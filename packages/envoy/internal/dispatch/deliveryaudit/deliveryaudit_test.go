@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -163,14 +164,22 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatalf("parse agent token: %v", err)
 	}
+	// Dispatch presents an identity of its own to the listener, as a deployment does: without one
+	// it refuses every send for a role (envoy.ErrNoListenerIdentity), and this rig mentions a role. The
+	// stand-in listener checks no bearer.
+	accountToken := filepath.Join(t.TempDir(), "envoy-account-token")
+	if err := os.WriteFile(accountToken, []byte("dispatch-test-account-token\n"), 0o600); err != nil {
+		t.Fatalf("write Dispatch's test account token: %v", err)
+	}
 	deps, err := api.NewDeps(api.DepsInput{
-		Store:       database,
-		Identity:    identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
-		AgentTokens: tokens,
-		ServerURL:   "https://dispatch.example",
-		EnvoyURL:    listener.URL,
-		Docs:        documents,
-		Events:      broker,
+		Store:                 database,
+		Identity:              identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		AgentTokens:           tokens,
+		ServerURL:             "https://dispatch.example",
+		EnvoyURL:              listener.URL,
+		EnvoyAccountTokenFile: accountToken,
+		Docs:                  documents,
+		Events:                broker,
 	})
 	if err != nil {
 		t.Fatalf("API dependencies: %v", err)

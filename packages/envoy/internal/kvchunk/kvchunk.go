@@ -306,33 +306,33 @@ func (l Layout) join(chunk func(key string) ([]byte, error)) ([]byte, error) {
 	return record, nil
 }
 
-// Read is the record entry, the value under key that a read through kv answered, stores, with the
-// layout it is stored in and the revision of the entry it was read from. A record stored whole is
-// entry's value itself. A chunk is read from the leader of the bucket's stream
-// (bus.KeyValue.GetFromLeader), because a copy of the stream that is behind the leader can lack a
-// chunk the leader holds. A chunk the leader does not hold either was deleted by a rewrite that
-// replaced the manifest since, or the record is damaged, and the manifest the leader holds now says
-// which: one at another revision is read in its place, up to readAttempts times (ErrMoved past
-// them), none at all is nats.ErrKeyNotFound, and one at the same revision is ErrDamaged. A
-// record whose chunks do not join into what its manifest names is ErrDamaged too. A damaged
-// record's layout is not returned: the chunks it names were never proved to be its, so the write
-// that replaces it deletes none of them, and the store's collection removes the ones the bucket
-// holds. Any other error is a read that did not answer. Each read waits no longer than ctx.
+// Read is the record value stores, value being what a read through kv answered under key at
+// revision - a direct get's entry, or a writer's put the stream's leader answered
+// (bus.KeyValue.ReadFromLeader) - with the layout it is stored in and the revision of the value it
+// was read from. A record stored whole is value itself. A chunk is read from the leader of the
+// bucket's stream (bus.KeyValue.GetFromLeader), because a copy of the stream that is behind the
+// leader can lack a chunk the leader holds. A chunk the leader does not hold either was deleted by
+// a rewrite that replaced the manifest since, or the record is damaged, and the manifest the leader
+// holds now says which: one at another revision is read in its place, up to readAttempts times
+// (ErrMoved past them), none at all is nats.ErrKeyNotFound, and one at the same revision is
+// ErrDamaged. A record whose chunks do not join into what its manifest names is ErrDamaged too. A
+// damaged record's layout is not returned: the chunks it names were never proved to be its, so the
+// write that replaces it deletes none of them, and the store's collection removes the ones the
+// bucket holds. Any other error is a read that did not answer. Each read waits no longer than ctx.
 //
 // The read again of the record's key is a leader read too, so a rewrite that made the record a
 // whole value of more than three quarters of the max payload answers it base64-encoded past that
 // bound: a client connection and a route take that answer, and a leafnode hop, which enforces the
 // max payload on what it forwards, would not. The hubs envoy-infra renders configure no leafnode
 // (infra/gcp's clustered hub turns its leafnode port off).
-func Read(ctx context.Context, kv bus.KeyValue, key string, entry nats.KeyValueEntry) ([]byte, Layout, uint64, error) {
+func Read(ctx context.Context, kv bus.KeyValue, key string, value []byte, revision uint64) ([]byte, Layout, uint64, error) {
 	for attempt := 1; ; attempt++ {
-		revision := entry.Revision()
-		layout, err := ReadLayout(entry.Value())
+		layout, err := ReadLayout(value)
 		if err != nil {
 			return nil, Layout{}, revision, err
 		}
 		if !layout.Chunked() {
-			return entry.Value(), layout, revision, nil
+			return value, layout, revision, nil
 		}
 		record, err := layout.join(func(chunk string) ([]byte, error) {
 			read, err := kv.GetFromLeader(ctx, chunk)
@@ -361,13 +361,13 @@ func Read(ctx context.Context, kv bus.KeyValue, key string, entry nats.KeyValueE
 		case attempt == readAttempts:
 			return nil, Layout{}, 0, fmt.Errorf("read %s: %w (%d reads)", key, ErrMoved, attempt)
 		}
-		entry = latest
+		value, revision = latest.Value(), latest.Revision()
 	}
 }
 
 // Written is what a Write stored: the revision its head was written at, and the layout the record
-// is stored in. Stored is false for a head the bucket refused (nats.ErrKeyExists), which stores
-// nothing.
+// is stored in. Stored is false for a head the bucket refused as a compare-and-swap another write
+// beat (bus.IsCASConflict), which stores nothing.
 type Written struct {
 	Revision uint64
 	Layout   Layout
@@ -382,16 +382,16 @@ type Written struct {
 //
 // What the write leaves unnamed it deletes once the bucket has answered for it (Delete): the
 // chunks of replaced once head landed, and its own chunks once the bucket refused head - a
-// compare-and-swap another write beat (nats.ErrKeyExists, Written.Stored false and no error), any
-// other refusal the server answered (a *nats.APIError) or one this client made before sending
-// (bus.ErrRefused), none of which stores anything - once a chunk write after them answered an
-// error, and once the write passed WriteBound before sending head. A call that did not answer, or
-// failed in any other way, deletes nothing, since what it sent can still land, and leaves its
-// chunks to the store's collection, as a crash does. head's
-// other errors are returned as they are. Each call waits no longer than ctx (bus.Bounded). now is
-// the store's clock, and WriteBound is read off its wall time, so a host that slept between the
-// chunks and the head counts the sleep. what names the record in the line a chunk left behind
-// logs (Delete).
+// compare-and-swap another write beat (bus.IsCASConflict: wrong last sequence, 10071, or 10164 from
+// a replicated bucket whose winning write is still being replicated; Written.Stored false and no
+// error), any other refusal the server answered (a *nats.APIError) or one this client made before
+// sending (bus.ErrRefused), none of which stores anything - once a chunk write after them answered
+// an error, and once the write passed WriteBound before sending head. A call that did not answer,
+// or failed in any other way, deletes nothing, since what it sent can still land, and leaves its
+// chunks to the store's collection, as a crash does. head's other errors are returned as they are.
+// Each call waits no longer than ctx (bus.Bounded). now is the store's clock, and WriteBound is
+// read off its wall time, so a host that slept between the chunks and the head counts the sleep.
+// what names the record in the line a chunk left behind logs (Delete).
 //
 // view is the store's view of the record for a reader that does not join chunks - an earlier
 // build - which the manifest carries beside its layout (layOut): called only for a record past one
@@ -427,7 +427,7 @@ func Write(ctx context.Context, kv bus.KeyValue, key string, record []byte, view
 	if !answered {
 		return Written{}, fmt.Errorf("write the %s %s: %w", what, key, err)
 	}
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		Delete(ctx, kv, keys, log, what, key)
 		return Written{}, nil
 	}

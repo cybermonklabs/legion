@@ -1,4 +1,10 @@
-import type { AskThread, IssueAskRow, MyReplyRow, MyReplySession } from "./dispatch-api.generated";
+import type {
+  AskThread,
+  CredentialPendingRow,
+  IssueAskRow,
+  MyReplyRow,
+  MyReplySession,
+} from "./dispatch-api.generated";
 
 /**
  * What a person and a session each have waiting: the narrowings the Inbox reads its rows
@@ -46,6 +52,16 @@ export interface MyReplyAgentRow extends MyReplyRow {
  *  reads as a Reply row, which is what every surface already draws for one. */
 export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgentRow {
   return row.kind === "agent" ? (row as MyReplyAgentRow) : (row as MyReplyThreadRow);
+}
+
+/** Whether a row of `GET /api/v1/credential-requests?approver=me` still waits on somebody's
+ *  decision: a pending row, which a broker older than the expired rows sends with no `state` at
+ *  all. An expired row - its deadline passed before anybody decided it, so the broker refuses
+ *  every decision of it - stays listed until somebody dismisses it, but nothing waits on the
+ *  viewer there: no `Needs you` count holds it, on the page or in `dispatch inbox`, and it does
+ *  not keep the Inbox from saying that nothing needs them. */
+export function awaitsDecision(row: Pick<CredentialPendingRow, "state">): boolean {
+  return row.state !== "expired";
 }
 
 /** The states `GET /api/v1/me/replies`'s `?state=` reads the caller's threads in: `unread`, the

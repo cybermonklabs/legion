@@ -1,9 +1,10 @@
-import { type ReactNode, useEffect } from "react";
+import type { ReactNode } from "react";
 
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
+import { useLiveRegistration } from "../writes/useKeyedWrite";
 import { isIndefinite, SNOOZE_PRESETS } from "./snooze";
 import { useAskSnooze } from "./useAskSnooze";
 
@@ -32,19 +33,16 @@ export function SnoozeControl({
 }: {
   askId: string;
   label: string;
-  /** Registers this row while its write is in flight or failed; unregistered once it settles
-   *  cleanly or the control unmounts. */
+  /** Registers the row of the ask its write is of while that write is in flight or failed;
+   *  unregistered once it settles cleanly or the control unmounts. */
   onLive: (askId: string, live: boolean) => void;
   /** The row's own snooze while its moment is still ahead; null on an ordinary row. */
   snoozedUntil: string | null;
 }): ReactNode {
   const write = useAskSnooze(askId);
-  const live = write.pending || write.failed;
-  useEffect(() => {
-    if (!live) return;
-    onLive(askId, true);
-    return () => onLive(askId, false);
-  }, [askId, live, onLive]);
+  // The row held is the one the live snooze is of, which is this row's unless a host has drawn
+  // the control for another ask since that press (`useAskSnooze`).
+  useLiveRegistration(write.liveAskId, onLive);
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
   // replaces, so it takes a line of its own rather than drawing over the issue key.
   const failure = write.failed ? (

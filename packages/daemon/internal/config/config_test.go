@@ -765,6 +765,18 @@ func TestLoadRefusesFailedPrivateKeyCommandEvenWhenItPrintsPEM(t *testing.T) {
 	}
 }
 
+// A private_key_command a signal ended has no status, so its refusal names the signal: read as a
+// status, it was `failed (exit -1)`.
+func TestLoadRefusesAPrivateKeyCommandASignalEndedNamingTheSignal(t *testing.T) {
+	body := strings.Replace(minimalFile, "private_key: implement-test-key", `private_key_command: "echo dying >&2; kill -KILL $$"`, 1)
+
+	_, err := Load(writeConfigFile(t, body), noEnv)
+
+	if want := "github_apps.implement.private_key_command failed (signal: killed): dying"; err == nil || err.Error() != want {
+		t.Errorf("Load error = %v, want %q", err, want)
+	}
+}
+
 func TestLoadRefusesEveryStage3Key(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -824,11 +836,11 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
 		},
 		{
-			// Dispatch holds the project's repository mapping, so a file that still names a
-			// repository is refused, naming where the mapping is set.
+			// The daemon takes each issue's repository from Dispatch, so a file that still names a
+			// repository is refused, naming where the repository comes from.
 			name: "a project names its repository",
 			body: strings.Replace(minimalFile, "DEMO: {}", "DEMO: { repo: acme/widgets }", 1),
-			want: `Unknown key "projects.DEMO.repo": Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`,
+			want: `Unknown key "projects.DEMO.repo": the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project`,
 		},
 		{
 			name: "review_workflows is no longer a key",
@@ -1965,8 +1977,8 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 		}
 	})
 	for _, tc := range []struct{ name, line, want string }{
-		{"a name that is no deployment capability", `capabilities: {decided: {nonsense: "because"}}`, "unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity"},
-		{"an image row, which no decision covers", `capabilities: {decided: {browser: "no Chromium"}}`, "unknown key capabilities.decided.browser: a decision may name secrets, model-fallback, resource-limits or pool-capacity"},
+		{"a name that is no deployment capability", `capabilities: {decided: {nonsense: "because"}}`, "unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room"},
+		{"an image row, which no decision covers", `capabilities: {decided: {browser: "no Chromium"}}`, "unknown key capabilities.decided.browser: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room"},
 		{"a blank reason", `capabilities: {decided: {secrets: "  "}}`, "capabilities.decided.secrets must not be empty"},
 		{"a null reason", `capabilities: {decided: {secrets: }}`, "capabilities.decided.secrets must not be empty"},
 		{"a reason that is not a string", `capabilities: {decided: {secrets: [a, b]}}`, "capabilities.decided.secrets must be a string"},

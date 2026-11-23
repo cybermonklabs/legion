@@ -114,9 +114,6 @@ export default defineConfig({
     dedupe: ["prosemirror-model"],
     alias: {
       "decode-named-character-reference": characterReferenceDecoder,
-      "@legion/contracts/repo": fileURLToPath(
-        new URL("../../contracts/src/repo.ts", import.meta.url)
-      ),
       "@legion/contracts/dispatch-snippet": fileURLToPath(
         new URL("../../contracts/src/dispatch-snippet.ts", import.meta.url)
       ),
@@ -138,6 +135,9 @@ export default defineConfig({
       ),
       "@legion/proof-editor/style.css": fileURLToPath(
         new URL("../../proof-editor/src/lib.css", import.meta.url)
+      ),
+      "@legion/proof-editor/block-nesting": fileURLToPath(
+        new URL("../../proof-editor/src/block-nesting.ts", import.meta.url)
       ),
       "@legion/proof-editor": fileURLToPath(
         new URL("../../proof-editor/src/lib.ts", import.meta.url)

@@ -236,7 +236,8 @@ test("a rail row unpins its agent", async () => {
   const { putAgentState } = renderRail({ agentState: pins });
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
-  await user.click(screen.getByRole("button", { name: "Unpin Reviewer from the sidebar" }));
+  // A row comes with the pins and its name with the agent list, a read that can answer later.
+  await user.click(await screen.findByRole("button", { name: "Unpin Reviewer from the sidebar" }));
 
   await waitFor(() => expect(rowTexts()).toEqual(["Planner2asleep", "Testerasleep"]));
   expect(putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
@@ -252,7 +253,7 @@ test("a move between pinned agents from the rail replaces the address, and one f
   renderRail({ agentState: pins, entries: ["/", `/agents/${PLANNER}/live`] });
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
-  await user.click(screen.getByRole("link", { name: "Reviewer" }));
+  await user.click(await screen.findByRole("link", { name: "Reviewer" }));
   expect(screen.getByTestId("address").textContent).toBe(`/agents/${REVIEWER}/live`);
 
   await user.click(screen.getByRole("button", { name: "Back" }));

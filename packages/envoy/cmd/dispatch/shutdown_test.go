@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -121,10 +122,8 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 		_, _ = process.renameIssue(key, "Renamed")
 	}()
 	// The edit's settlement queues behind the same lock two seconds in, so a count of waiters
-	// could pass with the title change still on its way: watch the title change's own statement,
-	// the issue-row lock a PATCH takes first (api's lockIssueRows). It runs in the Dispatch
-	// process, so its backend is named by that statement rather than by a pool of its own.
-	if pid := storetest.WaitForStatementBehind(t, database, holder, renameLock, 10*time.Second); pid == 0 {
+	// could pass with the title change still on its way: watch the title change's own backend.
+	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
 
@@ -139,10 +138,6 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	t.Logf("released the issue lock with %d waiting on it; exited %v after SIGTERM", waiting, time.Since(signalled))
 	process.checkSettledAtShutdown(t, database, artifactID)
 }
-
-// renameLock is the statement with which a PATCH of an issue locks the issue's row before it
-// writes (lockIssueRows in internal/dispatch/api/issue_parent.go), as pg_stat_activity shows it.
-const renameLock = `select parent_key from issues where key = $1 for no key update`
 
 // A write in flight at SIGTERM can wait on a lock past the HTTP drain's share, the document
 // service's budget and the point a fixed shutdown bound would end it, here a title change behind
@@ -454,7 +449,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
-	appCtx, err := appContextFor(resolveWith(t, nil), routes.AppContextOptions{
+	appCtx, err := appContextFor(t, resolveWith(t, nil), routes.AppContextOptions{
 		Store: database, Docs: documentService, Events: broker, Lifetime: lifetime,
 	})
 	if err != nil {
@@ -561,7 +556,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	documentService := docs.New(docs.Deps{Store: database, Events: broker})
 	lifetime, stop := context.WithCancel(context.Background())
 	defer stop()
-	appCtx, err := appContextFor(resolveWith(t, nil), routes.AppContextOptions{
+	appCtx, err := appContextFor(t, resolveWith(t, nil), routes.AppContextOptions{
 		Store: database, Docs: documentService, Events: broker, Lifetime: lifetime,
 	})
 	if err != nil {
@@ -740,7 +735,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), app, events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -856,7 +851,7 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	defer cancel()
 	stopIntakes, err := delivery.StartIntakes(ctx, func(name string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithName(name))
-	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil)
+	}, database.Pool, intakeLeasesOf(t, database.Pool), testGitHubApp(t, githubServer.URL), events.NewBroker(), nil, nil, delivery.NewAttributor(refs.Renames{}))
 	if err != nil {
 		t.Fatalf("start the intakes: %v", err)
 	}
@@ -882,8 +877,8 @@ func TestAPanicAfterTheIntakesStartEndsTheProcess(t *testing.T) {
 	}
 }
 
-// lockIssue holds the issue's row in a transaction of the test's own, as another writer would,
-// and rolls it back when the test ends if the test has not.
+// lockIssue holds the issue's owner lock (store.LockOwner) in a transaction of the test's own, as
+// another writer of the issue would, and rolls it back when the test ends if the test has not.
 func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 	t.Helper()
 	ctx := context.Background()
@@ -892,10 +887,55 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 		t.Fatalf("begin the lock holder: %v", err)
 	}
 	t.Cleanup(func() { _ = holder.Rollback(ctx) })
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, key); err != nil {
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(key)); err != nil {
 		t.Fatalf("lock the issue: %v", err)
 	}
 	return holder
+}
+
+// waitForRenameBehind waits up to within for the title change's backend to queue behind holder's
+// lock on the issue, and returns its process id, or 0 if it did not. The title change runs in the
+// Dispatch process, so its backend is found by its statement, the owner-lock statement a PATCH
+// sends first (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the
+// same statement for the same lock, but only once it holds its document's lock, an advisory lock
+// of its own; the title change holds none of those while it waits. Both hold the owner lock's
+// gate, which every write of this build takes shared in that same statement before it waits on
+// the owner (store.OwnerLockGateNamespace, migration 20261115200014), so the gate is the one
+// advisory lock that tells the two apart by nothing and is left out of the exclusion.
+func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, within time.Duration) uint32 {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(within)
+	for {
+		rows, err := database.Pool.Query(ctx, `
+			select pid from pg_stat_activity
+			where datname = current_database() and query = $1
+			  and pid not in (
+			    select pid from pg_locks
+			    where locktype = 'advisory' and granted
+			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
+		`, store.OwnerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
+		if err != nil {
+			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
+		}
+		pids, err := pgx.CollectRows(rows, pgx.RowTo[uint32])
+		if err != nil {
+			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
+		}
+		for _, pid := range pids {
+			queued, err := storetest.QueuedBehind(ctx, holder, pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if queued {
+				return pid
+			}
+		}
+		if time.Now().After(deadline) {
+			return 0
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch

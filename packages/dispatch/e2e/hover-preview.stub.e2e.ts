@@ -3,7 +3,7 @@
  *
  *  Every row reads the card and the page around it against one fixed answer for the issue it
  *  previews, so each runs against a recording rather than against a harness
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The phone row stayed in
+ *  (packages/dispatch/README.md, "The stubbed layer"). The phone row stayed in
  *  `hover-preview.e2e.ts`: the `iphone` project runs no stubbed row.
  */
 import { expect, type Page } from "@playwright/test";

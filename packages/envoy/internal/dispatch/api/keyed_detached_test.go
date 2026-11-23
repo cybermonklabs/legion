@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // keyedPost posts body to the rig's route on server as alice under key, giving up after timeout as
@@ -42,6 +43,7 @@ func keyedPost(server *httptest.Server, path, body, key string, timeout time.Dur
 // answer. A handler bound to its client's cancellation rolled back at the client's deadline, and
 // every repeat started again from nothing, so such a write could never land.
 func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
+	t.Parallel()
 	rig := newWritingRig(t, func(run int32, w http.ResponseWriter, r *http.Request, write rigWrite) {
 		select {
 		case <-time.After(20 * time.Second):
@@ -96,6 +98,7 @@ func TestAKeyedWriteSlowerThanItsClientFinishesAndIsReplayed(t *testing.T) {
 // past the lease is still told the first run is going rather than taking the key over and making
 // the write a second time. Only a run whose renewals stopped - its process died - is taken over.
 func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
+	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -141,6 +144,7 @@ func TestARunningHandlerRenewsItsKeyPastTheLease(t *testing.T) {
 // The handler's context is the server's, not the client's: the client's cancellation mid-run does
 // not reach it, and the server's own bound, keyedHandlerLimit, does.
 func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
+	t.Parallel()
 	running, proceed := make(chan struct{}), make(chan struct{})
 	type seen struct {
 		err  error
@@ -186,6 +190,7 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 // A keyed handler still running is part of the server's background work: shutdown's wait does not
 // return before it does, so the database pool is never closed under it.
 func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
+	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -218,6 +223,7 @@ func TestTheBackgroundWaitWaitsForARunningKeyedHandler(t *testing.T) {
 // backgroundWork's wait returns only once nothing runs, however work starts and ends around it:
 // work that starts while it waits, which a sync.WaitGroup forbids, is waited for too.
 func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
+	t.Parallel()
 	var work backgroundWork
 	work.wait()
 	work.start()
@@ -245,6 +251,7 @@ func TestTheBackgroundWaitWaitsForWorkStartedWhileItWaits(t *testing.T) {
 // handler's own context, and is mounted only under test hooks. A run whose context ends during the
 // delay never reaches its handler.
 func TestTheSlowWriteHookDelaysEveryKeyedRunOfItsPath(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true})
 	issue := createTestIssue(t, handler, "SLOW", "Slow writes")
 	path := "/api/v1/issues/" + issue + "/comments"
@@ -380,6 +387,7 @@ func TestAnInFlightRepeatIsJudgedWithoutSpoolingItsBody(t *testing.T) {
 // for a lease. Here the claim waits behind another transaction's hold on the key, the client gives
 // up meanwhile, and once the hold goes the request is claimed, run once and answered under its key.
 func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
+	t.Parallel()
 	rig := newKeyedRig(t, answerRun)
 	ctx := context.Background()
 	hold, err := rig.database.Pool.Begin(ctx)
@@ -436,6 +444,7 @@ func TestAKeyedClaimFinishesWhenItsClientGivesUpDuringIt(t *testing.T) {
 // answered as one whose holder died, here taking over a key the run made nothing under, rather than
 // told KEY_IN_FLIGHT for as long as the handler ignores its context.
 func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
+	t.Parallel()
 	release, releaseOnce := heldUntilReleased(t)
 	running := make(chan struct{})
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -466,16 +475,19 @@ func TestARunPastItsLimitStopsRenewingItsLease(t *testing.T) {
 // once the lock is free. The close settles the issue's documents before its transaction and
 // sweeps them after it (the next test), on a context that must outlive the client; a keyed
 // request's context already does, and context.WithoutCancel on it dropped the bound with the
-// cancellation, so a close held on the issue's row kept its background-work slot, and the
-// shutdown's wait for it, as long as the row stayed held.
-func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.T) {
+// cancellation, so a close held on the issue's owner lock kept its background-work slot, and the
+// shutdown's wait for it, as long as that lock stayed held.
+func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.requestKeyRunLimit = time.Second
-	issue := createInteractionIssue(t, handler, "TEST", "Closed while its row is held", "Context\n")
+	issue := createInteractionIssue(t, handler, "TEST", "Closed while its owner lock is held", "Context\n")
 	awaitSettled(t, database, issue.PrimaryArtifactID)
 	ctx := context.Background()
 	// The spec owes a settlement, which the close runs before its own transaction, and another
-	// writer holds the issue's row, which that settlement's transaction waits for.
+	// writer holds the issue's owner lock, which that settlement's transaction waits for: an
+	// issue's document is owned by the issue (store.IssueOwner), and every writer of an owner takes
+	// that lock in its read phase, before it writes anything (INFRA-636).
 	if _, err := database.Pool.Exec(ctx,
 		`insert into doc_settlements_pending (artifact_id) values ($1)`, issue.PrimaryArtifactID); err != nil {
 		t.Fatalf("mark the spec owed a settlement: %v", err)
@@ -485,8 +497,8 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *tes
 		t.Fatalf("begin the holder's transaction: %v", err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
-		t.Fatalf("hold the issue's row: %v", err)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
 
 	closing := map[string]any{"status": "done"}
@@ -501,10 +513,10 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *tes
 				response.Code, response.Body.String())
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("a keyed close still waited on the held issue row 15 s after its run's 1 s bound")
+		t.Fatal("a keyed close still waited on the held issue owner lock 15 s after its run's 1 s bound")
 	}
 	if err := holder.Rollback(ctx); err != nil {
-		t.Fatalf("release the issue's row: %v", err)
+		t.Fatalf("release the issue's owner lock: %v", err)
 	}
 	var open bool
 	if err := database.Pool.QueryRow(ctx,
@@ -516,14 +528,14 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *tes
 	}
 	repeat := keyedRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, closing, "alice", "close-held")
 	if repeat.Code != http.StatusOK || replayed(repeat) {
-		t.Fatalf("the repeat once the row is free: status=%d body=%s, want the key released and the close run",
+		t.Fatalf("the repeat once the owner lock is free: status=%d body=%s, want the key released and the close run",
 			repeat.Code, repeat.Body.String())
 	}
 }
 
 // closeCommitHold is the document service with a pause between a close's commit and its sweep: the
 // sweep's own Join, the first document call it makes, which comes once the close's transaction has
-// committed and before the sweep locks the issue's row (sweepClosedIssueAsksTx), closes committed
+// committed and before the sweep takes the issue's owner lock (sweepClosedIssueAsksTx), closes committed
 // and returns only once release is closed. The close's own transaction joins first, and that join
 // passes straight through: the count of joins since the hold was installed is what tells the two
 // apart, and only the sweep's pauses.
@@ -542,12 +554,13 @@ func (h *closeCommitHold) Join(ctx context.Context, tx pgx.Tx) (context.Context,
 	return h.API.Join(ctx, tx)
 }
 
-// A keyed close whose sweep, after its commit, waits on the issue's row ends at the keyed run's
-// bound too, and answers the close it committed. The sweep takes the issue's row in a transaction
+// A keyed close whose sweep, after its commit, waits on the issue's owner lock ends at the keyed
+// run's bound too, and answers the close it committed. The sweep takes that lock in a transaction
 // of its own (sweepClosedIssueAsksTx); on context.WithoutCancel of the keyed request's context it
-// waited for as long as another writer held the row, past the bound, holding the keyed run's
+// waited for as long as another writer held the lock, past the bound, holding the keyed run's
 // background-work slot all the while.
-func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.T) {
+func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.requestKeyRunLimit = time.Second
 	issue := createInteractionIssue(t, handler, "TEST", "Swept while its row is held", "Context\n")
@@ -568,16 +581,16 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.
 		close(hold.release)
 		t.Fatal("the close did not commit within 15 s")
 	}
-	// Another writer takes the issue's row between the close's commit and its sweep.
+	// Another writer takes the issue's owner lock between the close's commit and its sweep.
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		close(hold.release)
 		t.Fatalf("begin the holder's transaction: %v", err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
 		close(hold.release)
-		t.Fatalf("hold the issue's row: %v", err)
+		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
 	close(hold.release)
 	select {
@@ -587,7 +600,7 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.
 				response.Code, response.Body.String())
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("a keyed close's sweep still waited on the held issue row 15 s after its run's 1 s bound")
+		t.Fatal("a keyed close's sweep still waited on the held owner lock 15 s after its run's 1 s bound")
 	}
 	var closed bool
 	if err := database.Pool.QueryRow(ctx,

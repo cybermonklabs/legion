@@ -10,9 +10,9 @@
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
 // and the CLI present; it stops it and starts it again on the same database and port for A10. The
 // daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
-// booted with dispatch_url at that server, so every Dispatch read and write it makes - the
-// repository mapping, the issue list, its status writes and messages, and the read of the record a
-// completion names - goes to the real routes. The worker side is the real `dispatch` CLI
+// booted with dispatch_url at that server, so every Dispatch read and write it makes - the issue
+// list, its status writes and messages, and the read of the record a completion names - goes to
+// the real routes. The worker side is the real `dispatch` CLI
 // (packages/envoy-client/bin/dispatch.ts under bun) run as each claim's registered session, and
 // the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete. The plugin
 // side a completion's commit comes from is the real `findHandoffReport`
@@ -64,14 +64,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// handoffRecordsUser is the person the driver sets Dispatch up as: the project, its repository
-// mapping and the issues, through the trusted identity header the scratch server takes.
+// handoffRecordsUser is the person the driver sets Dispatch up as: the project, its default
+// repository and the issues, through the trusted identity header the scratch server takes.
 const handoffRecordsUser = "legion-e2e"
 
 // handoffBodyMax is Dispatch's handoff body cap (contracts DISPATCH_HANDOFF_BODY_MAX).
@@ -115,8 +116,8 @@ func TestHandoffRecordsLive(t *testing.T) {
 	r.step("a10-dispatch-restarted-the-retried-write-and-the-completion-land", r.a10Restarted)
 }
 
-// newHandoffRecordsLive starts Dispatch, sets up its project, mapping and issues, seeds the
-// daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
+// newHandoffRecordsLive starts Dispatch, sets up its project, default repository and issues, seeds
+// the daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
 func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	t.Helper()
 	r := startOnDispatch(t, "scripts/e2e/handoff-records.sh", "HR", "Handoff records live proof")
@@ -129,9 +130,9 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 // startOnDispatch readies a whole-daemon proof over the real Dispatch, for this driver and for
 // review_range_live_test.go's, which embeds what it returns. It starts Dispatch, writes its agent
 // token where the daemon reads it and names it the daemon's dispatch_url, and creates the run's
-// project, prefix and six characters of the run's own, titled name, with liveRepo mapped to it as
-// its default. The caller creates its issues (createIssue), seeds them (seedIssues), sets github
-// and boots the daemon (boot).
+// project, prefix and six characters of the run's own, titled name, with liveRepo set as its
+// default repository in Dispatch. The caller creates its issues (createIssue), seeds them
+// (seedIssues), sets github and boots the daemon (boot).
 func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsLive {
 	t.Helper()
 	proof := newLiveProof(t, script)
@@ -144,20 +145,7 @@ func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsL
 	if proof.project, err = claim.ProjectToken(proof.cfg.Project); err != nil {
 		t.Fatal(err)
 	}
-	// testbuild.RootEnv names the checkout the script runs from, whose packages/envoy the driver
-	// builds Dispatch from and whose packages/envoy-client holds the CLI. The script exports it:
-	// the driver binary runs from the caller's directory, not the package's. Unset (a plain `go
-	// test -tags e2e`, which runs in the package directory), the checkout is four directories up.
-	root := os.Getenv(testbuild.RootEnv)
-	if root == "" {
-		root = filepath.Join("..", "..", "..", "..")
-	}
-	if root, err = filepath.Abs(root); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := exec.LookPath("bun"); err != nil {
-		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
-	}
+	root := liveCLICheckout(t)
 	r := &handoffRecordsLive{
 		liveProof: proof, rt: fake.NewRuntime(), built: &built{}, root: root,
 		cliHome: t.TempDir(), claimants: map[claim.Token]*handoffClaimant{},
@@ -169,7 +157,7 @@ func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsL
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": name}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	return r
 }
 
@@ -180,7 +168,7 @@ func (r *handoffRecordsLive) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 2*time.Minute)
-	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
+	r.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 }
 
@@ -254,7 +242,7 @@ func (r *handoffRecordsLive) seedIssues(issues []dispatchSeed) {
 	t := r.t
 	t.Helper()
 	ctx := context.Background()
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, s := range issues {
 			listed := r.dispatch.issue(s.key)
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
@@ -734,35 +722,85 @@ func (r *handoffRecordsLive) cli(session string, args ...string) (string, int) {
 // `dispatch`.
 func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, int) {
 	r.t.Helper()
-	return r.bun(session, nil, filepath.Join(r.root, "packages", "envoy-client", "bin", "dispatch.ts"), args...)
+	return r.bun(session, nil, dispatchCLI(r.root), args...)
 }
 
-// bun runs `bun program args...` as an omp session's shell runs a program of its pane's:
-// DISPATCH_HOST omp, DISPATCH_SESSION_ID the session, Dispatch named by DISPATCH_URL and
-// DISPATCH_TOKEN, and extra after them. Nothing else of the caller's environment reaches it but
-// PATH: its home, its configuration file (absent, so the variables are the whole of its Dispatch
-// settings) and its session state are the run's own, so no operator's file or session is read.
+// bun runs `bun program args...` as an omp session's shell runs a program of its pane's, with the
+// run's Dispatch and its agent token (cliShell), and extra after the shell's own variables.
 func (r *handoffRecordsLive) bun(session string, extra []string, program string, args ...string) (cliOutput, int) {
 	r.t.Helper()
-	home := filepath.Join(r.cliHome, "home")
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		r.t.Fatal(err)
+	return cliShell{t: r.t, dir: r.cliHome, session: session, base: r.dispatch.base, token: r.dispatch.token}.bun(extra, program, args...)
+}
+
+// liveCLICheckout is the checkout whose packages/envoy-client holds the dispatch CLI a live proof
+// runs under bun, and whose packages/envoy its driver builds Dispatch from. testbuild.RootEnv
+// names it, and the proof's script exports it, because the driver binary runs from the caller's
+// directory, not the package's. Unset (a plain `go test -tags e2e`, which runs in the package
+// directory), the checkout is four directories up. It fails the test when bun is not on PATH.
+func liveCLICheckout(t *testing.T) string {
+	t.Helper()
+	root := os.Getenv(testbuild.RootEnv)
+	if root == "" {
+		root = filepath.Join("..", "..", "..", "..")
 	}
-	command := exec.Command("bun", append([]string{program}, args...)...)
-	command.Dir = r.cliHome
+	root, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := exec.LookPath("bun"); err != nil {
+		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
+	}
+	return root
+}
+
+// dispatchCLI is the dispatch CLI's entry under root, a checkout liveCLICheckout answers, which
+// bun runs.
+func dispatchCLI(root string) string {
+	return filepath.Join(root, "packages", "envoy-client", "bin", "dispatch.ts")
+}
+
+// cliShell is an omp session's shell as it runs a program of its pane's: DISPATCH_HOST omp,
+// DISPATCH_SESSION_ID the session, Dispatch named by DISPATCH_URL (base) and DISPATCH_TOKEN
+// (token). Nothing else of the caller's environment reaches the program but PATH: its working
+// directory, its home, its configuration file (absent, so the variables are the whole of its
+// Dispatch settings) and its session state are under dir, the run's own, so no operator's file or
+// session is read.
+type cliShell struct {
+	t                         *testing.T
+	dir, session, base, token string
+}
+
+// bun runs `bun program args...` in the shell, with extra after the shell's own variables, and
+// answers both streams and the exit code.
+func (s cliShell) bun(extra []string, program string, args ...string) (cliOutput, int) {
+	s.t.Helper()
+	return s.run(extra, "bun", append([]string{program}, args...)...)
+}
+
+// run runs `name args...` in the shell, with extra after the shell's own variables, where a
+// variable extra names again replaces the shell's (os/exec keeps the last), and answers both
+// streams and the exit code.
+func (s cliShell) run(extra []string, name string, args ...string) (cliOutput, int) {
+	s.t.Helper()
+	home := filepath.Join(s.dir, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		s.t.Fatal(err)
+	}
+	command := exec.Command(name, args...)
+	command.Dir = s.dir
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + home,
-		"TMPDIR=" + r.cliHome,
-		"XDG_CONFIG_HOME=" + filepath.Join(r.cliHome, "config"),
-		"XDG_STATE_HOME=" + filepath.Join(r.cliHome, "state"),
-		"XDG_CACHE_HOME=" + filepath.Join(r.cliHome, "cache"),
-		"ENVOY_CONFIG_FILE=" + filepath.Join(r.cliHome, "envoy.json"),
-		"DISPATCH_STATE_DIR=" + filepath.Join(r.cliHome, "dispatch-state"),
+		"TMPDIR=" + s.dir,
+		"XDG_CONFIG_HOME=" + filepath.Join(s.dir, "config"),
+		"XDG_STATE_HOME=" + filepath.Join(s.dir, "state"),
+		"XDG_CACHE_HOME=" + filepath.Join(s.dir, "cache"),
+		"ENVOY_CONFIG_FILE=" + filepath.Join(s.dir, "envoy.json"),
+		"DISPATCH_STATE_DIR=" + filepath.Join(s.dir, "dispatch-state"),
 		"DISPATCH_HOST=omp",
-		"DISPATCH_SESSION_ID=" + session,
-		"DISPATCH_URL=" + r.dispatch.base,
-		"DISPATCH_TOKEN=" + r.dispatch.token,
+		"DISPATCH_SESSION_ID=" + s.session,
+		"DISPATCH_URL=" + s.base,
+		"DISPATCH_TOKEN=" + s.token,
 	}
 	command.Env = append(command.Env, extra...)
 	var stdout, stderr bytes.Buffer
@@ -772,7 +810,7 @@ func (r *handoffRecordsLive) bun(session string, extra []string, program string,
 	if err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			r.t.Fatalf("run %s under bun: %v", program, err)
+			s.t.Fatalf("run %s %s: %v", name, strings.Join(args, " "), err)
 		}
 		code = exit.ExitCode()
 	}
@@ -904,7 +942,7 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
-	go c.serve()
+	c.sh.serve(c.serve)
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {
@@ -915,13 +953,13 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 	return c
 }
 
-// serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs), and takes each
-// prompt - answering it and starting the turn, as Oh My Pi does - for the step to read.
+// serve reads every frame the daemon sends the shim until the connection closes or the test ends
+// it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
+// while a turn runs), and takes each prompt - answering it and starting the turn, as Oh My Pi
+// does - for the step to read.
 func (c *handoffClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
-	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -946,7 +984,11 @@ func (c *handoffClaimant) serve() {
 			c.turn = true
 			c.mu.Unlock()
 			c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID})
-			c.prompts <- f
+			select {
+			case c.prompts <- f:
+			case <-c.sh.stopping:
+				return
+			}
 		}
 	}
 }

@@ -1,0 +1,43 @@
+{
+  "id": 642504,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 1820,
+  "type": "artifact.version",
+  "actor": {
+    "kind": "session",
+    "id": "lorem ipsum dolor sit",
+    "origin": {
+      "host": "lorem ipsu",
+      "machine": "lorem ipsum dolor sit"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-11-17T00:32:59.36086Z",
+  "payload": {
+    "name": "lorem ipsum dolor sit amet",
+    "version": {
+      "size": 44115,
+      "named": false,
+      "number": 3,
+      "authors": [
+        {
+          "id": "lorem ipsum dolor sit",
+          "kind": "session",
+          "origin": {
+            "host": "lorem ipsu",
+            "machine": "lorem ipsum dolor sit"
+          }
+        }
+      ],
+      "summary": null,
+      "created_at": "2026-11-17T00:32:59.36086Z"
+    },
+    "artifact_id": "60fc65ce-2f41-4bc7-a4f3-0526012eebe8",
+    "references_changed_truncated": true,
+    "references_changed_truncated_kinds": [
+      "issue"
+    ]
+  }
+}

@@ -217,6 +217,33 @@ func TestProjectTokenIsTheShippedSpelling(t *testing.T) {
 	}
 }
 
+// An outbox key belongs to the project its part before the first `-` names, the whole key where it
+// has none (KeyOfProject), read with either spelling of the project: the Dispatch key or the
+// claim token's. A key of another project is not the project's, and neither is one whose project
+// merely starts or ends with the same letters.
+func TestKeyOfProjectAnswersNoForAKeyOfAnotherProject(t *testing.T) {
+	for _, c := range []struct {
+		project, key string
+		want         bool
+	}{
+		{"LEGION", "LEGION-208", true},
+		{"legion", "LEGION-208", true},
+		{"LEGION", "LEGION", true},
+		{"legion", "LEGION", true},
+		{"LEGION", "OTHERPROJECT-9", false},
+		{"legion", "OTHERPROJECT-9", false},
+		{"LEGION", "OTHERPROJECT", false},
+		{"LEGION", "LEGIONX-1", false},
+		{"LEGION", "XLEGION-1", false},
+		{"LEGION", "LEG-1", false},
+		{"LEGION", "", false},
+	} {
+		if got := KeyOfProject(c.project, c.key); got != c.want {
+			t.Errorf("KeyOfProject(%q, %q) = %t, want %t", c.project, c.key, got, c.want)
+		}
+	}
+}
+
 // A claim token is the Envoy role the agent claims and the name every file of its pane is filed
 // under, so it is the shipped roleToken byte for byte (legion-roles.ts:48-55) — a token Envoy
 // would refuse, or one the TypeScript plugin would spell differently, is a role nobody reaches.

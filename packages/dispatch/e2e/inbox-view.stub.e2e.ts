@@ -4,7 +4,7 @@
  *
  *  Every row here reads what the page draws over one answer - boxes, counts, bands, an order
  *  the SPA computes and a width the reader's browser keeps - so each runs against a recording
- *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The row
+ *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). The row
  *  that follows a hundred and twenty threads through a live priority change stayed in
  *  `inbox-view.e2e.ts`.
  */

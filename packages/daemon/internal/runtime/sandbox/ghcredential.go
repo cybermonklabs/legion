@@ -202,17 +202,18 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // the role would go on reading a directory nothing refreshes. The render's own default is not
 // compared with it. A workflow role's default is the directory its repository routes to by the
 // pairs that resolve now (appauth's bundleDirs), and a pair starts or stops resolving when the
-// project's mapping gains or loses one of its two names, so a mapping edit moves the default of
-// every bundle built after it: an operator who removes the old name from the mapping after a
-// transfer moves it from the `from` owner's directory to the `to` owner's. The directories a
-// bundle holds do not move with it and the pod projects the pairs file, so nothing opens an
-// update round (movedGhDirs), and a refresh that refused the moved default would stop for the
-// rest of the pod's life, every token in it expiring within the hour.
+// daemon starts or stops serving one of its two names (GitHub's answer of whether both role Apps
+// are installed on it), so a change of that answer moves the default of every bundle built after
+// it: once GitHub no longer answers that both Apps are installed on the old name, the default
+// moves from the `from` owner's directory to the `to` owner's. The directories a bundle holds do
+// not move with it and the pod projects the pairs file, so nothing opens an update round
+// (movedGhDirs), and a refresh that refused the moved default would stop for the rest of the pod's
+// life, every token in it expiring within the hour.
 //
 // What the pod keeps by this is routing by repository: `legion gh` and `legion git-credential`
 // route each request by the repository it names, or by the one the working directory's git
 // remotes name, over the pairs this refresh writes beside the leases. What it does not gain is
-// the new default. A pod launched before the mapping edit keeps the directory its launch
+// the new default. A pod launched before that change keeps the directory its launch
 // recorded as its GH_CONFIG_DIR for as long as it lives, a later launch into the same pod
 // included, since that launch takes the default from this Secret (launcherBound), and only the
 // pod a launch replaces it with is fixed at the directory the repository routes to now. So a
@@ -297,10 +298,11 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 			changed = append(changed, dir)
 		}
 	}
-	// The pairs turn over with the deployment's configuration and the project's mapping rather
-	// than with a lease, so they are compared on their own: a pod the launch keeps projects the
-	// file it was created with, and the kubelet rewrites its content in place when the Secret
-	// changes, which is how a pair configured since the pod started reaches the wrappers in it.
+	// The pairs turn over with the deployment's configuration and GitHub's answers for their
+	// names rather than with a lease, so they are compared on their own: a pod the launch keeps
+	// projects the file it was created with, and the kubelet rewrites its content in place when
+	// the Secret changes, which is how a pair configured since the pod started reaches the
+	// wrappers in it.
 	pairs := ghconfig.RenderPairs(bundle.Pairs)
 	stalePairs := string(secret.Data[GitHubPairsKey]) != pairs
 	if len(changed) == 0 && !stalePairs {

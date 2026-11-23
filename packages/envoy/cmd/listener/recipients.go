@@ -5,12 +5,12 @@ import (
 )
 
 // recipientCounts is how many sessions, other than sender, a message published on topic is for,
-// as publishResponse carries the two numbers: recipients is every session the topic is for and
-// connected how many of those are live now, a pointer each so that a count of zero is sent as the
-// number it is. A count is nil when a cache it is read from cannot be served, and the publish
-// route leaves each nil field out of its answer on its own, rather than send a number that means
-// something narrower than the one it names (plan D16). The counts read three caches, and each is
-// checked before it is read:
+// as listenerwire.PublishResponse carries the two numbers: recipients is every session the topic
+// is for and connected how many of those are live now, a pointer each so that a count of zero is
+// sent as the number it is. A count is nil when a cache it is read from cannot be served, and the
+// publish route leaves each nil field out of its answer on its own, rather than send a number that
+// means something narrower than the one it names (plan D16). The counts read three caches, and
+// each is checked before it is read:
 //
 //   - the known-session store (session.KnownSessions.Opened: no store at all, one whose NATS grant
 //     does not open the bucket yet, one whose first read of the bucket has not completed, or one

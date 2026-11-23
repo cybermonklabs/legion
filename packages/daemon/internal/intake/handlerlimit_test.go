@@ -139,7 +139,6 @@ var reviewBoundedReads = map[string]string{
 // review does. They are bounded reads like the two above, and they are not counted, because
 // boundedReadsPerFact is the most any one fact makes and no fact here makes more than one.
 var otherFactBoundedReads = map[string]string{
-	"RepositoryMapping": "RepoMappingChanged reads the project's repository mapping again (readMapping); handleMessage returns the moment that read answers, so this fact reaches no other read and no transaction",
 	"PrepareRepository": "a DispatchIssue fact has the repository it resolves to readied before it is applied (prepareRepository); it is no pull request's event, so recordedPullRequest answers true with no read of the pool, and neither review resolver touches it: one read in all",
 	"PrepareArtifact":   "a DispatchArtifact fact has the issue its review is on readied before it is applied (prepareArtifact); it reaches the pool and GitHub through nothing else, for the same reason a DispatchIssue fact does not: one read in all",
 }

@@ -123,6 +123,13 @@ spec:
                 secretKeyRef:
                   name: listener-credentials
                   key: ENVOY_API_TOKEN
+            # Dispatch's identity at the listener, the one it takes a send's role mark from: the
+            # token cluster.sh up minted for the namespace's default ServiceAccount, for the
+            # listener's audience and the copy's own issuer (manifests/oidc-issuer.yaml), mounted
+            # below from the run's Secret. Without it Dispatch refuses every send for a role
+            # route, which the replay's role-routed issues make.
+            - name: ENVOY_ACCOUNT_TOKEN_FILE
+              value: /var/run/secrets/envoy-listener/token
           ports:
             - name: http
               containerPort: 8766
@@ -149,6 +156,9 @@ spec:
           volumeMounts:
             - name: home
               mountPath: /home/envoy
+            - name: envoy-listener-token
+              mountPath: /var/run/secrets/envoy-listener
+              readOnly: true
         - name: pprof
           image: __SOCAT_IMAGE__
           args: ["TCP-LISTEN:6061,fork,reuseaddr", "TCP:127.0.0.1:6060"]
@@ -168,3 +178,12 @@ spec:
         - name: home
           emptyDir:
             sizeLimit: 1Gi
+        # The kubelet's projected token would name the cluster's issuer, which no pod of the copy
+        # can reach; the minted one names the copy's own and outlives the run (cluster.sh,
+        # ACCOUNT_TOKEN_LIFETIME), so nothing rewrites it.
+        - name: envoy-listener-token
+          secret:
+            secretName: dispatch-credentials
+            items:
+              - key: ENVOY_ACCOUNT_TOKEN
+                path: token

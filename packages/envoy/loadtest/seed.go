@@ -87,7 +87,9 @@ func runSeed(args []string) error {
 	out := fs.String("out", "", "seed.json path (default $LOADTEST_ROOT/seed.json)")
 	comments := fs.Int("comments", 8, "comments per issue, every second one anchored")
 	workers := fs.Int("workers", 8, "concurrent writers")
-	_ = fs.Parse(args)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}

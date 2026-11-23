@@ -1,13 +1,17 @@
 // Package pgmigrate holds what Envoy's two Postgres migration runners share: Dispatch's
-// (internal/dispatch/store) and the secrets broker's (internal/broker/store). Both record an
-// applied migration by its version alone and apply every version they have not recorded, so both
-// trust the set they embed to give each version one file, and both run a migration's statements
-// under locks that production's reads and writes queue behind. Load refuses a set either runner
-// would apply other than as written, before the runner opens a transaction; Exec applies each
-// migration with its lock waits bounded by LockTimeout, and names the lock a migration gave up on
-// and the sessions that held it; Census reads, before a deployment applies the migrations a
-// database has not, what they would lock and the rows their own censuses count, and writes
-// nothing.
+// (internal/dispatch/store) and the secrets broker's (internal/cipher/store). Both record an
+// applied migration by its version and its file's identity, its name and the sha256 of its text
+// (Identity), and apply every version they have not recorded, so both trust the set they embed to
+// give each version one file, and both run a migration's statements under locks that production's
+// reads and writes queue behind. Load refuses a set either runner would apply other than as
+// written, before the runner opens a transaction, and LoadBuilt, which Dispatch's runner reads its
+// embedded set with, makes every check of Load's but the parse of a non-transactional statement,
+// which ExecNonTransactional makes before it runs one; Reconcile refuses, before the runner applies
+// anything, a database whose version table records a version under an identity other than the
+// file's own and other than one the file replaces; Exec applies each migration with its lock waits
+// bounded by LockTimeout, and names the lock a migration gave up on and the sessions that held
+// it; Census reads, before a deployment applies the migrations a database has not, what they
+// would lock and the rows their own censuses count, and writes nothing.
 package pgmigrate
 
 import (
@@ -28,8 +32,17 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
-	// NonTransactional selects a single idempotent, non-unique CREATE INDEX CONCURRENTLY outside
-	// a transaction, declared by -- pgmigrate:non-transactional on the file's first line.
+	// Checksum is the sha256 of the file's whole text in lower-case hex. With Name it is the
+	// identity a runner records of the file (Identity), and judges what its version table records
+	// of the version against (Reconcile).
+	Checksum string
+	// Replaces is each identity the file declares, in a -- replaces: <name> sha256:<hex> line, as
+	// one an earlier text or name of this version had: a database that records one of them is
+	// accepted, and its row left as it is, so the release that recorded it still boots (Reconcile).
+	Replaces []Identity
+	// NonTransactional says the file's first line is -- pgmigrate:non-transactional, which selects
+	// execution outside a transaction. Load and ExecNonTransactional check that the statement is a
+	// single idempotent, non-unique CREATE INDEX CONCURRENTLY; LoadBuilt reads the marker alone.
 	// Runners without that execution mode must refuse it before applying anything.
 	NonTransactional bool
 	// Census is the text of <version>_<name>.census.sql when the migration declares one: one
@@ -56,11 +69,15 @@ type Migration struct {
 //   - an entry is named any other way: a runner reading only *.up.sql would never see it, while
 //     whoever wrote it believes it runs;
 //   - a -- pgmigrate:non-transactional first-line marker does not hold exactly one
-//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex);
+//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex), or the
+//     marker stands, as a comment of its own, on any other line (misplacedMarker);
 //   - a rollback script or a census has no forward migration of its name;
 //   - a census is not one select, holds a Unicode escape, or names pg_terminate_backend,
 //     pg_cancel_backend, pg_sleep, an advisory-lock function or a function that runs a query
 //     given as text (checkCensus);
+//   - a -- replaces: line is not written as `-- replaces: <version>_<name>.up.sql sha256:<hex>`,
+//     alone on its line with 64 lower-case hex digits, names a file of another version, or stands
+//     where Postgres reads it as part of a literal rather than as a comment (readReplaces);
 //   - a forward migration or a census cannot be read.
 //
 // It reports every problem it finds and returns no migration when it finds one, so a runner that
@@ -72,6 +89,26 @@ type Migration struct {
 // identifiers out, which migrationid.Check holds Dispatch's set to and
 // pgmigratetest.CheckNumberedOneToN the broker's, which is numbered throughout.
 func Load(fsys fs.FS, dir string) ([]Migration, error) {
+	return load(fsys, dir, true)
+}
+
+// LoadBuilt is Load for the set a runner's binary embeds, which is fixed when the binary is built
+// and which a test of the runner's package holds to Load at every change. It makes every check
+// Load makes but one: it does not parse each non-transactional migration's statement with
+// libpg_query (concurrentIndex), which runs as WebAssembly in this process and compiles that
+// module on its first parse, about 1.7 s of CPU and 220 MiB of heap: Load paid that at every
+// start of the runner, whether or not the database owed a migration. ExecNonTransactional parses
+// the statement, and refuses it, before it runs (TestExecNonTransactionalRefusesWhatLoadRefuses),
+// so a migration this admits is applied only as Load would admit it. What a runner gives up is
+// Load's refusal of the whole set before it applies anything: a bad marked migration is refused
+// at its turn, after the pending migrations before it have been applied. The runner's package
+// test makes the whole check of the embedded set instead, so such a set does not ship.
+func LoadBuilt(fsys fs.FS, dir string) ([]Migration, error) {
+	return load(fsys, dir, false)
+}
+
+// load is Load, and LoadBuilt where parse is false.
+func load(fsys fs.FS, dir string, parse bool) ([]Migration, error) {
 	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return nil, fmt.Errorf("list migrations in %s: %w", dir, err)
@@ -130,9 +167,17 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 			problems = append(problems, fmt.Errorf("read migration %s: %w", name, err))
 			continue
 		}
-		migration := Migration{Version: version, Name: name, SQL: string(sql)}
+		migration := Migration{Version: version, Name: name, SQL: string(sql), Checksum: Checksum(sql)}
+		if migration.Replaces, err = readReplaces(name, version, migration.SQL); err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		if err := misplacedMarker(name, migration.SQL); err != nil {
+			problems = append(problems, err)
+			continue
+		}
 		migration.NonTransactional = nonTransactionalHeader(migration.SQL)
-		if migration.NonTransactional {
+		if migration.NonTransactional && parse {
 			if _, err := concurrentIndex(migration.SQL); err != nil {
 				problems = append(problems, fmt.Errorf("migration %s: %w", name, err))
 				continue

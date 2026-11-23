@@ -1,0 +1,247 @@
+File s10-code.txt: text/plain;charset=utf-8, version 1, 11,496 bytes.
+
+# A stand-in code-txt for the judging driver's tests, in the frozen file's shape.
+
+=== FILE: shadow.py ===
+"""A stand-in for the frozen reviewer's shadow.py, written for the judging driver's tests: the
+names the driver runs and replaces, in the shapes it reads, and none of the real code's text."""
+import datetime, hashlib, json, os, random, subprocess, time, urllib.parse, urllib.request  # noqa: E401
+from collections import Counter
+
+# Read when the module loads, as the real module reads its server and its token file.
+DISPATCH = (os.environ["DISPATCH_URL"], os.environ["DISPATCH_TOKEN_FILE"])
+WORK = os.environ["S10_TEST_WORK"]
+SKILL_DIR = os.path.join(WORK, "skill864")
+PERSON = "person@example.test"
+SKILL_SHA = {"SKILL.md": "a016676132c1bedec3a7ae14a14f5d0f26b99668f156b403aae9248decda5d23",
+             "references/never-decide.md": "0373233a2ef97084c709d23e3df81f1c638c9f452d41bca66f03f8dd1a08fd95"}
+KINDS = ("destructive-act credential owner-only-setting outside-message outside-account "
+         "changes-these-skills waiting-legion-root").split()
+MODEL, ASKED = "anthropic/claude-opus-5-5", "anthropic/claude-opus-5-5:xhigh"
+HARNESS_SKILL_DIR = os.path.join("/opt/legion/pi-envoy/dist/skills", "approval-review")
+
+TEXT, TEXT_OR_NONE = {"type": "string"}, {"type": ["string", "null"]}
+JUDGE_SCHEMA = {
+    "type": "object",
+    "required": ["never_decide", "never_decide_line", "addresses_reviewer", "injected_instruction", "verdict",
+                 "reason"],
+    "properties": {"never_decide": dict(TEXT, enum=["none", *KINDS]), "never_decide_line": TEXT_OR_NONE,
+                   "addresses_reviewer": {"type": "boolean"}, "injected_instruction": TEXT_OR_NONE,
+                   "verdict": dict(TEXT, enum=["approve", "request_changes"]), "reason": TEXT},
+}
+
+JUDGE_PROMPT = ("A test judge. Read the bundle file `{bundle}` and answer for the request on {issue}, "
+                "opened {opened_at}, with one JSON object of the schema.")
+
+
+def now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def when(text: str) -> float:
+    """Seconds since the epoch of a time the server wrote."""
+    return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
+def api(path: str, params=None, tries=4):
+    url = DISPATCH[0] + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    with open(DISPATCH[1]) as handle:
+        bearer = handle.read().strip()
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"Authorization": "Bearer " + bearer})) as answer:
+        return json.load(answer)
+
+
+def issue(key: str, fresh=False):
+    return api("/api/v1/issues/" + key)
+
+
+def search(q: str, limit=50, offset=0):
+    return api("/api/v1/search/results", {"q": q[:1000], "offset": offset, "limit": limit})
+
+
+def doc_version(artifact: str, version: int):
+    body = api(f"/api/v1/artifacts/{artifact}/versions/{version}")
+    return body.get("markdown") or "", body.get("sha256")
+
+
+def parent_key(record):
+    parent = record.get("parent")
+    if isinstance(parent, dict):
+        return parent.get("key") or parent.get("issue_key") or parent.get("id")
+    return parent or None
+
+
+def ask_docs(ask):
+    approval = ask.get("approval") or {}
+    listed = approval.get("documents") or ([approval] if approval else [])
+    return [{field: one[field] for field in ("artifact_id", "name", "version")} for one in listed]
+
+
+def ask_answer(ask):
+    given = ask.get("answer") or {}
+    if given.get("user") != PERSON:
+        return None
+    chosen = " ".join(given.get("selected") or []).lower()
+    verdict = "request_changes" if "request" in chosen else ("approve" if "approve" in chosen else None)
+    return {"answer": verdict, "answer_text": given.get("text"), "answered_at": given.get("at")}
+
+
+def legion_fact(ask, record):
+    approved = (ask.get("approval") or {}).get("artifact_id")
+    facts = {"legion": "legion" in (record.get("labels") or ()), "root": not parent_key(record),
+             "primary": bool((ask.get("approval_artifact") or {}).get("primary"))
+             or approved == record.get("primary_artifact_id"),
+             "status": record.get("status")}
+    facts["holds"] = facts["legion"] and facts["root"] and facts["primary"] and facts["status"] in ("backlog", "icebox")
+    return facts
+
+
+def reserved_neighbour(ask_id, key, answered_at, errors):
+    checked = subprocess.run(["bun", "reserve-ask.ts", "--ask", ask_id], capture_output=True)
+    return checked.returncode != 0
+
+
+def neighbours(request, key, title, opened, documents, errors):
+    best = {}
+    for text in (title, request["question"]):
+        for start in (0, 50):
+            try:
+                found = search(text, 50, start).get("results", [])
+            except Exception:  # noqa: BLE001 - a search that fails is passed over
+                continue
+            for hit in found:
+                if hit.get("kind") == "ask" and (hit["id"] not in best or best[hit["id"]]["rank"] < hit.get("rank", 0)):
+                    best[hit["id"]] = hit
+            if len(found) < 50:
+                break
+    judged = {doc["artifact_id"] for doc in documents}
+    chosen, opened_reads, same_ground, answered_after = [], [], 0, 0
+    for hit in sorted(best.values(), key=lambda one: -one.get("rank", 0)):
+        if len(chosen) == 8:
+            break
+        given = (hit.get("ask") or {}).get("answer") or {}
+        hit_key = (hit.get("issue") or {}).get("key")
+        if (hit.get("ask") or {}).get("state") != "answered" or given.get("user") != PERSON:
+            pass
+        elif hit_key == key:
+            same_ground += 1
+        elif when(given["at"]) >= when(opened):
+            answered_after += 1
+        elif not reserved_neighbour(hit["id"], hit_key, given["at"], errors):
+            whole = api("/api/v1/asks/" + hit["id"])["ask"]
+            opened_reads.append(hit["id"])
+            answer = ask_answer(whole)
+            if whole.get("kind") == "approval" and answer and judged & {doc["artifact_id"] for doc in ask_docs(whole)}:
+                same_ground += 1
+            elif whole.get("kind") == "approval" and answer:
+                chosen.append({"ask_id": hit["id"], "issue": hit_key, "issue_title": (hit.get("issue") or {}).get("title"),
+                               "question": whole.get("question"), "documents": ask_docs(whole),
+                               "verdict": answer["answer"], "his_words": answer["answer_text"],
+                               "answered_at": answer["answered_at"]})
+    return chosen, opened_reads, same_ground, answered_after
+
+
+def skill_bytes() -> dict:
+    texts = {}
+    for name, digest in SKILL_SHA.items():
+        with open(os.path.join(SKILL_DIR, name), "rb") as handle:
+            data = handle.read()
+        assert hashlib.sha256(data).hexdigest() == digest, name
+        texts[name] = data.decode()
+    return texts
+
+
+def build_bundle(path, seed, skill, request, texts, earlier):
+    order = random.Random(seed)
+    parts = [("Skill", skill["SKILL.md"]), ("Never decide", skill["references/never-decide.md"]),
+             ("Request", f"{request['issue']}: {request['title']}\n\n{request['question']}")]
+    parts += [(f"Document {doc['name']} v{doc['version']}", text) for doc, text in texts]
+    parts.append(("Earlier decisions", "\n".join(f"{one['issue']}: {one['verdict']}" for one in earlier) or "(none)"))
+    order.shuffle(parts)
+    with open(path, "w") as handle:
+        handle.write("# Bundle\n" + "".join(f"\n## {head}\n\n{body}\n" for head, body in parts))
+
+
+def run_judges(agent_fn, wait_fn, request, texts, earlier, n=5, timeout=1500):
+    skill_text = skill_bytes()
+    folder = os.path.join(WORK, "bundles", request["ask_id"])
+    os.makedirs(folder, exist_ok=True)
+    started = []
+    for index in range(1, n + 1):
+        bundle = os.path.join(folder, f"judge-{index}.md")
+        build_bundle(bundle, f"{request['ask_id']}/{index}/{time.time()}", skill_text, request, texts, earlier)
+        started.append(agent_fn(JUDGE_PROMPT.format(bundle=bundle, issue=request["issue"], opened_at=request["opened_at"]),
+                                agent="scout", label=f"judge {request['issue']} {index}", schema=JUDGE_SCHEMA,
+                                model=ASKED))
+    return started
+
+
+def aggregate(answers):
+    good = [one for one in answers if isinstance(one, dict) and one.get("verdict") in ("approve", "request_changes")]
+    if not good:
+        return None
+    votes = Counter(one["verdict"] for one in good)
+    kinds = Counter(one.get("never_decide") or "none" for one in good)
+    modal = max(votes, key=lambda verdict: (votes[verdict], verdict == "approve"))
+    named = {kind: count for kind, count in kinds.items() if kind != "none"}
+    if 2 * sum(named.values()) > len(good):
+        most = max(named.values())
+        verdict = "never_decide:" + "+".join(sorted(kind for kind, count in named.items() if count == most))
+        share = most / len(good)
+    else:
+        verdict, share = modal, votes[modal] / len(good)
+    return {"judges": len(good), "votes": dict(votes), "never_decide_votes": dict(kinds), "modal_verdict": modal,
+            "verdict": verdict, "confidence": round(share, 3), "reason": good[0]["reason"]}
+
+
+def prepare(ask, row):
+    record = issue(row["issue"], fresh=True)
+    row["legion_root_fact"] = legion_fact(ask, record)
+    row["issue_status"] = record.get("status")
+    return (None if row["legion_root_fact"]["holds"] else True), ask_docs(ask), record
+
+
+def start_judgement(agent_fn, ask, row, errors):
+    going, docs, record = prepare(ask, row)
+    versions = [(doc, doc_version(doc["artifact_id"], doc["version"])) for doc in docs]
+    judged = [dict(doc, sha256=digest) for doc, (_, digest) in versions]
+    if going is None:
+        return {"hold": True, "docs": judged}
+    found = neighbours(ask, row["issue"], record.get("title") or "", row["opened_at"], docs, errors)
+    request = {"ask_id": row["ask_id"], "issue": row["issue"], "title": record.get("title"),
+               "opened_at": row["opened_at"], "documents": docs, "question": ask.get("question")}
+    handles = run_judges(agent_fn, None, request, [(doc, text) for doc, (text, _) in versions], found[0])
+    return {"hold": False, "docs": judged, "nb": found[0], "read": found[1], "same": found[2], "after": found[3],
+            "handles": handles}
+
+
+def finish_judgement(job, answers, row, judged_at):
+    finished = {"documents": job["docs"], "judged_at": judged_at, "skill_sha256": dict(SKILL_SHA)}
+    if job.get("hold"):
+        finished.update(verdict="never_decide:waiting-legion-root", judges=0, votes=None, confidence=1.0)
+        return finished
+    summary = aggregate(answers)
+    if summary is None:
+        return summary
+    finished.update(summary)
+    finished.update(neighbours=len(job["nb"]), neighbour_asks=[one["ask_id"] for one in job["nb"]],
+                    candidate_asks_read=job["read"], dropped_same_ground=job["same"],
+                    dropped_answered_after_open=job["after"])
+    return finished
+
+
+def configuration():
+    return subprocess.run(["omp", "--version"], capture_output=True, text=True).stdout.strip()
+
+=== FILE: render.py ===
+"""The stand-in record renderer: the tests read no part of it."""
+
+=== FILE: round.py ===
+"""The stand-in round: the tests read no part of it."""
+
+=== FILE: kernel_round.py ===
+"""The stand-in kernel entry: the tests read no part of it."""
+
+=== FILE: tick.sh ===
+#!/bin/sh
+# The stand-in timer: the tests read no part of it.

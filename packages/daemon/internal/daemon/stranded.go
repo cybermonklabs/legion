@@ -23,10 +23,11 @@ const strandedReportTimeout = 5 * time.Second
 // strandedReleaseWakes is the wakes of released pods that workflow.Stranded judges R6 on: the
 // recorded resumes of project that have not reached the woken role's first turn
 // (store.UnfinishedPodResumesTx, read up to now so the ten-minute bound stays workflow's alone,
-// of each pod's newest release that suspended a role alone, and the rows a stuck pass has
-// already marked included, since those are exactly the pods a wake never brought back). It is
-// read only when the project holds a released claim, so a deployment that releases no pod
-// makes no query for one.
+// of each pod's newest release that suspended a role alone and the wakes a pause held, and the
+// rows a stuck pass has already marked included, since those are exactly the pods a wake never
+// brought back), each measured from its stuck clock and none of a project paused now (decision
+// 14 of dispatch://INFRA-3759). It is read only when the project holds a released claim, so a
+// deployment that releases no pod makes no query for one.
 //
 // It reads through tx, the transaction its caller is already in, which is also the snapshot the
 // claims it is judged against were read in: both callers wanted the wakes and the claims from
@@ -54,7 +55,7 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 	}
 	wakes := make([]workflow.ReleasedWake, 0, len(resumes))
 	for _, resume := range resumes {
-		wakes = append(wakes, workflow.ReleasedWake{Issue: resume.Issue, Role: resume.Role, At: resume.At, Stuck: resume.Stuck})
+		wakes = append(wakes, workflow.ReleasedWake{Issue: resume.Issue, Role: resume.Role, ClockAt: resume.ClockAt, Stuck: resume.Stuck})
 	}
 	return wakes, nil
 }
@@ -70,16 +71,17 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 // the boot's account of its claims, and no step after it depends on it. A read the daemon's stop
 // cancels is not a failure and logs nothing; one that outlives strandedReportTimeout is. project is
 // the configured project the line names, as `legion daemon started` does; projectToken selects the
-// project's claims (ofProject); steps are the design-gate steps the deployment gates.
-func reportStranded(ctx context.Context, st *store.Store, records record.Store, project, projectToken string, steps []record.DesignStep, log *slog.Logger) {
+// project's claims (ofProject); steps are the design-gate steps the deployment gates; clock is
+// the daemon's one clock, which the wakes' stuck clocks are judged against.
+func reportStranded(ctx context.Context, st *store.Store, records record.Store, project, projectToken string, steps []record.DesignStep, clock func() time.Time, log *slog.Logger) {
 	var stranded []supervise.Claim
-	if err := pgx.BeginTxFunc(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, st.Pool(), pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		claims, err := st.ClaimsTx(ctx, tx)
 		if err != nil {
 			return err
 		}
 		claims = ofProject(claims, projectToken)
-		now := time.Now().UTC()
+		now := clock().UTC()
 		resumes, err := strandedReleaseWakes(ctx, st, tx, projectToken, claims, now)
 		if err != nil {
 			return err

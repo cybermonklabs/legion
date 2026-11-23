@@ -123,6 +123,7 @@ export function ArchitecturePage({ project }: { project: string }): ReactNode {
   // every other write's (`PendingWritesIndicator`).
   const refresh = useKeyedWrite({
     label: (repo: string) => `Refresh of ${project}'s architecture source ${repo}`,
+    method: "POST",
     write: (repo, bounds) => api.syncArchitectureSource(project, repo, bounds),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["architecture", project] });

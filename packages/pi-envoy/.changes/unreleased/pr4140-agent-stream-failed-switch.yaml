@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A viewer of one session could be replayed another session's turns: after a session switch whose
+  move to the new session's NATS token failed, the previous session's agent-stream control subject
+  stayed open on a ring that held what came next, and after the host returned to a session with no
+  event, the turns it recorded went into the ring of the session it left until the next pass. Each
+  session now has a ring of its own, a turn goes into the ring of the session the host records it
+  under, and a control subject replays and arms its own session's ring alone. A switch closes
+  another session's control subject before anything else of the new session's opens, and a ring is
+  kept after the host moves on only while its viewer still watches.
+time: 2026-11-16T17:56:36Z
+custom:
+    Issue: pr4140

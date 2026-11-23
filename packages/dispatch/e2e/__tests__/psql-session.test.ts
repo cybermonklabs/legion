@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 
-import { sql, sqlAt } from "../psql";
+import { dropDatabase, resetSession, sql, sqlAt } from "../psql";
 import { bounds, eventually, rowLimit } from "./bounded-subprocess";
 
 /** The PostgreSQL server this run may make a database on: an issue pod names it, a developer
@@ -70,25 +70,28 @@ beforeAll(
 afterAll(
   async () => {
     restoreNames?.();
+    // The psql this file's cases started is connected to the database dropped below, and lives in
+    // e2e/psql.ts for as long as the process does: left open, it would answer the next `sql` call
+    // of this process - a rerun of this file, or another file - from a database that is gone.
+    resetSession();
     if (!live) return;
-    // FORCE because this process's own psql still holds a connection to the database: it is killed
-    // by the `exit` handler e2e/psql.ts installs, which runs after this one. The connection is the
-    // test role's own, which that role may terminate.
-    await sqlAt(server, [`drop database if exists ${database} with (force)`]);
+    // The psql killed above may still be on the server; `dropDatabase` ends it (its doc says how).
+    await dropDatabase(server, database);
   },
-  // This hook drops that database through the same shared helper, which two modules outside this
-  // directory call too, so bounding its psql would reach past this file. The minute here is what
-  // stops a drop that waits forever on a connection.
+  // This hook drops that database with `dropDatabase`, whose psql is `sqlAt`'s, which two modules
+  // outside this directory call too, so bounding its psql would reach past this file. The minute
+  // here is what stops a drop that waits forever on a connection.
   60_000
 );
 
-// First in the file on purpose: `sql` resolves the database when it starts its psql, and once a
-// later case has started one, no call reaches that refusal again. It is the refusal of this
-// process's own `sql` that the order proves, so the case runs here rather than in a child, and it
-// puts the two names back rather than replacing `process.env`: a replaced object is no longer the
+// `sql` resolves the database when it starts its psql, and once an earlier case has started one,
+// no call reaches that refusal again; so the case ends that psql first. It is the refusal of this
+// process's own `sql` that it proves, so the case runs here rather than in a child, and it puts
+// the two names back rather than replacing `process.env`: a replaced object is no longer the
 // runtime's environment, so every later `Bun.spawn` of the run would inherit the copy's values
 // and a later write would reach neither the real environment nor `Bun.env`.
 test("refuses when neither PLAYWRIGHT_DATABASE_URL nor DATABASE_URL names a database", async () => {
+  resetSession();
   const restore = captureEnvironment(["DATABASE_URL", "PLAYWRIGHT_DATABASE_URL"]);
   delete process.env.DATABASE_URL;
   delete process.env.PLAYWRIGHT_DATABASE_URL;
@@ -123,24 +126,28 @@ test.skipIf(!live)(
   }
 );
 
+// A table of its own, holding a row committed before the failed call, so the case reads only what
+// it wrote whichever case ran before it.
 test.skipIf(!live)(
   "rolls back the transaction a failure aborted before the next call",
   async () => {
+    await sql("CREATE TEMP TABLE rollback_log (ran int)", "INSERT INTO rollback_log VALUES (1)");
+
     await expect(
       sql(
         "BEGIN",
-        "INSERT INTO statement_log VALUES (2)",
+        "INSERT INTO rollback_log VALUES (2)",
         "SELECT nosuchcolumn",
         "COMMIT",
-        "INSERT INTO statement_log VALUES (4)"
+        "INSERT INTO rollback_log VALUES (4)"
       )
     ).rejects.toThrow(/nosuchcolumn/);
 
     // Without the ROLLBACK the session sends, this INSERT would be refused as part of an aborted
     // transaction; with it, the insert lands and nothing of the failed call did.
-    await sql("INSERT INTO statement_log VALUES (5)");
+    await sql("INSERT INTO rollback_log VALUES (5)");
     expect(
-      await sql("SELECT coalesce(string_agg(ran::text, ',' ORDER BY ran), '') FROM statement_log")
+      await sql("SELECT coalesce(string_agg(ran::text, ',' ORDER BY ran), '') FROM rollback_log")
     ).toBe("1,5");
   }
 );

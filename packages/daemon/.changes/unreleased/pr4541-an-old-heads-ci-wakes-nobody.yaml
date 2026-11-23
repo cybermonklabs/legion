@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  A CI settlement now wakes a released worker only when the settlement applies to the head that
+  the pull request's record holds. A settlement of an old head, a settlement of a head whose
+  synchronize has not arrived, and a settlement delivered again wake nobody.

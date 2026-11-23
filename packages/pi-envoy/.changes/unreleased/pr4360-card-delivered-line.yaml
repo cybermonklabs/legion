@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  An Envoy card a model request already carried keeps the same `delivered:` line after the session
+  resumes, so a resume no longer makes the provider write the prompt cache again from that card on.
+  The delivery time (and clock difference) a session first gives each card is now recorded in the
+  session as a custom entry, `envoy-card-delivered`, and a process that resumes the session reads
+  it before any other source. Before, a resumed process took the card's time from its replay ledger
+  record, which can be stamped seconds after the card was written, or fixed its own clock when it
+  wrote the same card again before its first request. A session recorded by an earlier release has
+  no such entries: a resume of it takes an old card's time from its ledger record or its place in
+  the session, also when the resumed process writes the card again before its first request. Its
+  place is now read from the session's message entries alone, so a `custom` entry Oh My Pi wrote
+  before the card's entry with a later stamp no longer moves it. That time can still differ by
+  seconds from the one the earlier release showed: when the ledger stamped the card late, and when
+  the card has no ledger record and Oh My Pi stamped its entry with the time it was handed the card,
+  seconds before the earlier release's `message_end` when the card arrived while that process was
+  still starting.
+time: 2026-11-18T04:11:15Z
+custom:
+    Issue: pr4360

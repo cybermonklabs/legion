@@ -14,8 +14,8 @@ import (
 )
 
 // floorPastEndLine is the WARN line of a resume floor past the stream's end, which the record
-// holds at the sequence before the stream's first (recordResumeFloorAt). packages/envoy/AGENTS.md
-// ("The log lines of a start") states it whole, so the tests name it whole.
+// holds at the sequence before the stream's first (recordResumeFloorAt). The tests name it whole,
+// as they name the lines of a start (cmd/listener/session_resume_past_end_test.go).
 const floorPastEndLine = "session resume floor past the stream's end, recorded at the sequence before the stream's first"
 
 // deletePath is one path that takes a session's consumer away and records the session's resume

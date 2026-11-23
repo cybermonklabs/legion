@@ -1,4 +1,5 @@
 import { type ReactNode, useState } from "react";
+import type { DisplayTree } from "../../api/types";
 import {
   borderDefault,
   focusVisibleRing,
@@ -26,16 +27,28 @@ const NONE_WRITTEN = "No description is written.";
  * keyboard's and the screen reader's way in is a real button beside the text, named by the
  * words it shows ("Edit the description of P3") and drawn over the block's corner only while it
  * holds the focus, so the page a mouse reads is the rendered text alone.
+ *
+ * The stored description is drawn from the tree the server read it into (`descriptionTree`),
+ * as every other stored text is, so no reader's browser parses it: Go's reading holds marks
+ * nested past its bound as text, where the browser's parser spends the square of their depth.
+ * What the reader has just written is a text the server has not stored, so it is drawn from its
+ * own markdown, as a reply quoting a write the server has not stored is (`ReplyQuote`'s
+ * `excerptTree`), until the stored description is that text.
  */
 export function PriorityDescription({
   canWrite,
   description,
+  descriptionTree,
   label,
   onSave,
   rows,
 }: {
   canWrite: boolean;
   description: string;
+  /** The server's reading of `description` (the priority's `description_tree`), absent from an
+   *  answer that carries none: a read made without `Dispatch-Trees: 1`, an empty description,
+   *  and the answer of a pod of the build before this one during a rolling deploy. */
+  descriptionTree: DisplayTree | undefined;
   /** What the description is called, which names the priority it belongs to: "Description of
    *  P3". The editor and the group around the rendered text carry it, and the button that
    *  opens the editor reads it after "Edit the": "Edit the description of P3". */
@@ -73,7 +86,9 @@ export function PriorityDescription({
         {canWrite ? `${NONE_WRITTEN} Click here to write one.` : NONE_WRITTEN}
       </p>
     ) : (
-      <MarkdownBody markdown={shown} />
+      // The tree is the reading of the stored description alone, so it goes with that text and
+      // with no other.
+      <MarkdownBody markdown={shown} tree={shown === description ? descriptionTree : undefined} />
     );
   if (!canWrite) return body;
   return (

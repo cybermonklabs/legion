@@ -10,7 +10,9 @@ import (
 // an issue's events, an agent's messages and a role's lane each gained the project as a token of
 // their own (DispatchIssueSubject, AgentSubject, RoleSubject). Every reader takes both forms
 // until the old one is refused. These are the hand-written twins of packages/contracts'
-// subject-project.ts, and packages/contracts/fixtures/subject-project.json is one table both run.
+// subject-project.ts, and packages/contracts/fixtures/subject-project.json is one table both run,
+// save LegacyIssueFilter, which only the listener's count of old-form names reads and which has no
+// twin there.
 
 const (
 	exceptionPrefix = "notifications.envoy.exceptions."
@@ -126,7 +128,7 @@ func init() {
 			}
 			return NoProject, ""
 		}},
-		// A repository's events: the project is the one Dispatch maps the repository to.
+		// A repository's events: the name holds no project, so the reader gets the repository alone.
 		{family: "notifications.github.>", read: func(rest []string) (string, string) {
 			if len(rest) >= 2 {
 				return "", rest[0] + "/" + rest[1]
@@ -154,6 +156,16 @@ func init() {
 		}},
 		// Where a deleted session consumer stopped, which names a session and no project.
 		{family: "notifications.envoy.resume.>", read: noProject},
+		// A role a session took from another, named by its claim's key (RoleClaimKey) before the
+		// previous holder and the attempt: a key of one token, a role's bare name, works for the
+		// role's own project, and a key of two, a free-form role under a project, for the project
+		// it names first, as its kept lane reads it.
+		{family: "notifications.envoy.takeover.>", read: func(rest []string) (string, string) {
+			if len(rest) == 4 {
+				return projectOfToken(rest[0]), ""
+			}
+			return RoleProject(rest[0]), ""
+		}},
 	}
 }
 
@@ -243,6 +255,77 @@ func CanonicalTopic(topic string) (canonical string, legacy bool) {
 	}
 	return topic, false
 }
+
+// LegacyIssueFilter reads a filter that reaches the issue family, which CanonicalTopic reads as its
+// own new form, and reports it old when its first token after the family's names an issue key, or
+// when it matches some old-form issue event's name (the key, then the event's type) and no new-form
+// one (the key's project, the key, then the type), with its new form: the issue family's own, any
+// project first. So notifications.dispatch.issue.*.comment.created hears old-form names alone,
+// since the new form of an event has one token more, and its new form is
+// notifications.dispatch.issue.*.*.comment.created. A filter reaches the family when each of its
+// first three tokens is the family's (notifications, dispatch, issue) or a wildcard, none of them
+// `>`: notifications.dispatch.*.*.comment.created is such a filter, and old as surely, and its new
+// form is the issue family's notifications.dispatch.issue.*.*.comment.created, since its own
+// tokens widened by a project token would hear other families' names too (a document event has
+// seven tokens). A failed-delivery report of one follows the filter it carries.
+// A filter that hears both forms (notifications.dispatch.issue.*.*.>, notifications.dispatch.*.>)
+// is not old, nor is one that hears the new form alone (notifications.dispatch.issue.*.INFRA-12.>).
+// An event's type is read as two tokens or more: every Dispatch event type is a noun and a verb
+// or longer (comment.created, settings.repo_project.updated). The listener's count of old-form
+// names reads it beside CanonicalTopic (store.LegacyTopicWarnings, store.CountStoredLegacyTopics),
+// and it is the rule packages/envoy/scripts/legacy-subjects-gate.sh holds a filter to (old_form in
+// lib/legacy-subjects-gate-forms.jq), so the gate and the count see the same filters. It is not one
+// of TopicForms' forms: what a session's consumer filters is unchanged. Until the old form is
+// refused only.
+func LegacyIssueFilter(topic string) (canonical string, legacy bool) {
+	if wrapped, found := strings.CutPrefix(topic, exceptionPrefix); found {
+		if canonical, legacy := LegacyIssueFilter(wrapped); legacy {
+			return exceptionPrefix + canonical, true
+		}
+		return "", false
+	}
+	tokens := strings.Split(topic, ".")
+	if len(tokens) < 4 || !familyToken(tokens[0], "notifications") || !familyToken(tokens[1], "dispatch") || !familyToken(tokens[2], "issue") {
+		return "", false
+	}
+	rest := tokens[3:]
+	if issueKeyToken(rest[0]) || (issueFilterMatches(rest, issueKeyToken) && !issueFilterMatches(rest, projectKey.MatchString, issueKeyToken)) {
+		return DispatchIssueTopicPrefix + "*." + strings.Join(rest, "."), true
+	}
+	return "", false
+}
+
+// familyToken reports whether a filter's token reaches a family's token name: it is that name, or
+// a wildcard over one token.
+func familyToken(token, name string) bool { return token == name || token == "*" }
+
+// issueFilterMatches reports whether an issue filter's tokens after the family's prefix match some
+// name of lead's classes followed by an event type of two tokens or more: a wildcard matches any
+// token, `>` as the last token one token or more, and a literal what its class takes.
+func issueFilterMatches(tokens []string, lead ...func(string) bool) bool {
+	fixed, open := tokens, false
+	if len(tokens) > 0 && tokens[len(tokens)-1] == ">" {
+		fixed, open = tokens[:len(tokens)-1], true
+	}
+	if !open && len(fixed) < len(lead)+2 {
+		return false
+	}
+	for i, token := range fixed {
+		class := issueTypeToken
+		if i < len(lead) {
+			class = lead[i]
+		}
+		if token != "*" && !class(token) {
+			return false
+		}
+	}
+	return true
+}
+
+// An issue event name's key token holds a hyphen, which no project key and no event type's token
+// does, and an event type's token holds none.
+func issueKeyToken(token string) bool  { return strings.Contains(token, "-") }
+func issueTypeToken(token string) bool { return !strings.Contains(token, "-") }
 
 // isProjectPosition reports whether token may stand in a new-form name's project position for a
 // twin: a project key, NoProject, or a wildcard over every project.
@@ -365,12 +448,10 @@ func RoleClaimKey(project, role string) string {
 }
 
 // ClaimProject is the project a claim of role works for, given the project the claim requested
-// ("" for none), once a claim keys on its project. Nothing calls it in this slice: while every
-// claim keys on its bare role name, the listener's POST /v1/roles/set refuses any new-form role
-// whose project is not RoleProject(role), so for a free-form role under a project
-// (PRIV.lead-reviewer) the route answers 400 where this answers PRIV. Plan C's t-c-8 wires it into
-// the route, and t-c-6 reads Dispatch's claims through it, so the two then decide a claim's
-// project one way.
+// ("" for none). The listener's POST /v1/roles/set asks it of a role named in the new form and
+// refuses a claim it refuses; a claim it allows is keyed by RoleClaimKey of that project (in
+// cmd/listener, through store.RoleClaimKeyOf), so a free-form role under a project
+// (PRIV.lead-reviewer) is that project's own claim beside the claim of the same name under none.
 //
 // A Legion role token (legion-<token>-…) works for the project its own name gives
 // (RoleProject), whatever the claim asks for: the role is that project's by construction, and a
@@ -394,6 +475,42 @@ func ClaimProject(role, requested string) (string, error) {
 		return "", fmt.Errorf("a claim of role %s asks for project %s, which is no project key", role, requested)
 	}
 	return requested, nil
+}
+
+// RoleClaimName is a claimed role's name read as the claim it names (RoleClaimOf).
+type RoleClaimName struct {
+	// Project is the project the claim works for (ClaimProject): the project the new form
+	// names for a free-form role, and the role's own (RoleProject) for a Legion role and for the
+	// old form.
+	Project string
+	// Role is the role's own name, without a project.
+	Role string
+	// Key is the key of the claim's record in the envoy_roles bucket (RoleClaimKey of Project):
+	// <project>.<role> for a free-form role under a project, and the bare name for every other.
+	Key string
+	// Legacy is true for the old form, the role alone (CanonicalRole).
+	Legacy bool
+}
+
+// RoleClaimOf reads a claimed role named in either form (CanonicalRole) as the claim it names: the
+// project the claim works for, given the project the new form names (ClaimProject; the old form
+// names none), and the key of its record (RoleClaimKey). It is the one reading of a role's name
+// every reader of one goes through: the claim route, which refuses the error, the role lane and
+// the publish route, which refuse a lane of the error (cmd/listener's roleLaneProjectError), the
+// edge's role and publish rules, and every key a holder is resolved by (store.RoleClaimKeyOf).
+// The error is ClaimProject's refusal of a Legion role named under another project; the name read
+// beside it is that role's own project and bare key, the claim such a name would reach.
+func RoleClaimOf(role string) (RoleClaimName, error) {
+	requested, name, legacy := CanonicalRole(role)
+	if legacy {
+		requested = ""
+	}
+	project, err := ClaimProject(name, requested)
+	if err != nil {
+		own := RoleProject(name)
+		return RoleClaimName{Project: own, Role: name, Key: RoleClaimKey(own, name), Legacy: legacy}, err
+	}
+	return RoleClaimName{Project: project, Role: name, Key: RoleClaimKey(project, name), Legacy: legacy}, nil
 }
 
 // ParseRoleClaimKey reads a role claim's key back to the project and role it was written from

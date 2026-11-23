@@ -24,13 +24,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -39,11 +39,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -63,11 +67,6 @@ var (
 func projectKeyProblem(field, value string) string {
 	return fmt.Sprintf("%s %q is not a project key: %s", field, value, contracts.ProjectKeyRule)
 }
-
-// repoLabelPrefix marks an issue created through DISPATCH_DEFAULT_PROJECT
-// with the external repository it came from, so the repository stays
-// visible and filterable once it's no longer named by the project key.
-const repoLabelPrefix = "repo:"
 
 // ServiceTokenVerifier verifies a Kubernetes pod's projected service-account token.
 // *oidc.LazyVerifier is the one Dispatch serves with: until its issuer is discovered every Verify
@@ -89,10 +88,9 @@ type AgentPublisher interface {
 
 // Deps are the API's application dependencies.
 type Deps struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
 	// from the words a person typed when those words match nothing it found
 	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
@@ -122,6 +120,14 @@ type Deps struct {
 	// fetches one project twice at once. The source row, not this sharing, orders every process's
 	// writes (architecture.Importer).
 	Architecture *architecture.Importer
+	// Renames is the rename pairs the boot read (store.ReadRepoRenames). The results routes name
+	// a check's repository by its canonical name under them, and GET /api/v1/issues/resolve finds
+	// a link stored under either name of a pair. The zero value holds no pairs.
+	Renames refs.Renames
+	// Attributor attributes the pull requests a results read or a recorded result reads through
+	// for (delivery.Attributor.ReadThroughCommitPulls). NewDeps builds it of Renames, so it
+	// attributes by the same pairs renamedRepo and resolveIssueRef read.
+	Attributor *delivery.Attributor
 	// OIDC verifies a JWT-shaped bearer as a Kubernetes pod's projected
 	// service-account token; nil is the unconfigured deployment, where a
 	// JWT-shaped bearer is only ever an unknown personal token. A configured
@@ -131,7 +137,7 @@ type Deps struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// AgentStream relays a live session's own conversation to a human watching it; nil is a
 	// deployment with no NATS, where an agent view is refused STREAM_UNAVAILABLE.
 	AgentStream agentstream.Source
@@ -142,7 +148,7 @@ type Deps struct {
 	// AgentSecrets relays the credential-request UI to the secrets broker; nil (the broker URL
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
-	AgentSecrets *agentsecrets.Client
+	AgentSecrets *cipher.Client
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -190,6 +196,22 @@ type Deps struct {
 	// changes the listener's sessions sees the change at its next read. A deployment leaves it
 	// false.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
+	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
+	// earlier event of its comment's owner still owes a send its session may take
+	// (model.MentionCopyHolderSQL, deliverResolvedCommentMention), the order the outbox keeps for its
+	// own sends. With no outbox no event is ever sent, so there is no order to keep with them and
+	// the wait would never end: the send goes at once, as it does in every test of this package
+	// that runs no outbox.
+	OutboxPublishes bool
+	// Metrics is the process's registry, which register adds the gauges of the mention sends held
+	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
+	Metrics *metrics.Registry
+	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
+	// serves from the moment it enters the route's handler chain, as the access-log line times
+	// it (routeHandler), for the keyword fill's pause, which shares it (textversions); nil times
+	// none.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -207,10 +229,9 @@ const defaultStreamHeartbeat = 15 * time.Second
 
 // DepsInput contains raw boot values used to construct API dependencies.
 type DepsInput struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
 	// than one an issue may carry, or a session id that is no session id, refuses startup.
 	NewIssueLabel   string
@@ -220,16 +241,35 @@ type DepsInput struct {
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token for
+	// the listener's audience (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), which every listener call
+	// reads and presents in EnvoyToken's place (envoy.WithAccountTokenFile); empty presents
+	// EnvoyToken. It is the one credential the listener takes a send's role mark from.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is the audience of the identity token the metadata server mints for
+	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
+	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
+	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
+	// send for a role (envoy.ErrNoListenerIdentity).
+	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
-	Docs         docs.API
+	// Docs is the document service the API serves documents through, and NewDeps refuses an input
+	// without one. Its caller builds it (docs.New; cmd/dispatch's newDocumentService) and shuts it
+	// down (docs.Service.Shutdown) once the server is done with it. NewDeps builds none of its own:
+	// nothing would hold a service it built to shut it down, and that service's compaction worker
+	// (startCompactionQueue) would run for the rest of the process.
+	Docs docs.API
 	// Embedder embeds a search request's query for meaning search (LEGION-549); nil turns it off.
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
 	Events   *events.Broker
+	// Renames is the rename pairs the boot read; see Deps.Renames. The zero value holds none.
+	// NewDeps builds Deps.Attributor of them.
+	Renames refs.Renames
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -238,7 +278,7 @@ type DepsInput struct {
 	OIDC          ServiceTokenVerifier
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// AgentStream is the live agent conversation relay; nil where the deployment has no NATS.
 	AgentStream agentstream.Source
 	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
@@ -272,18 +312,23 @@ type DepsInput struct {
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events; see
+	// Deps.OutboxPublishes.
+	OutboxPublishes bool
+	// Metrics is the process's metrics registry; see Deps.Metrics.
+	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads for the keyword fill's pause; see
+	// Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
 }
 
-// NewDeps parses boot configuration once and returns API dependencies.
+// NewDeps parses boot configuration once and returns API dependencies. It refuses an input with
+// no document service (DepsInput.Docs).
 func NewDeps(input DepsInput) (Deps, error) {
-	defaultProject := strings.TrimSpace(input.DefaultProject)
-	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
-		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
-	}
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
@@ -291,20 +336,21 @@ func NewDeps(input DepsInput) (Deps, error) {
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
+	if input.Docs == nil {
+		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
+	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
-	}
-	if input.Docs == nil {
-		input.Docs = docs.New(docs.Deps{
-			Store:     input.Store,
-			Events:    input.Events,
-			Identity:  input.Identity,
-			ServerURL: input.ServerURL,
-		})
 	}
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
+		if input.EnvoyAccountTokenFile != "" {
+			options = append(options, envoy.WithAccountTokenFile(input.EnvoyAccountTokenFile))
+		}
+		if input.EnvoyGoogleAudience != "" {
+			options = append(options, envoy.WithGoogleIdentity(input.EnvoyGoogleAudience))
+		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
 		}
@@ -320,9 +366,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if err != nil {
 		return Deps{}, err
 	}
-	var agentSecretsClient *agentsecrets.Client
+	var agentSecretsClient *cipher.Client
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
-		agentSecretsClient = agentsecrets.New(url, input.AgentSecretsTokenFile)
+		agentSecretsClient = cipher.New(url, input.AgentSecretsTokenFile)
 	}
 	heartbeat := input.StreamHeartbeat
 	if heartbeat == 0 {
@@ -332,7 +378,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Store:                  input.Store,
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
-		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
@@ -343,6 +388,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Events:                 input.Events,
 		GitHub:                 github,
 		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
+		Renames:                input.Renames,
+		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
@@ -357,34 +404,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
+		OutboxPublishes:        input.OutboxPublishes,
+		Metrics:                input.Metrics,
+		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil
-}
-
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...).
-func ParseRepoProjects(raw string) (map[string]string, error) {
-	projects := make(map[string]string)
-	if strings.TrimSpace(raw) == "" {
-		return projects, nil
-	}
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		repo, project, ok := strings.Cut(part, "=")
-		project = strings.TrimSpace(project)
-		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		canonical, _, err := externalRef(repo + "#1")
-		if err != nil {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		if _, exists := projects[canonical]; exists {
-			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
-		}
-		projects[canonical] = project
-	}
-	return projects, nil
 }
 
 type server struct {
@@ -408,8 +433,11 @@ type server struct {
 	readOnlyRefusal string
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
-	going           GoingCatalogue
-	adviceQueryHook func(context.Context, pgx.Tx, string) error
+	going GoingCatalogue
+	// unguardedReplacements counts the document replacements stored naming no token
+	// (noteUnguardedReplacement); nil, which counts nothing, where Deps.Metrics is nil.
+	unguardedReplacements *metrics.Counter
+	adviceQueryHook       func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
@@ -420,6 +448,19 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
+	// every event it appended are written and before its transaction commits, with those events;
+	// its error stands in for the commit failing, so the route answers it and rolls the write
+	// back. Only a test sets it: it is how a case holds a write open after its events are
+	// appended, to read whether any of them reaches a subscriber before the commit, and how it
+	// ends one in a rollback.
+	beforeCommentCommit func(ctx context.Context, events []model.Event) error
+	// betweenPersonPageReads runs on a person page's request once the route has decided it
+	// answers 200 and before it lists the rows (listPersonNodes), inside the transaction both
+	// reads share; nil, which every server the deployment builds leaves it, runs nothing. Only a
+	// test sets it: it is how a case commits a write between the decision and the list, to read
+	// that the list answers the snapshot the decision read.
+	betweenPersonPageReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -748,6 +789,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
+	s.registerHeldGauges(deps.Metrics)
+	s.unguardedReplacements = registerUnguardedReplacements(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -889,11 +932,18 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, so every one of those answers is
-	// compressed for a caller that takes gzip and the line counts the bytes that went on the
-	// wire. The two websockets register mounts beside the table carry no compressed answer: the
-	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	// them resolved. Compression sits just inside it, with nothing between them but the answers
+	// read's timing below, so every one of those answers is compressed for a caller that takes
+	// gzip and the line counts the bytes that went on the wire. The two websockets register
+	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
+	// frames after it are the socket's (compressAnswers).
+	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
+	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
+		// Just inside the access-log line, so the time of an answers read the keyword fill
+		// pauses on is the time the line records for it, every layer of the chain included.
+		served = timedAnswersReads(s.deps.AnswersLatency, served)
+	}
+	return accesslog.HandlerFunc(route.Pattern, served)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -926,17 +976,27 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 // confirms, a revoked token) it cancels the connection's context, on which the document server and
 // the live socket close the socket. stillResolves is the mount's own admission asked again, never
 // a wider one: the live socket's is callerStillResolves, which resolves whichever credential
-// admitted it, and the document socket's is signInStillResolves, the sign-in cookie alone, since
-// that is all the document service admits it by. A check that resolved anything the request
-// carries would let a credential that admitted nothing keep the socket open once the one that did
-// had ended. The check runs beside the handler, which holds pooled connections of its own while it
-// admits the socket, so it marks a context of its own for the pool (store.ErrNestedAcquire), and
-// it resolves on a context detached from the access-log line, which names the caller the socket
-// was admitted as (accesslog.Detached).
+// admitted it, and the document socket's is signInStillResolves, the browser credential alone
+// (a sign-in cookie, or an Identity-Aware Proxy assertion), since that is all the document service
+// admits it by. A check that resolved anything the request carries would let a credential that
+// admitted nothing keep the socket open once the one that did had ended. The check runs beside
+// the handler, which holds pooled connections of its own while it admits the socket, so it marks a
+// context of its own for the pool (store.ErrNestedAcquire), and it resolves on a context detached
+// from the access-log line, which names the caller the socket was admitted as (accesslog.Detached).
+//
+// A refusal that is only the credential's own life ending (identity.ErrCredentialExpired: an IAP
+// assertion, which lives about ten minutes while IAP signs a fresh one for every request it
+// passes, that IAP's key set still verifies and whose person is still admitted) cancels the
+// context with errCredentialExpired instead, which each socket closes with a code on which the
+// page reopens it at once: the live socket with contracts.LiveSocketMaxAgeClose (liveSocket.write),
+// and the document socket with the close frame ygo sends for that cause. The reopened socket's
+// upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past
+// its assertion and none is cut as if its person had gone. An expired assertion that is wrong in
+// any other way (a key IAP withdrew, a person no longer admitted) is a refusal like any other.
 func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, closeConnection := context.WithCancel(r.Context())
-		defer closeConnection()
+		ctx, closeConnection := context.WithCancelCause(r.Context())
+		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
 			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
@@ -951,7 +1011,11 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 					// broker's answer alone rather than the proof the upgrade already spent
 					// (callerStillResolves).
 					if err := stillResolves(check); err != nil {
-						closeConnection()
+						if errors.Is(err, identity.ErrCredentialExpired) {
+							closeConnection(errCredentialExpired)
+						} else {
+							closeConnection(nil)
+						}
 						return
 					}
 				}
@@ -961,15 +1025,36 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 	}
 }
 
-// signInStillResolves answers whether the sign-in cookie a document socket was admitted with
-// still resolves, which is what whileCallerResolves asks on that socket's every heartbeat. The
-// document service admits a socket by that cookie and nothing else (docs.Service.requestActor,
-// Identity.Login), and this asks the API's Identity the same question; cmd/dispatch hands the API
-// and the document service one Identity, so the two read one cookie the same way. It reads no
-// Authorization header. A bearer or a broker-issued token sent beside the cookie admitted nothing,
-// so it keeps nothing open either: resolved here, it would hold the socket open for the token's
-// whole life after the cookie ended, a read-only token's included, which the read list lets read
-// no document at all (readScopeRoutes).
+// errCredentialExpired is the cause whileCallerResolves cancels a socket's context with once the
+// credential its upgrade carried has expired (identity.ErrCredentialExpired). ygo reads CloseCode
+// off the cause and sends the document socket's peer that close frame, and the live socket reads
+// the cause itself (liveSocket.write).
+var errCredentialExpired error = credentialExpired{}
+
+// credentialExpired is that cause's type: an error whose CloseCode ygo sends.
+type credentialExpired struct{}
+
+func (credentialExpired) Error() string {
+	return "the credential this socket was opened with has expired; the page opens it again with a fresh one"
+}
+
+// CloseCode is the close frame ygo sends the document socket's peer: the document socket's code
+// for a socket whose admission no longer stands, on which the provider reconnects and the
+// reconnect is admitted again (contracts.DocumentAdmissionRevokedCloseCode).
+func (credentialExpired) CloseCode() (int, string) {
+	return contracts.DocumentAdmissionRevokedCloseCode, contracts.DocumentAdmissionRevokedCloseReason
+}
+
+// signInStillResolves answers whether the browser credential a document socket was admitted with
+// still resolves - the sign-in cookie, or under IAP identity the upgrade's IAP assertion - which
+// is what whileCallerResolves asks on that socket's every heartbeat. The document service admits a
+// socket by that credential and nothing else (docs.Service.requestActor, Identity.Login), and this
+// asks the API's Identity the same question; cmd/dispatch hands the API and the document service
+// one Identity, so the two read one credential the same way. It reads no Authorization header. A
+// bearer or a broker-issued token sent beside the cookie admitted nothing, so it keeps nothing open
+// either: resolved here, it would hold the socket open for the token's whole life after the cookie
+// ended, a read-only token's included, which the read list lets read no document at all
+// (readScopeRoutes).
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
 		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
@@ -983,8 +1068,10 @@ type apiError struct {
 	code    string
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
-	// that carries none. Only a refusal that knows when the caller may come back sets it
-	// (brokerTokenActor's 429); writeHandlerError writes the header.
+	// that carries none. Only a refusal that knows when the caller may come back sets it:
+	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
+	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
+	// writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1099,7 +1186,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	if caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
 		return caller.actor, caller.human, caller.err
 	}
-	if _, presented := brokertoken.Presented(r); presented {
+	if _, presented := ciphertoken.Presented(r); presented {
 		return s.brokerTokenActor(r)
 	}
 	if token, present := auth.BearerToken(r); present {
@@ -1224,6 +1311,28 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		if supplied != nil {
 			actor.Origin = supplied.Origin
 		}
+		// The credential itself proved this session, and for a token the broker scoped to a
+		// person it proved whose session it is too (brokerTokenActor sets Owner from the token
+		// and never from a body). That pair is what R14 calls "a session the server itself
+		// proved theirs", and the store ties the two with an alias_of tuple on the next write
+		// (graphstore.aliases). The act names the session the credential proved, exactly as
+		// actingPerson names the agent that acted for a person, and says it was proved
+		// (SessionProven), as every act naming a session the credential proved does; the actor's
+		// kind and id are left as they were, so every stored author, every event and every reader
+		// keeps the shape it has.
+		//
+		// A session named in a request body earns none of this: the branch below, which every
+		// credential that proves no session of its own takes, records the session the caller
+		// asked for, no act and no Proven mark, because an actor that merely claims a session
+		// proves nothing about whose it is (R14).
+		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
+			authenticated.Credential.Session == authenticated.ID {
+			actor.Act = &model.ActorAct{
+				Session:       authenticated.ID,
+				SessionProven: true,
+				Scopes:        authenticated.Credential.Scopes,
+			}
+		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
 		return actor, nil
 	}
@@ -1289,8 +1398,7 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 }
 
 // codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs: the deployment's shared token and a pod's projected token hold none, and a personal
-// token holds the set its own row names.
+// needs. What each credential holds is said once, above routeScopes.
 const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
@@ -1319,11 +1427,9 @@ func missingScopeError(scope, message string) *apiError {
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
 // that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
-// table is what decides and a handler restates nothing. A credential the deployment configured
-// rather than a person — the shared token, a pod's service-account token, a broker-issued token
-// scoped to a project — holds none of them; a personal token holds the set its own row names.
-// The first scope the credential lacks, in the order the row declares them, is 403
-// OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
+// table is what decides and a handler restates nothing. What each credential holds is said once,
+// above routeScopes. The first scope the credential lacks, in the order the row declares them, is
+// 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
 // through writeAuthenticationError, as every gate on this server does.
 //
 // The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the
@@ -1465,10 +1571,12 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // when the body names the session the credential proved; a session the body alone names is not
 // proven.
 //
-// Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
-// whose input struct does not declare one is a 400, and four of the mutating rows a person's
-// scope opened are DELETEs with no body at all. A browser's actor names no agent (act is nil),
-// so there is nothing for a body to name, and its body actor is ignored here as it always was.
+// Only those routes read it: decodeJSON ignores a member the route's input struct does not
+// declare (it logs the member at debug and decodes the rest), so a body actor on any other route
+// is dropped unread and the caller's credential alone decides the act, and four of the mutating
+// rows a person's scope opened are DELETEs with no body at all. A browser's actor names no agent
+// (act is nil), so there is nothing for a body to name, and its body actor is ignored here as it
+// always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
@@ -1632,6 +1740,18 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	return nil
 }
 
+// decodeJSONBody is decodeJSON for a route that reads its body's bytes again for what the decoded
+// value cannot say, such as whether a member was there at all (replaceFieldsRefusal); it answers
+// them.
+func decodeJSONBody(r *http.Request, value any) ([]byte, error) {
+	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
+	if err != nil {
+		return nil, err
+	}
+	logUndeclaredMembers(r, value, body)
+	return body, nil
+}
+
 // decodeJSONTestHook is decodeJSON for a route this tree alone calls: the test hooks, mounted only
 // under Deps.TestHooksEnabled. No page or command of another build reaches one, so a member the
 // hook does not declare is a mistake in the test that sent it, and is refused by name rather than
@@ -1712,6 +1832,23 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 	return s.deps.Events.Append(ctx, tx, event)
 }
 
+// appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
+// made before it existed (graphstore.Uncaused): the event's append and the append of what that
+// write stated under it, in one batch, the second naming the event's id as the id sequence left it
+// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
+// it paid for the event alone.
+func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+	var appended model.Event
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
+			return err
+		}
+		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		return nil
+	})
+	return appended, err
+}
+
 // publish hands each event to the broker and then stores the display trees of the stored texts
 // their payloads carry (storeEventDisplayTrees). ctx is the caller's own: a route's request
 // context, which by here has committed and holds no connection of the pool, or a background
@@ -1744,21 +1881,27 @@ func (s *server) readyPool() (*store.Pool, error) {
 	return s.deps.Store.Pool, nil
 }
 
-// lockIssue locks an issue row and returns its lifecycle status, closed or not. It is the
-// lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed issue
-// still takes: a message, its deliveries and the agent's reply to one.
+// lockIssue takes the issue's owner lock and returns its lifecycle status, closed or not. It is
+// the lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed
+// issue still takes: a message, its deliveries and the agent's reply to one. The read is the
+// statement after the lock, sent with it, so it sees a close the lock's previous holder
+// committed while this one waited (store.LockOwnerAndRead).
 func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
-	status, _, err := issueStatus(ctx, tx, key, ownerRowLock)
+	status, _, err := issueStatus(ctx, key, lockedOwnerRead(tx))
 	return status, err
 }
 
-// issueStatus reads an issue's lifecycle status, and whether it is open, through q under
-// lock. It refuses nothing: each write that a closed issue refuses decides that from open.
-func issueStatus(ctx context.Context, q queryer, key, lock string) (string, bool, error) {
+// issueStatusRead reads an issue's lifecycle status and whether it is open.
+const issueStatusRead = `select status, closed_at is null from issues where key = $1`
+
+// issueStatus is that read made through read: under the issue's owner lock for the check that
+// decides (lockIssue, ownerStatus), and through the pool for the check a comment makes before
+// its transaction opens, which reads exactly what the locked check will. It refuses nothing:
+// each write that a closed issue refuses decides that from open.
+func issueStatus(ctx context.Context, key string, read ownerRead) (string, bool, error) {
 	var status string
 	var open bool
-	if err := q.QueryRow(ctx, `
-		select status, closed_at is null from issues where key = $1`+lock, key).Scan(&status, &open); err != nil {
+	if err := read(ctx, store.IssueOwner(key), issueStatusRead, []any{key}, &status, &open); err != nil {
 		return "", false, err
 	}
 	return status, open, nil
@@ -1808,24 +1951,45 @@ func artifactCreatedEventPayload(artifact model.Artifact, changes model.Referenc
 	return payload
 }
 
-func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version) (*string, error) {
+// namedVersionDiff is the diff a named version's event carries: from the version before it to it.
+// Either may be the version this transaction has just queued (ledger), which the table holds only
+// once Commit has run its insert, so each is taken from the ledger when it is that version, and
+// read from the table otherwise (transactionVersionMarkdown).
+func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, version model.Version) (*string, error) {
 	if !version.Named || version.Number < 2 {
 		return nil, nil
 	}
-	var previous, current string
-	if err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, version.Number-1).Scan(&previous); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
+	previous, found, err := transactionVersionMarkdown(ctx, tx, ledger, artifactID, version.Number-1)
+	if err != nil {
 		return nil, fmt.Errorf("load previous artifact version: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, version.Number).Scan(&current); err != nil {
+	if !found {
+		return nil, nil
+	}
+	current, found, err := transactionVersionMarkdown(ctx, tx, ledger, artifactID, version.Number)
+	if err == nil && !found {
+		err = pgx.ErrNoRows
+	}
+	if err != nil {
 		return nil, fmt.Errorf("load current artifact version: %w", err)
 	}
 	diff := text.UnifiedDiff(previous, current)
 	return &diff, nil
+}
+
+// transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
+// queue has run: the ledger's, when it is the version this transaction queued
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
+func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
+	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
+		return markdown, true, nil
+	}
+	var markdown string
+	err := tx.QueryRow(ctx, `
+		select markdown from artifact_versions where artifact_id = $1 and number = $2
+	`, artifactID, number).Scan(&markdown)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	return markdown, err == nil, err
 }

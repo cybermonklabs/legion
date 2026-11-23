@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The description of the `pr.<n>.checks` topic now says that each `check_runs` entry carries
+  `conclusion`, the word GitHub gave that run, and that a skipped check ran nothing.

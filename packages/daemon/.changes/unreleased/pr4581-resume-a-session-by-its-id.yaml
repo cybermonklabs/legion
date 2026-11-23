@@ -1,0 +1,24 @@
+kind: Fixed
+custom:
+  Issue: pr4581
+body: |-
+  A claim that records a session and no session file is resumed by that session's id, and no
+  longer launched again and again until it fails. Such a claim spawned a fresh agent, which the
+  daemon refused as another session (`409 Worker respawn must resume the same agent session`) at
+  every try until `launch_failure_limit` failed the claim. The tmux runtime now resumes the newest
+  `*_<id>.jsonl` in the pane's sessions directory, and a pod's launcher the newest row of the
+  session table whose path ends in `_<id>.jsonl`. Where no store holds the session, the claim
+  forgets it once, charged nothing, and the issue, its architect and the controller are told once,
+  a daemon stop before the fresh agent starts included. The tmux runtime matches session file names
+  as written: a sessions directory whose path holds `*`, `?`, `[` or `\` is searched like any
+  other, where before it was searched nowhere. A sessions directory it cannot read is a launch
+  failure tried again, where before it read as holding no session; a folder or file below it that
+  it cannot read is skipped, as before, and named in a warning line.
+  Through a pod launcher older than this release, the agent's own command carries
+  `--resume=<session id>`, its prompt says the workspace may have been recreated, and a start that
+  does not register is forgotten at the next try, charged nothing, under the new notice kind
+  `session-forgotten`. A refused process an earlier release started for such a claim is charged
+  nothing. The `supervise: launched` line names how the launch resumed (`resumedBy`). Daemon API
+  contract 189: the launcher start frame gains `resumeSession`, the launcher hello
+  `resumesBySession`, and the migration `20261120042902_claim_agent_resume_generation` a column
+  whose way back is in its header.

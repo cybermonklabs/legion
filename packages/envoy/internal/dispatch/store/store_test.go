@@ -5,12 +5,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -244,7 +247,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"events_ask_answered_by_user",
 		"comments_ask_replies_by_user",
 		"document_blocks_node_id",
-		"block_refs_to",
+		"block_refs_to_source",
 		"block_refs_from_node",
 		"document_block_versions_owed",
 		"block_grammar_owed_enqueued",
@@ -282,11 +285,14 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 	// events_person_words_with_declines instead. Migration 20261114081436 drops
 	// message_deliveries_session_created, 0147's index over a session's sent message deliveries:
 	// the same read takes queued ones too and reads message_deliveries_session_taken instead.
+	// Migration 20261120222733 drops block_refs_to, 0121's index of block_refs' targets on
+	// (to_kind, to_id): block_refs_to_source (20261120222732) keys the same two columns and then
+	// the citing document, so every read block_refs_to served reads through it.
 	assertDatabaseObjectsAbsent(t, ctx, store.Pool, `
 		select indexname
 		from pg_indexes
 		where schemaname = current_schema()
-	`, []string{"asks_open_artifact", "events_person_words", "message_deliveries_session_created"})
+	`, []string{"asks_open_artifact", "events_person_words", "message_deliveries_session_created", "block_refs_to"})
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select viewname
 		from pg_views
@@ -340,6 +346,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"people_pkey",
 		"projects_pkey",
 		"projects_key_check",
+		"projects_default_repo_check",
 		"repo_projects_pkey",
 		"repo_projects_project_fkey",
 		"issues_pkey",
@@ -612,8 +619,7 @@ func auditTwoMigrations(t *testing.T, first, second string) error {
 
 func TestMigrateSkipsVersionRecordedOutsideTheRunner(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 7)
+	store := openMigratedTestStore(t, 7)
 	// Production recorded version 8 from Go (the one-time legacy document
 	// conversion) before 0008_legacy_documents.up.sql existed.
 	if _, err := store.Pool.Exec(ctx, `insert into schema_migrations (version) values (8)`); err != nil {
@@ -815,9 +821,9 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	// appliedCheck is the runner's own statement text, which it prepared and cached on the pooled
-	// connection as it applied the set (applyMigrationOnce). Its text must match byte for byte, so
-	// pgx finds it in the connection's statement cache.
-	const appliedCheck = "select exists(select 1 from schema_migrations where version = $1::bigint)"
+	// connection as it applied the set (applyMigrationOnce, pgmigrate.RecheckRecorded). Its text
+	// must match byte for byte, so pgx finds it in the connection's statement cache.
+	const appliedCheck = `select name, checksum, applied_checksum from "schema_migrations" where version = $1::bigint`
 	var held []*pgxpool.Conn
 	for i := range poolSize {
 		conn, err := store.Pool.Acquire(ctx)
@@ -827,8 +833,8 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 		held = append(held, conn)
 	}
 	for _, conn := range held {
-		var applied bool
-		if err := conn.QueryRow(ctx, appliedCheck, int64(1)).Scan(&applied); err != nil {
+		var name, checksum, applied *string
+		if err := conn.QueryRow(ctx, appliedCheck, int64(1)).Scan(&name, &checksum, &applied); err != nil {
 			t.Errorf("the runner's cached statement failed on a connection it reset: %v", err)
 		}
 	}
@@ -837,39 +843,81 @@ func TestMigrateClearsThePgxStatementCacheItReset(t *testing.T) {
 	}
 }
 
-// createVersionTable pins its transaction (pgmigrate.Pin), so the widen's ALTER TABLE, which takes
-// ACCESS EXCLUSIVE on schema_migrations, is bounded by LockTimeout. Here another connection holds
-// ACCESS SHARE on an integer schema_migrations in an open transaction, so the widen must wait for
-// it. With the pin the widen gives up after LockTimeout with a lock-timeout error (SQLSTATE 55P03)
-// rather than waiting without limit.
+// prepareVersionTable pins its transaction (pgmigrate.Pin), so the ALTER TABLE that gives an
+// earlier runner's schema_migrations the identity columns, and widens an integer version, takes
+// its ACCESS EXCLUSIVE lock within LockTimeout, and tries it again on a timeout, as a migration is
+// tried (pgmigrate.RetryVersionTableLockTimeouts). Here another connection holds ACCESS SHARE on
+// such a table in an open transaction, so the alter must wait for it. A holder that stays gives
+// every attempt up after LockTimeout, and the boot fails with a lock-timeout error (SQLSTATE 55P03)
+// after LockTimeoutAttempts of them rather than waiting without limit; a holder that ends after the
+// first attempt, as a pg_dump does, lets the next attempt through, and the boot goes on. The first
+// two rows are tables an earlier runner left: an integer version from before the timestamps,
+// under a set that holds one, which the alter widens and gives the columns; and a bigint version,
+// which it gives the columns alone.
 //
-// Control: remove the pgmigrate.Pin call from createVersionTable's callback and the widen waits
-// without limit; the context deadline below fires and the error is not a lock timeout.
-func TestMigrateCreateVersionTableBoundsTheWidenLock(t *testing.T) {
-	store := openIsolatedStoreWithPool(t, 4)
-	setup := context.Background()
-	// An integer version column, as a database created before versions became timestamps has, so
-	// createVersionTable(widen) runs the ALTER TABLE.
-	if _, err := store.Pool.Exec(setup, "create table schema_migrations (version integer primary key, applied_at timestamptz not null default now())"); err != nil {
-		t.Fatalf("seed an integer schema_migrations: %v", err)
-	}
-	holder := connectForTest(t, setup, store)
-	if _, err := holder.Exec(setup, "begin; lock table schema_migrations in access share mode"); err != nil {
-		t.Fatalf("hold a lock on schema_migrations: %v", err)
-	}
-	t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
+// Control: remove the pgmigrate.Pin call from prepareVersionTable's callback and the alter waits
+// without limit; the context deadline below fires and the error is not a lock timeout. Remove the
+// retry, and the third row fails on the first attempt's timeout.
+func TestMigratePrepareVersionTableBoundsItsAlterLock(t *testing.T) {
+	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
+	bound := attempts*pgmigrate.LockTimeout + (attempts-1)*pgmigrate.LockTimeoutRetryPause
+	for name, tc := range map[string]struct {
+		versionType string
+		set         []pgmigrate.Migration
+		release     bool
+	}{
+		"widen and add the identity columns":         {"integer", []pgmigrate.Migration{{Version: 20261030120000, Name: "20261030120000_stamped.up.sql"}}, false},
+		"add the identity columns":                   {"bigint", nil, false},
+		"a holder that ends after the first attempt": {"bigint", nil, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := openIsolatedStoreWithPool(t, 4)
+			setup := context.Background()
+			if _, err := store.Pool.Exec(setup, "create table schema_migrations (version "+tc.versionType+" primary key, applied_at timestamptz not null default now())"); err != nil {
+				t.Fatalf("seed an earlier runner's schema_migrations: %v", err)
+			}
+			holder := connectForTest(t, setup, store)
+			if _, err := holder.Exec(setup, "begin; lock table schema_migrations in access share mode"); err != nil {
+				t.Fatalf("hold a lock on schema_migrations: %v", err)
+			}
+			released := make(chan struct{})
+			if tc.release {
+				go func() {
+					defer close(released)
+					time.Sleep(pgmigrate.LockTimeout + pgmigrate.LockTimeoutRetryPause/2)
+					_, _ = holder.Exec(context.Background(), "rollback")
+				}()
+			} else {
+				close(released)
+				t.Cleanup(func() { _, _ = holder.Exec(context.Background(), "rollback") })
+			}
+			t.Cleanup(func() { <-released })
 
-	ctx, cancel := context.WithTimeout(setup, pgmigrate.LockTimeout+10*time.Second)
-	defer cancel()
-	started := time.Now()
-	err := store.createVersionTable(ctx, true)
-	elapsed := time.Since(started)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-		t.Fatalf("createVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03): the widen was not bounded", err, elapsed)
-	}
-	if elapsed > pgmigrate.LockTimeout+5*time.Second {
-		t.Errorf("createVersionTable returned after %v; want about LockTimeout (%v): it waited past its bound", elapsed, pgmigrate.LockTimeout)
+			ctx, cancel := context.WithTimeout(setup, bound+10*time.Second)
+			defer cancel()
+			started := time.Now()
+			err := store.prepareVersionTable(ctx, tc.set)
+			elapsed := time.Since(started)
+			if tc.release {
+				if err != nil {
+					t.Fatalf("prepareVersionTable returned %v after %v; want the attempt after the holder ended to go through", err, elapsed)
+				}
+				if elapsed < pgmigrate.LockTimeout {
+					t.Errorf("prepareVersionTable returned after %v; want it to have waited out the first attempt (%v)", elapsed, pgmigrate.LockTimeout)
+				}
+				return
+			}
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || !strings.Contains(err.Error(), fmt.Sprintf("after %d attempts", pgmigrate.LockTimeoutAttempts)) {
+				t.Fatalf("prepareVersionTable returned %v after %v; want a lock-timeout error (SQLSTATE 55P03) after %d attempts: the alter was not bounded", err, elapsed, pgmigrate.LockTimeoutAttempts)
+			}
+			if pgmigrate.IsRefusal(err) {
+				t.Errorf("prepareVersionTable = %v; a lock timeout reads as a refusal of the recorded rows", err)
+			}
+			if elapsed < attempts*pgmigrate.LockTimeout || elapsed > bound+5*time.Second {
+				t.Errorf("prepareVersionTable returned after %v; want about %v, every attempt's LockTimeout and the pauses between", elapsed, bound)
+			}
+		})
 	}
 }
 
@@ -948,31 +996,199 @@ func assertDatabaseObjectsAbsent(t *testing.T, ctx context.Context, pool *Pool, 
 	}
 }
 
+// migrateThrough applies every migration of the shipped set numbered up to maxVersion that the
+// database has not recorded.
 func migrateThrough(t *testing.T, store *Store, maxVersion int) {
 	t.Helper()
+	migrateAbove(t, store, 0, maxVersion)
+}
+
+// migrateAbove applies, in order, the migrations of the shipped set numbered above after and up
+// to maxVersion, on a database the shipped migrations up to after have already been applied to.
+// The ones up to after are not judged again: each would be a transaction of its own that only
+// finds its version recorded (applyMigrationOnce's RecheckRecorded), one per migration of the
+// history every time a test moves a database forward.
+func migrateAbove(t *testing.T, store *Store, after, maxVersion int) {
+	t.Helper()
 	ctx := context.Background()
-	// The runner's own DDL (createVersionTable), bigint included: a test that created the table
-	// as an integer would make the runner widen it, which is not what these tests are about.
-	if _, err := store.Pool.Exec(ctx, `
-		create table if not exists schema_migrations (
-			version bigint primary key,
-			applied_at timestamptz not null default now()
-		)
-	`); err != nil {
-		t.Fatalf("create schema migrations table: %v", err)
-	}
-	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
-	if err != nil {
-		t.Fatalf("load migrations: %v", err)
+	migrations := shippedMigrations(t)
+	// The runner's own table (prepareVersionTable), bigint and identity columns included: a test
+	// that created the table as an integer would make the runner widen it, which is not what these
+	// tests are about.
+	if err := store.prepareVersionTable(ctx, migrations); err != nil {
+		t.Fatalf("prepare schema migrations table: %v", err)
 	}
 	for _, migration := range migrations {
+		if migration.Version <= after {
+			continue
+		}
 		if migration.Version > maxVersion {
 			break
 		}
-		if err := store.applyMigration(ctx, migration); err != nil {
+		if err := store.applyMigration(ctx, migrations, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}
+}
+
+// shipped is the shipped set as pgmigrate.Load reads it, read once by this test binary: the
+// embedded files do not change while it runs.
+var shipped struct {
+	once       sync.Once
+	migrations []pgmigrate.Migration
+	err        error
+}
+
+func shippedMigrations(t *testing.T) []pgmigrate.Migration {
+	t.Helper()
+	shipped.once.Do(func() { shipped.migrations, shipped.err = pgmigrate.Load(migrationFiles, "migrations") })
+	if shipped.err != nil {
+		t.Fatalf("load migrations: %v", shipped.err)
+	}
+	return shipped.migrations
+}
+
+// latestVersion stands for every migration of the shipped set: openMigratedTestStore(t,
+// latestVersion) is a database Migrate has brought up to date.
+const latestVersion = math.MaxInt
+
+// migratedTemplates are the databases this test binary migrated through one version each, by
+// version. openMigratedTestStore clones one for each test that starts from a migrated schema,
+// where the test used to create an empty database and apply the whole history to it itself:
+// 97 tests did, 63% of the package's time (a run on 4 CPUs, 2026-11-22). Each template is built
+// once, as a clone of the nearest template below it moved forward by the migrations between
+// (migrateAbove), so one run applies each migration about once. TestMain drops them all.
+var migratedTemplates = struct {
+	sync.Mutex
+	byVersion map[int]string
+	made      []string
+}{byVersion: map[int]string{}}
+
+// openMigratedTestStore returns a store on a database of the test's own, dropped when the test
+// ends, carrying exactly the shipped migrations numbered up to version: what an empty database
+// and migrateThrough(t, store, version) would give it, as a clone of a template rather than by
+// applying the history again.
+func openMigratedTestStore(t *testing.T, version int) *Store {
+	t.Helper()
+	admin := adminDatabaseURL(t)
+	template := migratedTemplate(t, admin, version)
+	return openDatabaseCopy(t, admin, "dispatch_test_"+randomDatabaseSuffix(t), template)
+}
+
+// adminDatabaseURL is DISPATCH_TEST_DATABASE_URL with its path set to the postgres database,
+// where create database and drop database run.
+func adminDatabaseURL(t *testing.T) url.URL {
+	t.Helper()
+	admin, err := url.Parse(testDatabaseURL(t))
+	if err != nil {
+		t.Fatalf("parse test database URL: %v", err)
+	}
+	admin.Path = "/postgres"
+	return *admin
+}
+
+// migratedTemplate is the name of the template migrated through version, which it builds when
+// this binary has none yet. It holds migratedTemplates' lock while it builds, so two tests never
+// build one twice and each build starts from every template built before it.
+func migratedTemplate(t *testing.T, admin url.URL, version int) string {
+	t.Helper()
+	migratedTemplates.Lock()
+	defer migratedTemplates.Unlock()
+	if name, ok := migratedTemplates.byVersion[version]; ok {
+		return name
+	}
+	base, baseVersion := "", 0
+	for built, name := range migratedTemplates.byVersion {
+		if built < version && built > baseVersion {
+			base, baseVersion = name, built
+		}
+	}
+	name := "dispatch_template_" + randomDatabaseSuffix(t)
+	statement := "create database " + name + " strategy file_copy"
+	if base != "" {
+		statement = "create database " + name + " template " + base + " strategy file_copy"
+	}
+	adminExec(t, admin, statement)
+	migratedTemplates.made = append(migratedTemplates.made, name)
+	ctx := context.Background()
+	database, err := Open(ctx, databaseOn(admin, name))
+	if err != nil {
+		t.Fatalf("open template database %s: %v", name, err)
+	}
+	// A migration that fails ends the test here; the deferred close still lets the pool go, so a
+	// failed build leaves no connections behind for the tests after it. Close is idempotent.
+	defer database.Pool.Close()
+	migrateAbove(t, database, baseVersion, version)
+	// Postgres refuses to copy a database a session is connected to, so the template is left
+	// with none, and refuses connections from here on so a stray one cannot make a copy fail.
+	database.Pool.Close()
+	adminExec(t, admin, "alter database "+name+" with allow_connections false")
+	migratedTemplates.byVersion[version] = name
+	return name
+}
+
+// openDatabaseCopy creates name as a copy of template's files (strategy file_copy, as
+// testdb.DatabaseOn's empty databases are), drops it when the test ends, and returns a store on it.
+func openDatabaseCopy(t *testing.T, admin url.URL, name, template string) *Store {
+	t.Helper()
+	adminExec(t, admin, "create database "+name+" template "+template+" strategy file_copy")
+	// `with (force)` ends any backend still attached, as testdb.DatabaseOn's drop does.
+	t.Cleanup(func() { adminExec(t, admin, "drop database if exists "+name+" with (force)") })
+	store, err := Open(context.Background(), databaseOn(admin, name))
+	if err != nil {
+		t.Fatalf("open the copy of %s: %v", template, err)
+	}
+	t.Cleanup(store.Pool.Close)
+	return store
+}
+
+// databaseOn is the server admin names with its path set to database.
+func databaseOn(admin url.URL, database string) string {
+	admin.Path = "/" + database
+	return admin.String()
+}
+
+// adminExec runs one statement on a connection of its own to the admin database: neither create
+// database nor drop database may run in a transaction or against the database it names. A
+// failure names the statement, never the URL, which carries a credential.
+func adminExec(t testing.TB, admin url.URL, statement string) {
+	t.Helper()
+	if err := execOnAdmin(admin, statement); err != nil {
+		t.Fatalf("%s: %v", statement, err)
+	}
+}
+
+func execOnAdmin(admin url.URL, statement string) error {
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, admin.String())
+	if err != nil {
+		return fmt.Errorf("connect to the Postgres server at %s: %w", admin.Host, err)
+	}
+	defer conn.Close(ctx)
+	_, err = conn.Exec(ctx, statement)
+	return err
+}
+
+// TestMain runs the package's tests, then drops every template openMigratedTestStore built.
+func TestMain(m *testing.M) {
+	code := m.Run()
+	migratedTemplates.Lock()
+	made := migratedTemplates.made
+	migratedTemplates.Unlock()
+	if len(made) > 0 {
+		if admin, err := url.Parse(os.Getenv("DISPATCH_TEST_DATABASE_URL")); err == nil {
+			admin.Path = "/postgres"
+			for _, name := range made {
+				if err := execOnAdmin(*admin, "drop database if exists "+name+" with (force)"); err != nil {
+					fmt.Fprintf(os.Stderr, "drop template database %s: %v\n", name, err)
+					if code == 0 {
+						code = 1
+					}
+				}
+			}
+		}
+	}
+	os.Exit(code)
 }
 
 func seedGraphAt0007(t *testing.T, store *Store) string {
@@ -1012,8 +1228,7 @@ func seedGraphAt0007(t *testing.T, store *Store) string {
 
 func TestMigrate0015BackfillsIssueRanksByProjectCreationOrder(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 13)
+	store := openMigratedTestStore(t, 13)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core'), ('OPS', 'Operations');
 		insert into issues (key, project_key, number, title, created_by, created_at) values
@@ -1068,8 +1283,7 @@ func TestMigrate0015BackfillsIssueRanksByProjectCreationOrder(t *testing.T) {
 
 func TestMigrate0009BackfillsProjectAndRefKeyFrom0007(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 7)
+	store := openMigratedTestStore(t, 7)
 	seedGraphAt0007(t, store)
 
 	nameADefaultAssigneeOnEveryProject(t, store)
@@ -1122,8 +1336,7 @@ func TestMigrate0009BackfillsProjectAndRefKeyFrom0007(t *testing.T) {
 
 func TestMigrate0009DropsMalformedArtifactReferences(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 7)
+	store := openMigratedTestStore(t, 7)
 	commentID := seedGraphAt0007(t, store)
 	const malformed = "CORE-2/diagram-png``"
 	if _, err := store.Pool.Exec(ctx, `
@@ -1157,10 +1370,7 @@ func TestMigrate0009DropsMalformedArtifactReferences(t *testing.T) {
 
 func TestMigrateMarksLegacyNonNotifyingEventsPublished(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	// A database that stopped at the notify-only outbox: forget the backfill, then record
 	// an event of the kind that outbox never published.
 	if _, err := store.Pool.Exec(ctx, "delete from schema_migrations where version = 4"); err != nil {
@@ -1202,8 +1412,7 @@ func TestMigrateMarksLegacyNonNotifyingEventsPublished(t *testing.T) {
 // keeps any later writer from putting a null back.
 func TestMigrate0031RewritesNullAskOptionsToEmptyArrays(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 30)
+	store := openMigratedTestStore(t, 30)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -1246,8 +1455,7 @@ func TestMigrate0031RewritesNullAskOptionsToEmptyArrays(t *testing.T) {
 // that carried the old kind, and the check constraint refuses any new action row.
 func TestMigrate0035FoldsActionAsksIntoQuestions(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 34)
+	store := openMigratedTestStore(t, 34)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -1303,10 +1511,7 @@ func TestMigrate0035FoldsActionAsksIntoQuestions(t *testing.T) {
 // adds the check that refuses them.
 func TestMigrate0053RefusesAnApprovalOnAnyAskButAnApprovalAsk(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example');
 		insert into issues (key, project_key, number, title, created_by, rank)
@@ -1585,8 +1790,7 @@ func assertAskThreadsRepaired(t *testing.T, store *Store, migration string) {
 func TestAskReplyBackfillsMoveOnlyTheRepliesTheyOwn(t *testing.T) {
 	for _, backfill := range askReplyBackfills {
 		t.Run(backfill.name, func(t *testing.T) {
-			store := openEmptyTestStore(t)
-			migrateThrough(t, store, backfill.through)
+			store := openMigratedTestStore(t, backfill.through)
 			seedAskThreads(t, store)
 			applyMigrationFile(t, store, backfill.file)
 			assertAskThreadsRepaired(t, store, backfill.name)
@@ -1670,8 +1874,7 @@ func TestAskReplyBackfillsTerminateOnACyclicReplyChain(t *testing.T) {
 	for _, backfill := range askReplyBackfills {
 		t.Run(backfill.name, func(t *testing.T) {
 			ctx := context.Background()
-			store := openEmptyTestStore(t)
-			migrateThrough(t, store, backfill.through)
+			store := openMigratedTestStore(t, backfill.through)
 			const (
 				askID    = "33333333-3333-4333-8333-333333333333"
 				cyclicID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
@@ -1734,8 +1937,7 @@ const legionCurrentVersion = 20261117022936
 // after it moves a field's row only where the row it inserts is newer than the one held.
 func TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, legionCurrentVersion-1)
+	store := openMigratedTestStore(t, legionCurrentVersion-1)
 	hour := func(hours int) time.Time { return time.Date(2026, 11, 16, hours, 0, 0, 0, time.UTC) }
 	observe := func(issue, field, value string, at time.Time) {
 		t.Helper()

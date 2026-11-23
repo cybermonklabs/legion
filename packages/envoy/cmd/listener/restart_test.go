@@ -69,7 +69,7 @@ func TestListenerFollowsTheInterestRegistryAcrossNATSRestarts(t *testing.T) {
 		// cache first (kvwatch.Cache): the reconnect hook's Rewatch does not resume after the last
 		// revision applied, so its warm-up is a completed read holding every interest written so
 		// far. The copy keeps its rows through that read and removes only what a completed read
-		// found no evidence of (kvwatch.Copy, packages/envoy/AGENTS.md, "KV cache watchers"), so
+		// found no evidence of (kvwatch.Copy's BeginRead and CompleteRead), so
 		// GET /v1/interests/, which answers from the copy, lists every one of them throughout: a
 		// re-read that emptied the cache and refilled it would drop one. The write below waits for
 		// the warm-up line, so it cannot land inside the read and be counted in it.

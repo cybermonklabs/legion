@@ -54,10 +54,10 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20); err != nil || len(drifted) != 0 {
 		t.Fatalf("drift after recording = %#v, %v; want none", drifted, err)
 	}
-	if stored, err := StoredExcerpts(ctx, database.Pool, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
+	if stored, err := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-1"); err != nil || stored[document] != excerpt {
 		t.Fatalf("stored = %#v, %v; want %#v", stored, err, excerpt)
 	}
-	if stored, _ := StoredExcerpts(ctx, database.Pool, "issue", "CORE-2"); len(stored) != 0 {
+	if stored, _ := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-2"); len(stored) != 0 {
 		t.Fatalf("a mention in no block stored %#v; want none", stored)
 	}
 
@@ -100,7 +100,7 @@ func TestOwedExcerptsAreFoundThroughTheDriftIndexAndRecordedOnce(t *testing.T) {
 	if drifted, err := DriftedExcerpts(ctx, database.Pool, 20); err != nil || len(drifted) != 1 || drifted[0].Version != 2 {
 		t.Fatalf("drift after an older binary's version = %#v, %v; want the document at version 2", drifted, err)
 	}
-	if stored, _ := StoredExcerpts(ctx, database.Pool, "issue", "CORE-1"); len(stored) != 0 {
+	if stored, _ := StoredExcerpts(ctx, database.Pool, model.Actor{}, "issue", "CORE-1"); len(stored) != 0 {
 		t.Fatalf("a mention owed an excerpt serves %#v; want no stored excerpt", stored)
 	}
 	if marked, err := MarkStaleExcerpts(ctx, database.Pool); err != nil || marked != 0 {
@@ -308,7 +308,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 		}
 	}
 	for name, clear := range map[string]func() error{
-		"ClearExcerpts": func() error { return ClearExcerpts(ctx, database.Pool, document) },
+		"ClearExcerpts": func() error { return clearExcerptsOnPool(ctx, database.Pool, document) },
 		"a direct update": func() error {
 			_, err := database.Pool.Exec(ctx, `update refs set excerpt_version = null where from_id = $1`, document)
 			return err
@@ -326,7 +326,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 	}
 }
 
-// A version write names the targets whose excerpt it moved (ReplaceDocumentCounted): a version
+// A version write names the targets whose excerpt it moved (RecordExcerpts): a version
 // that rewrites the block a kept mention sits in moves that mention's excerpt and no other's, and
 // one that writes the same excerpts again moves nothing.
 func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
@@ -378,4 +378,22 @@ func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
 	if moved := record(4, reblocked); !slices.Equal(moved, []Target{core2}) {
 		t.Fatalf("moved by a mention's new block = %#v, want CORE-2 alone", moved)
 	}
+}
+
+// clearExcerptsOnPool marks fromID's excerpts owed from a transaction of its own, as a caller
+// holding no write phase would: ClearExcerpts puts its statement on a batch, which a transaction
+// sends.
+func clearExcerptsOnPool(ctx context.Context, pool *store.Pool, fromID string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		ClearExcerpts(b, fromID)
+		return nil
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

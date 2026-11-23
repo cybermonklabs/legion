@@ -21,7 +21,9 @@
 # own port. So two Legion roles of one pod, each with its own LOADTEST_ROOT, almost always run a
 # stack each with no port variable set; when their blocks do collide, check_port refuses the second
 # stack and the roles set the LOADTEST_*_PORT variables (or pick another root). stack.sh setup
-# records the ports in ROOT/stack.json, and `stack.sh status` prints them.
+# records the ports in ROOT/stack.json, and `stack.sh status` prints them. The blocks sit below the
+# machine's ephemeral range (port_base), and stack_ports refuses, naming both ranges, when they
+# cannot.
 #
 # lock_root ROOT: one run at a time per root (README.md, "One run at a time"). It takes an
 # exclusive, non-blocking flock on ROOT/.run.lock and keeps it on file descriptor 9. The lock lasts
@@ -110,7 +112,7 @@ declare -A PORT_OFFSET=(
   [postgres]=0 [proxy]=1 [nats]=2 [nats_monitor]=3 [listener]=4 [dispatch]=5 [pprof]=6
   [proxy_stats]=7 [envoy_proxy]=8
 )
-PORT_BASE=15000
+PORT_BASE_DEFAULT=15000
 PORT_STRIDE=10
 PORT_BLOCKS=200
 
@@ -122,25 +124,86 @@ port_block() {
   printf '%s\n' "$((16#$hex % PORT_BLOCKS))"
 }
 
-# default_port KEY BLOCK: the default port of KEY in block BLOCK:
+# ephemeral_range: this machine's ephemeral port range, "LOW HIGH", read from
+# /proc/sys/net/ipv4/ip_local_port_range (LOADTEST_PORT_RANGE_FILE names another file, for a test
+# of a range this machine does not have); nothing when the file cannot be read or does not hold two
+# numbers. The kernel takes the source port of every outgoing connection from this range, so a
+# stack port inside it can be taken by any connection of the stack before its own process binds it,
+# which then fails with "address already in use".
+ephemeral_range() {
+  local low high
+  { read -r low high <"${LOADTEST_PORT_RANGE_FILE:-/proc/sys/net/ipv4/ip_local_port_range}"; } 2>/dev/null || return 0
+  [[ $low =~ ^[0-9]+$ && $high =~ ^[0-9]+$ ]] || return 0
+  printf '%s %s\n' "$low" "$high"
+}
+
+# port_base: the first port of block 0. The PORT_BLOCKS blocks of PORT_STRIDE ports take
+# PORT_BLOCKS * PORT_STRIDE ports from it (2000). It is PORT_BASE_DEFAULT (15000) when they end
+# below the ephemeral range, which holds for Linux's default range (32768-60999). Otherwise it is
+# the 2000 ports just below the range: a gVisor pod's range starts at 16000, so there the blocks
+# take 14000-15998. When no range can be read it is the default. When the range starts too low for
+# 2000 ports above 1023, it prints a refusal naming both ranges on stderr and returns 1.
+port_base() {
+  local span=$((PORT_BLOCKS * PORT_STRIDE)) range low high base
+  range=$(ephemeral_range)
+  if [ -z "$range" ]; then
+    printf '%s\n' "$PORT_BASE_DEFAULT"
+    return 0
+  fi
+  read -r low high <<<"$range"
+  if ((PORT_BASE_DEFAULT + span <= low)); then
+    printf '%s\n' "$PORT_BASE_DEFAULT"
+    return 0
+  fi
+  base=$((low - span))
+  if ((base < 1024)); then
+    printf 'loadtest: the stack needs %d ports below the ephemeral range %d-%d (ip_local_port_range) and above 1023, and the range starts too low for them; set every LOADTEST_*_PORT to a port outside %d-%d\n' \
+      "$span" "$low" "$high" "$low" "$high" >&2
+    return 1
+  fi
+  printf '%s\n' "$base"
+}
+
+# port_in_ephemeral PORT: PORT is inside this machine's ephemeral range.
+port_in_ephemeral() {
+  local range low high
+  range=$(ephemeral_range)
+  [ -n "$range" ] || return 1
+  read -r low high <<<"$range"
+  (($1 >= low && $1 <= high))
+}
+
+# default_port KEY BLOCK [BASE]: the default port of KEY in block BLOCK:
 #
-#   PORT_BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = 15000 + 10k + 0..8
+#   BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = BASE + 10k + 0..8
 #
-# The 9 offsets differ and all are below the stride, so no two ports of a block and no two ports of
-# two different blocks ever meet (two roots in one block hold the same 9 ports);
-# every port is between 15000 and 16998, inside 1024-65535 and below the ephemeral range.
-default_port() { printf '%s\n' "$((PORT_BASE + $2 * PORT_STRIDE + PORT_OFFSET[$1]))"; }
+# BASE is port_base's unless given. The 9 offsets differ and all are below the stride, so no two
+# ports of a block and no two ports of two different blocks ever meet (two roots in one block hold
+# the same 9 ports); every port is between BASE and BASE + 1998, inside 1024-65535 and below the
+# ephemeral range (port_base).
+default_port() {
+  local base=${3:-}
+  if [ -z "$base" ]; then
+    base=$(port_base) || return 1
+  fi
+  printf '%s\n' "$((base + $2 * PORT_STRIDE + PORT_OFFSET[$1]))"
+}
 
 # stack_ports ROOT: ROOT's ports, "KEY PORT" a line in PORT_KEYS' order: the block's default port,
 # or the value of the key's PORT_VAR when this environment sets it. stack.sh setup records them in
-# ROOT/stack.json, which `stack.sh status` prints.
+# ROOT/stack.json, which `stack.sh status` prints. It fails, printing nothing, when a key takes its
+# default and port_base refuses.
 stack_ports() {
-  local block key var
+  local block key var base="" out=""
   block=$(port_block "$1")
   for key in "${PORT_KEYS[@]}"; do
     var=${PORT_VAR[$key]}
-    printf '%s %s\n' "$key" "${!var:-$(default_port "$key" "$block")}"
+    if [ -z "${!var:-}" ] && [ -z "$base" ]; then
+      base=$(port_base) || return 1
+    fi
+    out+="$key ${!var:-$(default_port "$key" "$block" "$base")}"$'\n'
   done
+  printf '%s' "$out"
 }
 
 # lock_field NAME RECORD: the value of NAME= in a lock record.

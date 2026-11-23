@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // seededArchitectTask is the work the architect's seeded entry names: the text the transition
@@ -213,10 +214,11 @@ func TestResumeAwaitedRootRaisesTheArchitectEntryForBothOfItsCallers(t *testing.
 		waiting := record.Awaiting{Ask: "ask-1", Since: record.EventMark{Seq: 5}, AnsweredAt: &answeredAt,
 			AnsweredBy: record.AnsweredByAsk}
 
-		seedRecord(t, pool, func(tx pgx.Tx) error {
-			ctx, _ := intake.WithCommitHooks(context.Background())
+		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.ResumeAwaitedRoot(ctx, tx, root, waiting)
-		})
+		}); err != nil {
+			t.Fatalf("resume the answered root: %v", err)
+		}
 
 		assertArchitectEntryRaised(t, pool, engine, seededEntry+1)
 	})
@@ -296,7 +298,7 @@ func TestAWakeStartRaisesNoArchitectEntryAndLeavesTheArchitectOwedItsWork(t *tes
 
 	oneWake(t, rig.pool, claim.RoleArchitect, pods.WakeRoleMessage, string(token))
 	start := architectStartOf(t, rig.pool)
-	if start.Entry != 0 || start.Task != WakeTask(pods.WakeRoleMessage, string(token)) {
+	if start.Entry != 0 || start.Task != WakeTask(pods.WakeRoleMessage, string(token), StoppedByRelease) {
 		t.Fatalf("the wake's start = entry %d carrying %q, want no entry and the wake's own task: a wake hands no phase entry's work",
 			start.Entry, start.Task)
 	}

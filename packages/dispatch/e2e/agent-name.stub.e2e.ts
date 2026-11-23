@@ -3,7 +3,7 @@
  *  agent, and a name with no space in it.
  *
  *  Each reads what the browser does - a box, a width, an address - so each runs against a
- *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *  The rows that read the margin on the live document, that count the registry's reads, and
  *  that watch a rename and a stop arrive stayed in `agent-name.e2e.ts`.
  */

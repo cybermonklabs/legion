@@ -642,8 +642,8 @@ func TestWritingIssueAskStatesOnARunTheCloseCutsStoresNothing(t *testing.T) {
 	closer := model.Actor{Kind: "user", ID: "carol"}
 	err := joinedWrite(service, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
-		// The issue route holds the issue's row before it writes any document.
-		if _, err := tx.Exec(ctx, `select 1 from issues where key = 'DOC-1' for no key update`); err != nil {
+		// The issue route holds the issue's owner lock before it writes any document.
+		if err := store.LockOwner(ctx, tx, store.IssueOwner("DOC-1")); err != nil {
 			return fmt.Errorf("lock the issue: %w", err)
 		}
 		_, err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(region, closer)}, closer, false)

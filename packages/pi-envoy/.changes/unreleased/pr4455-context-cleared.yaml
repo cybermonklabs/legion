@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  A session whose host reports no context window, or no usage, now takes the context ring away in
+  Dispatch's live view: the plugin sends `context-cleared`, and every replay keeps it in the place
+  of the reading. Before, the view kept the last reading. The plugin reads the window at the
+  points it read it before, so after a switch to a model with no window the ring goes at the next
+  turn start.

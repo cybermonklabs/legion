@@ -42,11 +42,12 @@
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go).
 // Each pane is a real `omp --mode rpc` under the real `legion worker-shim`, started by
-// localruntime_live_test.go, since a Legion pod carries no tmux, with this checkout's
-// `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own. What
-// stands in is the model endpoint and nothing else: each pane talks to one HTTP stand-in of the
-// driver's own (newPaneStandin, claim_compaction_live_test.go), which answers every turn with one
-// short message.
+// localruntime_live_test.go, since a Legion pod on a worker image from before
+// dispatch://INFRA-3257 carries no tmux, with this checkout's `@sjawhar/pi-envoy` and
+// `@sjawhar/pi-legion` in an Oh My Pi profile of the run's own. What stands in is the model
+// endpoint and nothing else: each pane talks to one HTTP stand-in of the driver's own
+// (newPaneStandin, claim_compaction_live_test.go), which answers every turn with one short
+// message.
 //
 // The seed is one tree with one child, so that the daemon starts three real panes of three
 // different kinds: the tree's root architect, the planner of the same issue, which stands in
@@ -241,7 +242,6 @@ func newRolePromptRuleLive(t *testing.T) *rolePromptRuleLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/role-prompt-rule.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/role-prompt-rule.sh")
 	r := &rolePromptRuleLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
@@ -337,7 +337,7 @@ func (r *rolePromptRuleLive) seed() {
 	ctx := context.Background()
 	r.board.show(r.issue, "in_progress")
 	r.board.place(r.child, "in_progress", r.issue, false)
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.issue, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.issue,
 			Project: r.cfg.Project, Title: "the issue whose architect and planner this proof reads the command line of",

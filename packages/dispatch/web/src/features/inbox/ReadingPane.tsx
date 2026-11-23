@@ -84,6 +84,7 @@ function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): Rea
         <ReadingPaneHead
           artifact={undefined}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
           onNextChange={undefined}
           onSkipToAnswer={undefined}
@@ -324,6 +325,7 @@ function ApprovalBody({
         <ReadingPaneHead
           artifact={artifact}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
           onNextChange={marked ? nextChange : undefined}
           onSkipToAnswer={undefined}
@@ -360,6 +362,7 @@ function DecisionBody({
         <ReadingPaneHead
           artifact={document.artifact}
           ask={ask}
+          key={ask.id}
           onAnswered={onAnswered}
           onNextChange={undefined}
           onSkipToAnswer={document.showsDocument ? document.skipToBlock : undefined}
@@ -385,6 +388,10 @@ function DecisionBody({
  * document could not be opened falls back to as well — the column never shows the document
  * page's rebuild or repair prompts. A Reply or an Agent row is one of four thread bodies
  * (`ThreadPane.tsx`), which fall back the same way.
+ *
+ * Each flow keys its head by the ask: the head's controls hold the writes they made -
+ * `Snoozing…`, a refusal and its Retry - so the next question selected is drawn under a head of
+ * its own, never under this one still showing the last question's.
  */
 export function ReadingPane({
   onAnswered,

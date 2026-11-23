@@ -79,6 +79,7 @@ var waveBlock = map[string]string{"wave": "How many regions take the first wave?
 // before version 3's own artifact.version. The undo supersedes no approval, so its advice names
 // none, and a request for approval returns the approval and opens nothing.
 func TestAVersionRestoringTheApprovedTextCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	document := approveThenChange(t, handler, "Restore the approved text", "", nil)
 	artifactID := document.artifactID
@@ -132,6 +133,7 @@ func TestAVersionRestoringTheApprovedTextCarriesTheApproval(t *testing.T) {
 // undo's version, and the restore then answers it Approve in alice's name with the restore's
 // reason, so the review names it and she is asked nothing.
 func TestAnOpenApprovalRequestIsAnsweredByTheVersionRestoringTheApprovedText(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	artifactID := approveThenChange(t, handler, "Request open at the undo", "", nil).artifactID
 	request := requestApproval(t, handler, artifactID)
@@ -154,6 +156,7 @@ func TestAnOpenApprovalRequestIsAnsweredByTheVersionRestoringTheApprovedText(t *
 // A version written over an approved document that changed nothing - a named version, which the
 // versions route writes whatever changed - holds the approved text, so the approval stays current.
 func TestANamedVersionThatChangesNothingKeepsTheApprovalCurrent(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Name an unchanged version", restoreSpec)
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
@@ -171,11 +174,13 @@ func TestANamedVersionThatChangesNothingKeepsTheApprovalCurrent(t *testing.T) {
 // restores an approval as the edit route does: an agent that undoes its edit by uploading the
 // approved text again gets version 3 approved in alice's name, and the upload supersedes nothing.
 func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	document := approveThenChange(t, handler, "Upload the approved text again", "", nil)
 
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+document.issueKey+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md", "content": versionMarkdown(t, handler, document.artifactID, 1),
+		"precondition": uploadBase(t, handler, document.artifactID),
 	})
 	advice := adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
 	waitForArtifactVersion(t, handler, document.artifactID, 3)
@@ -211,6 +216,7 @@ func approveThenOthersAnswer(t *testing.T, handler http.Handler, title string) a
 // its row as the answer carry does, so nothing is carried: no review in alice's name, and the
 // approval request the agent opened at version 2 stays open.
 func TestTheApprovedTextOverABlockDecidedSinceCarriesNothing(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	document := approveThenOthersAnswer(t, handler, "Approved text over a decided block")
 	request := requestApproval(t, handler, document.artifactID)
@@ -230,11 +236,13 @@ func TestTheApprovedTextOverABlockDecidedSinceCarriesNothing(t *testing.T) {
 // The upload route holds the blocks to their rows too: an upload of version 1's text over a block
 // bob decided since carries nothing.
 func TestAnUploadOfTheApprovedTextOverABlockDecidedSinceCarriesNothing(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	document := approveThenOthersAnswer(t, handler, "Uploaded approved text over a decided block")
 
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+document.issueKey+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md", "content": versionMarkdown(t, handler, document.artifactID, 1),
+		"precondition": uploadBase(t, handler, document.artifactID),
 	})
 	adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
 	waitForArtifactVersion(t, handler, document.artifactID, 3)
@@ -248,6 +256,7 @@ func TestAnUploadOfTheApprovedTextOverABlockDecidedSinceCarriesNothing(t *testin
 // mark, which is a change, so the approval stays stale, the undo supersedes nothing (the approval
 // was already stale) and a request for approval opens one.
 func TestAVersionOneCharacterFromTheApprovedTextLeavesTheApprovalStale(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	artifactID := approveThenChange(t, handler, "Nearly restore the approved text", "", nil).artifactID
 
@@ -272,6 +281,7 @@ func TestAVersionOneCharacterFromTheApprovedTextLeavesTheApprovalStale(t *testin
 // changed is the approver's own answer, given since her approval. An agent's reword of the open
 // block is no answer, so the approval stays stale.
 func TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	artifactID := approveThenChange(t, handler, "Restore around a reworded block", "\n"+waveAsk, waveBlock).artifactID
 
@@ -287,6 +297,7 @@ func TestARestoredTextAroundADecisionBlockTheAgentRewordedLeavesTheApprovalStale
 // version 1's text around her answer, given since her approval, so the answer carry carries her
 // approval to it, with the answer carry's reason rather than the restore's.
 func TestARestoredTextAroundTheApproversOwnAnswerCarriesByTheAnswerCarry(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	document := approveThenChange(t, handler, "Restore around her answer", "\n"+waveAsk, waveBlock)
 	artifactID := document.artifactID

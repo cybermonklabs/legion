@@ -4,7 +4,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { BroadcastCreated } from "../../api/types";
-import { type Shape, shape } from "../writes/write-storage";
+import { type Shape, shape } from "../writes/tab-storage";
 import { defineWriteKind, ofKind, type Write, type Writes } from "../writes/write-store";
 import type { BroadcastRequest } from "./broadcast-plan";
 
@@ -145,6 +145,7 @@ export function enqueueBroadcast(writes: Writes, send: BroadcastSend): void {
       label: `Broadcast to ${send.input.session_ids.length}`,
       presentation: "composer",
       target: "broadcast",
+      method: "POST",
       write: (bounds) => api.createBroadcast(send.input, bounds),
     })
     .catch(() => {});

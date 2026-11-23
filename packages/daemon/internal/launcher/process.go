@@ -58,7 +58,6 @@ func procPIDs(root string) ([]int, error) {
 // children, so what a pass spares and what it signals or reaps come from the same read: a process
 // a held child forks after it is in neither, rather than in the second and not the first.
 type namespaceProcesses struct {
-	// pids is every process the listing found.
 	pids []int
 	// spared is the guard's children and every process of theirs: a descendant by its parent
 	// chain (a held child's own children, as the install's --help run starts python), or a member
@@ -138,14 +137,16 @@ func statParentAndGroup(root string, pid int) (ppid, pgid int, ok bool) {
 }
 
 // pidGuard holds the pids of the launcher's own children that are no generation's, so a reap of
-// PID 1's leaves each exit to the wait that started it (pidGuard.reap: the orphan reaper's passes,
-// which skip them as they skip a manager's generation, and the controller pod's drain). A pid is
-// recorded as its process starts, under the lock every reap holds for its whole pass, so no pass
-// can read /proc between a child's start and its record. Every child the launcher's process starts
-// and waits for itself, but a generation, starts here: the test database's script (runTestPG), the
-// put-back's jj and git (bundleRestore) and the leak-check install's run of the check
-// (checkInstall). TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every
-// start that process reaches.
+// PID 1's leaves each exit to the wait that started it (pidGuard.reapOrphans: the orphan reaper's
+// passes, which skip them as they skip a manager's generation; pidGuard.reap: the controller pod's
+// drain). A pid is recorded as its process starts, under the lock every reap holds for its whole
+// pass, so no pass can read /proc between a child's start and its record. Every child the
+// launcher's process starts and waits for itself, but a generation, starts here: the test
+// database's script (runTestPG), the put-back's jj and git (bundleRestore), the leak-check
+// install's run of the check (checkInstall) and each cache trimmer sweep's deleter
+// (startContainedRemover).
+// TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt reads every start that process
+// reaches.
 type pidGuard struct {
 	mu   sync.Mutex
 	pids map[int]bool
@@ -196,14 +197,13 @@ func (g *pidGuard) held() []int {
 	return pids
 }
 
-// reap is one pass of reapNamespace that leaves the guard's children, and skip, to their own
-// waits, under the guard's lock for the whole pass, and answers whether any other process of the
-// namespace is left that is none of the guard's children's (listNamespace): their descendants and
-// group members are not counted, though an exited one PID 1 adopted is reaped, since no other wait
-// reads it. Every reap of the launcher's process runs here: the orphan reaper's passes
-// (reapOrphans, which skips each manager's generation) and the controller pod's drain of an exited
-// generation (cleanExitedGeneration), which so waits for no process of a held child's.
-func (g *pidGuard) reap(skip ...int) (bool, error) {
+// reap is the controller pod's drain's pass (cleanExitedGeneration): reapNamespace's, leaving the
+// guard's children to their own waits, under the guard's lock for the whole pass, and answering
+// whether any other process of the namespace is left that is none of the guard's children's
+// (listNamespace): their descendants and group members are not counted, so the drain waits for no
+// process of a held child's, though an exited one PID 1 adopted is reaped, since no other wait
+// reads it.
+func (g *pidGuard) reap() (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	held := g.held()
@@ -211,7 +211,17 @@ func (g *pidGuard) reap(skip ...int) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("list role namespace processes: %w", err)
 	}
-	return reapListed(listed.pids, append(held, skip...), listed.spared)
+	return reapListed(listed.pids, held, listed.spared)
+}
+
+// reapOrphans is the orphan reaper's pass (reapOrphans): it reaps what reap reaps, every exited
+// process of the namespace but the guard's children and skip's, under the guard's lock for the
+// whole pass, and needs no answer of what is left, so it reads no process's stat to classify it.
+func (g *pidGuard) reapOrphans(skip ...int) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	_, err := reapNamespace(append(g.held(), skip...)...)
+	return err
 }
 
 // signalNamespace sends sig to every process of PID 1's namespace but PID 1 and the guard's
@@ -281,17 +291,17 @@ func reapListed(pids, skip []int, uncounted map[int]bool) (bool, error) {
 
 // reapOrphans is PID 1's reaper: on every SIGCHLD it reaps each exited process of the container's
 // PID namespace but the generations its managers run, whose exits their own waits read, and the
-// launcher's own children (the test database's script, the put-back's jj and git and the
-// leak-check install's run of the check, pidGuard), whose exits their own waits read too. Every
-// manager's lock and then the guard's are held across the pass (pidGuard.reap), and a manager
-// records its generation's pid under its lock as it starts it, as the guard records its child's,
-// so the reaper never waits on a process it has not seen yet. In the controller's pod a pass that
-// fails leaves the role's namespace unobservable, so the launcher fails its container loudly. In an
-// issue pod's container the container's /proc still lists every role's processes, since a role's
-// PID namespace is nested in it, but none is the launcher's child except each role's role-init and
-// the launcher's own held children, which the pass skips: the rest are their role-init's to reap,
-// and Wait4 on them answers ECHILD. So a failed pass costs no role anything, and it is logged and
-// the next pass tries again.
+// launcher's own children (the test database's script, the put-back's jj and git, the leak-check
+// install's run of the check and each sweep's deleter, pidGuard), whose exits their own waits read
+// too. Every manager's lock and then the guard's are held across the pass (pidGuard.reapOrphans),
+// and a manager records its generation's pid under its lock as it starts it, as the guard records
+// its child's, so the reaper never waits on a process it has not seen yet. In the controller's pod
+// a pass that fails leaves the role's namespace unobservable, so the launcher fails its container
+// loudly. In an issue pod's container the container's /proc still lists every role's processes,
+// since a role's PID namespace is nested in it, but none is the launcher's child except each
+// role's role-init and the launcher's own held children, which the pass skips: the rest are their
+// role-init's to reap, and Wait4 on them answers ECHILD. So a failed pass costs no role anything,
+// and it is logged and the next pass tries again.
 func reapOrphans(ctx context.Context, signals <-chan os.Signal, managers []*manager, guard *pidGuard) {
 	for {
 		select {
@@ -305,7 +315,7 @@ func reapOrphans(ctx context.Context, signals <-chan os.Signal, managers []*mana
 					skip = append(skip, m.child.pid)
 				}
 			}
-			_, err := guard.reap(skip...)
+			err := guard.reapOrphans(skip...)
 			for _, m := range managers {
 				m.mu.Unlock()
 			}

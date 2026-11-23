@@ -270,15 +270,17 @@ export function recordNotFound(name: string): DispatchServiceError {
 }
 
 /** What the client throws when a write of its own ended with no definitive answer while Dispatch
- *  may still be running it: its keyed retry window ran out, or the call's deadline did. */
-function unsettled(): DispatchWriteUnsettledError {
+ *  may still be running it: its keyed retry window ran out, or the call's deadline did. `key` is
+ *  the write's `Idempotency-Key`. */
+function unsettled(key: string): DispatchWriteUnsettledError {
   return new DispatchWriteUnsettledError(
     new DispatchServiceError(
       IDEMPOTENCY_KEY_IN_FLIGHT,
       409,
       "an earlier request with this key is still running"
     ),
-    5
+    5,
+    key
   );
 }
 
@@ -423,7 +425,7 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
       mine.committed = answerLost;
       finish();
     });
-    throw unsettled();
+    throw unsettled(key ?? "unkeyed");
   };
 
   const client: FakeRecordClient = {

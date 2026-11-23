@@ -20,7 +20,8 @@ func TestAWaitRoundTripsAndOnlyItsOwnWritersMoveTheSequences(t *testing.T) {
 	at := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 	inTx(t, st, func(tx pgx.Tx) {
 		putRoot(t, ctx, records, tx, "LEGION-1")
-		must(t, records.PutDispatchIssue(ctx, tx, DispatchIssueRow{Key: "LEGION-1", Project: "LEGION", Status: "in_progress", Seq: 3,
+		must(t, records.PutDispatchIssue(ctx, tx, DispatchReading{Key: "LEGION-1", Project: "LEGION", Seq: 3,
+			Status: Carry("in_progress"), Parent: Carry(""), Blockers: Carry[[]string](nil),
 			ClaimedBy: "session:ses_architect", ClaimSeq: 9}))
 		must(t, records.PutRootAsk(ctx, tx, RootAsk{Issue: "LEGION-1", Ask: "ask-q", Kind: AskQuestion, Open: true, Seq: 11,
 			WaitingOn: "human", WaitingOnSeq: 11, ByTree: true}))

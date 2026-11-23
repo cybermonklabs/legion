@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `CheckResultDryRun {line}`, the answer of `POST /api/v1/issues/{key}/results/dry-run`, and a
+  `dispatch_result` description that says the body line keeps only plain words, with no word
+  holding `://`, a private or Dispatch host, or an issue key, and that `--dry-run` prints it.

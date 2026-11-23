@@ -264,7 +264,7 @@ func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused
 
 	refused := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
-	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
+	refusedSaying(t, refused, http.StatusConflict, claimInATurn,
 		inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
 	if got := processReads(h) - reads; got != 0 {
 		t.Errorf("the request read the claim's process %d times, want none: the compaction in flight owns that process", got)
@@ -316,7 +316,7 @@ func TestASecondCompactionOfAClaimBeingCompactedIsRefused(t *testing.T) {
 
 	second := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
-	wantFreshSessionRefusal(t, second, http.StatusConflict, claimInATurn,
+	refusedSaying(t, second, http.StatusConflict, claimInATurn,
 		string(token)+" is being compacted already. "+wantCompactionReaches+". "+wantAskAgainLater)
 	release()
 	<-answered
@@ -340,7 +340,7 @@ func TestACompactionRefusedForAClaimInATurnNamesTheCompaction(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+			refusedSaying(t, recorder, http.StatusConflict, claimInATurn,
 				inATurnRefusal(token, "a compaction would abort that turn", wantCompactionReaches))
 		})
 	}
@@ -362,7 +362,7 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+			refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 				heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
 			if asked := conn.Compactions(); len(asked) != 0 {
 				t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
@@ -414,7 +414,7 @@ func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *tes
 			}
 			release()
 
-			wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed, suspendedCompactionRefusal(token))
+			refusedSaying(t, <-answered, http.StatusConflict, compactionFailed, suspendedCompactionRefusal(token))
 			settled(h, token)
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator {
@@ -465,7 +465,7 @@ func TestACompactionThatEndedIntoATurnUnderAHeldSuspensionSaysTheClaimWasNotGive
 			}
 			release()
 
-			wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed, suspendedCompactionRefusal(token))
+			refusedSaying(t, <-answered, http.StatusConflict, compactionFailed, suspendedCompactionRefusal(token))
 			settled(h, token)
 			after := h.stored(token)
 			if after.State != supervise.StateWorking {
@@ -498,7 +498,7 @@ func TestAStartDropsTheDaemonsHoldAndTheIdleClaimItLeavesIsCompacted(t *testing.
 
 	refused := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
-	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
+	refusedSaying(t, refused, http.StatusConflict, claimInATurn,
 		heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
 	if err := m.StartedBy(h.ctx, 42, nil); err != nil {
 		t.Fatalf("the start run against the held claim: %v", err)
@@ -538,7 +538,7 @@ func TestACompactionIsRefusedForASuspendedAStoppedAndAFailedClaimNamingFreshSess
 
 				recorder := door.ask(t, h, tc.issue, tc.role)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning,
+				refusedSaying(t, recorder, http.StatusConflict, claimNotRunning,
 					string(token)+" is "+string(state)+", so it runs no Oh My Pi session to compact; "+
 						freshSessionName+" starts it again instead")
 			})
@@ -566,7 +566,7 @@ func TestACompactionOfAStoppedControllerNamesItsKeeperRatherThanFreshSession(t *
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
-	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotRunning,
+	refusedSaying(t, recorder, http.StatusConflict, claimNotRunning,
 		string(token)+" is retired, so it runs no Oh My Pi session to compact; "+
 			controllerKeeperName+" starts it again instead")
 	if strings.Contains(recorder.Body.String(), "fresh_session") {
@@ -584,7 +584,7 @@ func TestACompactionIsRefusedForAClaimWhoseLaunchIsInFlight(t *testing.T) {
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
-	assertFailure(t, recorder, http.StatusConflict, claimUnsettled)
+	refused(t, recorder, http.StatusConflict, claimUnsettled)
 }
 
 // A role the deployment runs on Claude Code has no Oh My Pi session to compact, and the daemon
@@ -603,7 +603,7 @@ func TestACompactionIsRefusedForAClaudeCodeClaim(t *testing.T) {
 
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimNotOnOmp,
+			refusedSaying(t, recorder, http.StatusConflict, claimNotOnOmp,
 				string(token)+" runs on Claude Code, which has no Oh My Pi session to compact; "+
 					freshSessionName+" is what starts it again")
 			if got := len(conn.Compactions()); got != 0 {
@@ -622,7 +622,7 @@ func TestTheControllersCompactRefusesTheRoleController(t *testing.T) {
 	recorder := h.request(http.MethodPost, "/legion/v1/claims/compact",
 		ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
-	wantFreshSessionRefusal(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
+	refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE",
 		"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
 			"the project's controller is none of them, and the controller does not compact its own session")
 }
@@ -642,11 +642,11 @@ func TestTheControllersCompactNeedsAControllerGrantAndAClaim(t *testing.T) {
 	}
 	decodeInto(t, minted, &worker)
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/compact",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/compact",
 		ClaimRequest{GrantID: worker.GrantID, Issue: "LEGION-209", Role: string(claim.RoleImplementer)}, nil),
 		http.StatusForbidden, "CONTROLLER_REQUIRED")
 
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/claims/compact",
+	refused(t, h.request(http.MethodPost, "/legion/v1/claims/compact",
 		ClaimRequest{GrantID: controllerGrant(t, h).GrantID, Issue: "LEGION-777", Role: string(claim.RoleTester)}, nil),
 		http.StatusNotFound, "NO_CLAIM")
 }
@@ -690,7 +690,7 @@ func TestACompactionRefusedForAClaimThatIsNotReadyNamesWhatIsWrong(t *testing.T)
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
-	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+	refusedSaying(t, recorder, http.StatusConflict, claimUnsettled,
 		unsettledRefusal(token, supervise.StateRegistered, wantCompactionReaches))
 }
 
@@ -703,14 +703,8 @@ func TestACompactionOfAClaimWhoseShimIsNotConnectedSaysNothingWasAsked(t *testin
 	token := readyImplementer(t, h)
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
-
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409; body %s", recorder.Code, recorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	if failure.Code != compactionFailed || !strings.Contains(failure.Error, "shim is not connected") {
-		t.Fatalf("the refusal is %+v, want %s naming the shim that is not connected", failure, compactionFailed)
+	if message := refused(t, recorder, http.StatusConflict, compactionFailed); !strings.Contains(message, "shim is not connected") {
+		t.Fatalf("the refusal says %q, want it to name the shim that is not connected", message)
 	}
 	if after := h.stored(token); after.State != supervise.StateReady {
 		t.Errorf("the refused claim is %s, want the ready it was", after.State)
@@ -737,15 +731,7 @@ func TestACompactionWhoseEndTheStoreWouldNotWriteAnswersTheStoreFailure(t *testi
 	h.store.Pool().Close()
 	release()
 
-	recorder := <-answered
-	if recorder.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body %s", recorder.Code, recorder.Body)
-	}
-	var failure Failure
-	decodeInto(t, recorder, &failure)
-	if failure.Code != compactionFailed {
-		t.Fatalf("the failure is %+v, want %s: the compaction ended and the claim could not be given back", failure, compactionFailed)
-	}
+	refused(t, <-answered, http.StatusInternalServerError, compactionFailed)
 	if got := len(conn.Compactions()); got != 1 {
 		t.Fatalf("Oh My Pi was asked for %d compactions, want the one that ran", got)
 	}
@@ -774,7 +760,7 @@ func TestACompactionOfAClaimThatLosesItsProcessSaysItWasNotGivenBack(t *testing.
 	h.relaunch(token)
 	release()
 
-	wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed,
+	refusedSaying(t, <-answered, http.StatusConflict, compactionFailed,
 		string(token)+" lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. "+wantAskAgainLater)
 	settled(h, token)
 	if prompts := conn.Prompts(); len(prompts) != 0 {

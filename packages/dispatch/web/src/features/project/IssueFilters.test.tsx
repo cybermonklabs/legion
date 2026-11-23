@@ -172,7 +172,8 @@ test("label chips send every selection to the API and retain only AND matches", 
     await waitFor(() =>
       expect(listIssues).toHaveBeenCalledWith({ label: ["frontend", "docs"], project: "CORE" })
     );
-    expect(screen.getByText("Guidance")).toBeTruthy();
+    // The board draws the labelled list once that request has answered, not when it is made.
+    expect(await screen.findByText("Guidance")).toBeTruthy();
     expect(screen.queryByText("Navigation")).not.toBeInTheDocument();
     expect(screen.queryByText("Endpoint")).not.toBeInTheDocument();
   } finally {

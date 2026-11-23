@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 
 import { jump } from "../../__tests__/fake-clock";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
+import { expectSameElements } from "../../__tests__/same-elements";
 import { useDwell } from "./useDwell";
 
 afterEach(() => {
@@ -43,7 +44,7 @@ test("an element three-quarters on screen for a second dwells, once", () => {
     });
     // onDwell runs from a resolved promise, after the timer fires.
     return Promise.resolve().then(() => {
-      expect(dwelled).toEqual([element]);
+      expectSameElements(dwelled, [element]);
     });
   } finally {
     view.unmount();
@@ -112,7 +113,7 @@ test("an element taller than the screen dwells once it fills three-quarters of t
       jest.advanceTimersByTime(1_000);
     });
     await Promise.resolve();
-    expect(dwelled).toEqual([element]);
+    expectSameElements(dwelled, [element]);
   } finally {
     view.unmount();
     screen.restore();
@@ -143,7 +144,7 @@ test("an element taller than its own scroller dwells once it fills that scroller
       jest.advanceTimersByTime(1_000);
     });
     await Promise.resolve();
-    expect(dwelled).toEqual([element]);
+    expectSameElements(dwelled, [element]);
   } finally {
     view.unmount();
     screen.restore();
@@ -263,14 +264,14 @@ test("every watch on the page shares one observer, and one ending leaves the res
   try {
     const first = view.getByTestId("first");
     expect(built).toBe(1);
-    expect(screen.observed()).toEqual([first, view.getByTestId("second")]);
+    expectSameElements(screen.observed(), [first, view.getByTestId("second")]);
     view.rerender(<Pair onDwell={onDwell} showSecond={false} />);
-    expect(screen.observed()).toEqual([first]);
+    expectSameElements(screen.observed(), [first]);
     await dwellOn(screen, first);
     expect([dwelled, built]).toEqual([["first"], 1]);
   } finally {
     view.unmount();
     screen.restore();
   }
-  expect(screen.observed()).toEqual([]);
+  expect(screen.observed().length).toBe(0);
 });

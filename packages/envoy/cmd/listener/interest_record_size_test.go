@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // wideTopics is a registration's topics of the shape a session with many issues sends: one
@@ -94,7 +95,7 @@ func requireWideRegistrationRenews(t *testing.T, sessionID string, tokenBytes in
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("%s was answered %d, want 200", heartbeat, recorder.Code)
 		}
-		var answer subscribeResponse
+		var answer listenerwire.SubscribeResponse
 		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 			t.Fatalf("decode the answer to %s: %v", heartbeat, err)
 		}
@@ -157,7 +158,7 @@ func TestARegistrationTheBusRefusesForItsSizeIsAnsweredTooLarge(t *testing.T) {
 	if retry := recorder.Header().Get("Retry-After"); retry != "" {
 		t.Fatalf("the 413 carries Retry-After %q, want none: the same write is refused at every retry", retry)
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal: %v", err)
 	}

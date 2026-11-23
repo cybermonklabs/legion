@@ -61,11 +61,21 @@ func (f runFact) apply(pr record.PullRequest) record.PullRequest {
 }
 
 // stored is pr as the store reads it back (record.PutPullRequest, then scanPullRequest): its
-// failing and cancelled checks and its pushes as lists, never nil; its check runs as they were,
-// nil apart from empty; its moves and its head run through JSON.
+// failing and cancelled checks and its pushes as lists, never nil; its commit statuses as a list
+// through JSON, as the store keeps them, so each status's created_at reads back as the store
+// gives it; its check runs as they were, nil apart from empty; its moves and its head run through
+// JSON.
 func stored(t *testing.T, pr record.PullRequest) record.PullRequest {
 	t.Helper()
 	pr.Failing, pr.Cancelled = append([]string{}, pr.Failing...), append([]string{}, pr.Cancelled...)
+	statuses, err := json.Marshal(append([]record.CommitStatus{}, pr.Statuses...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr.Statuses = []record.CommitStatus{}
+	if err := json.Unmarshal(statuses, &pr.Statuses); err != nil {
+		t.Fatal(err)
+	}
 	pr.Pushes = append([]record.ClassifiedPush{}, pr.Pushes...)
 	moves, err := json.Marshal(append([]record.Move{}, pr.Moves...))
 	if err != nil {

@@ -1,0 +1,21 @@
+# proxy-host-from-header-field: the Host the decision reads is the request's host header field
+# rather than r.Host. An HTTP/2 stream carries its authority in :authority, which net/http puts in
+# r.Host, and keeps a host field beside it in r.Header, so a stream naming another authority with
+# a host field naming the bound host is carried.
+# must fail: TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/bound.go
++++ b/packages/envoy/internal/cipher/proxy/bound.go
+@@ -268,7 +268,10 @@
+ 		// client that wrote "API.example.com" in one of the three is not a mismatch. The fold
+ 		// is fold.ASCII, ASCII-only for the reason the proxyrules package gives.
+ 		SNI:        fold.ASCII(sniOf(r)),
+-		HostHeader: fold.ASCII(hostHeaderOf(r.Host)),
++		// MUTANT: the Host the decision reads is the request's host header field, which
++		// net/http moves out of an HTTP/1.1 request and an HTTP/2 stream keeps beside its
++		// :authority, rather than r.Host.
++		HostHeader: fold.ASCII(hostHeaderOf(r.Header.Get("Host"))),
+ 		Method:     r.Method,
+ 		Path:       r.URL.Path,
+ 		Headers:    headersOf(r.Header),

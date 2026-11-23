@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
@@ -164,7 +165,7 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	// there, since the clone is what this workspace is added to.
 	result, err := runCommand(ctx, run, add, nil, cloneDir)
 	if err != nil {
-		return fmt.Errorf("run %s: %w", strings.Join(add, " "), err)
+		return runFailure(add, result, err)
 	}
 	forgotten := result.ExitCode != 0
 	if forgotten {
@@ -345,7 +346,7 @@ func readBookmark(ctx context.Context, run Runner, workspace Workspace, name str
 	}
 	result, err := runCommand(ctx, run, list, nil, workspace.Clone)
 	if err != nil {
-		return bookmarkRows{}, fmt.Errorf("run %s: %w", strings.Join(list, " "), err)
+		return bookmarkRows{}, runFailure(list, result, err)
 	}
 	if result.ExitCode != 0 {
 		return bookmarkRows{}, fmt.Errorf("Bookmark %s could not be resolved; workspace %s was not created: %w", name, workspace.Dir, commandFailure(list, result))
@@ -433,8 +434,8 @@ func ownCommitsRevset(workspaceName string) string {
 
 // removingSuffix marks a workspace directory Remove has renamed aside, about to delete: a sibling
 // name in the same parent directory, so the rename is one atomic same-filesystem operation
-// regardless of how large the directory is, unlike the `os.RemoveAll` that follows it, which a
-// kill can interrupt partway through a large tree.
+// regardless of how large the directory is, unlike the removal that follows it
+// (rolefile.RemoveTree), which a kill can interrupt partway through a large tree.
 const removingSuffix = ".removing"
 
 // removingPath is where Remove renames workspace.Dir to before deleting it.
@@ -467,7 +468,7 @@ func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Loc
 	// never refuses with "already exists", and before the store lock, since it holds nothing of the
 	// clone's.
 	aside := removingPath(workspace.Dir)
-	if err := os.RemoveAll(aside); err != nil {
+	if err := rolefile.RemoveTree(aside); err != nil {
 		return fmt.Errorf("clear a stale removal-in-progress directory: %w", err)
 	}
 	held := &storeLock{locker: store}
@@ -522,7 +523,7 @@ func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Loc
 		}
 	}
 	held.unlock()
-	if err := os.RemoveAll(aside); err != nil {
+	if err := rolefile.RemoveTree(aside); err != nil {
 		return fmt.Errorf("remove workspace directory: %w", err)
 	}
 	return nil

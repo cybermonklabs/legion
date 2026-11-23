@@ -70,15 +70,16 @@ fi
 work=$(mktemp -d "/tmp/legion-e2e2.$$.XXXXXXXX")
 # Every line of the run also goes to $work/transcript.log (lib/transcript.sh), so the driver and its
 # cleanup, which stops the panes and removes both containers, never fail on a write whoever is
-# reading. The transcript is in the work directory, kept with it on a failure, and cleanup SIGKILLs
-# every process whose command line names that directory (run_processes), so the tee gets the
-# transcript as fd 8, never by path. The tee keeps the copy it forked with, and the driver closes
-# its own so nothing it starts inherits it.
-exec 8>>"$work/transcript.log"
+# reading. The transcript is in the work directory, kept with it on a failure.
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
-transcript_to /dev/fd/8
-exec 8>&-
+transcript_to "$work/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweeps in cleanup end what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that
+# execs nothing carries none and is stopped by its pid (run_marks' comment there). The
+# transcript's tee, started above, carries none, so it outlives the sweeps and writes the run's
+# last line.
+export LEGION_E2E_RUN=$work
 ok=
 daemon_pid=
 deadline_pid=
@@ -104,6 +105,8 @@ TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (l
 timeout_hook=
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/process-tree.sh
+. "$root/scripts/e2e/lib/process-tree.sh"
 
 # ---- reporting and waiting ------------------------------------------------------------------------
 
@@ -133,33 +136,6 @@ until_true() {
 
 # ---- cleanup: never fails, leaves nothing of the run behind ---------------------------------------
 
-# stop_pid PID: SIGTERM, a bounded wait, then SIGKILL. Never fails.
-stop_pid() {
-  local pid=$1 i
-  [ -n "$pid" ] || return 0
-  kill -TERM "$pid" 2>/dev/null || return 0
-  for i in $(seq 1 50); do
-    kill -0 "$pid" 2>/dev/null || return 0
-    sleep 0.2
-  done
-  kill -KILL "$pid" 2>/dev/null || true
-  return 0
-}
-# run_processes: every process of this run still alive — any whose command line names the work
-# directory (the daemons, the listener, each pane's shell and shim) or whose working directory is
-# under it (each OMP, which runs in its claim's workspace).
-run_processes() {
-  local p cwd
-  for p in /proc/[0-9]*; do
-    cwd=$(readlink "$p/cwd" 2>/dev/null) || continue
-    case "$cwd/" in "$work"/*)
-      echo "${p#/proc/}"
-      continue
-      ;;
-    esac
-    if grep -qsF "$work" "$p/cmdline" 2>/dev/null; then echo "${p#/proc/}"; fi
-  done
-}
 cleanup() {
   local status=$? p
   # A second Ctrl-C, TERM or HUP must not end the teardown part way: its own signal traps would
@@ -180,15 +156,14 @@ cleanup() {
   # profile's link to that database goes (the link alone) once they are gone, so a kept workspace
   # holds no live path to the login (lib/box-login.sh). The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    # shellcheck disable=SC2046 # one pid per word
-    stop_box_login_processes $(run_processes)
+    stop_marked_processes "$work" "$box_login_stop_grace" || true
     unlink_box_login_db "$profile_agent"
   fi
   for p in "$ptoken" "$deadline_ptoken"; do
     TMUX_TMPDIR=$work/tmux tmux -L "legion-$p" kill-server >/dev/null 2>&1 || true
   done
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work" || true
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1 || true
   rm -rf "$work/model-gateway-cache" || true
   if [ -n "${ok:-}" ]; then
@@ -249,25 +224,22 @@ user_turns() {
   jq -R --arg m "$2" 'fromjson? | select(.type == "message" and .message.role == "user")
     | [.message.content[]? | .text? // empty] | join(" ") | select(contains($m))' "$1" | jq -s length
 }
-argv0() { tr '\0' '\n' <"/proc/$1/cmdline" | head -1; }
-# first_child PID: the process's first child. A Go process (the shim) starts its children from
-# whichever thread runs the goroutine, so every thread's children list is read, not the main one's.
-first_child() { cat /proc/"$1"/task/*/children 2>/dev/null | tr ' ' '\n' | grep -m1 .; }
-# omp_of PANE_PID: the OMP process, found by walking first children from the pane's process to the
-# one whose argv[0] is omp.
-omp_of() {
-  local p=$1 i
-  for i in 1 2 3 4 5 6; do
-    [ "$(basename "$(argv0 "$p")")" = omp ] && {
-      echo "$p"
-      return 0
-    }
-    p=$(first_child "$p")
-    [ -n "$p" ] || return 1
-  done
-  return 1
+# omp_of PANE_PID: the pane's Oh My Pi, the one process below the pane's own process, the pid the
+# claim's locator recorded, that runs the configured pinned binary $expected_omp by the kernel's
+# record (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is read: a
+# wrapper or an argv[0] of another name cannot stand in for it or hide it.
+omp_of() { launched "$1" "$expected_omp"; }
+# argv0 PID prints the program PID was called as, read whole (process_args, lib/process-tree.sh), for
+# a failure line; it prints nothing for a process that has gone.
+argv0() {
+  local -a args=()
+  process_args "$1" args || return 0
+  printf '%s\n' "${args[0]}"
 }
-env_of() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
+# incarnation_of CLAIM_JSON prints the pane pid of the claim's locator incarnation `<pid>:<start
+# ticks>`, and only while that pid is still the process that started then (incarnation_pid,
+# lib/process-tree.sh), never a pid the kernel has since given to another.
+incarnation_of() { incarnation_pid "$(jq -r '.locator.incarnation // empty' <<<"$1")"; }
 # start_daemon: the main daemon, in the background, its log appended to daemon.log, on a copy of the
 # socket its keeper holds (below). HOME and OMP_PROFILE select the run's isolated profile for the
 # plugin gate and — through the pane allow-list — every pane. Each poll has a timeout: until the
@@ -277,6 +249,7 @@ start_daemon() {
   python3 "$held_port" exec --from "$work/daemon.sock" --fd-env LEGION_LISTEN_FD -- \
     env -u LEGION_OMP_PATH HOME="$omp_home" OMP_PROFILE="$profile" PATH="$work/realbin:$PATH" "$work/legion" start --config "$work/legion.yaml" >>"$daemon_log" 2>&1 &
   daemon_pid=$!
+  record_start "$daemon_pid" || true
   until_true 180 "the daemon to answer /healthz" curl -fs --max-time 5 "http://127.0.0.1:$port/healthz"
 }
 # stop_daemon PID HOW: bounded, and the exit status judged — daemon.Run returns 0 on a cancelled
@@ -385,8 +358,10 @@ port_of() {
 }
 python3 "$held_port" keep --port-file "$work/daemon.port" --socket "$work/daemon.sock" >>"$work/keepers.log" 2>&1 &
 daemon_keeper_pid=$!
+record_start "$daemon_keeper_pid" || true
 python3 "$held_port" keep --port-file "$work/deadline.port" --socket "$work/deadline.sock" >>"$work/keepers.log" 2>&1 &
 deadline_keeper_pid=$!
+record_start "$deadline_keeper_pid" || true
 port='' deadline_port='' envoy_port=''
 port_of "the daemon's keeper" "$work/daemon.port" "$daemon_keeper_pid" port "$work/keepers.log"
 port_of "the second daemon's keeper" "$work/deadline.port" "$deadline_keeper_pid" deadline_port "$work/keepers.log"
@@ -427,6 +402,7 @@ ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_M
   python3 "$held_port" exec --port-file "$work/listener.port" --fd-env ENVOY_LISTEN_FD --env 'PORT={port}' -- \
   "$work/envoy-listener" >"$work/listener.log" 2>&1 &
 listener_pid=$!
+record_start "$listener_pid" || true
 port_of "the Envoy listener" "$work/listener.port" "$listener_pid" envoy_port "$work/listener.log"
 until_true 60 "the Envoy listener to answer /v1/sessions" \
   curl -fsS -H "@$work/envoy-auth-header" "http://127.0.0.1:$envoy_port/v1/sessions"
@@ -623,20 +599,23 @@ begin retried-frame-starts-no-second-turn
 # shim makes every send go unanswered: each times out (worker_rpc_timeout_seconds), the delivery
 # waits, and the next sweep sends the same frame again. Resumed, the shim hands OMP the first
 # prompt and answers every repeat from its dedupe record.
-pane2_pid=$(jq -r '.locator.incarnation | split(":")[0]' <<<"$c2_json")
-shim2=$(first_child "$pane2_pid")
-# The shim is the process whose argv[1] is worker-shim, as every reader of a Legion process tree
-# takes it, never one naming it in a later argv word.
-[ "$(tr '\0' '\n' <"/proc/$shim2/cmdline" | sed -n 2p)" = worker-shim ] ||
-  fail "the first child of pane process $pane2_pid is not the shim"
-kill -STOP "$shim2"
+pane2_pid=$(incarnation_of "$c2_json") || fail "claim $c2's pane process is not the one its locator names: $(jq -c .locator <<<"$c2_json")"
+# The shim is the pane's process's one child (child_of, lib/process-tree.sh), and its argv[1] is
+# worker-shim, as every reader of a Legion process tree takes it, never one naming it in a later
+# argv word. It is stopped only while it is that process (freeze_if, lib/process-tree.sh).
+shim2=$(child_of "$pane2_pid") || fail "pane process $pane2_pid: $shim2"
+shim2_start=$(proc_start "$shim2")
+shim2_args=()
+process_args "$shim2" shim2_args && [ "${shim2_args[1]-}" = worker-shim ] ||
+  fail "the child of pane process $pane2_pid is not the shim"
+freeze_if "$shim2" "$shim2_start" STOP || fail "shim $shim2 is no longer the process that started at $shim2_start"
 marker2="S2E-RETRY-$RANDOM$RANDOM"
 delivery2=$(claims deliver --json --claim "$c2" --task "Reply with the single word pong. ($marker2)" | jq -r .pending.id)
 lost_msg="supervise: the prompt was lost to the transport; the delivery waits"
 until_true 90 "the daemon to send delivery $delivery2 twice into the stopped shim" \
   sh -c "[ \"\$(jq -R --arg m '$lost_msg' --arg d '$delivery2' 'fromjson? | select(.msg == \$m and .delivery == \$d)' '$daemon_log' | jq -s length)\" -ge 2 ]"
 sends=$(log_count "$lost_msg" "$delivery2")
-kill -CONT "$shim2"
+freeze_if "$shim2" "$shim2_start" CONT || fail "shim $shim2 is no longer the process that started at $shim2_start"
 note "shim $shim2 stopped; delivery $delivery2 sent $sends times, every send unanswered; shim resumed"
 until_true 180 "claim $c2's retried delivery to run and end" claim_is "$c2" '.state == "idle" and .pending == null'
 turns=$(user_turns "$session_file2" "$marker2")
@@ -658,10 +637,14 @@ until_true 240 "claim $c1 to be ready again after its pane was killed" \
 after=$(claim_json "$c1")
 [ "$(jq -r .session <<<"$after")" = "$session1" ] || fail "the relaunch registered another session: $(jq -r .session <<<"$after")"
 [ "$(jq -r .locator.tmux.pane <<<"$after")" != "$old_pane" ] || fail "the claim still names the killed pane"
-omp1=$(omp_of "$(jq -r '.locator.incarnation | split(":")[0]' <<<"$after")") || fail "no omp process under the new pane"
+pane_after=$(incarnation_of "$after") || fail "claim $c1's new pane process is not the one its locator names: $(jq -c .locator <<<"$after")"
+omp1=$(omp_of "$pane_after") || fail "no omp process under the new pane: $omp1"
 resume_file=$(jq -r .sessionFile <<<"$after")
-tr '\0' '\n' <"/proc/$omp1/cmdline" | grep -qxF -- "--resume=$resume_file" ||
-  fail "the relaunched omp ($omp1) was not started with --resume=$resume_file: $(tr '\0' ' ' <"/proc/$omp1/cmdline" | cut -c1-200)"
+omp_args=()
+{ mapfile -d '' -t omp_args <"/proc/$omp1/cmdline"; } 2>/dev/null || fail "the relaunched omp's ($omp1) command line could not be read"
+resumed=
+for arg in ${omp_args[@]+"${omp_args[@]}"}; do [ "$arg" != "--resume=$resume_file" ] || resumed=1; done
+[ -n "$resumed" ] || fail "the relaunched omp ($omp1) was not started with --resume=$resume_file: $(printf '%s ' "${omp_args[@]}" | cut -c1-200)"
 [ "$(envoy_role "$c1" | jq -r .holder)" = "$session1" ] || fail "the resumed session does not hold its Envoy role"
 note "killed $old_pane (generation $old_gen) → pane $(jq -r .locator.tmux.pane <<<"$after"), generation $(jq -r .generation <<<"$after"), same session $session1"
 note "omp $omp1 started with --resume=$resume_file; the Envoy role still held by $session1"
@@ -752,6 +735,7 @@ python3 "$held_port" exec --from "$work/deadline.sock" --fd-env LEGION_LISTEN_FD
   env LEGION_OMP_PATH="$work/stub/omp" HOME="$omp_home" OMP_PROFILE="$profile" PATH="$work/realbin:$PATH" \
   "$work/legion" start --config "$work/deadline.yaml" >"$work/deadline.log" 2>&1 &
 deadline_pid=$!
+record_start "$deadline_pid" || true
 until_true 120 "the second daemon to answer /healthz" curl -fs --max-time 5 "http://127.0.0.1:$deadline_port/healthz"
 dclaims() {
   local sub=$1
@@ -763,14 +747,14 @@ cd3=$(dclaims spawn --json --tree S2-9 --issue S2-9 --role architect --prompt-fi
 until_true 30 "the unregistered claim's shim to connect" sh -c \
   "'$work/legion' claims list --json --config '$work/deadline.yaml' --operator-token-file '$work/operator-token' | jq -e '.claims[0].state == \"shim_connected\"'"
 first=$(dclaims list --json | jq -c '.claims[0]')
-first_pid=$(jq -r '.locator.incarnation | split(":")[0]' <<<"$first")
-kill -0 "$first_pid" || fail "the pane's process $first_pid is not alive before the deadline"
+first_inc=$(jq -r '.locator.incarnation // empty' <<<"$first")
+first_pid=$(incarnation_pid "$first_inc") || fail "the pane's process of incarnation $first_inc is not alive before the deadline"
 retired_msg="supervise: the agent never registered; retired its process"
 until_true 60 "the second daemon to retire the unregistered agent" grep -qF "\"msg\":\"$retired_msg\"" "$work/deadline.log"
 retired_after=$(($(date +%s) - spawned_at))
 counted=$(dclaims list --json | jq -c '.claims[0] | {state, generation, budgets}')
 jq -e '.budgets.launchFailures == 1' <<<"$counted" >/dev/null || fail "the retirement counted no launch failure: $counted"
-kill -0 "$first_pid" 2>/dev/null && fail "the retired incarnation's process $first_pid is still alive"
+! incarnation_pid "$first_inc" >/dev/null || fail "the retired incarnation's process $first_pid is still alive"
 note "claim $cd3: shim_connected with process $first_pid alive, never registered; retired ${retired_after}s after the spawn (deadline 10s); $counted"
 legion stop --config "$work/deadline.yaml" >/dev/null
 stop_daemon "$deadline_pid" "legion stop"
@@ -816,49 +800,63 @@ pass
 
 begin omp-child-environment
 now1=$(claim_json "$c1")
-pane1_pid=$(jq -r '.locator.incarnation | split(":")[0]' <<<"$now1")
-mapfile -t shell_argv < <(tr '\0' '\n' <"/proc/$pane1_pid/cmdline")
+pane1_pid=$(incarnation_of "$now1") || fail "claim $c1's pane process is not the one its locator names: $(jq -c .locator <<<"$now1")"
+shell_argv=()
+process_args "$pane1_pid" shell_argv || fail "the command line of pane process $pane1_pid could not be read"
 [ "${shell_argv[0]}" = /bin/sh ] && [ "${shell_argv[1]}" = -c ] ||
   fail "the pane's process runs '${shell_argv[0]} ${shell_argv[1]}', not sh -c"
-omp1=$(omp_of "$pane1_pid") || fail "no omp process under pane process $pane1_pid"
-chain=$pane1_pid
-chain_pids=$pane1_pid
-p=$pane1_pid
-while [ "$p" != "$omp1" ]; do
-  p=$(first_child "$p")
-  chain="$chain → $p ($(basename "$(argv0 "$p")"))"
-  chain_pids="$chain_pids $p"
+omp1=$(omp_of "$pane1_pid") || fail "no omp process under pane process $pane1_pid: $omp1"
+# The line from the pane's process down to its Oh My Pi, read upwards through each process's
+# parent, and each process's command line read whole, with no pipe between the read and the check.
+chain_pids=$omp1
+p=$omp1
+while [ "$p" != "$pane1_pid" ]; do
+  p=$(proc_parent "$p") && [ -n "$p" ] && [ "$p" -gt 1 ] || fail "omp $omp1 is not below pane process $pane1_pid"
+  chain_pids="$p $chain_pids"
 done
+chain=
 for p in $chain_pids; do
-  tr '\0' ' ' <"/proc/$p/cmdline" | grep -qF "$HOME/.dotfiles/shims/omp" &&
-    fail "pane process chain runs the dotfiles OMP wrapper: $(tr '\0' ' ' <"/proc/$p/cmdline")"
+  args=()
+  { mapfile -d '' -t args <"/proc/$p/cmdline"; } 2>/dev/null || fail "the command line of process $p, on the line to omp $omp1, could not be read"
+  for arg in ${args[@]+"${args[@]}"}; do
+    case $arg in *"$HOME/.dotfiles/shims/omp"*) fail "pane process chain runs the dotfiles OMP wrapper: ${args[*]}" ;; esac
+  done
+  chain="${chain:+$chain → }$p ($(basename -- "${args[0]-}"))"
 done
-shim1=$(first_child "$pane1_pid")
+shim1=$(child_of "$pane1_pid") || fail "pane process $pane1_pid: $shim1"
 # LEGION-206 P1 holds with the gateway route: the pane's shell and its OMP keep the daemon's own XDG
 # directories and carry no session bus address (only the key command gets the operator's).
 for p in "$pane1_pid" "$omp1"; do
   for name in XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME; do
-    dir=$(env_of "$p" "$name")
+    dir=$(env_of "$p" "$name") || fail "the environment of process $p could not be read"
     case "$dir" in "$state"/home/*) ;; *) fail "process $p ($(basename "$(argv0 "$p")"))'s $name is '$dir', not under $state/home" ;; esac
   done
-  ! grep -qz '^DBUS_SESSION_BUS_ADDRESS=' "/proc/$p/environ" ||
-    fail "process $p ($(basename "$(argv0 "$p")")) carries DBUS_SESSION_BUS_ADDRESS"
+  st=0
+  env_has "$p" DBUS_SESSION_BUS_ADDRESS || st=$?
+  [ "$st" = 1 ] || fail "process $p ($(basename "$(argv0 "$p")")) carries DBUS_SESSION_BUS_ADDRESS, or its environment could not be read (env_has status $st)"
 done
-xdg=$(env_of "$omp1" XDG_CONFIG_HOME)
-! grep -qz '^ANTHROPIC_API_KEY=' "/proc/$omp1/environ" || fail "omp's environment carries ANTHROPIC_API_KEY"
+xdg=$(env_of "$omp1" XDG_CONFIG_HOME) || fail "omp $omp1's environment could not be read"
+st=0
+env_has "$omp1" ANTHROPIC_API_KEY || st=$?
+[ "$st" = 1 ] || fail "omp's environment carries ANTHROPIC_API_KEY, or could not be read (env_has status $st)"
 actual_omp=$(readlink -f "/proc/$omp1/exe")
 [ "$actual_omp" = "$expected_omp" ] || fail "omp $omp1 executes $actual_omp, not the configured pinned binary $expected_omp"
-pane_path=$(env_of "$shim1" PATH)
-omp_path=$(env_of "$omp1" PATH)
+pane_path=$(env_of "$shim1" PATH) || fail "shim $shim1's environment could not be read"
+omp_path=$(env_of "$omp1" PATH) || fail "omp $omp1's environment could not be read"
 [ "${omp_path%%:*}" = "${pane_path%%:*}" ] ||
   fail "OMP PATH begins ${omp_path%%:*}, not the pane PATH head ${pane_path%%:*}"
-key_length=$(tr '\0' '\n' <"/proc/$omp1/environ" | awk 'index($0, "GEMINI_API_KEY=") == 1 {print length($0) - 15}')
-[ -n "$key_length" ] && [ "$key_length" -gt 0 ] || fail "omp's environment carries no GEMINI_API_KEY"
-[ -z "$(env_of "$shim1" GEMINI_API_KEY)" ] || fail "the shim's own environment carries the provider key"
+# The key's length, and the shim's and the three names' lengths, are read without any value standing
+# in a variable of this shell (env_length, lib/process-tree.sh), so a run under `bash -x` writes none
+# of them to the transcript.
+key_length=$(env_length "$omp1" GEMINI_API_KEY) || fail "omp $omp1's environment could not be read"
+[ "$key_length" -gt 0 ] || fail "omp's environment carries no GEMINI_API_KEY"
+shim_key_length=$(env_length "$shim1" GEMINI_API_KEY) || fail "shim $shim1's environment could not be read"
+[ "$shim_key_length" = 0 ] || fail "the shim's own environment carries the provider key"
 for name in GEMINI_API_KEY_TESTS SOPS_AGE_KEY_FILE SECRETSD_CONFIG; do
-  [ -z "$(env_of "$omp1" "$name")" ] || fail "omp's environment carries $name"
+  length=$(env_length "$omp1" "$name") || fail "omp $omp1's environment could not be read"
+  [ "$length" = 0 ] || fail "omp's environment carries $name"
 done
-note "pane process $pane1_pid is /bin/sh -c; first children: $chain"
+note "pane process $pane1_pid is /bin/sh -c; its line to omp: $chain"
 note "omp $omp1 executes the configured pinned binary $actual_omp, no process in its chain runs the dotfiles wrapper, and its PATH head ${omp_path%%:*} matches the pane's; XDG_CONFIG_HOME=$xdg; GEMINI_API_KEY of $key_length bytes (from the daemon-held file), absent from the shim; no ANTHROPIC_API_KEY, GEMINI_API_KEY_TESTS, SOPS_AGE_KEY_FILE or SECRETSD_CONFIG"
 note "the pane's shell $pane1_pid and omp $omp1: all four XDG base directories under $state/home, no DBUS_SESSION_BUS_ADDRESS"
 pass

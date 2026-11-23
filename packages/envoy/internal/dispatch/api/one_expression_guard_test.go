@@ -1,6 +1,6 @@
 //go:build !race
 
-// An eighth static check beside the seven source guards, under the tag they carry and for the same
+// A ninth static check beside the eight source guards, under the tag they carry and for the same
 // saving: it reads text - the api package's parsed declarations, and the bytes of every non-test
 // .go file of the module - and opens no database and starts no goroutine, so the race detector
 // has nothing here to watch. Behind the tag the race build neither compiles it nor walks
@@ -63,6 +63,7 @@ func namesTheExpression(node ast.Node) bool {
 // joins it reads over - is spelled once in the module. The precedent for reading the source
 // rather than the behaviour is api/lock_level_test.go.
 func TestOneExpressionDecidesWhoWaitsInOneSpelling(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	declarations := map[string]ast.Node{}
 	for _, source := range sources {

@@ -130,7 +130,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 		return err
 	}
 	if windows.exitCode != 0 && !targetAbsent(windows) {
-		return fmt.Errorf("reconcile orphans: list-windows exited %d%s", windows.exitCode, failure(windows))
+		return fmt.Errorf("reconcile orphans: list-windows%s", exited(windows))
 	}
 	if windows.exitCode == 0 {
 		for _, window := range readUnknownWindows(windows.stdout, r.socket, knownWindows) {
@@ -149,7 +149,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 		return err
 	}
 	if panes.exitCode != 0 && !targetAbsent(panes) {
-		return errors.Join(append(failures, fmt.Errorf("reconcile orphans: list-panes exited %d%s", panes.exitCode, failure(panes)))...)
+		return errors.Join(append(failures, fmt.Errorf("reconcile orphans: list-panes%s", exited(panes)))...)
 	}
 	if panes.exitCode == 0 {
 		for _, pane := range readUnknownPanes(panes.stdout, r.socket, knownPanes) {
@@ -171,8 +171,8 @@ func (r *Runtime) kill(ctx context.Context, argv []string, target string) error 
 	if err != nil {
 		return err
 	}
-	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) && !strings.Contains(res.stderr, "can't find window") {
-		return fmt.Errorf("reconcile orphans: %s %s exited %d%s", verb(argv), target, res.exitCode, failure(res))
+	if res.exitCode != 0 && !paneGoneStderr.MatchString(res.stderr) && !windowGoneStderr.MatchString(res.stderr) {
+		return fmt.Errorf("reconcile orphans: %s %s%s", verb(argv), target, exited(res))
 	}
 	return nil
 }

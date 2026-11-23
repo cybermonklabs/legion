@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // Bundle is one role's gh directories: Default, the lowercased owner whose directory GH_CONFIG_DIR
@@ -132,9 +133,11 @@ func ParsePairs(data []byte) ([]ghrepo.Rename, error) {
 // rename moved, since the bundle the daemon writes is all either of them reads. A root with no
 // such file holds no pair — a pod launched before this file existed projects none, and its drift
 // check replaces it — while a file that cannot be read or parsed is an error, which the caller
-// answers nothing on.
+// answers nothing on. It is read as ReadRegular reads, following the link a pod's Secret volume
+// makes of a file at its top (readRegularFollowing), so a named pipe a pane put there stalls no
+// call.
 func ReadPairs(root string) ([]ghrepo.Rename, error) {
-	data, err := os.ReadFile(filepath.Join(root, PairsFile))
+	data, err := readRegularFollowing(filepath.Join(root, PairsFile))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
@@ -240,6 +243,15 @@ func (b Bundle) Validate() error {
 // files and those pairs: the pane's own user can write it, so a reader of the bundle's default or
 // write owner reads the daemon's own record instead. It returns the directories whose hosts.yml
 // changed, sorted, and writes nothing for a bundle Validate refuses.
+//
+// Because the pane's own user can write root, the cleaning follows no link and waits on no fifo
+// (rolefile.RemoveTree): a link at the root, one at an owner's name among them, is unlinked and
+// what it names is never opened, and under an owner's directory only subdirectories go, so a link
+// there is left as it is. An entry the cleaning cannot remove, such as a link under a directory the
+// pane made 0555, is left as it is and answered as an error naming it. root may sit under a state
+// directory reached through a link, or be a link itself, so it is resolved once
+// (filepath.EvalSymlinks) before the cleaning reads it, and RemoveTree, which refuses a parent
+// that is a link, takes the directory that link names.
 func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 	if err := bundle.Validate(); err != nil {
 		return nil, err
@@ -267,7 +279,11 @@ func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 	if _, err := replaceFile(filepath.Join(root, PairsFile), RenderPairs(bundle.Pairs)); err != nil {
 		return nil, fmt.Errorf("write the gh bundle's %s: %w", PairsFile, err)
 	}
-	entries, err := os.ReadDir(root)
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the gh bundle's root %s: %w", root, err)
+	}
+	entries, err := os.ReadDir(resolved)
 	if err != nil {
 		return nil, err
 	}
@@ -276,14 +292,14 @@ func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 			continue
 		}
 		if _, owned := bundle.Dirs[entry.Name()]; !owned || !entry.IsDir() {
-			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+			if err := rolefile.RemoveTree(filepath.Join(resolved, entry.Name())); err != nil {
 				return nil, fmt.Errorf("remove %s from the gh bundle: %w", entry.Name(), err)
 			}
 			continue
 		}
 		// Nothing under an owner's directory but its own two files is the bundle's: a
 		// subdirectory there was cut by a run of before INFRA-2543 for one repository, and goes.
-		ownerDir := Dir(root, entry.Name())
+		ownerDir := Dir(resolved, entry.Name())
 		under, err := os.ReadDir(ownerDir)
 		if err != nil {
 			return nil, err
@@ -292,10 +308,42 @@ func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 			if !sub.IsDir() {
 				continue
 			}
-			if err := os.RemoveAll(filepath.Join(ownerDir, sub.Name())); err != nil {
+			if err := rolefile.RemoveTree(filepath.Join(ownerDir, sub.Name())); err != nil {
 				return nil, fmt.Errorf("remove %s/%s from the gh bundle: %w", entry.Name(), sub.Name(), err)
 			}
 		}
 	}
 	return changed, nil
+}
+
+// EmptyBundle makes root an empty 0700 directory, removing whatever an earlier run wrote there:
+// the gh directory of a controller whose gh acts as nobody (a project with no GitHub owner to
+// mint for, or a daemon with no GitHub App), which GH_CONFIG_DIR still names so that no gh
+// configuration elsewhere is read in its place, emptied so that no token an earlier run wrote
+// outlives this one. The removal follows no link and waits on no fifo (rolefile.RemoveTree), as
+// WriteBundle's cleaning does, since the controller's own user can write root; and root, which
+// may sit under a state directory reached through a link or be a link itself, is resolved once
+// (filepath.EvalSymlinks) first, so RemoveTree, which refuses a parent that is a link, takes the
+// directory that link names. Each error names the path it failed on.
+func EmptyBundle(root string) error {
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve the gh bundle's root %s: %w", root, err)
+	}
+	entries, err := os.ReadDir(resolved)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := rolefile.RemoveTree(filepath.Join(resolved, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }

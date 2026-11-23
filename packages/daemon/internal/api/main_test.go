@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"os"
 	"slices"
 	"testing"
@@ -31,10 +32,30 @@ var guardedAtStart []string
 // It then drops the migrated template testStore clones its databases from (testpg.Main), which
 // wraps the run: the guard decides the environment the tests and the template's migration both
 // run in.
+//
+// It ends with the two censuses of the pairs this run made: the answer id each door wrote, held
+// to the answer table (routeAnswerProblems), and the type each door decoded a body into, held to
+// the table of plugin request types (requestDecodedProblems). They are read here and nowhere
+// else because no one case drives every door: the pairs are made by the tests of the routes
+// themselves.
 func TestMain(m *testing.M) {
 	fixtureenv.MustGuard(guardKeep...)
 	guardedAtStart = fixtureenv.Kept()
-	os.Exit(testpg.Main("legion_api_test", m.Run))
+	os.Exit(testpg.Main("legion_api_test", func() int { return withRouteCensus(m.Run()) }))
+}
+
+// withRouteCensus is code, or 1 where a write of this run made a pair the answer table does not
+// name or a decode made a pair the request table does not name. A run of one test holds that
+// test's own pairs to the tables and no others, which reports no pair the run never made.
+func withRouteCensus(code int) int {
+	problems := append(routeAnswerProblems(), requestDecodedProblems()...)
+	for _, problem := range problems {
+		fmt.Fprintln(os.Stderr, "FAIL: "+problem)
+	}
+	if len(problems) > 0 {
+		return 1
+	}
+	return code
 }
 
 // TestTheGuardTestMainRanKeptTheGatedProofsInputs holds this package's entry point to the two

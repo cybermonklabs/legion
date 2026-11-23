@@ -4,6 +4,7 @@ package core_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -98,41 +99,24 @@ func (r *calloutRig) render(t *testing.T, callout bool) string {
 	return text
 }
 
-// hubContainer is the part of the container testnats.StartImageConfig returns that a restart uses.
-type hubContainer interface {
-	Stop(ctx context.Context, timeout *time.Duration) error
-	CopyToContainer(ctx context.Context, fileContent []byte, containerFilePath string, fileMode int64) error
-	Start(ctx context.Context) error
-	ConnectionString(ctx context.Context) (string, error)
-}
+// hubArgs is the hub's command line after its configuration: JetStream on.
+var hubArgs = []string{"-js"}
 
-// startHub runs the hub's image on the rig's authorization without its callout, which a client with
-// no credential is refused by at once (StartImageConfig waits for that refusal, as no auth service
-// runs yet). It returns the container and its client URL.
-func (r *calloutRig) startHub(t *testing.T) (hubContainer, string) {
+// startOn runs the hub's image on config, with the rig's auth service, which holds each answer
+// for answerDelay before it gives it, and returns the client URL once the service's user is
+// connected. The container starts on config itself, callout and all, with no restart
+// (testnats.StartImageReady says why).
+func (r *calloutRig) startOn(t *testing.T, config string, answerDelay time.Duration) string {
 	t.Helper()
-	ctr, uri := testnats.StartImageConfig(t, testnats.HubImage, r.render(t, false), []string{"-js"}, r.authorization.NoAuthUser != "")
-	return ctr, uri
-}
-
-// reconfigure stops the container, makes config its whole configuration and starts it again on the
-// same JetStream store, as an operator applies a changed configuration to the hub, and returns its
-// client URL. Every test of the rendered block on the hub's image starts its server this way.
-func (r *calloutRig) reconfigure(t *testing.T, ctr hubContainer, config string) string {
-	t.Helper()
-	ctx := context.Background()
-	stop := 10 * time.Second
-	require.NoError(t, ctr.Stop(ctx, &stop))
-	require.NoError(t, ctr.CopyToContainer(ctx, []byte(config), "/etc/nats/nats-server.conf", 0o644))
-	require.NoError(t, ctr.Start(ctx))
-	uri, err := ctr.ConnectionString(ctx)
-	require.NoError(t, err)
+	_, uri := testnats.StartImageReady(t, testnats.HubImage, config, hubArgs)
+	r.serve(t, uri, answerDelay)
 	return uri
 }
 
 // connectWhenUp connects to server as the nkey user whose seed is seed, with options, retrying for
-// 30 s while a server reconfigure restarted comes up, and closes the connection when the test ends.
-// testnats.ConnectSeed sets NoReconnect, so a connection the server closes stays closed.
+// 30 s while the server comes up behind its published port or a proxy, and closes the connection
+// when the test ends. testnats.ConnectSeed sets NoReconnect, so a connection the server closes
+// stays closed.
 func connectWhenUp(t *testing.T, server, seed string, options ...natsgo.Option) *natsgo.Conn {
 	t.Helper()
 	var conn *natsgo.Conn
@@ -141,42 +125,45 @@ func connectWhenUp(t *testing.T, server, seed string, options ...natsgo.Option) 
 		if conn, err = testnats.ConnectSeed(t, server, seed, options...); err == nil {
 			break
 		}
-		require.True(t, time.Now().Before(deadline), "could not connect to %s, restarted: %v", server, err)
+		require.True(t, time.Now().Before(deadline), "could not connect to %s within 30 s: %v", server, err)
 	}
 	t.Cleanup(conn.Close)
 	return conn
 }
 
-// restart reconfigures the container on config, then starts the auth service, which holds each
-// answer for answerDelay before it gives it, and returns the client URL once the service's user is
-// connected. The service's user is in auth_users, so it connects without a callout.
-func (r *calloutRig) restart(t *testing.T, ctr hubContainer, config string, answerDelay time.Duration) string {
+// serve starts the auth service on the server at uri, which holds each answer for answerDelay
+// before it gives it, and returns once the service's user is connected. The service's user is in
+// auth_users, so it connects without a callout.
+func (r *calloutRig) serve(t *testing.T, uri string, answerDelay time.Duration) {
 	t.Helper()
-	uri := r.reconfigure(t, ctr, config)
 	conn := connectWhenUp(t, uri, r.serviceSeed)
 	_, err := conn.Subscribe("$SYS.REQ.USER.AUTH", func(m *natsgo.Msg) {
 		time.Sleep(answerDelay)
-		r.answer(t, m)
+		r.answer(m, t.Errorf)
 	})
 	require.NoError(t, err)
 	require.NoError(t, conn.Flush())
-	return uri
 }
 
 // answer is the auth service's answer to one request: the request is sealed to the callout's xkey
 // and the answer to the server's, both signed as the server requires. A client presenting
 // sessionToken is admitted into $G, the user JWT's audience, which config mode reads as the
-// account to place it in, with a grant on deliverS1 alone; every other client is refused.
-func (r *calloutRig) answer(t *testing.T, m *natsgo.Msg) {
-	r.requests.Add(1)
+// account to place it in, with a grant on deliverS1 alone; every other client is refused. Only
+// once the answer is sent does it count the request in r.requests. Each failure goes to report,
+// and no count follows it. So a test that has waited for the count (requireRequests) has also
+// seen the handler's last report, and the handler cannot report after that test has ended, which
+// panics the test binary ("Log in goroutine after … has completed"): the server can finish a
+// client's connection before the handler returns, and nats.go's Close does not wait for a running
+// handler.
+func (r *calloutRig) answer(m *natsgo.Msg, report func(format string, args ...any)) {
 	request, err := r.curve.Open(m.Data, m.Header.Get("Nats-Server-Xkey"))
 	if err != nil {
-		t.Errorf("open the sealed authorization request: %v", err)
+		report("open the sealed authorization request: %v", err)
 		return
 	}
 	claims, err := jwt.DecodeAuthorizationRequestClaims(string(request))
 	if err != nil {
-		t.Errorf("decode the authorization request: %v", err)
+		report("decode the authorization request: %v", err)
 		return
 	}
 	response := jwt.NewAuthorizationResponseClaims(claims.UserNkey)
@@ -187,7 +174,7 @@ func (r *calloutRig) answer(t *testing.T, m *natsgo.Msg) {
 		user.Pub.Allow.Add("_INBOX.>")
 		user.Sub.Allow.Add("_INBOX.>", deliverS1)
 		if response.Jwt, err = user.Encode(r.issuer); err != nil {
-			t.Errorf("sign the user JWT: %v", err)
+			report("sign the user JWT: %v", err)
 			return
 		}
 	} else {
@@ -195,33 +182,83 @@ func (r *calloutRig) answer(t *testing.T, m *natsgo.Msg) {
 	}
 	token, err := response.Encode(r.issuer)
 	if err != nil {
-		t.Errorf("sign the authorization response: %v", err)
+		report("sign the authorization response: %v", err)
 		return
 	}
 	sealed, err := r.curve.Seal([]byte(token), claims.Server.XKey)
 	if err != nil {
-		t.Errorf("seal the authorization response: %v", err)
+		report("seal the authorization response: %v", err)
 		return
 	}
 	if err := m.Respond(sealed); err != nil {
-		t.Errorf("answer the authorization request: %v", err)
+		report("answer the authorization request: %v", err)
+		return
 	}
+	r.requests.Add(1)
 }
 
+// awaitAnswers waits up to 10 s for the auth service to have answered want requests in all, and
+// returns the count it read last. answer counts a request only after its answer is sent, and the
+// server can finish the client's connection before that, so one read could come too early; a
+// count already at want returns at once.
+func (r *calloutRig) awaitAnswers(want int64) int64 {
+	for deadline := time.Now().Add(10 * time.Second); r.requests.Load() < want && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return r.requests.Load()
+}
+
+// requireRequests requires that the auth service has answered want requests in all
+// (awaitAnswers).
 func (r *calloutRig) requireRequests(t *testing.T, want int64, why string) {
 	t.Helper()
-	require.Equal(t, want, r.requests.Load(), why)
+	require.Equal(t, want, r.awaitAnswers(want), why)
+}
+
+// TestTheRigCountsARequestOnlyAfterItsAnswer: calloutRig.answer, the handler of the rig's auth
+// service (serve) and of the hung-replica tests' replicas (hangAReplica), counts a request only
+// after its answer is sent, so its last report comes before a test that waits for the count can
+// read it. Each row gives it a well-formed sealed request whose answer cannot be sent
+// (unboundAuthorizationRequest), from a client it admits and from one it refuses: the handler
+// reports that failure, and counts nothing.
+//
+// Control: count the request before m.Respond; each row fails with "the rig counted a request it
+// did not answer".
+func TestTheRigCountsARequestOnlyAfterItsAnswer(t *testing.T) {
+	for name, token := range map[string]string{"an admitted client": sessionToken, "a refused client": "example-wrong-token"} {
+		t.Run(name, func(t *testing.T) {
+			rig := newCalloutRig(t, false)
+			curveKey, err := rig.curve.PublicKey()
+			require.NoError(t, err)
+			issuerKey, err := rig.issuer.PublicKey()
+			require.NoError(t, err)
+
+			var reports []string
+			rig.answer(unboundAuthorizationRequest(t, issuerKey, curveKey, token), func(format string, args ...any) {
+				reports = append(reports, fmt.Sprintf(format, args...))
+			})
+
+			require.Equal(t, []string{"answer the authorization request: " + natsgo.ErrMsgNotBound.Error()}, reports,
+				"the rig opened, decoded, signed and sealed the request, and reported only the answer it could not send")
+			require.Zero(t, rig.requests.Load(), "the rig counted a request it did not answer")
+		})
+	}
 }
 
 // The rendered callout block on the hub's image: the hub keeps its global account, so turning the
 // callout on needs no move, and the server sends to the auth service exactly the clients that are
 // not its static users.
 func TestAuthCalloutOnTheHubServer(t *testing.T) {
+	// The callout is turned on over the same JetStream store: the first container is stopped and a
+	// fresh one starts on the store with the callout configured, on a fresh address, as an
+	// operator's rollout replaces the hub's task (testnats.ImageStore).
 	t.Run("a stream written before the callout reads whole after it", func(t *testing.T) {
 		rig := newCalloutRig(t, false)
-		ctr, uri := rig.startHub(t)
-		conn, err := testnats.ConnectSeed(t, uri, rig.staticSeed)
-		require.NoError(t, err)
+		store := testnats.ImageStore(t)
+		ctr, uri := testnats.StartImageReady(t, testnats.HubImage, rig.render(t, false), hubArgs, store...)
+		// Every first connect of this rig goes through connectWhenUp, which retries; the second
+		// container's connects below follow the auth service's own, which does the same (serve).
+		conn := connectWhenUp(t, uri, rig.staticSeed)
 		js, err := conn.JetStream()
 		require.NoError(t, err)
 		_, err = js.AddStream(&natsgo.StreamConfig{Name: exampleStream, Subjects: []string{"example.>"}})
@@ -231,8 +268,11 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 			require.NoError(t, err)
 		}
 		conn.Close()
+		stop := 10 * time.Second
+		require.NoError(t, ctr.Stop(context.Background(), &stop))
 
-		uri = rig.restart(t, ctr, rig.render(t, true), 0)
+		_, uri = testnats.StartImageReady(t, testnats.HubImage, rig.render(t, true), hubArgs, store...)
+		rig.serve(t, uri, 0)
 		conn, err = testnats.ConnectSeed(t, uri, rig.staticSeed)
 		require.NoError(t, err)
 		t.Cleanup(conn.Close)
@@ -251,8 +291,7 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 
 	t.Run("with the callout", func(t *testing.T) {
 		rig := newCalloutRig(t, false)
-		ctr, _ := rig.startHub(t)
-		uri := rig.restart(t, ctr, rig.render(t, true), 0)
+		uri := rig.startOn(t, rig.render(t, true), 0)
 
 		t.Run("a token client is placed in the global account and its grant holds", func(t *testing.T) {
 			before := rig.requests.Load()
@@ -300,12 +339,11 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 	// valid, and the auth service, which knows no such client, refuses it.
 	t.Run("a keyed user left out of auth_users is sent to the callout and refused", func(t *testing.T) {
 		rig := newCalloutRig(t, false)
-		ctr, _ := rig.startHub(t)
 		staticKey := rig.authorization.Users[0].NKey
 		text := rig.render(t, true)
 		edited := strings.Replace(text, `auth_users: ["`+staticKey+`", `, `auth_users: [`, 1)
 		require.NotEqual(t, text, edited, "the edit must take the static user's key out of auth_users")
-		uri := rig.restart(t, ctr, edited, 0)
+		uri := rig.startOn(t, edited, 0)
 		_, err := testnats.ConnectSeed(t, uri, rig.staticSeed)
 		require.ErrorIs(t, err, natsgo.ErrAuthorization)
 		rig.requireRequests(t, 1, "the static user was sent to the callout")
@@ -313,8 +351,7 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 
 	t.Run("with a noAuthUser, a client with no credential becomes it with no callout request", func(t *testing.T) {
 		rig := newCalloutRig(t, true)
-		ctr, _ := rig.startHub(t)
-		uri := rig.restart(t, ctr, rig.render(t, true), 0)
+		uri := rig.startOn(t, rig.render(t, true), 0)
 		client, errs := connect(t, uri, "")
 		require.NoError(t, client.Publish("sessions.allowed", nil))
 		require.NoError(t, client.Publish("example.static-only", nil))

@@ -34,6 +34,7 @@ const (
 // rather than the daemon's, which is what keeps the row readable by the daemon of that other
 // project on a shared database.
 func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
+	t.Parallel()
 	t.Run("above the fan-out, beside the one project listing", func(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		client := &tickDispatch{issues: map[string]dispatch.Issue{
@@ -155,7 +156,7 @@ func seedStartedWaiter(t *testing.T, pool *store.Pool, key, blocker string) {
 	if err != nil {
 		t.Fatalf("project token: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		at := time.Now().UTC()
 		// The tree runs: the slot rule counts an issue of a live tree alone (record.NeedsSlot).
@@ -176,9 +177,9 @@ func seedStartedWaiter(t *testing.T, pool *store.Pool, key, blocker string) {
 // same table.
 func seedForeignMirror(t *testing.T, pool *store.Pool, key, status string, seq int64) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: key, Project: foreignProject, Status: status, Seq: seq})
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: foreignProject, Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
 		t.Fatalf("seed the mirror row of %s: %v", key, err)
 	}
@@ -190,7 +191,7 @@ func seedForeignMirror(t *testing.T, pool *store.Pool, key, status string, seq i
 func foreignMirrored(t *testing.T, pool *store.Pool) map[string]record.DispatchIssueRow {
 	t.Helper()
 	var mirrored []record.DispatchIssueRow
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		mirrored, err = record.NewStore().DispatchIssues(context.Background(), tx, foreignProject)
 		return err

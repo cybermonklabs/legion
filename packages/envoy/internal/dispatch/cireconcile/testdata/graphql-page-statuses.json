@@ -1,0 +1,102 @@
+{
+  "data": {
+    "rateLimit": {
+      "cost": 1,
+      "remaining": 4987,
+      "resetAt": "2026-11-17T06:00:00Z"
+    },
+    "repository": {
+      "pullRequests": {
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": "Y3Vyc29yOnYyOpK0MjAyNi0xMS0xN1QwNDo1OTowMFrOAAAABw=="
+        },
+        "nodes": [
+          {
+            "number": 7,
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "oid": "abcdef1234567890abcdef1234567890abcdef12",
+                    "status": {
+                      "contexts": [
+                        {
+                          "context": "ci/build",
+                          "state": "SUCCESS",
+                          "createdAt": "2026-11-17T05:01:00Z",
+                          "targetUrl": "https://ci.example.com/acme/widgets/builds/101",
+                          "description": "The build passed"
+                        },
+                        {
+                          "context": "ci/lint",
+                          "state": "FAILURE",
+                          "createdAt": "2026-11-17T05:02:00Z",
+                          "targetUrl": "https://ci.example.com/acme/widgets/builds/102",
+                          "description": "2 lint errors"
+                        },
+                        {
+                          "context": "ci/license",
+                          "state": "ERROR",
+                          "createdAt": "2026-11-17T05:03:00Z",
+                          "targetUrl": null,
+                          "description": null
+                        },
+                        {
+                          "context": "ci/deploy",
+                          "state": "PENDING",
+                          "createdAt": "2026-11-17T05:04:00Z",
+                          "targetUrl": "https://ci.example.com/acme/widgets/deploys/104",
+                          "description": "Deploying a preview"
+                        },
+                        {
+                          "context": "security/scan",
+                          "state": "EXPECTED",
+                          "createdAt": "2026-11-17T05:05:00Z",
+                          "targetUrl": null,
+                          "description": null
+                        }
+                      ]
+                    },
+                    "checkSuites": {
+                      "pageInfo": {
+                        "hasNextPage": false
+                      },
+                      "nodes": [
+                        {
+                          "databaseId": 900,
+                          "app": {
+                            "databaseId": 98765
+                          },
+                          "status": "COMPLETED",
+                          "conclusion": "SUCCESS",
+                          "updatedAt": "2026-11-17T05:00:10Z",
+                          "checkRuns": {
+                            "pageInfo": {
+                              "hasNextPage": false
+                            },
+                            "nodes": [
+                              {
+                                "databaseId": 1,
+                                "name": "ci-ok",
+                                "status": "COMPLETED",
+                                "conclusion": "SUCCESS",
+                                "startedAt": "2026-11-17T05:00:00Z",
+                                "completedAt": "2026-11-17T05:00:05Z",
+                                "permalink": "https://github.com/Acme/Widgets/runs/1"
+                              }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

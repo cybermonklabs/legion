@@ -22,8 +22,8 @@ import (
 // trimmed, both sides percent-decode, and neither decodes to more than 255 UTF-16 code units.
 //
 // Its caller wraps the whole parse in one try whose catch assigns nothing, so ONE malformed
-// member costs the process every attribute of the variable — the operator's theorem.project with
-// it, which is the attribute the spend report splits by today. That is why the daemon appends to
+// member costs the process every attribute of the variable, including the operator's project
+// attribute, which a spend report can group by. That is why the daemon appends to
 // the operator's value instead of composing one of its own, why SpendResourceAttributes writes no
 // empty member and percent-encodes everything it writes, and why the configuration loader refuses
 // an operator value SpendAttributesRefusal refuses rather than letting a launch carry it.
@@ -83,11 +83,11 @@ func SpendArmsValue(variants []Variant) string {
 // 202f 205f 3000` — so the two sets differ in exactly two code points, and this predicate is
 // unicode.IsSpace with those two taken out and put in.
 //
-// Go trims U+0085 (NEL) where JavaScript does not: `theorem.project=legion,<NEL>` is a member
+// Go trims U+0085 (NEL) where JavaScript does not: `acme.project=widgets,<NEL>` is a member
 // strings.TrimSpace reads as the empty one the detector skips, while the detector keeps it, finds
 // no `=` in it and throws, costing the launch every attribute. JavaScript trims U+FEFF (ZWNBSP)
 // where Go does not: `<ZWNBSP>=v` is a member whose key the detector trims to empty and throws
-// on, and `theorem.project=legion,<ZWNBSP>` one the detector trims to empty and filters away.
+// on, and `acme.project=widgets,<ZWNBSP>` one the detector trims to empty and filters away.
 func spendDetectorSpace(r rune) bool {
 	return r == '\uFEFF' || (r != '\u0085' && unicode.IsSpace(r))
 }
@@ -170,7 +170,7 @@ func spendMember(b *strings.Builder, key, value string) {
 // detector would throw on, or "" when nothing here refuses it. The configuration loader asks it
 // of the value the operator sets, because the throw is not that member's to pay: the detector's
 // caller catches it with an empty hand, so the launch loses every attribute of the variable,
-// including the operator's own theorem.project.
+// including the operator's own project attribute.
 //
 // It applies the measured rules in the detector's own order — an empty member is skipped as the
 // detector skips it, then the split on `=` into exactly two parts, the non-empty key, the

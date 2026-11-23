@@ -1,19 +1,36 @@
 import { AGENT_STREAM_LIMITS, capAgentStreamText } from "@legion/contracts";
 
-import { agentRow, type FakeSession, getSentMessages, setLiveSessions } from "./agents";
+import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
+import {
+  agentRow,
+  type FakeSession,
+  getSentMessages,
+  openAgents,
+  setListsState,
+  setLiveSessions,
+  setSessionLastSeen,
+  setSessionState,
+  setSessionStopped,
+} from "./agents";
 import {
   createAgentMessage,
   createIssue,
   createProject,
+  disconnectLiveSockets,
   dropAgentStreamViewers,
+  listAgentMessages,
   publishAgentStreamFrame,
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
+import { inboxPane, selectRow } from "./inbox-pane";
+import { agentRowId, newestDeliveryOf, seedAgentThread } from "./inbox-threads";
 import { expectConsecutiveLinksClear, expectUncovered } from "./layout";
+import { connect, watchLiveSockets } from "./live-socket-watch";
 import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
+import { selectMention } from "./mention";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -873,9 +890,29 @@ test("a session nobody answers for is told so, and recovers when a responder app
 });
 
 /** The live view's own text for a session that answers nothing, word for word as a reader meets
- *  it: `emptyText` in `web/src/features/agent-view/AgentConversationPage.tsx`. */
+ *  it: `NOT_ANSWERING_EMPTY_TEXT` in `web/src/features/agent-view/AgentConversationPage.tsx`. */
 const NOT_ANSWERING =
   "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Nothing appears here until it answers.";
+
+/** The line the live view puts above a transcript that holds turns while the session answers
+ *  nothing, word for word: `NOT_ANSWERING_NOTICE` in
+ *  `web/src/features/agent-view/AgentConversationPage.tsx`. A transcript with no turn says
+ *  `NOT_ANSWERING` in its empty slot instead. */
+const NOT_ANSWERING_ABOVE_TURNS =
+  "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Only the messages Dispatch keeps show here until it answers.";
+
+/** What the live view says, in the empty transcript or above its turns alike, of a session the
+ *  registry holds as unresponsive, word for word: alone while the relay still hears it, or after
+ *  the relay's text where it does not. `MISSED_HEARTBEATS_TEXT` in
+ *  `web/src/features/agent-view/AgentConversationPage.tsx`. */
+const MISSED_HEARTBEATS =
+  "This session has missed its heartbeats, so the live session list marks it unresponsive. It has not ended.";
+
+/** What the live view says, in the empty transcript or above its turns alike, of a session the
+ *  registry no longer holds, word for word: alone while the relay still hears it, or after the
+ *  relay's text where it does not. `LEFT_LIST_TEXT` in
+ *  `web/src/features/agent-view/AgentConversationPage.tsx`. */
+const LEFT_LIST = "The live session list no longer holds this session.";
 
 /** What this page said about Claude Code until INFRA-1026, in the empty transcript ("Claude Code
  *  sessions don't" stream) and beside the composer (a session "takes messages only when it was
@@ -925,6 +962,375 @@ test("a session that answers nothing is told what is true of the session, and th
     for (const excuse of CLIENT_EXCUSES) {
       expect(shown).not.toMatch(excuse);
     }
+  } finally {
+    await context.close();
+  }
+});
+
+/** What the header's presence says, in the title a reader points at it to read: `STATUS` in
+ *  `web/src/features/agent-view/AgentConversationPage.tsx`. A presence of the connection is titled
+ *  as one; a session the live session list no longer holds is titled by that fact instead. */
+const CONNECTION_LIVE = "Connection to the session's conversation: Live";
+const CONNECTION_NOT_ANSWERING = "Connection to the session's conversation: Not answering";
+const CONNECTION_RECONNECTING = "Connection to the session's conversation: Reconnecting";
+const NOT_LISTED = "The live session list no longer holds this session";
+
+/** The header's presence, in the view the reader is looking at: its word on the connection, or
+ *  on a session the list no longer holds. A session the list holds as unresponsive has none. */
+function connection(page: Page): Locator {
+  return frontLiveView(page).getByTitle(
+    /^(Connection to the session's conversation: |The live session list no longer holds this session$)/
+  );
+}
+
+/** A change of the registry reaches an open live view on the shell's next poll of the agent list
+ *  (`AGENT_REGISTRY_POLL_MS`, `web/src/features/refs/agent-registry.ts`); this is that poll twice
+ *  over. The row below waits for the poll in real time rather than jumping the page's clock to it
+ *  as other rows do: its eight changes would take eight 15 s jumps, which leave the live socket
+ *  more than 45 s without a frame unless one arrives between them. That is past the page's silence
+ *  limit (`LIVE_SOCKET_SILENT_MS`, read by `replaceIfSilent` in `web/src/api/live-socket.ts`), so
+ *  the page would replace the socket, and the new one sends again the subscribe the row asserts
+ *  is sent once. A listener that is down refuses the poll's read with no wait named, so the
+ *  page's two retries of it come half a second apart and the view says it is unreachable within
+ *  this too. */
+const REGISTRY_POLL_TIMEOUT = 2 * AGENT_REGISTRY_POLL_MS;
+
+/** A list that starts refilling reaches an open live view later than another change: the view
+ *  says so only once the page's two retries of the poll's refused read are out, and each waits
+ *  the listener's `Retry-After: 5` and up to as much again (`queryRetryDelay`,
+ *  `web/src/api/query-client.ts`). */
+const REGISTRY_REFILLING_TIMEOUT = REGISTRY_POLL_TIMEOUT + 20_000;
+
+/** A session of a row's own, listed beside the planner. `last_seen` is taken when the row seeds,
+ *  never at this module's scope, which a worker evaluates once and every later spec of that worker
+ *  ages. */
+function listedSession(
+  sessionID: string,
+  title: string,
+  capabilities = planner.capabilities
+): FakeSession {
+  return { ...planner, capabilities, last_seen: Date.now() - 5_000, session_id: sessionID, title };
+}
+
+// R2 (INFRA-4325). A session that does not answer the live view says so in the header and in one
+// line: above the messages Dispatch keeps when the transcript holds any, and in the empty
+// transcript's place when it holds none. Either of two sources says a session is silent, and
+// each says it in its own words. The relay hears nobody on the session's control subject: the
+// header reads Not answering and the line names the relay's causes. The registry's list holds the
+// session as unresponsive, which the header's note names in place of a word on the connection,
+// or no longer holds it, which the header names in place of Live; either way the line says what
+// the list says and no more, and a turn the session still streams changes neither. Where both
+// say so, the header keeps the relay's Not answering, beside the note where the list holds the
+// session as unresponsive, and the line names each, the relay's reason first. A lost socket is
+// the view's own connection: the header says it is reconnecting, and the relay's line stays. The
+// registry's word moves the view on its next poll, both ways, over the subscription the page
+// already holds: the page asks the session for nothing again. A read of the list that fails, the
+// list refilling or the listener down, is no word of the registry's: the header says why it has
+// no list to read, and the last list's word stands beside that, in the header and in the line.
+// SLOW(>=2s): three live views, a reconnect the page draws its own wait for, and eight changes of
+// the registry each waited on through the shell's 15 s poll of the agent list, one of them a
+// refilling list the page retries twice for before it says so.
+test("a silent session says so in the header and in a line above its messages, in the relay's words or the registry's", async ({
+  browser,
+}) => {
+  // Eight changes of the registry, each given `REGISTRY_POLL_TIMEOUT` and the refilling one
+  // `REGISTRY_REFILLING_TIMEOUT`, beside three page loads and a reconnect.
+  test.setTimeout(300_000);
+  const stored = listedSession("01a0e0c1-0000-7000-8000-0000000043a1", "Stored");
+  const empty = listedSession("01a0e0c1-0000-7000-8000-0000000043a2", "Empty");
+  const answering = listedSession("01a0e0c1-0000-7000-8000-0000000043a3", "Answering");
+  await setLiveSessions([planner, stored, empty, answering]);
+  // A message Dispatch keeps for the first, which the session answered through Dispatch: its view
+  // holds turns while the session streams none.
+  const asked = await createAgentMessage(stored.session_id, {
+    body: "Did the backfill finish?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    asked.id,
+    { attempt: 1, body: "Yes, at noon." },
+    { id: stored.session_id, kind: "session" }
+  );
+  await setAgentStreamResponder(stored.session_id, false);
+  await setAgentStreamResponder(empty.session_id, false);
+  await publishAgentStreamFrame(
+    answering.session_id,
+    {
+      frames: [assistantFrame(1, "Reading the backfill log.", false)],
+      session_id: answering.session_id,
+      v: 1,
+    },
+    "replay"
+  );
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const sockets = watchLiveSockets(page);
+  const view = frontLiveView(page);
+  // Every live socket reaches Dispatch; while `holdReconnect` is set, the one the page opens next
+  // waits until the row releases it, so the page stays reconnecting for as long as the row looks.
+  let holdReconnect = false;
+  let reconnectHeld = false;
+  const reconnectReleased = Promise.withResolvers<void>();
+  await page.routeWebSocket(/\/ws\/live$/u, async (route) => {
+    if (holdReconnect) {
+      reconnectHeld = true;
+      await reconnectReleased.promise;
+    }
+    connect(route);
+  });
+  try {
+    // The relay hears nobody for the first two. Over the messages Dispatch keeps, the line says
+    // why nothing else arrives; with none, the empty transcript says it.
+    await page.goto(`/agents/${stored.session_id}/live`);
+    await expect(view.getByTestId("agent-dispatch-reply")).toContainText("Yes, at noon.");
+    await expect(view.getByText(NOT_ANSWERING_ABOVE_TURNS)).toBeVisible();
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+
+    // The socket is lost (1012, as a restart closes it) and its reopen held: the header says the
+    // view is reconnecting, and the relay's word that the session is silent stays above its
+    // turns, since a lost socket says nothing of the session.
+    holdReconnect = true;
+    await disconnectLiveSockets();
+    await expect.poll(() => reconnectHeld).toBe(true);
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_RECONNECTING);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
+    await expect(view.getByTestId("agent-dispatch-reply")).toContainText("Yes, at noon.");
+    holdReconnect = false;
+    reconnectReleased.resolve();
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
+
+    // The registry marks it unresponsive as well. The header keeps the relay's Not answering beside
+    // the list's note, and the line names each source in its own words, the relay's reason first:
+    // it is the one that says nothing streams.
+    await setSessionState(stored.session_id, "unresponsive");
+    const unresponsive = view.getByTestId("agent-unresponsive");
+    await expect(unresponsive).toHaveText(/^Unresponsive/, { timeout: REGISTRY_POLL_TIMEOUT });
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(
+      `${NOT_ANSWERING_ABOVE_TURNS} ${MISSED_HEARTBEATS}`
+    );
+
+    // It stops, so the list no longer holds it: the note goes, the header still reads the relay's
+    // Not answering rather than the list's not-listed presence, and the line names the relay's
+    // reason and then what the list shows.
+    await setSessionStopped(stored.session_id, true);
+    await expect(unresponsive).toHaveCount(0, { timeout: REGISTRY_POLL_TIMEOUT });
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(
+      `${NOT_ANSWERING_ABOVE_TURNS} ${LEFT_LIST}`
+    );
+
+    await page.goto(`/agents/${empty.session_id}/live`);
+    await expect(view.getByTestId("agent-thread-empty")).toHaveText(NOT_ANSWERING);
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+
+    // The third answers, and the page subscribes to its conversation once.
+    await page.goto(`/agents/${answering.session_id}/live`);
+    await expect(view.getByTestId("agent-message-assistant")).toContainText(
+      "Reading the backfill log."
+    );
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_LIVE);
+    await expect(view.getByText(/not answering the live view/)).toHaveCount(0);
+    const subscribed = () =>
+      sockets.sent.filter(
+        (frame) =>
+          frame.type === "subscribe" &&
+          frame.view.kind === "agent" &&
+          frame.view.session_id === answering.session_id
+      ).length;
+    await expect.poll(subscribed).toBe(1);
+
+    // The registry holds it as unresponsive, its last heartbeat six minutes old, though the relay
+    // still has its replay: the header names that state, with when the session was last seen, in
+    // place of a word on the connection, and the line says what the list says rather than the
+    // relay's causes. The list carries the heartbeat as epoch milliseconds, which the note writes
+    // with `toISOString`, so its `datetime` is that heartbeat's own spelling.
+    const lastSeen = Date.now() - 6 * 60_000;
+    await setSessionLastSeen(answering.session_id, lastSeen);
+    await setSessionState(answering.session_id, "unresponsive");
+    await expect(unresponsive).toHaveText(/^Unresponsive · seen \d+ minutes ago$/, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(unresponsive.locator("time")).toHaveAttribute(
+      "datetime",
+      new Date(lastSeen).toISOString()
+    );
+    await expect(connection(page)).toHaveCount(0);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(MISSED_HEARTBEATS);
+    expect(subscribed()).toBe(1);
+
+    // It still streams: a new turn, with an id and a time of its own, so it is a second message
+    // rather than another snapshot of the replay's. It shows, and nothing else moves: no frame
+    // ends the registry's word.
+    await publishAgentStreamFrame(
+      answering.session_id,
+      liveTurn(1, 2, "Still reading the backfill log.", false)
+    );
+    await expect(view.getByTestId("agent-message-assistant")).toHaveCount(2);
+    await expect(view.getByTestId("agent-message-assistant").last()).toContainText(
+      "Still reading the backfill log."
+    );
+    await expect(unresponsive).toHaveText(/^Unresponsive/);
+    await expect(connection(page)).toHaveCount(0);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(MISSED_HEARTBEATS);
+    await expect(view.getByText(NOT_ANSWERING_ABOVE_TURNS)).toHaveCount(0);
+    expect(subscribed()).toBe(1);
+
+    // The list starts refilling. The header says so, and the list's last word stands beside it:
+    // the session is still unresponsive, the header still reads no Live beside its note, and the
+    // line still says what the list says.
+    await setListsState("refilling");
+    await expect(view.getByTestId("agent-list-refilling")).toBeVisible({
+      timeout: REGISTRY_REFILLING_TIMEOUT,
+    });
+    await expect(unresponsive).toHaveText(/^Unresponsive/);
+    await expect(connection(page)).toHaveCount(0);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(MISSED_HEARTBEATS);
+    expect(subscribed()).toBe(1);
+    await setListsState("ok");
+    await expect(view.getByTestId("agent-list-refilling")).toHaveCount(0, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+
+    // Its heartbeats are back, the newest one now.
+    await setSessionLastSeen(answering.session_id, Date.now());
+    await setSessionState(answering.session_id, "live");
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_LIVE, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(view.getByTestId("agent-silence-line")).toHaveCount(0);
+    await expect(unresponsive).toHaveCount(0);
+    expect(subscribed()).toBe(1);
+
+    // It stops. A stopped session holds no registry entry, so the list the view reads no longer
+    // holds it, however long the relay keeps its replay: the header says so, and the line says
+    // what the list says.
+    await setSessionStopped(answering.session_id, true);
+    await expect(connection(page)).toHaveAttribute("title", NOT_LISTED, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(LEFT_LIST);
+    expect(subscribed()).toBe(1);
+
+    // The listener goes down. The header says the list is unreachable, and the list's last word
+    // stands beside it: the session is still not in the list, in the header and in the line.
+    await setListsState("down");
+    await expect(view.getByTestId("agent-list-unreachable")).toBeVisible({
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(connection(page)).toHaveAttribute("title", NOT_LISTED);
+    await expect(view.getByTestId("agent-silence-line")).toHaveText(LEFT_LIST);
+    expect(subscribed()).toBe(1);
+    await setListsState("ok");
+  } finally {
+    await context.close();
+  }
+});
+
+/** What the live view and the Inbox say of a listed session whose capabilities hold no delivery
+ *  mode, before they say why: `noDeliveryLine` in `web/src/features/conversation/delivery.ts`. */
+const NO_DELIVERY_MODE =
+  "This session advertises no delivery mode, so a message sent here records a failed attempt.";
+
+/** The newest attempt Dispatch recorded for the message of a session's conversation that reads
+ *  `body`, as its state and its error; undefined until that message is stored. */
+async function attemptOf(
+  sessionID: string,
+  body: string
+): Promise<{ error: string | null; state: string } | undefined> {
+  const sent = (await listAgentMessages(sessionID))
+    .flatMap((read) => [read.message, ...(read.replies ?? [])])
+    .find((message) => message.body === body);
+  const attempt = newestDeliveryOf(sent === undefined ? [] : [sent]);
+  return attempt === undefined ? undefined : { error: attempt.error, state: attempt.state };
+}
+
+// R3 (INFRA-4325). Whether a session takes messages is whether its capabilities hold a delivery
+// mode, not whether it lists any: a list of only a capability this Dispatch knows no mode for - a
+// newer plugin's - takes none, as an empty list does. Every surface that offers to send such a
+// session something says so: its live view, its thread in the Inbox, its card on the Agents page
+// and a mention of it in an issue's composer, each with the reason, which differs between the two
+// lists. A message sent to either records a failed attempt, and the live view's warning stays,
+// since it is the page's and not the send's. A session that lists its modes is warned of nowhere.
+// SLOW(>=2s): two sessions each read on four pages - the live view with a send, the Inbox, the
+// Agents page and an issue's conversation - and a third session's live view.
+test("a session whose capabilities hold no delivery mode is warned of in its live view, the Inbox, the Agents page and a mention, and a send to it fails", async ({
+  browser,
+}) => {
+  const unknown = listedSession("01a0e0c1-0000-7000-8000-0000000043b1", "Newer plugin", [
+    "future-capability",
+  ]);
+  const none = listedSession("01a0e0c1-0000-7000-8000-0000000043b2", "Unreachable", []);
+  const taking = listedSession("01a0e0c1-0000-7000-8000-0000000043b3", "Fluent");
+  await setLiveSessions([planner, unknown, none, taking]);
+  await createProject({ key: "CORE", name: "Core" });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const view = frontLiveView(page);
+  try {
+    for (const [session, reason] of [
+      [unknown, "None of the capabilities it lists is a delivery mode this Dispatch knows."],
+      [none, "A session advertises none while its plugin cannot reach its conversation."],
+    ] as const) {
+      // An exchange the reader had with the session: Dispatch recorded its attempt as failed, the
+      // session advertising no Aside, and the session answered it all the same.
+      const thread = await seedAgentThread({
+        body: `What is the status, ${session.title}?`,
+        delivery: "aside",
+        replies: [`${session.title}: all green.`],
+        session,
+      });
+      const issue = await createIssue({ project: "CORE", title: `Mentions of ${session.title}` });
+
+      // Its live view warns, and a message sent from it records a failed attempt.
+      await page.goto(`/agents/${session.session_id}/live`);
+      const warning = view.getByTestId("agent-takes-no-messages");
+      await expect(warning).toHaveText(`${NO_DELIVERY_MODE} ${reason}`);
+      const composer = view.getByTestId("agent-composer");
+      const body = `Are you there, ${session.title}?`;
+      await composer.locator("textarea").fill(body);
+      await composer.getByRole("button", { exact: true, name: "Send" }).click();
+      await expect
+        .poll(() => attemptOf(session.session_id, body))
+        .toEqual({ error: expect.stringContaining("does not advertise aside"), state: "failed" });
+      await expect(warning).toHaveText(`${NO_DELIVERY_MODE} ${reason}`);
+
+      // Its thread in the Inbox.
+      await page.goto("/");
+      await selectRow(page, agentRowId(thread));
+      const pane = inboxPane(page);
+      await expect(pane.getByText("Takes no messages", { exact: true })).toBeVisible();
+      await expect(pane.getByTestId("agent-takes-no-messages")).toHaveText(
+        `${NO_DELIVERY_MODE} ${reason}`
+      );
+
+      // Its card on the Agents page, which names no capability that is not a mode.
+      await openAgents(page);
+      const card = agentRow(page, session.session_id);
+      const toggle = card.locator("[data-agent-toggle]");
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await toggle.click();
+      await expect(card.getByText("Takes no messages", { exact: true })).toBeVisible();
+      await expect(card).not.toContainText("future-capability");
+
+      // A mention of it in an issue's composer.
+      await page.goto(`/issues/${issue.key}/conversation`);
+      await selectMention(page, "/aside @", session.title);
+      await expect(
+        page.getByText(
+          `${session.title} advertises no delivery mode, so sending it records a failed attempt. ${reason}`,
+          { exact: true }
+        )
+      ).toBeVisible();
+    }
+
+    // A session that lists its modes: once the list holds it, its view warns of nothing.
+    await page.goto(`/agents/${taking.session_id}/live`);
+    await expect(view.getByTestId("agent-footer-machine")).toBeVisible();
+    await expect(view.getByText(/advertises no delivery mode/)).toHaveCount(0);
   } finally {
     await context.close();
   }

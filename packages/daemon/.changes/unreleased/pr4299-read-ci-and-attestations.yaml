@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    A read lease that the daemon mints from an App key now asks GitHub for read access to checks,
+    commit statuses and attestations, beside contents, metadata, pull requests, issues and Actions.
+    The review App's write token also asks for `statuses: read`, and the write token of each App
+    asks for `attestations: read`. Each request is still cut to what the App's installation holds,
+    with one warning for each permission it leaves out. So a role and the controller can read the
+    check runs, the commit statuses, the pull request check rollup and the attestations of a
+    private repository.
+time: 2026-11-17T12:46:28Z
+custom:
+    Issue: pr4299

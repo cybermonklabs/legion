@@ -33,8 +33,8 @@ func (s tokenSource) ReadToken(ctx context.Context, role appauth.AppRole, _ stri
 	return lease, err
 }
 
-// InstalledOwners is the owner accounts each App is installed on, which a gh bundle reads from
-// GitHub at every build (appauth.OwnerInstallations): the two these harnesses serve.
+// InstalledOwners is the owner accounts each App is installed on, which a gh bundle reads at
+// every build (appauth.OwnerInstallations): the two these harnesses serve.
 func (tokenSource) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	return []string{"acme", "sjawhar"}, nil
 }
@@ -101,8 +101,8 @@ func TestAClaimLeavingItsRunningStatesRevokesItsSecretAndGrants(t *testing.T) {
 					t.Fatalf("stop: %v", err)
 				}
 			}
-			assertFailure(t, mint(), http.StatusForbidden, "INVALID_SESSION_SECRET")
-			assertFailure(t, h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{GrantID: grant.GrantID, Issue: "LEGION-208", Status: "todo"}, nil),
+			refused(t, mint(), http.StatusForbidden, "INVALID_SESSION_SECRET")
+			refused(t, h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{GrantID: grant.GrantID, Issue: "LEGION-208", Status: "todo"}, nil),
 				http.StatusForbidden, "GRANT_REVOKED")
 			if stored := h.stored(token); len(stored.CapabilityHash) != 0 {
 				t.Fatalf("stored claim after %s keeps capability hash %x", exit, stored.CapabilityHash)

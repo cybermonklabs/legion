@@ -46,11 +46,11 @@ var clusteredHubPodMinCPU = big.NewRat(1, 4)
 func autopilotPodSize(pod autopilotPod) (cpu, memory string, err error) {
 	cpu, podCPU, err := appQuantity(pod.cpuInput, pod.cpu, pod.defaultCPU, "1, 1500m or 2")
 	if err != nil {
-		return "", "", &core.InputError{Input: pod.cpuInput, Err: err}
+		return "", "", err
 	}
 	memory, podMemory, err := appQuantity(pod.memoryInput, pod.memory, pod.defaultMemory, pod.memoryExamples)
 	if err != nil {
-		return "", "", &core.InputError{Input: pod.memoryInput, Err: err}
+		return "", "", err
 	}
 	sidecarCPU, sidecarMemory := new(big.Rat), new(big.Rat)
 	for _, sidecar := range pod.sidecars {

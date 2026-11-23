@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A channel server whose start fails (a hub refusing its NATS credential, say) now exits non-zero
+  with its mod link's socket removed. It printed `Claude Envoy channel server failed: …` and stayed
+  alive, its socket bound for a session nobody ran, because the mod link it was still binding when
+  the start failed was never closed. Once its run has returned, cleanly or not, the process ends
+  after stdout and stderr have taken every byte written to them, however slow the reader, rather
+  than when a handle nothing uses lets go (a NATS dial a stop ended): an MCP reply or the failure
+  line is never cut short.
+time: 2026-11-16T08:43:36Z
+custom:
+    Issue: pr4140

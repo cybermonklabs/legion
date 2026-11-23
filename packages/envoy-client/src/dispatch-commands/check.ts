@@ -25,10 +25,10 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
+import { dispatchRefFromUrl } from "./links";
 import {
   askIdProblem,
   commentIdProblem,
-  dispatchRefFromUrl,
   innerRefProblem,
   itemRefProblem,
   messageIdOf,
@@ -51,6 +51,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_search: true,
   dispatch_related: true,
   dispatch_issues: true,
+  dispatch_plans: true,
   dispatch_project: true,
   dispatch_projects: true,
   dispatch_priorities: true,

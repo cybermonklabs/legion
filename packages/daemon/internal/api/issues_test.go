@@ -29,7 +29,7 @@ func TestIssueStatusReportsAnExpiredControllerGrant(t *testing.T) {
 	h, _, _ := newArchitectHarness(t, credential.New(func() time.Time { return now }), nil)
 	grant := controllerGrant(t, h)
 	now = now.Add(time.Minute)
-	assertFailure(t, h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{
+	refused(t, h.request(http.MethodPost, "/legion/v1/issues/status", IssueStatusRequest{
 		GrantID: grant.GrantID, Issue: "LEGION-208", Status: "todo",
 	}, nil), http.StatusForbidden, "GRANT_EXPIRED")
 }

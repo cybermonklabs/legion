@@ -70,15 +70,15 @@ for arch in $(jq -r '.envoy[]' .github/go-release-targets.json); do
     # runs on ubuntu-24.04 for that reason.
     ../../scripts/go-third-party-notices.sh "$notices/legion-envoy-$arch" ./cmd/listener
     export CGO_ENABLED=0
-    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" ./cmd/agent-secrets ./cmd/agent-secrets-helper
+    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-$arch" ./cmd/cipher ./cmd/cipher-helper
   )
 done
 for target in $(jq -r '.["agent-secrets-client"][]' .github/agent-secrets-client-targets.json); do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
-    go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/agent-secrets
+    go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/cipher
     cd packages/envoy
-    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/agent-secrets
+    ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/cipher
   )
 done
 for target in $(jq -r '.["envoy-infra"][]' .github/envoy-infra-targets.json); do

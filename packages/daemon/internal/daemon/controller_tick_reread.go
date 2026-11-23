@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // applyControllerTick is one turn: it re-reads from Dispatch the issues anything is currently
@@ -61,56 +62,56 @@ func (w *workflowRuntime) observeWaitedOn(ctx context.Context) []intake.IssueSta
 // admits it whatever its links say and nothing consults the answer (blockers.Exempt), and the
 // keys come out in that judgement's own order, by the issue waiting on them.
 //
-// An open child is in the set because the turn's re-read is what rewrites its mirror row. A
+// An open child is in the set because the turn's re-read is what writes its row of the copy
+// again: a reading of all five values, each of which replaces the one an older reading wrote. A
 // child the architect filed and has not released has no event this daemon consumes — it reaches
-// the mirror from a Dispatch listing alone — so without this its row would stand until the next
+// the copy from a reading of Dispatch alone — so without this its row would stand until the next
 // boot, and its move to icebox, to another parent or out from under its parent would not end the
 // wait it holds.
 func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
-	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
-	if err != nil {
-		return nil, fmt.Errorf("list the issues of %s: %w", w.dispatchProject, err)
-	}
-	slots, err := w.records.Slots(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("list the admission slots: %w", err)
-	}
-	facts, err := record.ReadLineFacts(ctx, tx, w.records, w.dispatchProject, issues, w.gatedSteps)
-	if err != nil {
-		return nil, err
-	}
-	// Judged through the one judgement admission itself promotes from (blockers.JudgeLine): the
-	// rows of every issue a blocker can hold come before the line, which leaves such an issue out
-	// and cannot judge that itself (record.LineFacts.Held); the issues the line names are read
-	// after it, since only the line says which they are. This read wants those keys alone and
-	// drops the held rows, so the clock it hands over decides nothing here.
-	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil, time.Now())
-	if err != nil {
-		return nil, err
-	}
 	var keys []string
-	seen := make(map[string]struct{})
-	for _, blocked := range blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)) {
-		for _, blocker := range blocked.BlockedBy {
-			if _, repeated := seen[blocker]; repeated {
-				continue
-			}
-			seen[blocker] = struct{}{}
-			keys = append(keys, blocker)
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
+		if err != nil {
+			return fmt.Errorf("list the issues of %s: %w", w.dispatchProject, err)
 		}
-	}
-	return keys, nil
+		slots, err := w.records.Slots(ctx, tx)
+		if err != nil {
+			return fmt.Errorf("list the admission slots: %w", err)
+		}
+		facts, err := record.ReadLineFacts(ctx, tx, w.records, w.dispatchProject, issues, w.gatedSteps)
+		if err != nil {
+			return err
+		}
+		// Judged through the one judgement admission itself promotes from (blockers.JudgeLine):
+		// the rows of every issue a blocker can hold come before the line, which leaves such an
+		// issue out and cannot judge that itself (record.LineFacts.Held); the issues the line
+		// names are read after it, since only the line says which they are. This read wants those
+		// keys alone and drops the held rows, so the clock it hands over decides nothing here.
+		rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, w.records, w.dispatchProject, issues, slots, facts, nil, time.Now())
+		if err != nil {
+			return err
+		}
+		seen := make(map[string]struct{})
+		for _, blocked := range blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)) {
+			for _, blocker := range blocked.BlockedBy {
+				if _, repeated := seen[blocker]; repeated {
+					continue
+				}
+				seen[blocker] = struct{}{}
+				keys = append(keys, blocker)
+			}
+		}
+		return nil
+	})
+	return keys, err
 }
 
 // readObserved is Dispatch's answer for keys: one GetIssue each while they number
 // blockerReadFanout or fewer, and one whole-project listing above that, whose every summary is
-// taken — it is one request for all of them, and a row it refreshes beyond the keys asked for
-// costs nothing behind the mirror's own sequence fence. A key of another project is read one at a
+// taken — it is one request for all of them, and a summary of a key not asked for is a reading of
+// Dispatch like any other, which changes a value only where the copy holds it from an older
+// reading or from none (record.Store.PutDispatchIssue). A key of another project is read one at a
 // time in either branch, since the listing is of this daemon's project alone and names no issue
 // of another.
 //
@@ -157,8 +158,9 @@ func (w *workflowRuntime) readObserved(ctx context.Context, keys []string) []int
 }
 
 // readBlocker is one key read singly, and whether Dispatch answered for it. The observation
-// carries the project Dispatch names on the issue, the one read that answers it, so the mirror
-// row of a blocker outside this project is that project's rather than this daemon's
+// carries all five values the copy holds of an issue — its status, its parent, its blockers, its
+// labels and its rank — and the project Dispatch names on the issue, the one read that answers
+// it, so the row of a blocker outside this project is that project's rather than this daemon's
 // (blockers.Mirror.put).
 //
 // An answer that names no project at all is left out as a failed read is, and logged the same
@@ -185,7 +187,8 @@ func (w *workflowRuntime) readBlocker(ctx context.Context, key string) (intake.I
 		return intake.IssueStatus{}, false
 	}
 	return intake.IssueStatus{Key: key, Project: issue.Project, Status: issue.Status, Blockers: issue.BlockedBy,
-		Seq: issue.LastSeq, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Parent: parent}, true
+		Seq: issue.LastSeq, ClaimedBy: issue.Claim.Holder(), ClaimKnown: !issue.ClaimUnread, Parent: parent,
+		Labels: issue.Labels, Rank: issue.Rank}, true
 }
 
 // ownDispatchKey says whether key is an issue of this daemon's own Dispatch project, by its key's

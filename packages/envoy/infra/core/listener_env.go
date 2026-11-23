@@ -67,6 +67,10 @@ type ListenerConfig struct {
 	AgentSecretsURL      string
 	AgentSecretsAudience string
 	PublicURL            string
+	// ConsumerNames is how the listener names the JetStream consumers it creates,
+	// EnvConsumerNames: "fixed" or "fresh". "" leaves the variable unset, and the listener then
+	// runs fixed. CheckConsumerNames holds the rule.
+	ConsumerNames string
 }
 
 // TailnetHostName is the address a client reaches the listener of the tailnet machine hostname by,
@@ -117,10 +121,10 @@ func asciiLower(r rune) rune {
 //
 // This mirrors parseAllowedHosts in packages/envoy/internal/config, by hand: core may not import
 // that package, since a non-test import would put it in `go list -deps ./cmd/...`, the path list
-// a plugin release is cut from (packages/envoy/infra/AGENTS.md, "Release contract"), so an edit
-// to the listener's config would cut a plugin release. core/allowed_hosts_agreement_test.go runs
-// the same entries through both rules and keeps the copy honest, the asymmetry included: the rule
-// here runs one way, since parseAllowedHosts trims an entry and skips an empty one before it
+// a plugin release is cut from (packages/envoy/infra/README.md, "Changing the module"), so an
+// edit to the listener's config would cut a plugin release. core/allowed_hosts_agreement_test.go
+// runs the same entries through both rules and keeps the copy honest, the asymmetry included: the
+// rule here runs one way, since parseAllowedHosts trims an entry and skips an empty one before it
 // applies the shape rule, while this applies it to the entry as written. That extra strictness is
 // deliberate — Env renders the list comma-joined into the unit's docker run argument, where a
 // space would split the argument and an empty entry would render a stray comma.
@@ -143,7 +147,7 @@ func CheckAllowedHosts(input string, hosts []string) error {
 // packages/envoy/cmd/listener/brokerauth.go by hand, as the allowed-host rule above copies its
 // own: core may not import that package, since it is a main package and since a non-test import
 // would put it in `go list -deps ./cmd/...`, the path list a plugin release is cut from
-// (packages/envoy/infra/AGENTS.md, "Release contract").
+// (packages/envoy/infra/README.md, "Changing the module").
 var brokerVars = [3]struct{ input, variable string }{
 	{"agentSecretsUrl", "ENVOY_AGENT_SECRETS_URL"},
 	{"agentSecretsAudience", "ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE"},
@@ -243,7 +247,8 @@ func CheckSenderLimit(prefix string, perMinute, burst *int) (int, int, error) {
 // 0, each of which the listener refuses when it boots; CheckSenderLimit holds a component's own
 // rule for the two inputs, which also refuses a 0 an operator gave. CheckBroker owns the broker
 // check's rule, under core's own input names, so a component that renders those three under an
-// input of its own calls it with its own prefix first.
+// input of its own calls it with its own prefix first. CheckConsumerNames owns the consumer-name
+// rule, under core's own name, consumerNames, which a component checks under its own path first.
 func (c ListenerConfig) Check() error {
 	if bus.HoldsSeed(c.MachineID) {
 		return InputErrorf("machineId", "%w", SeedRefusal("machineId"))
@@ -289,7 +294,7 @@ func (c ListenerConfig) Check() error {
 	if err := CheckBroker("", c.AgentSecretsURL, c.AgentSecretsAudience, c.PublicURL); err != nil {
 		return err
 	}
-	return nil
+	return CheckConsumerNames("consumerNames", c.ConsumerNames)
 }
 
 // Env returns the listener's non-secret environment, KEY=value, in a fixed order, for the config
@@ -309,9 +314,10 @@ func (c ListenerConfig) Check() error {
 // bus.SenderMessagesPerMinuteEnvVar then bus.SenderMessageBurstEnvVar, each only when its field
 // is above 0 too. aws/rendering's ListenerEnv sets no NATSReplicas here and writes its own
 // ENVOY_NATS_REPLICAS after all of Env's variables, the sender limit's included. The broker check
-// comes last, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
-// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, so
-// a listener without one renders what it always rendered, byte for byte.
+// follows, in brokerVars's order — ENVOY_AGENT_SECRETS_URL,
+// ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE, ENVOY_PUBLIC_URL — and only on a config that sets it, and
+// EnvConsumerNames comes last, only on a config that sets it too, so a listener without either
+// renders what it always rendered, byte for byte.
 func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 	if err := c.Check(); err != nil {
 		return nil, err
@@ -373,6 +379,9 @@ func (c ListenerConfig) Env(natsURLs []string) ([]string, error) {
 		if value != "" {
 			env = append(env, brokerVars[i].variable+"="+value)
 		}
+	}
+	if c.ConsumerNames != "" {
+		env = append(env, EnvConsumerNames+"="+c.ConsumerNames)
 	}
 	return env, nil
 }

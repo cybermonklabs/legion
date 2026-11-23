@@ -15,7 +15,6 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvchunk"
@@ -35,43 +34,48 @@ type storedRow struct {
 // decodeStoredLocked is the interest copy's decode (kvwatch.Rows), called under r.mu: a record
 // stored whole is decoded as it is, and a manifest is joined from the chunks the chunk copy holds
 // (kvchunk.Chunks.Join), which the watcher delivered before it. A manifest the copy cannot join is
-// a record this build cannot decode, which the copy stores no row for.
+// a record this build cannot decode, which the copy stores no row for. So is a record naming
+// another session than its key, no machine or no update time, joined or whole: an error wrapping
+// ErrInterestUnbound (boundInterest), so the copy keeps no row for it and evicts the row it held,
+// and neither the subject index nor any read of the cache takes its topics.
 func (r *Registry) decodeStoredLocked(entry kvwatch.Entry) (storedRow, bool, error) {
 	record, layout, err := r.chunks.Join(entry.Value)
 	if err != nil {
 		return storedRow{}, false, err
 	}
-	stored, err := decodeRecord(record, layout)
+	stored, err := decodeRecord(entry.Key, record, layout)
 	return stored, err == nil, err
 }
 
-// decodeRecord decodes a record joined or read whole into the row it holds.
-func decodeRecord(record []byte, layout kvchunk.Layout) (storedRow, error) {
-	var item Interest
-	if err := json.Unmarshal(record, &item); err != nil {
+// decodeRecord decodes a record joined or read whole, stored under key, into the row it holds:
+// key's own row (boundInterest), or the error that says why it is none.
+func decodeRecord(key string, record []byte, layout kvchunk.Layout) (storedRow, error) {
+	item, err := boundInterest(key, record)
+	if err != nil {
 		return storedRow{}, err
 	}
 	return storedRow{Interest: item, layout: layout}, nil
 }
 
-// decodeEntry decodes entry, the value under sessionID that a read through kv answered, into the
-// row it stores, with the revision of the entry it was read from (kvchunk.Read, which reads a
-// record's chunks from the stream's leader and a manifest a rewrite replaced under it again). A
-// record this build cannot decode is ErrMalformedInterest, logged at WARN naming the session, with
-// the layout kvchunk.Read answered: none for a damaged chunked record (kvchunk.ErrDamaged), whose
-// chunks were never proved to be its own, so the write that replaces it deletes none of them, and
-// the joined layout for a record whose JSON does not decode, so that write deletes its chunks.
-// nats.ErrKeyNotFound is a record deleted while it was read, and any other error a read that did
-// not answer.
-func (r *Registry) decodeEntry(ctx context.Context, kv bus.KeyValue, sessionID string, entry nats.KeyValueEntry) (storedRow, uint64, error) {
-	record, layout, revision, err := kvchunk.Read(ctx, kv, sessionID, entry)
+// decodeEntry decodes value, the value under sessionID that a read through kv answered at
+// revision, into the row it stores, with the revision of the entry it was read from (kvchunk.Read,
+// which reads a record's chunks from the stream's leader and a manifest a rewrite replaced under
+// it again). A record this build cannot decode is ErrMalformedInterest, logged at WARN naming the
+// session, with the layout kvchunk.Read answered: none for a damaged chunked record
+// (kvchunk.ErrDamaged), whose chunks were never proved to be its own, so the write that replaces
+// it deletes none of them, and the joined layout for a record whose JSON does not decode or that
+// is no row of sessionID (ErrInterestUnbound), so that write deletes its chunks unless another
+// session's row names them (ownLayout). nats.ErrKeyNotFound is a record deleted while it was read,
+// and any other error a read that did not answer.
+func (r *Registry) decodeEntry(ctx context.Context, kv bus.KeyValue, sessionID string, value []byte, revision uint64) (storedRow, uint64, error) {
+	record, layout, revision, err := kvchunk.Read(ctx, kv, sessionID, value, revision)
 	if errors.Is(err, kvchunk.ErrDamaged) {
 		return storedRow{layout: layout}, revision, r.malformedRecord(sessionID, revision, err)
 	}
 	if err != nil {
 		return storedRow{}, 0, err
 	}
-	stored, err := decodeRecord(record, layout)
+	stored, err := decodeRecord(sessionID, record, layout)
 	if err != nil {
 		return storedRow{layout: layout}, revision, r.malformedRecord(sessionID, revision, err)
 	}
@@ -79,9 +83,19 @@ func (r *Registry) decodeEntry(ctx context.Context, kv bus.KeyValue, sessionID s
 }
 
 // malformedRecord is ErrMalformedInterest for sessionID's record at revision, whose cause is err,
-// logged at WARN naming the session.
+// logged at WARN naming the session: as a record naming another session where err is
+// ErrInterestUnbound, and as one this build cannot decode otherwise.
 func (r *Registry) malformedRecord(sessionID string, revision uint64, err error) error {
-	r.logger().Warn("registry read an interest record it cannot decode",
+	msg := "registry read an interest record it cannot decode"
+	if errors.Is(err, ErrInterestUnbound) {
+		msg = "registry read an interest record naming another session"
+	}
+	return r.malformedRecordAs(msg, sessionID, revision, err)
+}
+
+// malformedRecordAs is malformedRecord logged with msg.
+func (r *Registry) malformedRecordAs(msg, sessionID string, revision uint64, err error) error {
+	r.logger().Warn(msg,
 		slog.String("session_id", sessionID),
 		slog.Uint64("revision", revision),
 		slog.String("error", err.Error()),
@@ -91,14 +105,14 @@ func (r *Registry) malformedRecord(sessionID string, revision uint64, err error)
 
 // putInterestAt writes record as sessionID's interest record only while its latest revision is
 // revision, creating it when revision is 0, which names the session that had no row when its plan
-// read the bucket. replaced is the layout of the record read at revision. It reports what the write
-// stored (kvchunk.Written: the revision written, the layout record was stored in, and whether the
-// bucket took the write) and the epoch of the handle it was written through. A bucket that refused
-// the write holds another writer's row since, which is no error here (nats.ErrKeyExists, the
-// wrong-last-sequence answer a Create and an Update share), and the caller plans again over that
-// row. Each call waits no longer than ctx (bus.Bounded); a write ctx abandoned may still land, and
-// is safe for the same reason a conditional delete is: it stores only over the very revision it
-// read, so it cannot undo a write that landed after it.
+// read the bucket (createInterest). replaced is the layout of the record read at revision. It
+// reports what the write stored (kvchunk.Written: the revision written, the layout record was
+// stored in, and whether the bucket took the write) and the epoch of the handle it was written
+// through. A bucket that refused the write holds another writer's row since, which is no error
+// here (bus.IsCASConflict, the wrong-last-sequence answer a Create and an Update share), and the
+// caller plans again over that row. Each call waits no longer than ctx (bus.Bounded); a write ctx
+// abandoned may still land, and is safe for the same reason a conditional delete is: it stores
+// only over the very revision it read, so it cannot undo a write that landed after it.
 //
 // A record past one message is written as its chunks and then its manifest, the manifest with that
 // same compare-and-swap, and the chunks replaced named are deleted once it lands, unless another
@@ -120,7 +134,7 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, row Inte
 	}
 	written, err := kvchunk.Write(ctx, kv, sessionID, record, view, replaced, func(head []byte) (uint64, error) {
 		if revision == 0 {
-			return kv.Create(sessionID, head)
+			return createInterest(ctx, kv, sessionID, head)
 		}
 		return kv.Update(sessionID, head, revision)
 	}, r.now, r.logger(), interestRecord)

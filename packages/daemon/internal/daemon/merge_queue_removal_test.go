@@ -1,20 +1,14 @@
 package daemon
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -53,11 +47,11 @@ const (
 
 // dequeueWait bounds each wait of this test on the daemon's own work: an event through the
 // intake, a read of GitHub, a fact, and an outbox row's tries, the longest of whose waits here is
-// the four seconds before a row's fourth try (the outbox's retryBackoff). It is the bound a fault
-// is reported at, far above that, so a slow machine is not a failure and a row that never
-// finishes fails its case in seconds rather than at the package's deadline. dequeuePoll is how
-// often a wait asks: each question is a read of the database or of the daemon's whole log, so it
-// is not asked a hundred times a second.
+// the four seconds before a row's fourth try (the outbox's backoff, record.RetryBackoff). It is
+// the bound a fault is reported at, far above that, so a slow machine is not a failure and a row
+// that never finishes fails its case in seconds rather than at the package's deadline.
+// dequeuePoll is how often a wait asks: each question is a read of the database or of the
+// daemon's whole log, so it is not asked a hundred times a second.
 const (
 	dequeueWait = 30 * time.Second
 	dequeuePoll = 50 * time.Millisecond
@@ -94,30 +88,36 @@ const dequeueRetry = 20 * time.Millisecond
 // owedEntryRoles, workflow.OwedEntry), and no case of this test writes a phase row, so every role
 // here stands at entry 0 and was given nothing, which is owed nothing. The boot's cutover repair
 // does start a released merger in merging once, but only one whose phase row holds a READY head
-// (workflow's cutoverMergerRepair), so the repair passes over every merger here too. The only
-// resume of a released merger is therefore the delivery's own (wakeForDelivery), which the
-// record keeps as one pods.WakeDelivery row of pod_resumes. The idle release of
-// idle_rig_test.go's rig is not used: it needs the Agent Sandbox runtime over a Kubernetes
-// stand-in and a real listener, and the rows under test read only the claim's state.
+// (workflow's cutoverMergerRepair), so the repair passes over every merger here too. The entry
+// sweep's tick also queues the reconcile of each tree's news of its approved design
+// (queueOwedDesignNews), whose news-only start resumes a released merger owed news; the rig sets
+// that tick to an hour, so it never runs here, and a case that needs what changed recorded
+// records it itself, as the reconcile would. The only resume of a released merger is therefore the
+// delivery's own (wakeForDelivery), which the record keeps as one pods.WakeDelivery row of
+// pod_resumes. The idle release of idle_rig_test.go's rig is not used: it needs the Agent Sandbox
+// runtime over a Kubernetes stand-in and a real listener, and the rows under test read only the
+// claim's state.
 //
 // The reads of GitHub are counted from the moment the event is published. The daemon's per-issue
 // read asks the same path once for every issue with an open pull request as the runtime starts
 // (readIssuesAtStart), and logs no line when it ends, so the boot waits until GitHub has counted
 // that read and its reviews read, its last call, for every issue before any case publishes. The
 // per-issue read asks again only after a recorded handoff, and the merge-state ladder only after
-// an opened, synchronize, push, check, review or base-push fact, and no case records or applies
-// any of them. Each case then holds the count to the read executor's own lines (one per read), so
-// a read anything else made would fail it.
+// an opened, synchronize, push, check, review or base-push fact, a start read GitHub answered
+// `unknown`, or a second read of a conflicting head that read no answer, and no case records or
+// applies any of them: GitHub answers no read `unknown` and no head conflicting. Each case then
+// holds the count to the read executor's own lines (one per read), so a read anything else made
+// would fail it.
 //
 // Each case has an issue of its own, and each issue but the tenth's and the twelfth's is its own
-// tree root, so the sixteen share one daemon:
+// tree root, so the seventeen share one daemon:
 //
 //  1. The removal R1 is about: the issue in merging, the event at the head the record holds,
 //     GitHub answering open, the merger's pod released. GitHub is read once; the merger's claim is
 //     resumed once; the listener refuses the woken merger's topic at the row's second try, and
 //     the session takes the topic only after it; and the session is then told once, of the pull
 //     request, the head, and that the event names no reason. A row that ended on that refusal, as
-//     a phase-ended message does, would leave the merger it woke untold. The removal moves no
+//     a hook prompt's does, would leave the merger it woke untold. The removal moves no
 //     phase and writes no slot.
 //  2. GitHub's merge queue reports a removal in the same second as the merge it makes, so the read
 //     decides: GitHub answers merged, and the issue closes as the webhook's merge would close it,
@@ -144,7 +144,8 @@ const dequeueRetry = 20 * time.Millisecond
 //  9. The design gate closed and the merger's pod released: a merger the gate holds may not know
 //     the gate closed, and woken by the message it could enqueue the pull request again against
 //     the gate. The row neither wakes it nor publishes while the gate is closed, and once the test
-//     opens the gate, the merger is woken and told once.
+//     opens the gate, with what changed in the version it approves recorded, the merger is woken
+//     and told once.
 //  10. The issue's tree lingers: its root has closed, and a linger leaves every member where it
 //     stood, so the issue still stands in merging, but the close suspended the tree's merger, and
 //     the workflow no longer works the phase. An issue that is its own root leaves merging when that
@@ -168,7 +169,13 @@ const dequeueRetry = 20 * time.Millisecond
 //  16. A read queued before the record holds another pull request for the issue, at the same head,
 //     reads nothing, as case 12 holds it. No event reaches this rule: the record holds one pull
 //     request for each issue, and the event finds the issue by the number that pull request has.
+//  17. The gate open at a version the merger's phase has not taken, and the merger's pod released:
+//     a merger woken before what changed is recorded could enqueue the pull request again before
+//     it reads that change, so the row waits as the merger's start waits
+//     (mergerWaitsForTheDesignGate): it neither wakes the merger nor publishes while the change set
+//     is not recorded, and once the test records it, the merger is woken and told once.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
+	t.Parallel()
 	rig := newDequeueRig(t)
 	woken := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	merged := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
@@ -186,6 +193,8 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 	outOfWorkflow := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	mergedRecord := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	renumbered := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
+	owed := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
+	rig.oweNews(t, owed)
 	rig.boot(t)
 
 	t.Run("a released merger is woken and told once its session holds the role", func(t *testing.T) {
@@ -198,7 +207,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.wokenOnce(t, issue)
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		told := rig.told(t, issue)
 		if strings.Contains(told, "could not read") {
@@ -223,7 +232,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			return rig.phase(t, issue.key) == phase.Done
 		})
 		rig.await(t, "the read's row to finish", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRead) == 0
 		})
 		rig.readsWere(t, issue, reads, 1)
 		rig.nothingOwed(t, issue)
@@ -250,7 +259,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		})
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		if told := rig.told(t, issue); !strings.Contains(told, "could not read the pull request") {
 			t.Fatalf("the merger was told %q, want it told that the daemon could not read the pull request", told)
@@ -268,7 +277,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		applyFact(t, rig.pool, "api", "backward:"+issue.key, intake.BackwardMove{Issue: issue.key, Requester: claim.RoleMerger,
 			To: phase.Implementing, Reason: "the head needs work the merge queue showed"}, rig.engine)
 		rig.await(t, "the message's row to finish once the issue left merging", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		ended := rig.logged(t, dequeueLeftMerging, issue.key)
 		if len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), string(phase.Implementing)) {
@@ -301,7 +310,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			reads := rig.publish(t, issue, issue.head)
 			rig.await(t, "the message's row to end on the merger's claim", func() bool {
 				return len(rig.logged(t, dequeueMergerEnded, issue.key)) == 1 &&
-					rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+					outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 			})
 			if ended := rig.logged(t, dequeueMergerEnded, issue.key)[0]; ended["state"] != string(tc.state) {
 				t.Fatalf("the row ended on a merger whose claim is %v, want %s", ended["state"], tc.state)
@@ -327,6 +336,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			t.Fatalf("while the gate is closed %d resumes are recorded and the runtime resumed the merger %d times, want neither", resumed, resumes)
 		}
 		rig.nothingPublished(t, issue)
+		rig.recordChanges(t, issue)
 		approved := 2
 		putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
 			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
@@ -335,7 +345,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		})
 		rig.listener.holds(issue.topic)
 		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
-			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
 		rig.told(t, issue)
 		rig.readsWere(t, issue, reads, 1)
@@ -373,6 +383,30 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.queuedBeforeItLeft(t, renumbered, func(t *testing.T, issue dequeueIssue) {
 			rig.recordPullRequest(t, issue, func(pr *record.PullRequest) { pr.Number += 1000 })
 		}, "the record holds pull request")
+	})
+
+	t.Run("a released merger owed news of the approved design is woken only once what changed is recorded", func(t *testing.T) {
+		issue := owed
+		reads := rig.publish(t, issue, issue.head)
+		rig.await(t, "the message's row held over two tries", func() bool {
+			return rig.attempts(t, issue.key, record.OutboxKindMergeQueueRemoval) >= 2
+		})
+		if held := rig.lastError(t, issue.key, record.OutboxKindMergeQueueRemoval); !strings.Contains(held, "to be recorded") {
+			t.Fatalf("the message's row waits on %q, want what changed in the approved design to be recorded", held)
+		}
+		rig.nobodyWoken(t, issue)
+		rig.nothingPublished(t, issue)
+		rig.recordChanges(t, issue)
+		rig.await(t, "the merger woken for the message once what changed is recorded", func() bool {
+			return rig.wakes(t, issue.key) >= 1
+		})
+		rig.listener.holds(issue.topic)
+		rig.await(t, "the message's row to finish once the woken session holds the merger's role", func() bool {
+			return outboxRowsOfKind(t, rig.pool, issue.key, record.OutboxKindMergeQueueRemoval) == 0
+		})
+		rig.told(t, issue)
+		rig.readsWere(t, issue, reads, 1)
+		rig.wokenOnce(t, issue)
 	})
 }
 
@@ -431,6 +465,9 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 	rig.o.workflowTokens = &workflowTokenRecorder{}
 	rig.o.githubAPI = rig.github.url
 	rig.o.mergeStateRetry = dequeueRetry
+	// An hour: the entry sweep's tick would queue the reconcile of a tree's news, whose news-only
+	// start resumes a released merger beside the delivery's own wake (see the test's comment).
+	rig.o.entrySweep = time.Hour
 	return rig
 }
 
@@ -443,7 +480,8 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 // implementing has its implementer released too. No phase row is written, so no role of the
 // issue is behind its entry and the slot repair starts no worker of it (workflow.OwedEntry).
 // gateClosed records the root's design gate closed by a newer version of its spec than the one
-// approved.
+// approved, and the merger's phase as having taken that approved version, as the upgrade's seed
+// or the phase's entry records it (design_news_told).
 func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.ClaimState, gateClosed bool) dequeueIssue {
 	t.Helper()
 	index := len(r.issues) + 1
@@ -456,8 +494,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 		claims = append(claims, r.claim(t, key, claim.RoleImplementer, supervise.StateSuspended))
 	}
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, startedAgainIssue(r.cfg, key, key, stands), claims...)
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutPullRequest(ctx, tx, openPullRequest(issue)); err != nil {
 			return err
 		}
@@ -465,8 +502,11 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 			return nil
 		}
 		approved := 1
-		return r.records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "spec-" + key,
-			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
+		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: key, Step: record.DesignStepSpec, ArtifactID: "spec-" + key,
+			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
+			return err
+		}
+		return r.records.RaiseTold(ctx, tx, key, record.AudienceHolder, raisedTo(map[record.DesignStep]int{record.DesignStepSpec: approved}), time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
 	}
@@ -495,7 +535,7 @@ func (r *dequeueRig) seedUnderSecondRoot(t *testing.T, lingering bool) dequeueIs
 	}
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, root, merger)
 	putOutboxIssue(t, r.pool, r.records, startedAgainIssue(r.cfg, key, rootKey, phase.Merging))
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(context.Background(), tx, openPullRequest(issue))
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
@@ -543,6 +583,38 @@ func (r *dequeueRig) track(issue dequeueIssue) dequeueIssue {
 	return issue
 }
 
+// oweNews records issue's design gate open at version 2 of its spec over the version 1 its
+// merger's phase took (design_news_told), with no change set of that pair recorded: the merger is
+// owed news of version 2 that no start can carry yet (the outbox's mergerNewsUnrecorded), as it is
+// between a person's approval and the reconcile's read of what changed.
+func (r *dequeueRig) oweNews(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	if err := store.Transact(context.Background(), r.pool, func(_ context.Context, tx pgx.Tx) error {
+		ctx := context.Background()
+		approved := 2
+		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
+			LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true}); err != nil {
+			return err
+		}
+		return r.records.RaiseTold(ctx, tx, issue.key, record.AudienceHolder, raisedTo(map[record.DesignStep]int{record.DesignStepSpec: 1}), time.Now().UTC())
+	}); err != nil {
+		t.Fatalf("record the news %s's merger is owed: %v", issue.key, err)
+	}
+}
+
+// recordChanges records what changed in issue's spec from version 1 to version 2, as the
+// reconcile records a change set it read from Dispatch (the outbox's designChanges).
+func (r *dequeueRig) recordChanges(t *testing.T, issue dequeueIssue) {
+	t.Helper()
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.PutDesignChanges(context.Background(), tx, record.DesignChanges{
+			VersionPair: record.VersionPair{ArtifactID: "spec-" + issue.key, From: 1, To: 2}, State: record.DesignChangesRead,
+			Sections: []record.SectionChange{{Heading: "Scope", Change: "changed"}}, ReadAt: time.Now().UTC()})
+	}); err != nil {
+		t.Fatalf("record what changed in the spec of %s: %v", issue.key, err)
+	}
+}
+
 // closePullRequest records issue's pull request closed at its head, as the record holds it once
 // GitHub's closed is applied (recordPullRequest).
 func (r *dequeueRig) closePullRequest(t *testing.T, issue dequeueIssue) {
@@ -556,7 +628,7 @@ func (r *dequeueRig) closePullRequest(t *testing.T, issue dequeueIssue) {
 func (r *dequeueRig) recordPullRequest(t *testing.T, issue dequeueIssue, change func(*record.PullRequest)) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := r.records.PullRequest(ctx, tx, issue.key)
 		if err != nil {
 			return err
@@ -702,12 +774,12 @@ func (r *dequeueRig) queuedBeforeItLeft(t *testing.T, issue dequeueIssue, leave 
 	})
 	r.publishAs(t, r.cfg.Project+"-dequeued-again-"+issue.key, issue, issue.head)
 	r.await(t, "the second removal's read queued behind the held one", func() bool {
-		return r.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 2
+		return outboxRowsOfKind(t, r.pool, issue.key, record.OutboxKindMergeQueueRead) == 2
 	})
 	leave(t, issue)
 	release()
 	r.await(t, "both reads' rows to finish", func() bool {
-		return r.rows(t, issue.key, record.OutboxKindMergeQueueRead) == 0
+		return outboxRowsOfKind(t, r.pool, issue.key, record.OutboxKindMergeQueueRead) == 0
 	})
 	r.readsWere(t, issue, reads, 1)
 	if ended := r.logged(t, dequeueReadFinished, issue.key); len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), why) {
@@ -809,22 +881,9 @@ func (r *dequeueRig) wokenOnce(t *testing.T, issue dequeueIssue) {
 // logged is every line of the daemon's log about issue whose message starts with msg.
 func (r *dequeueRig) logged(t *testing.T, msg, issue string) []map[string]any {
 	t.Helper()
-	return slices.DeleteFunc(loggedLines(t, r.logs.String(), msg), func(entry map[string]any) bool {
-		text, _ := entry["msg"].(string)
-		return !strings.HasPrefix(text, msg) || entry["issue"] != issue
+	return slices.DeleteFunc(loggedMessages(t, r.logs.String(), msg), func(entry map[string]any) bool {
+		return entry["issue"] != issue
 	})
-}
-
-// rows is how many rows of kind the outbox holds for issue. A finished row is deleted
-// (record.Postgres.FinishOutbox).
-func (r *dequeueRig) rows(t *testing.T, issue string, kind record.OutboxKind) int {
-	t.Helper()
-	var rows int
-	if err := r.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2`,
-		issue, string(kind)).Scan(&rows); err != nil {
-		t.Fatalf("read the %s rows of %s: %v", kind, issue, err)
-	}
-	return rows
 }
 
 // attempts is how many tries the outbox has made of issue's row of kind, 0 for none.
@@ -902,98 +961,4 @@ func (r *dequeueRig) phase(t *testing.T, key string) phase.Phase {
 		t.Fatalf("read the phase of %s: the record does not hold it", key)
 	}
 	return issue.Phase
-}
-
-// dequeueListener is the Envoy listener as this test's daemon reaches it: the package's
-// noticeListener, which takes every publish, with the 404 the listener answers for a role topic no
-// live session holds (writeRoleHolderError, packages/envoy/cmd/listener/api.go, which notify
-// decodes as ErrNoHolder) for each merger's topic, counted, until the test says a session holds
-// that topic (holds). It is conflict_no_takeover_live_test.go's conflictListener in a build of
-// the package every test run compiles, which that live proof's is not.
-type dequeueListener struct {
-	notices  *noticeListener
-	mu       sync.Mutex
-	held     map[string]bool
-	refusals map[string]int
-}
-
-// dequeueEnvoyToken is the bearer the daemon of newDequeueRig presents to its Envoy listener.
-const dequeueEnvoyToken = "envoy-test-token"
-
-// newDequeueListener starts the listener and names it in cfg as Envoy's, with dequeueEnvoyToken as
-// the bearer the daemon presents to it. A request without that bearer is another process's: it is
-// answered 404 and logged (fromTheDaemon), and the listener records nothing of it.
-func newDequeueListener(t *testing.T, cfg *config.Config) *dequeueListener {
-	t.Helper()
-	l := &dequeueListener{notices: newNoticeListener(), held: map[string]bool{}, refusals: map[string]int{}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if fromTheDaemon(t, w, r, dequeueEnvoyToken) {
-			l.ServeHTTP(w, r)
-		}
-	}))
-	t.Cleanup(server.Close)
-	cfg.EnvoyURL = server.URL
-	cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
-	if err := os.WriteFile(cfg.EnvoyTokenFile, []byte(dequeueEnvoyToken+"\n"), 0o600); err != nil {
-		t.Fatalf("write the Envoy token: %v", err)
-	}
-	return l
-}
-
-// unheld makes the listener answer every publish to topic as it answers one to a role no live
-// session holds, until holds.
-func (l *dequeueListener) unheld(topic string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.held[topic] = false
-}
-
-// holds is the woken session taking topic: every later publish to it is delivered.
-func (l *dequeueListener) holds(topic string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.held[topic] = true
-}
-
-// refused is how many publishes to topic the listener refused for want of a holder.
-func (l *dequeueListener) refused(topic string) int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.refusals[topic]
-}
-
-// accepted is every publish to topic the listener delivered, oldest first.
-func (l *dequeueListener) accepted(topic string) []listenerPublish {
-	return l.notices.acceptedOn(topic)
-}
-
-func (l *dequeueListener) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost || req.URL.Path != "/v1/messages/publish" {
-		l.notices.ServeHTTP(w, req)
-		return
-	}
-	body, err := io.ReadAll(req.Body)
-	var published listenerPublish
-	if err == nil {
-		err = json.Unmarshal(body, &published)
-	}
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"read the publish: %v"}`, err), http.StatusBadRequest)
-		return
-	}
-	l.mu.Lock()
-	held, merger := l.held[published.Topic]
-	refused := merger && !held
-	if refused {
-		l.refusals[published.Topic]++
-	}
-	l.mu.Unlock()
-	if !refused {
-		req.Body = io.NopCloser(bytes.NewReader(body))
-		l.notices.ServeHTTP(w, req)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusNotFound)
-	_, _ = io.WriteString(w, `{"error":"no live session holds the role","reason":"unclaimed"}`)
 }

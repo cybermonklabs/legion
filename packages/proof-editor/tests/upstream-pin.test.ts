@@ -1,8 +1,8 @@
 /**
  * The pin has to carry every fix the fork's `library` line carries, and `upstream/` — the
- * declarations tsc reads in its place (AGENTS.md § The upstream boundary) — has to be what the
- * pinned sources emit. Both otherwise fail silently: nothing in this repository reads those
- * editor modules until a browser renders a document with them, and a stale declaration is a
+ * declarations tsc reads in its place (docs/upstream.md, "Resolving the modules") — has to be
+ * what the pinned sources emit. Both otherwise fail silently: nothing in this repository reads
+ * those editor modules until a browser renders a document with them, and a stale declaration is a
  * shape tsc believes and the runtime does not have.
  *
  * Each fix case below is one member of that line. The proof-mark rendering fix is checked by

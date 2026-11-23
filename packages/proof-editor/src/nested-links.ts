@@ -29,9 +29,9 @@
  * registering it on the editor's shared remark processor cannot change what the editor writes.
  */
 
-import { $remark } from '@milkdown/kit/utils';
-import type { Root } from '@milkdown/kit/transformer';
-import type { Transformer } from 'unified';
+import type { Root } from "@milkdown/kit/transformer";
+import { $remark } from "@milkdown/kit/utils";
+import type { Transformer } from "unified";
 
 type MdastNode = {
   type: string;
@@ -51,7 +51,7 @@ interface Piece {
 
 /** The outer link again over `children`: its own properties are `url` and `title`. */
 function linkOver(link: MdastNode, children: MdastNode[]): MdastNode {
-  return { type: 'link', url: link.url, title: link.title ?? null, children };
+  return { type: "link", url: link.url, title: link.title ?? null, children };
 }
 
 /**
@@ -64,7 +64,7 @@ function linkOver(link: MdastNode, children: MdastNode[]): MdastNode {
 function holdsLink(node: MdastNode): node is MdastNode & { children: MdastNode[] } {
   if (node.children === undefined) return false;
   for (const child of node.children) {
-    if (child.type === 'link' || holdsLink(child)) return true;
+    if (child.type === "link" || holdsLink(child)) return true;
   }
   return false;
 }
@@ -122,7 +122,7 @@ function splitLink(link: MdastNode): MdastNode[] {
  * keeps it too. A node holding no link is one part, untouched and shared rather than copied.
  */
 function splitInLabel(node: MdastNode): Piece[] {
-  if (node.type === 'link') {
+  if (node.type === "link") {
     return splitLink(node).map((sibling) => ({ hoisted: true, node: sibling }));
   }
   if (node.children === undefined) return [{ hoisted: false, node }];
@@ -144,7 +144,7 @@ function hoist(node: MdastNode): void {
   let children: MdastNode[] | null = null;
   for (let index = 0; index < original.length; index += 1) {
     const child = original[index];
-    if (child.type !== 'link') {
+    if (child.type !== "link") {
       hoist(child);
       children?.push(child);
       continue;
@@ -169,6 +169,6 @@ export function remarkHoistNestedLinks() {
 }
 
 export const libraryRemarkNestedLinksPlugin = $remark(
-  'remarkHoistNestedLinks',
-  () => remarkHoistNestedLinks as () => Transformer<Root, Root>,
+  "remarkHoistNestedLinks",
+  () => remarkHoistNestedLinks as () => Transformer<Root, Root>
 );

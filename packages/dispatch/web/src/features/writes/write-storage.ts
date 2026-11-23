@@ -1,5 +1,12 @@
-import { ApiError, WRITE_METHODS, type WriteMethod, type WriteRequest } from "../../api/client";
+import {
+  ApiError,
+  goesUnderKey,
+  WRITE_METHODS,
+  type WriteMethod,
+  type WriteRequest,
+} from "../../api/client";
 import { keySpent, SendExpiredError, SendInterruptedError, SendStoppedError } from "./keyed-write";
+import { entryNames, pageStorage, readEntry, removeEntry, type Shape, shape } from "./tab-storage";
 
 /**
  * Where every write to Dispatch waits out a reload (`write-store.ts`). Every `POST` and `PATCH`
@@ -8,9 +15,10 @@ import { keySpent, SendExpiredError, SendInterruptedError, SendStoppedError } fr
  * same write however often it is made, so the page keeps each write in `sessionStorage`, which a
  * reload keeps and closing the tab drops, from its press until Dispatch answers it, and the store
  * resumes it on load under its key. Each write is one entry, `dispatch.write:<key>`, in one
- * versioned format for every kind (`KeptWrite`): its key, its kind and how it is shown, the login
- * of the person who pressed it and when, the target its line is ordered on, where it stood and its
- * refusal, the request as it last went out, what its key has carried, and its kind's own record.
+ * versioned format for every kind (`KeptWrite`): its key and whether it goes under it, its kind
+ * and how it is shown, the login of the person who pressed it and when, the target its line is
+ * ordered on, where it stood and its refusal, the request as it last went out, what its key has
+ * carried, and its kind's own record.
  * An entry that does not parse - another version's, or damaged - is dropped when the page loads,
  * as is every entry of another person's. While any of them the reader sees is unconfirmed the
  * page asks the browser to confirm leaving (`beforeunload`), since a closed tab would lose it; a
@@ -97,62 +105,17 @@ export interface KeptWrite {
    *  write re-pressed under the key of the one it replaces (a composer's Retry, `supersede`) is
    *  kept as a write that has sent nothing and holds no request, while its key has carried that
    *  earlier press's request all the same. Every write kept here holds the field, and every one
-   *  `load` hands back: the release before this one wrote no such field, and `load` is the one
-   *  place that converts a missing one (`KeptEntry`), so nowhere else is absence a case. */
+   *  `load` hands back: the release before this one writes it too, the one before that wrote no
+   *  such field, and `load` is the one place that converts a missing one (`KeptEntry`), so
+   *  nowhere else is absence a case. */
   readonly carried: WriteMethod | null;
+  /** Whether the write goes under its key (`Write.keyed`), as its press registered it, which
+   *  the indicator reads for what its Retry does. Every write kept here holds the field, which
+   *  this release is the first to write; `load` is the one place that reads an entry an older
+   *  release wrote, which holds none (`KeptEntry`). */
+  readonly keyed: boolean;
   readonly detail: unknown;
 }
-
-/** A value's shape, checked: what a kept record is parsed by before it is trusted, and a type
- *  guard, so each is held to the type it stands for (`satisfies Shape<T>`) and nothing is cast. */
-export type Shape<T> = (value: unknown) => value is T;
-
-/** The type a shape checks for. */
-export type ShapeOf<S> = S extends Shape<infer T> ? T : never;
-
-/** The shapes a kept record is checked by: a record has each named field in its shape (a missing
- *  one reads as undefined, and others are not read), and `either` fits a value that one of its
- *  shapes fits. */
-export const shape = {
-  // `T[]`, not `readonly T[]`: `Array.isArray` proves a real array, and a kept record whose shape
-  // is checked against a request body the route table types (`CarriedBlockIds`) needs the mutable
-  // one — `readonly T[]` does not fit it, while `T[]` fits both.
-  array:
-    <T>(item: Shape<T>): Shape<T[]> =>
-    (value): value is T[] =>
-      Array.isArray(value) && value.every(item),
-  boolean: ((value) => typeof value === "boolean") as Shape<boolean>,
-  either:
-    <S extends readonly Shape<unknown>[]>(...shapes: S): Shape<ShapeOf<S[number]>> =>
-    (value): value is ShapeOf<S[number]> =>
-      shapes.some((fits) => fits(value)),
-  nullable:
-    <T>(inner: Shape<T>): Shape<T | null> =>
-    (value): value is T | null =>
-      value === null || inner(value),
-  number: ((value) => typeof value === "number" && Number.isFinite(value)) as Shape<number>,
-  oneOf:
-    <const V extends readonly (boolean | number | string | null)[]>(
-      ...values: V
-    ): Shape<V[number]> =>
-    (value): value is V[number] =>
-      values.includes(value as V[number]),
-  optional:
-    <T>(inner: Shape<T>): Shape<T | undefined> =>
-    (value): value is T | undefined =>
-      value === undefined || inner(value),
-  record:
-    <F extends Readonly<Record<string, Shape<unknown>>>>(
-      fields: F
-    ): Shape<{ readonly [K in keyof F]: ShapeOf<F[K]> }> =>
-    (value): value is { readonly [K in keyof F]: ShapeOf<F[K]> } =>
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value) &&
-      Object.entries(fields).every(([name, field]) => field(Reflect.get(value, name))),
-  string: ((value) => typeof value === "string") as Shape<string>,
-  unknown: ((_value) => true) as Shape<unknown>,
-} as const;
 
 const keptRefusalShape = shape.either(
   shape.record({ kind: shape.oneOf("interrupted", "stopped") }),
@@ -185,16 +148,17 @@ const keptRequestShape = shape.either(
   shape.record({ body: shape.unknown, method: shape.oneOf(...WRITE_METHODS), path: shape.string })
 ) satisfies Shape<KeptRequest>;
 
-/** An entry as it is read back: a kept write, whose `carried` can be missing, and the format's
- *  version. The version stands still while a field is only added: the release before this one
- *  wrote no `carried`, so an entry of its holds every other field this shape names and still
- *  loads here, and an entry this one writes holds every field that release reads - it reads no
- *  `carried` at all - so it still loads there. Every entry this release writes holds the field,
- *  as a method or as `null`; a missing one is an entry of that older shape, and `load` is the
- *  one place that converts it, so this shape is the only one that has it absent and nothing
- *  downstream of `load` reads one. */
-type KeptEntry = Omit<KeptWrite, "carried"> & {
+/** An entry as it is read back: a kept write, whose `carried` and `keyed` can be missing, and
+ *  the format's version. The version stands still while a field is only added: the release
+ *  before this one writes `carried` and no `keyed`, and the one before that wrote neither, so an
+ *  entry of theirs holds every other field this shape names and still loads here, and an entry
+ *  this one writes holds every field those releases read, and so still loads there. Every entry
+ *  this release writes holds both fields; a missing one is an entry of an older shape, and `load`
+ *  is the one place that converts it, so this shape is the only one that has either absent and
+ *  nothing downstream of `load` reads one. */
+type KeptEntry = Omit<KeptWrite, "carried" | "keyed"> & {
   readonly carried?: WriteMethod | null;
+  readonly keyed?: boolean;
   readonly version: typeof FORMAT_VERSION;
 };
 
@@ -202,6 +166,7 @@ const keptEntryShape = shape.record({
   carried: shape.optional(shape.nullable(shape.oneOf(...WRITE_METHODS))),
   detail: shape.unknown,
   key: shape.string,
+  keyed: shape.optional(shape.boolean),
   kind: shape.string,
   label: shape.string,
   login: shape.string,
@@ -312,7 +277,7 @@ export class WriteStorage {
       this.#storage?.setItem(name, JSON.stringify({ ...write, version: FORMAT_VERSION }));
     } catch {
       // The write is still made; only its reload is lost.
-      this.#remove(name);
+      removeEntry(this.#storage, name);
     }
     this.#confirm(write.key, WriteStorage.#settled(write));
   }
@@ -325,41 +290,56 @@ export class WriteStorage {
    *  reads rather than a whole record, since its caller has no reason to build one. */
   keepNothing(write: Pick<KeptWrite, "key" | "presentation" | "state">): void {
     if (this.#retired) return;
-    this.#remove(`${ENTRY_PREFIX}${write.key}`);
+    removeEntry(this.#storage, `${ENTRY_PREFIX}${write.key}`);
     this.#confirm(write.key, WriteStorage.#settled(write));
   }
 
   /** Drops the write kept under `key`: it landed, or the reader dropped its refusal. */
   forget(key: string): void {
     if (this.#retired) return;
-    this.#remove(`${ENTRY_PREFIX}${key}`);
+    removeEntry(this.#storage, `${ENTRY_PREFIX}${key}`);
     this.#confirm(key, true);
   }
 
   /** Every write `login` kept, in press order. An entry that is not one of this format's, or one
-   *  another person kept, is dropped. The one place an entry of the shape the release before
-   *  this one wrote becomes a write of this one: it holds no `carried`, and what the key of such
-   *  an entry has carried is read as that release read it, so none of the writes it kept is
-   *  decided differently here. A write is marked `sent` only as `writeUnderKey` tells the store
-   *  an attempt's request has gone out, while its request is kept from the press, before its
-   *  turn comes: so a kept request says what went out only where `sent` says one did, and a key
-   *  nothing went out under has never been seen by Dispatch. An entry this release wrote holds
-   *  the field, `null` included, and is read as it was written. */
+   *  another person kept, is dropped. The one place an entry of an older shape becomes a write of
+   *  this one: it holds no `carried`, or no `keyed`, and each is read as the release that wrote
+   *  it read it, so none of the writes it kept is decided differently here. A write is marked
+   *  `sent` only as `writeUnderKey` tells the store an attempt's request has gone out, while its
+   *  request is kept from the press, before its turn comes: so a kept request says what went out
+   *  only where `sent` says one did, and a key nothing went out under has never been seen by
+   *  Dispatch. An entry this release wrote holds both fields, `null` included, and is read as it
+   *  was written. */
   load(login: string): KeptWrite[] {
     const storage = this.#storage;
     if (storage === undefined || this.#retired) return [];
     const loaded: KeptWrite[] = [];
-    for (const name of this.#names(storage)) {
-      const entry = this.#read(storage, name);
-      if (entry === undefined || `${ENTRY_PREFIX}${entry.key}` !== name || entry.login !== login) {
-        this.#remove(name);
+    for (const name of entryNames(storage, ENTRY_PREFIX)) {
+      const entry = readEntry(storage, name);
+      if (
+        !keptEntryShape(entry) ||
+        `${ENTRY_PREFIX}${entry.key}` !== name ||
+        entry.login !== login
+      ) {
+        removeEntry(storage, name);
         continue;
       }
-      const { carried, version: _version, ...write } = entry;
+      const { carried: keptCarried, keyed, version: _version, ...write } = entry;
       // What that older release derived, read only where the entry itself holds no record: one
       // this release wrote is read as written, the `null` of a key nothing went out under too.
       const derived = write.sent && write.request !== null ? write.request.method : null;
-      loaded.push({ ...write, carried: carried === undefined ? derived : carried });
+      const carried = keptCarried === undefined ? derived : keptCarried;
+      // The method the write makes is its kept request's - the one its press named, or the one
+      // it last went out as - else the one its key carried. With neither, it is a write its kind
+      // makes again from its own record (`WriteKind.resume`) that nothing has gone out under, and
+      // the release that kept it said of every such write that its Retry asks again under its
+      // key, which it is read as here.
+      const method = write.request?.method ?? carried;
+      loaded.push({
+        ...write,
+        carried,
+        keyed: keyed ?? (method === null || goesUnderKey(method)),
+      });
     }
     return loaded.sort((a, b) => a.pressedAt - b.pressedAt);
   }
@@ -385,31 +365,7 @@ export class WriteStorage {
     this.#unconfirmed.clear();
     const storage = this.#storage;
     if (storage === undefined) return;
-    for (const name of this.#names(storage)) this.#remove(name);
-  }
-
-  #remove(name: string): void {
-    try {
-      this.#storage?.removeItem(name);
-    } catch {
-      // A storage that refuses even a removal holds nothing this page wrote.
-    }
-  }
-
-  /** The names of every entry, read before any is removed. */
-  #names(storage: Storage): string[] {
-    return Array.from({ length: storage.length }, (_, index) => storage.key(index)).filter(
-      (name): name is string => name?.startsWith(ENTRY_PREFIX) === true
-    );
-  }
-
-  #read(storage: Storage, name: string) {
-    try {
-      const value: unknown = JSON.parse(storage.getItem(name) ?? "null");
-      return keptEntryShape(value) ? value : undefined;
-    } catch {
-      return undefined;
-    }
+    for (const name of entryNames(storage, ENTRY_PREFIX)) removeEntry(storage, name);
   }
 
   /** Marks the write under `key` confirmed - landed, refused or dropped - or still out, and asks
@@ -452,15 +408,6 @@ export class WriteStorage {
 /** What says the page is plainly still the person's after a navigation that did not happen: a
  *  press on it, or the page shown again. */
 const STAYING = ["keydown", "pageshow", "pointerdown"] as const;
-
-/** The page's sessionStorage, or undefined where the browser refuses it the page. */
-function pageStorage(): Storage | undefined {
-  try {
-    return window.sessionStorage;
-  } catch {
-    return undefined;
-  }
-}
 
 let pageWrites: WriteStorage | undefined;
 

@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -59,11 +60,11 @@ func (h *harness) abandonSession(refusal string) {
 // A claim the provider refused out of its budget fails, and the retry of it leaves that session
 // behind. The claim records which session it abandoned and why, since nothing else does — the
 // session itself stays in its store — and the first task the agent that replaces it is given names
-// that session, the cause in the provider's own words (the context size it refused at among them),
-// the issue's branch and the handoffs committed on it. Nothing in a new session says that an older
-// one existed, so a worker given the bare task would read an empty transcript as a fresh start and
-// do again what the abandoned session already pushed (dispatch://INFRA-714, item 4 of the refusal
-// section).
+// that session, quoted, the cause in the provider's own words (the context size it refused at
+// among them), the issue's branch and the handoffs committed on it. Nothing in a new session says
+// that an older one existed, so a worker given the bare task would read an empty transcript as a
+// fresh start and do again what the abandoned session already pushed (dispatch://INFRA-714, item
+// 4 of the refusal section).
 func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *testing.T) {
 	h := newHarness(t)
 	refusal := "the provider ended the turn with an error at 226k tokens of context"
@@ -86,6 +87,9 @@ func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *
 		if !strings.Contains(first, want) {
 			t.Errorf("the first task of the fresh session does not name %q:\n%s", want, first)
 		}
+	}
+	if quoted := "The session this claim ran before this one, " + strconv.Quote(session) + ", was abandoned"; !strings.Contains(first, quoted) {
+		t.Errorf("the first task of the fresh session does not quote the session it replaced, %q:\n%s", quoted, first)
 	}
 	if !strings.HasSuffix(first, "Continue Workflow. Issue: LEGION-209. Phase: implementing.") {
 		t.Errorf("the first task of the fresh session is %q, want it to end with the task itself", first)
@@ -186,12 +190,13 @@ func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 }
 
 // The abandoned session's sentence is told at the confirmation of the prompt that carried it, by
-// the rule the record of a let-go follows (confirm). The pinned Oh My Pi acknowledges a prompt at
-// its admission and can then answer it busy (lateRefused): the fresh agent is in a turn of its own
-// and never read that prompt, so the abandonment is still untold and the task the turn's end sends
-// names the session again. The turn that takes that prompt tells it, by that delivery. A late busy
-// answer to the same prompt then says that turn was another's: the confirmation goes back, and the
-// telling with it, so the next prompt names the session again, and the turn that takes it tells it.
+// the rule the record of a let-go follows (confirmCarrying). The pinned Oh My Pi acknowledges a
+// prompt at its admission and can then answer it busy (lateRefused): the fresh agent is in a turn
+// of its own and never read that prompt, so the abandonment is still untold and the task the
+// turn's end sends names the session again. The turn that takes that prompt tells it, by that
+// delivery. A late busy answer to the same prompt then says that turn was another's: the
+// confirmation goes back, and the telling with it, so the next prompt names the session again,
+// and the turn that takes it tells it.
 func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
 	h := newHarness(t)
 	refusal := "the provider ended the turn with an error at 226k tokens of context"

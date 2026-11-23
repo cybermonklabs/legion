@@ -17,7 +17,7 @@ body: |-
   `ls-remote` refuse the write as before, naming the limit and what the read said. `legion gh`
   also answers the shared public leak check's own visibility read (`gh api --hostname github.com
   repos/<slug> --jq .visibility`) itself by the same rule, printing the word, or nothing with exit
-  1 where no read answers. That read is the one the check makes for every `theorem-labs/`
+  1 where no read answers. That read is the one the check makes for every `example-org/`
   repository before the guard's own, so this is how such a push now gets through in a spent hour.
   It is read fresh, taking no kept answer and keeping none: the check counts the commits of
   another remote it reads public as held and does not scan them, so a stale public would let a

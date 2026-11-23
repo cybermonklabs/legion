@@ -52,6 +52,30 @@ type fakeGitHub struct {
 	// zero is GitHub's hour. tokenExpiry records each minted token's expiry for tokenExpired.
 	tokenLifetime time.Duration
 	tokenExpiry   sync.Map
+	// installationStatus, keyed by "owner/repo", answers that repository's installation lookup
+	// with the status and GitHub's error body rather than the installation: 404 is a repository
+	// the App is not installed on, or one deleted. answerInstallation sets it, under mu, since a
+	// test changes it between passes.
+	mu                 sync.Mutex
+	installationStatus map[string]int
+}
+
+// answerInstallation makes the installation lookup of repo ("owner/repo") answer status, and
+// answer the installation again for a status of zero.
+func (f *fakeGitHub) answerInstallation(repo string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.installationStatus == nil {
+		f.installationStatus = map[string]int{}
+	}
+	f.installationStatus[repo] = status
+}
+
+// installationAnswer is the status answerInstallation set for repo, zero for none.
+func (f *fakeGitHub) installationAnswer(repo string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.installationStatus[repo]
 }
 
 // tokenExpired reports whether r's bearer is an installation token this fake minted whose expiry
@@ -69,6 +93,11 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		installationRepos: []string{"acme/widgets"},
 	}
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
+		if status := f.installationAnswer(r.PathValue("owner") + "/" + r.PathValue("repo")); status != 0 {
+			w.WriteHeader(status)
+			fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
+			return
+		}
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"id":          f.installID,
 			"app_slug":    "delivery-test",
@@ -143,16 +172,24 @@ func (f *fakeGitHub) handle(pattern string, handler http.HandlerFunc) {
 	f.mux.HandleFunc(pattern, handler)
 }
 
-func (f *fakeGitHub) newTestClient() *githubapp.Client {
-	t := f.t
+// newTestClient builds the App client this fake answers, with options (a shared rate limit,
+// githubapp.WithLimits) where a test needs them.
+func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Client {
+	f.t.Helper()
+	return newAppClient(f.t, githubtest.Spec{Handle: f.mux.ServeHTTP}, options...)
+}
+
+// newAppClient is a GitHub App client, signed with a key made for the test, of the GitHub
+// stand-in spec describes, with options where a test needs them.
+func newAppClient(t *testing.T, spec githubtest.Spec, options ...githubapp.Option) *githubapp.Client {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	base := githubtest.Server(t, githubtest.Spec{Handle: f.mux.ServeHTTP})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	base := githubtest.Server(t, spec)
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base, options...)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

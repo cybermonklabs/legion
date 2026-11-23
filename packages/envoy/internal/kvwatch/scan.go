@@ -50,7 +50,7 @@ func (s *KeyScan) count(entry Entry) bool {
 //
 // A snapshot short of the bucket is not a reading of it, so a scan that did not reach the end of
 // the bucket fails the caller instead of handing it what happened to arrive. The jetstream watcher
-// (nats.go v1.50.0 jetstream/kv.go) ends a scan two ways: it sends a nil entry once it has
+// (nats.go v1.55.0 jetstream/kv.go) ends a scan two ways: it sends a nil entry once it has
 // delivered every existing key, and it closes its updates with no nil at all when its subscription
 // ends first, an ordered consumer it could not recreate or a closed connection. It has no idle
 // timer, so the scan holds its own: a scan that delivers no entry for idle gives up as timed out.

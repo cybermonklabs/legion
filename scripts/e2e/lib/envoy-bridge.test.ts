@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { bridgeConfigFromEnvironment, envelopeValidation, redactUpstream } from "./envoy-bridge";
+import { randomBytes } from "node:crypto";
+import { connect, nkeys } from "nats";
+import { LoggableError } from "../../../packages/envoy-client/src/errors";
+import { natsDialFailure } from "../../../packages/envoy-client/src/nats-connection";
+import {
+  bridgeConfigFromEnvironment,
+  bridgeFailureLine,
+  bridgeReadyLine,
+  envelopeValidation,
+} from "./envoy-bridge";
 
 const currentEnvelope = (overrides: Record<string, unknown> = {}) => ({
   event_id: "evt-1",
@@ -89,6 +98,9 @@ describe("bridgeConfigFromEnvironment", () => {
       ["nats://ok.example:4222#nats://canary-g:4222", "canary-g"],
       ["nats://canary-h.example:4222,nats://canary-i.example:4222", "canary-"],
       ["nats://canary%zz.example:4222", "canary"],
+      // nats.js ends the host at a `\` (it reads the URL as an http: one), so this dials the bare
+      // name canary-j, which only a resolver's search domain completes
+      ["nats://canary-j\\en@envoy-nats.tailnet.example:4222", "canary-j"],
       ["::", "::"],
     ] as const) {
       const refusal = (() => {
@@ -128,25 +140,100 @@ describe("bridgeConfigFromEnvironment", () => {
   });
 });
 
-describe("redactUpstream", () => {
-  test("puts the variable's name in place of the value, its user info, and its host", () => {
-    const upstream = "nats://user:canary-pw@Canary-Host.tailnet.example:4222";
-    for (const message of [
-      `"http://user:canary-pw@canary-host.tailnet.example:4222" cannot be parsed as a URL.`,
-      "getaddrinfo ENOTFOUND canary-host.tailnet.example",
-      `connect to ${upstream} failed`,
-    ]) {
-      const redacted = redactUpstream(message, upstream);
-      expect(redacted).toContain("SMOKE_UPSTREAM_NATS");
-      expect(redacted.toLowerCase()).not.toContain("canary");
-    }
+/** What real nats.js throws when it fails to connect to `server`: no server runs there. */
+async function realFailure(server: string): Promise<unknown> {
+  try {
+    const connection = await connect({ servers: server, reconnect: false, timeout: 5_000 });
+    await connection.close();
+  } catch (error) {
+    return error;
+  }
+  throw new Error(`${server} connected, which this row needs it not to`);
+}
+
+/** Everything an error carries that an uncaught one prints: its message and Bun's `input`. */
+const carried = (error: unknown) =>
+  `${error instanceof Error ? error.message : String(error)} ${String((error as { input?: unknown }).input ?? "")}`.toLowerCase();
+
+// Neither connection's setting reaches a line: the rig's NATS (SMOKE_RIG_NATS) may hold a
+// credential, and the operator's upstream names production infrastructure and may hold one too.
+// Each URL's user info is joined here, so the source holds no credential-bearing URL for the push
+// leak check to find.
+describe("the bridge's output lines", () => {
+  const userinfo = (...parts: string[]) => `${parts.join(":")}@`;
+  const canary = () => `canary${randomBytes(4).toString("hex")}`;
+
+  test("the readiness line names both servers by their variables alone", () => {
+    const config = bridgeConfigFromEnvironment({
+      SMOKE_REPO: "a/b",
+      SMOKE_RIG_NATS: `nats://${userinfo("rig", "canary-rig-pw")}172.30.0.1:31000`,
+      SMOKE_UPSTREAM_NATS: "nats://envoy-nats.tailnet.example:4222",
+    });
+    const line = bridgeReadyLine(config);
+    expect(line).toContain("upstream=SMOKE_UPSTREAM_NATS downstream=SMOKE_RIG_NATS");
+    expect(line.toLowerCase()).not.toContain("canary");
+    expect(line).not.toContain("172.30.0.1");
   });
 
-  test("leaves a message that does not quote the upstream as it is", () => {
-    expect(redactUpstream("CONNECTION_REFUSED", "nats://envoy-nats.tailnet.example:4222")).toBe(
-      "CONNECTION_REFUSED"
+  // Each row holds first that nats.js's own error carries the secret, so it can fail for the leak.
+  // An upstream nats.js cannot read is refused before any dial (bridgeConfigFromEnvironment).
+  const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
+  const secrets = { host: canary(), rigPassword: canary(), rigToken: canary() };
+  test.each([
+    [
+      "an upstream host the resolver cannot find",
+      "upstream",
+      `nats://${userinfo("user", "pw")}${secrets.host}.e2-proof.invalid:4222`,
+      secrets.host,
+    ],
+    [
+      "a rig server that does not parse",
+      "rig",
+      `nats://${userinfo("rig", secrets.rigPassword)}172.30.0.1:99999`,
+      secrets.rigPassword,
+    ],
+    ["a rig seed pasted as the host", "rig", `nats://${seed}:4222`, seed],
+    [
+      "a rig token with an unencoded /",
+      "rig",
+      `nats://${userinfo(`${secrets.rigToken}/def+gh==`)}172.30.0.1:31000`,
+      secrets.rigToken,
+    ],
+  ] as const)(
+    "%s: the failure line carries none of it",
+    async (_, which, server, secret) => {
+      const config = bridgeConfigFromEnvironment({
+        SMOKE_REPO: "a/b",
+        SMOKE_RIG_NATS: which === "rig" ? server : "nats://172.30.0.1:31000",
+        SMOKE_UPSTREAM_NATS:
+          which === "upstream" ? server : "nats://envoy-nats.tailnet.example:4222",
+      });
+      const error = await realFailure(server);
+      expect(carried(error)).toContain(secret.toLowerCase());
+      const lines = [bridgeReadyLine(config), bridgeFailureLine(error, config)].join("\n");
+      expect(lines.toLowerCase()).not.toContain(secret.toLowerCase());
+      expect(lines).toContain("BRIDGE UNHEALTHY ");
+    },
+    30_000
+  );
+
+  test("a failed dial reads as the bridge's own line, the upstream named by its variable", async () => {
+    const config = bridgeConfigFromEnvironment({
+      SMOKE_REPO: "a/b",
+      SMOKE_RIG_NATS: "nats://172.30.0.1:31000",
+      SMOKE_UPSTREAM_NATS: "nats://envoy-nats.tailnet.example:4222",
+    });
+    // As runBridge's dial wraps a failure.
+    const refused = new LoggableError(
+      natsDialFailure("SMOKE_UPSTREAM_NATS", await realFailure("nats://127.0.0.1:1"))
     );
-  });
+    expect(bridgeFailureLine(refused, config)).toBe(
+      "BRIDGE UNHEALTHY could not connect to NATS at SMOKE_UPSTREAM_NATS: CONNECTION_REFUSED"
+    );
+    expect(bridgeFailureLine(new Error(`refused ${canary()}`), config)).toBe(
+      "BRIDGE UNHEALTHY Error (message withheld)"
+    );
+  }, 30_000);
 });
 
 describe("envelopeValidation", () => {

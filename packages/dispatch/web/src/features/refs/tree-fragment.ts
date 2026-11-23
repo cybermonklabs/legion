@@ -23,6 +23,39 @@ function childrenOf(node: DisplayTree): readonly DisplayTree[] | undefined {
   return content;
 }
 
+/** The words a node holds, its children's included, with no symbol the author typed to format
+ *  them. It is also what `pmdoc.FindQuote` matches a quote against, since a quote names the
+ *  document's text and never its markdown. The server writes one space wherever two text runs
+ *  are not adjacent in the document's own positions (`pmdoc.buildFlattenedText`), which is
+ *  wherever anything was entered, left or passed between them: the break inside a wrapped line,
+ *  or the end of one list item and the start of the next. Two runs are adjacent only as
+ *  consecutive children of one parent, so everything else this walk crosses opens the space the
+ *  server wrote. */
+export function wordsOf(node: DisplayTree): string {
+  let words = "";
+  let apart = false;
+  const read = (current: DisplayTree): void => {
+    const text = textOf(current);
+    if (text !== undefined) {
+      words += apart && words !== "" ? ` ${text}` : text;
+      apart = false;
+      return;
+    }
+    // The node's own open position, and its close once its children are read; a leaf that is no
+    // text, a hard break among them, takes the one position it is.
+    apart = true;
+    const children = childrenOf(current);
+    if (children !== undefined) {
+      for (const child of children) {
+        read(child);
+      }
+      apart = true;
+    }
+  };
+  read(node);
+  return words;
+}
+
 /** What a cut of one node left: the node to keep, absent where nothing of it fits, and how many
  *  characters of the budget are still free. */
 interface CutNode {

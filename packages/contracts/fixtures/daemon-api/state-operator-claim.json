@@ -32,7 +32,8 @@
             "pane": "%1"
           }
         },
-        "pluginContract": 0
+        "pluginContract": 0,
+        "updateState": "none"
       },
       "workers": {}
     }
@@ -44,9 +45,7 @@
   "claimsToRefresh": 0,
   "capabilities": [],
   "repositories": {
-    "owners": [],
-    "mapped": [],
-    "refused": [],
+    "live": [],
     "withoutWebhookApp": [],
     "caches": []
   },

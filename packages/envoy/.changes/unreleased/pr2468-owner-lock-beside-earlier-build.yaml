@@ -1,0 +1,28 @@
+kind: Changed
+body: |-
+    A pod of this release and a pod of an earlier one exclude each other's writes to one issue,
+    document or project during a rolling release, in both directions. Migration
+    `20261115100924_server_processes_owner_lock_protocol` adds
+    `server_processes.owner_lock_protocol`, and `20261115200014_owner_lock_legacy_gate` adds
+    `dashboard_builds.owner_lock_protocol`, each an integer with the constant default 0, so no row
+    is rewritten; a pod of this release writes 1 in both, and a pod of an earlier release, which
+    serialises writers on the owner's row, leaves 0. An earlier release counts as present while a
+    pod of it has reported within the last 10 minutes, or for an hour after one last started: its
+    boot's dashboard publish, its registration and the return of a lapsed registration each stamp
+    that start, through a trigger, and the migration stamps it from the newest dashboard publish of
+    an earlier release already stored, when that is within the hour. While one is present, a write
+    of this release takes the owner's row too (`for no key update`, the Inbox's `for share`, a
+    background pass's `skip locked`) right after its advisory lock and before it reads what it
+    decides on, which holds a transaction id through that write's reads and costs a guarded read
+    one more round trip. With none present it takes the advisory lock alone, behind a shared lock
+    of a gate that it tries and never waits for. The trigger takes the gate exclusively, so a pod of
+    an earlier release that starts, as a rollback starts one, waits at its dashboard publish until
+    every write that holds the gate has committed, and a write that starts while it waits takes the
+    row instead. The publish gives up at 60 seconds, as every earlier release's does; a
+    registration's wait is bounded at 5 seconds, since it holds the lock every pod's heartbeat
+    takes, after which a starting pod of the earlier release exits before it serves and a lapsed
+    one tries again at its next heartbeat. The check and the gate ride in the lock's own
+    statement. Each pod logs once when it starts or stops taking the row.
+time: 2026-11-15T10:09:24.000000000Z
+custom:
+    Issue: pr2468

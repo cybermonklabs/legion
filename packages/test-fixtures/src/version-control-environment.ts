@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
 
 /** The identity jj commits as, which no configuration of the host supplies. */
@@ -51,10 +51,14 @@ const leakCheckPointer = "public-leak-check/path";
  * `HOME` — whose content is the path of the check. A push whose environment names the check in
  * none of the three is refused with a setup error rather than made.
  *
- * The first source that names something wins, even where the file it names is not there: that is
- * the guard's own order, and the guard reports such a name as the missing check it is. A fixture
- * that fell through to the next source instead would hand a spawned git a check this machine's own
- * push would never run.
+ * The first source that names or holds something wins, a broken one included: that is the guard's
+ * own order, and the guard reports a broken setup as the broken check it is. A `PUBLIC_LEAK_CHECK`
+ * is answered as it is named, whatever is there. A pointer file that names nothing or cannot be
+ * read is answered as the pointer file's own path. A `public-leak-check.sh` on `PATH` that is no
+ * executable — a dangling link, a file with no execute bit, a directory — is answered as that path,
+ * but only where no pointer file names a check, since the guard reads the pointer file first, as the
+ * check's own pre-push hook does. A fixture that fell through to the next source instead would hand
+ * a spawned git a check this machine's own push would never run, or none where the guard refuses.
  *
  * The `PATH` search is the guard's own (`packages/daemon/internal/lookpath`, `On`): the entries in
  * order, absolute ones only, and the first that holds a file with an execute bit.
@@ -64,6 +68,7 @@ export function sharedPublicLeakCheck(
 ): string | undefined {
   const named = environment[leakCheckVariable];
   if (named !== undefined && named !== "") return named;
+  let unusable: string | undefined;
   for (const entry of (environment["PATH"] ?? "").split(delimiter)) {
     if (entry === "" || !isAbsolute(entry)) continue;
     const candidate = join(entry, leakCheckName);
@@ -71,18 +76,33 @@ export function sharedPublicLeakCheck(
       const found = statSync(candidate);
       if (found.isFile() && (found.mode & 0o111) !== 0) return candidate;
     } catch {
-      // No check on this entry: the next one.
+      // Nothing that runs on this entry: the next one.
+    }
+    try {
+      lstatSync(candidate);
+      unusable ??= candidate;
+    } catch {
+      // Nothing of the check's name at all on this entry.
     }
   }
   const configHome = configurationHome(environment);
-  if (configHome === undefined) return undefined;
+  if (configHome === undefined) return unusable;
+  const pointer = join(configHome, leakCheckPointer);
   let pointed: string;
   try {
-    pointed = readFileSync(join(configHome, leakCheckPointer), "utf8").trim();
+    pointed = readFileSync(pointer, "utf8").trim();
   } catch {
-    return undefined;
+    // Only a pointer file that is not there at all names nothing; any other failure to read it (a
+    // directory, a parent that is a file, a file it may not read) is a broken setup at its path, as
+    // the guard's own `os.Lstat` reads it.
+    try {
+      lstatSync(pointer);
+      return pointer;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? unusable : pointer;
+    }
   }
-  return pointed === "" ? undefined : pointed;
+  return pointed === "" ? pointer : pointed;
 }
 
 /** The configuration home of an environment, the way the leak guard reads it. */

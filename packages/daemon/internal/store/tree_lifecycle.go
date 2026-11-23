@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -39,7 +40,7 @@ func (s *Store) OpenOperatorTreeLifecycle(ctx context.Context, project, tree str
 func (s *Store) openTreeLifecycle(ctx context.Context, project, tree string, authority treelifecycle.Authority,
 	created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error) {
 	var lifecycle treelifecycle.Lifecycle
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		opened, err := treelifecycle.Open(ctx, tx, project, tree, authority)
 		if err != nil {
 			return err
@@ -67,25 +68,21 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // launch; runtime work happens after this transaction commits. The project controller's claim
 // (`controller: daemon`) belongs to no tree, so it binds no lifecycle: it is written at epoch zero.
 func (s *Store) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
-	var queued bool
-	err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if claim.IsController(c.Role, c.Issue, c.Tree) {
 			c.TreeEpoch = 0
-			queued, err = s.putClaim(ctx, tx, c)
-			return err
+			return s.putClaim(ctx, tx, c)
 		}
 		epoch, err := treelifecycle.BindWork(ctx, tx, c.Project, c.Tree)
 		if err != nil {
 			return err
 		}
 		c.TreeEpoch = epoch
-		queued, err = s.putClaim(ctx, tx, c)
-		return err
+		return s.putClaim(ctx, tx, c)
 	})
 	if err != nil {
 		return supervise.Claim{}, fmt.Errorf("admit claim %s: %w", c.Token, err)
 	}
-	s.committedClaim(c, queued)
 	return c, nil
 }
 
@@ -97,7 +94,7 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 	if claim.IsController(c.Role, c.Issue, c.Tree) {
 		return nil
 	}
-	return s.Tx(ctx, func(tx pgx.Tx) error {
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.CheckWork(ctx, tx, c.Project, c.Tree, c.TreeEpoch); err != nil {
 			return fmt.Errorf("launch claim %s: %w", c.Token, err)
 		}
@@ -116,7 +113,7 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
 	var reserved bool
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err
 		}
@@ -166,7 +163,7 @@ func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree st
 // cleanup confirmed reserves nothing, so the operator's retry answers as the finished close it is.
 func (s *Store) ReserveOperatorTreeCleanup(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		reserved, err := treelifecycle.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityOperator)
 		if err != nil {
 			return err
@@ -187,10 +184,10 @@ func (s *Store) ReserveOperatorTreeCleanup(ctx context.Context, project, tree st
 // Read after the tree's cleanup reservation committed, it is the tree's complete runnable
 // population: no later claim can bind to the reserved epoch, and a claim that won before the
 // reservation is already stored, whether or not its process launched yet. A claim whose issue has
-// since moved to another tree (a child re-admitted as a root of its own) and that runs nothing is
-// not the tree's: its new tree re-points it before it starts again (supervise.Machine.Retree), and
+// since moved to another tree and runs nothing is not this tree's: its next start re-points it, and
 // waiting on it would hold this tree's cleanup for as long as the new tree leaves it idle. "Runs
-// nothing" is Retree's own set (supervise.RunsNothingStates), retired already excluded.
+// nothing" is Retree's own set (supervise.RunsNothingStates), retired already excluded. One that
+// still runs is waited on, since it still runs in this tree's resources.
 func pendingTreeClaims(ctx context.Context, tx pgx.Tx, project, tree string) ([]string, error) {
 	rows, err := tx.Query(ctx, `select c.token, c.state from claims c where c.project = $1 and c.tree = $2 and c.state <> 'retired'
 		and not (c.state = any($3) and exists (select 1 from issues i where i.key = c.issue and i.tree <> $2))
@@ -227,8 +224,14 @@ type TreeReleaser interface {
 // tree's resources and the reservation is confirmed, after which only a fresh root admission opens
 // the tree's next epoch. A caller whose reservation is no longer current releases nothing. A retry
 // after a failed release runs it again: releasing what is already gone succeeds.
+//
+// The release deletes every pod of the tree, so the transaction that confirms it also ends the
+// pause's hold of each of them (endTreePausePodHoldsTx, decision 13 of dispatch://INFRA-3759): a
+// hold of a deleted pod would hold nothing, and a project release would name a pod that is gone.
+// The confirmation goes first, since it takes treelifecycle.Serialize, which every writer of a
+// pod hold takes before the issue's lock (LockIssueForPause).
 func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser TreeReleaser) error {
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := treelifecycle.CheckReservation(ctx, tx, project, tree, epoch); err != nil {
 			return err
 		}
@@ -247,8 +250,11 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 	if err := releaser.CleanupTree(ctx, tree); err != nil {
 		return fmt.Errorf("release the resources of tree %s: %w", tree, err)
 	}
-	return s.Tx(ctx, func(tx pgx.Tx) error {
-		return treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch)
+	return Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := treelifecycle.ConfirmCleanup(ctx, tx, project, tree, epoch); err != nil {
+			return err
+		}
+		return endTreePausePodHoldsTx(ctx, tx, project, tree, time.Now().UTC())
 	})
 }
 
@@ -256,8 +262,10 @@ func (s *Store) CleanupReservedTree(ctx context.Context, project, tree string, e
 // releasing. Such a tree's resources are its cleanup's to delete, and no orphan sweep's.
 func (s *Store) TreeLive(ctx context.Context, project, tree string) (bool, error) {
 	var live bool
-	err := s.pool.QueryRow(ctx, `select exists (select 1 from tree_lifecycles
-		where project = $1 and tree = $2 and cleanup_confirmed_at is null)`, project, tree).Scan(&live)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select exists (select 1 from tree_lifecycles
+			where project = $1 and tree = $2 and cleanup_confirmed_at is null)`, project, tree).Scan(&live)
+	})
 	if err != nil {
 		return false, fmt.Errorf("read the lifecycle of tree %s: %w", tree, err)
 	}
@@ -279,16 +287,24 @@ func (s *Store) TreeLive(ctx context.Context, project, tree string) (bool, error
 // tree whose cleanup confirmed holds none. The orphan sweep keeps a Sandbox whose home is the
 // tree it is labelled with; a tree's cleanup deletes every Sandbox of its own tree, carrying
 // nothing over, since an issue pod's disk goes with its pod and its next launch makes both again.
+//
+// The record is the project's own (lower(project) = project, the token, as readIdleView reads
+// it): the issues table holds every project's records, and the Sandbox of the operator's spawn
+// of another project's issue is this project's, labelled with that issue. That project's record
+// of the issue is no record of this one's, so it keeps no such Sandbox past its own tree, whatever
+// it says of that project's line, linger or hand-over.
 func (s *Store) IssueSandboxHome(ctx context.Context, project, issue string) (string, error) {
 	var home string
-	err := s.pool.QueryRow(ctx, `select coalesce((select case
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select coalesce((select case
 			when exists (select 1 from handovers h where h.issue = i.key and not h.cancelled and h.tree = i.tree) then i.key
 			when exists (select 1 from tree_lifecycles l where l.project = $1 and l.tree = i.tree) then
 				case when exists (select 1 from tree_lifecycles l where l.project = $1 and l.tree = i.tree and l.cleanup_confirmed_at is null)
 					then i.tree else '' end
 			when (i.status = 'todo' and i.handed_over and i.key = i.tree) or i.linger_until > now() then i.tree
 			else '' end
-		from issues i where i.key = $2), '')`, project, issue).Scan(&home)
+		from issues i where i.key = $2 and lower(i.project) = $1), '')`, project, issue).Scan(&home)
+	})
 	if err != nil {
 		return "", fmt.Errorf("read the tree issue %s's Sandbox belongs to: %w", issue, err)
 	}

@@ -29,8 +29,9 @@ const (
 func seedMirrorChild(t *testing.T, pool *pgxpool.Pool, key, status, parent string, waits ...string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		row := record.DispatchIssueRow{Key: key, Project: testProject, Status: status, Blockers: waits, Seq: 1, Parent: parent}
-		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
+		reading := record.DispatchReading{Key: key, Project: testProject, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)}
+		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, reading); err != nil {
 			t.Fatalf("seed the mirror of %s: %v", key, err)
 		}
 	})

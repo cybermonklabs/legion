@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import {
@@ -9,28 +10,23 @@ import {
   secondaryButtonCompact,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import {
-  expiredRetryNote,
-  SendExpiredError,
-  SendInterruptedError,
-  SendStoppedError,
-  sameKeyRetryNote,
-} from "./keyed-write";
+import { focusOnDocument } from "../shell/roving";
+import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
 import { useWriteSelection, useWrites, type Write } from "./write-store";
 
-/** Why the refused write was not saved, in the reader's words. */
-function refusalReason(refusal: Error): string {
-  if (refusal instanceof SendInterruptedError) {
-    return `this page was closed before Dispatch confirmed it. ${sameKeyRetryNote("saved")}`;
+/** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
+ *  verdict - stopped, its key run out, or interrupted by a reload - may have landed, and what its
+ *  Retry does is `retryNote`'s, by whether the write goes under its key (`keyed`, `Write.keyed`):
+ *  a `PUT` or a `DELETE` sends none, so no Retry of one asks under a key. */
+function refusalReason(keyed: boolean, refusal: Error): string {
+  if (!(refusal instanceof SendStoppedError)) {
+    return apiErrorMessage(refusal, "Dispatch could not be reached");
   }
-  if (refusal instanceof SendExpiredError) {
-    return `Dispatch has not confirmed it. ${expiredRetryNote("saved")}`;
-  }
-  if (refusal instanceof SendStoppedError) {
-    return `Dispatch has not confirmed it. ${sameKeyRetryNote("saved")}`;
-  }
-  return apiErrorMessage(refusal, "Dispatch could not be reached");
+  const retry = retryNote(keyed, refusal, "saved");
+  return refusal instanceof SendInterruptedError
+    ? `this page was closed before Dispatch confirmed it. ${retry}`
+    : `Dispatch has not confirmed it. ${retry}`;
 }
 
 /** The writes the indicator shows: every one shown there that Dispatch has not yet made. */
@@ -59,6 +55,136 @@ export function uploadedPercent(row: Write): number | undefined {
     : undefined;
 }
 
+/** Focuses the first of `candidates` that takes the focus, without scrolling; says whether one
+ *  did. */
+function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
+  for (const candidate of candidates) {
+    candidate?.focus({ preventScroll: true });
+    if (candidate !== null && document.activeElement === candidate) return true;
+  }
+  return false;
+}
+
+/**
+ * Hands on the focus a press in the panel takes away. A press here can take the control it was
+ * made on off the page - Stop trying once its write is refused, Retry or Discard once their row
+ * goes, any of them as the panel goes once nothing is pending - and the browser then leaves the
+ * focus on the page's body, which loses a keyboard reader's place. So the panel notes the row the
+ * focus is in and where the focus came from as it entered the panel, and once the element that
+ * held the focus in the panel has left the page while the focus is on the body, the focus goes to
+ * the first control that takes it: while the panel is still drawn, one in that element's row (the
+ * Retry a stopped write's row offers once Stop trying has gone), else the panel's first; only once
+ * the panel is gone or holds none, the element the focus came from, else the page's main region
+ * (`app.tsx`'s `main-content`), which the shell focuses on a page change too. A focus the reader
+ * takes out of the panel, by a Tab or by a press that leaves the focus outside it, is forgotten,
+ * so nothing moves a focus the reader put somewhere else; a press elsewhere that leaves the focus
+ * in the panel, as on a control whose `mousedown` is prevented or on a scrollbar, forgets nothing.
+ * A focus a pointer press puts in the panel is forgotten too, never noted: Chromium focuses a
+ * pressed button and draws it no focus ring, so a hand-off would move that focus, unseen, onto
+ * another row's control, and the next Space or Enter would press it - Discard, first in a row
+ * waiting to send. A press lasts from its `pointerdown` until its `click` has been dispatched, or
+ * it is cancelled: on a touch screen the browser moves the focus only once the finger lifts, on
+ * the `mousedown` it sends after the `pointerup`, which can come well after the press began; and a
+ * touch that scrolls the panel's list ends in a `pointercancel` and no `click`, after which a press
+ * still under way would forget every focus that enters the panel, the hand-off's own too. A key
+ * pressed in between ends it as well, so the focus the keyboard moves is noted even after a press
+ * no `click` ended.
+ * Returns the panel's ref.
+ */
+function usePanelFocusReturn(): RefObject<HTMLElement | null> {
+  const panel = useRef<HTMLElement>(null);
+  // The element that holds the focus in the panel, the write whose row it is in, and the element
+  // that held the focus before it came in.
+  const held = useRef<Node | null>(null);
+  const heldRow = useRef<string | null>(null);
+  const from = useRef<HTMLElement | null>(null);
+  // Forgets all three at once: a focus the reader takes out of the panel, and the hand-off below
+  // once it has read them.
+  const forget = useCallback(() => {
+    held.current = null;
+    heldRow.current = null;
+    from.current = null;
+  }, []);
+  useEffect(() => {
+    const inPanel = (target: EventTarget | null): target is Node =>
+      target instanceof Node && panel.current?.contains(target) === true;
+    // Where the pointer press under way began - in the panel or elsewhere - from its
+    // `pointerdown` until its `click` has been dispatched, until it is cancelled, or until a key
+    // is pressed; null between presses.
+    let press: "panel" | "elsewhere" | null = null;
+    const focused = (event: FocusEvent) => {
+      const { relatedTarget, target } = event;
+      if (press === "panel" || !inPanel(target)) {
+        forget();
+        return;
+      }
+      if (held.current === null) {
+        from.current = relatedTarget instanceof HTMLElement ? relatedTarget : null;
+      }
+      held.current = target;
+      heldRow.current =
+        target instanceof Element
+          ? (target.closest("[data-pending-write]")?.getAttribute("data-pending-write") ?? null)
+          : null;
+    };
+    const pressed = (event: PointerEvent) => {
+      press = inPanel(event.target) ? "panel" : "elsewhere";
+    };
+    // A press elsewhere forgets, not a blur: the control that holds the focus is blurred too as
+    // the window loses the focus to another tab or app, which moves nothing of the reader's place
+    // on the page. Whatever the press does to the focus is done once its `click` has been
+    // dispatched, so where it left the focus is read after that, and the press ends there.
+    const clicked = () => {
+      const ended = press;
+      setTimeout(() => {
+        press = null;
+        if (ended === "elsewhere" && !inPanel(document.activeElement)) forget();
+      });
+    };
+    const endPress = () => {
+      press = null;
+    };
+    document.addEventListener("focusin", focused, true);
+    document.addEventListener("pointerdown", pressed, true);
+    document.addEventListener("click", clicked, true);
+    document.addEventListener("pointercancel", endPress, true);
+    document.addEventListener("keydown", endPress, true);
+    return () => {
+      document.removeEventListener("focusin", focused, true);
+      document.removeEventListener("pointerdown", pressed, true);
+      document.removeEventListener("click", clicked, true);
+      document.removeEventListener("pointercancel", endPress, true);
+      document.removeEventListener("keydown", endPress, true);
+    };
+  }, [forget]);
+  // React sends no blur for an element it takes off the page, and the browser moves the focus
+  // with no event, so each commit looks: a layout effect, so the focus moves in the commit that
+  // takes the element away.
+  useLayoutEffect(() => {
+    const left = held.current;
+    if (left === null || left.isConnected) return;
+    const box = panel.current;
+    const id = heldRow.current;
+    const rowSelector = id === null ? null : `[data-pending-write="${CSS.escape(id)}"]`;
+    const row = rowSelector === null ? null : box?.querySelector(rowSelector);
+    const back = from.current;
+    forget();
+    if (!focusOnDocument()) return;
+    const controls = [
+      ...(row?.querySelectorAll<HTMLElement>("button") ?? []),
+      ...(box?.querySelectorAll<HTMLElement>("button") ?? []),
+    ];
+    if (focusFirst(controls)) {
+      // The focus listener took that move for the focus entering the panel afresh; it came in
+      // from where it did before.
+      from.current = back;
+      return;
+    }
+    focusFirst([back, document.getElementById("main-content")]);
+  });
+  return panel;
+}
+
 /**
  * The shell's one account of the writes no composer shows (`write-store.ts`'s `indicator`
  * writes): chrome, out of the page's flow in the corner the connection pill shares, and gone while
@@ -74,6 +200,8 @@ export function uploadedPercent(row: Write): number | undefined {
 export function PendingWritesIndicator(): ReactNode {
   const writes = useWrites();
   const rows = useWriteSelection("indicator", shown);
+  // Before the early return, so it outlives the panel going while nothing is pending.
+  const panel = usePanelFocusReturn();
   if (rows.length === 0) return null;
   const out = rows.filter(
     (row) => row.status !== "refused" && !waitingToSend(row) && !heldForSignOut(row)
@@ -96,6 +224,7 @@ export function PendingWritesIndicator(): ReactNode {
         actionable ? calloutWarningBorder : borderDefault
       }`}
       data-testid="pending-writes"
+      ref={panel}
     >
       {out.length === 0 ? null : (
         <p aria-live="polite" className={`font-medium ${textSecondaryOnSurface}`} role="status">
@@ -115,7 +244,7 @@ export function PendingWritesIndicator(): ReactNode {
                 {row.status === "refused" ? (
                   <>
                     <span className={`min-w-0 flex-1 ${dangerText}`}>
-                      Not saved: {row.label} — {refusalReason(row.refusal)}
+                      Not saved: {row.label} — {refusalReason(row.keyed, row.refusal)}
                     </span>
                     <button
                       className={secondaryButtonCompact}

@@ -17,7 +17,6 @@
 
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
-import { COMPACT_VIEWPORT_WIDTH, sidebarInbox } from "./inbox-threads";
 import { withIssuePage } from "./issue-page-option";
 import { expect, type Locator, type Page, type Response, test } from "./test";
 
@@ -256,13 +255,21 @@ test("the new issue page draws the whole document in the shipped typeface @phone
   await page.evaluate(() => {
     Object.assign(window, { __noReload: 1 });
   });
-  // Below `xl` (`COMPACT_VIEWPORT_QUERY`, `web/src/features/shell/useDialog.ts`) the shell draws
-  // its top bar, whose `Dispatch` link goes to the Inbox, and no navigation column.
-  const compact = (page.viewportSize()?.width ?? 0) < COMPACT_VIEWPORT_WIDTH;
-  const toInbox = compact
-    ? page.getByRole("banner").getByRole("link", { exact: true, name: "Dispatch" })
-    : sidebarInbox(page);
-  await toInbox.click();
+  // The new page's frame (part D) draws an icon rail in place of today's sidebar and top bar
+  // from 768 px up, whose Inbox link goes to the Inbox. Below that it draws no navigation of its
+  // own until the header's menu comes, so the row moves through the router's history there: the
+  // move a link makes, with no reload.
+  const rail = page.getByTestId("icon-rail");
+  // The new page was drawn above, and the shell draws the rail in the render that routes to that
+  // page, from a width query read as it renders, so one count says whether this width has it.
+  if ((await rail.count()) > 0) {
+    await rail.getByRole("link", { name: /^Inbox/ }).click();
+  } else {
+    await page.evaluate(() => {
+      window.history.pushState({}, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+  }
   await expect(
     page.locator("main").getByRole("heading", { exact: true, level: 1, name: "Inbox" })
   ).toBeVisible();

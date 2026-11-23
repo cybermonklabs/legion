@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    Dispatch's architecture import, delivery reconcile and webhook redelivery sweep no longer wait longer than their stated periods: each now waits its interval less up to a tenth of it after a pass, at most five minutes for the import and the reconcile and two minutes for the sweep, where it waited up to 5 min 30 s and 2 min 12 s.
+    Each loop's lease takes a period of nine tenths of its interval, so a lone process never loses a pass as a period it served already.
+    Every reconcile pass still reads each open pull request row (an open row is due 4.5 minutes after its last read), and a failed webhook delivery is still asked for again at the next sweep (each retry is due at nine tenths of its backoff).
+time: 2026-11-18T03:49:50.405000027Z
+custom:
+    Issue: pr4373

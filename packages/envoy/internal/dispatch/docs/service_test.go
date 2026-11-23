@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testSigningKey is the one-key set the package's people stores seal refresh tokens under.
@@ -1131,7 +1132,9 @@ func TestEditAskOfAnEmptyQuestionNamesTheStep(t *testing.T) {
 			` (paragraph) reads "![a photo](/photo.png)"; no document edit writes a paragraph into a decision, ` +
 			`so none reaches this block - upload the document again as a new version ` +
 			`with the question written beside that paragraph (dispatch artifact --issue <KEY>, or ` +
-			`--project <KEY> for a project's document, --name <the document> --content-file - --force), or write the ` +
+			`--project <KEY> for a project's document, --name <the document> --content-file - --force, ` +
+			`and --precondition-json '{"document":"<the token dispatch doc-read prints>"}' where the command ` +
+			`has that flag, which names the text the upload replaces), or write the ` +
 			`question beside it in the document editor; ` +
 			`either keeps what the paragraph holds`
 		if err == nil || err.Error() != want {
@@ -4680,7 +4683,7 @@ func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	joined, ledger := service.Join(ctx, tx)
-	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
 	if got, err := service.Text(joined, artifactID); err != nil || got != "after\n" {
@@ -5392,9 +5395,7 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
 	defer blocker.Rollback(context.Background())
-	if _, err := blocker.Exec(context.Background(), `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
+	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -5582,9 +5583,7 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin blocker transaction: %v", err)
 	}
-	if _, err := blocker.Exec(context.Background(), `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
+	if _, _, err := lockArtifactOwner(context.Background(), blocker, artifactID); err != nil {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	settled := make(chan struct{})
@@ -5859,10 +5858,78 @@ func joinedWrite(service *Service, write func(ctx context.Context) error) error 
 	return ledger.Commit(ctx)
 }
 
+// replacementPrecondition is what a replacement names: the token the document stands at now,
+// which ReplaceText asks of every replacement, and none at all for a document whose live tree is
+// outside the Proof schema, which has no token and which only a replacement can repair. A test
+// whose subject is not the token reads it here.
+//
+// The token comes from the write's own fork inside a joined context, from the room where one
+// holds the document, and from the store where none does: reading the live document of a room
+// nothing holds would load one, and a cold write is measured by finding none
+// (TestAColdWritesShadowMeasuresTheRoomThatLoadedUnderIt).
+func replacementPrecondition(ctx context.Context, service *Service, artifactID string) (*model.EditPrecondition, error) {
+	token, err := documentTokenForReplacement(ctx, service, artifactID)
+	if errors.Is(err, ErrDocOutsideSchema) || errors.Is(err, ErrDocSchema) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &model.EditPrecondition{Document: token}, nil
+}
+
+func documentTokenForReplacement(ctx context.Context, service *Service, artifactID string) (string, error) {
+	if _, joined := txFromContext(ctx); !joined && service.srv.GetDoc(artifactID) == nil {
+		tree, err := service.storedTree(ctx, artifactID)
+		if err != nil {
+			return "", err
+		}
+		return nodeToken(tree)
+	}
+	return service.currentToken(ctx, artifactID)
+}
+
+// liveDocumentToken is replacementPrecondition for a test that holds a *testing.T and reads the
+// token outside any write of its own.
+func liveDocumentToken(t *testing.T, service *Service, artifactID string) *model.EditPrecondition {
+	t.Helper()
+	precondition, err := replacementPrecondition(context.Background(), service, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's token: %v", err)
+	}
+	return precondition
+}
+
+// joinedDocumentToken is liveDocumentToken on a write's own joined context, which reads the tree
+// that write has already changed: a second replacement in one transaction names what the first
+// left, not what the room held before both.
+func joinedDocumentToken(t *testing.T, ctx context.Context, service *Service, artifactID string) *model.EditPrecondition {
+	t.Helper()
+	precondition, err := replacementPrecondition(ctx, service, artifactID)
+	if err != nil {
+		t.Fatalf("read the document's token on the write's context: %v", err)
+	}
+	return precondition
+}
+
+// joinedReplaceText replaces the document in a transaction of its own, naming the token it
+// stands at now. The token is read outside the write, as a caller reads it before it uploads:
+// read on the write's own context it would fork the document's room, which a test of a cold
+// write must not find loaded.
 func joinedReplaceText(service *Service, artifactID, markdown string, actor model.Actor) (string, error) {
+	precondition, err := replacementPrecondition(context.Background(), service, artifactID)
+	if err != nil {
+		return "", err
+	}
+	return joinedReplaceTextNaming(service, artifactID, markdown, actor, precondition)
+}
+
+// joinedReplaceTextNaming is joinedReplaceText for a test that read the token itself: one
+// counting what a write reads, where this helper's own read would be one read more.
+func joinedReplaceTextNaming(service *Service, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	var canonical string
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
-		canonical, err = service.ReplaceText(ctx, artifactID, markdown, actor)
+		canonical, err = service.ReplaceText(ctx, artifactID, markdown, actor, precondition)
 		return err
 	})
 	return canonical, err
@@ -6118,61 +6185,55 @@ func deleteRun(text string) func(*pmdoc.Node) *pmdoc.Node {
 // failure; the completed eviction of a room that was live is the same observation.
 func waitForRoomFailure(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	testwait.Until(t, "the document's room to fail, or its failed room's eviction to finish", func() (string, bool) {
 		if service.roomFailure(artifactID) != nil {
-			return
+			return "failed", true
 		}
-		if _, resident := service.rooms.Load(artifactID); !resident && service.srv.GetDoc(artifactID) == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("document room did not become unavailable after append failure")
+		_, resident := service.rooms.Load(artifactID)
+		live := service.srv.GetDoc(artifactID) != nil
+		return fmt.Sprintf("not failed, resident %t, live document %t", resident, live), !resident && !live
+	})
 }
 
 func waitForNoLiveDocument(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if service.srv.GetDoc(artifactID) == nil {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("document room remained resident after closure")
-}
-func waitForDocumentText(t *testing.T, service *Service, artifactID, want string) {
-	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		got, err := service.Text(context.Background(), artifactID)
-		if err == nil && got == want {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	got, err := service.Text(context.Background(), artifactID)
-	t.Fatalf("document text = %q (%v), want %q", got, err, want)
+	testwait.Until(t, "the document's room to close", func() (string, bool) {
+		live := service.srv.GetDoc(artifactID) != nil
+		return fmt.Sprintf("live document %t", live), !live
+	})
 }
 
+func waitForDocumentText(t *testing.T, service *Service, artifactID, want string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("the document to read %q", want), func() (string, bool) {
+		got, err := service.Text(context.Background(), artifactID)
+		return fmt.Sprintf("%q (%v)", got, err), err == nil && got == want
+	})
+}
+
+// waitForDocumentVersion waits for version number of the document to settle and answers it. A
+// wait that gives up prints the newest version the document held when it last read, so a run that
+// settled the wrong number of versions says which.
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {
 	t.Helper()
-	// A ceiling, not a duration: a settlement that needs a room reload first (a test that evicted
-	// the room) takes longer than one that only writes, and a loaded CI runner stretches both.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	var settled model.Version
+	testwait.Until(t, fmt.Sprintf("version %d of the document to settle", number), func() (string, bool) {
 		version, ok, err := loadDocumentVersion(context.Background(), database, artifactID, number)
 		if err != nil {
 			t.Fatalf("load document version: %v", err)
 		}
 		if ok {
-			return version
+			settled = version
+			return fmt.Sprintf("version %d", version.Number), true
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("document version did not settle")
-	return model.Version{}
+		var newest int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select coalesce(max(number), 0) from artifact_versions where artifact_id = $1`, artifactID).Scan(&newest); err != nil {
+			t.Fatalf("read the document's newest version: %v", err)
+		}
+		return fmt.Sprintf("no version %d; the newest the document holds is version %d", number, newest), false
+	})
+	return settled
 }
 
 func loadDocumentVersion(ctx context.Context, database *store.Store, artifactID string, number int) (model.Version, bool, error) {
@@ -6206,6 +6267,68 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 // eviction moved the room's generation its retry arms nothing: the next write to the room settles
 // on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
+	service, artifactID := evictMidSettle(t)
+	// The next write settles on its own. The eviction left the document owing the settlement it
+	// cut short, and this write's reload of the room arms that owed settlement (onLoadDocument), so
+	// a settlement that reads the room before the write lands versions "after" first: the version
+	// that carries the write is the latest to come, whatever its number
+	// (TestAnEvictionsOwedSettlementBeforeTheNextWritesCommitLosesNoEdit holds that order).
+	editLiveTree(t, service, artifactID, replaceRun("after", "later"))
+	testwait.Until(t, `the document's latest version to read "later\n"`, func() (string, bool) {
+		markdown := latestVersionMarkdown(t, service, artifactID)
+		return markdown, markdown == "later\n"
+	})
+}
+
+// The settlement an eviction cut short is owed, and the next write's load of the room arms it
+// (onLoadDocument), the settle delay out: it can run before that write commits, which load made
+// happen at random (INFRA-3149). Here the write's commit is held until the owed settlement has
+// versioned the document. No edit is lost, and the versions come in that order: the owed
+// settlement's version holds the evicted room's edit, "after", and the next version, the write's
+// own settlement's, holds the write, "later".
+func TestAnEvictionsOwedSettlementBeforeTheNextWritesCommitLosesNoEdit(t *testing.T) {
+	service, artifactID := evictMidSettle(t)
+	var owed int
+	err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+		// This Apply loaded the room, and the load armed the owed settlement: the write commits
+		// once that settlement has versioned what the store holds.
+		testwait.Until(t, `the owed settlement's version to read "after\n"`, func() (string, bool) {
+			markdown := latestVersionMarkdown(t, service, artifactID)
+			return markdown, markdown == "after\n"
+		})
+		owed = latestVersionNumber(t, service, artifactID)
+		fragment := doc.GetXmlFragment(fragmentName)
+		tree, err := pmdoc.Read(fragment)
+		if err != nil {
+			t.Fatalf("read live tree: %v", err)
+		}
+		want := replaceRun("after", "later")(tree)
+		transact(func(txn *crdt.Transaction) {
+			if err := pmdoc.Update(txn, fragment, want); err != nil {
+				t.Errorf("update live tree: %v", err)
+			}
+		})
+	})
+	if err != nil {
+		t.Fatalf("apply the write after the owed settlement: %v", err)
+	}
+	testwait.Until(t, `the document's latest version to read "later\n"`, func() (string, bool) {
+		markdown := latestVersionMarkdown(t, service, artifactID)
+		return markdown, markdown == "later\n"
+	})
+	if latest := latestVersionNumber(t, service, artifactID); latest != owed+1 {
+		t.Errorf("the write's version is version %d, want %d, the one after the owed settlement's version %d", latest, owed+1, owed)
+	}
+	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "later\n" {
+		t.Errorf("the document reads %q (%v), want the write, %q", text, err, "later\n")
+	}
+}
+
+// evictMidSettle is a service whose document's room was evicted after its settlement's warm-up
+// and before that settlement read the room, so the settlement stopped short and the document owes
+// it: the document reads "after", the evicted room's edit, and no room holds it.
+func evictMidSettle(t *testing.T) (*Service, string) {
+	t.Helper()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -6222,14 +6345,8 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	// The settlement runs on a timer of its own, so this waits for the hook itself rather than
-	// polling a clock: a box running several packages at once took longer than the three seconds
-	// a poll allowed and failed a row whose subject is not timing at all. The ceiling is a
-	// ceiling, not a duration - a settlement that lands at once ends the wait at once.
-	select {
-	case <-reached:
-	case <-time.After(30 * time.Second):
-		t.Fatal("settlement never reached the hook")
-	}
+	// polling a clock.
+	testwait.Receive(t, "the settlement to reach the hook", reached)
 	// The hook is one-shot through the CAS above; leaving it in place avoids racing the settle
 	// goroutine that reads it.
 	// The live edit was already persisted incrementally, so the reloaded text carries it; the
@@ -6238,15 +6355,7 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	if got, err := service.Text(ctx, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after mid-settle eviction = %q (%v), want the persisted live text", got, err)
 	}
-	editLiveTree(t, service, artifactID, replaceRun("after", "later"))
-	version := waitForDocumentVersion(t, service.store, artifactID, 2)
-	var markdown string
-	if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, version.Number).Scan(&markdown); err != nil {
-		t.Fatal(err)
-	}
-	if markdown != "later\n" {
-		t.Fatalf("version %d markdown = %q, want %q", version.Number, markdown, "later\n")
-	}
+	return service, artifactID
 }
 
 // A settlement whose room a close retires between its warm-up and its read of the room, a close
@@ -6318,8 +6427,12 @@ func TestAWarmedReadSurvivesItsRoomsEviction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("name a version of a room evicted once warm: %v", err)
 			}
+			// The version's insert is a write, which the transaction's write phase runs at Commit.
+			if err := ledger.Commit(ctx); err != nil {
+				t.Fatalf("commit the named version: %v", err)
+			}
 			var markdown string
-			if err := tx.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, result.Version.Number).Scan(&markdown); err != nil {
+			if err := service.store.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`, artifactID, result.Version.Number).Scan(&markdown); err != nil {
 				t.Fatal(err)
 			}
 			if markdown != "The quick brown fox\n" {

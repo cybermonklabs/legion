@@ -16,21 +16,23 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // codegraphTimeout bounds each codegraph invocation independently. The warm-up runs only in the
 // background, so nothing waits on it; a first index of a large repository (tens of thousands of
-// files) takes longer than Provision's own command budget. codegraphStopGrace is how long a
-// codegraph child whose context ended has to leave on its SIGTERM before it is killed and the
-// invocation returns: a shim's warm-up ends with the shim's Oh My Pi (WarmCodegraphIndex), and the
-// shim waits on it inside the role's stop grace (internal/shim's Config.StopGrace, the pod's
-// terminationGracePeriodSeconds, `worker_stop_timeout_seconds`, 10 s by default), so this grace is
-// well inside what is left of that once the agent's own grace is spent; CodeGraph 1.5.0 leaves
-// within about two seconds of a SIGTERM, its SQLite closed.
-const (
-	codegraphTimeout   = 30 * time.Minute
-	codegraphStopGrace = 2 * time.Second
-)
+// files) takes longer than Provision's own command budget. It is a variable so that a test can
+// shorten it.
+var codegraphTimeout = 30 * time.Minute
+
+// codegraphStopGrace is how long a codegraph child whose context ended has to leave on its SIGTERM
+// before it is killed and the invocation returns: a shim's warm-up ends with the shim's Oh My Pi
+// (WarmCodegraphIndex), and the shim waits on it inside the role's stop grace (internal/shim's
+// Config.StopGrace, the pod's terminationGracePeriodSeconds, `worker_stop_timeout_seconds`, 10 s
+// by default), so this grace is well inside what is left of that once the agent's own grace is
+// spent; CodeGraph 1.5.0 leaves within about two seconds of a SIGTERM, its SQLite closed.
+const codegraphStopGrace = 2 * time.Second
 
 // codegraphEmptyLockGrace is how long an empty `.codegraph/codegraph.lock` still counts as held,
 // either side of now. CodeGraph's FileLock takes the lock with one `fs.writeFileSync(lockPath,
@@ -226,6 +228,14 @@ func warmCodegraphIndex(ctx context.Context, dir string, launched time.Time) {
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[legion] codegraph warm-up could not run for %s: %s\n", dir, err)
+		return
+	}
+	if result.timedOut {
+		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s timed out after %s: %s\n", subcommand, dir, codegraphTimeout, strings.TrimSpace(result.stderr))
+		return
+	}
+	if result.signal != "" {
+		fmt.Fprintf(os.Stderr, "[legion] codegraph %s for %s was ended by %s: %s\n", subcommand, dir, result.signal, strings.TrimSpace(result.stderr))
 		return
 	}
 	if result.exitCode != 0 {
@@ -536,10 +546,19 @@ func codegraphLockHeldByLiveProcess(dir string) bool {
 	return strings.Contains(string(cmdline), "codegraph")
 }
 
+// codegraphResult is one codegraph run that ran: its output, and its exit status, or the signal
+// that ended it, and whether that signal was the run's own codegraphTimeout. A codegraph a signal
+// ended answered no status, as one that exited non-zero did, and the warm-up reads the two alike:
+// a `status` so ended is one that answered nothing (nextCodegraphStep's fallback), and a build so
+// ended leaves its index "indexing" (measured on CodeGraph 1.5.0, killed with SIGTERM and with
+// SIGKILL mid-build), which a later warm-up repairs with `codegraph index`, at most once per
+// directory per process (indexed). exitCode is -1 where signal is set.
 type codegraphResult struct {
 	stdout   string
 	stderr   string
 	exitCode int
+	signal   string
+	timedOut bool
 }
 
 // codegraphEnvironment is the minimal environment every codegraph invocation gets: its own PATH
@@ -563,8 +582,8 @@ func codegraphEnvironment() []string {
 
 // runCodegraph runs one codegraph subcommand in dir, bounded by codegraphTimeout, with
 // codegraphEnvironment's minimal, explicit environment — never the caller's full environment. ctx
-// ending, or the timeout, SIGTERMs the child (CodeGraph 1.5.0 leaves within about two seconds of
-// one, its SQLite closed) and kills it after codegraphStopGrace; either way Run returns once the
+// ending, or the timeout, SIGTERMs the child (CodeGraph 1.5.0 dies of it within about two seconds,
+// its SQLite closed) and kills it after codegraphStopGrace; either way Run returns once the
 // child is reaped, so a caller waiting on the warm-up is never held longer than that grace past
 // the end of its context.
 func runCodegraph(ctx context.Context, codegraphPath, dir string, args ...string) (codegraphResult, error) {
@@ -575,18 +594,22 @@ func runCodegraph(ctx context.Context, codegraphPath, dir string, args ...string
 	cmd.Env = codegraphEnvironment()
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = codegraphStopGrace
+	killed := procgroup.KilledByContext(cmd)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
 	result := codegraphResult{stdout: stdout.String(), stderr: stderr.String()}
-	if err == nil {
-		return result, nil
+	switch end := procgroup.Ended(err); {
+	case err == nil:
+	case end.Exited != nil:
+		result.exitCode = end.Exited.ExitCode()
+	case end.Signal != "":
+		result.exitCode, result.signal = -1, end.Signal
+		// The bound's SIGTERM is the run's own timeout only while the caller's ctx still runs.
+		result.timedOut = killed() && ctx.Err() == nil
+	default:
+		return result, err
 	}
-	var exited *exec.ExitError
-	if errors.As(err, &exited) {
-		result.exitCode = exited.ExitCode()
-		return result, nil
-	}
-	return result, err
+	return result, nil
 }

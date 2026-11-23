@@ -199,7 +199,7 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 		return err
 	}
 	if m.held != nil {
-		return m.endHeld(ctx, stopOwed)
+		return m.endHeld(ctx, false, stopOwed)
 	}
 	return m.launch(ctx, ending)
 }

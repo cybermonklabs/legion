@@ -85,8 +85,7 @@ func reviewerRequestsChanges(t *testing.T, pool *pgxpool.Pool, engine *Engine, r
 func architectMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, to phase.Phase) {
 	t.Helper()
 	standsIn(t, pool, phase.Accepting, "needs_review")
-	applyRefusingNothing(t, pool, engine, intake.BackwardMove{Issue: "LEGION-208",
-		Requester: claim.RoleArchitect, To: to, Reason: "the work does not stand"})
+	applyRefusingNothing(t, pool, engine, rootsMoveBack(t, pool, engine, "LEGION-208", to, "the work does not stand"))
 }
 
 // mergerMovesBack is the merger's own move of the issue out of merging, the one phase it holds,
@@ -100,15 +99,19 @@ func mergerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		Reason: "the head GitHub shows is not the head this merger read"})
 }
 
-// marksConflicting is the daemon's read of GitHub that judges head, the pull request's own
-// recorded head, conflicting with its base: the mark a conflict round is read against
-// (classify.ConflictRound). It is applied while the issue stands in implementing, the one phase
-// with no row for the conflict trigger, so it records the judgement and moves nothing
-// (workflow's mergeability).
+// marksConflicting is the daemon's two reads of GitHub, a minute apart, that judge head, the pull
+// request's own recorded head, conflicting with its base: the confirmed conflict a conflict round
+// is read against (record.PullRequest.ConflictingHead, classify.ConflictRound). The reads carry a
+// base that requires no check and is not strict, and the issue stands short of accepting, so the
+// conflict is recorded and nothing is asked or moved (workflow's mergeability,
+// classify.ConflictNeedsMerge).
 func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head string) {
 	t.Helper()
-	applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
-		Base: "main", HeadSHA: head, Mergeable: record.MergeabilityConflicting})
+	read := intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: head,
+		Mergeable: record.MergeabilityConflicting, Rules: &record.BaseRules{}}
+	applyRefusingNothing(t, pool, engine, read)
+	read.ReadAt = engine.now().Add(conflictConfirmWait)
+	applyRefusingNothing(t, pool, engine, read)
 }
 
 // Every move back is counted under its own "<from>-<to>" pair, and the pass the daemon has always
@@ -126,7 +129,7 @@ func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head str
 // The fifth move is made while the daemon's record holds the head conflicting with its base. It
 // raises no pair at all: nobody sent the work back, so the move is of no kind a hook or an
 // operator counts (recordPass). The pass rises on all five, because a phase completion's key is
-// built from it (record.PhaseRow.Pass, api/handoff.go's handoffPosition) and two passes through
+// built from it (record.PhaseRow.Pass, api's handoffPosition) and two passes through
 // one phase that carried the same number would collide.
 //
 // The review rounds review_round_cap bounds are counted apart from the pairs, and only a review

@@ -12,12 +12,12 @@ import (
 // jtiRetentionMargin is how long past a DPoP proof's acceptance window its record is kept. The
 // window's end is dated on the clock of whoever checked the proof and compared with this
 // database's, so the margin covers the skew between the two; it is the broker's own margin for
-// the same record (internal/broker/oauthstore).
+// the same record (internal/cipher/oauthstore).
 const jtiRetentionMargin = time.Minute
 
 // DPoPProofs is Dispatch's rfc9449.DPoPReplayStorage: the record of every RFC 9449 proof a
 // request has already spent, so a captured proof replayed inside its acceptance window is refused
-// (migration 0150). internal/brokertoken hands it to the library's resource check, and nothing
+// (migration 0150). internal/ciphertoken hands it to the library's resource check, and nothing
 // else writes the table.
 type DPoPProofs struct {
 	pool *Pool

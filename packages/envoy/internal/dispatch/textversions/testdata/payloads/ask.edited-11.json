@@ -1,0 +1,93 @@
+{
+  "id": 438417,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 54,
+  "type": "ask.edited",
+  "actor": {
+    "kind": "session",
+    "id": "01a1cf1a-5130-7462-ac3e-bdb2eea4203d",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+      "session_title": "lorem ipsum dolor sit amet"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-11-12T15:25:27.038456Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "asked_of": null,
+    "asked_of_at": null,
+    "asked_of_by": null,
+    "author": {
+      "id": "01a1cf1a-5130-7462-ac3e-bdb2eea4203d",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+        "host": "lor",
+        "machine": "lorem ipsum dolor",
+        "session_title": "lorem ipsum dolor sit amet"
+      }
+    },
+    "block_id": "90b44541-6a08-4837-bc31-4be8ff0326e6",
+    "created_at": "2026-11-12T14:28:21.101926Z",
+    "edited_at": "2026-11-12T15:25:27.038456Z",
+    "edited_by": {
+      "id": "01a1cf1a-5130-7462-ac3e-bdb2eea4203d",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+        "host": "lor",
+        "machine": "lorem ipsum dolor",
+        "session_title": "lorem ipsum dolor sit amet"
+      }
+    },
+    "id": "2c58235e-9a20-4155-9b5a-c449a7259dcc",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 436267,
+    "options": [
+      {
+        "id": "b2",
+        "label": "lorem ipsum dolor s"
+      },
+      {
+        "id": "b3",
+        "label": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+        "id": "b4",
+        "label": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolo"
+      }
+    ],
+    "previous": {
+      "multiple": false,
+      "options": [
+        {
+          "label": "lorem ipsum dolor s"
+        },
+        {
+          "label": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do"
+        },
+        {
+          "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+          "label": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolo"
+        }
+      ],
+      "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+      "urgency": "med"
+    },
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolo",
+    "referenced_by_count": 0,
+    "revision": 2,
+    "state": "open",
+    "urgency": "med"
+  }
+}

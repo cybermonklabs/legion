@@ -1,0 +1,43 @@
+name: Check a release's changelog entries for private names
+description: >-
+  The private-name check of the changelog entries a release's build job rendered with
+  `release-push.sh fold-notes` and uploaded as an artifact: downloads that artifact and runs
+  .github/scripts/check-private-names.sh, with the deployment's term list, over the one file in it,
+  release-notes.md, which is the file the publish job writes into the GitHub release's body. A
+  missing file fails the check (exit 2), so an artifact that holds no entries never passes as
+  clean. It runs that shell script and nothing else, so the job that calls it runs no dependency
+  code (.github/scripts/check-release-credentials.sh reads these steps). Its callers are
+  .github/workflows/release-notes-names.yaml's job, which release.yaml's legion_names,
+  pi_envoy_names and pi_legion_names and release-envoy-listener.yaml's release_names call, and
+  release.yaml's claude_envoy_names, which also checks the packed plugin; each caller keeps its
+  own needs, conditions, permissions and checkout of the .github cone, and its publish job runs
+  that package's release only when it succeeded.
+
+inputs:
+  artifact:
+    description: The name of the artifact that holds the rendered release-notes.md.
+    required: true
+  private-name-terms:
+    description: >-
+      The deployment's term list, PRIVATE_NAME_TERMS, from the Actions secret of that name. The
+      check fails a push's or a dispatched run's scan without it.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/private-names-release-notes
+
+    # By the script's path from the checkout's root, the one form of it
+    # check-release-credentials.sh classes as no dependency code wherever a step runs.
+    - name: Check the rendered changelog entries name nothing private
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PRIVATE_NAME_TERMS: ${{ inputs.private-name-terms }}
+      run: |
+        "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh" "$RUNNER_TEMP/private-names-release-notes/release-notes.md"

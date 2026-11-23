@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -306,6 +307,346 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 			// and so does the installation's, which every query is sent under.
 			_, _, _, err = b.GraphQL(ctx, tokenB, "query { viewer { login } }", nil)
 			requireHeld(t, err, "B's query inside the limit A met")
+		})
+	}
+}
+
+// Every rate limit a request meets is noted on the attempt its context carries (githubreads),
+// with the error its caller is given: a limit already recorded, which holds a REST request in
+// send and a query in GraphQL before it is sent, and is noted though nothing was sent; and a limit
+// GraphQLRateLimit reads in a query's answer, which GitHub gives with status 200, named with the
+// query's method and target. That limit is noted once it is recorded, so a secondary limit's
+// cause carries the wait its strike holds every process to, past GitHub's own. A limit read in a
+// 200 holds GitHub's own wording of it in place of the answer's body, which is the query's data
+// (GitHub answers the request that spends the last point with its data), since GET /healthz
+// serves the cause with no credential: the envelope's entries that name the limit, or, where it
+// holds none, the headers that name the limit, and never any of the data or an entry about
+// something else. The note carries that wording, and so does the error its caller is given, which
+// a loop notes wrapped. A query GitHub answers is not noted.
+func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
+	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	spent := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
+	secondaryLimit := `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
+	dataMarker := "a-private-repositorys-own-data-4324"
+	lastPoint := `{"data":{"viewer":{"login":"` + dataMarker + `"}}}`
+	// GitHub can answer a query's errors beside what data it read; the cause holds the errors.
+	secondaryWithData := `{"data":{"viewer":{"login":"` + dataMarker + `"}},"errors":[{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}]}`
+	// GitHub's RATE_LIMITED is in the data alone, beside an error about another thing, on the
+	// answer that spends the last point: only the headers name the limit.
+	limitedInData := `{"data":{"t":"RATE_LIMITED secret"},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve to a Repository with the name 'acme/x'."}]}`
+	read := func(ctx context.Context, client *Client, token string) error {
+		_, _, _, err := client.Read(ctx, token, "/repos/acme/web/issues/2")
+		return err
+	}
+	query := func(ctx context.Context, client *Client, token string) error {
+		_, _, _, err := client.GraphQL(ctx, token, "query { viewer { login } }", nil)
+		return err
+	}
+	held := func(scope string) func(*limitGitHub, error) string {
+		return func(_ *limitGitHub, err error) string {
+			if limited, ok := AsRateLimit(err); !ok || !limited.Held || limited.Scope != scope {
+				return fmt.Sprintf("(want a limit held under %s, got %v)", scope, err)
+			}
+			return err.Error()
+		}
+	}
+	// answeredAt200 is the cause noted for a limit GitHub answers a query with at 200 and body:
+	// the limit's own text with wording, GitHub's own words for the limit, in place of the body.
+	// The caller is given the limit with that wording and an empty Body, worded as RateLimitError
+	// words it, and never the body.
+	answeredAt200 := func(body, wording string) func(*limitGitHub, error) string {
+		return func(fake *limitGitHub, err error) string {
+			limited, ok := AsRateLimit(err)
+			if !ok || limited.Held || limited.Status != http.StatusOK || limited.Body != "" || limited.wording != wording ||
+				err.Error() != fmt.Sprintf("rate-limited by GitHub (status 200), next request in %s: %s", limited.Wait, wording) {
+				return fmt.Sprintf("(want GitHub's own 200 as a limit carrying GitHub's wording %q of it in place of its body %s, got %v)", wording, body, err)
+			}
+			return fmt.Sprintf("POST %s/graphql: rate-limited by GitHub (status 200), next request in %s: %s", fake.server.URL, limited.Wait, wording)
+		}
+	}
+	cases := []struct {
+		name string
+		// prepare records the limit, or sets the answer, the request meets.
+		prepare func(t *testing.T, limits *ratelimit.Store, fake *limitGitHub)
+		request func(ctx context.Context, client *Client, token string) error
+		// sent is whether the request reached GitHub, and cause the cause noted given the error
+		// the caller was given, "" when nothing is noted.
+		sent  bool
+		cause func(fake *limitGitHub, err error) string
+		// absent is text of GitHub's answer the cause must not hold.
+		absent []string
+	}{{
+		name: "a REST request a recorded limit holds",
+		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
+			if err := limits.Record(context.Background(), InstallationScope(7), time.Minute); err != nil {
+				t.Fatalf("record the installation's limit: %v", err)
+			}
+		},
+		request: read,
+		cause:   held(InstallationScope(7)),
+	}, {
+		name: "a query a recorded GraphQL limit holds before it is sent",
+		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
+			if err := limits.Record(context.Background(), GraphQLScope, time.Minute); err != nil {
+				t.Fatalf("record the GraphQL limit: %v", err)
+			}
+		},
+		request: query,
+		cause:   held(GraphQLScope),
+	}, {
+		name: "a query GitHub answers 200 with its budget spent",
+		prepare: func(_ *testing.T, _ *ratelimit.Store, fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusOK, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, body: spent})
+		},
+		request: query,
+		sent:    true,
+		cause:   answeredAt200(spent, "RATE_LIMITED: API rate limit exceeded for installation"),
+	}, {
+		name: "a query GitHub answers 200 with its data and a secondary limit in its errors",
+		prepare: func(_ *testing.T, _ *ratelimit.Store, fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusOK, body: secondaryWithData})
+		},
+		request: query,
+		sent:    true,
+		cause:   answeredAt200(secondaryWithData, "You have exceeded a secondary rate limit. Please wait a few minutes before you try again."),
+		absent:  []string{dataMarker},
+	}, {
+		// The data of the answer is what a private repository's pull requests or check runs are
+		// to delivery_reconcile and ci_reconcile, which no cause may carry to GET /healthz. Its
+		// envelope holds no error, so the headers that say the budget is spent name the limit.
+		name: "a query GitHub answers 200 with its data and its last point spent",
+		prepare: func(_ *testing.T, _ *ratelimit.Store, fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusOK, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, body: lastPoint})
+		},
+		request: query,
+		sent:    true,
+		cause:   answeredAt200(lastPoint, "X-RateLimit-Remaining: 0; X-RateLimit-Reset: "+reset),
+		absent:  []string{dataMarker},
+	}, {
+		name: "a query GitHub answers 200 with its last point spent and the limit's type in its data beside another error",
+		prepare: func(_ *testing.T, _ *ratelimit.Store, fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusOK, header: map[string]string{"X-RateLimit-Remaining": "0"}, body: limitedInData})
+		},
+		request: query,
+		sent:    true,
+		cause:   answeredAt200(limitedInData, "X-RateLimit-Remaining: 0"),
+		absent:  []string{"secret", "NOT_FOUND"},
+	}, {
+		// GitHub asks for a second, and the strike holds the installation a minute at least.
+		name: "a query GitHub answers 403 with a secondary limit, which its strike holds past GitHub's own wait",
+		prepare: func(_ *testing.T, _ *ratelimit.Store, fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusForbidden, header: map[string]string{"Retry-After": "1"}, body: secondaryLimit})
+		},
+		request: query,
+		sent:    true,
+		cause: func(fake *limitGitHub, err error) string {
+			if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Scope != InstallationScope(7) || limited.Wait <= time.Second {
+				return fmt.Sprintf("(want GitHub's 403 as a secondary limit struck under %s past GitHub's own second, got %v)", InstallationScope(7), err)
+			}
+			return "POST " + fake.server.URL + "/graphql: " + err.Error()
+		},
+	}, {
+		name:    "a query GitHub answers",
+		prepare: func(*testing.T, *ratelimit.Store, *limitGitHub) {},
+		request: query,
+		sent:    true,
+		cause:   func(*limitGitHub, error) string { return "" },
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := startLimitGitHub(t)
+			limits := ratelimit.New(storetest.Open(t).Pool)
+			client := fake.newClient(t, WithLimits(limits))
+			token, err := client.Token(context.Background(), 7)
+			if err != nil {
+				t.Fatalf("token: %v", err)
+			}
+			tc.prepare(t, limits, fake)
+			requests := fake.count()
+
+			ctx, attempt := githubreads.Begin(context.Background())
+			err = tc.request(ctx, client, token)
+			sentRequests := 0
+			if tc.sent {
+				sentRequests = 1
+			}
+			if got := fake.count() - requests; got != sentRequests {
+				t.Fatalf("GitHub got %d requests, want %d", got, sentRequests)
+			}
+			want := tc.cause(fake, err)
+			sent, failed, cause := attempt.Outcome()
+			if sent != tc.sent || failed != (want != "") || cause != want {
+				t.Fatalf("the request answered %v: sent %v, failed %v, cause %q; want sent %v and cause %q", err, sent, failed, cause, tc.sent, want)
+			}
+			for _, text := range tc.absent {
+				if strings.Contains(cause, text) {
+					t.Fatalf("the cause %q holds %q, which is GitHub's answer and names no limit", cause, text)
+				}
+			}
+		})
+	}
+}
+
+// A limit GitHub answered a query with at 200 is noted with GitHub's wording of the limit alone,
+// whatever builds the note: the body of such an answer is the query's data, which GET /healthz
+// would serve with no credential. GraphQLRateLimit builds such a limit with that wording and no
+// Body (answeredLimit), and limitNoted, the client's note of a limit GitHub answered, which GraphQL
+// notes every limit it reads with (TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt), carries
+// the limit's text; here it is given each limit as GraphQLRateLimit reads it from the header and
+// the body the query was answered with. At any other status the body is GitHub's refusal, which
+// Body and the note carry whole, and a refusal with no body leaves the note ending at the wait.
+func TestALimitNotedAt200NeverCarriesTheQuerysData(t *testing.T) {
+	const marker = "a-private-repositorys-own-data-4324"
+	const target = "https://api.github.com/graphql"
+	rows := []struct {
+		name   string
+		status int
+		header http.Header
+		body   string
+		// wording is GitHub's wording of the limit at a 2xx and its Body at any other status, and
+		// what the note carries after the limit's wait, "" for nothing.
+		wording string
+	}{{
+		name:    "the last point spent, with the query's data",
+		status:  http.StatusOK,
+		header:  http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {"1800000000"}},
+		body:    `{"data":{"viewer":{"login":"` + marker + `"}}}`,
+		wording: "X-RateLimit-Remaining: 0; X-RateLimit-Reset: 1800000000",
+	}, {
+		name:    "a secondary limit beside the query's data",
+		status:  http.StatusOK,
+		body:    `{"data":{"viewer":{"login":"` + marker + `"}},"errors":[{"message":"You have exceeded a secondary rate limit."}]}`,
+		wording: "You have exceeded a secondary rate limit.",
+	}, {
+		name:    "the limit's type in the query's data, beside another error",
+		status:  http.StatusOK,
+		header:  http.Header{"X-Ratelimit-Remaining": {"0"}},
+		body:    `{"data":{"t":"RATE_LIMITED ` + marker + `"},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository with the name 'acme/x'."}]}`,
+		wording: "X-RateLimit-Remaining: 0",
+	}, {
+		name:    "GitHub's refusal at 403",
+		status:  http.StatusForbidden,
+		body:    `{"message":"You have exceeded a secondary rate limit."}`,
+		wording: `{"message":"You have exceeded a secondary rate limit."}`,
+	}, {
+		name:   "a refusal with no body",
+		status: http.StatusTooManyRequests,
+	}}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			limited, _ := GraphQLRateLimit(row.status, row.header, []byte(row.body))
+			body, wording := row.wording, ""
+			if row.status/100 == 2 {
+				body, wording = "", row.wording
+			}
+			if limited == nil || limited.Status != row.status || limited.Body != body || limited.wording != wording {
+				t.Fatalf("GraphQLRateLimit read %v, want a limit at %d whose Body is %q and whose wording is %q", limited, row.status, body, wording)
+			}
+			want := fmt.Sprintf("POST %s: rate-limited by GitHub (status %d), next request in %s", target, row.status, limited.Wait)
+			if row.wording != "" {
+				want += ": " + row.wording
+			}
+			if cause := limitNoted(http.MethodPost, target, limited).Error(); cause != want || strings.Contains(cause, marker) {
+				t.Fatalf("the note reads %q, want %q, which holds nothing of the query's data", cause, want)
+			}
+		})
+	}
+}
+
+// RateLimitError is an exported struct any package can build, not only answeredLimit, and its
+// text reaches GET /healthz as a cause, served with no credential, however a loop wraps and notes
+// it. At a 2xx status a Body is the data the request asked for -- a private repository's, or an
+// installation token the mint answers 201 with -- so neither the error's text nor the client's
+// note of it (limitNoted) carries Body there, whoever filled it. At 403 Body is GitHub's refusal,
+// which the text and both notes end with, so no row passes by printing no body anywhere.
+func TestARateLimitErrorAt2xxPrintsNoBodyWhoeverBuildsIt(t *testing.T) {
+	const marker = "ghs_an-installation-token-4324"
+	const refusal = `{"message":"API rate limit exceeded for installation ID 7."}`
+	const target = "https://api.github.com/app/installations/7/access_tokens"
+	rows := []struct {
+		status int
+		body   string
+		// detail is what the text carries after the limit's wait, "" for nothing.
+		detail string
+	}{
+		{status: http.StatusOK, body: marker},
+		{status: http.StatusCreated, body: marker},
+		{status: http.StatusNoContent, body: marker},
+		{status: http.StatusForbidden, body: refusal, detail: refusal},
+	}
+	for _, row := range rows {
+		t.Run(strconv.Itoa(row.status), func(t *testing.T) {
+			limited := &RateLimitError{Status: row.status, Wait: time.Minute, Body: row.body}
+			want := fmt.Sprintf("rate-limited by GitHub (status %d), next request in 1m0s", row.status)
+			if row.detail != "" {
+				want += ": " + row.detail
+			}
+			if text := limited.Error(); text != want || strings.Contains(text, marker) {
+				t.Fatalf("the limit reads %q, want %q, which holds no 2xx body", text, want)
+			}
+
+			ctx, attempt := githubreads.Begin(context.Background())
+			githubreads.NoteFailure(ctx, limited)
+			if _, failed, cause := attempt.Outcome(); !failed || cause != want || strings.Contains(cause, marker) {
+				t.Fatalf("the attempt failed %v with the cause %q, want the limit's text %q, which holds no 2xx body", failed, cause, want)
+			}
+
+			noted := "POST " + target + ": " + want
+			ctx, attempt = githubreads.Begin(context.Background())
+			githubreads.NoteFailure(ctx, limitNoted(http.MethodPost, target, limited))
+			if _, failed, cause := attempt.Outcome(); !failed || cause != noted || strings.Contains(cause, marker) {
+				t.Fatalf("the attempt failed %v with the client's note %q, want %q, which holds no 2xx body", failed, cause, noted)
+			}
+		})
+	}
+}
+
+// A loop notes the error it gave up on in words of its own around it (delivery's recordRead,
+// "<step>: %w"), and where that note is the first on its attempt, before any note the client
+// makes, the error's own text is the cause GET /healthz serves with no credential. A limit GitHub
+// answered a query with at 200 is such an error, and the body of that answer is the query's data.
+// The error holds GitHub's wording of the limit in place of that body (answeredLimit), so neither
+// its text nor the cause carries the data whichever note comes first, and the loop still finds
+// the limit and its wait in the chain.
+func TestA200LimitALoopNotesWrappedBeforeTheClientNeverCarriesTheQuerysData(t *testing.T) {
+	const marker = "a-private-repositorys-own-data-4324"
+	const step = "reconcile merged pull requests"
+	rows := []struct {
+		name    string
+		header  http.Header
+		body    string
+		wording string
+	}{{
+		name:    "the last point spent, with the query's data",
+		header:  http.Header{"X-Ratelimit-Remaining": {"0"}},
+		body:    `{"data":{"search":{"nodes":[{"title":"` + marker + `"}]}}}`,
+		wording: "X-RateLimit-Remaining: 0",
+	}, {
+		name:    "a secondary limit beside the query's data",
+		header:  http.Header{},
+		body:    `{"data":{"search":{"nodes":[{"title":"` + marker + `"}]}},"errors":[{"message":"You have exceeded a secondary rate limit."}]}`,
+		wording: "You have exceeded a secondary rate limit.",
+	}}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			limited, _ := GraphQLRateLimit(http.StatusOK, row.header, []byte(row.body))
+			if limited == nil {
+				t.Fatalf("GraphQLRateLimit read no limit in %s", row.body)
+			}
+			err := fmt.Errorf("%s: %w", step, limited)
+			ctx, attempt := githubreads.Begin(context.Background())
+			githubreads.NoteFailure(ctx, err)
+
+			want := fmt.Sprintf("%s: rate-limited by GitHub (status 200), next request in %s: %s", step, limited.Wait, row.wording)
+			if text := err.Error(); text != want || strings.Contains(text, marker) {
+				t.Fatalf("the wrapped limit reads %q, want %q, which holds nothing of the query's data", text, want)
+			}
+			if _, failed, cause := attempt.Outcome(); !failed || cause != want || strings.Contains(cause, marker) {
+				t.Fatalf("the attempt failed %v with the cause %q, want the loop's note %q, which holds nothing of the query's data", failed, cause, want)
+			}
+			if found, ok := AsRateLimit(err); !ok || found.Wait != limited.Wait || found.Wait <= 0 {
+				t.Fatalf("the wrapped error %v holds no limit with GitHub's wait %s", err, limited.Wait)
+			}
 		})
 	}
 }

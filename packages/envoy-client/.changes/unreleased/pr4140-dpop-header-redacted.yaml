@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  An excerpt of a body that is not the server's own (`@legion/envoy-client/excerpt`) redacts the
+  value of an echoed `DPoP` header line (`DPoP: <proof>`) and of a JSON `"DPoP"` member, in any
+  case and in a list as Go's header JSON writes one, as it redacts an `Authorization` header or
+  member, and every value shaped as a JWS (a proof or a JWT) wherever it stands, inside a JSON
+  string's escaped quotes, as HTML or as a list's second value included, within the same first
+  64 KiB it reads. The proof is signed for the one request and is none of the tokens a client
+  keeps, so a gateway that echoed the request printed it whole in the client's error.
+time: 2026-11-18T18:26:18Z
+custom:
+    Issue: pr4140

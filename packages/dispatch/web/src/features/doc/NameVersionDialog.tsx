@@ -14,9 +14,11 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 
 export interface NameVersionDialogProps {
-  error: boolean;
+  /** What the last Save was answered with, or null while none failed. */
+  error: Error | null;
   onClose: () => void;
   onSave: (summary: string) => void;
   open: boolean;
@@ -86,11 +88,17 @@ export function NameVersionDialog({
               value={summary}
             />
           </label>
-          {error ? (
+          {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
-              Could not name this version. Try again.
+              {/* A version the reader stopped may have been named, and Save is a press of its
+                  own, under a key of its own. */}
+              {error instanceof SendStoppedError
+                ? stoppedWriteNote("the new version", "made", {
+                    anew: "Saving it again names a new version.",
+                  })
+                : "Could not name this version. Try again."}
             </p>
-          ) : null}
+          )}
           <div className="flex items-center justify-end gap-2">
             <button
               className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}

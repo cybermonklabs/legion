@@ -107,7 +107,7 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 	if r.failReadTree && command.Argv[0] == "git" && slices.Contains(command.Argv, "read-tree") {
 		return Result{ExitCode: 1, Stderr: "forced read-tree failure for test"}, nil
 	}
-	if r.beforeLsRemote != nil && len(command.Argv) > 2 && command.Argv[0] == "git" && command.Argv[2] == "ls-remote" {
+	if r.beforeLsRemote != nil && command.Argv[0] == "git" && slices.Contains(command.Argv, "ls-remote") {
 		r.beforeLsRemote()
 	}
 
@@ -116,15 +116,6 @@ func (r *recordingRunner) Run(ctx context.Context, command Command) (Result, err
 	// A clone from a pod's feed reaches it through the insteadOf its own environment names.
 	if isClone(actual.Argv) && !slices.Contains(command.Env, "GIT_ALLOW_PROTOCOL=file") {
 		actual.Argv[3] = r.remote
-	}
-	// The skills clone names GitHub in its argv too: `git clone --depth 1 --single-branch
-	// --quiet <url> <dir>` (CloneSkills).
-	if commandWith(actual.Argv, "git", "clone", "--depth", "1", "--single-branch") {
-		for i, arg := range actual.Argv {
-			if arg == "https://github.com/acme/widgets" {
-				actual.Argv[i] = r.remote
-			}
-		}
 	}
 	if commandWith(actual.Argv, "git", "clone", "--bare", "--quiet", "https://github.com/acme/widgets") {
 		for i, arg := range actual.Argv {
@@ -727,7 +718,7 @@ func TestFetchClonesBareReadingNoConfigurationButItsOwn(t *testing.T) {
 		t.Errorf("the feed's main is %s, not the remote's", main)
 	}
 	clone := findCall(t, run.Calls(), "git", "clone")
-	if want := []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", "https://github.com/acme/widgets"}; !slices.Equal(clone.Argv[:len(want)], want) || len(clone.Argv) != len(want)+1 || !strings.HasPrefix(clone.Argv[len(want)], feed+".clone-") {
+	if want := slices.Concat(feedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", "https://github.com/acme/widgets"}); !slices.Equal(clone.Argv[:len(want)], want) || len(clone.Argv) != len(want)+1 || !strings.HasPrefix(clone.Argv[len(want)], feed+".clone-") {
 		t.Errorf("Fetch ran %q, want %q into a temporary sibling of %s", clone.Argv, want, feed)
 	}
 	assertCredentialedEnvironmentBounded(t, clone, FetchTimeout)

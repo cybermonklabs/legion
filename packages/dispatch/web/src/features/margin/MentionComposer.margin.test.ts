@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { canSubmitComposer, hasUnsavedInput } from "../conversation/MentionComposer";
+import { hasUnsavedInput } from "../conversation/composer-model";
+import { canSubmitComposer } from "../conversation/MentionComposer";
 import { buildIssuePath, composerReferences } from "../refs/routes";
 
 test("composer turns typed dispatch and pasted same-origin links into reference chips", () => {

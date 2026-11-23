@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +62,10 @@ const (
 	// so a finer poll observes nothing sooner and only takes the subscription's mutex oftener.
 	sessionPullDrainWait = time.Second
 	sessionPullDrainPoll = 10 * time.Millisecond
+	// sessionPullDroppedLogEvery is how often a pull writes its line for a message on its inbox
+	// that its consumer did not deliver (SessionPull.receive): the first, then at most one a
+	// minute, each saying how many it held back since the line before.
+	sessionPullDroppedLogEvery = time.Minute
 )
 
 // ErrSessionPullStalled ends a pull (SessionPull.Next) that heard nothing from the server, no
@@ -77,10 +83,14 @@ var ErrSessionPullStalled = errors.New("bus: the session consumer's pull heard n
 type SessionPull struct {
 	conn *nats.Conn
 	sub  *nats.Subscription
-	// name is the consumer's, next its pull request subject, inbox the subject the server answers
-	// on, and request the pull request's body.
-	name, next, inbox string
-	request           []byte
+	// sessionID is the session whose consumer it pulls; name is the consumer's, next its pull
+	// request subject, inbox the subject the server answers on, ack the start of the
+	// acknowledgement subject the server gives each message the consumer delivers, and request the
+	// pull request's body.
+	sessionID, name, next, inbox, ack string
+	request                           []byte
+	// logger is the logger of the SessionConsumers that started it.
+	logger *slog.Logger
 	// remaining is how many messages the pull request in flight may still deliver; 0 when none is.
 	// Only Next reads or writes it.
 	remaining int
@@ -95,12 +105,16 @@ type SessionPull struct {
 	detachOnce sync.Once
 	detachErr  error
 
-	// mu guards queue and heard.
+	// mu guards queue, heard, droppedLoggedAt and droppedHeld.
 	mu sync.Mutex
 	// queue holds what the server sent on the inbox, heartbeats aside, until Next reads it.
 	queue []*nats.Msg
 	// heard is when the server last sent anything on the inbox, or the pull last sent a request.
 	heard time.Time
+	// droppedLoggedAt is when receive last wrote its line for a message it dropped, and
+	// droppedHeld how many it has dropped since without one (sessionPullDroppedLogEvery).
+	droppedLoggedAt time.Time
+	droppedHeld     int
 }
 
 // Pull starts pulling sessionID's consumer on the connection, without reading it first: the first
@@ -125,7 +139,11 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 		return nil, err
 	}
 	conn := s.client.Connection()
-	p := &SessionPull{conn: conn, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
+	p := &SessionPull{
+		conn: conn, sessionID: sessionID, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(),
+		ack: "$JS.ACK." + Stream + "." + name + ".", request: request, logger: s.logger, heartbeat: s.pullHeartbeat,
+		wake: make(chan struct{}, 1),
+	}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err
 	}
@@ -137,17 +155,60 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 }
 
 // receive takes what the server sends on the pull's inbox: a heartbeat only marks it heard, and
-// anything else is queued for Next.
+// anything else is queued for Next, except a message whose reply is not the consumer's own
+// acknowledgement subject ($JS.ACK.<stream>.<consumer>.…, the form nats-server writes unless its
+// js_ack_fc_v2 feature flag is set, and the one the listener's grant acknowledges on). The
+// consumer delivered no such message; another connection published it into the inbox, as any
+// grant that publishes every _INBOX. subject may. It is dropped (drop), so neither Next nor
+// Release acts on it: Next could read no delivery from its reply and would end the pull, and an
+// answer on a reply naming another consumer would answer that consumer's message. nats-server
+// refuses a client's publish whose reply begins $JS.ACK., so such a message reaches the inbox
+// today with some other reply; the check does not rely on that.
+//
+// A status is not checked: a message with no reply is the server's status as far as receive can
+// tell, since a forged one carries the same subject and no reply. So a message another connection
+// publishes into the inbox with no reply and a Status header of 409 or 503 is still queued, and
+// Next ends the pull on it (the relay then restarts at the ack floor; nothing is acknowledged).
+// A session's own grant closes it: natsgrant.Session publishes bus.SessionReplies
+// (_INBOX.*.<session id>.>) in place of every _INBOX. subject, so a session publishes to no
+// pull's inbox, _INBOX.<id>. A holder of the shared session user or of a host user still can.
 func (p *SessionPull) receive(msg *nats.Msg) {
+	status, _ := pullStatus(msg)
+	if status == "" && !strings.HasPrefix(msg.Reply, p.ack) {
+		p.drop(msg)
+		return
+	}
 	p.mu.Lock()
 	p.heard = time.Now()
-	if status, _ := pullStatus(msg); status != pullStatusHeartbeat {
+	if status != pullStatusHeartbeat {
 		p.queue = append(p.queue, msg)
 	}
 	p.mu.Unlock()
 	select {
 	case p.wake <- struct{}{}:
 	default:
+	}
+}
+
+// drop counts a message receive will not queue and writes its WARN line: the first, then at most
+// one every sessionPullDroppedLogEvery, each saying how many it held back since the line before,
+// since whoever publishes into the inbox can do so as fast as it likes. A dropped message is not
+// the server's, so it does not mark the pull heard.
+func (p *SessionPull) drop(msg *nats.Msg) {
+	now := time.Now()
+	p.mu.Lock()
+	logLine := p.droppedLoggedAt.IsZero() || now.Sub(p.droppedLoggedAt) >= sessionPullDroppedLogEvery
+	held := p.droppedHeld
+	if logLine {
+		p.droppedLoggedAt, p.droppedHeld = now, 0
+	} else {
+		p.droppedHeld++
+	}
+	p.mu.Unlock()
+	if logLine {
+		p.logger.Warn("session consumer pull dropped a message its consumer did not deliver: its reply is not the consumer's acknowledgement subject",
+			slog.String("session_id", p.sessionID), slog.String("consumer", p.name), slog.String("reply", msg.Reply),
+			slog.Int("held", held))
 	}
 }
 
@@ -288,7 +349,7 @@ func (p *SessionPull) Detach() error {
 		// unread, which is what Release returns. A drain hands those messages to receive, which
 		// queues them.
 		if err := p.sub.Drain(); err != nil {
-			// Drain fails only on a closed connection (nats.go v1.53.1: ErrConnectionClosed;
+			// Drain fails only on a closed connection (nats.go v1.55.0: ErrConnectionClosed;
 			// its other error, a subscription with no connection, cannot arise here). The close
 			// has already ended the subscription and thrown away what nats.go held unread, so
 			// those messages reach neither Release nor the server and are delivered again only

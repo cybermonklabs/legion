@@ -4,7 +4,7 @@
  *
  *  Every row here reads what the browser does with one fixed answer - the listing, the focus,
  *  the address a row navigates to, the panels a chord toggles - so each runs against a
- *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *  What stayed in `keyboard-palette.e2e.ts`, and why, is written there.
  */
 import { expect } from "@playwright/test";

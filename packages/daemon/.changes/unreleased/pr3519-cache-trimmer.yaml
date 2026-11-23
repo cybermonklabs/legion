@@ -1,0 +1,65 @@
+kind: Added
+custom:
+  Issue: pr3519
+body: |-
+  Every issue pod's launcher runs a cache trimmer, on by default for every Kubernetes deployment.
+  When the issue volume reaches `runtime.kubernetes.volume_trim.high_percent` (85 by default), it
+  deletes the oldest entries not modified for `min_age_minutes` (an hour more in the Go build
+  cache) that no process of the pod holds from four cache roots — Go's own build directories
+  under `/legion/scratch/tmp`, the Go build cache, the tool caches under `/legion/scratch/cache`
+  but the Playwright registry and the Claude Code cache, and the Bun install cache — toward
+  `low_percent` (70), stopping there or sooner. It deletes nothing from workspaces, repositories,
+  the Go module cache or the uv caches, and nothing else of the temporary directory.
+  `enabled: false` switches it off, and the settled block is in the state body under
+  `settings.runtime.kubernetes.volume_trim`. A launcher that is not PID 1 of its PID namespace, which in a
+  pod is the container's first process, runs no trimmer, as it runs no memory guard: it may not
+  see every process that may be using the volume.
+
+  A sweep that leaves the volume above its low mark, unless the settings stopped it, and a
+  trimmer that switches itself off after three panics in a row of one kind of its work — its
+  readings of the volume, a row that also counts its wait for settings and its interval clock
+  with the line that starts it, or its sweeps and their reports, each kind's row ended by a
+  reading or a sweep of that kind that runs to its end — reach the issue's architect as a new
+  `volume-near-full` notice, bounded to three per trimmer and episode and one an hour per pod.
+  A report skips the hour, and not the three, where a rise raised its episode: at the start of a
+  reported sweep (one that ended above the low mark and that the settings did not stop, its start
+  read after it returns and before the interval's lines about it and its report, so one whose
+  line or report then panicked, which sends none, counts too), the lower of that start and the
+  one before it five points or more above the episode's anchor, never a reading inside a pause
+  or below the high mark. The anchor is the
+  lowest start of the episode's reported sweeps where no rise raised it, and the floor that
+  raised it, which never moves, where one did, so a volume that keeps filling raises a new
+  episode at each five points its sweep starts climb, read one reported sweep after the first
+  that starts there, and a peak that one start reads raises none; but a transient high, such as
+  97%, that two reported starts in a row read raises a rise anchored there, after which a fill
+  from lower down raises none until two starts stand five points above it, and none at all where
+  it is above 95%, until a recovery starts a new chain. Until a recovery a chain whose anchor is
+  A at its first rise holds at most (100 − A) / 5 rises, rounded down, which is
+  (100 − `high_percent`) / 5, three at the default, for a chain anchored at the high mark; an
+  anchor above 95% can never be passed, and from one of 95% a rise needs two reported sweeps in a
+  row that start at exactly 100.0%. Each reading of the trimmer's own at or below the low mark,
+  an interval's or a sweep's last, after one at or above the high mark, starts a new chain of
+  rises, its anchor taken afresh, so a sweep that ends exactly at the low mark is a recovery and
+  sends no report; a fall while the trimmer is off (`enabled: false`, or settings it refuses) is
+  not read, and its episode and chain go on when it runs again, unless its first reading then is
+  at or below the low mark, which is a recovery. So a volume that cycles can be told about each
+  cycle: its recovery episode's reports wait for the hour, but a rise, raised in each cycle where
+  two reported sweeps in a row start five points or more above the lowest start of that cycle's
+  reported sweeps before them, is told without waiting. Each rise episode of a cycle costs up to
+  three notices that skip the hour, and a cycle whose anchor is A at its first rise costs at most
+  3 × ⌊(100 − A) / 5⌋ such notices, nine at the default high mark, besides the recovery
+  episode's reports, which come at most one an hour; what fills of a given shape cost a pod in a
+  day is measured in docs/kubernetes.md, in the paragraph on `runtime.kubernetes.volume_trim`,
+  under "Configuration" of "Kubernetes runtime: the Go daemon on Agent Sandbox". The
+  switched-off notice is sent whatever the bounds stand at. A rollback below this release has the operator
+  delete the queued notices first, as docs/kubernetes.md says.
+
+  A `worker-died` notice of the tree architect, and of a held phase, now names the pod end of the
+  process the notice is about — `Evicted: The node was low on resource: ephemeral-storage. ...`
+  above all — where that process died of one, and, where the notice carries no failure record,
+  the sentence the daemon wrote when it gave up on the claim, quoted and cut at 400 characters;
+  the one that ends a closed issue's production-check look, which carried that sentence whole,
+  now quotes and cuts it the same way. The pod end is kept on the claim, in a new
+  `claims.pod_end` column, so a failure the daemon replays after a restart names it too; each
+  launch of the claim clears it, and the death of the process that launch started writes its own
+  in its place.

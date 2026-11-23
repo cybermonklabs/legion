@@ -406,7 +406,8 @@ func (v vm) natsUnit() string {
 // fetched before every start: a fetch that fails fails the start, and the unit's restart fetches
 // again 10 seconds later. It listens on the VM's loopback, where Tailscale Serve forwards the
 // tailnet's connections to its port, and reaches NATS there too. It is stopped with
-// docker stop -t 30, since the listener's own shutdown takes up to about twenty-three seconds.
+// docker stop -t 30, since the listener's own shutdown takes up to 28 seconds (stopBudget in
+// packages/envoy/cmd/listener/main.go).
 func (v vm) listenerUnit() string {
 	run := []string{"--env-file", listenerEnvPath}
 	for _, e := range v.listener.env {

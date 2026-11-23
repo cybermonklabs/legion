@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The broker's wake notice to a session's listener carries the broker's own projected
+  ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads afresh for
+  each notice, so the listener admits the account that token names as it admits every other
+  caller's. The shared bearer it used instead is gone: a broker started with `BROKER_ENVOY_TOKEN`
+  or `BROKER_ENVOY_TOKEN_FILE` refuses to start, naming the variable that replaces it, and
+  `BROKER_ENVOY_URL` now requires that file.
+  Envoy's NATS grants move to one public table, `packages/envoy/natsgrant`, which the hub's
+  renderer and the auth service both read; `packages/envoy/daemonpermissions` is gone into
+  `natsgrant.Daemon`, and a hub's rendered users are unchanged, element for element.
+time: 2026-11-16T03:34:48Z
+custom:
+    Issue: pr4139

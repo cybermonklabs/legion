@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  Dispatch reads an envoy.json whose `envoy` section names `natsAuth`, the credential a session's
+  NATS connection presents (`broker` or `none`, which the session's own client decides), holding
+  it to a string as it holds `token` and `natsSeed`. It refused the key as unrecognized.
+time: 2026-11-16T04:35:41Z
+custom:
+    Issue: pr4140

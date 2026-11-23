@@ -9,7 +9,7 @@
 // place once four fifths of that has passed.
 //
 //	dev-oidc-issuer [--token <audience>=<service account>=<file> ...]
-//	                [--code-flow <client id>=<client secret file> ...]
+//	                [--code-flow <client id>=<client secret file>=<redirect URI> ...]
 //	                [--device-flow <client id>=<client secret file> ...]
 //	                [--sign-in-as <email> [--sign-in-group <group>]]
 //
@@ -22,10 +22,16 @@
 //
 // --code-flow serves the authorization code flow for one confidential client, whose secret is the
 // file's content less surrounding whitespace: the values DISPATCH_SIGNIN_CLIENT_ID and
-// DISPATCH_SIGNIN_CLIENT_SECRET take. It is repeatable, each time for another client id, so one
-// issuer serves Dispatch's client and the secrets broker's at once, as Dispatch's browser suite
-// now runs both against one issuer; each client has its own secret, and a code issued to one is
-// not exchanged by the other. Each authorization signs in the next person queued at the
+// DISPATCH_SIGNIN_CLIENT_SECRET take. The redirect URI, everything after the second "=", is the
+// client's one registered callback, an absolute http or https URL with no fragment: an
+// authorization naming any other address is refused 400 redirect_uri_mismatch and sends the
+// browser nowhere, as Google refuses one. A loopback IP literal callback with no port, such as
+// http://127.0.0.1/auth/callback, is taken at any port (RFC 8252 section 7.3), since the local
+// stacks start the issuer before the server whose callback it is binds a port the OS chooses. It
+// is repeatable, each time for another client id, so one issuer serves Dispatch's client and the
+// secrets broker's at once, as Dispatch's browser suite now runs both against one issuer; each
+// client has its own secret and callback, and a code issued to one is not exchanged by the
+// other. Each authorization signs in the next person queued at the
 // loopback-only control route POST <issuer URL>/_dev/sign-in-as, whose body is the JSON object of
 // that person's ID token claims; with none queued, it signs in --sign-in-as's person, and without
 // --sign-in-as it refuses the authorization. The queue and --sign-in-as's person are the issuer's
@@ -52,7 +58,7 @@
 // A caller that needs a token for an account no --token names, or for a pod of its own choosing,
 // asks the loopback-only control route POST <issuer URL>/_dev/mint, whose body names the subject,
 // the audience and, when it matters, the pod uid, and whose answer is {"token": "…"}. The browser
-// suite's request seeder (internal/broker/brokertest/requestseed) enrolls each of its pods that
+// suite's request seeder (internal/cipher/ciphertest/requestseed) enrolls each of its pods that
 // way, since every pod needs a uid of its own.
 //
 // Once every file is written it logs "issuer listening url=<issuer URL>", the value
@@ -79,7 +85,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/broker/machine"
+	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -100,8 +106,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	var tokens tokenFlags
 	fs.Var(&tokens, "token", "keep `<audience>=<service account>=<file>`'s token in file (repeatable)")
-	flow := codeFlow{codeClients: clientFlags{flagName: "--code-flow"}, deviceClients: clientFlags{flagName: "--device-flow"}}
-	fs.Var(&flow.codeClients, "code-flow", "serve the sign-in code flow for `<client id>=<client secret file>` (repeatable)")
+	flow := codeFlow{codeClients: clientFlags{flagName: "--code-flow", redirect: true}, deviceClients: clientFlags{flagName: "--device-flow"}}
+	fs.Var(&flow.codeClients, "code-flow", "serve the sign-in code flow for `<client id>=<client secret file>=<redirect URI>` (repeatable)")
 	fs.Var(&flow.deviceClients, "device-flow", "serve the device authorization grant for `<client id>=<client secret file>` (repeatable)")
 	fs.StringVar(&flow.signInAs, "sign-in-as", "", "sign each authorization or device approval in as `<email>` when none is queued (needs --code-flow or --device-flow)")
 	fs.StringVar(&flow.signInGroup, "sign-in-group", "", "make --sign-in-as's person a member of the sign-in pool group `<group>` (needs --sign-in-as)")
@@ -155,16 +161,18 @@ func (f codeFlow) serves() bool {
 	return len(f.codeClients.clients)+len(f.deviceClients.clients) > 0
 }
 
-// clientSpec is one --code-flow or --device-flow: a confidential client the issuer serves, and
-// its secret.
+// clientSpec is one --code-flow or --device-flow: a confidential client the issuer serves, its
+// secret, and for --code-flow its registered redirect URI.
 type clientSpec struct {
-	clientID, clientSecret string
+	clientID, clientSecret, redirectURI string
 }
 
 // clientFlags is one repeated client flag, --code-flow or --device-flow: the clients it names,
-// and its own name, which its refusals carry.
+// its own name, which its refusals carry, and whether each client names its redirect URI, as a
+// --code-flow client does.
 type clientFlags struct {
 	flagName string
+	redirect bool
 	clients  []clientSpec
 }
 
@@ -179,14 +187,27 @@ func (f clientFlags) ids() []string {
 	return ids
 }
 
-// Set parses <client id>=<client secret file> and reads the secret from the file now, so a file
-// that cannot be read, or holds nothing but whitespace, is refused before any issuer runs rather
-// than serving a client no caller can authenticate as. A client id given twice is refused: the
-// second secret would replace the first, and the client the caller meant would authenticate with
-// neither.
+// Set parses <client id>=<client secret file>, and for --code-flow
+// <client id>=<client secret file>=<redirect URI>, and reads the secret from the file now, so a
+// file that cannot be read, or holds nothing but whitespace, is refused before any issuer runs
+// rather than serving a client no caller can authenticate as. A --code-flow redirect URI is
+// everything after the second "=": a URI may hold one in its query, and neither a client id nor
+// a secret file holds one. It is refused unless oidctest.ParseRedirectURI takes it, so an
+// issuer never registers a callback it cannot redirect to. A client id given twice is refused:
+// the second secret would replace the first, and the client the caller meant would authenticate
+// with neither.
 func (f *clientFlags) Set(value string) error {
 	clientID, file, _ := strings.Cut(value, "=")
-	if clientID == "" || file == "" {
+	var redirectURI string
+	if f.redirect {
+		file, redirectURI, _ = strings.Cut(file, "=")
+		if clientID == "" || file == "" || redirectURI == "" {
+			return errors.New("want <client id>=<client secret file>=<redirect URI>")
+		}
+		if _, err := oidctest.ParseRedirectURI(redirectURI); err != nil {
+			return err
+		}
+	} else if clientID == "" || file == "" {
 		return errors.New("want <client id>=<client secret file>")
 	}
 	for _, served := range f.clients {
@@ -202,7 +223,7 @@ func (f *clientFlags) Set(value string) error {
 	if secret == "" {
 		return fmt.Errorf("the client secret file %s is empty", file)
 	}
-	f.clients = append(f.clients, clientSpec{clientID: clientID, clientSecret: secret})
+	f.clients = append(f.clients, clientSpec{clientID: clientID, clientSecret: secret, redirectURI: redirectURI})
 	return nil
 }
 
@@ -347,7 +368,7 @@ func serve(ctx context.Context, specs []tokenSpec, flow codeFlow, lifetime time.
 	issuer := oidctest.New(p)
 	key := issuer.PublishKey(p, "dev-signing-key")
 	for _, client := range flow.codeClients.clients {
-		issuer.EnableCodeFlow(key, client.clientID, client.clientSecret)
+		issuer.EnableCodeFlow(key, client.clientID, client.clientSecret, client.redirectURI)
 	}
 	for _, client := range flow.deviceClients.clients {
 		issuer.EnableDeviceFlow(key, client.clientID, client.clientSecret)

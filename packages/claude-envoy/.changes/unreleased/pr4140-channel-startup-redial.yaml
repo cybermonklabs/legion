@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  A channel server that starts while its NATS connection is redialing (a hub restarting, or its auth
+  service away) now comes up once the connection is back. Its startup flush, which nats.js rejects
+  with DISCONNECT on each redial, ended the start with a bare `Claude Envoy channel server failed:
+  DISCONNECT`; it is asked again until the connection is back. A stop asked for meanwhile ends the
+  wait and the process exits 0, as an asked-for stop does; a connection closed for good fails the
+  start, naming why. A failed dial now names its NATS servers by the setting that holds them
+  (`the server envoy.natsUrls in <file> names`), never by any part of their text, which a pasted seed
+  or token, or a URL's user info, can be, and gives why it failed as nats.js's code or nats-server's
+  fixed refusal; and a hub with no auth service is refused naming the setting that chose the broker
+  token.
+time: 2026-11-16T11:41:31Z
+custom:
+    Issue: pr4140

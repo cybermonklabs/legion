@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +30,14 @@ import (
 // nothing else, which is the whole point -- an in-process fan-out cannot cross between them.
 func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
+	handler, _ := secondProcess(t, database)
+	return handler
+}
+
+// secondProcess is secondProcessHandler and the second process's event stream relay, for a test
+// that orders its writes against that relay's start (awaitRelayStart).
+func secondProcess(t *testing.T, database *store.Store) (http.Handler, *eventStreamRelay) {
+	t.Helper()
 	second := storetest.SecondProcess(t, database)
 	broker := events.NewBroker()
 	documentService := docs.New(docs.Deps{Store: second, Events: broker, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
@@ -54,8 +61,9 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 		t.Fatalf("new API dependencies for the second process: %v", err)
 	}
 	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-	return mux
+	served := register(mux, t.Context(), deps)
+	t.Cleanup(served.waitBackground)
+	return mux, served.eventRelay
 }
 
 // TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed is what the live feed is for with two
@@ -64,6 +72,7 @@ func secondProcessHandler(t *testing.T, database *store.Store) http.Handler {
 // itself -- B's relay hears the commit on `listen dispatch_events` (migration 0107) and reads it
 // back out of the log. The broker fan-out the feed used to read would have ended at A.
 func TestEventCommittedOnAnotherProcessReachesAnOpenEventFeed(t *testing.T) {
+	t.Parallel()
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	second := httptest.NewServer(secondProcessHandler(t, database))
@@ -91,7 +100,7 @@ func newCountedRelay(t *testing.T, deps Deps) (*eventStreamRelay, chan int64) {
 	relay.coalesce = time.Millisecond
 	reads := make(chan int64, 1024)
 	relay.readAfter = func(ctx context.Context, after, through int64) ([]model.Event, error) {
-		page, err := relay.server.readEventsAfterID(ctx, after, through, maxEventReplay)
+		page, err := relay.server.readEventsAfterID(ctx, model.Actor{}, after, through, maxEventReplay)
 		reads <- after
 		return page, err
 	}
@@ -250,6 +259,7 @@ func relaySubscribers(relay *eventStreamRelay) int {
 // last one closes. A relay that kept running after its last subscriber left would read the log
 // after every commit until the process exited.
 func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, reads := newCountedRelay(t, deps)
@@ -297,6 +307,7 @@ func TestEventStreamRelayReadsNothingWithoutASubscriber(t *testing.T) {
 // of the event log and one encoding of its frame, however many streams are open. Every subscriber
 // receives the same frame bytes.
 func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
+	t.Parallel()
 	const subscribers = 3
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
@@ -334,6 +345,7 @@ func TestEventStreamRelayReadsEachCommitOnceForEverySubscriber(t *testing.T) {
 // the last one is being cancelled either joins the running generation before it stops or starts a
 // new one; either way it receives the next commit.
 func TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, _ := newCountedRelay(t, deps)
@@ -361,6 +373,7 @@ func TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent(t *tes
 // processes are apart, so the subscription on B is sent nothing past a while A is open, and a and
 // then b once A commits.
 func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *testing.T) {
+	t.Parallel()
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
@@ -383,6 +396,7 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 // transaction holds open takes no connection a request needs. The reset check, a shared-pool
 // query, runs on the reads a notification wakes.
 func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	// The relay reads through a pool of its own, so its acquires are its alone.
 	deps.Store = storetest.SecondProcess(t, database)
@@ -421,6 +435,7 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 // cursor the relay has published through rather than from the log's head -- a cursor reset there
 // would silently swallow exactly the events the window dropped from every open page's feed.
 func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, _ := newCountedRelay(t, deps)
@@ -475,12 +490,13 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 // ids restart at 1, below the cursor the relay has published through, and `id > cursor` matches
 // nothing. A relay that only ever published forward would fall silent there for good: every live
 // update of every later scenario would be lost, with no error anywhere. The relay reads the reset
-// through eventCursorCheck and ends its generation with every subscription it holds -- the
+// through events.EventCursorCheck and ends its generation with every subscription it holds -- the
 // stream's answer to a reader it can no longer serve in order, which ends each open events
 // subscription with an ended frame (behind) and sends its page through a resubscribe
 // (TestTheEventFeedResumesAfterTheEventLogIsResetBeneathTheReader) -- and the next subscription
 // starts a generation on the new log.
 func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	issue := createPlainIssue(t, handler, "TEST")
 	relay, _ := newCountedRelay(t, deps)
@@ -542,6 +558,7 @@ func TestEventStreamRelayRecoversWhenTheEventLogIsReset(t *testing.T) {
 // subscription made meanwhile finds the relay still on the old cursor, so it hands over only once
 // the relay has reset, and is sent a, which committed after it subscribed, below that new cursor.
 func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
+	t.Parallel()
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
@@ -623,6 +640,7 @@ func mustEventFrameID(t *testing.T, frame LiveEventFrame) int64 {
 // live and the frame it receives when it resumes the same bytes; a hand-rolled live read would
 // hand a page an ask without them, and only a resubscribe would repair it.
 func TestLiveAskEventFrameCarriesTheReadTimeFields(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Ask fields", "A spec")
 	since := eventHead(t, rig.database)
@@ -657,197 +675,5 @@ func TestLiveAskEventFrameCarriesTheReadTimeFields(t *testing.T) {
 		if !ok || string(value) == "null" {
 			t.Fatalf("live ask.opened payload = %s, want a read-time %s", liveFrame.Event, field)
 		}
-	}
-}
-
-// liveEventSeed is one event a test writes directly, oldest first.
-type liveEventSeed struct {
-	kind    string
-	actor   string
-	payload string
-	at      time.Time
-}
-
-// seedLiveEvents writes each event on issue LIVE-1, oldest first, and returns the ids they took.
-func seedLiveEvents(t *testing.T, database *store.Store, seeds []liveEventSeed) []int64 {
-	t.Helper()
-	ctx := context.Background()
-	for _, statement := range []string{
-		`insert into projects (key, name, default_assignee) values ('LIVE', 'Live', 'alice') on conflict do nothing`,
-		`insert into issues (key, project_key, number, title, created_by, rank) values ('LIVE-1', 'LIVE', 1, 'x', '{"kind":"user","id":"alice"}', 'U') on conflict do nothing`,
-	} {
-		if _, err := database.Pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("%s: %v", statement, err)
-		}
-	}
-	ids := make([]int64, 0, len(seeds))
-	for _, seed := range seeds {
-		var id int64
-		if err := database.Pool.QueryRow(ctx, `
-			insert into events (issue_key, seq, type, actor, payload, notify, created_at)
-			select 'LIVE-1', coalesce(max(seq), 0) + 1, $1, $2::jsonb, $3::jsonb, false, $4
-			from events where issue_key = 'LIVE-1'
-			returning id
-		`, seed.kind, seed.actor, seed.payload, seed.at).Scan(&id); err != nil {
-			t.Fatalf("insert %s event: %v", seed.kind, err)
-		}
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-// liveUser is the actor of the events a test writes.
-const liveUser = `{"kind":"user","id":"alice"}`
-
-// eventCursorCheck reads the newest event's id and the time of the event at the cursor; once the
-// cursor's row is gone (a reset of the log), cursorAt is nil.
-func TestEventCursorCheckReadsTheNewestEventAndTheCursorsRow(t *testing.T) {
-	database := storetest.Open(t)
-	ctx := context.Background()
-
-	maxID, cursorAt, err := eventCursorCheck(ctx, database.Pool, 0)
-	if err != nil {
-		t.Fatalf("eventCursorCheck on an empty log: %v", err)
-	}
-	if maxID != 0 || cursorAt != nil {
-		t.Fatalf("an empty log = %d, %v; want 0, nil", maxID, cursorAt)
-	}
-
-	base := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
-	ids := seedLiveEvents(t, database, []liveEventSeed{
-		{kind: "issue.created", actor: liveUser, payload: `{}`, at: base},
-		{kind: "artifact.version", actor: liveUser, payload: `{}`, at: base.Add(time.Minute)},
-		{kind: "issue.updated", actor: liveUser, payload: `{}`, at: base.Add(2 * time.Minute)},
-	})
-	maxID, cursorAt, err = eventCursorCheck(ctx, database.Pool, ids[1])
-	if err != nil {
-		t.Fatalf("eventCursorCheck: %v", err)
-	}
-	if maxID != ids[2] {
-		t.Fatalf("newest event = %d, want %d", maxID, ids[2])
-	}
-	if cursorAt == nil || !cursorAt.Equal(base.Add(time.Minute)) {
-		t.Fatalf("the cursor's row time = %v, want %v", cursorAt, base.Add(time.Minute))
-	}
-
-	if _, err := database.Pool.Exec(ctx, `delete from events where id = $1`, ids[1]); err != nil {
-		t.Fatalf("delete the cursor's row: %v", err)
-	}
-	maxID, cursorAt, err = eventCursorCheck(ctx, database.Pool, ids[1])
-	if err != nil {
-		t.Fatalf("eventCursorCheck once the cursor's row is gone: %v", err)
-	}
-	if maxID != ids[2] || cursorAt != nil {
-		t.Fatalf("with the cursor's row gone = %d, %v; want %d, nil", maxID, cursorAt, ids[2])
-	}
-
-	if _, err := database.Pool.Exec(ctx, `truncate events restart identity cascade`); err != nil {
-		t.Fatalf("reset the event log: %v", err)
-	}
-	reset := seedLiveEvents(t, database, []liveEventSeed{{kind: "issue.created", actor: liveUser, payload: `{}`, at: base.Add(time.Hour)}})
-	maxID, cursorAt, err = eventCursorCheck(ctx, database.Pool, ids[2])
-	if err != nil {
-		t.Fatalf("eventCursorCheck after a reset: %v", err)
-	}
-	if maxID != reset[0] || maxID >= ids[2] || cursorAt != nil {
-		t.Fatalf("after a reset = %d, %v; want the new newest id %d below the cursor %d, and nil", maxID, cursorAt, reset[0], ids[2])
-	}
-}
-
-// cursorCheck is one answer of eventCursorCheck.
-type cursorCheck struct {
-	maxID    int64
-	cursorAt *time.Time
-}
-
-func (c cursorCheck) equal(other cursorCheck) bool {
-	if c.maxID != other.maxID {
-		return false
-	}
-	if c.cursorAt == nil || other.cursorAt == nil {
-		return c.cursorAt == nil && other.cursorAt == nil
-	}
-	return c.cursorAt.Equal(*other.cursorAt)
-}
-
-func (c cursorCheck) String() string {
-	cursorAt := "no row"
-	if c.cursorAt != nil {
-		cursorAt = c.cursorAt.UTC().Format(time.RFC3339)
-	}
-	return fmt.Sprintf("newest id %d, cursor's row %s", c.maxID, cursorAt)
-}
-
-// resetAfterFirstStatement is a queryer that resets the event log the moment the first statement
-// read through it has answered, which is a reset committing in the middle of whatever read that
-// statement began.
-type resetAfterFirstStatement struct {
-	queryer
-	reset func()
-	fired bool
-}
-
-func (q *resetAfterFirstStatement) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
-	return scanThen{row: q.queryer.QueryRow(ctx, sql, args...), after: func() {
-		if !q.fired {
-			q.fired = true
-			q.reset()
-		}
-	}}
-}
-
-// scanThen is a row that runs after once its Scan has answered.
-type scanThen struct {
-	row   pgx.Row
-	after func()
-}
-
-func (r scanThen) Scan(dest ...any) error {
-	err := r.row.Scan(dest...)
-	r.after()
-	return err
-}
-
-// A reset of the event log (e2e/seed.ts's `truncate events restart identity` and its refill) that
-// commits while eventCursorCheck is reading must leave the answer describing one log, the old one
-// or the new one. A mixed answer - the old log's newest id with no row at the cursor in the new
-// one - is one the relay would take for a reset to the old log's head: it would move its cursor
-// there, and the new log's lower ids would then read as a second reset that closed the
-// subscription opened after the first (TestEventStreamRelayRecoversWhenTheEventLogIsReset).
-func TestEventCursorCheckReadsOneLogWhenTheLogIsResetMidCheck(t *testing.T) {
-	database := storetest.Open(t)
-	ctx := context.Background()
-	base := time.Date(2026, 10, 12, 9, 0, 0, 0, time.UTC)
-	ids := seedLiveEvents(t, database, []liveEventSeed{
-		{kind: "issue.created", actor: liveUser, payload: `{}`, at: base},
-		{kind: "issue.updated", actor: liveUser, payload: `{}`, at: base.Add(time.Minute)},
-		{kind: "issue.updated", actor: liveUser, payload: `{}`, at: base.Add(2 * time.Minute)},
-	})
-	cursor := ids[1]
-	check := func(q queryer) cursorCheck {
-		t.Helper()
-		maxID, cursorAt, err := eventCursorCheck(ctx, q, cursor)
-		if err != nil {
-			t.Fatalf("eventCursorCheck: %v", err)
-		}
-		return cursorCheck{maxID: maxID, cursorAt: cursorAt}
-	}
-
-	oldLog := check(database.Pool)
-	resetting := &resetAfterFirstStatement{queryer: database.Pool, reset: func() {
-		if _, err := database.Pool.Exec(ctx, `truncate events restart identity cascade`); err != nil {
-			t.Fatalf("reset the event log: %v", err)
-		}
-		seedLiveEvents(t, database, []liveEventSeed{{kind: "issue.created", actor: liveUser, payload: `{}`, at: base.Add(time.Hour)}})
-	}}
-	got := check(resetting)
-	if !resetting.fired {
-		t.Fatal("the check read nothing through the queryer, so no reset landed inside it")
-	}
-	newLog := check(database.Pool)
-
-	if !got.equal(oldLog) && !got.equal(newLog) {
-		t.Fatalf("a reset during the check answered %v; want the old log's answer (%v) or the new log's (%v), not two logs in one answer",
-			got, oldLog, newLog)
 	}
 }

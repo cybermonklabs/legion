@@ -54,7 +54,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -158,20 +158,20 @@ func liveRepositoryCache() RepositoryCache {
 	}
 }
 
-// mappedRepositories is the run's mapping as the runtime reads it.
-func (r *liveRig) mappedRepositories() []ghrepo.Repository {
-	r.mappedMu.Lock()
-	defer r.mappedMu.Unlock()
-	return slices.Clone(r.mapped)
+// cacheRepositories is the run's cache set as the runtime reads it (Options.CacheRepositories).
+func (r *liveRig) cacheRepositories() []ghrepo.Repository {
+	r.cachedMu.Lock()
+	defer r.cachedMu.Unlock()
+	return slices.Clone(r.cached)
 }
 
-// mapRepository adds repo to the run's mapping, as Dispatch's mapping names a repository before
-// any issue of it launches.
-func (r *liveRig) mapRepository(repo ghrepo.Repository) {
-	r.mappedMu.Lock()
-	defer r.mappedMu.Unlock()
-	if !slices.Contains(r.mapped, repo) {
-		r.mapped = append(r.mapped, repo)
+// cacheRepository adds repo to the run's cache set, as the daemon's cache set gains a
+// repository at the commit of the first record that names it, before any issue of it launches.
+func (r *liveRig) cacheRepository(repo ghrepo.Repository) {
+	r.cachedMu.Lock()
+	defer r.cachedMu.Unlock()
+	if !slices.Contains(r.cached, repo) {
+		r.cached = append(r.cached, repo)
 	}
 }
 
@@ -709,11 +709,11 @@ type liveRig struct {
 	// trees is the durable state every runtime of the run reads (Options.Store): every tree live
 	// until a check records its cleanup confirmed.
 	trees *fakeStore
-	// mapped is the repositories the run maps (Options.Mapped): each added just before its first
-	// issue pod launches (root-ready, second-owner), so no sweep makes a cache the run's first
-	// launch of that repository is to make.
-	mappedMu sync.Mutex
-	mapped   []ghrepo.Repository
+	// cached is the run's cache set (Options.CacheRepositories): each repository added just
+	// before its first issue pod launches (root-ready, second-owner), so no sweep makes a cache
+	// the run's first launch of that repository is to make.
+	cachedMu sync.Mutex
+	cached   []ghrepo.Repository
 
 	// The current runtime instance and its listener; stop ends both.
 	rt      *Runtime
@@ -737,7 +737,7 @@ type liveRig struct {
 	// enrollments is the harness's own enrollment of each claim's running pod, as the daemon's
 	// machine holds it; grants and requests are what checkSecretsAutomaticGrant records for
 	// checkSecretsCrossPodNegative to attack.
-	secrets            *agentsecrets.Client
+	secrets            *cipher.Client
 	secretsBlockReason string
 	enrollments        map[claim.Token]liveEnrollment
 	grants             map[claim.Token]string
@@ -831,7 +831,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
 		// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
 		// person approves it, and the client keeps logging in for as long as the run lasts.
-		client := &agentsecrets.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
+		client := &cipher.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
 		if err := client.Start(r.ctx); err != nil {
 			r.secretsBlockReason = fmt.Sprintf("the token login was refused: %v", err)
 		} else {
@@ -979,7 +979,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		Log:                   r.log,
 		SessionStore:          r.sessionStore,
 		RepositoryCache:       liveRepositoryCache(),
-		Mapped:                r.mappedRepositories,
+		CacheRepositories:     r.cacheRepositories,
 	}
 	if r.env.agentSecretsURL != "" {
 		opts.AgentSecrets = &AgentSecrets{URL: r.env.agentSecretsURL, Audience: "agent-secrets", TokenExpiry: time.Hour}

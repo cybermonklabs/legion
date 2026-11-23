@@ -30,10 +30,10 @@ import { asUser } from "./users";
  * from the `tmux_place` each `Agent` of `GET /api/v1/agents` carries. One `test.describe` per
  * check of dispatch://INFRA-883/artifact/verification-md, each carrying that check's grep tag:
  * `@machines-draw` is k5, `@machines-honesty` k7 and `@machines-width` k9. The width check is
- * two cases, because `packages/dispatch/AGENTS.md` refuses the `@phone` tag to a case that
- * starts at a desktop width and narrows itself: the untagged 1440 px case is a stubbed row
- * (`machines.stub.e2e.ts`), and the `@phone` case runs here at the `iphone` project's own
- * width, each measured against the ratios `e2e/machines.ts` computes from the same seeded
+ * two cases, because a case that starts at a desktop width and narrows itself takes no `@phone`
+ * tag, since under `iphone` it would start from the wrong layout: the untagged 1440 px case is a
+ * stubbed row (`machines.stub.e2e.ts`), and the `@phone` case runs here at the `iphone` project's
+ * own width, each measured against the ratios `e2e/machines.ts` computes from the same seeded
  * layout string.
  *
  * What is left here is what the clock decides and what one engine draws. A pane's state and a
@@ -206,8 +206,7 @@ test.describe("@machines-width", () => {
   // The phone project's own, and only its own: every claim here is about what the phone layout
   // does at 390 px, which `chromium` at its own width would only contradict. A row the phone
   // projects alone run carries ` @phone-only` beside its `@phone`, and that second tag is what
-  // keeps `chromium` from scheduling it (`packages/dispatch/AGENTS.md`, R5;
-  // e2e/playwright.config.ts).
+  // keeps `chromium` from scheduling it (e2e/playwright.config.ts).
   test("at a phone width the strip scrolls sideways, the drawn panes keep their proportions, and a 22-pane window is listed in layout order @phone @phone-only", async ({
     browser,
   }) => {

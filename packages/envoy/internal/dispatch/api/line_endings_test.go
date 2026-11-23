@@ -19,6 +19,7 @@ import (
 // written with line feeds stores, so the browser editor, which reads both line endings as a line
 // feed, reads it the same way.
 func TestWrittenTextReachesTheDocumentWithLineFeeds(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	projects := 0
 	issue := func(t *testing.T, spec string) (key, artifactID string) {
@@ -48,8 +49,9 @@ func TestWrittenTextReachesTheDocumentWithLineFeeds(t *testing.T) {
 				Artifact model.Artifact `json:"artifact"`
 			}
 			for _, content := range []string{"First.\n", document} {
-				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]string{
+				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", map[string]any{
 					"name": "notes.md", "content": eol(content),
+					"precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+key+"/artifacts", "notes.md"),
 				}, "alice")
 				ok(t, response, "upload")
 				uploaded = decodeBody[struct {
@@ -163,6 +165,7 @@ var answeredAt = regexp.MustCompile(`answered_at="[^"]*"`)
 // what it stores (pmdoc.LineFeeds in validateCreateMessage and createCommentFor) and every
 // reader of one body is shown one text.
 func TestAMessageAndACommentBodyAreStoredWithLineFeeds(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockAskHandler(t)
 	projects := 0
 	issueKey := func(t *testing.T) string {

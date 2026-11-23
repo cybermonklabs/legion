@@ -1,0 +1,71 @@
+-- 20261120042902_claim_agent_resume_generation.up.sql — the mark of a launch that had Oh My Pi
+-- resume a claim's session by its id itself (dispatch://INFRA-4108 R3).
+--
+-- claims.agent_resume_generation is supervise.Claim.AgentResumeGeneration: the generation of the
+-- launch that had Oh My Pi resume the claim's session by its id itself (`--resume=<session id>`,
+-- runtime.SpawnSpec.ResumeByAgent), and 0 where no such launch is outstanding. Such a launch is
+-- made for a claim that records its session and no file, through a pod launcher older than the
+-- lookup of a session by its id (supervise's resumeByID). It is written with the launch it names:
+-- the machine's start sets it, and only while it is 0, once that start has succeeded, and it
+-- reaches the store in launchNow's write, the one that records the process the launch started.
+-- register clears it in the write that records the session and its file, and forgetSession
+-- clears it with the session. It is read at the claim's next try, which forgets the session with
+-- the cause not-resumed-by-id where the mark stands (resumeByID), and by died and
+-- registrationDeadline, which charge nothing for the end of the process it names: a start that did
+-- not register as the session (endUncharged). A column of its own is what lets a daemon restarted
+-- between that launch and its agent's registration read the mark back.
+--
+-- Every row the table already holds takes the default, 0: no such launch is outstanding, since no
+-- release before this one made one.
+--
+-- The release before this one names each column it reads and writes (the claim store's
+-- claimSelect and upsertClaim), so it neither reads nor writes this one, and every row it inserts
+-- takes the default. So after a rollback it never clears a mark this release left standing either:
+-- neither its registration nor its forget of a session names the column. At the roll-forward such
+-- a mark would name a launch that release's own moves have overtaken, and a claim that then
+-- records a session and no file would have it forgotten at its next try through a launcher
+-- without the lookup, with Oh My Pi never asked to resume it.
+--
+-- Nor does that release decode the notice kind session-forgotten, which this release adds: the
+-- notice of a forget through a launcher without the lookup that the issue's architect is told,
+-- outbox kind 'notice', and the one the project's controller is told, outbox kind
+-- 'controller_notice'. It decodes an outbox row strictly and refuses a notice kind it does not
+-- know (record.DecodeOutboxPayload, "unknown notice kind" and "unknown controller notice kind"), so
+-- such a row left queued fails on every attempt and never finishes: there is no attempt cap and no
+-- dead letter. A 'notice' row of the kind costs more, as
+-- 20261109060737_drop_awaiting_slot_notice.up.sql says of the row it deletes: while its backoff
+-- holds next_at ahead of now it is one of the rows record.Store.WaitingNotices returns, and
+-- daemon.pacedCatchUps returns its decode error, so GET /legion/v1/state answers an error for the
+-- whole project.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
+-- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1.
+--
+-- The outbox delete takes the session-forgotten notices this release queued and had not sent when
+-- the daemon stopped, the architect's and the controller's, as the way back that
+-- 20261113181500_architect_stalled_notices.up.sql carries takes the architect-stalled wakes. A sent
+-- notice leaves no row, since the outbox deletes a row once it is delivered, so these are the only
+-- ones standing. What the delete costs is those tellings: the architect and the controller are not
+-- told of a forget this release made before it stopped.
+--
+-- The drop and the delete of this migration's row go together. The release before this one needs
+-- neither to run, since it never names the column: the delete is what makes the version the store
+-- reports, its highest recorded row (store.SchemaVersionTx), that release's own again. Both are
+-- owed to the roll-forward. With the column dropped and the row deleted, store.apply finds no row
+-- of this version and runs this file again, which adds the column again at its default. The drop
+-- is also what lets this file run again at all, since an add of a column that stands fails, and
+-- it takes with the column every mark the release before could not clear.
+--
+-- What the drop costs is the marks themselves: after the roll-forward a claim that records a
+-- session and no file has Oh My Pi asked once more to resume it by its id, and where that launch
+-- does not register its end is charged nothing and the next try forgets the session, as on a row
+-- the first upgrade gave the default.
+--
+-- begin;
+-- delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'session-forgotten';
+-- alter table claims drop column if exists agent_resume_generation;
+-- delete from schema_version where version = 20261120042902;
+-- commit;
+alter table claims add column agent_resume_generation bigint not null default 0;

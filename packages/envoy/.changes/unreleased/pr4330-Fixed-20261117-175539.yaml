@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  What `agent-secrets` and `agent-secrets-helper` tell a person now names only a cure for the failure in front of them, from one rule. A sign-in that this machine cannot renew, or a missing one, gets `run: agent-secrets login`. A helper in machine-login mode with no live credential gets `run: agent-secrets machine login, and have a human approve it`. A helper in identity mode says its trade loop is trading for a new credential; once a refusal or an answer no retry cures has stopped that loop, it says that nothing renews its credential, that no session enrols under the machine's credential once that lapses, and that the helper needs a restart once that is fixed. A refusal the broker answered gets nothing added, since the broker's own words name the cure where one exists: a person Dispatch holds and a machine no entry lists are no longer told to sign in again. Neither is a broker that did not answer. The CLI prints the helper's own no-credential answer. `agent-secrets machine login-status`, and a machine command that the broker refuses `LAUNCHER_INVALID`, read the helper's mode from the helper's answer.
+  A broker refusal of a person's sign-in names that sign-in, for example `the secrets broker refused ada@example.com's sign-in on this machine`, rather than `this machine's identity`. A refusal of a machine's own identity reads as before.
+time: 2026-11-17T17:55:39.597655452Z
+custom:
+    Issue: pr4330

@@ -2,10 +2,10 @@ package roles
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -61,12 +61,23 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
-// bucket returns the handle of bucket on the client's current connection, opening it when it is
-// not open on that connection yet.
-func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
+// openBucketHook, when set, runs before each bucket open (bucket). It is nil outside tests.
+var openBucketHook atomic.Pointer[func()]
+
+// bucket returns the handle of bucket on the client's current connection, opening it within ctx
+// when it is not open on that connection yet.
+//
+// b.mu guards the handles alone, and the open is made with it released: the open sends a
+// STREAM.INFO, which waits for nats.go's connection lock, and nats.go holds that lock through a
+// reconnect's dial and handshake. Held across the open, b.mu kept every other read of Buckets
+// waiting behind that handshake. The read that makes the open answers its caller at its own bound
+// (within); an open still waiting then goes on to ctx's end or the JetStream MaxWait, holding
+// nothing. Two reads that both find a handle missing each open one, and the first to finish keeps
+// its handle; an open reads the bucket's stream (two STREAM.INFO requests, the legacy handle's and
+// the jetstream handle's) and leaves nothing behind.
+func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error) {
 	js := b.client.JS()
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if js != b.js {
 		b.js, b.roles, b.sessions = js, nil, nil
 	}
@@ -75,13 +86,24 @@ func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
 		handle = &b.sessions
 	}
 	if *handle != nil {
-		return **handle, nil
+		kv := **handle
+		b.mu.Unlock()
+		return kv, nil
 	}
-	kv, err := bus.OpenKeyValue(context.Background(), b.client.Connection(), js, name)
+	b.mu.Unlock()
+	conn := b.client.Connection()
+	if hook := openBucketHook.Load(); hook != nil {
+		(*hook)()
+	}
+	kv, err := bus.OpenKeyValue(ctx, conn, js, name)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
-	*handle = &kv
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if js == b.js && *handle == nil {
+		*handle = &kv
+	}
 	return kv, nil
 }
 
@@ -103,7 +125,7 @@ func within[T any](ctx context.Context, what string, read func() (T, error)) (T,
 // role.
 func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
 	return within(ctx, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
-		kv, err := b.bucket(bus.RoleClaimBucket)
+		kv, err := b.bucket(ctx, bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil
 		}
@@ -129,11 +151,14 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // Holder reads sessionID's record from the session bucket, whatever state that record is in:
 // judging it is Windows.EntryState's, so a record the bucket still holds past its maximum age is
 // answered here and judged by its own last registration. A key the bucket does not hold, one no
-// read may name (bus.ErrRefused) and a value that does not decode are nats.ErrKeyNotFound: no
-// record stands for the session. Any other error is a read that did not answer.
+// read may name (bus.ErrRefused), a value that does not decode and one that is not sessionID's
+// registration (session.DecodeEntry: another session's record copied under the key, a JetStream
+// answer) are nats.ErrKeyNotFound: no record stands for the session. A record an earlier build
+// wrote, naming no key, is read as sessionID's, as every listener but the edge reads it. Any
+// other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
 	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
-		kv, err := b.bucket(bus.SessionBucket)
+		kv, err := b.bucket(ctx, bus.SessionBucket)
 		if err != nil {
 			return nil, err
 		}
@@ -145,9 +170,9 @@ func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.Session
 	if err != nil {
 		return session.SessionEntry{}, err
 	}
-	var holder session.SessionEntry
-	if err := json.Unmarshal(entry.Value(), &holder); err != nil {
-		return session.SessionEntry{}, fmt.Errorf("%w: session %s does not decode: %w", nats.ErrKeyNotFound, sessionID, err)
+	holder, err := session.DecodeEntry(sessionID, entry.Value())
+	if err != nil {
+		return session.SessionEntry{}, fmt.Errorf("%w: session %s's record is not read as its registration: %w", nats.ErrKeyNotFound, sessionID, err)
 	}
 	return holder, nil
 }

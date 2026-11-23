@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -20,16 +21,24 @@ func ompOnly(invocation string) map[runtime.Backend]Launcher {
 }
 
 // The Oh My Pi launcher's command is innerCommand's, byte for byte (TestInnerCommand pins those
-// bytes), on the prompt file the launch hands it, and its pane carries no pairs of its own.
+// bytes), on the prompt file the launch hands it. A fresh pane carries no pairs of its own; a
+// resumed one carries exactly OMP_SESSION_EXCLUSIVE=1, which holds its Oh My Pi to the session it
+// resumes.
 func TestOmpLauncherLaunchIsInnerCommand(t *testing.T) {
 	spec := testSpec()
 	const promptFile = "/state/secrets/legion-omp-legion-43-tester-system-prompt.md"
 	prefix := []string{"env", "K=v", "--"}
-	for _, resume := range []string{"", "/state/trees/x/.omp/s 1.jsonl"} {
+	for resume, wantPairs := range map[string][]string{
+		"":                              nil,
+		"/state/trees/x/.omp/s 1.jsonl": {"-e", "OMP_SESSION_EXCLUSIVE=1"},
+	} {
 		spec.ResumeSessionFile = resume
 		inner, pairs, err := NewOmpLauncher(prefix, "/opt/oh-my-pi/18.0.3/omp").Launch(spec, Host{StateDir: "/state", Legion: "/opt/legion"}, promptFile)
-		if err != nil || pairs != nil {
-			t.Fatalf("Launch = %v, %q", err, pairs)
+		if err != nil {
+			t.Fatalf("Launch(resume %q) = %v", resume, err)
+		}
+		if !slices.Equal(pairs, wantPairs) {
+			t.Errorf("Launch(resume %q) carries the pairs %q, want %q", resume, pairs, wantPairs)
 		}
 		if want := innerCommand(prefix, "/opt/oh-my-pi/18.0.3/omp", resume, promptFile); inner != want {
 			t.Errorf("Launch(resume %q) = %q, want %q", resume, inner, want)

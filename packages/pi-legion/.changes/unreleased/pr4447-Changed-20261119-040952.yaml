@@ -1,0 +1,5 @@
+kind: Changed
+body: A controller ranks its weekly plan by the deployment's priorities, and its daily report names the lines it moved and the work in flight under no priority.
+time: 2026-11-19T04:09:52.149291697Z
+custom:
+    Issue: pr4447

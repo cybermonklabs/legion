@@ -145,12 +145,12 @@ func TestStrandedNamesAReleasedClaimOnlyWhenItsWakeNeverBroughtThePodBack(t *tes
 
 	resumes := []ReleasedWake{
 		// Woken a minute ago: the replacement pod is still being built.
-		{Issue: "LEGION-2", Role: string(claim.RoleTester), At: strandedNow.Add(-time.Minute)},
+		{Issue: "LEGION-2", Role: string(claim.RoleTester), ClockAt: strandedNow.Add(-time.Minute)},
 		// Woken well past the bound with no turn, for both roles of LEGION-3's pod.
-		{Issue: "LEGION-3", Role: string(claim.RoleReviewer), At: strandedNow.Add(-30 * time.Minute)},
-		{Issue: "LEGION-3", Role: string(claim.RoleArchitect), At: strandedNow.Add(-30 * time.Minute)},
+		{Issue: "LEGION-3", Role: string(claim.RoleReviewer), ClockAt: strandedNow.Add(-30 * time.Minute)},
+		{Issue: "LEGION-3", Role: string(claim.RoleArchitect), ClockAt: strandedNow.Add(-30 * time.Minute)},
 		// The same fact already recorded by the stuck pass, whatever the wake's age reads as now.
-		{Issue: "LEGION-4", Role: string(claim.RolePlanner), At: strandedNow, Stuck: true},
+		{Issue: "LEGION-4", Role: string(claim.RolePlanner), ClockAt: strandedNow, Stuck: true},
 	}
 
 	got, err := Stranded(context.Background(), nil, s, "LEGION", nil, claims, resumes, strandedNow)
@@ -164,7 +164,7 @@ func TestStrandedNamesAReleasedClaimOnlyWhenItsWakeNeverBroughtThePodBack(t *tes
 
 	// A wake exactly at the bound has not run out of it.
 	atTheBound := []ReleasedWake{{Issue: "LEGION-1", Role: string(claim.RoleImplementer),
-		At: strandedNow.Add(-StrandedReleaseWake)}}
+		ClockAt: strandedNow.Add(-StrandedReleaseWake)}}
 	got, err = Stranded(context.Background(), nil, s, "LEGION", nil, []supervise.Claim{never}, atTheBound, strandedNow)
 	if err != nil {
 		t.Fatalf("Stranded at the bound: %v", err)

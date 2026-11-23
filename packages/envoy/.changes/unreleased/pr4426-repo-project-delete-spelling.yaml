@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `DELETE /api/v1/settings/repo-projects/{owner}/{repo}` removes only the mapping stored under
+  exactly its path's spelling. A canonical path, lower case with no trailing `.git`, removes the
+  mapping of that name, as before; any other spelling, such as `acme/x.git` or `Acme/X`, removes
+  only a mapping stored under that spelling, and the same request sent again removes nothing more.
+  A caller that sent `acme/x.git` or `Acme/X` to remove the mapping `acme/x` now removes nothing:
+  send the mapping's name as stored, as the dashboard does.

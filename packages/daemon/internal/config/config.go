@@ -36,6 +36,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
@@ -66,9 +67,14 @@ const (
 // Config is the daemon's settled configuration: the file, the environment, and the defaults
 // resolved into the values the daemon runs on.
 type Config struct {
-	Project string
-	Port    int
-	Bind    string
+	// Revision is the commit this binary was built from (cmd/legion's revision, which the worker
+	// image and the release link in), "" for a build nothing stamped. It is not read from the file:
+	// `legion start` sets it, and the daemon names it after its NATS connection's name
+	// (natsauth.ConnectionName).
+	Revision string
+	Project  string
+	Port     int
+	Bind     string
 	// AdvertiseHost is `advertise_host`: the host every pod's shim dials the worker stream at in
 	// Bind's place, so Bind can be the unspecified address a daemon running as a pod listens on; ""
 	// (the default) has pods dial Bind. Only runtime: kubernetes accepts it, and readAdvertiseHost
@@ -169,9 +175,11 @@ type Config struct {
 	// named for itself, at the retry of a look nobody reported, or at this bound.
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
-	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
-	// round before it, and no answer holds the round past it. It is a decimal number of minutes,
-	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
+	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role the round
+	// asks ends the round before it once no turn runs and no claim's activity report holds it
+	// (internal/daemon's roundEnd.holding), and no answer, turn or background work holds the round
+	// past it. It is a decimal number of minutes, as `worker_silence_minutes` is, so a live proof
+	// can drive the bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -250,6 +258,12 @@ type Config struct {
 	// records keep the name each was written under. The zero value, which answers as
 	// strings.EqualFold does, while the file configures none.
 	RepositoryRenames ghrepo.Renames
+	// LeakCheck is `leak_check`, or leakguard.RepositoryVar and leakguard.ManifestVar in the
+	// daemon's environment, which the file's members override one by one: the repository the
+	// deployment's shared public leak check is read from and the check's manifest digest
+	// (leakguard.Manifest). The zero Setting is a deployment that runs no shared leak check of its
+	// own (resolveLeakCheck).
+	LeakCheck leakguard.Setting
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
 	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
@@ -321,6 +335,12 @@ const (
 	// minutes of the ask, so thirty minutes is three times that answer and still inside one tick
 	// of a roll (dispatch://INFRA-2981 R2).
 	defaultPodUpdateGrace = 30 * time.Minute
+
+	// DefaultReviewRoundCap is `review_round_cap`'s default (Config.ReviewRoundCap). It is exported
+	// for a test that builds its Config by hand: the daemon API contract takes a positive cap
+	// alone (packages/contracts/src/legion-api.ts), so a pane's `legion` tool refuses every state
+	// read of a daemon whose cap is 0.
+	DefaultReviewRoundCap = 3
 )
 
 // tossedKeys are the settings that no longer exist, mapped to why. A file carrying one is refused
@@ -419,6 +439,7 @@ type fileConfig struct {
 	RoleConfigFiles          map[claim.Role][]string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
+	LeakCheck                *fileLeakCheck
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -661,6 +682,18 @@ func describedMembers(value *yaml.Node, key, group string) (map[string]*yaml.Nod
 		}
 	}
 	return found, nil
+}
+
+// namesKey reports whether the mapping value names the key name, whatever value follows it. It
+// reads the mapping's own keys, since describedMembers leaves out a member whose value is null, so
+// a key written with nothing after it counts as named.
+func namesKey(value *yaml.Node, name string) bool {
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		if value.Content[i].Value == name {
+			return true
+		}
+	}
+	return false
 }
 
 // readNatsURLs is `nats_urls`: valid URLs, in order, each once.
@@ -981,7 +1014,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
-		ReviewRoundCap:       3,
+		ReviewRoundCap:       DefaultReviewRoundCap,
 		Warnings:             file.Warnings,
 	}
 	if file.Project == nil || strings.TrimSpace(*file.Project) == "" {
@@ -1092,6 +1125,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
+		return Config{}, err
+	}
+	if err := resolveLeakCheck(file, env, &cfg); err != nil {
 		return Config{}, err
 	}
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {

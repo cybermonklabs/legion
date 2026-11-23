@@ -1,7 +1,9 @@
 ---
 title: Dispatch identity and GitHub App client
 parent: dispatch-server
-depends_on: [dispatch-api, dispatch-architecture]
-paths: [packages/envoy/internal/dispatch/auth, packages/envoy/internal/dispatch/githubapp, packages/envoy/internal/dispatch/githubapi]
+depends_on: [dispatch-api, dispatch-architecture, dispatch-text]
+paths: [packages/envoy/internal/dispatch/auth, packages/envoy/internal/dispatch/githubapp, packages/envoy/internal/dispatch/githubreads, packages/envoy/internal/dispatch/githubapi]
 ---
 Browser session cookies, the sign-in callback's parsing and the people store's interface (`auth`), the GitHub App installation client that posts reviews and comments as Legion's bot identities and mints the installation token the web app's GitHub reads use (`githubapp`), and the read-through GitHub proxy the web app calls, which forwards a pull request, an issue or a commit's check runs as the App installation (`githubapi`). People sign in with Google through the shared sign-in pool: the authorization code flow is `internal/oidc` (`envoy-listener`) and the membership check that names a person by email is `identity` (`dispatch-model`). `githubapp` imports `auth` for the App's credentials, and `githubapi` imports `githubapp` and the API's JSON writer (`api`), so the three travel together as one identity concern. `githubapp` also calls the architecture notes package (`internal/dispatch/architecture/notes`, `dispatch-architecture`): its `Dir` lists only the entries of a notes directory that `notes.IsNote` keeps, and its `DirFiles` holds each note to the 1 MiB bound with `notes.CheckSize`.
+
+`githubreads` is the record of each GitHub read Dispatch makes under a lease, which `GET /healthz` names as `github`: the attempt one leased pass carries on its context, the failures noted on it, and each process's copy of the recorded attempts. `githubapp` imports it, because its `send`, the one function that sends anything to GitHub, marks each request on the attempt the request's context carries and notes the answers no caller takes as data. `githubreads` imports only the standard library and `text` (`dispatch-text`), which makes a cause storable, so that `githubapp` can import it.

@@ -4,7 +4,7 @@ import "github.com/sjawhar/legion/daemon/internal/workflow"
 
 // testRepositories serves every repository the API tests record issues on, each at main. A
 // repository it does not name is one no preparation has read GitHub for, which the daemon answers
-// as unread (its lookup): no mapping entry refuses a repository, GitHub's answer for it does.
+// as unread (its lookup): only GitHub's answer for a repository refuses it.
 var testRepositories = servedRepositories{"acme/widgets": "main", "sjawhar/legion": "main"}
 
 type servedRepositories map[string]string

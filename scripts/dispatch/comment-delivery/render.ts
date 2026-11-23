@@ -170,7 +170,7 @@ export function renderReport(
   );
   out.push("## What the classes mean", "");
   out.push(
-    "`tq receipts` (theorem-labs/agent-infra `transcript-store/`) gives each pair a " +
+    "`tq receipts` (example-org/deployment `transcript-store/`) gives each pair a " +
       "status: `received`, `not_received` or `unknown`. It reads the transcripts of the pair's " +
       "session and of each session forked from it. This report gives each comment one class. It " +
       "checks the classes in this order, and it uses the first class that applies.",

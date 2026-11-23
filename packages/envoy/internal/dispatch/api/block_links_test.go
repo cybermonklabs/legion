@@ -26,10 +26,16 @@ func readBlockLinks(t *testing.T, handler http.Handler, from, to string) model.B
 	return decodeBody[model.BlockLinks](t, response)
 }
 
-// uploadIssueDocument uploads markdown as the issue document name and returns it.
+// uploadIssueDocument uploads markdown as the issue document name and returns it, naming the
+// token of the version it replaces where the issue already holds that name.
 func uploadIssueDocument(t *testing.T, handler http.Handler, key, name, markdown string) model.Artifact {
 	t.Helper()
-	response := multipartRequest(t, handler, "/api/v1/issues/"+key+"/artifacts", map[string]string{"name": name}, name, "text/markdown", []byte(markdown), "alice")
+	owner := "/api/v1/issues/" + key + "/artifacts"
+	fields := map[string]string{"name": name}
+	if base := uploadBaseNamed(t, handler, owner, name); base != nil {
+		fields["precondition"] = encodeUploadBase(t, base)
+	}
+	response := multipartRequest(t, handler, owner, fields, name, "text/markdown", []byte(markdown), "alice")
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload %s: status=%d body=%s", name, response.Code, response.Body.String())
 	}
@@ -79,6 +85,7 @@ func compareBlockLinks(t *testing.T, stage string, got []model.BlockLink, want [
 // are exactly its two, newest first, each dated by the version that wrote it; the links back are
 // exactly the spec's one.
 func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	holdIt := ":::callout{#hold-it kind=\"note\" title=\"\"}\nHold it.\n:::"
@@ -145,6 +152,7 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 // A document's blocks can link to one another: the links from a document to itself are those.
 // A document with none answers an empty list, never null.
 func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue, blockRef := createShipItSpec(t, handler, "CORE")
@@ -178,6 +186,7 @@ func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
 // Each end must name a document: a block, an issue or no reference at all is 400, and a document
 // that does not exist is 404.
 func TestBlockLinksRefuseAnEndThatIsNotADocument(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue, blockRef := createShipItSpec(t, handler, "CORE")

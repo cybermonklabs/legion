@@ -425,6 +425,10 @@ func (c *stubConn) BundleWorkspace(context.Context, string, time.Duration) (runt
 	return runtime.WorkspaceBundle{}, errors.New("the stream stub bundles no workspace")
 }
 
+func (c *stubConn) WorkspaceWork(context.Context, string, time.Duration) (runtime.WorkspaceWork, error) {
+	return runtime.WorkspaceWork{}, errors.New("the stream stub reads no workspace")
+}
+
 func (c *stubConn) AgentSecretsEnrollment(context.Context, string) error {
 	return errors.New("the stream stub does not enroll agent secrets")
 }
@@ -490,12 +494,24 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	if err := os.WriteFile(r.instructions, []byte("# Deployment instructions (demo)\n\nRun the checks.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The daemon's HOME is an empty directory of the rig's own. tmux reads ~/.tmux.conf from the
+	// HOME of the client that starts its server, and the runtime hands every tmux client the
+	// daemon's HOME (PaneEnvironment), so the operator's own configuration ran in each rig's
+	// server, and the new-session that starts it returned only once that file had run: a `run`
+	// line in it (tpm's, which calls tmux again for each option of each plugin) took 4 to 13 s
+	// on a loaded machine, against 0.1 s with no file, and past the CommandTimeout below the
+	// new-session of a Spawn or a Resume failed. What an operator configures is no part of what
+	// these tests prove.
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "TMUX_TMPDIR=") {
+		if !strings.HasPrefix(entry, "TMUX_TMPDIR=") && !strings.HasPrefix(entry, "HOME=") {
 			r.environ = append(r.environ, entry)
 		}
 	}
-	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
+	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "HOME="+home, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
 	watchdog := armOrphanWatchdog(t, "legion-"+r.project, r.environ)
 	r.daemon = newFakeDaemon()
 	r.stream = newStreamStub(t, filepath.Join(dir, "stream.sock"), r.daemon)
@@ -1833,13 +1849,13 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	// real gh's help of that command, gh's own for none, saved beside the wrapper's own tests; the
 	// shared public leak check's own read of a repository's visibility — the one call `legion gh`
 	// hands gh unchecked, and the read the guard makes for every write that names a destination —
-	// with a visibility; and every other run with the GH_CONFIG_DIR it was given. The variable
-	// that read carries is the guard's own exported one (leakguard.VisibilityReadVar), which
-	// `legion gh`'s exemption is written from too, so a rename cannot part this stand-in from the
-	// read it answers. It reports `public` because that is the answer which runs the whole guard
-	// over the call — a private or internal destination skips the in-process rule pass — and
-	// because any other word is no visibility GitHub reports, which refuses the call as a setup
-	// failure rather than letting this test read which gh ran.
+	// with a visibility; and every other run with the GH_CONFIG_DIR it was given. It tells that
+	// read by its argv, `api --hostname github.com repos/<slug> [--include] --jq .visibility`, as
+	// the real gh would have to: `legion gh` runs gh from an allowlist of its caller's environment,
+	// which holds no Legion variable naming the read. It reports `public` because that is the
+	// answer which runs the whole guard over the call — a private or internal destination skips
+	// the in-process rule pass — and because any other word is no visibility GitHub reports, which
+	// refuses the call as a setup failure rather than letting this test read which gh ran.
 	help, err := filepath.Abs(filepath.Join("..", "..", "..", "cmd", "legion", "testdata", "gh-help"))
 	if err != nil {
 		t.Fatal(err)
@@ -1848,7 +1864,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
 		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
-		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n  echo public\n  exit 0\nfi\n" +
+		"case \" $* \" in\n\\ api\\ --hostname\\ github.com\\ *\\ --jq\\ .visibility\\ )\n  echo public\n  exit 0;;\nesac\n" +
 		"printf 'real gh %s\\n' \"$GH_CONFIG_DIR\"\n"
 	if err := os.WriteFile(realGH, []byte(stub), 0o755); err != nil {
 		t.Fatal(err)

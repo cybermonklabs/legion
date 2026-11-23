@@ -33,7 +33,10 @@ import (
 // It closes with:
 //   - 4001 (max age, contracts.LiveSocketMaxAgeClose) once it reaches its age, drawn as it opens
 //     (liveSocketAge), or when the rotate test hook asks, so no socket holds one of the browser's
-//     connections indefinitely: the page reopens at once and resumes every subscription;
+//     connections indefinitely: the page reopens at once and resumes every subscription. It closes
+//     with 4001 too once the credential its upgrade carried expires, an Identity-Aware Proxy
+//     assertion (whileCallerResolves, errCredentialExpired), and the reopened socket's fresh one is
+//     judged again;
 //   - 1012 (service restart) when Dispatch shuts down (server.lifetime) or the disconnect test hook
 //     asks, and as it opens once the shutdown waits for the open sockets (closeUnserved);
 //   - 1008 (policy violation) once its caller no longer resolves (whileCallerResolves);
@@ -69,6 +72,9 @@ const (
 	liveSocketReadBuffer = 4096
 	// liveSocketMaxAgeReason is the reason a close for the socket's age carries.
 	liveSocketMaxAgeReason = "max age"
+	// liveSocketCredentialExpiredReason is the reason a 4001 close carries when the credential the
+	// socket's upgrade carried has expired rather than the socket's own age (errCredentialExpired).
+	liveSocketCredentialExpiredReason = "credential expired"
 )
 
 // liveSocket is one open GET /ws/live socket, the deliveryLiveConn the hub sends to.
@@ -292,7 +298,11 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 			socket.close(gws.CloseServiceRestart, "")
 			return
 		case <-ctx.Done():
-			socket.close(gws.ClosePolicyViolation, "")
+			if errors.Is(context.Cause(ctx), errCredentialExpired) {
+				socket.close(contracts.LiveSocketMaxAgeClose, liveSocketCredentialExpiredReason)
+			} else {
+				socket.close(gws.ClosePolicyViolation, "")
+			}
 			return
 		case <-ticker.C:
 			if err := socket.conn.WriteControl(gws.PingMessage, nil, time.Now().Add(liveSocketWriteWait)); err != nil {

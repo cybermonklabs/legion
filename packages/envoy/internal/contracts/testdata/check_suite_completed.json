@@ -1,0 +1,11 @@
+{
+  "app": { "id": 15368 },
+  "conclusion": "success",
+  "head_branch": "legion/INFRA-4374",
+  "head_sha": "4198cda5fd0ae76e055089846f40f7be0d10dcf4",
+  "id": 120620605808,
+  "latest_check_runs_count": 48,
+  "pull_requests": [],
+  "status": "completed",
+  "updated_at": "2026-11-19T16:20:04Z"
+}

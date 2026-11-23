@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { subsetScriptValue } from "./subset-script";
 
 /**
  * `subset.sh` cuts InterVariable-subset.woff2 to the characters of its UNICODES, and the
@@ -10,16 +11,6 @@ import { join } from "node:path";
  * to SUBSET_SHA256, so the committed file must be those bytes. A file replaced by hand, or a range
  * changed in one place alone, fails here.
  */
-
-const subsetSh = readFileSync(join(import.meta.dir, "subset.sh"), "utf8");
-
-function scriptValue(name: string): string {
-  const match = new RegExp(`^${name}=(\\S+)$`, "m").exec(subsetSh);
-  if (match === null) {
-    throw new Error(`subset.sh has no ${name}= line`);
-  }
-  return match[1];
-}
 
 function declarations(body: string): Map<string, string> {
   const result = new Map<string, string>();
@@ -33,7 +24,7 @@ function declarations(body: string): Map<string, string> {
 }
 
 test("the shipped font file is the one subset.sh holds it to", () => {
-  const expected = scriptValue("SUBSET_SHA256");
+  const expected = subsetScriptValue("SUBSET_SHA256");
   const font = readFileSync(join(import.meta.dir, "InterVariable-subset.woff2"));
   expect(createHash("sha256").update(font).digest("hex")).toBe(expected);
 });
@@ -53,7 +44,7 @@ test("subset.sh cuts the characters the face's unicode-range names", () => {
   if (!range) {
     throw new Error('the "Dispatch Inter" @font-face rule in styles.css has no unicode-range');
   }
-  const [faceEntries, scriptEntries] = [range, scriptValue("UNICODES")].map((list) =>
+  const [faceEntries, scriptEntries] = [range, subsetScriptValue("UNICODES")].map((list) =>
     list.split(",").map((entry) => entry.trim().toUpperCase())
   );
   expect(faceEntries).toEqual(scriptEntries);

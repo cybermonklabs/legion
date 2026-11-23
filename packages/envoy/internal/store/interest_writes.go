@@ -15,8 +15,9 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
-// deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead),
-// each bucket call waiting no longer than ctx (bus.Bounded), and then the chunks of the record it
+// deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead,
+// which reads a value that is no row of sessionID again from the stream's leader: rowOf), each
+// bucket call waiting no longer than ctx (bus.Bounded), and then the chunks of the record it
 // deleted when that record is the one the cache holds, joined, for the session, and no other
 // session's row names them (ownLayout). A manifest the delete read but no read of this listener
 // joined names chunks never proved to be this record's, so they are left to the reaper's
@@ -34,7 +35,9 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	revision := r.cache.FenceFor(epoch, sessionID)
 	held, _ := r.cache.Get(sessionID)
 	r.mu.RUnlock()
-	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.DeleteAtRead(sessionID) })
+	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) {
+		return kv.DeleteAtRead(ctx, sessionID, rowOf(sessionID))
+	})
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
@@ -70,15 +73,26 @@ func (r *Registry) ownLayout(sessionID string, layout kvchunk.Layout) kvchunk.La
 	return layout
 }
 
+// rowOf is whether a value is a row of sessionID (boundInterest), the test a read fenced on a
+// revision takes (bus.KeyValue.ReadStored): a value it refuses is read again from the stream's
+// leader, whose revision is the one the value is stored at. A manifest this build writes is such a
+// row, since the view it carries for an earlier build names the session (ChunkedRecordView).
+func rowOf(sessionID string) func(value []byte) bool {
+	return func(value []byte) bool {
+		_, err := boundInterest(sessionID, value)
+		return err == nil
+	}
+}
+
 // deleteInterestAt deletes sessionID's interest record only while its latest revision is
 // revision, and reports whether the bucket took the delete: a bucket that refused it holds a row
-// stored since, which is no error here (JetStream's wrong last sequence, 10071, which nats.go
-// names nats.ErrKeyExists), and that row stands. layout is the layout of the record read at
-// revision, whose chunks a delete the bucket took deletes after it, unless another session's row
-// names them too (ownLayout, deleteChunks). Each bucket
-// call waits no longer than ctx (bus.Bounded). A delete ctx abandoned may still land after this
-// answer, and that is safe: it deletes the one revision it names, so a write that landed since is
-// kept, and the chunks of the record it deleted are left to the reaper's collection.
+// stored since, which is no error here (JetStream's wrong last sequence, bus.IsCASConflict), and
+// that row stands. layout is the layout of the record read at revision, whose chunks a delete the
+// bucket took deletes after it, unless another session's row names them too (ownLayout,
+// deleteChunks). Each bucket call waits no longer than ctx (bus.Bounded). A delete ctx abandoned
+// may still land after this answer, and that is safe: it deletes the one revision it names, so a
+// write that landed since is kept, and the chunks of the record it deleted are left to the
+// reaper's collection.
 //
 // A revision of 0 fences nothing - nats.go sends no expected-last-sequence header for it, so the
 // bucket would take the delete over whatever it holds - and names no row a caller read, since a
@@ -96,7 +110,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 	if !answered {
 		return false, fmt.Errorf("delete %s's interest record at revision %d: %w", sessionID, revision, err)
 	}
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		return false, nil
 	}
 	if err != nil {
@@ -198,8 +212,15 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // the same topics elsewhere, the listener's registration route filtering a session consumer,
 // plans once and writes that plan instead (PlanInterest, UpsertPlanned).
 func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []string) (Interest, error) {
-	for range interestWriteAttempts {
-		cur, revision, getErr := r.readStored(ctx, item.SessionID, true)
+	for attempt := range interestWriteAttempts {
+		// A retry follows a write the bucket refused at the revision the last read reported, so it
+		// reads the row from the stream's leader (readLeader): a record the server wrote, which a
+		// direct get reports at another stream's sequence, is replaced at the one it is stored at.
+		read := readBucket
+		if attempt > 0 {
+			read = readLeader
+		}
+		cur, revision, getErr := r.readStored(ctx, item.SessionID, read)
 		roles, err := r.controllerLaneRoles(ctx, item.SessionID, cur.Topics, item.Topics, topics)
 		if err != nil {
 			return Interest{}, err
@@ -235,7 +256,7 @@ func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []str
 // controller's claim that did not answer or failed (controllerLaneRoles): the route refuses the
 // registration rather than filter a consumer on a row the write would decide differently.
 func (r *Registry) PlanInterest(ctx context.Context, sessionID string, requested []string) (InterestPlan, error) {
-	return r.planInterest(ctx, sessionID, slices.Clone(requested), false)
+	return r.planInterest(ctx, sessionID, slices.Clone(requested), readCache)
 }
 
 // PlanInterestAfterConflict is PlanInterest over the row the bucket now holds rather than the
@@ -243,15 +264,21 @@ func (r *Registry) PlanInterest(ctx context.Context, sessionID string, requested
 // by the writer that stored that row, and a plan made from a cache still behind it would be
 // refused again. Its caller filters the session's consumer on this plan before writing it, as it
 // did for the first, so the filter and the row still name one set after a conflict.
+//
+// The row is read from the stream's leader (readLeader), and so is the row UpsertPlanned fences
+// this plan's write on (InterestPlan.read): a refusal is also what a record the server
+// wrote earns a write, since a direct get reports it at another stream's sequence, and the
+// leader's read answers such a record as no row of the session's at the sequence it is stored
+// at, which the write then replaces.
 func (r *Registry) PlanInterestAfterConflict(ctx context.Context, sessionID string, requested []string) (InterestPlan, error) {
-	return r.planInterest(ctx, sessionID, slices.Clone(requested), true)
+	return r.planInterest(ctx, sessionID, slices.Clone(requested), readLeader)
 }
 
-// planInterest is PlanInterest over a row read from the cache, or from the bucket alone when
-// fromBucket is set: a plan made again after the bucket refused a write at the revision the last
-// plan read must see the row that refused it, which the cache may not hold yet.
-func (r *Registry) planInterest(ctx context.Context, sessionID string, requested []string, fromBucket bool) (InterestPlan, error) {
-	cur, revision, err := r.getWithRevision(ctx, sessionID, fromBucket)
+// planInterest is PlanInterest over a row read as read says: from the cache, or from the stream's
+// leader for a plan made again after the bucket refused a write at the revision the last plan
+// read, which must see the row that refused it, which the cache may not hold yet.
+func (r *Registry) planInterest(ctx context.Context, sessionID string, requested []string, read interestRead) (InterestPlan, error) {
+	cur, revision, err := r.getWithRevision(ctx, sessionID, read)
 	if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 		return InterestPlan{}, err
 	}
@@ -263,6 +290,7 @@ func (r *Registry) planInterest(ctx context.Context, sessionID string, requested
 		Roles:    roles,
 		Topics:   MergedTopics(sessionID, roles, cur.Topics, requested),
 		Revision: revision,
+		read:     read,
 	}, nil
 }
 
@@ -299,7 +327,11 @@ var ErrInterestPlanConflict = errors.New("the interest record changed under the 
 // the skip, which is one call wide rather than the seconds the consumer call takes: a row
 // stored inside it refuses the write, and the skip inside it answers from the row that moved.
 func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan InterestPlan) (Interest, error) {
-	cur, revision, getErr := r.readStored(ctx, item.SessionID, true)
+	read := readBucket
+	if plan.read == readLeader {
+		read = readLeader
+	}
+	cur, revision, getErr := r.readStored(ctx, item.SessionID, read)
 	if revision != plan.Revision {
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
@@ -318,7 +350,10 @@ func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan Intere
 
 // writeRowAt stores the row a write of item under plan over cur makes (interestRow), under the
 // revision cur was read at, and reports the row the session's record now holds with whether the
-// bucket took the write. getErr is what that read answered with.
+// bucket took the write. getErr is what that read answered with. The row is written under
+// item.SessionID, the session the write is for, and names it (mergeForUpsert): never under a key a
+// stored row names, so a row the server copied under this key from another session's cannot
+// carry the write into that session's row (ErrInterestUnbound).
 //
 // It is the whole of what a merging write and a planned write do once their row is read
 // (UpsertWithin, UpsertPlanned): the heartbeat skip, which answers cur and writes nothing, the
@@ -336,7 +371,7 @@ func (r *Registry) writeRowAt(ctx context.Context, cur storedRow, revision uint6
 	if unchanged {
 		return cur.Interest, true, nil
 	}
-	written, epoch, err := r.putInterestAt(ctx, merged.SessionID, merged, buf, revision, cur.layout)
+	written, epoch, err := r.putInterestAt(ctx, item.SessionID, merged, buf, revision, cur.layout)
 	if err != nil {
 		return Interest{}, false, err
 	}
@@ -397,6 +432,26 @@ func (r *Registry) recordInterest(stored storedRow, revision, epoch uint64, getE
 	}
 }
 
+// createInterest writes value as sessionID's row where the read its write was planned from found
+// none. A key with no row can still hold a message, a delete or a purge marker, which the write
+// replaces at the sequence the stream's leader reports it stored at (bus.KeyValue.ReadFromLeader);
+// only a key the stream holds no message for is created. nats.go's Create would replace the marker
+// at the revision a direct get reports for it, which for a marker the server copied from another
+// key's is the source's: the copy carries the source's Nats-Sequence header ahead of its own, so
+// that write was refused at every attempt, and every registration of the session answered 503 for
+// as long as the copy stood. A key whose newest message is a row stored since that read is left to
+// Create, which the bucket refuses with nats.ErrKeyExists.
+func createInterest(ctx context.Context, kv bus.KeyValue, sessionID string, value []byte) (uint64, error) {
+	leader, err := kv.ReadFromLeader(ctx, sessionID)
+	switch {
+	case err != nil:
+		return 0, err
+	case leader.Kind == bus.LeaderMarker:
+		return kv.Update(sessionID, value, leader.Revision)
+	}
+	return kv.Create(sessionID, value)
+}
+
 // mergeForUpsert computes the Interest to persist by reconciling the requested
 // item/topics with the current cached/durable state returned by r.Get.
 //
@@ -412,15 +467,25 @@ func (r *Registry) recordInterest(stored storedRow, revision, epoch uint64, getE
 // ErrKeyNotFound is the genuinely-new-session case — proceed with the passed-in
 // item and topics. ErrMalformedInterest is merged the same way: the record answered, so this is
 // not the transient case, its topics are ones this build never routed (the cache holds no record
-// it cannot decode), and the session's own subscribe is the authority on its record.
+// it cannot decode), and the session's own subscribe is the authority on its record. A record
+// naming another session than its key is one of these (ErrInterestUnbound): its topics are another
+// session's, or a JetStream answer's, and none of them is merged.
+//
+// The merged row names the requesting session on every branch: the key it is written under
+// (writeRowAt), whatever the stored row named.
 //
 // The merged row keeps no topic reaching a private stream subject that is not the session's own,
 // and holds them sorted (MergedTopics): a row stored before the listener refused such a topic is
 // cleaned at the session's next registration. plan is the topics to merge in and the roles the
 // session holds (controllerLaneRoles), which decide the one private subject a session registers
 // beside its own agent subject: the controller notice lane of the project whose controller role
-// it holds. The listener's registration route filters the session's consumer on the row this
-// merge produces, having planned it with these same roles (PlanInterest).
+// it holds. The topics are merged into the row the write read, never into the plan's copy of
+// it, so a topic the bucket's row holds and a stale cache lacked is kept. The listener's
+// registration route filters the session's consumer on the row this merge produces, having
+// planned it with these same roles (PlanInterest), and plans again when the row it stored is not
+// the one it filtered on. plan's Withheld topics are taken out of the row the write read before
+// the merge: a caller that holds a session to a rule of its own (cmd/listener's edge hold) takes
+// a stored topic out of the row that way.
 //
 // The machine id and the directory are the requesting registration's, and the stored row is the
 // fallback for whichever of the two the request leaves empty. A session that registers again
@@ -443,7 +508,12 @@ func mergeForUpsert(cur Interest, getErr error, item Interest, now int64, plan I
 	item.MachineID = first(requested.MachineID, cur.MachineID)
 	item.Dir = first(requested.Dir, cur.Dir)
 	item.UpdatedAt = now
-	item.Topics = MergedTopics(requested.SessionID, plan.Roles, item.Topics, plan.Topics)
+	item.SessionID = requested.SessionID
+	stored := item.Topics
+	if len(plan.Withheld) > 0 {
+		stored = slices.DeleteFunc(slices.Clone(stored), func(topic string) bool { return slices.Contains(plan.Withheld, topic) })
+	}
+	item.Topics = MergedTopics(requested.SessionID, plan.Roles, stored, plan.Topics)
 	return item, nil
 }
 
@@ -569,7 +639,7 @@ func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string
 		return nil, kvchunk.ReservedKey(sessionID)
 	}
 	if len(topics) == 0 {
-		record, _, err := r.getWithRevision(ctx, sessionID, true)
+		record, _, err := r.getWithRevision(ctx, sessionID, readBucket)
 		if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 			return nil, err
 		}
@@ -602,7 +672,7 @@ func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string
 // (oneInterest) and not itself among them, in the record's order; none when the record cannot be
 // read.
 func (r *Registry) otherFormsHeld(ctx context.Context, sessionID string, topics []string) []string {
-	record, _, err := r.getWithRevision(ctx, sessionID, false)
+	record, _, err := r.getWithRevision(ctx, sessionID, readCache)
 	if err != nil {
 		return nil
 	}
@@ -692,7 +762,11 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		return r.deleteInterest(ctx, sessionID)
 	}
 	for attempt := range interestWriteAttempts {
-		read, revision, err := r.readStored(ctx, sessionID, attempt > 0)
+		from := readCache
+		if attempt > 0 {
+			from = readLeader
+		}
+		read, revision, err := r.readStored(ctx, sessionID, from)
 		if errors.Is(err, ErrMalformedInterest) {
 			r.logger().Warn("registry left an interest record it cannot decode unchanged",
 				slog.String("session_id", sessionID),

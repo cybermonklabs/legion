@@ -64,17 +64,18 @@ func (r *podUpdateRig) migrate(version int) {
 // release's mark and publishes nothing, so the role is never asked and the round waits for its
 // bound. It is run by leaving the migrate call out.
 func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCutover(t *testing.T) {
+	t.Parallel()
 	earlier := readyWorker(claim.RoleImplementer)
 	earlier.round, earlier.reasons = podUpdateRound, podUpdateDrift
 	rig := newPodUpdateRig(t, earlier)
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
 		t.Fatalf("the implementer holds no ask mark, want the earlier release's mark written at the enqueue")
 	}
-	if err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+	if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
 		Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound),
-	}); err != nil {
-		t.Fatalf("queue the earlier release's ask: %v", err)
+	}); err != nil || !written {
+		t.Fatalf("queue the earlier release's ask = %t, %v; want it written", written, err)
 	}
 
 	rig.migrate(updateAskCutover)
@@ -140,6 +141,7 @@ func (r *podUpdateRig) askedOf(role claim.Role) int {
 // reviewer on 2026-11-17: the sweep marked the claim asked when it enqueued the ask, the row that
 // found no holder finished, and no sweep asked again, so the round waited for its bound.
 func TestPodUpdateAskThatFoundNoHolderIsAskedAgainAndTheRoundEndsLongBeforeItsBound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 	clocks := rig.replacementClocks()
@@ -211,13 +213,15 @@ func TestPodUpdateAskThatFoundNoHolderIsAskedAgainAndTheRoundEndsLongBeforeItsBo
 // main the lost row finished and the sweep's mark stood, and with the take-back of 74ab1cd3 the
 // row found no mark to take back, the sweep's mark landed after it, and no sweep asked again.
 func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
 	enqueue := rig.s.enqueue
-	rig.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error {
-		if err := enqueue(ctx, issue, payloads...); err != nil {
-			return err
+	rig.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
+		written, err := enqueue(ctx, issue, payloads...)
+		if err != nil || !written {
+			return written, err
 		}
 		for _, payload := range payloads {
 			if _, ask := payload.(record.UpdateAsk); ask {
@@ -225,7 +229,7 @@ func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testi
 				break
 			}
 		}
-		return nil
+		return true, nil
 	}
 
 	rig.tick()
@@ -269,6 +273,7 @@ func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testi
 // and the next sweep asked the session again. On main, with no take-back, every queued row
 // publishes, and a session the first row reached is asked by the second as well.
 func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// unheld is whether the older row runs while the role's topic has no holder.
@@ -284,10 +289,10 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
 			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound)
 			for range 2 {
-				if err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+				if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
-				}); err != nil {
-					t.Fatalf("queue a row of the round: %v", err)
+				}); err != nil || !written {
+					t.Fatalf("queue a row of the round = %t, %v; want it written", written, err)
 				}
 			}
 			rig.tick()
@@ -325,15 +330,17 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 // The ask is published and marked under the claim's own lock, and that lock is taken without
 // waiting (supervise's Machine.PublishUpdateAsk). An issue's role-message lane runs one row at a
 // time (record.LaneKey), and a Sandbox relaunch holds a claim's lock for minutes while the runtime
-// waits out its pod, so a row that waited for that lock would hold every phase-ended message, hook
-// prompt and ask of that issue behind one relaunch. Here the claim's machine is held inside a
-// Resume: the row returns a wait at once, having published nothing and marked nothing, and the
-// row's next attempt once the relaunch is over publishes the ask, which is delivered once in all.
+// waits out its pod, so a row that waited for that lock would hold every hook prompt, merge
+// forward's message and ask of that issue behind one relaunch. Here the claim's machine is held
+// inside a Resume: the row returns a wait at once, having published nothing and marked nothing,
+// and the row's next attempt once the relaunch is over publishes the ask, which is delivered once
+// in all.
 //
 // The negative control is a row that takes the lock with waiting: the run below does not return
 // while the relaunch is held inside its Resume. On 74ab1cd3, which published with no lock held,
 // the row publishes while the relaunch holds the claim.
 func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.tick()
@@ -426,6 +433,7 @@ func (p stoppingPublisher) PublishKept(ctx context.Context, topic, message strin
 // wrote the mark under the lane's context: the store refused the write as cancelled, the row
 // answered an error and the stored claim held no mark.
 func TestPodUpdateAskDeliveredAsTheDaemonStopsIsStillMarked(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.tick()

@@ -74,8 +74,8 @@ export function installActMessageRecorder(): void {
  * in the `afterEach` of `setup.ts` beside its clock restore, so a row that throws before its own
  * restore still gets it back; a row may restore it sooner with `mockRestore()` on the spy this
  * returns. Bun skips that `afterEach` when an `afterEach` before it throws, so the preload's
- * `beforeEach` also puts back a spy the row before left in place: after a row in which an
- * `afterEach` before that restore throws (the row's own, or the preload's `reportReachedNetwork`),
+ * `beforeEach` also puts back a spy the row before left in place: after a row in which one of the
+ * row's own `afterEach` hooks throws, since those run before that restore,
  * `console.error` comes back only when the next row starts, and when that row is a file's last, it
  * stays quiet through that file's `afterAll`. A second call in the same row restores the first spy
  * and returns a new one. The spy records each act message it is handed before it drops the call,

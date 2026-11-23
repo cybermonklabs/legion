@@ -5,10 +5,135 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// A pane can put anything at its gh directory's paths between two of the daemon's refreshes, and
+// Write never opens what is no regular file: a named pipe at config.yml or hosts.yml, which a read
+// would wait on until something wrote to it, stalling every pane's refresh behind it, and a
+// directory or a symbolic link there, are each removed and the rendered file written in its place.
+// Each write's answer is waited for with no span of its own (testwait.Receive), so a Write that
+// waits on the pipe fails the row by name before the test binary's deadline rather than hanging
+// it, and a Write that is merely slow passes.
+func TestWriteOpensNoFileThatIsNoRegularFile(t *testing.T) {
+	rendered := Render("ghs_fifo_token", "implement", time.Now().Add(time.Hour))
+	for _, tc := range []struct {
+		name  string
+		file  string
+		plant func(path string) error
+	}{
+		{"a named pipe at config.yml", ConfigFile, func(path string) error { return syscall.Mkfifo(path, 0o600) }},
+		{"a named pipe at hosts.yml", HostsFile, func(path string) error { return syscall.Mkfifo(path, 0o600) }},
+		{"a directory at config.yml", ConfigFile, func(path string) error { return os.MkdirAll(filepath.Join(path, "inside"), 0o700) }},
+		{"a symbolic link at config.yml", ConfigFile, func(path string) error { return os.Symlink(os.DevNull, path) }},
+		{"a symbolic link to a regular file at hosts.yml", HostsFile, func(path string) error {
+			target := path + ".target"
+			if err := os.WriteFile(target, []byte("github.com:\n    oauth_token: ghs_planted\n"), 0o600); err != nil {
+				return err
+			}
+			return os.Symlink(target, path)
+		}},
+		{"a file larger than any the daemon writes at config.yml", ConfigFile, func(path string) error {
+			return os.WriteFile(path, bytes.Repeat([]byte("#"), MaxFileBytes+1), 0o600)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := tc.plant(filepath.Join(dir, tc.file)); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := Write(dir, rendered)
+				done <- err
+			}()
+			if err := testwait.Receive(t, "Write with "+tc.name, done); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+			for name, want := range map[string]string{ConfigFile: rendered.Config, HostsFile: rendered.Hosts} {
+				info, err := os.Lstat(filepath.Join(dir, name))
+				if err != nil || !info.Mode().IsRegular() {
+					t.Fatalf("%s is %v (%v), want a regular file", name, info, err)
+				}
+				if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != want {
+					t.Errorf("%s holds %q (%v), want %q", name, got, err, want)
+				}
+			}
+		})
+	}
+}
+
+// A pane that swaps a named pipe and a regular file onto config.yml or hosts.yml by rename, again
+// and again while the daemon's refresh runs, stalls no refresh: Write reads what is there only
+// through ReadRegular, which never waits on a pipe whatever was at the path a moment before, and
+// writes only by renaming a file of its own over it. A check of the path followed by an open of
+// it blocked on the pipe within a few dozen Writes (the 53rd, measured by #4424's second review).
+// Each Write's answer is waited for with no span of its own (testwait.Receive), so a Write that
+// blocked fails the row by name before the test binary's deadline. Each pipe keeps a hard link in a
+// side directory, and the row's end opens every pipe there, which releases such a Write.
+func TestWriteStallsOnNoPipeSwappedInWhileItRuns(t *testing.T) {
+	rendered := Render("ghs_race_token", "implement", time.Now().Add(time.Hour))
+	release := func(side string) {
+		entries, _ := os.ReadDir(side)
+		for _, entry := range entries {
+			if f, err := os.OpenFile(filepath.Join(side, entry.Name()), os.O_RDWR|syscall.O_NONBLOCK, 0); err == nil {
+				_ = f.Close()
+			}
+		}
+	}
+	for _, file := range []string{ConfigFile, HostsFile} {
+		t.Run(file, func(t *testing.T) {
+			dir, side := t.TempDir(), t.TempDir()
+			if _, err := Write(dir, rendered); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(dir, file)
+			var stop atomic.Bool
+			var swapping sync.WaitGroup
+			swapping.Add(1)
+			go func() {
+				defer swapping.Done()
+				for i := 0; !stop.Load(); i++ {
+					regular := filepath.Join(dir, ".regular"+strconv.Itoa(i))
+					if os.WriteFile(regular, []byte("x\n"), 0o600) == nil {
+						_ = os.Rename(regular, target)
+					}
+					pipe := filepath.Join(side, "pipe"+strconv.Itoa(i))
+					if syscall.Mkfifo(pipe, 0o600) != nil {
+						continue
+					}
+					link := filepath.Join(dir, ".pipe"+strconv.Itoa(i))
+					if os.Link(pipe, link) == nil {
+						_ = os.Rename(link, target)
+					}
+				}
+			}()
+			defer func() {
+				stop.Store(true)
+				swapping.Wait()
+				release(side)
+			}()
+			for round := range 2000 {
+				done := make(chan error, 1)
+				go func() {
+					_, err := Write(dir, rendered)
+					done <- err
+				}()
+				if err := testwait.Receive(t, "Write "+strconv.Itoa(round)+" while a pipe was swapped onto "+file, done); err != nil {
+					t.Fatalf("Write %d: %v", round, err)
+				}
+			}
+		})
+	}
+}
 
 // Hosts renders exactly the file gh >= 2.40 writes for one account, and TokenFromHosts reads the
 // token back out of it: the daemon writes one and the `legion` CLI reads the other, so the shape

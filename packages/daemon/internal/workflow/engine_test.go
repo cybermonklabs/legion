@@ -84,30 +84,10 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 	// start carries its task (every phase start through StartOrOwe), as do the architect's
 	// (awaiting_reconcile.go) and the wake's (wake.go); a child's own architect's plain start carries
 	// none (gateOpened, reviveArchitect), and the task-less starts admission brings back beside a
-	// phase worker are written in internal/admit, never here.
-	rows, err := pool.Query(ctx, `select kind, payload from outbox order by id`)
-	if err != nil {
-		t.Fatalf("read outbox: %v", err)
-	}
-	defer rows.Close()
-	var kinds []string
-	for rows.Next() {
-		var kind string
-		var payload []byte
-		if err := rows.Scan(&kind, &payload); err != nil {
-			t.Fatalf("scan outbox: %v", err)
-		}
-		kinds = append(kinds, kind)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate outbox: %v", err)
-	}
-	// The registration binds the spec step to its document, which moves the issue's
-	// step-to-document pairs, so it queues the publication of that set as well
-	// (record.PublishChangedGates).
-	if want := []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "supervise", "notice"}; !sameStrings(kinds, want) {
-		t.Fatalf("outbox kinds = %v, want %v", kinds, want)
-	}
+	// phase worker are written in internal/admit, never here. The registration binds the spec step
+	// to its document, which moves the issue's step-to-document pairs, so it queues the publication
+	// of that set as well (record.PublishChangedGates).
+	assertOutboxKinds(t, pool, []string{"design_gates_publish", "gate_seed", "notice", "issue_branch", "plan_record", "supervise", "notice"})
 }
 
 // A child entering an open gate is recorded by its own fact and starts planning when the waiting
@@ -139,7 +119,7 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	// The first supervise row is the child's own architect's start, before its planner's
 	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
 	// tells the architect above it (ChildStartedNotice).
-	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
@@ -377,7 +357,7 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 		t.Fatalf("ApplyFact tester completion: %v", err)
 	}
 	task := startTask(t, pool, claim.RoleReviewer)
-	if want := "Phase: reviewing. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
+	if want := "Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 3 (dispatch handoff-read --issue LEGION-208 --phase test --version 3). Tester's verdict: pass. Pull request: #42." +
 		reviewedPartOf("none") + reviewEntryPartOf(phaseRowOf(t, pool, claim.RoleReviewer).Entry); !strings.HasSuffix(task, want) {
 		t.Fatalf("reviewer task %q, want it to end with %q", task, want)
 	}
@@ -386,17 +366,23 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
-// read back and joined in order.
+// reviewerPrompt is the reviewer's composed prompt as its pane reads it (rolePrompt).
 func reviewerPrompt(t *testing.T) string {
+	t.Helper()
+	return rolePrompt(t, claim.RoleReviewer)
+}
+
+// rolePrompt is role's composed prompt as its pane reads it: every part Compose names, read back
+// and joined in order.
+func rolePrompt(t *testing.T, role claim.Role) string {
 	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	parts, err := composer.Compose(claim.RoleReviewer, false)
+	parts, err := composer.Compose(role, false)
 	if err != nil {
-		t.Fatalf("compose the reviewer's prompt: %v", err)
+		t.Fatalf("compose the %s's prompt: %v", role, err)
 	}
 	var prompt strings.Builder
 	for _, path := range parts.RolePromptPaths {
@@ -623,6 +609,9 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // until its issue closes. (The merge's row is the close itself, which suspends the tree:
 // TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
+	// The root's architect, whose sign-off the route names it by; the seeded issue has no run of a
+	// step the record counts, so its route reads none.
+	architect := claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 	cases := []struct {
 		name       string
 		current    phase.Phase
@@ -678,7 +667,7 @@ func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 		{
 			name: "sign-off", current: phase.Accepting,
 			fact: func() intake.Fact {
-				return intake.SignOff{Issue: "LEGION-208"}
+				return intake.SignOff{Issue: "LEGION-208", By: architect, Generation: 1}
 			},
 			wantPhase: phase.Retro, wantStatus: "retro", wantOutbox: []string{"dispatch_status", "supervise"},
 		},
@@ -744,13 +733,18 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // already live.
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
-		for _, to := range requiredBackwardTargets(from) {
+		for _, to := range requiredBackwardTargets(phase.Order, from) {
 			t.Run(string(from)+"-to-"+string(to), func(t *testing.T) {
 				pool := migratedPool(t)
 				role := phase.RoleFor(from)
 				seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: from, Generation: 1, Status: "in_progress", Rank: "U"})
 				seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: "claim"})
-				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: to, Reason: "correct"}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				engine := testEngine(config.DesignGateRootIssues, nil)
+				move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: to, Reason: "correct"}
+				if role == claim.RoleArchitect {
+					move = rootsMoveBack(t, pool, engine, "LEGION-208", to, "correct")
+				}
+				if _, err := intake.ApplyFact(context.Background(), pool, "api", string(from)+"-"+string(to), move, engine, admissionStub{}); err != nil {
 					t.Fatalf("ApplyFact backward: %v", err)
 				}
 				if got, pass, rounds := issuePhase(t, pool), implementerPass(t, pool), implementerRounds(t, pool); got != to || pass != 1 || rounds != 0 {
@@ -912,10 +906,13 @@ func testEngine(policy config.DesignGate, log *slog.Logger) *Engine {
 }
 
 // assertOutboxKinds is every row the transition left, by kind and in the order it wrote them. A
-// phase worker's start is one of them: one row, which carries the task (StartOrOwe).
+// phase worker's start is one of them: one row, which carries the task (StartOrOwe). A step record
+// is left out: each start and end of a step writes one beside the move's own rows, and the tests
+// of the step sites (step_sites_test.go, step_sites_linger_test.go) read those rows exactly
+// (stepWrites), so every row of any other kind is still compared here.
 func assertOutboxKinds(t *testing.T, pool *pgxpool.Pool, want []string) {
 	t.Helper()
-	rows, err := pool.Query(t.Context(), `select kind from outbox order by id`)
+	rows, err := pool.Query(t.Context(), `select kind from outbox where kind <> $1 order by id`, string(record.OutboxKindStepRecord))
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}
@@ -1038,6 +1035,74 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 	}
 }
 
+// A merged change never moves back: the backward move of an issue whose pull request has merged
+// is refused BACKWARD_REFUSED with that reason, in whichever phase the issue stands — a root in
+// merging, whose close can wait on the rest of its tree, an issue still in reviewing whose pull
+// request merged early, and an issue in accepting, where an approval of a merged pull request's
+// head ends the review round (TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound)
+// — and nothing moves, is counted or is started. The controls are the same moves on an issue in
+// merging and in accepting whose pull request is still open: each goes back and starts the
+// phase's worker, so the merge alone is what refuses the others.
+func TestABackwardMoveOfAMergedIssueIsRefused(t *testing.T) {
+	const reason = "its pull request has merged; a merged change never moves back"
+	for _, tc := range []struct {
+		name    string
+		from    phase.Phase
+		to      phase.Phase
+		state   record.PullRequestState
+		refused bool
+	}{
+		{"the merger's on a root in merging whose pull request merged", phase.Merging, phase.Reviewing, record.PullRequestMerged, true},
+		{"the reviewer's on an issue in reviewing whose pull request merged early", phase.Reviewing, phase.Implementing, record.PullRequestMerged, true},
+		{"the architect's on an issue in accepting whose pull request merged", phase.Accepting, phase.Implementing, record.PullRequestMerged, true},
+		{"the merger's on an issue in merging whose pull request is open", phase.Merging, phase.Reviewing, record.PullRequestOpen, false},
+		{"the architect's on an issue in accepting whose pull request is open", phase.Accepting, phase.Implementing, record.PullRequestOpen, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			role := phase.RoleFor(tc.from)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: tc.from, Generation: 1, Status: PhaseStatus(tc.from), Rank: "U"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim")})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+			pr := record.PullRequest{State: tc.state, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headOne, Failing: []string{}}
+			if tc.state == record.PullRequestMerged {
+				pr.MergeSHA = "merge-42"
+			}
+			seedPR(t, pool, pr)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			move := intake.BackwardMove{Issue: "LEGION-208", Requester: role, To: tc.to, Reason: "the spec changed"}
+			if role == claim.RoleArchitect {
+				// An architect's request names the claim, the generation and the run of accepting
+				// its route read, which the workflow judges again (rootsMoveBack).
+				move = rootsMoveBack(t, pool, engine, "LEGION-208", tc.to, "the spec changed")
+			}
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "backward", move, engine, admissionStub{})
+			if err != nil {
+				t.Fatalf("ApplyFact backward: %v", err)
+			}
+			if !tc.refused {
+				if result.Refusal != nil {
+					t.Fatalf("the move = %+v, want it applied: the pull request is open", result.Refusal)
+				}
+				if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != tc.to || pass != 1 {
+					t.Fatalf("phase = %q, pass %d; want %q and one pass", got, pass, tc.to)
+				}
+				if started := superviseRequests(t, pool, "start"); started["LEGION-208/"+string(phase.RoleFor(tc.to))] != 1 {
+					t.Fatalf("the move back to %s started %v, want its %s started once", tc.to, started, phase.RoleFor(tc.to))
+				}
+				return
+			}
+			if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, reason) {
+				t.Fatalf("the move = %+v; want BACKWARD_REFUSED saying %q", result.Refusal, reason)
+			}
+			if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != tc.from || pass != 0 {
+				t.Fatalf("phase = %q, pass %d; want %q and no pass", got, pass, tc.from)
+			}
+			assertOutboxKinds(t, pool, []string{})
+		})
+	}
+}
+
 // capPosts is what review_round_cap has told so far: every Dispatch message naming the cap, and
 // how many pr-blocked notices the architect was sent.
 func capPosts(t *testing.T, pool *pgxpool.Pool) (messages []string, blocked int) {
@@ -1100,8 +1165,8 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 	ctx := context.Background()
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
 		Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
-	// The record as a CONFLICTING read of this head leaves it (workflow's mergeability): the head
-	// it holds conflicting is the head under review.
+	// The record as the confirmed conflict of this head leaves it (workflow's mergeability): the
+	// head it holds conflicting is the head under review.
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
 		Branch: "legion/LEGION-208", HeadSHA: headOne, ConflictingHead: headOne, CheckedHead: headOne, Failing: []string{}})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-1"})

@@ -114,10 +114,11 @@ func (w *Watcher) end(ctx context.Context) {
 
 // lostConnection reports whether err says the connection was lost before a request reached the
 // server or its answer came back: the drain hook's own cause (bus.ErrConnectionLost), and what
-// nats.go answers a request with when its connection is closed, reconnecting, or, with the
-// reconnect buffer off, refusing a publish until it reconnects.
+// nats.go answers a request with when its connection is closed, disconnected by a reconnect,
+// reconnecting, or, with the reconnect buffer off, refusing a publish until it reconnects.
 func lostConnection(err error) bool {
 	return errors.Is(err, bus.ErrConnectionLost) || errors.Is(err, nats.ErrConnectionClosed) ||
+		errors.Is(err, nats.ErrDisconnected) ||
 		errors.Is(err, nats.ErrConnectionReconnecting) || errors.Is(err, nats.ErrReconnectBufExceeded)
 }
 

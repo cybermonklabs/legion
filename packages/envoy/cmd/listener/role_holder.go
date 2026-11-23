@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // roleHolderSessions is the session side of a role-holder resolution (roles.SessionLookup): this
@@ -48,41 +49,10 @@ func (s roleHolderSessions) Holder(ctx context.Context, sessionID string) (sessi
 	return s.Refresh(readCtx, sessionID)
 }
 
-// roleHolderError is the 404 of a role with no live holder. HolderState says which of the three
-// states the claim's holder is in, so a caller can tell a holder that is merely unresponsive -
-// stalled, still claiming, still being stored for - from one that is gone. ClaimReleased is on
-// every lapsed answer and is always false: a lookup takes nothing from a holder, whatever its
-// state, so a caller that used to read this answer as "the role is free now" is told plainly that
-// the claim still stands.
-type roleHolderError struct {
-	Error       string        `json:"error"`
-	Reason      roles.State   `json:"reason"`
-	Holder      string        `json:"holder,omitempty"`
-	HolderState session.State `json:"holder_state,omitempty"`
-	// ClientInstanceID is the process the lapsed holder's claim names
-	// (store.RoleClaim.ClientInstanceID), as the 200 reports it beside the live holder: it is
-	// how a client reading this answer sees that the role is held under its own session id by
-	// another process. Absent for a role no claim stands for, and for a claim that names no
-	// process - one an earlier build wrote, or one whose claimant stated none.
-	ClientInstanceID string `json:"client_instance_id,omitempty"`
-	// HandedBack is the hand-back mark the lapsed holder's claim carries
-	// (store.RoleClaim.HandedBack), as the 200 reports it beside the live holder: the holder
-	// gave this role back through a release that could not free the claim, so no registration
-	// renews it any more and the role claim reaper frees the role once that renewal has
-	// lapsed, a live window and up to one reap interval later.
-	// Absent for a role no claim stands for, and for a claim no such release reached.
-	HandedBack bool `json:"handed_back,omitempty"`
-	// ClaimRevision is the role's claim revision, as the 200 reports it: the revision of the
-	// claim a lapsed holder still holds, and zero for an unclaimed role, so a scheduler
-	// reading this 404 can claim the role with if_claim_revision and have that claim refused
-	// if the role moved in between.
-	ClaimRevision uint64 `json:"claim_revision"`
-	LastSeen      *int64 `json:"last_seen,omitempty"`
-	ClaimReleased *bool  `json:"claim_released,omitempty"`
-}
-
+// writeRoleHolderError writes the 404 of a role whose claim has no live holder
+// (listenerwire.RoleRefusal), naming the holder and its state where a claim names one.
 func writeRoleHolderError(w http.ResponseWriter, role string, result roles.Resolution) {
-	response := roleHolderError{
+	response := listenerwire.RoleRefusal{
 		Reason:        result.State,
 		ClaimRevision: result.ClaimRevision,
 	}
@@ -352,11 +322,11 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 // the only reason this function tells them apart. So knowing a live predecessor's session id is
 // not enough to take its role out of the client instance that still runs it.
 //
-// The error is non-nil only with roleHolderUnread, wrapped as the route reports it, naming the
-// read that failed. A key the bucket does not hold is that bucket's word that the session is
-// gone, not a failure; every other read failure takes nothing from a holder. Both reads are
-// bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget its own
-// caller holds.
+// The error is non-nil only with roleHolderUnread, a holderSessionUnread naming the read that
+// failed and the session it read. A key the bucket does not hold is that bucket's word that the
+// session is gone, not a failure; every other read failure takes nothing from a holder. Both
+// reads are bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget
+// its own caller holds.
 func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
 	if previous == "" || holder != previous {
 		_, _, err := liveSessionEntry(ctx, sessions, holder, roleHolderReadTimeout, sessionIsLive)
@@ -364,7 +334,7 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleTakenFromHolder, nil
 		case err != nil:
-			return roleHolderUnread, fmt.Errorf("read role holder liveness: %w", err)
+			return roleHolderUnread, &holderSessionUnread{read: "read role holder liveness", holder: holder, err: err}
 		default:
 			return roleStaysWithHolder, nil
 		}
@@ -374,7 +344,7 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return roleTakenFromHolder, nil
 	case err != nil:
-		return roleHolderUnread, fmt.Errorf("read role predecessor registration: %w", err)
+		return roleHolderUnread, &holderSessionUnread{read: "read role predecessor registration", holder: holder, err: err}
 	case !sessionIsLive(sessions.EntryState(predecessor)):
 		return roleTakenFromHolder, nil
 	case !session.InstanceMatches(predecessor.ClientInstanceID, claimantInstanceID):
@@ -385,6 +355,20 @@ func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegis
 		return roleTakenFromHolder, nil
 	}
 }
+
+// holderSessionUnread is a soft claim's read of the session its standing claim names that did not
+// answer (roleSupersessionVerdict): the holder's liveness, or the declared predecessor's
+// registration. Its text is read's words and the read's own error, which names holder, the
+// session read, so an edge answer gives it in the listener's own words (edgeScope.unresolved).
+type holderSessionUnread struct {
+	read   string
+	holder string
+	err    error
+}
+
+func (e *holderSessionUnread) Error() string { return e.read + ": " + e.err.Error() }
+
+func (e *holderSessionUnread) Unwrap() error { return e.err }
 
 // notGone is the state test of every caller that may act on a session that stopped answering as
 // it acts on one that answers: a session-addressed send, an agent delivery, both reapers

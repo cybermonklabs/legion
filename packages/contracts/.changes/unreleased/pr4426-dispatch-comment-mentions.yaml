@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  The `dispatch_comment` tool takes `mentions`: the roles (`role:<name>`) and sessions
+  (`session:<id>`) that Dispatch delivers the comment to.

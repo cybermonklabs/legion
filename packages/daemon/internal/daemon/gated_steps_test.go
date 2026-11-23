@@ -2,15 +2,20 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // A boot publishes the design-gate steps it is configured with onto the project's Dispatch row,
@@ -21,6 +26,7 @@ import (
 // row ran publishes again — which is what lets a deployment that changed its list have the new
 // one written without anyone asking.
 func TestGatedStepsPublishAtBoot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -90,10 +96,58 @@ func TestGatedStepsPublishAtBoot(t *testing.T) {
 // The publish executor refuses a runner with no Dispatch client rather than dropping the row, as
 // every other Dispatch write of the outbox does: the row is retried once a client is there.
 func TestGatedStepsPublishWithoutADispatchClientIsRefused(t *testing.T) {
+	t.Parallel()
 	row := mustOutboxRow(t, "LEGION", record.GatedStepsPublish{Project: "LEGION", Steps: []record.DesignStep{record.DesignStepSpec}}, time.Now())
 	err := (&outbox{}).execute(context.Background(), row)
 	if err == nil || err.Error() != "gated steps executor has no Dispatch client" {
 		t.Fatalf("execute without a Dispatch client = %v, want the refusal naming the missing client", err)
+	}
+}
+
+// The router's 404 of a Dispatch that has no route for a write (dispatch.NoRoute) is a wait only
+// for a kind whose route a Dispatch may not serve yet: the record lane's step records and plans,
+// and the role holders' publication (waitsForTheRoute). The outbox's execute, which each row's run
+// passes, decides it by the row's kind, so a step record and a plan wait here though their
+// executors say nothing of that answer, and the wait wraps nothing of Dispatch's refusal, so no
+// permanentRefusal ends the row on it. The gated steps' publication, whose route stands on every
+// Dispatch it is sent to, meets the same answer as a failure, and retries it. A handler's 404
+// NOT_FOUND "not found", which a Dispatch that serves the route answers, is no wait for any kind.
+func TestTheRoutersNotFoundIsAWaitOnlyForAKindThatWaitsForItsRoute(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	started := now.Add(-time.Minute)
+	for _, tc := range []struct {
+		name  string
+		row   record.OutboxRow
+		route string
+		waits bool
+	}{
+		{name: "a step record", waits: true, route: "PUT /api/v1/issues/LEGION-208/steps/1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b",
+			row: mustOutboxRow(t, "LEGION-208", record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b", Task: "default", Step: 2,
+				Kind: "step", Role: "implementer", Type: "implementation", Agent: "legion-legion-legion-208-implementer", Generation: 1,
+				StartedAt: &started}, now)},
+		{name: "a plan record", waits: true, route: "PUT /api/v1/issues/LEGION-208/plans/5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e",
+			row: mustOutboxRow(t, "LEGION-208", record.PlanRecord{ID: "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e", Generation: 1, Source: "default",
+				Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"implementer"}}}}, now)},
+		{name: "the gated steps' publication", route: "PUT /api/v1/projects/LEGION/gated-steps",
+			row: mustOutboxRow(t, "LEGION", record.GatedStepsPublish{Project: "LEGION", Steps: []record.DesignStep{record.DesignStepSpec}}, now)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			noRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for " + tc.route}
+			err := (&outbox{dispatch: &outboxDispatch{gatedStepsErr: noRoute, recordErr: noRoute}}).execute(context.Background(), tc.row)
+			var refusal *dispatch.Error
+			switch {
+			case tc.waits && (!errors.Is(err, wait.ErrWaiting) || errors.As(err, &refusal) || !strings.Contains(err.Error(), noRoute.Message)):
+				t.Fatalf("execute against a Dispatch with no route = %v, want a wait naming the router's answer and wrapping none of it", err)
+			case !tc.waits && (errors.Is(err, wait.ErrWaiting) || !errors.As(err, &refusal) || permanentRefusal(tc.row, err)):
+				t.Fatalf("execute against a Dispatch with no route = %v, want the failure Dispatch answered, which the row retries", err)
+			}
+			notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}
+			err = (&outbox{dispatch: &outboxDispatch{gatedStepsErr: notFound, recordErr: notFound}}).execute(context.Background(), tc.row)
+			if errors.Is(err, wait.ErrWaiting) || !errors.As(err, &refusal) {
+				t.Fatalf("execute against a handler's 404 = %v, want the failure Dispatch answered", err)
+			}
+		})
 	}
 }
 
@@ -139,15 +193,17 @@ func designGatesPublications(t *testing.T, pool *store.Pool) map[string]int64 {
 // restart loop must cost neither a second row nor a Dispatch write: the enqueue writes nothing
 // for a row whose payload is already what it would write (record.Postgres.EnqueueDesignGates).
 func TestBootQueuesEveryRecordedGatePublication(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	boot := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject}
+	boot := &workflowRuntime{pool: pool, records: records, dispatchProject: gatePublishProject, gatedSteps: gatePublishSteps}
 	const gated, done, ungated = "LEGION-301", "LEGION-302", "LEGION-303"
-	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria"}
-	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec"}
+	// The boot's deployment gates both steps, so each row it publishes holds its tree.
+	criteria := record.DesignGateDocument{Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(true)}
+	spec := record.DesignGateDocument{Step: record.DesignStepSpec, ArtifactID: "artifact-spec", Holds: new(true)}
 	approved := 1
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, seed := range []struct {
 			key   string
 			shown string

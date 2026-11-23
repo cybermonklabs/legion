@@ -11,18 +11,18 @@ import (
 
 // Where the waiting line puts an issue whose work came back is shipped text, so the fragment is
 // read from the source it is declared in (record.WaitingLineBand) rather than written out again
-// here. Sixteen files carry the eighteen texts that state it — AGENTS.md and admit.go carry two
-// each — and the eight of them that are files of packages/daemon are read here, one loop running
+// here. Fourteen files carry the fifteen texts that state it — admit.go carries two — and the
+// eight of them that are files of packages/daemon are read here, one loop running
 // both checks over each: the fragment's presence, and the ban below. Presence reads the fragment
 // and nothing else: whether the sentence around it is true is a reader's to judge, never this
 // loop's, so green here is coverage and not correctness. The file is read through one helper
 // that puts its prose on a single line, so a text wrapped across a line break reads as one
 // written out on a single line. (INFRA-1100.)
 //
-// The eight texts outside packages/daemon are read out of waiting_line_words_extract.txt, the
+// The six texts outside packages/daemon are read out of waiting_line_words_extract.txt, the
 // copy of their sentences committed beside this package, and never out of the files themselves:
 // a test that reads a shipped text puts that text in this job's filter — a declared read applies
-// to every compiled source file of a run — and an edit of AGENTS.md or a skill page would then
+// to every compiled source file of a run — and an edit of a docs or skill page would then
 // start the whole daemon Go lane. Each quotation is held to the constant its file was held to,
 // so a constant renamed in the daemon fails here whatever those texts say, which is the half of
 // this check that had to stay with the product. What keeps the copy the texts' own, holds it to

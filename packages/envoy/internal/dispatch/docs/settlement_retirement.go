@@ -143,8 +143,9 @@ func (s *Service) endRetirement(room string, state *roomState) {
 // reservation on room's record (roomState.retiring), to end, or for ctx to end, which it answers.
 // Its callers, a writer taking the writer slot (openLiveWrite), a settlement taking the room
 // (settleRoomWithin) and another retirement (reserveRetirement), then look at the record again. A
-// writer waits holding its document's owner row and no lock of the document's own, which takes the
-// owner row first (lockDocumentRoom): the close it waits for takes no owner row, and its
+// writer waits holding its document's owner lock (beside an earlier build, its owner row too) and
+// no lock of the document's own, which a taker of both takes after the owner lock
+// (lockDocumentRoom): the close it waits for takes neither, and its
 // compaction leaves the document's lock to a later one when another holder has it
 // (servicePersistenceAdapter.Compact). A retirement waits holding the room's close gate, which no
 // step from the other retirement's close to the end of its reservation takes.

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // stateClock is the registry's clock for the tests below: the real time moved on by what the test
@@ -45,7 +46,14 @@ func (c *stateClock) advance(d time.Duration) {
 // where a stalled session's record still stands to be read as unresponsive.
 func stalledSessionsRig(t *testing.T) (*listenerDeps, *stateClock) {
 	t.Helper()
-	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	return stalledSessionsRigOn(t, testnats.URL(t))
+}
+
+// stalledSessionsRigOn is stalledSessionsRig on the server uri names, one the test can stop
+// answering under live connections (testnats.Server.Freeze).
+func stalledSessionsRigOn(t *testing.T, uri string) (*listenerDeps, *stateClock) {
+	t.Helper()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the bus: %v", err)
 	}
@@ -95,14 +103,14 @@ func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *t
 	now.advance(90 * time.Second)
 	register(t, d, "ses_live", session.SessionEntry{MachineID: "test-machine", Dir: "/test/live", SelfSubscribed: true})
 
-	listed := func(query string) []sessionInfo {
+	listed := func(query string) []listenerwire.SessionInfo {
 		t.Helper()
 		recorder := httptest.NewRecorder()
-		sessionsHandler(d.registry, d.sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions"+query, nil))
+		sessionsHandler(d.registry, d.sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions"+query, nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET /v1/sessions%s: status %d, body %s", query, recorder.Code, recorder.Body.String())
 		}
-		var rows []sessionInfo
+		var rows []listenerwire.SessionInfo
 		if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 			t.Fatalf("decode GET /v1/sessions%s: %v", query, err)
 		}
@@ -141,7 +149,7 @@ func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
 	if refused.Code != http.StatusNotFound {
 		t.Fatalf("GET /v1/registry/ses_stalled: status %d, body %s; want 404", refused.Code, refused.Body.String())
 	}
-	var refusal noLiveSessionRefusal
+	var refusal listenerwire.NoLiveSessionRefusal
 	if err := json.Unmarshal(refused.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refused.Body.String(), err)
 	}
@@ -157,7 +165,7 @@ func TestTheRegistryRouteAnswersAStalledSessionOnlyWhenAsked(t *testing.T) {
 	if asked.Code != http.StatusOK {
 		t.Fatalf("GET /v1/registry/ses_stalled?include=unresponsive: status %d, body %s; want 200", asked.Code, asked.Body.String())
 	}
-	var info sessionInfo
+	var info listenerwire.SessionInfo
 	if err := json.Unmarshal(asked.Body.Bytes(), &info); err != nil {
 		t.Fatalf("decode the answer %s: %v", asked.Body.String(), err)
 	}
@@ -191,11 +199,11 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 
 	for attempt := range 5 {
 		recorder := httptest.NewRecorder()
-		roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+		roleGetHandler(d, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("lookup %d: status %d, body %s; want 404", attempt, recorder.Code, recorder.Body.String())
 		}
-		var answer roleHolderError
+		var answer listenerwire.RoleRefusal
 		if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 			t.Fatalf("decode lookup %d's answer %s: %v", attempt, recorder.Body.String(), err)
 		}
@@ -252,7 +260,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("send to a stalled self-subscribed session: status %d, body %s; want 200", accepted.Code, accepted.Body.String())
 	}
-	var answer sendResponse
+	var answer listenerwire.SendResponse
 	if err := json.Unmarshal(accepted.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the send answer %s: %v", accepted.Body.String(), err)
 	}
@@ -265,7 +273,7 @@ func TestASendIsStoredForAStalledSessionAndRefusedForAGoneOne(t *testing.T) {
 	if refused.Code != http.StatusNotFound {
 		t.Fatalf("send to a gone session: status %d, body %s; want 404", refused.Code, refused.Body.String())
 	}
-	var refusal noLiveSessionRefusal
+	var refusal listenerwire.NoLiveSessionRefusal
 	if err := json.Unmarshal(refused.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refused.Body.String(), err)
 	}
@@ -294,7 +302,7 @@ func TestARefusalThatCannotNameTheLastRegistrationSaysSo(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("send to a session the listener holds nothing for: status %d, body %s; want 404", recorder.Code, recorder.Body.String())
 	}
-	var refusal noLiveSessionRefusal
+	var refusal listenerwire.NoLiveSessionRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}

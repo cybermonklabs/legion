@@ -17,10 +17,12 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueSummary, UserState } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
 import { IssueBoard } from "./IssueBoard";
@@ -751,12 +753,16 @@ async function droppedCard(): Promise<HTMLElement> {
 
 /** Wait until a click reaches React again: dnd-kit stops click propagation for 50 ms after a
  * drop, so a route is no evidence of what a click did until that listener is gone. The fake
- * clock the test installed moves past the 50 ms, so that timer has fired when this resolves. */
+ * clock the test installed moves past the 50 ms, so that timer has fired when this resolves.
+ * Every row that drags installs that clock before its drag and ends through this: the listener
+ * is on `document`, which the next row shares, and on the real clock a row that ends inside
+ * the 50 ms hands it the next row, whose first click then never reaches its target. */
 async function pastDndKitClickGuard(): Promise<void> {
   await tick(80);
 }
 
 test("the click that trails a drop never follows the card's link, however late it arrives", async () => {
+  jest.useFakeTimers();
   const patchIssue = answerIssuePatches().mockResolvedValue(patched);
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   try {
@@ -780,6 +786,8 @@ test("the click that trails a drop never follows the card's link, however late i
     expect(trailingFollowed).toBe(false);
     expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE");
   } finally {
+    await pastDndKitClickGuard();
+    realClock();
     cleanup();
     patchIssue.mockRestore();
   }
@@ -812,6 +820,7 @@ test("a drop that draws no click leaves the next press on the board working", as
 // put it back: the button is still down, and its release draws the same trailing click a drop
 // does (`onDragCancel` on the board's `DndContext`).
 test("a drag cancelled with Escape keeps its own release off the card's link", async () => {
+  jest.useFakeTimers();
   const patchIssue = answerIssuePatches().mockResolvedValue(patched);
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   try {
@@ -844,6 +853,8 @@ test("a drag cancelled with Escape keeps its own release off the card's link", a
     expect(followed).toBe(false);
     expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE");
   } finally {
+    await pastDndKitClickGuard();
+    realClock();
     cleanup();
     patchIssue.mockRestore();
   }
@@ -878,6 +889,7 @@ test("a pointer press on a card after a drop that drew no click follows its link
 // The mark is the board's own: a link anywhere else on the page follows itself while one is
 // pending, which is the whole point of the containment test on the click's target.
 test("a drop's mark never cancels a click outside the board", async () => {
+  jest.useFakeTimers();
   const patchIssue = answerIssuePatches().mockResolvedValue(patched);
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   const elsewhere = document.createElement("a");
@@ -893,6 +905,8 @@ test("a drop's mark never cancels a click outside the board", async () => {
     });
     expect(followed).toBe(true);
   } finally {
+    await pastDndKitClickGuard();
+    realClock();
     elsewhere.remove();
     cleanup();
     patchIssue.mockRestore();
@@ -1008,5 +1022,38 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
   } finally {
     hook.unmount();
     patchIssue.mockRestore();
+  }
+});
+
+// A move the reader stopped may have been made: the board goes back to where the page read it,
+// reads itself again, and says so, rather than a failure it cannot know of.
+test("a move the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, issues);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> | undefined;
+    act(() => {
+      moved = hook.result.current.moveCard("CORE-1", "todo", 1);
+    });
+    await stopTheLateWrite(queryClient);
+    await act(async () => moved);
+    expect(hook.result.current.error).toBe(
+      stoppedWriteNote("the move of CORE-1", "made", {
+        anew: "The board is read again from Dispatch, and moving the card again sends a new move.",
+      })
+    );
+  } finally {
+    realClock();
+    hook.unmount();
+    queryClient.clear();
+    patchIssue.mockRestore();
+    listIssues.mockRestore();
   }
 });

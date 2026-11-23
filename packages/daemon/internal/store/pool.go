@@ -6,12 +6,15 @@ import (
 	"log/slog"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"sync"
 	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // ErrNestedAcquire is the daemon's pool refusing a second connection to a caller that already
@@ -21,7 +24,7 @@ import (
 // its connection until it commits, and a caller that asks for a second one while it holds the
 // first waits for a connection only the callers queued behind it can give back. INFRA-3169 is
 // that cycle measured: three call sites asked the pool for a connection while holding one of
-// their own — the boot's report of stranded claims, the mapping refresh and the state route —
+// their own — the boot's report of stranded claims, the repository refresh and the state route —
 // and one of them held the global fact serializer (intake.ApplyFact's advisory lock) while it
 // waited, which is the lock every other fact of every tree queues behind. On the production
 // deployment all 32 connections sat `idle in transaction` with `active` at 1 to 2, Postgres
@@ -95,6 +98,19 @@ func hold(ctx context.Context) func() {
 	return sync.OnceFunc(func() { state.connection.Store(false) })
 }
 
+// heldRelease is hold's release for a caller that runs its release however it ends, so it is never
+// nil: noRelease for a context the pool cannot see.
+func heldRelease(ctx context.Context) func() {
+	if release := hold(ctx); release != nil {
+		return release
+	}
+	return noRelease
+}
+
+// noRelease is the release of a hold that marked nothing: one on a context the pool cannot see,
+// and a savepoint's, which ends inside the transaction that holds the connection.
+func noRelease() {}
+
 // holdsConnection answers whether ctx's caller holds a connection of this pool now. A context
 // nothing marked holds none as far as the pool can tell, which is the guard's own limit
 // (ErrNestedAcquire).
@@ -105,23 +121,25 @@ func holdsConnection(ctx context.Context) bool {
 
 // ForConcurrentWorker returns a context for one of a caller's goroutines that run side by side
 // for as long as the caller lives: ctx's deadline, cancellation and values, with a hold mark of
-// its own, always a fresh one. A worker that takes a connection — a transaction, a cursor — marks
-// only itself, so its siblings are still free to take theirs, and the pool still refuses each
-// worker a second connection of its own. A goroutine that runs beside others and reaches this
-// pool takes one. A caller that takes none is one the guard cannot see, since a context nothing
-// marked holds no connection as far as the pool can tell (holdsConnection): the sandbox
-// launcher's frame loop is such a caller, deleting a restored workspace bundle on a context made
-// from context.Background() (runtime/sandbox/launcher.go, restoreReported), and the pool refuses
-// it nothing.
+// its own, always a fresh one, and no commit scope. A worker that takes a connection — a
+// transaction, a cursor — marks only itself, so its siblings are still free to take theirs, and
+// the pool still refuses each worker a second connection of its own. A goroutine that runs beside
+// others and reaches this pool takes one. A caller that takes none is one the guard cannot see,
+// since a context nothing marked holds no connection as far as the pool can tell
+// (holdsConnection): the sandbox launcher's frame loop is such a caller, deleting a restored
+// workspace bundle on a context made from context.Background() (runtime/sandbox/launcher.go,
+// restoreReported), and the pool refuses it nothing.
 //
 // It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
 // that one hands back the mark ctx already carries, which siblings sharing it would set and
 // clear under each other. A worker's mark is its own whatever the parent carries, so the caller
 // must start these goroutines outside any transaction or connection of this pool's — a
 // process-lifetime context, as the daemon's loops run off — since a fresh mark cannot see a
-// connection the parent holds.
+// connection the parent holds. For the same reason it holds no commit scope: a goroutine started
+// inside a TransactWith body would otherwise join that body's transaction, run statements on its
+// connection beside the body, and append to its hook list from a second goroutine.
 func ForConcurrentWorker(ctx context.Context) context.Context {
-	return context.WithValue(ctx, holdingKey{}, &holding{})
+	return context.WithValue(context.WithValue(ctx, holdingKey{}, &holding{}), commitHooksKey{}, (*commitScope)(nil))
 }
 
 // loggedSites is the calling stacks that have already logged a refusal: one line per distinct
@@ -146,7 +164,7 @@ const refusalDepth = 32
 
 // logRefusal logs a refusal once per distinct calling stack, with that stack, which is what names
 // the path to repair. The stack, read into a fixed array, is itself the key (loggedSites): a
-// function that only passes a call on to the pool — pgx.BeginFunc, a Store method, intake's
+// function that only passes a call on to the pool — TransactWith, a Store method, intake's
 // ApplyFact or any function of the daemon's own — stands in the stacks of all its callers without
 // making them one, so no caller's refusal silences another's. The stack is formatted only on a
 // stack's first refusal; a refusal of a stack already seen costs the read of its program counters
@@ -175,9 +193,38 @@ type Pool struct {
 }
 
 // NewPool wraps an open pgx pool. The daemon's own pool is opened by Open; a test that builds a
-// pool of its own wraps it here, so what it exercises is the pool the daemon runs on.
+// pool of its own wraps it here, so that it exercises what this type adds to any pool it wraps:
+// the guard (ErrNestedAcquire) and the argument rule (storableArgs). The codec rule, which is what
+// makes a string storable, belongs to the pgx pool instead: it runs only on a pool built from
+// PoolConfig (testpg.ClonePool's is), and a pool built without it sends a NUL, an invalid byte or a
+// \u0000 escape to the server as pgx's own codecs write it, and the server refuses the write.
 func NewPool(pool *pgxpool.Pool) *Pool {
 	return &Pool{pool: pool}
+}
+
+// storableArgs is the argument rule: args, with each string argument that the store's text rule
+// changes (storetext.Changes) given as a *string to the same text, in a copy of args. pgx sends a
+// plain string in text format as it is, without asking the codec of its parameter's type, and a
+// *string reaches that codec (the codec rule, registerStorableCodecs), which knows whether the
+// parameter is text or jsonb and applies that type's rule. Every other argument stays as it is,
+// and so does a leading pgx option such as pgx.QueryExecModeSimpleProtocol. A call whose strings
+// the rule keeps gets args itself back, with no allocation.
+func storableArgs(args []any) []any {
+	var storable []any
+	for i, arg := range args {
+		s, ok := arg.(string)
+		if !ok || !storetext.Changes(s) {
+			continue
+		}
+		if storable == nil {
+			storable = slices.Clone(args)
+		}
+		storable[i] = new(s)
+	}
+	if storable == nil {
+		return args
+	}
+	return storable
 }
 
 // guard refuses a connection to a caller that already holds one, and logs the stack that asked
@@ -199,7 +246,7 @@ func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, er
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := p.pool.Query(ctx, sql, args...)
+	rows, err := p.pool.Query(ctx, sql, storableArgs(args)...)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +301,7 @@ func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err := p.guard(ctx); err != nil {
 		return errRow{err: err}
 	}
-	return p.pool.QueryRow(ctx, sql, args...)
+	return p.pool.QueryRow(ctx, sql, storableArgs(args)...)
 }
 
 // Exec runs a statement on a pooled connection.
@@ -262,16 +309,16 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	if err := p.guard(ctx); err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	return p.pool.Exec(ctx, sql, args...)
+	return p.pool.Exec(ctx, sql, storableArgs(args)...)
 }
 
 // acquire hands out one of the pool's connections to a caller that must run its own work on the
 // connection after its transaction ends and before the connection returns to the pool. Store.apply
 // is the one such caller: it resets the session of the connection that a migration ran on
-// (releaseMigrationConn). A transaction from Begin cannot serve it, because pgx returns that
+// (releaseMigrationConn). A transaction from BeginTx cannot serve it, because pgx returns that
 // transaction's connection to the pool as the transaction ends. acquire runs the guard first, as
 // every other way this pool hands out a connection does. Then it marks the caller as holding a
-// connection, as begin does. The caller runs release only once the connection is back in the pool
+// connection, as BeginTx does. The caller runs release only once the connection is back in the pool
 // or closed, so the guard sees the connection for as long as the caller holds it. release is never
 // nil: for a context the pool cannot see, it does nothing.
 func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(), err error) {
@@ -282,63 +329,78 @@ func (p *Pool) acquire(ctx context.Context) (conn *pgxpool.Conn, release func(),
 	if err != nil {
 		return nil, nil, err
 	}
-	release = hold(ctx)
-	if release == nil {
-		release = func() {}
-	}
-	return conn, release, nil
-}
-
-// Begin opens a transaction and marks the caller as holding a connection. It is what
-// pgx.BeginFunc opens its transaction through, and with it Store.Tx, so every call site that
-// wraps a transaction in a function keeps working as it was written.
-func (p *Pool) Begin(ctx context.Context) (pgx.Tx, error) {
-	if err := p.guard(ctx); err != nil {
-		return nil, err
-	}
-	return p.begin(ctx, pgx.TxOptions{})
+	return conn, heldRelease(ctx), nil
 }
 
 // BeginTx opens a transaction with options and marks the caller as holding a connection. It is
-// what pgx.BeginTxFunc opens its transaction through, and what intake.ApplyFact opens each
-// fact's with.
+// what TransactWith opens every transaction of the daemon through, and the pool's one way to a
+// transaction, so the boundary guard counts its one begin on pgx's pool. The transaction it gives
+// is always the store's own (storeTx), so every statement of it passes the argument rule. It
+// carries the release of the caller's hold mark, which does nothing for a context the pool cannot
+// see, as acquire's does.
 func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	return p.begin(ctx, options)
-}
-
-// begin is the body both transaction entry points share once their guard has passed. A
-// transaction on a context the pool cannot see has no mark to clear and is handed on as pgx
-// opened it: a trackedTx around it would only forward its Commit and Rollback.
-func (p *Pool) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	tx, err := p.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
-	release := hold(ctx)
-	if release == nil {
-		return tx, nil
-	}
-	return &trackedTx{Tx: tx, release: release}, nil
+	return &storeTx{Tx: tx, release: heldRelease(ctx)}, nil
 }
 
-// trackedTx clears the caller's mark however the transaction ends. Callers commit and then run a
-// deferred rollback; the release absorbs that second call (hold).
-type trackedTx struct {
+// storeTx is every transaction the pool hands out, and every savepoint opened inside one. Its
+// Exec, Query and QueryRow, and each query a SendBatch sends, pass their arguments through the
+// argument rule (storableArgs). A savepoint its Begin opens is a storeTx too. CopyFrom needs no
+// rule of its own: COPY sends every value in binary format, through the codec rule
+// (registerStorableCodecs). Prepare takes no arguments. Conn gives pgx's own connection: a
+// statement run on it reaches the codecs but not the argument rule, and no code of the daemon
+// calls it.
+//
+// release clears the caller's hold mark however the transaction ends. It is never nil: it does
+// nothing for a transaction on a context the pool cannot see and for a savepoint, which ends
+// inside the transaction that holds the connection. Callers commit and then run a deferred
+// rollback; the release absorbs that second call (hold).
+type storeTx struct {
 	pgx.Tx
 	release func()
 }
 
-func (t *trackedTx) Commit(ctx context.Context) error {
+func (t *storeTx) Begin(ctx context.Context) (pgx.Tx, error) {
+	savepoint, err := t.Tx.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &storeTx{Tx: savepoint, release: noRelease}, nil
+}
+
+func (t *storeTx) Commit(ctx context.Context) error {
 	defer t.release()
 	return t.Tx.Commit(ctx)
 }
 
-func (t *trackedTx) Rollback(ctx context.Context) error {
+func (t *storeTx) Rollback(ctx context.Context) error {
 	defer t.release()
 	return t.Tx.Rollback(ctx)
+}
+
+func (t *storeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return t.Tx.Exec(ctx, sql, storableArgs(args)...)
+}
+
+func (t *storeTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return t.Tx.Query(ctx, sql, storableArgs(args)...)
+}
+
+func (t *storeTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return t.Tx.QueryRow(ctx, sql, storableArgs(args)...)
+}
+
+func (t *storeTx) SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults {
+	for _, query := range b.QueuedQueries {
+		query.Arguments = storableArgs(query.Arguments)
+	}
+	return t.Tx.SendBatch(ctx, b)
 }
 
 // errRow carries a refusal through the single-row surface, which has no error return of its own:

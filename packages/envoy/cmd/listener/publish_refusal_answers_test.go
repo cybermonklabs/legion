@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // stalledRoleKV is a role bucket whose claim read does not answer: a Get waits stall, or until the
@@ -112,7 +113,7 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 			if got := recorder.Header().Get("Retry-After"); got != "1" {
 				t.Fatalf("Retry-After = %q, want 1", got)
 			}
-			var refusal apiError
+			var refusal listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 			}
@@ -169,7 +170,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 
 			started := time.Now()
 			recorder := httptest.NewRecorder()
-			roleGetHandler(state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+			roleGetHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 			elapsed := time.Since(started)
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("lookup whose role store did not answer: status %d, body %s; want 503 - the bus did not answer, the listener did not fail", recorder.Code, recorder.Body.String())
@@ -180,7 +181,7 @@ func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *test
 			if got := recorder.Header().Get("Retry-After"); got != "1" {
 				t.Fatalf("Retry-After = %q, want 1", got)
 			}
-			var refusal apiError
+			var refusal listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 			}
@@ -259,7 +260,7 @@ func TestADeniedPublishIsRefusedPermanentlyAndNotRecordedAsBusUnavailable(t *tes
 				if got := recorder.Header().Get("Retry-After"); got != tc.wantRetry {
 					t.Fatalf("Retry-After = %q, want %q", got, tc.wantRetry)
 				}
-				var refusal apiError
+				var refusal listenerwire.APIError
 				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 					t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 				}

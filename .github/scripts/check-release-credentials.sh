@@ -16,8 +16,9 @@
 #    (a) runs no dependency code, (b) uses only the actions on CREDENTIALED_USES below, (c) sets
 #    `cache-mode: none`, and (d) names the deploy key only as `DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}`
 #    (the dot form) in the step-level `env:` of a step whose `run:` calls the one push command
-#    (PUSH_COMMAND), `release-push.sh push-tag`, and nothing else; the workflow's `env:` reaches
-#    every job, so the key there is never allowed.
+#    (PUSH_COMMAND), `release-push.sh push-tag`, as a command and through the checkout's own copy
+#    (behind `$GITHUB_WORKSPACE/`, as below), and nothing else; the workflow's `env:` reaches every
+#    job, so the key there is never allowed.
 # 2. A build job — one that runs dependency code — holds none of those four write scopes and no
 #    `secrets` reference but `secrets.GITHUB_TOKEN`, in its own text or the workflow's `env:` (so
 #    no deploy key, by dot or by index, no other secret and no `toJSON(secrets)`), declares
@@ -64,6 +65,23 @@
 #    without one the step exits 127 and the job carries on: that is what left every legion
 #    release's "## Worker image" section unwritten until release.yaml's worker_image_release,
 #    a job that checked nothing out, got its checkout.
+# 7. A job that calls a reusable workflow (`uses:` and no `steps:`) names no secret but
+#    GITHUB_TOKEN in its text, and carries no `secrets: inherit`, which hands it every secret,
+#    unless its `uses:` is `./` and the path of a workflow on WORKFLOWS: the called workflow's jobs
+#    are what run the secret, and this check reads only those. So a names job pointed at
+#    worker-image.yaml, which runs a docker build, or a `secrets:` block added to worker_image, is
+#    refused here rather than passing unread. A call to a listed workflow carries no
+#    `secrets: inherit` either: it would hide from rule 8 which secret the call passes.
+# 8. A step that starts publishing a build job's output waits for that output's private-name check.
+#    A names job is a job whose text names secrets.PRIVATE_NAME_TERMS; it checks the output of
+#    each job it needs. In any other job, a step whose `if:` tests `needs.<build>.result ==
+#    'success'` for such a build, as a conjunction (no `||`), is the first step of that package's
+#    chain, since every later step of it reads the step before it: that `if:` also tests
+#    `needs.<names job>.result == 'success'`. Else a finding of the names job publishes anyway.
+#    An `if:` that joins packages with `||`, such as the setup-node step that serves every npm
+#    publish, is no step of one package and is not read. A names job also brings in, through its
+#    steps and the local composite actions they use at any depth, only the remote actions on
+#    CREDENTIALED_USES, so no third-party action runs beside the term list.
 #
 # "Runs dependency code" is a tripwire over named patterns, not a proof that no other code runs: a
 # step runs dependency code when its `uses:` starts with one of DEPENDENCY_USES, when the shell its
@@ -75,31 +93,32 @@
 # DOCKER_DEPENDENCY_LONG (`docker container run`, `docker image build`, `docker buildx build`, …),
 # past docker's global options (`--config /tmp/c`, `-H tcp://x`, `-D`), is a path with a
 # `scripts/` or `out/` component (`./scripts/x`, `../../scripts/x`, `out/x`,
-# `"$GITHUB_WORKSPACE/out/x"`), other than .github/scripts/release-push.sh itself, or is
-# `release-push.sh fold-notes`, at any path or none (`.github/scripts/release-push.sh
-# fold-notes`), which runs changie: release-push.sh's other commands are not dependency code, and
-# fold-notes is. Command position is found by one quote-aware scan of the `run:` (its `${{ … }}`
-# expressions elided first), as bash reads it: a `#` starts a comment only at word start — the
-# start of the run, after unquoted whitespace or a newline, or after an unquoted `;`, `&`, `|`,
-# `(`, `)`, `<`, `>` or backtick, not `{` (`${#x}`, `$#` and `a#b` are words) — and the comment
-# runs to the real newline, so a
-# backslash inside it continues nothing; escaped whitespace and an escaped `#` are word characters
-# (`echo a\ #` has no comment); a backslash-newline joins lines outside single quotes, whatever the
-# number of backslashes before it (an escaped backslash is a character: `printf 'x' \\` ends its
-# command, `printf 'x' \\\` continues it, and `a\` + newline + `#` glues `a#`); a quote carries
-# across newlines, and `;`, `&`, `|` and `#` inside one are literal; `$(…)`, `<(…)`, `(…)` and
-# backticks open a command of their own, inside a double-quoted string too, and the string resumes
-# at the close; an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a command, and a redirection's
-# target (`>/dev/null`, `>> "$GITHUB_OUTPUT"`, `2>&1`) is not one of its words. Each command sheds
-# its leading `VAR=value` assignments and the keywords that precede a command (if, then, for, do,
-# time, exec, env, `{`, `}`, …), and the first word left is the command; an interpreter there (one
-# of INTERPRETERS: bash, sh, dash, zsh, source, `.`) is looked through, past its flags and the
-# option name an `-o`, `+o`, `-O` or `+O` takes, to the word after it (`bash -o pipefail
-# scripts/x.sh` runs `scripts/x.sh`), and the script string behind its `-c`, like the words behind
-# `eval`, is scanned the same way (`sh -c 'bun install'`, `eval "bun install"` and `eval bun
-# install` run `bun`). A variable in command position (`"$tool" build`), a command behind `xargs`
-# or `nohup`, or a program not on the list passes here; the job-level tripwire (`release-push.sh
-# no-credential`) and review hold the rest.
+# `"$GITHUB_WORKSPACE/out/x"`), other than one of the two repository shell scripts
+# NOT_DEPENDENCY_SCRIPTS names (.github/scripts/release-push.sh and
+# .github/scripts/check-private-names.sh) run from the checkout, or is `release-push.sh
+# fold-notes`, at any path or none (`.github/scripts/release-push.sh fold-notes`), which runs
+# changie: release-push.sh's other commands are not dependency code, and fold-notes is. A command
+# runs one of the two from the checkout only when its word is the script's path behind
+# `$GITHUB_WORKSPACE/` (or `${GITHUB_WORKSPACE}/`): a bare or `./` path, a `../` in front, or a
+# path from another directory names whatever file sits there once a working-directory or a `cd`
+# earlier in the `run:` has moved the shell, which this check cannot follow, so it is dependency
+# code. check-private-names.sh is not dependency code: it sources nothing, and runs bash builtins
+# and dirname, mktemp, rm, git (ls-files), grep, find, sort, xargs, env, sh, tr, cat and wc, all
+# the runner's own; it is the one script a job holding the deployment's term list runs
+# (release.yaml's claude_envoy_names and release-notes-names.yaml's job, through
+# .github/actions/private-names-packed-plugin and .github/actions/private-names-release-notes).
+# The
+# classification is of a command a step runs, never of a word a comment or another command's
+# argument holds: a script named only that way is no exemption. A step whose `uses:` is a local
+# action and no DEPENDENCY_USES entry is read through that action's action.yml: a composite
+# action's steps are read as a job's steps are (each `run:` under its own `shell:`), and any other
+# kind of action, or one this check cannot read, runs dependency code. Command position is found
+# by `.github/scripts/shell_commands.py` (`commands_of`), whose docstring gives the rules it reads a
+# `run:` by, as bash does: comments, quotes, line joins, substitutions, redirections, the
+# assignments and keywords before a command, and an interpreter, `-c` or `eval` looked through. A
+# variable in command position (`"$tool" build`), a command behind `xargs` or `nohup`, or a
+# program not on the list passes here; the job-level tripwire (`release-push.sh no-credential`)
+# and review hold the rest.
 #
 # What this check is for, so it is held to the right bar: it pins the release workflows' shape
 # against drift — a later well-meant edit that puts dependency code, a cache or a credential in the
@@ -108,12 +127,15 @@
 # the boundary; this check is a tripwire on that boundary, and the pass-through class above (a
 # variable in command position, `xargs`, `nohup`, an unlisted program, a `bun` behind `docker -Dl
 # debug run`) is accepted on that ground.
-# Scope: exactly the three workflows WORKFLOWS lists: release.yaml,
-# release-envoy-listener.yaml and release-envoy-infra.yaml. Rules 1-3 and 6 read every job that
-# has `steps:`; a job that calls a reusable workflow (`uses:` and no steps, release.yaml's
-# worker_image) is out of their
-# scope, since what it runs is that workflow's own jobs. Rule 4 reads the job it names. Rule 5
-# reads every job's `if:`, steps or not.
+# Scope: exactly the four workflows WORKFLOWS lists: release.yaml, release-envoy-listener.yaml,
+# release-envoy-infra.yaml, and release-notes-names.yaml, the reusable workflow that release.yaml's
+# and the listener's notes names jobs call, whose job holds the deployment's term list. Rules 1-3
+# and 6 read every job that has `steps:`; a job that calls a reusable workflow (`uses:` and no
+# steps: those names jobs, and release.yaml's worker_image) is out of their scope, since what it
+# runs is that workflow's own jobs, which this check reads when the workflow is on WORKFLOWS
+# (release-notes-names.yaml is; worker-image.yaml, which builds the worker image, is not). Rule 7
+# reads every such job. Rule 4 reads the job it names. Rule 5 reads every job's `if:`, steps or
+# not.
 #
 # Run from anywhere: .github/scripts/check-release-credentials.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
@@ -121,13 +143,15 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-python3 <<'PY'
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 <<'PY'
 import json
 import re
 import sys
 from pathlib import Path
 
 import yaml
+
+from shell_commands import commands_of
 
 
 class LineLoader(yaml.SafeLoader):
@@ -153,6 +177,7 @@ LineLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapp
 RELEASE = Path(".github/workflows/release.yaml")
 LISTENER = Path(".github/workflows/release-envoy-listener.yaml")
 INFRA = Path(".github/workflows/release-envoy-infra.yaml")
+NOTES_NAMES = Path(".github/workflows/release-notes-names.yaml")
 
 # What makes a job credentialed: one of these scopes, or the deploy key's name anywhere in it, by
 # dot or by index (`secrets.DEPLOY_KEY`, `secrets['DEPLOY_KEY']`, `secrets["DEPLOY_KEY"]`), in any
@@ -164,12 +189,19 @@ DEPLOY_KEY_REF = re.compile(
 )
 DEPLOY_KEY_VALUE = re.compile(r"\$\{\{\s*secrets\.DEPLOY_KEY\s*\}\}", re.IGNORECASE)
 RELEASE_PUSH = ".github/scripts/release-push.sh"
+PRIVATE_NAMES_CHECK = ".github/scripts/check-private-names.sh"
+# The repository shell scripts under a scripts/ directory that are no dependency code, each at
+# this exact path (the header says what each runs).
+NOT_DEPENDENCY_SCRIPTS = (RELEASE_PUSH, PRIVATE_NAMES_CHECK)
+# The workspace-root prefixes a command word must carry to run one of NOT_DEPENDENCY_SCRIPTS from
+# the checkout, wherever its step runs.
+WORKSPACE_ANCHORS = ("$GITHUB_WORKSPACE/", "${GITHUB_WORKSPACE}/")
 TRIPWIRE = f"{RELEASE_PUSH} no-credential"
 # The one release-push.sh command a step holding the deploy key may run: a release pushes its
 # tag, and nothing else pushes.
 PUSH_COMMAND = "release-push.sh push-tag"
 # The workflows this check reads, in this order: a workflow joins the check here.
-WORKFLOWS = [RELEASE, LISTENER, INFRA]
+WORKFLOWS = [RELEASE, LISTENER, INFRA, NOTES_NAMES]
 # A secret other than GITHUB_TOKEN, which a build job must not hold: `secrets.X` or `secrets['X']`
 # for any X but GITHUB_TOKEN, `toJSON(secrets)` (the context and functions are case-insensitive,
 # as are secret names), or a bare `secrets` inside a `${{ … }}` expression (`${{ secrets }}`,
@@ -237,161 +269,6 @@ CREDENTIALED_USES = {
     "docker/login-action",
 }
 
-# Just enough shell to find each simple command's first word.
-EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
-ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
-SKIP_WORDS = {
-    "if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "in",
-    "time", "exec", "env", "!", "{", "}", "case", "esac",
-}
-# Transparent in command position: the command is the word after the interpreter and its flags (an
-# `-o`, `+o`, `-O` or `+O`, alone or ending a cluster such as `-eo`, takes the next word as the
-# option's name), or each command of the script string after its `-c`. `eval` runs the words after
-# it as such a script string.
-INTERPRETERS = {"bash", "sh", "dash", "zsh", "source", "."}
-
-
-class Scanner:
-    """One quote-aware pass over a `run:`, as bash reads it (the header's rules), collecting each
-    simple command's words. Between characters it holds the word being read, the words of the
-    command being read, whether the next character begins a word (where a `#` starts a comment),
-    and whether the next word is a redirection's target (dropped: `>/dev/null` names no command)."""
-
-    def __init__(self) -> None:
-        self.commands: list[list[str]] = []
-        self.words: list[str] = []
-        self.word = ""
-        self.started = False
-        self.at_word_start = True
-        self.redirect_target = False
-
-    def add(self, char: str) -> None:
-        self.word += char
-        self.started = True
-        self.at_word_start = False
-
-    def end_word(self) -> None:
-        if self.started:
-            if not self.redirect_target:
-                self.words.append(self.word)
-            self.redirect_target = False
-        self.word = ""
-        self.started = False
-        self.at_word_start = True
-
-    def end_command(self) -> None:
-        self.end_word()
-        if self.words:
-            self.commands += command_of(self.words)
-        self.words = []
-        self.redirect_target = False
-
-    def scan(self, text: str) -> list[list[str]]:
-        quote = None
-        # The open `$(`, `<(`, `(` and backticks, innermost last, each with the quote it interrupted:
-        # inside, an unquoted command of its own starts; at the close, the string resumes.
-        open_subs: list[tuple[str, str | None]] = []
-        i = 0
-        while i < len(text):
-            char = text[i]
-            after = text[i + 1:i + 2]
-            if quote == "'":
-                if char == "'":
-                    quote = None
-                else:
-                    self.add(char)
-            elif char == "`":
-                self.end_command()
-                if open_subs and open_subs[-1][0] == "tick":
-                    quote = open_subs.pop()[1]
-                else:
-                    open_subs.append(("tick", quote))
-                    quote = None
-            elif char == "$" and after == "(":
-                self.add(char)  # the `$` and what precedes it stay with the outer word
-                self.end_command()
-                open_subs.append(("paren", quote))
-                quote = None
-                i += 1
-            elif quote == '"':
-                if char == '"':
-                    quote = None
-                elif char == "\\" and after in ("$", "`", '"', "\\"):
-                    self.add(after)
-                    i += 1
-                elif char == "\\" and after == "\n":
-                    i += 1
-                else:
-                    self.add(char)  # any other `\x` keeps both characters
-            elif char == "#" and self.at_word_start:
-                end = text.find("\n", i)  # the newline stays, to end the command below
-                i = len(text) if end < 0 else end
-                continue
-            elif char == "\\" and after == "\n":
-                i += 1
-            elif char == "\\" and after:
-                self.add(after)
-                i += 1
-            elif char in "'\"":
-                quote = char
-                self.started = True
-                self.at_word_start = False
-            elif char == "(" or (char in "<>" and after == "("):
-                if char != "(":
-                    i += 1
-                self.end_command()
-                open_subs.append(("paren", None))
-            elif char == ")":
-                self.end_command()
-                if open_subs and open_subs[-1][0] == "paren":
-                    quote = open_subs.pop()[1]
-            elif char in "<>":
-                self.end_word()
-                self.redirect_target = True
-                while text[i + 1:i + 2] in ("<", ">", "&", "|"):  # `>>`, `2>&1`, `<<<`, `>|`
-                    i += 1
-            elif char in ";&|\n":
-                self.end_command()
-            elif char in " \t":
-                self.end_word()
-            else:
-                self.add(char)
-            i += 1
-        self.end_command()
-        return self.commands
-
-
-def commands_of(run: str) -> list[list[str]]:
-    """Each simple command of a `run:`, as its words with the command first."""
-    return Scanner().scan(EXPRESSION.sub("EXPR", run))
-
-
-def command_of(words: list[str]) -> list[list[str]]:
-    """The command the words run, after the assignments and keywords before it: the words from the
-    command on; or, when the command is an interpreter, the command it is handed (`bash -o pipefail
-    scripts/x.sh` runs `scripts/x.sh`), or each command of the script string behind its `-c`
-    (`sh -c 'bun install && go build'` runs `bun install` and `go build`); or, when it is `eval`,
-    each command of the words after it, joined (`eval "bun install"` and `eval bun install` both
-    run `bun install`)."""
-    while words and (ASSIGNMENT.match(words[0]) or words[0] in SKIP_WORDS):
-        words.pop(0)
-    if not words:
-        return []
-    if words[0] == "eval":
-        return commands_of(" ".join(words[1:]))
-    if words[0] not in INTERPRETERS:
-        return [words]
-    words.pop(0)
-    while words and words[0].startswith(("-", "+")):
-        flag = words.pop(0)
-        if flag.startswith("--"):
-            continue
-        if "c" in flag:
-            return commands_of(words[0]) if words else []
-        if flag.endswith(("o", "O")) and words:
-            words.pop(0)
-    return command_of(words)
-
 
 def is_release_push(command: str) -> bool:
     """Whether the command word names release-push.sh, at any path: what it is left with after a
@@ -399,6 +276,16 @@ def is_release_push(command: str) -> bool:
     `./release-push.sh` and a bare `release-push.sh` all read as the one script. dependency_command
     asks it of a `fold-notes`, and rule 6 of a step that needs a checkout before it."""
     return PATH_PREFIX.sub("", command).rsplit("/", 1)[-1] == "release-push.sh"
+
+
+def from_checkout(command: str) -> bool:
+    """Whether the command word runs one of NOT_DEPENDENCY_SCRIPTS from the checkout: its path
+    behind a WORKSPACE_ANCHORS prefix. A bare or `./` path, a `../` or any other prefix anchors
+    nothing, since a working-directory or a `cd` may have moved the shell."""
+    for anchor in WORKSPACE_ANCHORS:
+        if command.startswith(anchor):
+            return command[len(anchor):] in NOT_DEPENDENCY_SCRIPTS
+    return False
 
 
 def dependency_command(words: list[str]) -> str | None:
@@ -430,10 +317,11 @@ def dependency_command(words: list[str]) -> str | None:
     path = PATH_PREFIX.sub("", command)
     if is_release_push(command) and words[1:2] == ["fold-notes"]:
         return f"'{command} fold-notes' (it runs changie)"
-    # The exemption is the checkout's own path, not the name is_release_push counts at any path:
-    # release-push.sh's other commands are no dependency code, and a script under some other
-    # scripts/ directory is not this one, whatever it is called.
-    if DEPENDENCY_PATH.search(path) and path != RELEASE_PUSH:
+    # The exemptions are the checkout's own scripts, run from the checkout (from_checkout), not a
+    # name counted at any path or under any directory: release-push.sh's other commands and
+    # check-private-names.sh are no dependency code, and a script elsewhere is not one of them,
+    # whatever it is called.
+    if DEPENDENCY_PATH.search(path) and not from_checkout(command):
         return f"'{command}'"
     return None
 
@@ -455,13 +343,77 @@ def shell_of(step: Mapping, job: Mapping, workflow: Mapping) -> tuple[str, int |
     return "bash", None
 
 
-def dependency_code(step: Mapping, job: Mapping, workflow: Mapping) -> str | None:
+# The job and the workflow a composite action's step is read under: none of either's defaults
+# reaches it.
+NO_SCOPE = Mapping()
+NO_SCOPE.lines = {}
+
+
+def local_action_code(uses: str, seen: tuple) -> str | None:
+    """How a local action runs dependency code, read off its action.yml in the checkout: each step
+    of a composite action as dependency_code reads a job's step, under no job or workflow default;
+    any other kind of action, or one this check cannot read, as dependency code itself."""
+    if uses in seen:
+        return None
+    steps, unread = composite_steps(uses)
+    if unread:
+        return unread
+    found = []
+    for index, step in enumerate(steps):
+        if isinstance(step, Mapping):
+            if what := dependency_code(step, NO_SCOPE, NO_SCOPE, seen + (uses,)):
+                found.append(f"{describe(step, index)} {what}")
+    return "; ".join(found) or None
+
+
+def composite_steps(uses: str) -> tuple[list, str | None]:
+    """A local action's steps, read off its action.yml in the checkout, or none and why it cannot
+    be read as a composite action's (no action.yml, YAML that does not parse, another kind of
+    action). The one reader local_action_code and action_uses share."""
+    directory = Path(uses)
+    files = [directory / name for name in ("action.yml", "action.yaml") if (directory / name).is_file()]
+    if not files:
+        return [], "has no action.yml in the checkout for this check to read"
+    try:
+        action = yaml.load(files[0].read_text(), Loader=LineLoader)
+    except yaml.YAMLError:
+        return [], f"has a {files[0].name} that is not valid YAML"
+    runs = action.get("runs") if isinstance(action, Mapping) else None
+    using = runs.get("using") if isinstance(runs, Mapping) else None
+    if using != "composite":
+        return [], f"runs '{using}', a program this check cannot read"
+    return list(runs.get("steps") or []), None
+
+
+def action_uses(uses: str, seen: tuple = ()) -> list[str]:
+    """The remote actions a step's `uses:` brings into its job: itself, or, for a local composite
+    action, every remote `uses:` of its steps at any depth. A local action this check cannot read
+    brings one entry that names it and why, which no allow-list holds."""
+    if not uses.startswith("./"):
+        return [uses]
+    if uses in seen:
+        return []
+    steps, unread = composite_steps(uses)
+    if unread:
+        return [f"{uses} ({unread})"]
+    found = []
+    for step in steps:
+        if isinstance(step, Mapping) and isinstance(step.get("uses"), str):
+            found += action_uses(step["uses"], seen + (uses,))
+    return found
+
+
+def dependency_code(step: Mapping, job: Mapping, workflow: Mapping, seen: tuple = ()) -> str | None:
     """How the step runs dependency code (`runs 'bun'`, `uses 'actions/setup-go@…'`, `runs its body
-    under shell 'python', not bash or sh`), or None."""
+    under shell 'python', not bash or sh`, `uses './.github/actions/x', whose step …`), or None."""
     found = []
     uses = step.get("uses")
     if isinstance(uses, str) and uses.lower().startswith(DEPENDENCY_USES):
         found.append(f"uses '{uses}'")
+    elif isinstance(uses, str) and uses.startswith("./"):
+        if what := local_action_code(uses, seen):
+            joined = "whose" if what.startswith("step") else "which"
+            found.append(f"uses '{uses}', {joined} {what}")
     run = step.get("run")
     if isinstance(run, str):
         interpreter, _ = shell_of(step, job, workflow)
@@ -517,14 +469,18 @@ def texts_of(node, path=(), line=0) -> list[tuple[tuple, int, str]]:
 
 
 def deploy_key_allowed(steps: list, path: tuple, text: str) -> bool:
-    """`DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}` in the env of a step that runs PUSH_COMMAND, and
-    nothing else: the dot form, exactly, as the one value of that key."""
+    """`DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}` in the env of a step whose `run:` runs PUSH_COMMAND,
+    the checkout's release-push.sh (from_checkout) with `push-tag`, and nothing else: the dot form,
+    exactly, as the one value of that key."""
     if len(path) != 4 or path[0] != "steps" or path[2:] != ("env", "DEPLOY_KEY"):
         return False
     if not DEPLOY_KEY_VALUE.fullmatch(text.strip()):
         return False
     run = steps[path[1]].get("run")
-    return isinstance(run, str) and PUSH_COMMAND in run
+    return isinstance(run, str) and any(
+        from_checkout(words[0]) and is_release_push(words[0]) and words[1:2] == ["push-tag"]
+        for words in commands_of(run)
+    )
 
 
 def describe(step: Mapping, index: int) -> str:
@@ -666,6 +622,24 @@ def check_job(
                     f"in the env of a step whose run calls {PUSH_COMMAND}",
                 )
 
+    # A names job holds the deployment's term list: only the allow-listed actions run beside it, so
+    # no third-party code reads the list from its step's environment or the runner's memory. A
+    # local composite action is read through, at any depth (action_uses).
+    if not (scopes or key_sites) and any(NAMES_SECRET.search(text) for _, _, text in texts):
+        for index, step in enumerate(steps):
+            uses = step.get("uses")
+            if not isinstance(uses, str):
+                continue
+            for remote in action_uses(uses):
+                if remote.split("@", 1)[0].lower() in CREDENTIALED_USES:
+                    continue
+                brought = "" if remote == uses else f", which brings in '{remote}',"
+                problem(
+                    path, step.lines.get("uses", line_of(step, job_line)),
+                    f"job '{name}' holds the deployment's term list (secrets.PRIVATE_NAME_TERMS), "
+                    f"but {describe(step, index)} uses '{uses}'{brought} which is not on the "
+                    f"checker's allow-list for a job that holds a secret; add it there deliberately",
+                )
     if dependency:
         build_jobs += 1
         index, step, found = dependency[0]
@@ -807,6 +781,80 @@ def check_conditions(path: Path, jobs: Mapping) -> None:
                 f"job it reads",
             )
 
+# 7. A job that calls a reusable workflow hands a secret only to one this check reads.
+LOCAL_CALLS = {f"./{workflow}" for workflow in WORKFLOWS}
+
+
+def check_call(path: Path, name: str, job: Mapping, job_line: int) -> None:
+    uses = job.get("uses")
+    if not isinstance(uses, str):
+        return
+    if uses in LOCAL_CALLS:
+        # A listed workflow's own jobs are read, but `secrets: inherit` hands it every secret and
+        # hides from rule 8 which one the call passes: a names job called so stops counting as one.
+        if job.get("secrets") == "inherit":
+            problem(
+                path, job.lines.get("secrets", job_line),
+                f"job '{name}' calls {uses} with 'secrets: inherit', which hands it every secret "
+                f"and hides from rule 8 the one it needs; pass that one secret by name",
+            )
+        return
+    named = [
+        (line, secret.group(0))
+        for _, line, text in texts_of(job, line=job_line)
+        if (secret := OTHER_SECRET.search(text))
+    ]
+    if job.get("secrets") == "inherit":
+        named.append((job.lines.get("secrets", job_line), "every secret ('secrets: inherit')"))
+    for line, secret in named:
+        problem(
+            path, line,
+            f"job '{name}' calls {uses}, a workflow this check does not read, but its text names "
+            f"{secret}; a job that calls a reusable workflow hands a secret but GITHUB_TOKEN only "
+            f"to a workflow on WORKFLOWS, called as './' and its path",
+        )
+
+# 8. A step that starts publishing a build's output waits for the names job that checks it.
+NAMES_SECRET = re.compile(
+    r"(?<![\w./-])secrets\s*(?:\.\s*PRIVATE_NAME_TERMS\b|\[\s*['\"]PRIVATE_NAME_TERMS['\"]\s*\])",
+    re.IGNORECASE,
+)
+SUCCESS_TEST = re.compile(NEEDS_REF + r"result\s*==\s*'success'", re.IGNORECASE)
+
+
+def check_names_gates(path: Path, jobs: Mapping) -> None:
+    names_of: dict[str, list[str]] = {}
+    for name, job in jobs.items():
+        if isinstance(job, Mapping) and any(NAMES_SECRET.search(text) for _, _, text in texts_of(job)):
+            for build in needs_of(job):
+                names_of.setdefault(str(build).lower(), []).append(str(name))
+    for name, job in jobs.items():
+        if not isinstance(job, Mapping) or not isinstance(job.get("steps"), list):
+            continue
+        for index, step in enumerate(job["steps"]):
+            cond = step.get("if") if isinstance(step, Mapping) else None
+            if not isinstance(cond, str) or "||" in cond:
+                continue
+            tested = {
+                (match.group(1) or match.group(2)).lower() for match in SUCCESS_TEST.finditer(cond)
+            }
+            for build, names in names_of.items():
+                if build not in tested or str(name) in names:
+                    continue
+                for names_job in names:
+                    if names_job.lower() in tested:
+                        continue
+                    problem(
+                        path, step.lines.get("if", line_of(step, jobs.lines.get(name, 1))),
+                        f"job '{name}' {describe(step, index)} tests needs.{build}.result == "
+                        f"'success' but not needs.{names_job}.result == 'success'; {names_job} "
+                        f"checks {build}'s output for the deployment's private names, so the step "
+                        f"that starts publishing it waits for that check, else a finding there "
+                        f"publishes anyway",
+                    )
+
+
+
 
 loaded: dict[Path, tuple[Mapping, Mapping]] = {}
 for path in WORKFLOWS:
@@ -826,7 +874,10 @@ for path in WORKFLOWS:
         continue
     loaded[path] = (doc, jobs)
     for name, job in jobs.items():
-        if not isinstance(job, Mapping) or not isinstance(job.get("steps"), list):
+        if not isinstance(job, Mapping):
+            continue
+        if not isinstance(job.get("steps"), list):
+            check_call(path, str(name), job, jobs.lines.get(name, 1))
             continue
         check_job(path, str(name), job, jobs.lines.get(name, 1), job["steps"], doc)
 
@@ -864,6 +915,10 @@ if LISTENER in loaded:
 # belongs to a job with no skippable ancestor, where GitHub's implicit success() can decide.
 for path, (_, jobs) in loaded.items():
     check_conditions(path, jobs)
+
+# 8. A step that starts publishing a build's output waits for the names job that checks it.
+for path, (_, jobs) in loaded.items():
+    check_names_gates(path, jobs)
 
 if problems:
     for entry in problems:

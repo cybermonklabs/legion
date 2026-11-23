@@ -33,7 +33,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { DISPATCH_READ_ONLY_TOKEN, IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
-import type { RequestCredential } from "@legion/envoy-client/bearer";
+import { credentialDeadline, type RequestCredential } from "@legion/envoy-client/bearer";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
 
 import {
@@ -91,6 +91,10 @@ interface Answer {
   readonly code: string;
 }
 
+/** How long one request may take, its broker trade included: the credential waits on all of it
+ *  but the request's 1 s reserve (`credentialDeadline`), and the request goes in that reserve. */
+const REQUEST_DEADLINE_MS = 30_000;
+
 /** Sends `method path` to Dispatch under `credential`, with a DPoP proof for that very URL. */
 async function present(
   credential: RequestCredential,
@@ -100,14 +104,21 @@ async function present(
   headers: Readonly<Record<string, string>> = {}
 ): Promise<Answer> {
   const url = new URL(path, baseUrl).toString();
+  const deadline = AbortSignal.timeout(REQUEST_DEADLINE_MS);
   const response = await fetch(url, {
     body: body === undefined ? undefined : JSON.stringify(body),
     headers: {
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       ...headers,
-      ...(await credential.headers(method, url)),
+      ...(await credential.headers(
+        method,
+        url,
+        undefined,
+        credentialDeadline(deadline, REQUEST_DEADLINE_MS)
+      )),
     },
     method,
+    signal: deadline,
   });
   const text = await response.text();
   let code = "";

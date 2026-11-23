@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -168,6 +169,7 @@ func sessionCloser(name, id string) closer {
 // settlement's versions move the issue's sequence past the close's, so the reopen is sent against
 // a read taken after that settlement, as a client that reads the issue before it writes sends it.
 func TestClosingAnIssueWithdrawsItsOpenAsksAndReopeningRestoresThem(t *testing.T) {
+	t.Parallel()
 	for _, closer := range closers {
 		t.Run(closer.name, func(t *testing.T) {
 			f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
@@ -356,6 +358,7 @@ func (failingSettlement) SettleIssueDocuments(context.Context, string) error {
 // to withdraw, but the close still leaves it reading resolved, and the reopen's settlement opens
 // it as its author's ask.
 func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
+	t.Parallel()
 	for _, settlementFails := range []bool{false, true} {
 		name := "settled by the close"
 		if settlementFails {
@@ -436,6 +439,7 @@ const pastedCloseDecision = ":::ask{#close-decision urgency=\"med\" multiple=\"f
 // sweep still leaves it reading resolved beside that block, and the reopen's settlement stamps it
 // and opens it as a new ask, beside the restored one.
 func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.T) {
+	t.Parallel()
 	for _, settlementFails := range []bool{false, true} {
 		name := "settled by the close"
 		if settlementFails {
@@ -587,6 +591,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 // block would only be marked resolved by the close's sweep, with no ask and no record of who
 // closed it.
 func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService := docs.New(docs.Deps{Store: database, Settle: time.Hour})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
@@ -654,6 +659,7 @@ func (d *peerInsertDocs) WriteIssueAskStates(ctx context.Context, issueKey strin
 // close's sweep, once the rooms are closed, leaves it reading resolved, and the settlement that
 // then runs on the closed issue saves it so, still with no ask (reconcileAskBlocks).
 func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	wrapper := &peerInsertDocs{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -692,6 +698,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 
 // Every close withdraws the asks open at that close, and every reopen restores them, once each.
 func TestEachCloseAndReopenWithdrawsAndRestoresOnce(t *testing.T) {
+	t.Parallel()
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		service := docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
@@ -979,4 +986,68 @@ func scanEventActor(t *testing.T, database *store.Store, query string, args ...a
 		t.Fatalf("decode event actor: %v", err)
 	}
 	return actor
+}
+
+// countedAskStateWrites is the document service with its sweep writes counted: every call of
+// WriteIssueAskStates, which is the one write a close's sweep makes (sweepIssueAskBlocksTx).
+type countedAskStateWrites struct {
+	docs.API
+	writes atomic.Int32
+}
+
+func (c *countedAskStateWrites) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]docs.BlockRef, error) {
+	c.writes.Add(1)
+	return c.API.WriteIssueAskStates(ctx, issueKey, asks, actor, markUnindexed)
+}
+
+// A close's sweep decides whether the issue is still closed under the issue's owner lock
+// (sweepClosedIssueAsksTx): a reopen committed while the sweep waited for that lock leaves the
+// reopened issue's documents alone. The test holds the lock as the reopen does and commits the
+// reopen while the sweep waits; a sweep that read the issue before the lock would write the
+// closed issue's ask states into the documents of an issue that is open again.
+func TestACloseSweepThatWaitedOutAReopenWritesNothing(t *testing.T) {
+	t.Parallel()
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "Swept after a reopen", "Context\n")
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `update issues set status = 'done', closed_at = now() where key = $1`, issue.Key); err != nil {
+		t.Fatalf("close the issue: %v", err)
+	}
+	counted := &countedAskStateWrites{API: served.deps.Docs}
+	served.deps.Docs = counted
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reopen: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock: %v", err)
+	}
+	swept := make(chan error, 1)
+	go func() {
+		swept <- served.sweepClosedIssueAsksTx(ctx, issue.Key, nil, model.Actor{Kind: "user", ID: "alice"})
+	}()
+	if err, early, _ := storetest.AwaitOwnerLockWaiter(t, database, "the close's sweep", swept); early {
+		t.Fatalf("the sweep answered %v while this test held the issue's owner lock: it decided on the issue "+
+			"under no lock", err)
+	}
+	if _, err := holder.Exec(ctx, `update issues set status = 'todo', closed_at = null where key = $1`, issue.Key); err != nil {
+		t.Fatalf("reopen the issue: %v", err)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the reopen: %v", err)
+	}
+	select {
+	case err := <-swept:
+		if err != nil {
+			t.Fatalf("the sweep: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the sweep never returned once the reopen committed")
+	}
+	if writes := counted.writes.Load(); writes != 0 {
+		t.Fatalf("the sweep wrote the ask states of %s %d time(s) after a reopen committed while it waited: it "+
+			"read the issue as closed before the issue's owner lock", issue.Key, writes)
+	}
 }

@@ -28,7 +28,7 @@ func TestConfigCheckRefusesARoleOverlayThePaneCannotRead(t *testing.T) {
 	config, _ := workflowConfig(t, 13370, "role_config_files: {implementer: ["+present+"]}\n")
 	var out, errb bytes.Buffer
 	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-	if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || out.String() != want || errb.Len() != 0 {
+	if want := demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
 		t.Fatalf("a present overlay: exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
 	}
 
@@ -85,9 +85,12 @@ func TestProbeImageRefusesARoleOverlayAfterATimeout(t *testing.T) {
 		{"the timeout alone", "", 0},
 	} {
 		var stderr bytes.Buffer
-		code := checkRoleOverlays([]roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string, []string) (string, error) { return tc.why, timedOut }, &stderr)
+		code, noVerdict := checkRoleOverlays(context.Background(), []roleOverlays{{role: "merger", files: []string{"/a.yml", "/b.yml"}}}, func([]string, []string) (string, error) { return tc.why, timedOut }, &stderr)
 		if code != tc.code || !strings.Contains(stderr.String(), "timed out after 1m0s") {
 			t.Errorf("%s: exit %d, stderr %q; want %d and the timeout", tc.name, code, stderr.String(), tc.code)
+		}
+		if len(noVerdict) != 0 {
+			t.Errorf("%s: steps with no verdict %q under a live context, want none", tc.name, noVerdict)
 		}
 		if refused := strings.Contains(stderr.String(), bootprobe.RoleOverlaysRefusedLine("merger", tc.why)); refused != (tc.why != "") {
 			t.Errorf("%s: stderr %q, refusal line printed %t", tc.name, stderr.String(), refused)
@@ -121,13 +124,16 @@ func TestTheRoleConfigFilesFlagTakesARoleOncePerArmAndReadsEach(t *testing.T) {
 
 	var read, alone [][]string
 	var stderr bytes.Buffer
-	code := checkRoleOverlays(flag, func(value, own []string) (string, error) {
+	code, noVerdict := checkRoleOverlays(context.Background(), flag, func(value, own []string) (string, error) {
 		read = append(read, value)
 		alone = append(alone, own)
 		return "", nil
 	}, &stderr)
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("checkRoleOverlays = %d, stderr %q; want 0 and nothing", code, stderr.String())
+	}
+	if len(noVerdict) != 0 {
+		t.Errorf("checkRoleOverlays steps with no verdict = %q under a live context, want none", noVerdict)
 	}
 	if want := [][]string{alpha, beta}; !reflect.DeepEqual(read, want) {
 		t.Errorf("the probe read %q, want each arm on its own and the merger's repeat of the first read once: %q", read, want)

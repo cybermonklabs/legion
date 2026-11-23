@@ -58,7 +58,8 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { broadcastDelivery, capabilityLabel, MODE_LABELS } from "../conversation/delivery";
+import { listedReplies } from "../conversation/conversation-model";
+import { broadcastDelivery, deliveryModesOf, MODE_LABELS } from "../conversation/delivery";
 import { useHeldSends } from "../conversation/held-sends";
 import { ReplyTurn, ThreadReplies } from "../conversation/ReplyTurn";
 import { capabilitiesForTarget, TargetedMessageCard } from "../conversation/TargetedMessageCard";
@@ -209,6 +210,7 @@ function AgentExchangeReply({
       void queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
+    method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -286,6 +288,7 @@ function AgentTargetedMessage({
       void queryClient.invalidateQueries({
         queryKey: agentMessagesQuery(agent.session_id).queryKey,
       }),
+    method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(read.message.id, delivery, bounds),
   });
   const replies = read.replies ?? [];
@@ -399,6 +402,7 @@ function AgentMessageList({
   // compared against `created_at` (the server's clock), so a slow browser clock would otherwise
   // make Clear a silent no-op. This hides exactly what the viewer saw.
   const clear = useKeyedWrite({
+    method: "PUT",
     write: (cutoff: string, bounds) =>
       api.putAgentState(agent.session_id, { cleared_before: cutoff }, bounds),
     label: () => `Conversation with ${label} cleared`,
@@ -806,20 +810,29 @@ function AgentRowDetails({
 }): ReactNode {
   const sendKey = useMemo(() => agentSendKey(agent.session_id), [agent.session_id]);
   const hold = useSending(sendKey);
-  const capabilities = agent.capabilities ?? [];
+  // The delivery modes the session lists, and only those: a capability that is no mode carries no
+  // message, so a list of those alone takes none, as an empty one does.
+  const modes = deliveryModesOf(agent.capabilities ?? []);
+  // The session's conversation as the row's list reads it (`AgentMessageList`), the same read,
+  // whatever a fold or a Clear shows of it: a draft the composer keeps for one of its messages
+  // goes back by that message's Reply, and one kept for a message the read no longer holds is
+  // drawn itself (`ListedReplies`). Until the read answers, every kept reply is as it was.
+  const messages = useQuery(agentMessagesQuery(agent.session_id));
+  const listed = useMemo(
+    () => (messages.data === undefined ? undefined : listedReplies(messages.data)),
+    [messages.data]
+  );
   return (
     <div className={`border-t px-4 pb-4 ${borderDefault}`} hidden={!expanded} id={id}>
       <div
         className={`mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs ${textMutedOnCanvas}`}
       >
-        {capabilities.length === 0 ? (
-          // A session that advertises no mode refuses every message: nothing can carry one into
-          // its conversation while its plugin cannot reach it.
+        {modes.length === 0 ? (
+          // A session that advertises no mode refuses every message: an empty list says its plugin
+          // cannot reach its conversation, and a list of unknown capabilities names no mode to use.
           <span>Takes no messages</span>
         ) : (
-          capabilities.map((capability) => (
-            <span key={capability}>{capabilityLabel(capability)}</span>
-          ))
+          modes.map((mode) => <span key={mode}>{MODE_LABELS[mode]}</span>)
         )}
         <span>
           Seen <Timestamp at={new Date(agent.last_seen).toISOString()} />
@@ -841,6 +854,7 @@ function AgentRowDetails({
         <AgentMessageComposer
           agent={agent}
           hold={hold}
+          listed={listed}
           onCancelReply={() => setReplyTo(null)}
           onClose={leaveAgentComposer}
           replyTo={replyTo}

@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The worker image pins the shared public leak check at `leak-check-v21` (`ARG LEAK_CHECK_TAG`),
+  in place of `leak-check-v18`. Each push from a pod runs this check before it writes. In a clone
+  made with `--filter=blob:none`, the check on `leak-check-v18` fetched from the promisor remote,
+  one at a time, each commit of the destination that the clone lacked; on `leak-check-v21` it
+  fetches none of them. Measured on such a clone of cybermonklabs/legion pushing one new commit,
+  the check took 6.2 s and fetched nothing, where the check without that change had started 219
+  fetches when it was stopped at 15 minutes. `legion gh`'s list of reads is proven against
+  `leak-check-v21` too (`ghReadsProvenCheck`), so a call that writes nothing still skips the
+  visibility read in a pod on the new pin.

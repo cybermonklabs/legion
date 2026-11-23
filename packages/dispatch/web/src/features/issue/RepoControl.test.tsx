@@ -1,13 +1,18 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import {
+  type Commits,
+  type HeldNotifications,
+  holdNotifications,
+  recordCommits,
+} from "../../__tests__/commits";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
+import type { Issue, IssueDetails, IssueSummary, Project } from "../../api/types";
 import { RepoControl } from "./RepoControl";
 
 const issue: Issue = {
@@ -69,37 +74,39 @@ const summary: IssueSummary = {
   created_by: issue.created_by,
   created_at: issue.created_at,
 };
-const mappings: RepoProject[] = [
+
+/** CORE's default repository is acme/widgets, and OTHER's is other/thing. */
+const projects: Project[] = [
   {
-    repo: "acme/widgets",
-    project: "CORE",
-    default: true,
-    renamed_to: null,
-    created_by: { kind: "user", id: "alice" },
     created_at: "2026-10-01T00:00:00Z",
+    default_repo: "acme/widgets",
+    gated_steps: [],
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
   },
   {
-    repo: "acme/gadgets",
-    project: "CORE",
-    default: false,
-    renamed_to: null,
-    created_by: { kind: "user", id: "alice" },
     created_at: "2026-10-01T00:00:00Z",
-  },
-  {
-    repo: "other/thing",
-    project: "OTHER",
-    default: true,
-    renamed_to: null,
-    created_by: { kind: "user", id: "alice" },
-    created_at: "2026-10-01T00:00:00Z",
+    default_repo: "other/thing",
+    gated_steps: [],
+    key: "OTHER",
+    name: "Other",
+    open_asks: 0,
   },
 ];
+
+/** The projects with CORE holding no default repository: a project with none carries no
+ *  `default_repo`. */
+const noCoreDefault: Project[] = projects.map(({ default_repo, ...project }) =>
+  project.key === "CORE" ? project : { ...project, default_repo }
+);
 
 const detailKey = ["issue", issue.key] as const;
 const listKey = ["issues", "project", issue.project] as const;
 
-function CachedControl(): ReactNode {
+/** The control as the issue page draws it: with the repository its host reads from the cache,
+ *  each commit of it recorded with that repository. */
+function CachedControl({ commits }: { commits: Commits<string | null> }): ReactNode {
   const cached = useQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: () => Promise.reject(new Error("the test seeds this query")),
@@ -109,24 +116,22 @@ function CachedControl(): ReactNode {
     return null;
   }
   return (
-    <RepoControl
-      issueKey={cached.data.key}
-      project={cached.data.project}
-      repo={cached.data.repo}
-      resolvedRepo={cached.data.resolved_repo}
-    />
+    <commits.Recorded host={cached.data.repo}>
+      <RepoControl
+        issueKey={cached.data.key}
+        project={cached.data.project}
+        repo={cached.data.repo}
+        resolvedRepo={cached.data.resolved_repo}
+      />
+    </commits.Recorded>
   );
 }
 
 function renderControl(
   own: { repo: string | null; resolvedRepo: string | null },
-  mapped: RepoProject[] = mappings,
-  { failFirstRead = false }: { failFirstRead?: boolean } = {}
+  listed: Project[] = projects
 ) {
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mapped);
-  if (failFirstRead) {
-    listRepoProjects.mockRejectedValueOnce(new Error("the network dropped the read"));
-  }
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue(listed);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -151,18 +156,25 @@ function renderControl(
     { ...summary, repo: own.repo, resolved_repo: own.resolvedRepo },
   ]);
   const user = userEvent.setup();
+  // What the box holds, the repository its placeholder names, and its description.
+  const commits = recordCommits<string | null>(() => {
+    const drawn = box();
+    const description = document.getElementById(drawn.getAttribute("aria-describedby") ?? "");
+    return `${drawn.value} | ${drawn.placeholder} | ${description?.textContent}`;
+  });
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl />
+      <CachedControl commits={commits} />
     </QueryClientProvider>
   );
   return {
+    commits,
     user,
-    listRepoProjects,
+    listProjects,
     queryClient,
     unmount: () => {
       view.unmount();
-      listRepoProjects.mockRestore();
+      listProjects.mockRestore();
     },
   };
 }
@@ -187,28 +199,33 @@ async function write(user: UserEvent, repo: string): Promise<void> {
   await user.tab();
 }
 
-test("RepoControl suggests the project's mapped repositories, shows the resolved one, and patches repo", async () => {
+// The suggestion comes from the project list, the read the sidebar and the issue header share:
+// the control reads no route of its own.
+test("RepoControl suggests the project's default repository, shows the resolved one, and patches repo", async () => {
+  // The one read is the project list, which `renderControl` answers at the api client, and the
+  // write is answered by `answerIssuePatches`, so a request that reaches the network is one the
+  // control should not make.
+  const network = spyOn(globalThis, "fetch").mockRejectedValue(
+    new Error("RepoControl sent a request")
+  );
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
     repo: "acme/gadgets",
     resolved_repo: "acme/gadgets",
     last_seq: 2,
   });
-  const { listRepoProjects, queryClient, unmount, user } = renderControl({
+  const { listProjects, queryClient, unmount, user } = renderControl({
     repo: null,
     resolvedRepo: "acme/widgets",
   });
   try {
     // The box holds the issue's own repository, which it has none of, so the one it resolves to
-    // is its placeholder; no mapping is read until the reader reaches for the control.
+    // is its placeholder.
     expect(box().value).toBe("");
     expect(box().placeholder).toBe("acme/widgets");
-    expect(listRepoProjects).not.toHaveBeenCalled();
-    // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(box());
-    await waitFor(() => expect(listRepoProjects).toHaveBeenCalled());
-    // CORE's mappings sorted; OTHER's absent.
-    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
+    // CORE's default alone; OTHER's is absent.
+    await waitFor(() => expect(suggestions()).toEqual(["acme/widgets"]));
+    expect(listProjects).toHaveBeenCalledTimes(1);
     await write(user, "acme/gadgets");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
@@ -218,33 +235,35 @@ test("RepoControl suggests the project's mapped repositories, shows the resolved
     );
     expect(box().value).toBe("acme/gadgets");
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.repo).toBe("acme/gadgets");
+    expect(network).not.toHaveBeenCalled();
   } finally {
     unmount();
     patchIssue.mockRestore();
+    network.mockRestore();
   }
 });
 
 // Any `owner/name` is a repository the server takes, so the box is not held to the project's
-// mappings: what the reader types is what is written.
-test("RepoControl writes an owner/name the project does not map", async () => {
+// default: what the reader types is what is written.
+test("RepoControl writes an owner/name that is not the project's default", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
-    repo: "zed/unmapped",
-    resolved_repo: "zed/unmapped",
+    repo: "zed/elsewhere",
+    resolved_repo: "zed/elsewhere",
   });
   const { queryClient, unmount, user } = renderControl({
     repo: null,
     resolvedRepo: "acme/widgets",
   });
   try {
-    await write(user, "zed/unmapped");
+    await write(user, "zed/elsewhere");
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/elsewhere" }, keyedAttempt)
     );
     await waitFor(() =>
-      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.repo).toBe("zed/unmapped")
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.repo).toBe("zed/elsewhere")
     );
-    expect(box().value).toBe("zed/unmapped");
+    expect(box().value).toBe("zed/elsewhere");
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -259,7 +278,7 @@ test("RepoControl sends null for the clear control", async () => {
   });
   const { unmount, user } = renderControl({ repo: "acme/gadgets", resolvedRepo: "acme/gadgets" });
   try {
-    // The issue's own repository is in the box before the mapping list has loaded.
+    // The issue's own repository is in the box before the project list has loaded.
     expect(box().value).toBe("acme/gadgets");
     await user.click(screen.getByRole("button", { name: "Clear the repository of CORE-1" }));
     await waitFor(() =>
@@ -478,83 +497,45 @@ test("RepoControl describes the repository the issue resolves to", async () => {
 
 // With nothing resolved there is no repository for the placeholder, so it says what the box
 // takes, and the description says there is none.
-test("RepoControl says No repository when nothing resolves in a project that maps one", async () => {
-  const { listRepoProjects, unmount } = renderControl({ repo: null, resolvedRepo: null });
+test("RepoControl says No repository when nothing resolves", async () => {
+  const { unmount } = renderControl({ repo: null, resolvedRepo: null }, noCoreDefault);
   try {
     expect(await screen.findByText("Repository:")).toBeTruthy();
     expect(box().placeholder).toBe("owner/name");
     expect(box()).toHaveAccessibleDescription("No repository");
-    expect(listRepoProjects).toHaveBeenCalledTimes(1);
   } finally {
     unmount();
   }
 });
 
-// A project that maps no repository has nothing to suggest, and its issues take a repository all
-// the same, so the rail carries the item with an empty suggestion list.
-test("RepoControl shows the item for an issue whose project maps no repository", async () => {
-  const others = mappings.filter((mapping) => mapping.project !== "CORE");
+// A project with no default repository has nothing to suggest, and its issues take a repository
+// all the same, so the rail carries the item with an empty suggestion list.
+test("RepoControl shows the item for an issue whose project has no default repository", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
-    repo: "zed/unmapped",
-    resolved_repo: "zed/unmapped",
+    repo: "zed/elsewhere",
+    resolved_repo: "zed/elsewhere",
   });
-  const { queryClient, unmount, user } = renderControl({ repo: null, resolvedRepo: null }, others);
+  const { queryClient, unmount, user } = renderControl(
+    { repo: null, resolvedRepo: null },
+    noCoreDefault
+  );
   try {
-    // The mappings are read at once; once they are in and React has rendered them, the control
-    // has decided.
+    // The project list is read at once; once it is in and React has rendered it, the control has
+    // decided.
     await waitFor(() =>
-      expect(queryClient.getQueryData<RepoProject[]>(["repo-projects"])).toEqual(others)
+      expect(queryClient.getQueryData<Project[]>(["projects"])).toEqual(noCoreDefault)
     );
     await act(async () => {});
     expect(screen.getByText("Repository:")).toBeTruthy();
     expect(suggestions()).toEqual([]);
-    await write(user, "zed/unmapped");
+    await write(user, "zed/elsewhere");
     await waitFor(() =>
-      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/unmapped" }, keyedAttempt)
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "zed/elsewhere" }, keyedAttempt)
     );
   } finally {
     unmount();
     patchIssue.mockRestore();
-  }
-});
-
-// A failed mappings read costs the reader the suggestions and nothing else: the box still takes
-// a repository, and the read is offered again.
-test("RepoControl shows a failed mappings read with a retry instead of hiding the item", async () => {
-  const { listRepoProjects, unmount, user } = renderControl(
-    { repo: null, resolvedRepo: null },
-    mappings,
-    { failFirstRead: true }
-  );
-  try {
-    expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
-    expect(screen.getByText("Repository:")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(suggestions()).toEqual(["acme/gadgets", "acme/widgets"]));
-    expect(
-      screen.queryByText("Could not load the repositories mapped to CORE.")
-    ).not.toBeInTheDocument();
-    expect(box().placeholder).toBe("owner/name");
-  } finally {
-    unmount();
-  }
-});
-
-// With a repository resolved the box still names it, and a failed read says so beside it.
-test("RepoControl shows a failed mappings read beside a resolved repository", async () => {
-  const { unmount } = renderControl({ repo: null, resolvedRepo: "acme/widgets" }, mappings, {
-    failFirstRead: true,
-  });
-  try {
-    // A focus with no press before it: user-event has no form for a bare focus.
-    fireEvent.focus(box());
-    expect(await screen.findByText("Could not load the repositories mapped to CORE.")).toBeTruthy();
-    expect(box().placeholder).toBe("acme/widgets");
-    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-  } finally {
-    unmount();
   }
 });
 
@@ -576,6 +557,89 @@ test("RepoControl rolls back and shows the server's refusal", async () => {
     expect(box().value).toBe("");
     expect(box().placeholder).toBe("acme/widgets");
   } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// Enter writes what the box holds, and from that press on the control draws it in every commit,
+// with the repository the issue then resolves to: the box, its placeholder and its description.
+// The pick reaches the issue's cache in a microtask of the press, and the control's host only
+// when TanStack Query tells the cache's observers, in a browser a timer later, which the row
+// holds back: a commit before that timer that drew the repository the pick replaces is a frame
+// of it on screen (INFRA-3904).
+test("RepoControl draws the pick, and the repository it resolves to, in every commit from Enter on, while its host still passes the inherited repository it replaces", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { commits, queryClient, unmount, user } = renderControl({
+    repo: null,
+    resolvedRepo: "acme/widgets",
+  });
+  let notifications: HeldNotifications | undefined;
+  try {
+    await user.click(box());
+    await user.paste("acme/gadgets");
+    const fromPress = commits.markAt(box(), "keydown");
+    notifications = holdNotifications();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+    );
+    // The cache draws the pick, and its host has not been told.
+    expect(queryClient.getQueryData<IssueDetails>(detailKey)?.repo).toBe("acme/gadgets");
+    expect(new Set(fromPress().map(({ host }) => host))).toEqual(new Set([null]));
+    notifications.tell();
+    expect(fromPress().at(-1)?.host).toBe("acme/gadgets");
+    await act(async () => {
+      save.resolve({ ...issue, repo: "acme/gadgets", resolved_repo: "acme/gadgets", last_seq: 2 });
+      await save.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+    );
+    expect(fromPress().map(({ drawn }) => drawn)).toEqual(
+      fromPress().map(() => "acme/gadgets | acme/gadgets | acme/gadgets")
+    );
+  } finally {
+    notifications?.tell();
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A pick can land before TanStack Query has told the box's host of it: a background tab holds
+// that timer back while a request's answer still lands. Dispatch drops a `.git` suffix before it
+// stores a repository (canonicalRepo), so a pick of `acme/widgets.git` on an issue that holds
+// `acme/widgets` lands as the repository the host passed at the press, and passes still. The box
+// draws what Dispatch stored once the host is told, and keeps no pick Dispatch did not store.
+test("RepoControl draws what Dispatch stored once its host is told, when the pick landed first as the repository its host passed at the press", async () => {
+  const patchIssue = answerIssuePatches().mockResolvedValue({
+    ...issue,
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
+    last_seq: 2,
+  });
+  const { queryClient, unmount, user } = renderControl({
+    repo: "acme/widgets",
+    resolvedRepo: "acme/widgets",
+  });
+  let notifications: HeldNotifications | undefined;
+  try {
+    await user.clear(box());
+    await user.click(box());
+    await user.paste("acme/widgets.git");
+    notifications = holdNotifications();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+    );
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/widgets.git" }, keyedAttempt);
+    // The pick landed, and its host has been told of nothing.
+    expect(notifications.held()).toBeGreaterThan(0);
+    notifications.tell();
+    expect(box().value).toBe("acme/widgets");
+  } finally {
+    notifications?.tell();
     unmount();
     patchIssue.mockRestore();
   }

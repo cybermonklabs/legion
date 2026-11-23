@@ -11,9 +11,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -146,7 +146,7 @@ func (a *Admission) quietTrees(ctx context.Context, tx pgx.Tx, issues []record.I
 // bound, the measure and the registration above.
 func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []record.Issue,
 	facts record.LineFacts, slots []record.Slot, line []record.LineEntry, dropped []record.HeldIssue,
-	rows map[string]blockers.Row,
+	rows map[string]blockers.Row, floor stallFloor,
 ) error {
 	if a.stalledTreeNotice <= 0 {
 		return nil
@@ -168,7 +168,14 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	if len(candidates) == 0 {
 		return nil
 	}
-	// Step 2: the measure the rule decides on.
+	// Step 2: the measure the rule decides on. The quiet time is counted from no earlier than
+	// the end of the project's latest pause (floor, stallFloor.count), as the architect-stalled
+	// arms count theirs: a pause stops every role of a tree, so a tree quiet only while the pause
+	// held the project has not stopped (decision 14 of dispatch://INFRA-3759). The floor is the
+	// pass's own, read with the pause before anything else (promoteHolds, readStallFloor), so the
+	// measure reads nothing for it; the notice still says how long the tree has been quiet, the
+	// pause's time included. Nothing reaches this while the project is paused, because the pass
+	// promotes nothing then.
 	quiet, claims, err := a.quietTrees(ctx, tx, issues, now)
 	if err != nil {
 		return err
@@ -177,7 +184,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 	claimed := false
 	for _, root := range candidates {
 		measure := quiet[root.Key]
-		if measure.Quiet <= a.stalledTreeNotice {
+		if from, _ := floor.count(measure.MovedAt); now.Sub(from) <= a.stalledTreeNotice {
 			continue
 		}
 		if told := root.TreeStalledToldAt; told != nil && !measure.MovedAt.After(*told) {
@@ -319,7 +326,7 @@ func (a *Admission) tellStalledTrees(ctx context.Context, tx pgx.Tx, issues []re
 		if err := a.store.MarkTreeStalledTold(ctx, tx, root.Key, measure.MovedAt); err != nil {
 			return err
 		}
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Warn("admission: told the controller a tree has stopped", "issue", root.Key,
 				"quiet", measure.Quiet, "movedAt", measure.MovedAt)
 		})
@@ -480,27 +487,38 @@ func (a *Admission) workingTrees(ctx context.Context, tx pgx.Tx, issues []record
 // The words that do not silence are each a tree's own work or a person's: a tree closed or
 // parked waits for a re-admission (tree_closed, tree_parked), a root whose label is off waits
 // for a person to hand it over (label_off), a root a live tree has not released waits for its
-// architect (ancestry), an issue under an accepted ancestor waits for that ancestor to close
-// (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
+// architect (ancestry), an issue under an accepted ancestor waits while that ancestor stands
+// in retro or merging (accepted_ancestor), and an issue past its review is at work on no slot, whose stillness is
 // the stall itself (at_work). None of them is the daemon holding work it means to start, which
 // is what a wait by design is.
+//
+// The two holds an owner's plan makes do not silence either: a parent held before its retro for
+// the issues beneath it (children_before_retro) and a task that was stopped (task_stopped). Each
+// stands on an issue that has had its start and stands in held, which lineHolds.waitsByDesign
+// reads as stopped before it reads any word, so their rows here are never what decides, and
+// false says the same as that rule. A held parent is then judged as a parent past its review
+// that waits in accepting for its children is judged, and each issue beneath it by its own word;
+// a stopped task waits for its owner's next version of the plan or for a person, the tree's own
+// work or a person's (TestAHoldOfAPlanIsNoWaitByDesign).
 //
 // A word with no row here fails admit's TestTheMeasureAnswersEveryHeldReason, which reads the
 // words from the record package's own source: a word added to the vocabulary and left out of
 // this table would otherwise be ignored quietly, which is the fault rather than a new place to
 // hide it.
 var silencedTree = map[record.HeldReason]bool{
-	record.HeldTreeClosed:         false,
-	record.HeldTreeParked:         false,
-	record.HeldLabelOff:           false,
-	record.HeldAncestry:           false,
-	record.HeldRootAwaitingPerson: true,
-	record.HeldDesignGate:         true,
-	record.HeldDispatchBlocker:    true,
-	record.HeldChildrenFirst:      true,
-	record.HeldAcceptedAncestor:   false,
-	record.HeldAtWork:             false,
-	record.HeldUnclassified:       false,
+	record.HeldTreeClosed:          false,
+	record.HeldTreeParked:          false,
+	record.HeldLabelOff:            false,
+	record.HeldAncestry:            false,
+	record.HeldRootAwaitingPerson:  true,
+	record.HeldDesignGate:          true,
+	record.HeldDispatchBlocker:     true,
+	record.HeldChildrenFirst:       true,
+	record.HeldAcceptedAncestor:    false,
+	record.HeldChildrenBeforeRetro: false,
+	record.HeldTaskStopped:         false,
+	record.HeldAtWork:              false,
+	record.HeldUnclassified:        false,
 }
 
 // silences says whether an issue the line left behind for word is waiting by design, from the
@@ -850,6 +868,6 @@ func stalledTreeReason(root string, measure record.TreeQuiet, members []record.I
 		}
 	}
 	reason.WriteString("\nRead the tree and decide what it needs. You can ask a role what it waits on." +
-		" You can move an issue back a phase. You can park the tree.")
+		" You can park the tree.")
 	return reason.String()
 }

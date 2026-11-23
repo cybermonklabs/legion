@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  With `NATS_AUTH=broker`, a session's start waits for its broker token within its pass deadline
+  less 10 s for the rest of the pass, where that is shorter than the 20 s trade deadline, or half
+  a pass shorter than 20 s, so the start names the cause before the pass is abandoned, and a
+  short pass deadline (such as `ENVOY_PASS_DEADLINE_MS=7500`) no longer gives it
+  0 s. The shutdown's deregistration makes one attempt within what is left of the shutdown's 1 s,
+  without a credential the broker has not handed over by then. The extension's Dispatch calls,
+  AskGate's document reads among them, give their client their budget as its deadline, so the
+  credential is given that budget less the request's reserve.
+time: 2026-11-17T22:09:42Z
+custom:
+    Issue: pr4140

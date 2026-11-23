@@ -419,7 +419,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	if second.Entry <= first.Entry {
 		t.Fatalf("round 2's reviewer row is on entry %d, want one above round 1's %d: round 2 started", second.Entry, first.Entry)
 	}
-	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
+	want := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Handoff: test version 2 (dispatch handoff-read --issue LEGION-208 --phase test --version 2)." +
 		" Tester's verdict: pass. Pull request: #42." + reviewedPartOf(headOne) + reviewEntryPartOf(second.Entry)
 	if second.EntryTask != want {
 		t.Fatalf("round 2's task = %q, want %q", second.EntryTask, want)
@@ -508,15 +508,14 @@ func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testin
 // task — and the promotion a carried hand-over makes, which keeps its rows (admit's readmit
 // returns before the clear for an orphan) and so keeps the commit.
 func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
-	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf(headOne)
+	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf(headOne)
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
-		pool, _, apply := reviewRoundOne(t)
+		pool, engine, apply := reviewRoundOne(t)
 		apply("approve", reviewAt(t, pool, 1, "approved", headOne, reviewTestedAt))
 		if got := issuePhase(t, pool); got != phase.Accepting {
 			t.Fatalf("after the approval the issue is in %s, want accepting", got)
 		}
-		if result := apply("move-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: phase.Implementing,
-			Reason: "the API needs another shape"}); result.Refusal != nil {
+		if result := apply("move-back", rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the API needs another shape")); result.Refusal != nil {
 			t.Fatalf("the architect's move back was refused: %+v", result.Refusal)
 		}
 		backToReviewing(t, apply, 2)
@@ -526,12 +525,14 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 			t.Fatalf("round 2's task = %q, want it to name %s, the commit the approval read", task, headOne)
 		}
 	})
-	t.Run("a move back for a head that conflicts with its base", func(t *testing.T) {
+	t.Run("the reviewer's own move back from a round that decided nothing", func(t *testing.T) {
 		pool, engine, apply := reviewRoundTwo(t)
-		applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
-			Base: "main", HeadSHA: headOne, Mergeable: record.MergeabilityConflicting})
+		if result := apply("move-back", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleReviewer, To: phase.Implementing,
+			Reason: "the change needs the migration first"}); result.Refusal != nil {
+			t.Fatalf("the reviewer's move back was refused: %+v", result.Refusal)
+		}
 		if got := issuePhase(t, pool); got != phase.Implementing {
-			t.Fatalf("after the conflicting read the issue is in %s, want implementing", got)
+			t.Fatalf("after the reviewer's move back the issue is in %s, want implementing", got)
 		}
 		mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(2*time.Hour))
 		backToReviewing(t, apply, 3)
@@ -573,7 +574,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		pool, engine, _ := reviewRoundTwo(t)
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			_, err := engine.startSuspendedOwner(ctx, tx, suspendedOwner{issue: *issue, root: *issue, role: claim.RoleReviewer,
 				run: record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}}, row)
 			return err
@@ -586,7 +587,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		pool, engine, _ := reviewRoundTwo(t)
 		row, issue := reviewerRow(t, pool), issueRecord(t, pool, "LEGION-208")
 		outboxRan(t, pool)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.repairSilence(ctx, tx, *issue, *issue, record.RoleRun{Claim: &record.RoleClaim{GivenEntry: row.Entry}}, row,
 				intake.WorkerSilent{Issue: "LEGION-208", Role: claim.RoleReviewer, Generation: 1, LastStep: reviewTestedAt, Bound: time.Hour},
 				reviewTestedAt.Add(2*time.Hour))
@@ -605,7 +606,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 		carried := issueRecord(t, pool, "LEGION-208")
 		carried.Generation++
 		seedIssue(t, pool, *carried)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.StartPromotedWorker(ctx, tx, *carried, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
@@ -668,15 +669,15 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 	t.Run("the re-admission of the root", func(t *testing.T) {
 		pool, engine, _ := reviewedChild(t)
 		before := reviewerRow(t, pool)
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-207", time.Now().UTC())
 		})
 		member := issueRecord(t, pool, "LEGION-208")
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
 		})
 		after := reviewerRow(t, pool)
-		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
+		want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(before.Entry+1)
 		if after.Entry != before.Entry+1 || after.EntryTask != want {
 			t.Fatalf("the promoted reviewer is on entry %d with the task %q, want entry %d with %q", after.Entry, after.EntryTask, before.Entry+1, want)
 		}
@@ -687,7 +688,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 		child := issueRecord(t, pool, "LEGION-208")
 		fact := RecordedFact(*child)
 		fact.Status = "todo"
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.ReenterChild(ctx, tx, *child, fact)
 		})
 		testsIntoReviewing(t, pool, apply)
@@ -706,7 +707,7 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 		root := liveRootOf(t, pool, "LEGION-300", 1)
 		member := issueRecord(t, pool, "LEGION-208")
 		member.Status = "todo"
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 			return engine.AdoptMember(ctx, tx, *member, root, intake.AdoptedChild{Issue: "LEGION-208", Parent: "LEGION-300", Status: "todo"})
 		})
 		if got := issueRecord(t, pool, "LEGION-208").Tree; got != "LEGION-300" {
@@ -724,10 +725,10 @@ func TestAGenerationThatClearsItsRowsNamesNoCommit(t *testing.T) {
 	})
 }
 
-// The negative control of v-review-range: the commit round 2 names comes from the record of the
-// first review and from nothing else. With the stored commit taken off the reviewer's row after
-// round 1's review, round 2's task names none; with it left, the same lines name it, so the
-// control can fail.
+// The negative control of the commit a later round is told: the commit round 2 names comes from
+// the record of the first review and from nothing else. With the stored commit taken off the
+// reviewer's row after round 1's review, round 2's task names none; with it left, the same lines
+// name it, so the control can fail.
 func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

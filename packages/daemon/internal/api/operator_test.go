@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -46,7 +47,10 @@ func TestOperatorRoutesRefuseAnythingButTheOperatorBearer(t *testing.T) {
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/stop"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/retry"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/forget-session"},
+		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/release-names"},
 		{http.MethodPost, "/legion/v1/operator/claims/" + string(architectToken) + "/close"},
+		{http.MethodPost, "/legion/v1/operator/project/pause"},
+		{http.MethodPost, "/legion/v1/operator/project/resume"},
 	}
 	for _, route := range routes {
 		for name, header := range map[string]http.Header{
@@ -578,7 +582,7 @@ func (r *heldRetrier) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (i
 func heldIssue(t *testing.T, h *harness, from phase.Phase) {
 	t.Helper()
 	parent := "LEGION-208"
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutIssue(context.Background(), tx, record.Issue{
 			Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject,
 			Title: "LEGION-209", Parent: &parent, Phase: phase.Held, Hold: &record.Hold{From: from}, Generation: 1, Status: "in_progress",

@@ -9,9 +9,10 @@ import (
 	"testing"
 )
 
-// TarballPrefix is the one directory GitHub's tarball of the check's repository holds every
-// member under, `<owner>-<repo>-<sha>/`.
-const TarballPrefix = "theorem-labs-agent-infra-84d835ba5d00f97212253ffa221898f1f234a772/"
+// TarballPrefix is the one directory a GitHub tarball holds every member under, named as GitHub
+// names one, `<owner>-<repo>-<sha>/`. The install reads each member by its path below it, whatever
+// that directory's name (leakguard's memberPath).
+const TarballPrefix = "example-org-deployment-84d835ba5d00f97212253ffa221898f1f234a772/"
 
 // checkDirectory is the directory of the check's repository the check's files are under. The
 // guard spells it for itself (leakguard.checkDirectory, unexported).
@@ -27,15 +28,16 @@ type Member struct {
 
 // GitHubTarball is a gzipped tarball shaped as GitHub's tarball of the check's repository: under
 // TarballPrefix, the leak-check directory's own entry, one file of the repository outside that
-// directory (README.md), and every member of check under the directory at its path, in path
-// order. A path that leaves the directory is written as it is, so a test can hand the pack one.
+// directory (CONTRIBUTING.md, a name the check's own directory does not hold), and every member of
+// check under the directory at its path, in path order. A path that leaves the directory is written
+// as it is, so a test can hand the pack one.
 func GitHubTarball(t testing.TB, check map[string]Member) []byte {
 	t.Helper()
 	return gzipTar(t, func(archive *tar.Writer) {
 		if err := archive.WriteHeader(&tar.Header{Name: TarballPrefix + checkDirectory + "/", Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
 			t.Fatal(err)
 		}
-		writeMember(t, archive, TarballPrefix+"README.md", Member{Body: "the rest of the repository\n", Mode: 0o644})
+		writeMember(t, archive, TarballPrefix+"CONTRIBUTING.md", Member{Body: "the rest of the repository\n", Mode: 0o644})
 		for _, name := range slices.Sorted(maps.Keys(check)) {
 			writeMember(t, archive, TarballPrefix+checkDirectory+"/"+name, check[name])
 		}

@@ -496,8 +496,8 @@ func loopSeedExportResolve(t *testing.T, args ...string) (loopSeedExportFlags, e
 	fs.SetOutput(io.Discard)
 	var f loopSeedExportFlags
 	f.register(fs)
-	if err := fs.Parse(args); err != nil {
-		t.Fatalf("loop-seed-export %q: %v", args, err)
+	if err := parseArgs(fs, args); err != nil {
+		return f, err
 	}
 	return f, f.resolve()
 }
@@ -521,7 +521,9 @@ func TestLoopSeedExportReadsItsPostgresURLFromAFile(t *testing.T) {
 		t.Errorf("-pg is %q, want the file's content with its trailing white space trimmed", redactPG(f.pg))
 	}
 
-	_, err = loopSeedExportResolve(t, "-plan", "loopseed.plan.json", "-pg", pg, "-pg-file", path)
+	// A -pg with a password is refused before the two forms are compared
+	// (TestAPostgresPasswordOnTheCommandLineIsRefused), so this -pg has none.
+	_, err = loopSeedExportResolve(t, "-plan", "loopseed.plan.json", "-pg", "postgres://dispatch@10.139.0.3:5432/dispatch", "-pg-file", path)
 	var both *bothCredentialFormsError
 	if !errors.As(err, &both) || both.Flag != "-pg" || both.FileFlag != "-pg-file" {
 		t.Errorf("-pg given with -pg-file too: refusal %v, want one naming the two forms", err)

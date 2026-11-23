@@ -57,7 +57,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 				}
 				forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), 2*time.Second)
 				if err == nil {
-					err = forward.Wait()
+					_, err = forward.Wait()
 				}
 				if err != nil {
 					forwardErr.Store(err.Error())
@@ -144,6 +144,7 @@ func TestCloseDoesNotInstallABindThatFinishesAfterStop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
+	t.Cleanup(client.Close)
 
 	const subject = "notifications.role.close-after-bind"
 	client.subscriptionsMu.Lock()

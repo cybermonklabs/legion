@@ -16,7 +16,7 @@ import (
 // repository's store lock, and a provision that waited on that lock while it held a place would
 // keep every other repository's checkouts waiting behind it. The clone and fetch under each store
 // lock are one at a time per repository and unbounded across repositories, on purpose: a project
-// maps a handful of repositories, each fetch brings two branches, and a bound shared across
+// works in a handful of repositories, each fetch brings two branches, and a bound shared across
 // repositories would bring back the cross-repository wait the place's position removed.
 const provisionConcurrency = 16
 

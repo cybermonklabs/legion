@@ -37,9 +37,7 @@ func TestAThreeCopyStreamKeepsALeaderAndTakesAPublishWithOneMemberStopped(t *tes
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	if _, err := js.AddStream(&natsgo.StreamConfig{Name: "THREE", Subjects: []string{"three.>"}, Replicas: 3, Storage: natsgo.FileStorage}); err != nil {
-		t.Fatalf("create a three-copy stream: %v", err)
-	}
+	cluster.CreateStream(t, natsgo.StreamConfig{Name: "THREE", Subjects: []string{"three.>"}, Replicas: 3, Storage: natsgo.FileStorage})
 	if _, err := js.Publish("three.before", []byte("before")); err != nil {
 		t.Fatalf("publish with every member running: %v", err)
 	}

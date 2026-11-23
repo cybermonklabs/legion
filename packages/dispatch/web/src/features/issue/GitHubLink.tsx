@@ -4,8 +4,17 @@ import type { ReactNode } from "react";
 import { ApiError, api } from "../../api/client";
 import type { ExternalLink } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import { safeExternalHref } from "../../lib/external-href";
-import { badgeLow, linkHoverText, linkText, textMutedOnSurface } from "../../theme/classes";
+import {
+  badgeLow,
+  linkHoverText,
+  linkText,
+  pageInkText,
+  pageLabelChip,
+  pageQuietText,
+  textMutedOnSurface,
+} from "../../theme/classes";
 
 interface GitHubReference {
   head?: { sha?: string };
@@ -93,8 +102,21 @@ function newestCheckRuns(checkRuns: CheckRun[], workflowRuns: WorkflowRun[]): Ch
  * shown as its number and title (the repository while the title is unknown — loading, or no
  * GitHub App installation for the repository), never as the raw address, so it fits the line on a
  * phone; the title is truncated and carried in full by the link's tooltip.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) no link carries a
+ * `title`, so what the tooltip said is drawn instead: a GitHub
+ * issue or pull request reads as `<owner>/<repo>#<n>` and its title, whole; while the title
+ * loads, or when it could not be read, as its whole address; and when Dispatch holds no GitHub
+ * token for the repository, as `<owner>/<repo>#<n>` and the sentence saying so. A link with no
+ * GitHub reading is its whole address, and an unsafe link says so in words. Every text there
+ * wraps with `[overflow-wrap:anywhere]`, not `break-all`, so a line breaks between words where
+ * it can and cuts a word only where it cannot. There each colour is one of that page's: a link
+ * is its ink with the underline, an unsafe address its quiet words, and the state and the
+ * checks its label chips.
  */
 export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
+  const tooltips = useTooltips();
+  const page = usePageWords();
   const href = safeExternalHref(link.url);
   const match =
     href?.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)\/?$/) ?? null;
@@ -145,23 +167,38 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   });
 
   if (href === null) {
-    return (
+    return page === null ? (
       <span
         className={`inline-block max-w-[18ch] truncate text-sm sm:max-w-[32ch] ${textMutedOnSurface}`}
         title="Unsafe external link"
       >
         {link.url}
       </span>
+    ) : (
+      <span className={`inline-block text-sm ${pageQuietText}`} {...page.pageChrome}>
+        <span className="max-w-full [overflow-wrap:anywhere]" {...page.authorText}>
+          {link.url}
+        </span>
+        <span className="ml-1">({page.CONTROL_LABELS.external_link_unsafe})</span>
+      </span>
     );
   }
   if (match === null) {
-    return (
+    return page === null ? (
       <a
         className={`inline-block max-w-[18ch] truncate text-sm underline sm:max-w-[32ch] ${linkText} ${linkHoverText}`}
         href={href}
         title={link.url}
       >
         <TruncatedText>{link.url}</TruncatedText>
+      </a>
+    ) : (
+      <a
+        className={`inline-block max-w-full text-sm underline [overflow-wrap:anywhere] ${pageInkText}`}
+        href={href}
+        {...page.authorText}
+      >
+        {link.url}
       </a>
     );
   }
@@ -180,34 +217,70 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       : isPullRequest && reference.merged
         ? "merged"
         : reference.state;
+  const linkTitle = unavailable
+    ? "GitHub details are unavailable for this repository."
+    : reference === undefined
+      ? link.url
+      : `${repository}${number}: ${reference.title}`;
   return (
     <a
-      className={`inline-flex max-w-full items-center gap-2 text-sm underline ${linkText} ${linkHoverText}`}
+      className={`inline-flex max-w-full ${page === null ? `items-center gap-2 text-sm underline ${linkText} ${linkHoverText}` : `flex-wrap items-center gap-2 text-sm underline ${pageInkText}`}`}
       href={href}
-      title={
-        unavailable
-          ? "GitHub details are unavailable for this repository."
-          : reference === undefined
-            ? link.url
-            : `${repository}${number}: ${reference.title}`
-      }
+      title={tooltips ? linkTitle : undefined}
     >
-      <span className="shrink-0 font-medium">{number}</span>
-      <TruncatedText className="max-w-[18ch] sm:max-w-[32ch]">
-        {reference === undefined ? repository : reference.title}
-      </TruncatedText>
+      {page === null ? (
+        <>
+          <span className="shrink-0 font-medium">{number}</span>
+          <TruncatedText className="max-w-[18ch] sm:max-w-[32ch]">
+            {reference === undefined ? repository : reference.title}
+          </TruncatedText>
+        </>
+      ) : reference === undefined && !unavailable ? (
+        <span className="min-w-0 [overflow-wrap:anywhere]" {...page.authorText}>
+          {link.url}
+        </span>
+      ) : (
+        <>
+          <span className="min-w-0 font-medium [overflow-wrap:anywhere]" {...page.authorText}>
+            {`${repository}${number}`}
+          </span>
+          {reference === undefined ? (
+            <span className="min-w-0 [overflow-wrap:anywhere]" {...page.pageChrome}>
+              {page.STATE_LINES.github_unreadable}
+            </span>
+          ) : (
+            <span className="min-w-0 [overflow-wrap:anywhere]" {...page.authorText}>
+              {reference.title}
+            </span>
+          )}
+        </>
+      )}
+      {/* Inside `NoTooltips` the state and the checks' result are values too, so neither chip
+          keeps its width: each keeps `max-w-full` and breaks anywhere, as the reference beside
+          them does. */}
       {state === undefined ? null : (
         <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeLow.bg} ${badgeLow.text}`}
+          className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
+          {...page?.authorText}
         >
           {state}
         </span>
       )}
       {isPullRequest && !checks.isError && checks.data !== undefined ? (
         <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeLow.bg} ${badgeLow.text}`}
+          className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
+          {...page?.pageChrome}
         >
-          checks: {checks.data}
+          {page === null ? (
+            <>checks: {checks.data}</>
+          ) : (
+            <>
+              {page.CONTROL_LABELS.github_checks}:{" "}
+              <span className="max-w-full [overflow-wrap:anywhere]" {...page.authorText}>
+                {checks.data}
+              </span>
+            </>
+          )}
         </span>
       ) : null}
     </a>

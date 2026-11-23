@@ -26,7 +26,7 @@ const IssueAskRepairInterval = 10 * time.Minute
 const issueAskRepairTimeout = 5 * time.Minute
 
 // issueAskRepairLease names the lease one interval pass runs under. Two passes running at once
-// are correct - they serialise on each issue's row, and the second finds nothing left - but they
+// are correct - they serialise on each issue's owner lock, and the second finds nothing left - but they
 // would read the same documents for the same result, which is reason enough for one process to
 // run it each interval.
 const issueAskRepairLease = "issue-ask-repair"
@@ -78,11 +78,11 @@ func (r *IssueAskRepair) add(other IssueAskRepair) {
 //
 // An issue with no event naming the closer or the reopener is logged and left as it is: no actor
 // is invented. Every record is dated when the pass writes it. Each issue is repaired in a
-// transaction of its own that holds the issue's row and reads its state and asks again under it,
-// so two passes running at once serialise on the row and the second finds nothing left; a pass
-// that finds nothing writes nothing and appends no event. One issue's failure is logged and the
-// pass goes on to the next; the returned error names how many failed. It reads deps.Store,
-// deps.Docs and deps.Events.
+// transaction of its own that holds the issue's owner lock and reads its state and asks again
+// under it, so two passes running at once serialise on that lock and the second finds nothing
+// left; a pass that finds nothing writes nothing and appends no event. One issue's failure is
+// logged and the pass goes on to the next; the returned error names how many failed. It reads
+// deps.Store, deps.Docs and deps.Events.
 func RepairIssueAsks(ctx context.Context, deps Deps, markedSince *time.Time) (IssueAskRepair, error) {
 	s := &server{deps: deps}
 	repair, _, _, err := s.repairIssueAsks(ctx, markedSince, nil)
@@ -225,11 +225,17 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		return repair, err
 	}
 	defer tx.Rollback(ctx)
+	// Every read and the document work run first, holding no transaction id; the asks' rows, their
+	// events and the document writes are queued on the ledger and run as one batch at its commit,
+	// in the order made (INFRA-636), as the close and the reopen this stands in for run them.
 	documentCtx, ledger := s.deps.Docs.Join(ctx, tx)
 	defer ledger.Discard()
 	var closed, owesSettlement bool
 	var open, withdrawn int
-	if err := tx.QueryRow(ctx, `select closed_at is not null from issues where key = $1 for no key update`, issueKey).Scan(&closed); err != nil {
+	// The issue's owner lock, then its read in a statement of its own (store.LockOwnerAndRead).
+	if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(issueKey), `
+		select closed_at is not null from issues where key = $1
+	`, []any{issueKey}, &closed); err != nil {
 		return repair, fmt.Errorf("lock the issue: %w", err)
 	}
 	if err := tx.QueryRow(ctx, `
@@ -244,7 +250,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 	`, issueKey).Scan(&open, &withdrawn, &owesSettlement); err != nil {
 		return repair, fmt.Errorf("read the issue's asks: %w", err)
 	}
-	var events []model.Event
+	var events []*model.Event
 	switch {
 	case closed && (open > 0 || owesSettlement):
 		closer, found, err := latestIssueEventActor(ctx, tx, `
@@ -273,7 +279,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 		}
 		repair.Swept = len(unindexed)
 		var asks []model.Ask
-		asks, events, err = s.recordWithdrawnAsksTx(documentCtx, tx, issueKey, openAsks, closer)
+		asks, events, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, issueKey, openAsks, closer)
 		if err != nil {
 			return repair, err
 		}
@@ -293,19 +299,21 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 				"issue", issueKey, "withdrawn_asks", withdrawn)
 			return repair, nil
 		}
-		var asks []model.Ask
-		asks, events, err = s.restoreIssueAsksTx(documentCtx, tx, issueKey, reopener)
+		restored, err := s.prepareRestoration(documentCtx, tx, issueKey, reopener)
 		if err != nil {
 			return repair, err
 		}
-		repair.Restored = len(asks)
+		if events, err = s.recordRestoredAsksTx(documentCtx, ledger, issueKey, restored, reopener); err != nil {
+			return repair, err
+		}
+		repair.Restored = len(restored)
 	default:
 		return repair, nil
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return IssueAskRepair{}, err
 	}
-	s.publish(ctx, events...)
+	s.publish(ctx, appendedEvents(events...)...)
 	if repair.Changed() {
 		slog.Info("dispatch: repaired the asks of an issue", append([]any{"issue", issueKey}, repair.LogArgs()...)...)
 	}

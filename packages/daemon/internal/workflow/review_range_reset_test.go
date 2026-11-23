@@ -34,7 +34,7 @@ func clockReads(engine *Engine, at time.Time) {
 func readmitsTheTree(t *testing.T, pool *pgxpool.Pool, engine *Engine, at time.Time) {
 	t.Helper()
 	clockReads(engine, at)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-207", at)
 	})
 }
@@ -45,7 +45,7 @@ func promotesTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine, at ti
 	t.Helper()
 	clockReads(engine, at)
 	member := issueRecord(t, pool, "LEGION-208")
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.StartPromotedWorker(ctx, tx, *member, claim.RoleReviewer)
 	})
 }
@@ -88,7 +88,7 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 		t.Fatalf("after the late approval the reviewer's row reads the reviewed commit %q, want none: the approval was submitted before the re-admission cleared the generation", got)
 	}
 	promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(reviewerRow(t, pool).Entry)
+	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(reviewerRow(t, pool).Entry)
 	if task := reviewerRow(t, pool).EntryTask; task != want {
 		t.Fatalf("the promoted reviewer's first task = %q, want %q: the first review of the new generation reads the whole change", task, want)
 	}

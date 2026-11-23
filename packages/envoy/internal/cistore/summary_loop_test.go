@@ -19,26 +19,34 @@ import (
 )
 
 // verdictNames names a verdict in a failure message.
-var verdictNames = map[verdict]string{verdictIdle: "idle", verdictWait: "wait", verdictHeld: "held", verdictAttempt: "attempt"}
+var verdictNames = map[verdict]string{verdictIdle: "idle", verdictWait: "wait", verdictHeld: "held", verdictStuck: "stuck", verdictAttempt: "attempt"}
 
 // predicates is what the predicates say of a record at one millisecond.
-type predicates struct{ due, claimFresh, heldBack bool }
+type predicates struct{ due, claimFresh, heldBack, stuck bool }
 
 // heldBack reports whether st would be due but for legacyBacklog.
 func heldBack(st State, now int64, debounce time.Duration) bool {
 	return !st.SettledEmitted && settlementReady(st) && legacyBacklog(st, now, debounce)
 }
 
+// stuck reports whether st is unsettled, not ready and has had no event for heldAfter by now: the
+// pass names what holds it.
+func stuck(st State, now int64) bool {
+	return !st.SettledEmitted && !settlementReady(st) && now-st.LastEventAt >= heldAfter.Milliseconds()
+}
+
 func predicatesAt(st State, now int64, debounce time.Duration) predicates {
-	return predicates{due(st, now, debounce), claimFresh(st, now, debounce), heldBack(st, now, debounce)}
+	return predicates{due(st, now, debounce), claimFresh(st, now, debounce), heldBack(st, now, debounce), stuck(st, now)}
 }
 
 // The summary loop queues a record by schedule's verdict and reads it again only when the verdict
 // changes, so schedule must agree with the predicates a pass acts on at every millisecond: it
-// attempts exactly the due records with no fresh claim, holds exactly the heldBack ones, calls a
-// record idle only when no later millisecond makes it due or held, and wakes a waiting record at
-// exactly the first millisecond at which the predicates change - a later wake would settle late, or
-// count a held record late; an earlier one would find nothing changed.
+// attempts exactly the due records with no fresh claim, holds exactly the heldBack ones, calls
+// exactly the stuck ones stuck, calls a record idle or stuck only when no later millisecond makes
+// it due or held or changes whether it is stuck, and wakes a waiting record at exactly the first
+// millisecond at which the predicates change - a later wake would settle late, count a held record
+// late, or name a held head late; an earlier one would find nothing changed. A record that is not
+// ready waits until heldAfter past its last event and is then stuck, which the pass files idle.
 func TestScheduleMatchesThePredicates(t *testing.T) {
 	const last = int64(10_000_000)
 	grace := handoverGrace.Milliseconds()
@@ -75,8 +83,12 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 		want     []verdict // every verdict the windows meet
 	}{
 		{"settled", ready(func(st *State) { st.SettledEmitted = true; st.EmittedCount = 1 }), debounce, []verdict{verdictIdle}},
-		{"not ready", ready(func(st *State) { st.Checks["build"] = Check{Name: "build", CheckRunID: 700, Status: "in_progress"} }), debounce, []verdict{verdictIdle}},
-		{"overflowed", ready(func(st *State) { st.Overflowed = true }), debounce, []verdict{verdictIdle}},
+		{"not ready", ready(func(st *State) { st.Checks["build"] = Check{Name: "build", CheckRunID: 700, Status: "in_progress"} }), debounce, []verdict{verdictWait, verdictStuck}},
+		{"not ready and unstamped", ready(unstamped, func(st *State) { st.Suites["9002"] = Suite{ID: "9002", AppID: githubActionsAppID, Status: "queued"} }), debounce, []verdict{verdictWait, verdictStuck}},
+		{"another App's empty suite beside the finished run", ready(func(st *State) {
+			st.Suites["9003"] = Suite{ID: "9003", AppID: "5789269", Status: "queued"}
+		}), debounce, []verdict{verdictWait, verdictAttempt}},
+		{"overflowed", ready(func(st *State) { st.Overflowed = true }), debounce, []verdict{verdictWait, verdictStuck}},
 		{"stamped and terminal", ready(), debounce, []verdict{verdictWait, verdictAttempt}},
 		{"unstamped and terminal", ready(unstamped), debounce, []verdict{verdictWait, verdictAttempt, verdictHeld}},
 		{"a fresh claim of the record's generation", ready(claimed(3, d+10)), debounce, []verdict{verdictWait, verdictAttempt}},
@@ -87,11 +99,11 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wait := tc.debounce.Milliseconds()
-			marks := []int64{last + wait, last + wait + grace}
+			marks := []int64{last + wait, last + wait + grace, last + heldAfter.Milliseconds()}
 			if claim := tc.st.Claim; claim != nil {
 				marks = append(marks, claim.ClaimedAt, claim.ClaimedAt+2*wait+1)
 			}
-			// far is past every mark: an idle record must stay idle there too.
+			// far is past every mark: an idle or stuck record must stay so there too.
 			far := last + 10*grace
 			seen := map[verdict]bool{}
 			for _, mark := range marks {
@@ -105,15 +117,18 @@ func TestScheduleMatchesThePredicates(t *testing.T) {
 					if (v == verdictHeld) != p.heldBack {
 						t.Fatalf("at %d: schedule = %s, but heldBack = %v", now, verdictNames[v], p.heldBack)
 					}
+					if (v == verdictStuck) != p.stuck {
+						t.Fatalf("at %d: schedule = %s, but stuck = %v", now, verdictNames[v], p.stuck)
+					}
 					switch v {
-					case verdictIdle:
+					case verdictIdle, verdictStuck:
 						for _, later := range append(append([]int64(nil), marks...), far) {
 							for _, q := range []int64{later - 1, later, later + 1} {
 								if q < now {
 									continue
 								}
-								if p := predicatesAt(tc.st, q, tc.debounce); p.due || p.heldBack {
-									t.Fatalf("at %d: schedule = idle, but at %d the record is %+v", now, q, p)
+								if p := predicatesAt(tc.st, q, tc.debounce); p.due || p.heldBack || p.stuck != (v == verdictStuck) {
+									t.Fatalf("at %d: schedule = %s, but at %d the record is %+v", now, verdictNames[v], q, p)
 								}
 							}
 						}

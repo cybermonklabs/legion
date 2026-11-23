@@ -441,7 +441,7 @@ func TestOnlyAHeldSuspensionLetsARowEndSuspendedWithoutNamingIt(t *testing.T) {
 			saved := table[k]
 			t.Cleanup(func() { table[k] = saved })
 			table[k] = rule{name: "a rogue row", to: saved.to, act: func(m *Machine, ctx context.Context, _ Event) error {
-				return m.suspendNow(ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator})
+				return m.suspendNow(ctx, RequestSuspend{Claim: testToken, By: SuspendedByOperator}, false)
 			}}
 
 			err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})

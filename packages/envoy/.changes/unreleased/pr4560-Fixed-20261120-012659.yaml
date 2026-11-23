@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  A read-only GitHub App narrowing (`--github-read-only`, the API's `read_only`) now also holds
+  `checks: read` and `statuses: read`, so a read-only token reads a head's check runs and commit
+  statuses, such as a commit status a base branch requires before a merge. GitHub answered those
+  reads `403`. The broker reads what each installation holds from the installations listing it
+  already makes, and asks for `actions: read`, `checks: read` and `statuses: read` only where the
+  installation holds them, so an installation without one of the three gets a token with the
+  others in one token request. Before, the broker asked for `actions: read` first and, on GitHub's
+  `422`, asked again without it. The WARN line for a missing grant is now `broker: a GitHub App
+  installation does not hold every read a read-only token asks for, …` with `missing=` naming the
+  permissions left out (such as `missing=actions,statuses`); it was `… does not hold actions, …`.
+time: 2026-11-20T01:26:59Z
+custom:
+    Issue: pr4560

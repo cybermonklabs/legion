@@ -1153,10 +1153,19 @@ function environmentOf(home: string): Record<string, string> {
   return kept;
 }
 
-/** One run of the real agent: its own profile, its own case directory, and one message. */
-async function askAgent(omp: string, request: AgentRequest): Promise<AgentAnswer> {
-  const startedAt = Date.now();
-  const child = Bun.spawn({
+/** One agent run's process: its message written to its standard input, its two outputs read. */
+type AgentProcess = Bun.Subprocess<Blob, "pipe", "pipe">;
+
+/**
+ * The agent's process for one request, with the message on standard input and never as an
+ * argument. `omp -p` with no message argument reads a piped standard input whole and sends it
+ * unchanged as the one message, the same text an argument carries, so every case is asked in the
+ * same words whatever its length. An argument does not always fit: the kernel refuses one longer
+ * than its limit for a single argument (524,288 bytes in the gVisor pods this runs in, 131,072 on
+ * a plain Linux kernel), and a case's evidence can render longer than that.
+ */
+function spawnAgent(omp: string, request: AgentRequest): AgentProcess {
+  return Bun.spawn({
     cmd: [
       omp,
       "--profile",
@@ -1172,15 +1181,35 @@ async function askAgent(omp: string, request: AgentRequest): Promise<AgentAnswer
       "--mode",
       "json",
       "-p",
-      request.prompt,
     ],
     cwd: request.directory,
     env: environmentOf(request.home),
-    stdin: "ignore",
+    stdin: new Blob([request.prompt]),
     stdout: "pipe",
     stderr: "pipe",
     timeout: RUN_TIMEOUT_MS,
   });
+}
+
+/**
+ * One run of the real agent: its own profile, its own case directory, and one message. A run
+ * that cannot be started is that case's failure, as a run that exits with no answer is, so one
+ * case never ends the run that holds it.
+ */
+export async function askAgent(omp: string, request: AgentRequest): Promise<AgentAnswer> {
+  const startedAt = Date.now();
+  let child: AgentProcess;
+  try {
+    child = spawnAgent(omp, request);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      text: "",
+      model: null,
+      latencyMs: Date.now() - startedAt,
+      failure: `the agent could not be started: ${why}`,
+    };
+  }
   const [out, error, code] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),

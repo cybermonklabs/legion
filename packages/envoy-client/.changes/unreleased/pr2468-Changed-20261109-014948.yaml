@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+    `dispatch result` reports Dispatch's `409 CHECK_CONTENDED` under its code and says what to do
+    with it: the check moved twice while the result was being written, nothing was recorded, and
+    running the same command again is the whole remedy. It read as prose with its code hidden
+    before, which gave a caller no sign that a repeat of the call is what the refusal asks for.
+time: 2026-11-09T01:49:48.060653696Z
+custom:
+    Issue: pr2468

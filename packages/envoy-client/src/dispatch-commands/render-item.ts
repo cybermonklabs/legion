@@ -15,9 +15,9 @@ import { actorText } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
-import { withoutUserinfo } from "../errors";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
+import { linkFor } from "./links";
 import { edgeLine, graphSectionLines } from "./render-graph";
 
 /**
@@ -174,16 +174,18 @@ export function waitsOnPerson(ask: { readonly waiting_on_person?: string }): str
  *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
  *  must not claim otherwise. A Dispatch older than that rule answers no person, and the row
  *  then says nobody rather than printing an empty name (`waitsOnPerson`). */
-function openAskLine(ask: OpenAsk, baseUrl: string): string {
+function openAskLine(ask: OpenAsk, linkBase: string | undefined): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
 }
 
-/** `dispatch open-asks` as text, each ask linked against `baseUrl`, which a caller outside the
- *  command (the Claude Code session hook) may give as the configured Dispatch URL: the links
- *  name it without the user and password that URL may carry. */
-export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
-  const linkBase = withoutUserinfo(baseUrl);
+/** `dispatch open-asks` as text, each ask linked against `linkBase`, the base `linkBaseOf`
+ *  answers (the command's own, or the Claude Code session hook's), or printed as its
+ *  `dispatch://` reference where there is none (`linkFor`). */
+export function formatOpenAsksSummary(
+  response: OpenAsksResponse,
+  linkBase: string | undefined
+): string {
   const scope = "active open asks you authored on open issues and project documents";
   if (response.count === 0) {
     return ["There are no unanswered asks for this session.", `Scope: ${scope}.`].join("\n");

@@ -1,0 +1,50 @@
+{
+  "id": 259,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 2,
+  "type": "message.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a13837-52fd-75ab-b7de-2f02bc3bc481",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit",
+      "tmux": "lorem i",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit am"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-16T17:38:01.322747Z",
+  "payload": {
+    "id": "8bc3f57f-8737-47b5-a5f4-0ca5428d23b0",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem i",
+    "author": {
+      "id": "01a13837-52fd-75ab-b7de-2f02bc3bc481",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit",
+        "host": "lor",
+        "pane": "lo",
+        "tmux": "lorem i",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit am"
+      }
+    },
+    "target": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-16T17:38:01.322747Z",
+    "deliveries": [],
+    "in_reply_to": null,
+    "broadcast_id": null,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ]
+  }
+}

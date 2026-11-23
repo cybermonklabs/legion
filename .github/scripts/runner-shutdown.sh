@@ -13,7 +13,7 @@
 #   Process completed with exit code 143.
 #
 # 143 is 128 + SIGTERM, the status of a step the runner killed. The pair was read whole on
-# theorem-labs/agent-infra run 42466562410, job `services (legion)` 128687417206, on 2026-11-08
+# example-org/deployment run 42466562410, job `services (legion)` 128687417206, on 2026-11-08
 # (dispatch://INFRA-49/comment/4083a833-8bb4-4dba-9d61-8f20757ca82c). The job's result is
 # `failure`, the same result a test of the change failing gives it, so the result alone cannot
 # tell a platform kill from a fault of the change and those two annotations are what does.
@@ -34,12 +34,12 @@
 #     job itself on run 43168566331 and printed `INFRA-1413 cause
 #     probe: jobs-anonymous=200 jobs-with-token=200 secrets-with-token=403`, so the jobs route
 #     answers from that job with no token at all — this repository is public, exactly as
-#     ci.yaml:121-123 already records for the `changes` job's read of the pull request's file
-#     list — while the `403` on the secrets route is the control showing that same token is
-#     restricted. What reading the check runs buys is that this reading rests on a scope the
-#     job declares rather than on the repository staying public. `filter=all` because the
-#     default, `latest`, keeps one check run per name, and a head can carry an earlier
-#     attempt's as well.
+#     .github/ci-notes/ci.md#why-the-routers-permissions-block-holds-those-two-scopes already
+#     records for the `changes` job's read of the pull request's file list — while the `403` on the
+#     secrets route is the control showing that same token is restricted. What reading the check
+#     runs buys is that this reading rests on a scope the job declares rather than on the repository
+#     staying public. `filter=all` because the default, `latest`, keeps one check run per name, and
+#     a head can carry an earlier attempt's as well.
 #   GET {url}/annotations?per_page=100
 #     `annotation_level` and `message` of every annotation of that check run. `checks: read`,
 #     which the `checks: write` of both callers' jobs carries.
@@ -90,15 +90,15 @@
 # runner_shutdown_kills <job>...: prints those of the named jobs this run's data shows a runner
 # shutdown killed, one per line, and returns 0. It reads the commit's check runs on its first
 # question and keeps them in a variable for the rest of that shell, but both callers take its
-# output through `$(…)`, which is a subshell: ci-ok.sh:134 in one call naming every failed job,
-# ci-ok-report.sh:122 one job per call. The variable dies with the subshell, so a call made
+# output through `$(…)`, which is a subshell: ci-ok.sh in one call naming its `failed` jobs,
+# ci-ok-report.sh:180 one job per call. The variable dies with the subshell, so a call made
 # that way reads the route again and the keeping saves nothing across such calls — asking job
 # by job costs one read of the check runs per job. It returns 1, having warned, when GitHub
-# refused one of its reads three times or the environment above is incomplete: the caller then
-# keeps every failure a failure and the verdict stays the failing one, which is how
-# ci-ok-report.sh:196-201 answers a refused jobs list too. Every warning goes to stderr, where
-# the job log holds it as gh-read.sh's own attempts are held, so a caller may read the job
-# names off this function's stdout.
+# refused one of its reads at every attempt gh-read.sh made or the environment above is
+# incomplete: the caller then keeps every failure a failure and the verdict stays the failing one,
+# which is how ci-ok-report.sh:249-260 answers a refused jobs list too. Every warning goes to
+# stderr, where the job log holds it as gh-read.sh's own attempts are held, so a caller may read
+# the job names off this function's stdout.
 
 # shellcheck source=.github/scripts/gh-read.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/gh-read.sh"
@@ -153,7 +153,7 @@ runner_shutdown_kills() {
     if ! _runner_shutdown_check_runs=$(gh_read gh api --paginate \
       "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?filter=all&per_page=100" \
       --jq '.check_runs[] | {name, url, details_url}'); then
-      echo "::warning::GitHub refused the check runs on $HEAD_SHA three times, so no failure of this run can be read as a runner shutdown; every failure stands as a failure" >&2
+      echo "::warning::GitHub refused the check runs on $HEAD_SHA at every attempt gh-read.sh made, so no failure of this run can be read as a runner shutdown; every failure stands as a failure" >&2
       return 1
     fi
     _runner_shutdown_check_runs=$(jq -s --arg run "/actions/runs/$GITHUB_RUN_ID/job/" \
@@ -168,7 +168,7 @@ runner_shutdown_kills() {
     while read -r url; do
       if ! annotations=$(gh_read gh api --paginate "$url/annotations?per_page=100" \
         --jq '.[] | select(.annotation_level == "failure") | .message'); then
-        echo "::warning::GitHub refused the annotations of $job three times, so its failure cannot be read as a runner shutdown; it stands as a failure" >&2
+        echo "::warning::GitHub refused the annotations of $job at every attempt gh-read.sh made, so its failure cannot be read as a runner shutdown; it stands as a failure" >&2
         return 1
       fi
       # A check run with no failure annotation is a part of the job that did not fail; one that

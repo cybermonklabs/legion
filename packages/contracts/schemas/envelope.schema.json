@@ -26,6 +26,7 @@
     "expires_at": { "type": "integer" },
     "kept_at": { "type": "integer" },
     "mention_dedupe_keys": { "type": "object", "additionalProperties": { "type": "string" } },
+    "role": { "type": "string", "minLength": 1 },
     "payload_summary": { "type": "string", "minLength": 1 },
     "payload_ref": { "type": "string" },
     "payload": { "type": "string" },

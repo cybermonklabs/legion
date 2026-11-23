@@ -9,18 +9,23 @@ import {
   type PendingKey,
 } from "./pending-edits";
 
-// Each test names its own artifact: fake-indexeddb keeps one database for the whole test process.
+// Each test names its own artifact, and its rows are deleted after it: fake-indexeddb keeps one
+// database for the whole test process, and a rerun of this file names the same artifacts again.
 let next = 0;
+const named: string[] = [];
 function artifactId(): string {
   next += 1;
-  return `pending-edits-test-${next}`;
+  const artifact = `pending-edits-test-${next}`;
+  named.push(artifact);
+  return artifact;
 }
 
 const opened: PendingEdits[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const store of opened.splice(0)) {
     store.close();
   }
+  await Promise.all(named.splice(0).map(deletePendingEdits));
 });
 
 async function open(artifact: string, clientId: number): Promise<PendingEdits> {

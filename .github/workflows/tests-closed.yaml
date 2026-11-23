@@ -5,7 +5,8 @@ name: CI (closed pull request)
 # concurrency group, ci-<pull request number>, with cancel-in-progress, so that CI run ends
 # `cancelled`. What that cancelled run leaves on the head is a verdict, not a skipped pass:
 # ci.yaml's `ci-ok` job is gated on `always()`, which runs a job in a cancelled run too (a
-# force-cancel is the one that does not, as the comment above ci.yaml's `cancel-started` says),
+# force-cancel is the one that does not, as
+# .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top says),
 # so the verdict job takes a runner there and judges the jobs it needs, and a cancelled job is no
 # success to ci-ok.sh. One runner is the price of that rule, and the rule is why it is paid: a
 # cancelled run on a head that is still live must not leave a passing ci-ok behind it.

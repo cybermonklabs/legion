@@ -11,10 +11,11 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // natsContextWaits counts the goroutines nats.go parks on a subscription's context for its life
-// (nats.go v1.50.0 js.go:2052-2058), one per watch until its context is cancelled. The trace names
+// (nats.go v1.55.0 js.go:2070-2076), one per watch until its context is cancelled. The trace names
 // the package nats%2ego, so the function is matched without its package.
 func natsContextWaits() int {
 	n := 0
@@ -67,13 +68,8 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			go func() { done <- kvwatch.WatchOn(w, other) }()
 			eventually(t, "the replacing watch waiting for the held apply", waitingForTheApplyLock)
 			release()
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("the replacing watch: %v", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("the replacing watch never returned")
+			if err := testwait.Receive(t, "the replacing watch to return", done); err != nil {
+				t.Fatalf("the replacing watch: %v", err)
 			}
 		}},
 		{name: "its connection closes", stopped: "test cache watcher stopped", end: func(t *testing.T, _ *kvwatch.Watcher, conn *natsgo.Conn, _ string, release func()) {
@@ -81,7 +77,7 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			release()
 		}},
 		{name: "End stops it at shutdown", end: func(t *testing.T, w *kvwatch.Watcher, _ *natsgo.Conn, _ string, release func()) {
-			endWithin(t, w)
+			w.End(testContext(t))
 			release()
 		}},
 	} {
@@ -126,7 +122,7 @@ func TestASubscriptionEndingMidScanDisarmsTheIdleWaitAndReleasesItsContext(t *te
 			if test.replaced {
 				live = 1
 			}
-			eventuallyWithin(t, 10*time.Second, "nats.go's goroutine on the ended watch's context to be released",
+			eventually(t, "nats.go's goroutine on the ended watch's context to be released",
 				func() bool { return natsContextWaits() <= baseline+live })
 			if test.stopped != "" {
 				eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })

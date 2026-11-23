@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -322,14 +321,15 @@ func TestStubEmbedCertificateCoversItsHostsAndIsItsOwnRoot(t *testing.T) {
 // TestRunStubEmbedRefusesWhatItCannotServe: every input is checked before the port is taken, so a
 // run that cannot serve says why rather than listening and refusing every request.
 func TestRunStubEmbedRefusesWhatItCannotServe(t *testing.T) {
+	keyFile := credentialFileAt(t, "embed-key", "k\n")
 	for _, c := range []struct {
 		args []string
 		want string
 	}{
-		{[]string{}, "-key or -key-file is required"},
-		{[]string{"-key", "k", "-listen", ""}, "-listen is required"},
-		{[]string{"-key", "k", "-throttle-every", "-1"}, "-throttle-every must be 0 or more"},
-		{[]string{"-key", "k", "extra"}, `unexpected argument "extra"`},
+		{[]string{}, "-key-file is required"},
+		{[]string{"-key-file", keyFile, "-listen", ""}, "-listen is required"},
+		{[]string{"-key-file", keyFile, "-throttle-every", "-1"}, "-throttle-every must be 0 or more"},
+		{[]string{"-key-file", keyFile, "extra"}, `unexpected argument "extra"`},
 	} {
 		err := runStubEmbed(c.args)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -338,11 +338,12 @@ func TestRunStubEmbedRefusesWhatItCannotServe(t *testing.T) {
 	}
 }
 
-// TestStubEmbedReadsItsKeyFromAFile: the embedder's api-key has a file form, because a key given
-// as -key is in this process's argv, and in the argv of the ssh that started it, for the whole
-// life of the deployment (dispatch://INFRA-988). The file's content with its trailing white
-// space trimmed is the key, and the four refusals are the ones every credential of this package
-// is read with (readCredentials).
+// TestStubEmbedReadsItsKeyFromAFile: the embedder's api-key comes from a file, because a key
+// given as -key would be in this process's argv, and in the argv of the ssh that started it, for
+// the whole life of the deployment (dispatch://INFRA-988). The file's content with its trailing
+// white space trimmed is the key, the refusals of an unusable file are the ones every credential
+// of this package is read with (readCredentials), and -key itself is refused as a removed flag
+// (TestACredentialOnTheCommandLineIsRefused).
 func TestStubEmbedReadsItsKeyFromAFile(t *testing.T) {
 	const key = "stub-embed-api-key"
 	// The file ends in white space, as one written with printf does (vm/vm.sh writes it on the
@@ -354,12 +355,6 @@ func TestStubEmbedReadsItsKeyFromAFile(t *testing.T) {
 	}
 	if opts.key != key {
 		t.Errorf("the key is %q, want the file's content with its trailing white space trimmed", opts.key)
-	}
-
-	_, err = stubEmbedArgs([]string{"-key", key, "-key-file", path})
-	var both *bothCredentialFormsError
-	if !errors.As(err, &both) || both.Flag != "-key" || both.FileFlag != "-key-file" {
-		t.Errorf("-key given with -key-file too: refusal %v, want one naming the two forms", err)
 	}
 
 	// A file that cannot be read, and one that holds no credential: each refused by the flag and

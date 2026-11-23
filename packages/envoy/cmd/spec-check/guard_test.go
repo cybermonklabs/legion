@@ -312,28 +312,6 @@ func testGuard(t *testing.T, binary string) {
 	})
 }
 
-// The guard item of packages/envoy/AGENTS.md says that the guard names a text that no shell runs,
-// and tells its writer the way past it: reword the line. It quotes the guard's line for each place
-// as the guard writes it.
-func TestTheGuideTellsTheWriterToRewordALineThatNoShellRuns(t *testing.T) {
-	t.Parallel()
-	guide, err := os.ReadFile(filepath.Join("..", "..", "AGENTS.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, item, ok := strings.Cut(string(guide), "\n- `spec-check guard --root <dir>`")
-	if !ok {
-		t.Fatal("packages/envoy/AGENTS.md holds no guard item")
-	}
-	item, _, _ = strings.Cut(item, "\n- ")
-	if !strings.Contains(item, "no shell runs") || !strings.Contains(item, "reword") {
-		t.Errorf("the guard item of packages/envoy/AGENTS.md does not say that it names a text that no shell runs and that its writer rewords that line:\n%s", item)
-	}
-	if line := strings.TrimSuffix(strings.TrimPrefix(guardHit, ": "), "\n"); !strings.Contains(item, line) {
-		t.Errorf("the guard item of packages/envoy/AGENTS.md does not quote the guard's line %q:\n%s", line, item)
-	}
-}
-
 // workflowTree is a repository root that holds one workflow, .github/workflows/spec.yaml, whose
 // one job's steps follow its head from line 5 on, and the workflow's path.
 func workflowTree(t *testing.T, steps string) (root, workflow string) {

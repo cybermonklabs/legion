@@ -157,7 +157,7 @@ test("the search narrows the people and says so when it matches nobody", async (
     await user.clear(search);
     await user.click(search);
     await user.paste("nobody");
-    expect(screen.queryAllByRole("option")).toEqual([]);
+    expect(screen.queryAllByRole("option").length).toBe(0);
     expect(screen.getByText("No matching person.")).toBeDefined();
   } finally {
     unmount();

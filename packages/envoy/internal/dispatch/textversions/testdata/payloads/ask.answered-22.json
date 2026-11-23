@@ -1,0 +1,101 @@
+{
+  "id": 551159,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 47,
+  "type": "ask.answered",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-11-15T00:39:12.871263Z",
+  "payload": {
+    "anchor": null,
+    "answer": {
+      "at": "2026-11-15T00:39:12.871263Z",
+      "id": "b4",
+      "selected": [
+        "lorem ipsum dol"
+      ],
+      "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+      "user": "alice@example.com"
+    },
+    "approval": {
+      "artifact_id": "6bc95a4a-c342-477a-8030-2b79954912ed",
+      "documents": [
+        {
+          "artifact_id": "6bc95a4a-c342-477a-8030-2b79954912ed",
+          "name": "lorem i",
+          "requested_version": 9,
+          "version": 9
+        },
+        {
+          "artifact_id": "e437ebfb-85f2-4da9-9c76-f7d08fcf93a0",
+          "name": "lorem ipsum dol",
+          "requested_version": 7,
+          "version": 7
+        }
+      ],
+      "name": "lorem i",
+      "requested_version": 9,
+      "version": 9
+    },
+    "approval_artifact": {
+      "project": "ACME",
+      "slug": "lore",
+      "name": "lorem i",
+      "primary": true
+    },
+    "artifact_id": null,
+    "asked_of": null,
+    "asked_of_at": null,
+    "asked_of_by": null,
+    "author": {
+      "id": "01a1d8d2-6d03-7741-a374-09e591d4f1cd",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet ",
+        "host": "lor",
+        "machine": "lorem ipsum dolor s",
+        "session_title": "lorem ipsum dolor sit amet lo"
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-11-15T00:16:50.455834Z",
+    "edited_at": null,
+    "id": "d7c2d2c1-a04a-4e3d-8243-3dcb12764572",
+    "issue_key": "ACME-1",
+    "kind": "approval",
+    "multiple": false,
+    "opened_event_id": 550435,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsu",
+        "id": "b2",
+        "label": "lorem i"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "id": "b3",
+        "label": "lorem ipsum dol"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ",
+    "referenced_by_count": 6,
+    "references_changed": [
+      {
+        "id": "570147dd-edbc-4696-b81f-ea2e9be9ebdc",
+        "issue_key": "ACME-2",
+        "kind": "ask"
+      }
+    ],
+    "revision": 2,
+    "state": "answered",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "urgency": "high"
+  }
+}

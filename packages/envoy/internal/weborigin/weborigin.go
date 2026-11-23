@@ -21,11 +21,6 @@ import (
 
 var (
 	labelRule = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	// numericLabelRule is a host label a browser's URL parser reads as a number, decimal or hex.
-	// A host whose last label is numeric is an IPv4 address to a browser (WHATWG URL, "ends in a
-	// number"), which it refuses or rewrites unless it is already in its one canonical form: four
-	// decimal octets with no leading zero, the only IPv4 form netip.ParseAddr takes.
-	numericLabelRule = regexp.MustCompile(`^(?:[0-9]+|0x[0-9a-f]*)$`)
 	// defaultPorts are the ports a browser leaves out of an origin, by scheme.
 	defaultPorts = map[string]int{"http": 80, "https": 443}
 )
@@ -36,7 +31,7 @@ var (
 //     echoing it, since a user or a query could carry a credential;
 //   - a host label that is not a lowercase DNS label, or one ReservedLabel refuses: "--" as its
 //     third and fourth characters, unless it is an xn-- label the IDNA lookup profile takes;
-//   - a host ending in a number that is not an IPv4 address in its canonical form;
+//   - a host ending in a number (NumericLabel) that is not an IPv4 address in its canonical form;
 //   - a port outside 1-65535, written with a leading zero, or empty;
 //   - any other spelling than the browser's: an upper-case scheme, or the scheme's default port.
 func Parse(raw string) (*url.URL, error) {
@@ -56,7 +51,7 @@ func Parse(raw string) (*url.URL, error) {
 			return nil, err
 		}
 	}
-	if numericLabelRule.MatchString(labels[len(labels)-1]) {
+	if NumericLabel(labels[len(labels)-1]) {
 		if addr, err := netip.ParseAddr(host); err != nil || !addr.Is4() {
 			return nil, fmt.Errorf("host %s ends in a number and is no IPv4 address in its canonical form, which a browser refuses or rewrites", host)
 		}
@@ -95,6 +90,19 @@ func ReservedLabel(label string) error {
 		return fmt.Errorf("host label %q is an xn-- label the IDNA lookup profile refuses, a Fake A-label (RFC 5890 section 2.3.1)", label)
 	}
 	return fmt.Errorf("host label %q has \"--\" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for", label)
+}
+
+// NumericLabel reports whether a host label, in lower case, is a number as the WHATWG URL
+// parser's IPv4 reading takes one: decimal, or 0x and hex digits, where 0x alone is the number 0.
+// A host whose last label is numeric is an IPv4 address to a browser (WHATWG URL, "ends in a
+// number"), which it refuses or rewrites unless it is already in its one canonical form: four
+// decimal octets with no leading zero, the only IPv4 form netip.ParseAddr takes. The last label
+// of no host name is one.
+func NumericLabel(label string) bool {
+	if hex, ok := strings.CutPrefix(label, "0x"); ok {
+		return strings.Trim(hex, "0123456789abcdef") == ""
+	}
+	return label != "" && strings.Trim(label, "0123456789") == ""
 }
 
 // GoogleRedirectHost refuses a host Google takes in no OAuth redirect URI, so browser sign-in at an

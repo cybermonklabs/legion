@@ -15,6 +15,7 @@ import (
 )
 
 func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
+	t.Parallel()
 	token, err := claim.NewToken("legion", "LEGION-209", claim.RoleTester)
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +30,7 @@ func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
 		t.Fatalf("a claim whose session is intact is told %q, want nothing of a lost session", kept)
 	}
 
-	c.SessionLost = true
+	c.SessionLost = supervise.SessionLossGone
 	lost, err := AddressingFragment("legion", c, ghrepo.Repository{}, "", nil)
 	if err != nil {
 		t.Fatal(err)

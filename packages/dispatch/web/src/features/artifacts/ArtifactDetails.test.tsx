@@ -249,9 +249,12 @@ test("ArtifactDetails groups a source's edges into one card and expands its clam
   try {
     const view = renderDetails(artifact);
 
+    // The region is drawn at once, saying `Loading references…`, so its cards are waited for.
     const references = await screen.findByRole("region", { name: "Referenced by" });
     // One source, two edges: one card carrying both, not two cards repeating the source.
-    expect(within(references).getAllByRole("link", { name: "Artifact · CORE-1" })).toHaveLength(1);
+    expect(
+      await within(references).findAllByRole("link", { name: "Artifact · CORE-1" })
+    ).toHaveLength(1);
     expect(within(references).getByText("Anchored item")).toBeTruthy();
 
     const excerpt = within(references).getByText(long);
@@ -344,7 +347,7 @@ test("ArtifactDetails encodes an author-set block id in the source deep link", a
   try {
     const view = renderDetails(artifact);
     const references = await screen.findByRole("region", { name: "Referenced by" });
-    const source = within(references).getByRole("link", { name: "Artifact · CORE-1" });
+    const source = await within(references).findByRole("link", { name: "Artifact · CORE-1" });
     expect(source.getAttribute("href")).toContain("#b-two%20words%25");
     view.unmount();
   } finally {

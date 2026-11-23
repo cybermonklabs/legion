@@ -1,0 +1,38 @@
+kind: Added
+body: |-
+  Every route that takes a credential-request record id or a grant id answers a person a private
+  Dispatch project hides the record or grant from exactly as it answers an id nothing has, and
+  writes nothing. `POST /v1/credential-requests/{record}/approve` and `/deny` answer such a person
+  `404 NOT_FOUND`, where a secret request answered `403 DECIDE_ON_BROKER_PAGE` with its page, or
+  `403 JUDGE_DECIDES`, to any person Dispatch relayed; the person is the body's `approver`, and a
+  body naming none is a person who sees no private project. `POST /v1/grants/{id}/revoke-by-approver`
+  and `POST /v1/operator/grants/{id}/revoke` answer `404 NOT_FOUND` where a person-approved grant
+  answered `403 NOT_APPROVER`, and where a grant the model judge approved in anyone's stead was
+  ended: such a judged grant is ended only by a person who may see it. A grant's approver and its
+  session's operator still list it on Live grants and end it, whatever project it touches. The
+  former person of a person's pod that `BROKER_POD_OPERATORS` no longer maps is not its operator
+  here, since the pod acts for no person: Live grants still lists the pod's grants to them, naming
+  no operator, and they end one only if they approved it or its approver is anyone, withholding
+  nothing from the pod; a grant the policy gave the pod without asking is listed, as a service's
+  pod's is, to every signed-in person who may see it and reads "Ends with its machine login", and a
+  grant of a private project they are not on is hidden from them as from anyone outside it and is
+  on the pages of that project's people. A
+  record signed for another broker address now answers such a person `404` from the dismissal and
+  the approval page too, where the dismissal answered `500` and the page `503`. While Dispatch
+  cannot say whether the person may see the record or grant, the decide routes, the dismissal and
+  both revokes answer `503 PROJECT_ACCESS_UNAVAILABLE` and change nothing; a grant's approver and
+  its session's operator still end it then. A session's own routes do the same for a request or a
+  grant of a private project the calling session cannot see: one its own credential does not name,
+  or whose access list no longer holds the credential's person. `GET /v1/requests/{id}`,
+  `POST /v1/requests/{id}/cancel` and `POST /v1/grants/{id}/revoke` answer such an id `404
+  NOT_FOUND`, and `POST /v1/grants/{id}/values` `403 GRANT_NOT_LIVE`, as each answers an id nothing
+  has, where they answered `403 NOT_YOURS`, and `503 PROJECT_ACCESS_UNAVAILABLE` while Dispatch
+  cannot say. This holds whoever owns the id, so another session of the same person that does not
+  name the project, and another pod of the same Legion claim whose account maps to another project,
+  no longer read or cancel it either; `403 NOT_YOURS` now says only that an id exists in a project
+  the caller sees. The session that holds the request or grant reads, cancels, releases and revokes
+  it as before, a request whose reason cites a private project's issue its credential does not name
+  included.
+time: 2026-11-20T07:01:48Z
+custom:
+    Issue: pr4135

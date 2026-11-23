@@ -925,8 +925,8 @@ echo "case: rule 3 — release-asset addresses the gate's one spelling misses"
 # /releases/latest/download/<asset> answered 302 to the tagged asset, and the http:// and the
 # www.github.com spellings each answered 301 to it. None of the three is an address a job
 # assembles from pieces, and none is in a file whose name holds .test., so none is one of the two
-# bounds AGENTS.md names: each is a release asset a new install fetches with no row, no entry and
-# nothing saying so, which is the class R1 of dispatch://INFRA-1974 closes.
+# bounds this gate's header names: each is a release asset a new install fetches with no row, no
+# entry and nothing saying so, which is the class rule 3 closes.
 root=$(fixture reach-asset-spellings)
 cat > "$root/.github/workflows/spellings.yaml" <<'YAML'
 name: Spellings
@@ -1105,7 +1105,7 @@ echo "case: rule 3 — the path spellings the rule leaves open"
 # segments too. An extra slash after `download` is NOT one of them, whatever a server answers:
 # the trailing wildcard swallows it, so the rule reads that URL, and the case below this one
 # drives it.
-# AGENTS.md and this gate's header both name these as open, and a named gap is a claim: this
+# This gate's header names these as open, and a named gap is a claim: this
 # case is what holds that claim true, and it turns red the day the rule closes them.
 root=$(fixture reach-open-path-spellings)
 cat > "$root/.github/workflows/open-paths.yaml" <<'YAML'
@@ -1123,7 +1123,7 @@ jobs:
           curl -fsSL -O https://github.com/./other/thing/releases/download/v3.0.0/thing-3.0.0.tar.gz
 YAML
 run_gate "$root"
-check "exits 0, which is the gap AGENTS.md names" "$(is "$status" 0)"
+check "exits 0, which is the gap this gate's header names" "$(is "$status" 0)"
 
 echo 'case: rule 3 — an extra slash after download, which the rule does read'
 # The case above lists the path spellings the rule misses. This one is the neighbour that looks
@@ -1537,6 +1537,79 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the digest and the file it does not occur in" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry's digest $SOLO does not occur in .github/workflows/solo.yaml, the file it names as the pin, so nothing checks the bytes this entry declines a second source for. One source never means no checksum.$")"
+
+# decline_by_arg <fixture> <pinned_as> <ARG line…>: a workflow that fetches SOLO_URL, an entry
+# declining it pinned by the worker Dockerfile with that pinned_as (`-` writes no pinned_as line),
+# and those lines appended to that Dockerfile.
+decline_by_arg() {
+  local root=$1 pinned_as=$2 pinned_as_line=""
+  shift 2
+  [ "$pinned_as" = - ] || pinned_as_line="    pinned_as: $pinned_as"
+  cat > "$root/.github/workflows/solo.yaml" <<YAML
+name: Solo
+on: [push]
+jobs:
+  solo:
+    runs-on: ubuntu-24.04
+    steps:
+      - shell: bash
+        run: curl -fsSL -O $SOLO_URL
+YAML
+  printf '%s\n' "$@" >> "$root/packages/daemon/docker/worker.Dockerfile"
+  cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+no_second_source:
+  - url: $SOLO_URL
+    digest: $SOLO
+    pinned_in: packages/daemon/docker/worker.Dockerfile
+$pinned_as_line
+    why: No registry outside this release serves these bytes today, and copying them into the ghcr package is the work dispatch://INFRA-1986 owns.
+YAML
+}
+
+echo "case: a no_second_source entry pinned as an ARG whose value is its digest"
+root=$(fixture decline-pinned-as)
+decline_by_arg "$root" "ARG SOLO_SHA256" "ARG SOLO_SHA256=$SOLO"
+run_gate "$root"
+check "passes" "$(is "$status" 0)"
+
+echo "case: a no_second_source entry pinned as an ARG that moved, its old digest left in a comment"
+# The digest still occurs in the file, which is all the occurrence rule reads; pinned_as is what
+# reads the ARG's own value.
+root=$(fixture decline-pinned-as-moved)
+decline_by_arg "$root" "ARG SOLO_SHA256" "# was $SOLO" "ARG SOLO_SHA256=$TOOL"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the digest, the file and the ARG's value" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry's digest is $SOLO and packages/daemon/docker/worker.Dockerfile pins ARG SOLO_SHA256=$TOOL. ")"
+
+echo "case: a no_second_source entry whose pinned_as is not an ARG"
+root=$(fixture decline-pinned-as-shape)
+decline_by_arg "$root" "SOLO_SHA256" "ARG SOLO_SHA256=$SOLO"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the form pinned_as takes" \
+  "$(contains "$out" "this entry's pinned_as is SOLO_SHA256, and the one form it takes is \`ARG <NAME>\`")"
+
+echo "case: a no_second_source entry a Dockerfile ARG pins, its pinned_as line deleted"
+# Without pinned_as the occurrence rule alone reads the entry, and the ARG's value is what a
+# Dockerfile checks the bytes against, so the line is required wherever the pin is a Dockerfile.
+root=$(fixture decline-pinned-as-missing)
+decline_by_arg "$root" - "ARG SOLO_SHA256=$SOLO"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry, the Dockerfile and the ARG line that holds the digest" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry names packages/daemon/docker/worker.Dockerfile, a Dockerfile, as the file that pins these bytes, and carries no \`pinned_as: ARG <NAME>\`. .*packages/daemon/docker/worker.Dockerfile:[0-9]* holds it as ARG SOLO_SHA256: add \`pinned_as: ARG SOLO_SHA256\` to this entry.")"
+
+echo "case: a no_second_source entry whose pinned_as line is deleted and whose ARG moved, its old digest left in a comment"
+# The reviewer's plant: without the requirement above, the comment meets the occurrence rule and
+# the gate passes a digest no ARG holds.
+root=$(fixture decline-pinned-as-missing-moved)
+decline_by_arg "$root" - "# was $SOLO" "ARG SOLO_SHA256=$TOOL"
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry and says no ARG line holds the digest" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: this entry names packages/daemon/docker/worker.Dockerfile, a Dockerfile, as the file that pins these bytes, and carries no \`pinned_as: ARG <NAME>\`. .*No ARG line of packages/daemon/docker/worker.Dockerfile holds $SOLO")"
 
 echo "case: a no_second_source entry pinned in the manifest itself"
 # The trap the rule above exists for: the entry's own `digest:` line is in the manifest, so the

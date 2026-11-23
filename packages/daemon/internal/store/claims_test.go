@@ -191,9 +191,9 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 			got, failing.SendFailures, failing.LastSendFailureAt)
 	}
 
-	// The send that reached a turn clears all three (supervise's confirm), through the same
-	// upsert: a delivery read back still counting failures an earlier turn got past would name a
-	// stall that is over.
+	// The send that reached a turn clears all three (supervise's confirmCarrying), through the
+	// same upsert: a delivery read back still counting failures an earlier turn got past would name
+	// a stall that is over.
 	confirmed := failing
 	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = at(6), failing.ID, at(7)
 	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
@@ -209,15 +209,14 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 
 // The text of a failed send is the far side's own: the wedged command's stderr, relayed by the
 // shim, or Oh My Pi's `error` decoded from JSON, where a `\u0000` becomes a NUL byte. This column
-// takes only what its server encoding can read, so supervise scrubs the text before it is stored
-// (scrubSendError) and the rule it holds is valid UTF-8 with no NUL.
+// holds only what its server encoding can read, and the store's text rule is what makes such a
+// text fit: the NUL is stored as U+FFFD, and every other character as it was written.
 //
-// Both halves of that are pinned here, against the real server. The raw text is refused outright,
-// which is what made the record's write fail; that failure used to return before the refused
-// adoption was charged, so the send was re-sent with no bound (INFRA-1480). The same words
-// without the NUL — the text the daemon stores — round-trip whole, so the diagnosis an operator
-// reads survives a restart.
-func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
+// Pinned here against the real server. A write of this text once failed, and that failure
+// returned before the refused adoption was charged, so the send was re-sent with no bound
+// (INFRA-1480). The raw text is taken now and reads back whole, with U+FFFD where the NUL was, so
+// the diagnosis an operator reads survives a restart.
+func TestADeliverysSendErrorWithANULRoundTripsWithAReplacementCharacter(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -227,23 +226,18 @@ func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
 	const raw = "worker-stream: legion-LEGION-209-implementer refused adopt-working-copy: " +
 		"Command failed (exit 1): jj metaedit: the git lock " +
 		"/legion/workspaces/acme/widgets/legion-209/.git/index.lock\x00 was last written 31m ago"
-	scrubbed := strings.ReplaceAll(raw, "\x00", "")
+	stored := strings.ReplaceAll(raw, "\x00", "\uFFFD")
 	d := supervise.Delivery{
 		ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, Generation: 4, QueuedAt: at(1),
 		SendFailures: 1, LastSendFailureAt: at(5), LastSendError: raw,
 	}
 
-	if err := store.PutDelivery(ctx, c.Token, d); err == nil {
-		t.Fatal("the store took a send error holding a NUL; this test needs the write the server refuses")
-	}
-
-	d.LastSendError = scrubbed
 	if err := store.PutDelivery(ctx, c.Token, d); err != nil {
-		t.Fatalf("put the scrubbed delivery: %v", err)
+		t.Fatalf("put the delivery whose send error holds a NUL: %v", err)
 	}
 	got := onlyClaim(t, store).Pending
-	if got == nil || got.LastSendError != scrubbed {
-		t.Fatalf("delivery read back = %+v, want the scrubbed text whole", got)
+	if got == nil || got.LastSendError != stored {
+		t.Fatalf("delivery read back = %+v, want the send error whole with U+FFFD in place of the NUL", got)
 	}
 }
 
@@ -437,6 +431,29 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 
 	want.PluginContract = 24
 	want.PluginRelaunchFor = 0
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// The mark of a launch that had Oh My Pi resume the claim's session by its id itself
+// (AgentResumeGeneration) is a column of its own: a daemon restarted between that launch and its
+// agent's registration reads the mark back, and with it whether the launch's end is charged and
+// whether the claim's next try forgets the session (dispatch://INFRA-4108 R3). The claim marked
+// is one launched at generation 7 that records its session and no file; once its agent registered
+// with the file, the mark is 0, no such launch outstanding, and reads back as 0.
+func TestAClaimsAgentResumeGenerationRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-implementer")
+	want.Generation, want.SessionFile, want.AgentResumeGeneration = 7, "", 7
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	want.SessionFile, want.AgentResumeGeneration = "/state/sessions/implementer.jsonl", 0
 	if err := store.PutClaim(ctx, want); err != nil {
 		t.Fatalf("put claim again: %v", err)
 	}
@@ -1112,7 +1129,7 @@ func TestAnActivityReportOfAnEarlierProcessIsNoReportToAnyReader(t *testing.T) {
 			read: func(t *testing.T) activityReport {
 				t.Helper()
 				var held *record.RoleClaim
-				if err := st.Tx(ctx, func(tx pgx.Tx) error {
+				if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 					claims, err := record.NewStore().RoleClaims(ctx, tx, []claim.Token{token})
 					held = claims[token]
 					return err

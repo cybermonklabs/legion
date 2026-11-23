@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -55,7 +57,7 @@ func (r *mainPathRig) wakeByRoleMessage(report string) string {
 	if err != nil || result.Refusal != nil {
 		r.t.Fatalf("apply the listener's report %s = %#v, %v", report, result, err)
 	}
-	return workflow.WakeTask(pods.WakeRoleMessage, string(r.token))
+	return workflow.WakeTask(pods.WakeRoleMessage, string(r.token), workflow.StoppedByRelease)
 }
 
 // queueReleaseResume queues the resume a cancelled idle release writes for the architect's claim:
@@ -95,7 +97,7 @@ func (r *mainPathRig) architectStartPending() (string, bool) {
 	entry := rolePhaseRow(r.t, r.pool, r.key, claim.RoleArchitect).Entry
 	var reason string
 	var pending bool
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		run, err := r.records.RoleRun(r.ctx, tx, r.token, r.key, claim.RoleArchitect, root.Generation)
 		reason, pending = workflow.ArchitectStartPending(root, entry, run)
 		return err
@@ -132,6 +134,7 @@ func (r *mainPathRig) architectStartPending() (string, bool) {
 // row left for the lane to run again, and is sent once the wake's turn is over. Read as superseded
 // by the entry's task, the wake's task was retired at the seventh step, never taken by a turn.
 func TestAWakesTaskIsSentBeforeTheAnswerThatRaisedTheArchitectsEntry(t *testing.T) {
+	t.Parallel()
 	const child, ask = "LEGION-452", "ask-a"
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
@@ -209,6 +212,7 @@ func TestAWakesTaskIsSentBeforeTheAnswerThatRaisedTheArchitectsEntry(t *testing.
 // the resume is queued with no release marked or cancelled (queueReleaseResume). No idle pass is
 // run, so whether one releases a claim that holds its entry's task unconfirmed is not shown here.
 func TestAReleasesResumeLeavesTheTaskOfAnEntryTheClaimHolds(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -254,6 +258,7 @@ func TestAReleasesResumeLeavesTheTaskOfAnEntryTheClaimHolds(t *testing.T) {
 // suspended by the role stop's suspend alone (release); and the resume is queued with no release
 // marked or cancelled (queueReleaseResume).
 func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()

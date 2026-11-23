@@ -37,8 +37,8 @@
 # attributed to the issue, read just now, so the delivery reconcile has no reason to read it
 # again. The fake GitHub is given one repository holding the same pull requests and each head's
 # check runs, replacing every repository it served. That repository is PROJECT's default where
-# PROJECT maps one, since every issue then resolves to it and a recorded result's commit must be
-# one it holds, and otherwise one of this run's own, which nothing maps.
+# PROJECT has one, since every issue then resolves to it and a recorded result's commit must be
+# one it holds, and otherwise one of this run's own, which is no project's default.
 #
 # It writes nine issues in PROJECT and closes every one of them, also when a check fails; on exit
 # it deletes the pull_request_heads rows it staged and empties the fake GitHub. Nothing it writes
@@ -63,6 +63,10 @@ USAGE
 
 # shellcheck source-path=SCRIPTDIR source=lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# psql is given DATABASE_URL without its password, and the password in PGPASSWORD (pg_url_run),
+# as e2e/psql.ts gives it.
+# shellcheck source-path=SCRIPTDIR source=../../../envoy/scripts/lib/pg-url.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../../../envoy/scripts/lib/pg-url.sh"
 require_env DISPATCH_URL PROJECT FAKE_GITHUB_PORT DATABASE_URL DEV_SIGNIN_LOGIN
 [[ "$FAKE_GITHUB_PORT" =~ ^[0-9]+$ ]] || {
   printf 'FAKE_GITHUB_PORT is %s, not a port number\n' "$FAKE_GITHUB_PORT" >&2
@@ -202,10 +206,12 @@ expect() {
 }
 
 # psql_quiet ARGS...: runs the SQL on stdin against DATABASE_URL with the psql variables ARGS
-# names (-v name=value), printing its rows unaligned. libpq would connect to PGHOSTADDR in place
-# of the URL's host, so it is left out, as e2e/psql.ts leaves it.
+# names (-v name=value), printing its rows unaligned. The URL reaches psql without its password,
+# which goes in PGPASSWORD (pg_url_run), and libpq would connect to PGHOSTADDR in place of the
+# URL's host, so it is left out, as e2e/psql.ts leaves it.
+psql_without_hostaddr() { env -u PGHOSTADDR psql "$@"; }
 psql_quiet() {
-  env -u PGHOSTADDR psql "$database_url" -X -q -A -t -v ON_ERROR_STOP=1 "$@"
+  pg_url_run "$database_url" psql_without_hostaddr -X -q -A -t -v ON_ERROR_STOP=1 "$@"
 }
 
 # sql SECTION WHAT ARGS...: psql_quiet, its rows in $work/sql; a failure fails.
@@ -324,17 +330,19 @@ close_issue() {
   pass "$1" "closed $2"
 }
 
-# upload SECTION ISSUE FILE: uploads FILE as ISSUE's verification.md through the CLI.
+# upload SECTION ISSUE FILE: uploads FILE as ISSUE's verification.md through the CLI. ISSUE holds
+# no verification.md yet, so the upload replaces no version and names no token.
 upload() {
   run "$1" "upload verification.md to $2" artifact --issue "$2" --name verification.md \
     --path "$3" --force
   pass "$1" "uploaded verification.md to $2"
 }
 
-# document_body FILE: the JSON an artifact POST takes for FILE as verification.md.
+# document_body FILE BASE: the JSON an artifact POST takes for FILE as verification.md, replacing
+# the version whose document token is BASE.
 document_body() {
-  jq -cn --arg a "$session" --rawfile c "$1" \
-    '{actor: {kind: "session", id: $a}, name: "verification.md", content: $c}'
+  jq -cn --arg a "$session" --rawfile c "$1" --arg t "$2" \
+    '{actor: {kind: "session", id: $a}, name: "verification.md", content: $c, precondition: {document: $t}}'
 }
 
 # artifact_id SECTION ISSUE: sets $artifact to the id of ISSUE's verification.md.
@@ -345,11 +353,15 @@ artifact_id() {
     fail "$1" "find $2's verification.md" "$(body)"
 }
 
-# version_of SECTION ISSUE: sets $version to the current version of ISSUE's verification.md.
-version_of() {
+# text_of SECTION ISSUE: sets $version to the current version of ISSUE's verification.md and
+# $doc_token to its document token, the base a write replacing that version names.
+text_of() {
   get "/api/v1/issues/$2/artifacts/verification-md/text"
-  want_status 200 "$1" "read $2's verification.md version"
-  version="$(jq -er '.version' "$work/body")" || fail "$1" "read $2's verification.md version" "$(body)"
+  want_status 200 "$1" "read $2's verification.md"
+  version="$(jq -er '.version' "$work/body")" ||
+    fail "$1" "read $2's verification.md version" "$(body)"
+  doc_token="$(jq -er '.token' "$work/body")" ||
+    fail "$1" "read $2's verification.md token" "$(body)"
 }
 
 # check_block ID CI_CHECK WORDS: a check CI proves, as markdown writes it.
@@ -424,14 +436,15 @@ SQL
 
 # --- setup ---------------------------------------------------------------------------------------
 
-# PROJECT's default repository, under the name it is called today, where it maps one: every issue
-# of the project resolves to it, so a recorded result's commit must be one it holds, and the fake
-# serves it. Where PROJECT maps none, the run drives a repository of its own, which nothing maps.
-get "/api/v1/settings/repo-projects"
-want_status 200 setup "the repository mappings answer"
+# PROJECT's default repository, where it has one (`default_repo` on GET /api/v1/projects, stored
+# under the name the repository is called today): every issue of the project resolves to it, so a
+# recorded result's commit must be one it holds, and the fake serves it. Where PROJECT has none,
+# the run drives a repository of its own, which no project has as its default.
+get "/api/v1/projects"
+want_status 200 setup "the projects answer"
 default_repo="$(jq -r --arg p "$project" \
-  'first(.[] | select(.project == $p and .default) | (.renamed_to // .repo)) // ""' "$work/body")" ||
-  fail setup "read the repository mappings" "$(body)"
+  'first(.[] | select(.key == $p) | .default_repo // empty) // ""' "$work/body")" ||
+  fail setup "read $project's default repository" "$(body)"
 driven_repo="${default_repo:-acme/ci-check-$run_tag}"
 readonly driven_repo
 fake setup "seed the fake GitHub with $driven_repo" '.'
@@ -481,14 +494,15 @@ run k1 "record a tester's pass for c-held" result --issue "$k1" --check c-held -
   --verdict pass --commit "$held_commit" --surface cli --run "bash e2e/acceptance/ci-check.sh" \
   --observed "the ci-check acceptance run recorded it"
 pass k1 "recorded a tester's pass for c-held at $held_commit"
-version_of k1 "$k1"
+text_of k1 "$k1"
 readonly k1_version="$version"
 
-# refused_write WHAT FILE BLOCK RULE: posting FILE as k1's verification.md is refused 400
-# INVALID_CI_CHECK, naming BLOCK and RULE.
+# refused_write WHAT FILE BLOCK RULE: posting FILE as k1's verification.md, naming $doc_token, the
+# token of its live version, is refused 400 INVALID_CI_CHECK, naming BLOCK and RULE. A refused
+# write stores nothing, so the token one read names serves every refusal until a write lands.
 refused_write() {
   local message
-  send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$2")"
+  send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$2" "$doc_token")"
   want_status 400 k1 "$1"
   expect k1 "$1 is refused INVALID_CI_CHECK" '"INVALID_CI_CHECK"' '.code'
   message="$(jq -er '.error' "$work/body")" || fail k1 "$1 names $3" "no error in: $(body)"
@@ -517,18 +531,20 @@ A check a tester records a result for.
 :::"
 refused_write "ci_check added to c-held, which holds a recorded result" "$work/k1-held.md" c-held \
   "this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one"
-version_of k1 "$k1"
+text_of k1 "$k1"
 [[ "$version" == "$k1_version" ]] ||
   fail k1 "the four refused writes store nothing" "verification.md is at version $version, was $k1_version"
 pass k1 "the four refused writes store nothing: verification.md is still at version $k1_version"
 
 k1_document "$work/k1-fresh.md" "$k1_held" "$k1_fresh"
-send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$work/k1-fresh.md")"
+send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$work/k1-fresh.md" "$doc_token")"
 [[ "$status" == 2?? ]] || fail k1 "ci_check on the fresh id c-fresh is accepted" "HTTP $status: $(body)"
 pass k1 "ci_check on the fresh id c-fresh is accepted, HTTP $status"
 run k1 "read verification.md back" doc-read --issue "$k1" --artifact verification.md
 line k1 "dispatch doc-read reads c-fresh back with its ci_check" \
   ":::check{#c-fresh surface=\"cli\" when=\"before_merge\" negative_control=\"$k1_control\" ci_check=\"contracts\"}"
+# The fresh write made a new version, whose token the next write names.
+text_of k1 "$k1"
 k1_document "$work/k1-reused.md" ":::check{#c-held surface=\"cli\" ci_check=\"contracts\" negative_control=\"$k1_control\"}
 A new check written under the id of one that holds a result.
 :::" "$k1_fresh"

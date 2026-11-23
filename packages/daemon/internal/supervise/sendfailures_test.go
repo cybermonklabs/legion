@@ -7,6 +7,7 @@ package supervise
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // staleLockRefusal is what the shim answers an adoption with when jj is wedged on a git lock
@@ -24,9 +26,9 @@ const staleLockRefusal = "Command failed (exit 1): jj metaedit: the git lock " +
 
 // staleLockRefusalWithNUL is that same answer with a NUL byte in it, which is what reaches the
 // daemon when the far side's JSON holds a `\u0000`: Oh My Pi decodes it into the `error` string,
-// and the shim relays the wedged command's own bytes whatever they are. No Postgres encoding
-// stores a NUL ("invalid byte sequence for encoding \"UTF8\": 0x00"), so a daemon that recorded
-// it raw could not write the record of the failed send at all.
+// and the shim relays the wedged command's own bytes whatever they are. PostgreSQL refuses a NUL in
+// text ("invalid byte sequence for encoding \"UTF8\": 0x00"), so the record holds U+FFFD in its
+// place, as every text the daemon stores does (storetext.FarSideError).
 const staleLockRefusalWithNUL = "Command failed (exit 1): jj metaedit: the git lock " +
 	"/legion/workspaces/acme/widgets/legion-480/.git/index.lock\x00 was last written 31m ago"
 
@@ -210,12 +212,16 @@ func TestDeliveryBudgets(t *testing.T) {
 		}
 	})
 
-	// The far side's text never reaches the store as it arrived (scrubSendError). It is the
-	// wedged command's own output, relayed whole, and the store takes only some of what a command
-	// can write: the rule is valid UTF-8, with no NUL, and the column holds a diagnosis rather
-	// than a log. What the scrub cuts still goes to the log line beside it, which has no store to
-	// refuse it, so nothing is lost and only moved.
-	t.Run("the text a failed send records is scrubbed and bounded", func(t *testing.T) {
+	// The far side's text reaches the delivery as the daemon keeps any far side's error text
+	// (storetext.FarSideError), in memory as in the store. It is the wedged command's own output,
+	// relayed whole, and the column holds a diagnosis rather than a log: each NUL and each byte
+	// that is not UTF-8 reads U+FFFD, and the text is cut to its start. The warning beside the
+	// record carries that same text, and it is the one line of its message however long the text
+	// is: a check that counts refused adoptions by that message counts one. What the cut left out
+	// follows it in the log at Info, in lines one log entry holds, under a message of their own
+	// that names the warning's (farSideErrorInFull, storetext.LogWhole), so nothing is lost and
+	// only moved.
+	t.Run("the text a failed send records is cleaned and bounded", func(t *testing.T) {
 		// About a megabyte of relayed stderr, as a jj wedged on a lock writes it, ending in a
 		// line the log must still carry and the record must not.
 		hugeRefusal := "Command failed (exit 1): jj metaedit: " +
@@ -225,29 +231,28 @@ func TestDeliveryBudgets(t *testing.T) {
 			name string
 			// reason is what the shim's `ok: false` answer carries.
 			reason string
-			// want is the whole text the delivery must hold once the scrub has run.
+			// want is the whole text the delivery must hold.
 			want string
-			// logged is a fragment of the far side's text the log line must still carry.
-			logged string
+			// whole is the far side's whole text, which the log's parts after the warning carry
+			// when the record holds only its start, and "" when the record holds all of it.
+			whole string
 		}{
-			{name: "a NUL byte, which no Postgres encoding stores",
+			{name: "a NUL byte, which PostgreSQL refuses in text",
 				reason: staleLockRefusalWithNUL,
-				want:   adoptRefusal(strings.ReplaceAll(staleLockRefusalWithNUL, "\x00", "")).Error(),
-				logged: "index.lock"},
+				want:   adoptRefusal(strings.ReplaceAll(staleLockRefusalWithNUL, "\x00", "\uFFFD")).Error()},
 			// Not the row above again, and not to be deleted as a duplicate of it: a NUL is valid
 			// UTF-8 and a lone 0xff begins no UTF-8 sequence at all, so the two are refused by
 			// different servers. An SQL_ASCII server takes the 0xff, a UTF8 server — production's
 			// encoding — refuses it ("invalid byte sequence for encoding "UTF8": 0xff"), and every
-			// encoding refuses the NUL. The rule the scrub holds is valid UTF-8, and this is the
-			// row that reads it.
+			// encoding refuses the NUL. The record holds valid UTF-8 with no NUL, and this is the
+			// row that reads the first half of that.
 			{name: "a byte that begins no UTF-8 sequence",
 				reason: staleLockRefusalWithRawByte,
-				want:   adoptRefusal(strings.ReplaceAll(staleLockRefusalWithRawByte, "\xff", "\uFFFD")).Error(),
-				logged: "index.lock"},
+				want:   adoptRefusal(strings.ReplaceAll(staleLockRefusalWithRawByte, "\xff", "\uFFFD")).Error()},
 			{name: "about a megabyte of the wedged command's stderr",
 				reason: hugeRefusal,
-				want:   string([]rune(adoptRefusal(hugeRefusal).Error())[:maxSendErrorRunes]) + "…",
-				logged: "and this is the last line of the megabyte"},
+				want:   string([]rune(adoptRefusal(hugeRefusal).Error())[:storetext.FarSideErrorRunes-1]) + "…",
+				whole:  adoptRefusal(hugeRefusal).Error()},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				h := adoptingHarness(t)
@@ -259,19 +264,39 @@ func TestDeliveryBudgets(t *testing.T) {
 				if got != tc.want {
 					t.Fatalf("recorded %.300q, want %.300q", got, tc.want)
 				}
-				if !utf8.ValidString(got) || strings.ContainsRune(got, 0) || len([]rune(got)) > maxSendErrorRunes+1 {
+				if !utf8.ValidString(got) || strings.ContainsRune(got, 0) || utf8.RuneCountInString(got) > storetext.FarSideErrorRunes {
 					t.Fatalf("recorded %.300q of %d runes, want valid UTF-8, no NUL, and at most %d runes",
-						got, len([]rune(got)), maxSendErrorRunes)
+						got, utf8.RuneCountInString(got), storetext.FarSideErrorRunes)
 				}
 				if stored, ok := h.store.delivery(testToken); !ok || stored.LastSendError != got {
-					t.Fatalf("stored delivery's text = %.300q (held %t), want the scrubbed text persisted with it",
+					t.Fatalf("stored delivery's text = %.300q (held %t), want the recorded text persisted with it",
 						stored.LastSendError, ok)
 				}
-				if lines := h.logs.lines("level=WARN",
-					`msg="supervise: the shim refused to adopt the working copy; the prompt was never sent"`,
-					tc.logged); len(lines) != 1 {
-					t.Fatalf("logged %d warnings carrying %q, want the one refusal with the far side's whole text",
-						len(lines), tc.logged)
+				records := h.records.of(adoptRefusedLine)
+				if len(records) != 1 || records[0].level != slog.LevelWarn {
+					t.Fatalf("logged %d records of %q, want the refusal's one warning, however long its text", len(records), adoptRefusedLine)
+				}
+				warned, _ := records[0].attr("error")
+				delivery, _ := records[0].attr("delivery")
+				if warned.String() != got {
+					t.Fatalf("the warning carries %.300q, want the text the delivery records", warned.String())
+				}
+				var whole strings.Builder
+				for i, part := range h.records.of(farSideErrorInFull) {
+					number, _ := part.attr("part")
+					of, _ := part.attr("of")
+					partDelivery, _ := part.attr("delivery")
+					text, _ := part.attr("error")
+					if part.level != slog.LevelInfo || number.Kind() != slog.KindInt64 || number.Int64() != int64(i+1) ||
+						of.String() != adoptRefusedLine || partDelivery.String() != delivery.String() {
+						t.Fatalf("part record %d is %s part %v of %q for delivery %v, want part %d at INFO of %q for delivery %v",
+							i+1, part.level, number, of, partDelivery, i+1, adoptRefusedLine, delivery)
+					}
+					whole.WriteString(text.String())
+				}
+				if whole.String() != tc.whole {
+					t.Fatalf("the log's parts after the warning join to %d bytes ending %q, want the far side's whole text of %d bytes ending %q",
+						whole.Len(), whole.String()[max(0, whole.Len()-48):], len(tc.whole), tc.whole[max(0, len(tc.whole)-48):])
 				}
 			})
 		}

@@ -182,11 +182,11 @@ test("the scan reads every spelling of a test file the lane collects", () => {
   }
 });
 
-// The lane is `bun test --parallel --timeout 60000 e2e/__tests__`, and `bun test <directory>`
-// collects a `*.test.ts` at any depth below it, so a row written one directory down runs on the
-// lane like any other. This row plants the same bare `90_000` at the top of a scratch
-// `__tests__`, one directory below it, and under its `fixtures/`, and proves the rule reads all
-// three files and refuses the limit in each.
+// The lane is `bun run test:harness e2e/__tests__`, and package.json's `test:harness` script is
+// `bun test --parallel --timeout 60000`. `bun test <directory>` collects a `*.test.ts` at any
+// depth below it, so a row written one directory down runs on the lane like any other. This row
+// plants the same bare `90_000` at the top of a scratch `__tests__`, one directory below it, and
+// under its `fixtures/`, and proves the rule reads all three files and refuses the limit in each.
 test("the scan reads a test file of a subdirectory, which the lane runs too", () => {
   const root = mkdtempSync(join(tmpdir(), "row-limits-reach-"));
   try {

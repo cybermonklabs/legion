@@ -95,26 +95,57 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher credential does not name this pod's role"
 		}
 		// The pod the connection is accepted for carries the instant the API server created it,
-		// which decides whether a release's saved work is this pod's to restore
-		// (launchers.restoreWorkspace).
-		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, hello), r.launcherHelloAck(kind), ""
+		// and the instant the API server created its Sandbox, where that Sandbox owns the issue's
+		// kept volume. The two decide whether a release's saved work is this pod's to restore, or
+		// is on its volume already (launchers.restoreWorkspace). Both come from the informer's
+		// objects, so neither costs a request.
+		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, keptVolumeSince(view.sandbox), hello), r.launcherHelloAck(kind), ""
 	}
 }
 
+// keptVolumeSince is when the API server created s, where s owns an issue's kept volume
+// (ownsKeptVolume), and the zero time otherwise: a Sandbox whose pod's volume is the pod's own,
+// and the project controller's Sandbox. A kept volume is as old as the Sandbox that owns it,
+// since Agent Sandbox makes the claim from the Sandbox's template, and the claim goes only with
+// the Sandbox.
+func keptVolumeSince(s *sandbox) time.Time {
+	if !ownsKeptVolume(s) {
+		return time.Time{}
+	}
+	return s.CreationTimestamp.Time
+}
+
 // launcherHelloAck is the acknowledgement an accepted launcher on a pod of kind is answered with,
-// the one place each of its members is decided. An issue pod's launcher is handed the memory
-// guard's settings (Options.MemoryGuard), none when the deployment turned the guard off; the
-// controller's pod is handed none here, since its guard's settings are a block of their own
-// that this runtime does not carry, and an absent member is what its launcher reads as "run no
-// guard". Every issue pod's launcher is also told that this daemon knows the pod's kernel's kill
-// (KernelKills), whatever the guard's settings, since a microVM pod's launcher sends those reports
-// only where it is told so and its roles are owed the note however the guard is set; the
-// controller's pod runs no watch whose reports it would carry.
+// the one place each of its members is decided. Each pod kind's launcher is handed the memory
+// guard's settings of its own kind and never the other's: an issue pod's launcher those of
+// runtime.kubernetes.memory_guard.issue_pods (Options.MemoryGuard), the controller pod's launcher
+// those of runtime.kubernetes.memory_guard.controller_pod (Options.ControllerMemoryGuard), in
+// either of its forms. A kind whose block turned the guard off is handed none. An issue pod's
+// launcher is also handed what its cache trimmer runs by (Options.VolumeTrim), none when the
+// deployment configured none; the controller's pod is handed none of it, the volume it works on
+// being its Sandbox's own and no issue's cache. Its launcher runs no trimmer in its single-role
+// form. Where the session database names a writer audience, its launcher runs the roles-dir form
+// and builds a trimmer, which waits for settings that never come; the git lock sweep there finds
+// no clone, since the pod's working directory is no jj workspace and no start of the controller
+// names one. An absent member is what a launcher reads as "run none". Every launcher of either
+// kind is also told that this daemon knows the pod's kernel's kill (KernelKills), whatever the
+// guard's settings, since a microVM pod's launcher sends those reports only where it is told so
+// and its roles are owed the note however the guard is set. The controller's launcher is answered
+// both, its guard's settings and KernelKills, whatever the project's sandbox is now, since its pod
+// may be one an earlier configuration built, and the launcher, not this answer, knows which
+// sandbox it runs in: a gVisor controller pod's launcher reads the guard's settings and ignores
+// KernelKills, and a microVM controller pod's launcher ignores the guard's settings and sends its
+// reports where KernelKills came, as a microVM issue pod's does (the launcher's runsGuest). So a
+// gVisor controller pod re-adopted after a change of runtime.kubernetes.sandbox.type, which runs
+// on until its next launch replaces it, keeps its guard.
 func (r *Runtime) launcherHelloAck(kind podKind) shimwire.LauncherHelloAck {
-	var ack shimwire.LauncherHelloAck
-	if _, issue := kind.(issuePod); issue {
+	ack := shimwire.LauncherHelloAck{KernelKills: true}
+	switch kind.(type) {
+	case issuePod:
 		ack.MemoryGuard = r.memoryGuard
-		ack.KernelKills = true
+		ack.VolumeTrim = r.volumeTrim
+	case controllerPod:
+		ack.MemoryGuard = r.controllerMemoryGuard
 	}
 	return ack
 }

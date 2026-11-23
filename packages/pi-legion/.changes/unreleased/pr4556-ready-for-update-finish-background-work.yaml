@@ -1,0 +1,9 @@
+kind: Fixed
+custom:
+  Issue: pr4556
+body: |-
+  The `legion` tool's `ready_for_update` description tells a role to let each subagent and
+  background job finish, or stop it, and push what it made, before it answers. It says that the
+  round ends early only once every role has answered, no role is in a turn and no role reports
+  running background work, and that a role whose work finishes after its answer pushes what it
+  made and answers again with the same round.

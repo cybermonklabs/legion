@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // AskGate on the real Oh My Pi: the loader resolves the gate's string-literal imports of the host's
 // own modules (pi-ai, the session context, the settings, the fallback chains) only inside the
@@ -57,6 +58,8 @@ const CLI_ENTRY = path.join(
 );
 /** Where the fake Dispatch takes a `dispatch ask` for DSP-1. */
 const ASKS = "/api/v1/issues/DSP-1/asks";
+/** The Dispatch token the session is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /**
  * One real session: a `dispatch` on disk, a stand-in model that answers `gateAnswer` to every
@@ -161,7 +164,7 @@ async function runSession(options: {
       env: {
         ENVOY_URL: base,
         DISPATCH_URL: options.dispatchUrl ?? base,
-        DISPATCH_TOKEN: "askgate-token",
+        DISPATCH_TOKEN,
         ENVOY_CONFIG_FILE: path.join(root, "envoy.json"),
         ...(options.mode === undefined ? {} : { OMP_ASKGATE: options.mode }),
       },

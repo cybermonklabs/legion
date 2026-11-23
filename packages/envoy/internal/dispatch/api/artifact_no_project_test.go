@@ -21,6 +21,7 @@ const conversationSession = "session-0123456789abcdef"
 // of those reads, and every route over the row, to that on the row as 0071 stores it; the only other
 // no-project shape, a document whose project is nulled, is one artifacts_one_owner refuses.
 func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	s := directServer(deps)
 	ctx := context.Background()
@@ -107,8 +108,8 @@ func TestArtifactReadsServeARowWithNoProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	read, err = s.lockAnchorArtifact(ctx, tx, documentOwner(photoID), photoID)
-	wantNoProject("lockAnchorArtifact on the file", read, err, photoID)
+	read, err = s.loadAnchorArtifact(ctx, tx, documentOwner(photoID), photoID)
+	wantNoProject("loadAnchorArtifact on the file", read, err, photoID)
 	if anchor, err := s.loadAskAnchorArtifact(ctx, tx, photoID); err != nil {
 		t.Errorf("loadAskAnchorArtifact: %v", err)
 	} else if anchor.Project != "" {

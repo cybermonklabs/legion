@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // An issue's design gates are the documents the Legion deployment's gate records on that issue,
@@ -30,13 +31,23 @@ import (
 // with facts it caused, and it would move the activity feed of every gated issue each time a
 // daemon republished what Dispatch already holds.
 
-// issueDesignGate is one step of an issue's gate: the step word and the document that step
-// records. The step is one of model.GatedStepsKnown, which design_gates' own check repeats. The
-// route takes and answers the same shape, since what the daemon publishes is what Dispatch
-// stores.
+// issueDesignGate is one step of an issue's gate: the step word, the document that step records,
+// and Holds, whether the deployment's gate holds the issue's tree on that step. The step is one
+// of model.GatedStepsKnown, which design_gates' own check repeats. The route answers this shape,
+// and the issue read carries it; the route takes issueDesignGateInput, the same fields read as a
+// request.
+//
+// Holds is the daemon's answer and not Dispatch's: which steps a tree is gated on is the daemon's
+// rule, and it is not the project's list alone, since a root's architect may register its
+// Verification document as `criteria` beside a deployment whose list names `spec` and not
+// `criteria`, and that row holds the tree. It is null for an entry that does not carry it, which
+// is every entry a daemon older than the field publishes (design_gates.holds, migration
+// 20261114020013_design_gates_holds), and the superseded-approval advice answers such a row by the
+// project's list (supersededApprovalGates).
 type issueDesignGate struct {
 	Step       string `json:"step" enum:"decisions,criteria,spec"`
 	ArtifactID string `json:"artifact_id"`
+	Holds      *bool  `json:"holds"`
 }
 
 // issueDesignGates is the stored set the route answers: the issue and its gates in the order
@@ -46,14 +57,26 @@ type issueDesignGates struct {
 	Gates []issueDesignGate `json:"gates"`
 }
 
+// issueDesignGateInput is one entry of the body PUT /api/v1/issues/{key}/design-gates takes: an
+// issueDesignGate as the daemon publishes it. It is a type of its own because a request body
+// requires what its handler refuses the lack of, and a response the fields Go's marshaller always
+// writes (openAPIRequestBodyTypes), and the two differ here: the route refuses an entry with no
+// step or no document, and takes one with no holds, which every daemon older than the field
+// publishes, and stores it as null.
+type issueDesignGateInput struct {
+	Step       string `json:"step" enum:"decisions,criteria,spec" required:"true"`
+	ArtifactID string `json:"artifact_id" required:"true"`
+	Holds      *bool  `json:"holds"`
+}
+
 // issueDesignGatesInput is the body PUT /api/v1/issues/{key}/design-gates takes. Gates is
 // required, and a pointer for projectGatedStepsInput.Steps' reason: a body that names no list is
 // refused (400 INVALID_ISSUE, putIssueDesignGates below) rather than read as the empty one, so a
 // malformed publish cannot clear an issue's record, while an explicit `[]` is the publish that
 // clears it.
 type issueDesignGatesInput struct {
-	Gates *[]issueDesignGate `json:"gates" required:"true"`
-	Actor *model.Actor       `json:"actor"`
+	Gates *[]issueDesignGateInput `json:"gates" required:"true"`
+	Actor *model.Actor            `json:"actor"`
 }
 
 // putIssueDesignGates publishes the documents an issue's design-gate steps record. The daemon
@@ -62,7 +85,8 @@ type issueDesignGatesInput struct {
 // beside it. A list naming anything but the three steps is refused before the database's own
 // check would raise, a step named twice is refused as the project's own publish refuses it (one
 // record per step is all the gate keeps), and a gate naming no document is refused because the
-// document is the whole of what the row says.
+// document is what the row is about. Each entry's holds is stored as it was given, and an entry
+// that gives none is stored as null.
 func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	var input issueDesignGatesInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -81,14 +105,15 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 			strings.Join(model.GatedStepsKnown, ", ")))
 		return
 	}
-	gates := *input.Gates
-	for index, gate := range gates {
+	gates := make([]issueDesignGate, 0, len(*input.Gates))
+	for _, entry := range *input.Gates {
+		gate := issueDesignGate(entry)
 		if !slices.Contains(model.GatedStepsKnown, gate.Step) {
 			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
 				"%q is not a design-gate step: gates names %s", gate.Step, strings.Join(model.GatedStepsKnown, ", ")))
 			return
 		}
-		if slices.ContainsFunc(gates[:index], func(earlier issueDesignGate) bool { return earlier.Step == gate.Step }) {
+		if slices.ContainsFunc(gates, func(earlier issueDesignGate) bool { return earlier.Step == gate.Step }) {
 			writeError(w, "INVALID_ISSUE", http.StatusBadRequest, fmt.Sprintf(
 				"%q is named twice: gates names each design-gate step once, with the one document that step records", gate.Step))
 			return
@@ -98,6 +123,7 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 				"%q names no document: artifact_id is the document that step's gate recorded", gate.Step))
 			return
 		}
+		gates = append(gates, gate)
 	}
 	// The order a reader gets the set back in is model.GatedStepsKnown's, whatever order the
 	// publish named the steps in: the rows are a set keyed by step, so the answer is sorted
@@ -107,9 +133,11 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	})
 	steps := make([]string, len(gates))
 	documents := make([]string, len(gates))
+	holds := make([]*bool, len(gates))
 	for index, gate := range gates {
 		steps[index] = gate.Step
 		documents[index] = gate.ArtifactID
+		holds[index] = gate.Holds
 	}
 
 	tx, err := s.begin(r.Context())
@@ -118,23 +146,26 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue is read in the write's own transaction, under a lock that a second publish of the
-	// same issue waits for (`for no key update`, the lock an issue's own writes take), so two
-	// publishes replace the set one after the other and the stored set is always one whole set, the
-	// set of the one that finishes last; with the key-share lock the rows' foreign key takes, both
-	// deletes read the old rows and the two upserts leave a mix. The refusal and the write decide
-	// on the same row. The code is
-	// written here rather than taken from loadIssue, which answers the package's plain
-	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that
-	// does not serve this route at all, and that one answers the router's own
-	// `404 {"code":"NOT_FOUND"}` (routes/router.go), which is the plain code loadIssue would
-	// give here too. The daemon ends a publication on this code alone, so the two must differ:
-	// with loadIssue's code every publication against a Dispatch older than the route would be
-	// dropped as a refusal no retry repairs.
+	// The issue is read in the write's own transaction, under its owner's advisory lock, which
+	// every writer of the issue takes (store.LockOwner): the lock and the read are one batch,
+	// the read is a plain select in the statement after the lock, and the refusal and the write
+	// decide on the same row (INFRA-636: while no earlier build is in the fleet, no row lock of an
+	// owner table, which would give the transaction its id before the reads; beside an earlier
+	// build LockOwnerAndRead also takes the issue's row, as that build's writers do). The lock is
+	// exclusive and held to the commit, so a second publish of the same issue waits for it and the
+	// two replace the set one after the other: the stored set is always one whole set, the set of
+	// the one that finishes last (TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet). The
+	// code is written here rather than taken from loadIssue, which answers the package's plain
+	// NOT_FOUND: the daemon must tell a Dispatch that knows no such issue from a Dispatch that does
+	// not serve this route at all, and that one answers the router's own `404 {"code":"NOT_FOUND"}`
+	// (routes/router.go), which is the plain code loadIssue would give here too. The daemon ends a
+	// publication on this code alone, so the two must differ: with loadIssue's code every
+	// publication against a Dispatch older than the route would be dropped as a refusal no retry
+	// repairs.
 	var issue string
-	if err := tx.QueryRow(r.Context(), `
-		select key from issues where key = $1 for no key update
-	`, r.PathValue("key")).Scan(&issue); err != nil {
+	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(r.PathValue("key")), `
+		select key from issues where key = $1
+	`, []any{r.PathValue("key")}, &issue); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", r.PathValue("key")))
 			return
@@ -153,12 +184,15 @@ func (s *server) putIssueDesignGates(w http.ResponseWriter, r *http.Request) {
 	// run only when there is a row to write: an insert selecting from empty arrays writes nothing
 	// and asks the database for it anyway.
 	if len(gates) > 0 {
+		// holds is written whatever it was, null included: the publish is the whole of what the
+		// row says, so an entry that carries no answer replaces the one an earlier publish gave
+		// rather than leaving it standing beside a document it may not have been given for.
 		if _, err := tx.Exec(r.Context(), `
-			insert into design_gates (issue, step, artifact_id)
-			select $1::text, published.step, published.artifact_id
-			from unnest($2::text[], $3::text[]) as published(step, artifact_id)
-			on conflict (issue, step) do update set artifact_id = excluded.artifact_id
-		`, issue, steps, documents); err != nil {
+			insert into design_gates (issue, step, artifact_id, holds)
+			select $1::text, published.step, published.artifact_id, published.holds
+			from unnest($2::text[], $3::text[], $4::boolean[]) as published(step, artifact_id, holds)
+			on conflict (issue, step) do update set artifact_id = excluded.artifact_id, holds = excluded.holds
+		`, issue, steps, documents, holds); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

@@ -77,6 +77,11 @@ func TestReadPaneLookup(t *testing.T) {
 			paneLookup{status: paneLookupFailed, detail: "list-panes -t %1533 timed out after 2s"},
 		},
 		{
+			"a client another signal ended proves nothing", "%1533",
+			result{stdout: listing, stderr: "lost server", exitCode: -1, signal: "signal: killed"},
+			paneLookup{status: paneLookupFailed, detail: "list-panes -t %1533 was ended by signal: killed: lost server"},
+		},
+		{
 			"a row whose pid is not a pid", "%1533",
 			result{stdout: "%1533 nope\n"},
 			paneLookup{status: paneLookupFailed, detail: "list-panes -t %1533 reported an unparseable pid for %1533: %1533 nope"},

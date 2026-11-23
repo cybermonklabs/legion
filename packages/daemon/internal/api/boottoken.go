@@ -111,6 +111,15 @@ func (s recordingStore) RetireDelivery(ctx context.Context, c supervise.Claim, d
 	return nil
 }
 
+func (s recordingStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	freed, err := s.Store.ReleaseHolds(ctx, c, holds)
+	if err != nil {
+		return nil, err
+	}
+	s.written(c)
+	return freed, nil
+}
+
 func (s recordingStore) written(c supervise.Claim) {
 	if len(c.BootTokenHash) > 0 {
 		s.tokens.mu.Lock()

@@ -1,7 +1,7 @@
 // Package githubappjwt parses a GitHub App's private key and signs the JWT a GitHub App
 // authenticates as, for the two callers that act as a GitHub App: Dispatch's GitHub client
 // (internal/dispatch/githubapp) and the secrets broker's github-app minter
-// (internal/broker/secrets). Its errors are plain sentinels that never quote the key.
+// (internal/cipher/secrets). Its errors are plain sentinels that never quote the key.
 package githubappjwt
 
 import (

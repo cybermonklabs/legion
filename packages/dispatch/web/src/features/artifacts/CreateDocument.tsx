@@ -7,6 +7,7 @@ import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { refreshOwnerArtifacts } from "./ArtifactUpload";
@@ -16,6 +17,15 @@ import { TitleForm } from "./TitleForm";
  *  sentence covers both ways of adding a document there; the repair upload of a document already
  *  being read keeps its own (`CLOSED_ISSUE_UPLOAD_REFUSAL`). */
 export const CLOSED_ISSUE_DOCUMENT_REFUSAL = "This issue is closed. Reopen it to add a document.";
+
+/** What the form says of a create the reader stopped (`stoppedWriteNote`): Dispatch may have made
+ *  it, and a press of Create again is a new write, which Dispatch refuses where the first one made
+ *  the document. */
+function stoppedCreate(title: string): string {
+  return stoppedWriteNote(`the document “${title}”`, "made", {
+    anew: "Press Create again: if it was, Dispatch says that title is taken and the list shows the document.",
+  });
+}
 
 /** Who holds a new document: an issue, or a project. An agent's conversation holds files only. */
 export type DocumentOwner = { issue: string } | { project: string };
@@ -74,6 +84,7 @@ export function CreateDocument({
   const create = useKeyedWrite({
     inline: true,
     label: (name: string) => `New document ${name}`,
+    method: "POST",
     write: (name: string, bounds) => api.uploadArtifact(owner, { name }, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: (made) => {
@@ -101,12 +112,22 @@ export function CreateDocument({
     submitGuard.guard(() => create.mutate(name));
   };
   // The artifact that holds the title is named for what it is: the list holds the owner's images
-  // and files beside its documents, and the write refuses their names too.
+  // and files beside its documents, and the write refuses their names too. A create the reader
+  // stopped is no verdict of Dispatch's, and this form offers no Retry of it: a press of Create
+  // again is a press the person made anew, under a key of its own whatever title it carries
+  // (`useKeyedWrite`). Where the stopped create had reached Dispatch, that press names a document
+  // that exists now, and Dispatch refuses it - a write with no content makes no document - so the
+  // person reads that refusal here and the list shows the document. The write is `inline`, so
+  // the shell lets go of it once stopped and this form is the only place the reader learns what
+  // became of it. The stopped write's own words promise a Retry under its key, which this form
+  // does not make, so it says what pressing Create again does instead.
   const problem =
     takenBy !== undefined
       ? `${takenBy.kind === "doc" ? "A document" : "An artifact"} on ${"issue" in owner ? "this issue" : "this project"} already holds that title: ${takenBy.name}.`
       : create.isError
-        ? apiErrorMessage(create.error, "Could not create the document.")
+        ? create.error instanceof SendStoppedError
+          ? stoppedCreate(create.variables ?? "")
+          : apiErrorMessage(create.error, "Could not create the document.")
         : undefined;
 
   return (

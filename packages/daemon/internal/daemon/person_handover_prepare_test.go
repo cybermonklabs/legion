@@ -69,6 +69,7 @@ func labelledBy(key, kind string) []json.RawMessage {
 // or a log that does not decode, fails the preparation naming the issue, so the event is delivered
 // again rather than applied with a setter nobody read.
 func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-755"
 	triageRoot := intake.DispatchIssue{Key: key, Seq: 2, Type: "issue.updated", Status: "triage", Title: key, Rank: "A", HandedOver: true, ResolvedRepo: "acme/widgets"}
 	pool := isolatedOutboxPool(t)
@@ -110,9 +111,9 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 				putOutboxIssue(t, pool, records, recordedOn(key, key, "triage"))
 			}
 			// acme/widgets is served at main, so the labelled todo root is prepared for admission
-			// as today, with no wait for a read of the mapping.
+			// as today, from the read the repository state holds.
 			repos := newRepositories("LEGION", ghrepo.Renames{})
-			repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}}, nil)
+			repos.fill(ghrepo.MustParse("acme/widgets"))
 			branches := newDefaultBranches(roleTokens{}, repos, "", defaultBranchTTL, time.Now)
 			branches.read["acme/widgets"] = defaultBranchRead{repository: ghbranch.Repository{Name: ghrepo.MustParse("acme/widgets"), DefaultBranch: "main"}, at: time.Now()}
 			client := &eventLogDispatch{logs: tc.logs, logErr: tc.logErr}
@@ -145,6 +146,7 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 // request and a version event read nothing and carry no view, and a read that fails fails the
 // preparation, so the event is delivered again.
 func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
+	t.Parallel()
 	const key = "LEGION-755"
 	person := dispatch.Actor{Kind: "user", ID: "sami"}
 	approval := intake.DispatchArtifact{Key: key, ArtifactID: "art-1", Kind: intake.DispatchArtifactApproved, Version: 9, Actor: person}
@@ -224,6 +226,7 @@ func TestPrepareArtifactReadsTheIssueOnlyForAPersonsOwnApproval(t *testing.T) {
 // is never queued again), an unlabelled triage root, or a labelled triage child; and a read that
 // fails fails the reconcile naming the issue.
 func TestBootReconcileReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
+	t.Parallel()
 	const unrecorded, recorded, unlabelled, child = "CAPTURE-755", "CAPTURE-589", "CAPTURE-526", "CAPTURE-756"
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)

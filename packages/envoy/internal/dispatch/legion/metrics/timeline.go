@@ -69,9 +69,10 @@ const (
 
 // sentBackStatuses are the statuses a send-back moves out of before observations exist:
 // `needs_review` is the status of both reviewing and accepting, `testing` is its own, and
-// `retro` is the status of both retro and merging, out of which a head that starts conflicting
-// with its base sends the issue back to implementing like any other (the daemon workflow's
-// TriggerConflict). Those are the words the spec's "an `in_progress` after `testing`,
+// `retro` is the status of both retro and merging, out of which a backward move
+// (`request_backward_move`, the daemon workflow's TriggerBackward rows) sends the issue back to
+// implementing like any other, as a head that started conflicting with its base did before
+// cybermonklabs/legion#4464. Those are the words the spec's "an `in_progress` after `testing`,
 // `needs_review` or `retro` (a send-back) is implementing" is read by.
 var sentBackStatuses = []string{statusTesting, statusNeedsReview, statusRetro}
 
@@ -520,8 +521,9 @@ func statusPhase(previous, status string) (phase string, sendBack, named bool) {
 		// The workflow writes `in_progress` twice over: once where it admits an issue out of the
 		// queue or out of parked, and once for every send-back to implementing, whatever phase
 		// the issue comes back from (workflow/table.go's TriggerTesterFailed,
-		// TriggerReviewRejected and TriggerConflict all write it). Only the send-back, a move
-		// out of `testing`, `needs_review` or `retro`, names a phase.
+		// TriggerReviewRejected and TriggerBackward all write it, and before
+		// cybermonklabs/legion#4464 a conflict's move did too). Only the send-back, a move out of
+		// `testing`, `needs_review` or `retro`, names a phase.
 		if slices.Contains(sentBackStatuses, previous) {
 			return legion.PhaseImplementing, true, true
 		}

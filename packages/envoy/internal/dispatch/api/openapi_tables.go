@@ -8,7 +8,7 @@ package api
 import (
 	"reflect"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -190,9 +190,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseIssuePriority (issue_create.go), read by create and update alike.
 	{reflect.TypeOf(createIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "priority"}: rawField{Fragment: openAPIIssuePriority, Nullable: true},
-	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name".
-	{reflect.TypeOf(createIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
-	{reflect.TypeOf(updateIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
+	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name". The
+	// project's default repository is read by the same rule; its handler refuses a body without
+	// the field, which the field's own `required:"true"` says.
+	{reflect.TypeOf(createIssueInput{}), "repo"}:              rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(updateIssueInput{}), "repo"}:              rawField{Fragment: openAPIRepository, Nullable: true},
+	{reflect.TypeOf(projectDefaultRepositoryInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
 	// An upload refuses `primary` whenever it carries one, JSON or multipart (artifacts.go):
 	// primary is fixed at issue creation. The field is described so a client reading the document
 	// knows what the bytes would have to be, never because one may send them.
@@ -257,6 +260,11 @@ var openAPIMultipartSchema = map[string]any{
 		"actor": map[string]any{
 			"type":        "string",
 			"description": "the acting session as one JSON object, as the JSON body's `actor` field",
+		},
+		"precondition": map[string]any{
+			"type": "string",
+			"description": "the base this upload replaces as one JSON object, as the JSON body's " +
+				"`precondition` field",
 		},
 	},
 	"required": []any{"file"},

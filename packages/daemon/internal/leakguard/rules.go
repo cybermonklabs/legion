@@ -22,9 +22,9 @@ import (
 //go:embed private-names.toml
 var ruleFile string
 
-// maskedBy are the content rules a path component is masked by, the three
-// check-private-names.sh's own `names` reads (its lines 140-143): the deployment repository, the
-// company, and the company's first word as a proper noun.
+// maskedBy are the content rules a path component is masked by, the three that
+// check-private-names.sh's named_parts reads, under the same names: the deployment repository,
+// the company, and the company's first word as a proper noun.
 var maskedBy = []string{"repository_rule", "company_rule", "proper_noun_rule"}
 
 // rules is the compiled rule file: one detector every record of every call is scanned with, and
@@ -87,42 +87,110 @@ func compile() (built *rules, err error) {
 	return &rules{detector: detector, names: names}, nil
 }
 
-// scan is the report of records: one line per refusal, naming the record and the class and
-// nothing else. The same class against the same record is one line however many times it
-// matches, since the report says what a record names rather than how often, and a record's
+// scan adds the report of one record to rep: one line per refusal, naming the record and the
+// class and nothing else. The same class against the same record is one line however many times
+// it matches, since the report says what a record names rather than how often, and a record's
 // classes are sorted because the engine reads its rules out of a map and would otherwise order
-// two of them differently from one run to the next.
+// two of them differently from one run to the next. Past refusalLines, rep counts a line rather
+// than holding it.
 //
-// Each record is scanned on its own, with Detect of a fragment rather than DetectSource of a
+// The record is scanned on its own, with Detect of a fragment rather than DetectSource of a
 // source: the detector accumulates the findings of a source, and a scan of several records
 // through it would report the first record's finding against every record after it.
-func (r *rules) scan(ctx context.Context, records []Record) ([]string, error) {
-	var lines []string
-	for _, record := range records {
-		var of []string
-		seen := map[string]bool{}
-		for _, finding := range r.detector.DetectContext(ctx, detect.Fragment{Raw: record.Text, FilePath: record.Label}) {
-			line := r.mask(record.Label) + ": " + finding.Description
-			if !seen[line] {
-				seen[line] = true
-				of = append(of, line)
-			}
-		}
-		slices.Sort(of)
-		lines = append(lines, of...)
-		// A context that ended stops the detector's own scan loop and leaves it answering no
-		// findings, which would read as a record that holds nothing. A bound that ran out is a
-		// setup failure instead, so the write is refused rather than passed.
-		if err := ctx.Err(); err != nil {
-			return nil, err
+func (r *rules) scan(ctx context.Context, record Record, rep *report) error {
+	var of []string
+	seen := map[string]bool{}
+	for _, finding := range r.detector.DetectContext(ctx, detect.Fragment{Raw: record.Text, FilePath: record.Label}) {
+		line := r.mask(record.Label) + ": " + finding.Description
+		if !seen[line] {
+			seen[line] = true
+			of = append(of, line)
 		}
 	}
-	return lines, nil
+	slices.Sort(of)
+	for _, line := range of {
+		rep.add(line)
+	}
+	// A context that ended stops the detector's own scan loop and leaves it answering no
+	// findings, which would read as a record that holds nothing. A bound that ran out is a setup
+	// failure instead, so the write is refused rather than passed.
+	return ctx.Err()
+}
+
+// pass is one rule pass over records that arrive one at a time, as a push's diff is read: it
+// scans each record as it arrives and keeps nothing of it but its refusal lines, so its memory is
+// the record in hand, the detector's own cost of scanning it, and at most refusalLines refusal
+// lines and a count of the rest. Whatever reads the records holds one line of its own beside
+// that. None of it grows with the size of the push's files.
+type pass struct {
+	ctx    context.Context
+	engine *rules
+	report report
+	// err is a scan that did not finish: the context ended under it. Every add after it answers
+	// it, so that the reader of the records stops.
+	err error
+}
+
+// add scans one record.
+func (p *pass) add(record Record) error {
+	if p.err == nil {
+		p.err = p.engine.scan(p.ctx, record, &p.report)
+	}
+	return p.err
+}
+
+// end answers the pass as a write of what: nil where no record matched, a refusal naming the
+// records that did, at most refusalLines of them and a count of the rest, and a setup failure
+// where a scan did not finish.
+func (p *pass) end(what string) error {
+	if p.err != nil {
+		return &SetupFailure{What: what, Why: "the private-name rules did not finish", Err: p.err}
+	}
+	if len(p.report.lines) == 0 {
+		return nil
+	}
+	return &Refusal{What: what, By: byRules, Lines: p.report.all()}
+}
+
+// refusalLines is the most lines a refusal of the rule pass names. A push that adds a file at a
+// path a path rule refuses is refused once for each line it adds there, so the report of a push
+// of a million such lines would otherwise be a million lines, held in memory and printed. Past
+// this many, the report counts the lines it leaves out in a last line of its own; below it, the
+// report is every line, as it always was.
+const refusalLines = 1000
+
+// report is the lines of a refusal as the rule pass builds them: at most refusalLines of them,
+// and a count of the ones past that.
+type report struct {
+	lines   []string
+	leftOut int
+}
+
+// add is line added to the report, or counted where the report is full.
+func (r *report) add(line string) {
+	if len(r.lines) < refusalLines {
+		r.lines = append(r.lines, line)
+		return
+	}
+	r.leftOut++
+}
+
+// all is the report's lines, and a last line counting the lines left out where there are any.
+func (r *report) all() []string {
+	if r.leftOut == 0 {
+		return r.lines
+	}
+	lines := "lines"
+	if r.leftOut == 1 {
+		lines = "line"
+	}
+	return append(r.lines, fmt.Sprintf("(%d more %s left out: this report names the first %d)", r.leftOut, lines, refusalLines))
 }
 
 // mask is label with each slash-separated component the repository or company rules match
-// replaced by "<name>", the masking .github/scripts/check-private-names.sh does (its lines
-// 145-154). A label that names no file has no component to mask and comes back as it was.
+// replaced by "<name>", the masking .github/scripts/check-private-names.sh does (its named_parts
+// function, which its mask applies). A label that names no file has no component to mask and comes
+// back as it was.
 func (r *rules) mask(label string) string {
 	parts := strings.Split(label, "/")
 	for i, part := range parts {

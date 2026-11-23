@@ -34,6 +34,7 @@ const (
 )
 
 func TestPrioritiesRead(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	for _, project := range []string{"CORE", "OPS", "WEB"} {
 		createTestProject(t, handler, project)

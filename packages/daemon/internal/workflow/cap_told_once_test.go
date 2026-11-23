@@ -8,25 +8,23 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // capMoves is how many moves back this proof drives past a review round cap of 3, of three
 // kinds. capReviews is how many of them are the review App's request for changes, the one kind
-// that opens a round the cap counts (recordRound), and capConflicts how many are the daemon's
-// own move for a head that conflicts with its base. Six counted rounds is enough that a build
-// telling the architect on every counted round at or above the cap tells it four times.
+// that opens a round the cap counts (recordRound). The rest are a tester's fail and the merger's
+// own move back to the reviewer, neither of which opens a round. Six counted rounds is enough that
+// a build telling the architect on every counted round at or above the cap tells it four times.
 const (
-	capMoves     = 17
-	capReviews   = 6
-	capConflicts = 5
+	capMoves   = 17
+	capReviews = 6
 )
 
 // capNotices is how many notices of kind the architect has been sent about the issue. The cap's
-// own notice is read by its kind and not by the number of notices, because the daemon's move for
-// a conflicting head wakes the architect with a checks-red notice of its own: a count of every
-// wake could not tell the two apart, and would rise on a build that tells the cap once.
+// own notice is read by its kind and not by the number of notices, because every move back wakes
+// the architect with a phase-finished notice of its own: a count of every wake could not tell the
+// two apart, and would rise on a build that tells the cap once.
 func capNotices(t *testing.T, pool *pgxpool.Pool, kind record.NoticeKind) int {
 	t.Helper()
 	count := 0
@@ -52,13 +50,12 @@ func clearsGeneration(t *testing.T, pool *pgxpool.Pool) {
 // above it.
 //
 // Seventeen moves back are driven past a cap of 3: six of them the review App's requests for
-// changes, which are the rounds the cap counts, six a tester's fail and five the daemon's own
-// move for a head that conflicts with its base. The architect gets one cap message and one
-// pr-blocked notice out of all of them. The notice is counted by its kind: every move the daemon
-// makes for a conflicting head wakes the architect with a checks-red notice, so a count of the
-// architect's wakes would rise whatever the cap did. Against the build before this change, which
-// told the cap on every counted round at or above it, the pr-blocked notices over these rounds
-// were four.
+// changes, which are the rounds the cap counts, six a tester's fail and five the merger's own move
+// back to the reviewer. The architect gets one cap message and one pr-blocked notice out of all of
+// them. The notice is counted by its kind: every move back wakes the architect with a
+// phase-finished notice, so a count of the architect's wakes would rise whatever the cap did.
+// Against the build before this change, which told the cap on every counted round at or above it,
+// the pr-blocked notices over these rounds were four.
 //
 // The three cases after it read the mark the telling leaves (record.PhaseRow.CapTold): it is the
 // cap value told, compared with !=, so a cap raised under the row tells again at its new number,
@@ -78,11 +75,7 @@ func TestTheArchitectIsToldOncePerCapValue(t *testing.T) {
 			case 2:
 				reviewerRequestsChanges(t, pool, engine, strconv.Itoa(move), headOne)
 			case 0:
-				// The daemon's own move, and the read that takes the mark off the head behind
-				// it: a round opened while the mark stands is a conflict round the cap does not
-				// count, which is another proof's subject (TestConflictRoundsCostTheCapNothing).
-				marksConflictingFrom(t, pool, engine, phase.Reviewing, "needs_review", headOne)
-				clearsConflicting(t, pool, engine, headOne)
+				mergerMovesBack(t, pool, engine)
 			}
 		}
 
@@ -90,7 +83,7 @@ func TestTheArchitectIsToldOncePerCapValue(t *testing.T) {
 			t.Fatalf("the implementer's row counts %d passes, want the %d moves back this proof drove", pass, capMoves)
 		}
 		if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != capReviews || conflicts != 0 {
-			t.Fatalf("the implementer's row counts %d review rounds of which %d conflict rounds, want the %d reviews of the %d moves and no conflict round: the mark is cleared behind each conflicting head, so every round here is counted",
+			t.Fatalf("the implementer's row counts %d review rounds of which %d conflict rounds, want the %d reviews of the %d moves and no conflict round: no head here is held conflicting, so every round is counted",
 				rounds, conflicts, capReviews, capMoves)
 		}
 		want := "Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted."
@@ -99,9 +92,9 @@ func TestTheArchitectIsToldOncePerCapValue(t *testing.T) {
 			t.Fatalf("over %d moves back the cap posted %q and %d pr-blocked notices, want the one message %q and one notice: the cap is told once for each value it holds",
 				capMoves, messages, blocked, want)
 		}
-		if red := capNotices(t, pool, "checks-red"); red != capConflicts {
-			t.Fatalf("the architect was sent %d checks-red notices over %d moves for a conflicting head, want one each: this is what a count of the architect's wakes would read instead of the cap's own notice",
-				red, capConflicts)
+		if finished := capNotices(t, pool, "phase-finished"); finished != capMoves {
+			t.Fatalf("the architect was sent %d phase-finished notices over %d moves back, want one each: this is what a count of the architect's wakes would read instead of the cap's own notice",
+				finished, capMoves)
 		}
 	})
 

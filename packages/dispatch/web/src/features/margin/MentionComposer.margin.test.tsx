@@ -456,6 +456,42 @@ test("Escape after typing only an ask option prompts before discarding", async (
   }
 });
 
+// A margin comment's Close is the reader's own control, and asks as Escape does: what they typed
+// is not dropped with nothing said, and Discard is what drops it.
+test("Close over a typed margin comment prompts before discarding, as Escape does", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  let closed = 0;
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <Composer
+        anchor={{ artifact: "document-1", mark_id: "mark-1", quote: "selected" }}
+        owner={{ key: "CORE-1", kind: "issue" }}
+        onClose={() => {
+          closed += 1;
+        }}
+      />
+    </QueryClientProvider>
+  );
+
+  try {
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste("A note worth keeping");
+    await user.click(screen.getByRole("button", { name: "Close" }));
+
+    await waitFor(() => expect(screen.getByText("Discard draft?")).toBeDefined());
+    expect(closed).toBe(0);
+    expect(field.value).toBe("A note worth keeping");
+    await user.click(screen.getByRole("button", { exact: true, name: "Discard" }));
+    expect(closed).toBe(1);
+  } finally {
+    view.unmount();
+  }
+});
+
 const MARK_ANCHOR = {
   artifact: specArtifact.id,
   mark_id: "m-1",
@@ -866,7 +902,8 @@ test("a refusal no document binds for ends at the wait's bound, telling the read
       return { markId: "m-2", placement: null, quote: MARK_ANCHOR.quote };
     },
   });
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const refusal = Promise.withResolvers<never>();
   const createComment = spyOn(api, "createComment").mockReturnValue(refusal.promise);
   jest.useFakeTimers();

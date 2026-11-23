@@ -30,7 +30,7 @@ func TestAHandoverEndsAtAForwardTheGrantRefuses(t *testing.T) {
 		holder = "ses_kept_handover_denied"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
-	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+	if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -70,7 +70,7 @@ func TestAHandoverEndsAtAWalkTheGrantRefusesWhileItsHolderReadFailed(t *testing.
 	)
 	harness := newListenerDeliveryHarnessOn(t, deniedGrantClient(t, bus.KeptRoleCursorSubject(role)))
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
-	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+	if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleBeyondTheSessionCache(t, harness, holder, role)

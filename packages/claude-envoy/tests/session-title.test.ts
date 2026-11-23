@@ -338,11 +338,17 @@ test("a title keeps no bidirectional override, and keeps a private-use glyph", a
 // at module scope: a call per row would print the warning per row.
 const withoutTmux = skipWithout("tmux")
 
+/** Where the two rows' tmux sockets go. A socket path has 107 bytes to fit in (Linux's `sun_path`
+ *  holds 108 with its terminating zero), and tmux refuses a longer one (`Filename too long`):
+ *  `<directory>/title-tmux-XXXXXX/tmux.sock` passes it under a `TMPDIR` over 79 bytes. So the
+ *  directories go under `/tmp`, whatever `TMPDIR` is, as mod-link.test.ts's socket homes do. */
+const SOCKET_ROOT = "/tmp"
+
 test.skipIf(withoutTmux)(
   "a real tmux server answers a pane it does not have with no answer, and names its own pid",
   async () => {
     // A running server answers a pane it does not have with an empty line and exit status 0.
-    const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
+    const directory = mkdtempSync(join(SOCKET_ROOT, "title-tmux-"))
     const socket = join(directory, "tmux.sock")
     execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "probe"])
     try {
@@ -384,7 +390,7 @@ test.skipIf(withoutTmux)(
 test.skipIf(withoutTmux)(
   "queryTmux keeps the tabs between fields when its process has neither TMUX nor a UTF-8 locale",
   () => {
-    const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
+    const directory = mkdtempSync(join(SOCKET_ROOT, "title-tmux-"))
     const socket = join(directory, "tmux.sock")
     execFileSync("tmux", ["-S", socket, "-f", "/dev/null", "new-session", "-d", "-s", "probe"])
     try {

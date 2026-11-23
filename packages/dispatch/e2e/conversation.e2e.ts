@@ -116,6 +116,7 @@ test("Conversation owns the route, lists one card per message newest first, and 
       "Spec",
       "Verification",
       "Plan",
+      "Steps",
       "Conversation",
       "Children",
       "Artifacts 1",

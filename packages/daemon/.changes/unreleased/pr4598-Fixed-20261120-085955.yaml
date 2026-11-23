@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The copy of Dispatch''s issues (`dispatch_issues`) keeps, for each value of a row (status, parent, blockers, labels and rank), the sequence of the Dispatch reading that wrote it. A reading changes a value only at a higher sequence, or fills a value that no reading wrote, so a second reading at the same sequence no longer replaces or removes an issue''s parent. The copy also holds each issue''s labels and board rank, and has an index on its parent column. Migration `20261120055717_dispatch_issue_value_sequences` marks each project that has rows: the first boot of that project on this release empties its rows, fills them again from its listing and logs one line at info. A rollback runs the one statement of docs/kubernetes.md, "Rolling back the release that fences each value of the copy of Dispatch''s issues", with every daemon of the database stopped.'
+time: 2026-11-20T08:59:55.686478198Z
+custom:
+    Issue: pr4598

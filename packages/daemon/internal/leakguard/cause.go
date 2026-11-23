@@ -2,7 +2,9 @@ package leakguard
 
 import (
 	"strings"
-	"unicode/utf8"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // RefusalPrefix begins every cause sentence of a start refused because the pod's shared public
@@ -22,8 +24,12 @@ var oneLine = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 // Cause is the one-line cause sentence of a check that could not be installed: RefusalPrefix,
 // then what happened, then err's text after a colon where err is not nil. A what that already
 // begins with RefusalPrefix — the launcher's own sentence, which the daemon carries on — is not
-// prefixed a second time. Newlines become spaces, so the sentence stays one line, and it is cut
-// to at most maxCauseBytes at a rune boundary.
+// prefixed a second time. The whole sentence is kept as the daemon keeps a far side's text
+// (storetext.FarSideText): an HTTP client's error carries the URL it last asked, and a read
+// GitHub redirected to its download host carries that host's `?token=`. Newlines become spaces,
+// so the sentence stays one line, and it is cut to at most maxCauseBytes at a rune boundary by
+// redact.Bytes, which reads the whole sentence through the URL rule before the cut, so the cut can
+// never leave a part of a query or a userinfo behind.
 func Cause(what string, err error) string {
 	sentence := what
 	if !strings.HasPrefix(sentence, RefusalPrefix) {
@@ -32,13 +38,6 @@ func Cause(what string, err error) string {
 	if err != nil {
 		sentence += ": " + err.Error()
 	}
-	sentence = oneLine.Replace(sentence)
-	if len(sentence) <= maxCauseBytes {
-		return sentence
-	}
-	cut := maxCauseBytes
-	for cut > 0 && !utf8.RuneStart(sentence[cut]) {
-		cut--
-	}
-	return sentence[:cut]
+	sentence, _ = redact.Bytes(oneLine.Replace(storetext.FarSideText(sentence)), maxCauseBytes)
+	return sentence
 }

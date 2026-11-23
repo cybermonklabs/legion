@@ -34,7 +34,7 @@ type BlockPointer struct {
 // references (ParseBlockPointerValue); any other value is skipped.
 //
 // A typed block repeating the id of a typed block before it in document order lists none: the
-// block index takes the first holder of an id for its node (refs.IndexBlocks). Only typed blocks
+// block index takes the first holder of an id for its node (refs.PlanBlocks). Only typed blocks
 // count here, because only their ids are written in markdown, and so are the same in the tree a
 // version write indexes and in the markdown the reconciliation reads back: the rendering writes a
 // typed block's id so that it reads back as the tree holds it (TypedBlockIDAttribute), each U+0000
@@ -42,15 +42,16 @@ type BlockPointer struct {
 // written. A paragraph's id is not written in markdown, and a list item or table cell has no
 // offset, so it is never the index's node. An earlier holder that is not typed but has an offset
 // (a paragraph) is caught by the index itself, which writes a pointer only from a node of the
-// pointer's own block type (refs.IndexBlocks).
+// pointer's own block type (refs.PlanBlocks).
 func BlockPointers(tree *Node) []BlockPointer {
-	if len(active.linkKinds) == 0 {
+	manifest := active.Load()
+	if len(manifest.linkKinds) == 0 {
 		return nil
 	}
 	var pointers []BlockPointer
 	held := make(map[string]struct{})
 	Walk(tree, func(node *Node) bool {
-		typ, typed := typedBlock(node.Type)
+		typ, typed := manifest.types[node.Type]
 		if !typed {
 			return true
 		}
@@ -62,7 +63,7 @@ func BlockPointers(tree *Node) []BlockPointer {
 			}
 			held[id] = struct{}{}
 		}
-		for _, name := range active.pointerAttributes[node.Type] {
+		for _, name := range manifest.pointerAttributes[node.Type] {
 			refs, _ := stringSlice(node.Attrs[name])
 			for _, ref := range refs {
 				target, canonical := text.CanonicalBlockRef(ref)

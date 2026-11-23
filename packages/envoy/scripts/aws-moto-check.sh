@@ -2,7 +2,7 @@
 # packages/envoy/scripts/aws-moto-check.sh
 #
 # Runs the built agent-secrets against moto's AWS, with no AWS account
-# (cmd/agent-secrets/secret_moto_test.go, TestTheBuiltCLIAgainstMoto): it starts moto 5.2.5 on a
+# (cmd/cipher/secret_moto_test.go, TestTheBuiltCLIAgainstMoto): it starts moto 5.2.5 on a
 # free loopback port under the account the tests' key ARN names, waits until it answers, runs the
 # test with AGENT_SECRETS_MOTO_URL naming it and AGENT_SECRETS_BINARY naming BINARY (empty: the
 # test builds the CLI from this tree), stops moto, and exits with go test's status.
@@ -53,5 +53,5 @@ fi
 echo "aws-moto-check.sh: moto answers at $url; running ${binary:-the CLI built from this tree}"
 
 status=0
-AGENT_SECRETS_MOTO_URL="$url" AGENT_SECRETS_BINARY="$binary" go test -tags moto -run '^TestTheBuiltCLIAgainstMoto$' -count=1 -v ./cmd/agent-secrets/ || status=$?
+AGENT_SECRETS_MOTO_URL="$url" AGENT_SECRETS_BINARY="$binary" go test -tags moto -run '^TestTheBuiltCLIAgainstMoto$' -count=1 -v ./cmd/cipher/ || status=$?
 exit "$status"

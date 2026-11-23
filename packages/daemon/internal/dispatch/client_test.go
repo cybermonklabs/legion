@@ -50,6 +50,26 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 	if issues[1].Key != "LEGION-2" || fmt.Sprint(issues[1].Rank) != "c" || issues[1].Parent == nil || *issues[1].Parent != "LEGION-1" || issues[1].HandedOver {
 		t.Fatalf("second filtered issue = %#v, want LEGION-2 with Dispatch rank c under LEGION-1, not handed over (no labels)", issues[1])
 	}
+	for i, want := range [][]string{{"frontend", "Legion"}, {}} {
+		if !reflect.DeepEqual(issues[i].Labels, want) {
+			t.Fatalf("labels of %s = %#v, want %#v as the listing answered them", issues[i].Key, issues[i].Labels, want)
+		}
+	}
+}
+
+// release_children reads a child from the project's listing when Dispatch's detail read of it
+// fails, as the summary made an Issue (api's cachedIssueReader), and the copy of Dispatch's issues
+// takes that Issue as a reading of all five values: the Issue keeps the labels the listing showed,
+// with every other field the listing carries.
+func TestASummaryAsAnIssueKeepsItsLabels(t *testing.T) {
+	parent := "LEGION-1"
+	summary := IssueSummary{Key: "LEGION-2", Title: "child", Status: "todo", Parent: &parent, Rank: "b", Labels: []string{"frontend", "Legion"},
+		HandedOver: true, LastSeq: 7, ResolvedRepo: "acme/widgets", BlockedBy: []string{"LEGION-3"}, ClaimedBy: "session:architect"}
+	want := Issue{Key: "LEGION-2", Title: "child", Status: "todo", Parent: &parent, Rank: "b", Labels: []string{"frontend", "Legion"},
+		HandedOver: true, LastSeq: 7, ResolvedRepo: "acme/widgets", BlockedBy: []string{"LEGION-3"}, Claim: &Claim{Kind: "session", ID: "architect"}}
+	if got := summary.Issue(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the summary as an Issue = %#v, want %#v", got, want)
+	}
 }
 
 func TestGetIssueReturnsWorkflowFields(t *testing.T) {
@@ -117,36 +137,6 @@ func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
 	}
 	if issue.ResolvedRepo != "acme/gadgets" {
 		t.Fatalf("issue = %#v, want it resolved to acme/gadgets", issue)
-	}
-}
-
-// The repository mapping is every project's (GET /api/v1/settings/repo-projects), each mapping
-// with its project and whether it is that project's default; the daemon keeps its own project's.
-func TestListRepoProjectsReadsEveryMappingWithItsDefault(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/settings/repo-projects" {
-			t.Fatalf("request = %s %s, want GET /api/v1/settings/repo-projects", r.Method, r.URL.Path)
-		}
-		assertBearer(t, r)
-		writeJSON(t, w, []map[string]any{
-			{"repo": "acme/gadgets", "project": "LEGION", "default": false, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-			{"repo": "acme/widgets", "project": "LEGION", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-			{"repo": "other/thing", "project": "OTHER", "default": true, "created_by": nil, "created_at": "2026-10-16T12:00:00Z"},
-		})
-	}))
-	defer server.Close()
-
-	mappings, err := New(server.URL, dispatchToken).ListRepoProjects(context.Background())
-	if err != nil {
-		t.Fatalf("list repo projects: %v", err)
-	}
-	want := []RepoProject{
-		{Repo: "acme/gadgets", Project: "LEGION"},
-		{Repo: "acme/widgets", Project: "LEGION", Default: true},
-		{Repo: "other/thing", Project: "OTHER", Default: true},
-	}
-	if !reflect.DeepEqual(mappings, want) {
-		t.Fatalf("mappings = %#v, want %#v", mappings, want)
 	}
 }
 

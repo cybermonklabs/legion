@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  A shared secret's request whose responsible person may not see it, because it belongs to a
+  private project that person is not on, waits in the Inbox of everyone who may see it instead.
+  A list asks Dispatch about such requests for at most two seconds from when it reads its rows.
+  The requests it has not read by then are left off it, and the broker logs one WARN line for the
+  list that counts them, at most once every 30 seconds for each person: `an approver's list
+  leaves out, unread, rows whose responsible person is someone else, since its time for reading
+  them ran out; each belongs there only where that person may not see it`, with `reader` and
+  `rows`. A request left off because a read of Dispatch failed is logged at WARN once every 30
+  seconds, naming the record and its responsible person: `an approver's list leaves out a row
+  whose responsible person is someone else, since Dispatch could not be asked whether the row
+  belongs there too; it belongs there only where that person may not see it`, with `record` and
+  `responsible`. Where that person is not on the request's project, such a request may wait in
+  no Inbox until Dispatch answers.
+time: 2026-11-20T06:43:32Z
+custom:
+    Issue: pr4135

@@ -16,8 +16,7 @@ import (
 // The lines a session consumer's create writes of a start it moved (bus.SessionConsumers.create):
 // the WARN of a start past the stream's end it created at the stream's first sequence, and the
 // INFO of a caller's start it lowered to the session's resume record. A production check reads the
-// WARN by its text, and packages/envoy/AGENTS.md ("The log lines of a start") states both whole, so
-// the tests name them whole.
+// WARN by its text and keys, so the tests name both lines whole.
 const (
 	clampedStartLine = "session consumer start past the stream's end, created at the stream's first sequence"
 	loweredStartLine = "session consumer created at its resume record's floor, below the start the caller asked"

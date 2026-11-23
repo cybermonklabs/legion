@@ -1,0 +1,21 @@
+-- packages/envoy/internal/broker/store/migrations/0036_request_notify.up.sql
+-- Who is asked to decide a request for a shared human-tier secret. Such a request names the
+-- approver 'anyone', which anyone signed in to the broker may decide (record.MayDecide), and until
+-- now GET /v1/pending listed it for every person, so every signed-in person's Dispatch Inbox held
+-- every such request, including the ones they have nothing to do with.
+--
+-- notify is the person responsible for the agent that made the request, the canonical login
+-- requests.Machine.Create found when it wrote the record (responsiblePerson): the session's
+-- operator; for a fleet machine's own session, the person its BROKER_VM_EXCHANGE_ACCOUNTS entry
+-- names; for a Legion pod, the assignee of the Dispatch issue its claim names. PendingForApprover
+-- lists an 'anyone' record for that person alone, and for everyone where notify is null, which is
+-- every record where no person was found and every row this migration finds, so no request waits
+-- where nobody sees it.
+--
+-- It chooses who is asked and never who may decide: it is no part of the signed record body, and
+-- the chain a release re-verifies does not read it. credential_requests rows are written once and
+-- never updated (credential_requests_no_update), and Create writes notify with the row.
+--
+-- Additive and nullable, so it rewrites no row, and a broker from before it keeps serving while it
+-- applies: that broker writes no notify, and its records are listed for everyone as before.
+alter table credential_requests add column if not exists notify text;

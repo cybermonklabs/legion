@@ -1,15 +1,15 @@
-import { test } from './harness.js';
-import { EditorState, TextSelection } from '@milkdown/kit/prose/state';
-import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
-
-import { createHeadlessProof } from '../lib-headless.js';
+import type { Node as ProseMirrorNode } from "@milkdown/kit/prose/model";
+import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import {
   BLOCK_ID_ATTR,
   blockIdOf,
   createBlockIdsPlugin,
   setBlockIdGenerator,
   setBlockIdVisitCounter,
-} from '../editor/schema/block-ids.js';
+} from "../editor/schema/block-ids.js";
+
+import { createHeadlessProof } from "../lib-headless.js";
+import { test } from "./harness.js";
 
 function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -37,20 +37,22 @@ const BLOCKS = 10_000;
  */
 const MOST_VISITS = 5;
 
-console.log('\n=== Block ids cost ===');
+console.log("\n=== Block ids cost ===");
 
-await test('one character into a 10,000-block document reads only what it changed', async () => {
+await test("one character into a 10,000-block document reads only what it changed", async () => {
   const { schema } = await createHeadlessProof();
   const paragraphs: ProseMirrorNode[] = [];
   for (let i = 1; i <= BLOCKS; i += 1) {
-    paragraphs.push(schema.nodes.paragraph.create({ [BLOCK_ID_ATTR]: `b-${i}` }, schema.text(`block ${i}`)));
+    paragraphs.push(
+      schema.nodes.paragraph.create({ [BLOCK_ID_ATTR]: `b-${i}` }, schema.text(`block ${i}`))
+    );
   }
   const doc = schema.nodes.doc.create(null, paragraphs);
   assert(doc.childCount === BLOCKS, `expected ${BLOCKS} blocks, built ${doc.childCount}`);
 
   // Every block is identified, so the edit below must stamp nothing: minting is a failure.
   setBlockIdGenerator(() => {
-    throw new Error('the edit stamped a block; the document was meant to be fully identified');
+    throw new Error("the edit stamped a block; the document was meant to be fully identified");
   });
   let read: number | null = null;
   setBlockIdVisitCounter((visited) => {
@@ -64,14 +66,19 @@ await test('one character into a 10,000-block document reads only what it change
     const inside = pos + 1;
     const state = base.apply(base.tr.setSelection(TextSelection.create(base.doc, inside)));
     const started = performance.now();
-    const next = state.apply(state.tr.insertText('x', inside));
+    const next = state.apply(state.tr.insertText("x", inside));
     const elapsed = performance.now() - started;
 
-    assert(next.doc.childCount === BLOCKS, `the edit changed the block count: ${next.doc.childCount}`);
-    assert(next.doc.child(middle).textContent.startsWith('x'), 'the character was not inserted');
-    assert(blockIdOf(next.doc.child(middle)) === `b-${middle + 1}`, 'the edited block lost its id');
-    assert(read !== null, 'the plugin did not report what it read');
-    console.log(`  10,000 blocks, one character inserted: ${read} nodes read in ${elapsed.toFixed(1)}ms`);
+    assert(
+      next.doc.childCount === BLOCKS,
+      `the edit changed the block count: ${next.doc.childCount}`
+    );
+    assert(next.doc.child(middle).textContent.startsWith("x"), "the character was not inserted");
+    assert(blockIdOf(next.doc.child(middle)) === `b-${middle + 1}`, "the edited block lost its id");
+    assert(read !== null, "the plugin did not report what it read");
+    console.log(
+      `  10,000 blocks, one character inserted: ${read} nodes read in ${elapsed.toFixed(1)}ms`
+    );
     assert(read <= MOST_VISITS, `nodes read = ${read}, expected at most ${MOST_VISITS}`);
   } finally {
     setBlockIdVisitCounter(null);

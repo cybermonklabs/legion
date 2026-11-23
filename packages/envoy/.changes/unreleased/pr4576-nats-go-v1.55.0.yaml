@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  Bump `github.com/nats-io/nats.go` from v1.53.1 to v1.55.0. The ordered consumer heartbeat
+  reset can no longer register a subscription after connection close, which previously caused
+  `assignment to entry in nil map`. A reconnect-interrupted JetStream publish now returns
+  `ErrDisconnected`, which the stored-publish path classifies as an unanswered send and retries.
+  A watcher's consumer delete answered `ErrDisconnected` during a drain is now logged as a
+  warning, not an error.
+time: 2026-11-20T05:13:00Z
+custom:
+    Issue: pr4576

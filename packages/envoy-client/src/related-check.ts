@@ -6,6 +6,7 @@ import {
   type WriteAdvice,
   type WriteSuggestion,
 } from "@legion/contracts";
+import { linkFor } from "./dispatch-commands/links";
 import { messageFor } from "./errors";
 import { askStateLines } from "./search-answer";
 
@@ -17,8 +18,9 @@ export interface RelatedCheckContext {
   /** The text the check read (a title, a question), the source of the search words when the
    *  server sent no `search_query`; empty when there is none. */
   readonly text: string;
-  /** The Dispatch URL item links are made absolute against. */
-  readonly configUrl: string;
+  /** The base item links are made absolute against (`linkBaseOf`), or undefined where none
+   *  prints and each link is its `dispatch://` reference (`linkFor`). */
+  readonly linkBase: string | undefined;
 }
 
 /**
@@ -59,7 +61,7 @@ export function relatedCheckLines(
     ];
   }
   try {
-    lines.push(...otherProjectLines(suggestions, context.configUrl));
+    lines.push(...otherProjectLines(suggestions, context.linkBase));
   } catch (error) {
     lines.push(`The answers of other projects could not be shown: ${messageFor(error)}`);
   }
@@ -67,7 +69,7 @@ export function relatedCheckLines(
     const likely = suggestions.likely_duplicate;
     if (likely !== undefined && likely !== null) {
       lines.push(
-        `Likely duplicate: ${likely.key} [${likely.status}] ${likely.title} → ${absoluteHref(likely.href, context.configUrl)}`
+        `Likely duplicate: ${likely.key} [${likely.status}] ${likely.title} → ${linkFor(likely.href, context.linkBase)}`
       );
       lines.push(
         "Read it. If it is the same work, fold this issue into it by the duplicate rule of skill://dispatch-first."
@@ -78,7 +80,7 @@ export function relatedCheckLines(
     }
     for (const match of suggestions.title_matches ?? []) {
       lines.push(
-        `Near copy you forced past: ${match.key} [${match.status}] ${match.title} → ${absoluteHref(match.href, context.configUrl)}`
+        `Near copy you forced past: ${match.key} [${match.status}] ${match.title} → ${linkFor(match.href, context.linkBase)}`
       );
     }
   } catch (error) {
@@ -149,7 +151,7 @@ export function decisionBlockLines(
 export function declinedAskLines(
   advice: WriteAdvice | undefined,
   issueKey: string,
-  configUrl: string
+  linkBase: string | undefined
 ): string[] {
   try {
     const declined = advice?.declined_asks;
@@ -161,9 +163,9 @@ export function declinedAskLines(
         : `This issue holds ${count} questions a person declined to answer. Ask one again only if the facts have changed:`,
     ];
     for (const ask of declined) {
-      const href = absoluteHref(
+      const href = linkFor(
         `/issues/${encodeURIComponent(issueKey)}/asks/${encodeURIComponent(ask.id)}`,
-        configUrl
+        linkBase
       );
       lines.push(`- Declined: ${ask.question} → ${href}`);
       if (ask.note !== "") lines.push(`  Their note: ${ask.note}`);
@@ -187,7 +189,7 @@ function relatedCheckForm(suggestions: Suggestions, context: RelatedCheckContext
     // A server predating the forms names no search mode, so its header names none either.
     const header =
       form.mode === undefined ? "Related items:" : `Related items (searched by ${form.mode}):`;
-    return [header, ...form.related.flatMap((item) => relatedItemLines(item, context.configUrl))];
+    return [header, ...form.related.flatMap((item) => relatedItemLines(item, context.linkBase))];
   }
   return [
     form.mode === undefined
@@ -201,14 +203,14 @@ function relatedCheckForm(suggestions: Suggestions, context: RelatedCheckContext
  * asking project. A server that offered none — the field absent, null, or an empty list — prints
  * nothing, the heading with it, so a check that offered nothing reads as one.
  */
-function otherProjectLines(suggestions: Suggestions, configUrl: string): string[] {
+function otherProjectLines(suggestions: Suggestions, linkBase: string | undefined): string[] {
   const items = suggestions.other_projects ?? [];
   if (items.length === 0) return [];
   return [
     // The heading names where the items come from. It claims nothing about whether they answer
     // the question the check read: the server ranks them by meaning, and the reader decides.
     "Answered questions in other projects:",
-    ...items.flatMap((item) => relatedItemLines(item, configUrl, true)),
+    ...items.flatMap((item) => relatedItemLines(item, linkBase, true)),
   ];
 }
 
@@ -222,7 +224,7 @@ function otherProjectLines(suggestions: Suggestions, configUrl: string): string[
  */
 function relatedItemLines(
   item: WriteSuggestion,
-  configUrl: string,
+  linkBase: string | undefined,
   namesProject = false
 ): string[] {
   try {
@@ -232,7 +234,7 @@ function relatedItemLines(
       namesProject && item.owner.kind === "issue" && project !== undefined && project !== ""
         ? `${project}: ${label}`
         : label;
-    const lines = [`- ${named} → ${absoluteHref(item.href, configUrl)}`];
+    const lines = [`- ${named} → ${linkFor(item.href, linkBase)}`];
     if (item.kind === "ask") {
       lines.push(...askLines(item.ask));
     }
@@ -264,15 +266,6 @@ function suggestionLabel(item: WriteSuggestion): string {
     return `${item.owner.key} [${item.owner.status}] ${item.owner.title}`;
   }
   return `${item.owner.name} (${item.owner.project}/${item.owner.slug})`;
-}
-
-/** The link as an absolute URL, or as the server sent it when it does not parse as one. */
-function absoluteHref(href: string, configUrl: string): string {
-  try {
-    return new URL(href, configUrl).toString();
-  } catch {
-    return String(href);
-  }
 }
 
 /**

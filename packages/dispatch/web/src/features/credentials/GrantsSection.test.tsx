@@ -21,8 +21,8 @@ const operated: ApproverGrantResp = {
 };
 
 /** A grant that belongs to no person: the policy gave it without asking, so it has no approver,
- *  and a pod acts for nobody, so its enrollment has no operator. The broker refuses every
- *  signed-in person's revoke of it. */
+ *  and a service's pod acts for nobody, so its enrollment has no operator. The broker refuses
+ *  every signed-in person's revoke of it. */
 function nobodys(operator: string): ApproverGrantResp {
   return {
     approver: null,

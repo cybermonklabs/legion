@@ -94,6 +94,7 @@ func idleRigEarlierBundle(issue string, at time.Time) runtime.WorkspaceBundle {
 // each holding a live claim ready or idle, each one the idle rule would otherwise take — stand
 // with their claims untouched.
 func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
 	rig := newIdleWakeRig(t, nil, idleRigOperatorRetry, idleRigFreshSession, idleRigQueuedStart)
 	// From here no pod of the rig is released for being idle. The gate is shut now and kept
 	// shut by a goroutine of the rig's for the rest of the test, because the listener
@@ -242,7 +243,7 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 // about the gate; the count of the line the daemon logs at the gate is taken after that wait,
 // so the lines read after the release belong to the ticks that made it. The teardown's own line
 // is written only after the runtime has deleted the pod, its Sandbox and its disk (the outbox's
-// SuspendIssue, then its line), which is what the release wait reads, so the line is waited for
+// ReleaseIssue, then its line), which is what the release wait reads, so the line is waited for
 // rather than read once: read at once, a release that has deleted everything and not yet written
 // its line reads as no release at all, which a loaded run of the whole package met.
 func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue) {

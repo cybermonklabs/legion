@@ -2,9 +2,12 @@ package delivery
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/citebody"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // TestCitedIssuesReadsAURLAsAURL holds the whole citation decision, not the expression that
@@ -125,7 +128,7 @@ func TestCitedIssuesReadsAURLAsAURL(t *testing.T) {
 		{name: "inside CJK text with no space in it", body: "参照https://github.com/acme/widgets/issues/7です。", credit: true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			urls := citedIssues(repo, row.body)
+			urls := citedIssues(refs.Renames{}, repo, citebody.New(row.body, nil))
 			if row.credit {
 				if len(urls) != 1 || urls[0] != cited {
 					t.Errorf("citedIssues(%q, %q) = %v, want %s and nothing else", repo, row.body, urls, cited)
@@ -192,7 +195,7 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 		{name: "another host's path, plain", body: "See https://example.test/github.com/acme/widgets/issues/7 here.", want: []string{seven}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if urls := citedIssues(repo, row.body); !slices.Equal(urls, row.want) {
+			if urls := citedIssues(refs.Renames{}, repo, citebody.New(row.body, nil)); !slices.Equal(urls, row.want) {
 				t.Errorf("citedIssues(%q, %q) = %v, want %v", repo, row.body, urls, row.want)
 			}
 		})
@@ -202,37 +205,82 @@ func TestCitedIssuesCreditsEveryCitationItsWordEnds(t *testing.T) {
 // TestCitedIssuesCostsNoMoreForACitationFarFromASpace is the cost test, written so that it fails
 // on the shape it guards against rather than on a clock. Two bodies of the same length carry the
 // same 200 citations and differ only in what separates them: spaces, which end a word at once,
-// and commas, which do not. A reader that walks back to the nearest space pays the body's length
-// for every match and the comma body costs many times the space one; a reader that reads a
-// bounded run pays the same for both.
-//
-// The two bodies are timed in turn, three times each, and each keeps its quickest: the machine's
-// load only ever adds to a time, and in turn it reaches both bodies over the same stretch of the
-// run, where all three runs of one body and then all three of the other put whatever the load did
-// between them into the ratio.
-//
-// Measured in this pod at this head, best of three each: 5.83 ms and 5.05 ms, a ratio under one.
-// The same bodies against the walk this change replaced (ebb65528's reader): 5.74 ms and
-// 134.77 ms, a ratio of 23. The bound below is 8, which no linear reader approaches and no
-// walking one meets.
+// and commas, which do not. A reader that walks back to the nearest space needs the 65,536 bytes
+// of prose for every path of the comma body; a reader that reads a bounded run needs the same
+// bytes for both, since neither a space nor a comma is a host byte. The reading reaches the body
+// only through citebody's counted reads; the row holds each body's counts (holdToTheReader) and
+// the two bodies to the same counts: a count has no noise to allow for, so the bound is the claim
+// itself rather than a ratio.
 func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	const repo = "acme/widgets"
+	bySpace, byComma := citationsFarFromASpace()
+	var space, comma citebody.Reads
+	citedIssues(refs.Renames{}, repo, citebody.New(bySpace, &space))
+	citedIssues(refs.Renames{}, repo, citebody.New(byComma, &comma))
+	t.Logf("separated by spaces %+v, by commas %+v", space, comma)
+	for _, problem := range append(holdToTheReader("the citations separated by spaces", bySpace, space), holdToTheReader("the citations separated by commas", byComma, comma)...) {
+		t.Error(problem)
+	}
+	if comma != space {
+		t.Errorf("citing %d bytes separated by commas read %+v, and separated by spaces %+v, want the same: a path is read back to the nearest space rather than a bounded run", len(byComma), comma, space)
+	}
+}
+
+// citationsFarFromASpace is the cost row's two bodies: 65,536 bytes of prose and 200 citations,
+// separated by spaces and by commas.
+func citationsFarFromASpace() (bySpace, byComma string) {
 	one := "github.com/acme/widgets/issues/7"
 	prose := strings.Repeat("a", 65536)
-	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
-	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
-	timed := func(body string) time.Duration {
-		started := time.Now()
-		citedIssues(repo, body)
-		return time.Since(started)
+	return prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " "),
+		prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
+}
+
+// TestTheReaderCountsAScanBackFromEachPath is the cost rows' control. A reading that scans back
+// from each issue path to the nearest whitespace, as a change to citedIssues could, can reach
+// the bytes before the path only by asking the Body for them, so holdToTheReader names it: here
+// over the comma body, where the scan needs the body back to its start at every path.
+func TestTheReaderCountsAScanBackFromEachPath(t *testing.T) {
+	_, byComma := citationsFarFromASpace()
+	var reads citebody.Reads
+	body := citebody.New(byComma, &reads)
+	for _, match := range body.Find(githubIssuePath) {
+		strings.LastIndexAny(body.Span(0, match[0]), " \t\r\n")
 	}
-	space, comma := timed(bySpace), timed(byComma)
-	for range 2 {
-		space, comma = min(space, timed(bySpace)), min(comma, timed(byComma))
+	citedIssues(refs.Renames{}, "acme/widgets", body)
+	problems := holdToTheReader("the comma body read back from each path", byComma, reads)
+	t.Logf("%+v: %q", reads, problems)
+	if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, "one span handed") }) {
+		t.Errorf("a scan back from each of 200 paths over %d bytes read %+v, and the cost rows' check named no span longer than citationReach and the longest path: it cannot see the scan", len(byComma), reads)
 	}
-	if comma > 8*space {
-		t.Errorf("citing %d bytes separated by commas took %v against %v separated by spaces, more than 8 times as long: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space)
+}
+
+// holdToTheReader is what the cost rows hold of reads, what citedIssues read of body through
+// citebody: at most one pass over the body for each of the two finders, and at least one; at
+// least one span for each issue path, whose decision needs one, and at most four, its decision's
+// and its owner, repository and number, and one for each bare reference; and no span longer than
+// citationReach and the longest issue path, the window one decision needs. Together they bound
+// the bytes read by a constant times the body. It answers each one reads breaks.
+func holdToTheReader(what, body string, reads citebody.Reads) []string {
+	paths := githubIssuePath.FindAllStringIndex(body, -1)
+	bares := len(githubBareReference.FindAllStringIndex(body, -1))
+	longestPath := 0
+	for _, path := range paths {
+		longestPath = max(longestPath, path[1]-path[0])
 	}
+	var problems []string
+	if reads.Passes < 1 || reads.Passes > 2 {
+		problems = append(problems, what+": "+strconv.Itoa(reads.Passes)+" passes over the body, want 1 or 2, one for each finder")
+	}
+	if reads.Spans < len(paths) || reads.Handed == 0 {
+		problems = append(problems, what+": "+strconv.Itoa(reads.Spans)+" spans for "+strconv.Itoa(len(paths))+" issue paths, "+strconv.Itoa(reads.Handed)+" bytes: a path was decided without a counted span, so the count saw nothing of it")
+	}
+	if most := 4*len(paths) + bares; reads.Spans > most {
+		problems = append(problems, what+": "+strconv.Itoa(reads.Spans)+" spans, want at most "+strconv.Itoa(most)+", four for each issue path and one for each bare reference: a path is read more than its decision needs")
+	}
+	if most := citationReach + longestPath; reads.Longest > most {
+		problems = append(problems, what+": one span handed "+strconv.Itoa(reads.Longest)+" bytes, want at most "+strconv.Itoa(most)+" (citationReach and the longest issue path): a path is read back to the nearest space rather than a bounded run")
+	}
+	return problems
 }
 
 // TestCitedIssuesReadsAHostNameOfAHostNamesLength holds the two ends of what a host may be. A
@@ -245,19 +293,19 @@ func TestCitedIssuesReadsAHostNameOfAHostNamesLength(t *testing.T) {
 	const cited = "https://github.com/acme/widgets/issues/7"
 	t.Run("a citation after a word of 65,533 bytes", func(t *testing.T) {
 		body := strings.Repeat("a", 65533) + " https://github.com/acme/widgets/issues/7"
-		if urls := citedIssues(repo, body); len(urls) != 1 || urls[0] != cited {
+		if urls := citedIssues(refs.Renames{}, repo, citebody.New(body, nil)); len(urls) != 1 || urls[0] != cited {
 			t.Errorf("citedIssues over a 65,533-byte word = %v, want %s and nothing else", urls, cited)
 		}
 	})
 	t.Run("a host name of 65,533 bytes is no host name", func(t *testing.T) {
 		body := strings.Repeat("a", 65533) + "github.com/acme/widgets/issues/7"
-		if urls := citedIssues(repo, body); len(urls) != 0 {
+		if urls := citedIssues(refs.Renames{}, repo, citebody.New(body, nil)); len(urls) != 0 {
 			t.Errorf("citedIssues over a 65,533-byte host name = %v, want none", urls)
 		}
 	})
 	t.Run("more digits after the colon than a host name is long leaves no host", func(t *testing.T) {
 		body := "See https://github.com:" + strings.Repeat("4", 300) + "/acme/widgets/issues/7 here."
-		if urls := citedIssues(repo, body); len(urls) != 0 {
+		if urls := citedIssues(refs.Renames{}, repo, citebody.New(body, nil)); len(urls) != 0 {
 			t.Errorf("citedIssues over 300 digits after the colon = %v, want none: past a host name's length there is no host left to read", urls)
 		}
 	})

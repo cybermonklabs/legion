@@ -53,8 +53,8 @@ sjawhar/legion#2528 made thirteen inputs of `envoy-infra:gcp:Dispatch` optional 
 schema. In cybermonklabs/legion the three searches found no caller outside
 `packages/envoy/infra` itself: seven hits, every one a comment or a changelog fragment.
 
-The consumer is theorem-labs/agent-infra, read read-only with
-`gh api repos/theorem-labs/agent-infra/contents/<path> -H "Accept: application/vnd.github.raw"`.
+The consumer is example-org/deployment, read read-only with
+`gh api repos/example-org/deployment/contents/<path> -H "Accept: application/vnd.github.raw"`.
 Its `dispatch/main.go` holds one `DispatchArgs` literal (lines 746-775) and one `NewDispatch` call
 (line 816). Compiled against an SDK generated from the plugin built at the head, that literal
 failed with exactly six errors and compiled clean once those six were wrapped in
@@ -68,7 +68,7 @@ that changed type, `frontDoorToolsImage`, is set nowhere in that program, becaus
 mode off. `legion/main.go` reads the component's outputs through a `pulumi.NewStackReference`
 (lines 770 and 953-967) and needed nothing, no output's type having changed.
 
-Both of agent-infra's stacks pin `envoy-infra@2.9.1` in `Pulumi.yaml`, and its
+Both of the deployment repository's stacks pin `envoy-infra@2.9.1` in `Pulumi.yaml`, and its
 `envoy/envoy-infra-version.sh` refuses a pin that disagrees with the generated SDK, so nothing
 reached a running stack; the pin move is dispatch://INFRA-775. The release is a major because the
 title reads `feat(envoy-infra)!:`, which `.github/scripts/release-bump.sh` reads.

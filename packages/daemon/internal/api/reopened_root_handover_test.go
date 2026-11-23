@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -50,7 +51,7 @@ func heldChildHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder
 		Project: testDispatchProject, Title: "the held child", Phase: phase.Admitted, Generation: 1, Status: "todo", DispatchStatus: "todo",
 		Rank: "B", HandedOver: true, LastDispatchSeq: 4})
 	approved := 1
-	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutGate(context.Background(), tx, record.DesignGate{Issue: statusRoot, ArtifactID: "7d1e3a5c-9b2f-4c6e-8a40-3f5d7b9e1c26", LatestVersion: 1, ApprovedVersion: &approved})
 	}); err != nil {
 		t.Fatalf("seed the accepted tree: %v", err)
@@ -75,7 +76,7 @@ func heldChildHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder
 // written at the linger's start now, and the hand-over is decided at its end from the member's
 // own state (the workflow's unfinishedHandOvers).
 func TestARerunUnderAReopenedRootIsNotTakenForAStaleHandOver(t *testing.T) {
-	h, handlers, _, logs := heldChildHarness(t)
+	h, handlers, statuses, logs := heldChildHarness(t)
 	ctx := context.Background()
 	apply := func(id string, fact intake.Fact) {
 		t.Helper()
@@ -105,11 +106,9 @@ func TestARerunUnderAReopenedRootIsNotTakenForAStaleHandOver(t *testing.T) {
 		t.Fatalf("the reopened root = %#v, want it re-admitted at generation 2, no longer lingering", root)
 	}
 
-	// In the new run its architect starts the child over: park_child, then rerun_child.
+	// In the new run its architect starts the child over: backlog, then rerun_child.
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
-		t.Fatalf("park = %d %s, want 200", recorder.Code, recorder.Body)
-	}
+	ownersBacklog(t, h, handlers, statuses, architect, statusChild)
 	if recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
 		t.Fatalf("rerun = %d %s, want 200", recorder.Code, recorder.Body)
 	}

@@ -9,7 +9,7 @@
 // reconciliation retried while the keeper launches the controller reads them, and the store holds
 // the controller's claim launching, as the supervisor stores it before the launch begins. What the
 // proof stands in for lies outside the sweep: the agent is a sleep stub (no model, Dispatch or
-// NATS), the App tokens are placeholders, and no repository is mapped.
+// NATS), the App tokens are placeholders, and no record names a repository.
 package daemon
 
 import (

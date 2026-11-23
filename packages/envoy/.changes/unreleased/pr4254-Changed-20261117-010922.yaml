@@ -1,0 +1,5 @@
+kind: Changed
+body: 'The Envoy listener''s request and answer bodies are one public package, `listenerwire`, which imports the standard library alone. The listener writes and reads its types, and so do its Go clients: the broker''s wake, Dispatch''s envoy client, the load-test harness through its new `loadtest/listenerclient`, the refill rig and the Legion daemon, none of which keeps a copy of its own any more. Each answer keeps its bytes. A Go client''s request leaves out the fields it does not set, which the listener reads as it read them empty, and a load-test registration no longer carries the `driving` flag, which the listener never read. `internal/wirecheck` holds a wire package''s clients to its types, and `listenerwire`''s tests run it over the listener''s clients.'
+time: 2026-11-17T01:09:22.100350226Z
+custom:
+    Issue: pr4254

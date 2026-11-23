@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // errCutOff is every statement of a process the test has cut off from Postgres.
@@ -98,7 +99,7 @@ func startNATSCut(t *testing.T, natsURL string, latency time.Duration) (*natsCut
 	if err != nil {
 		t.Fatalf("parse the NATS URL: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the NATS relay: %v", err)
 	}
@@ -268,12 +269,12 @@ func (p *intakeProcess) holdDeadline() time.Time {
 // its own, storetest.SecondProcess) and natsURL's server, until the test ends or its stop is
 // called. Its GitHub answers every pull request 404 after counting it, which the intake logs and
 // acknowledges, and holds the fetch of each number block reports true until the fetch's own
-// deadline or the test's end.
-func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool) *intakeProcess {
+// deadline or the test's end. options are added to its NATS client's own.
+func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block func(number int) bool, options ...bus.ConnectOption) *intakeProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
 	leasePool := storetest.Leases(t, second.Pool)
-	client, err := bus.Connect([]string{natsURL}, bus.WithName(intakeConnectionName))
+	client, err := bus.Connect([]string{natsURL}, append([]bus.ConnectOption{bus.WithName(intakeConnectionName)}, options...)...)
 	if err != nil {
 		t.Fatalf("connect the process's intake: %v", err)
 	}
@@ -304,7 +305,7 @@ func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block fu
 	process.release = sync.OnceFunc(func() { close(held) })
 	t.Cleanup(process.release)
 
-	intake := newIntake(client, second.Pool, process.leases, github, events.NewBroker(), loadedSettingsCache(t, t.Context(), second.Pool))
+	intake := newIntake(client, second.Pool, process.leases, github, events.NewBroker(), loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	process.intake = intake
 	runCtx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -321,10 +322,11 @@ func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block fu
 }
 
 // publishMergedPullRequest publishes the merge of acme/widgets pull request number by a population
-// author, which the intake fetches from GitHub.
-func publishMergedPullRequest(t *testing.T, publisher *bus.Client, number int) {
+// author, which the intake fetches from GitHub, and answers the stream sequence the stream stored
+// it at.
+func publishMergedPullRequest(t *testing.T, publisher *bus.Client, number int) uint64 {
 	t.Helper()
-	publishPullRequestEnvelope(t, publisher, "acme", "widgets", number, map[string]string{
+	return publishPullRequestEnvelope(t, publisher, "acme", "widgets", number, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
 		"number": strconv.Itoa(number), "author": "octocat",
 	})

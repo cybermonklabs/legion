@@ -3,7 +3,12 @@ import { type ReactNode, useCallback, useMemo, useState } from "react";
 
 import { projectIssuesQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
+import { type PageWords, usePageWords, withoutEllipsis } from "../../components/tooltips";
 import {
+  pageLabelChip,
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
@@ -54,8 +59,56 @@ function saveLabels(draft: readonly string[], labels: readonly string[]): string
   ];
 }
 
+/** `main`'s name for the labels control: the name it answers to in every state outside
+ *  `NoTooltips`, and inside while the control draws a label (`displayLabels`: the open popover's
+ *  draft, else the issue's labels) and no save is in flight. */
+const editLabelsName = "Edit labels";
+
+/** The name the labels control answers to, which the new issue page's add menu, its `l` key and
+ *  its rows find it by inside `NoTooltips` rather than drawing a second one. `inside` is
+ *  required: the control's state inside `NoTooltips`, or `null` outside it, where the name is
+ *  `main`'s "Edit labels" in every state. Inside it carries the labels the control draws,
+ *  whether a save is in flight, and the page's words (`ANSWER_LINES` and `CONTROL_LABELS`). With
+ *  no label the name is the words the control draws, then the list's `control_name_to` and the
+ *  issue's key ("Add a label to CORE-1", as the priority's is "Add a priority to CORE-1"), so a
+ *  voice user saying what they read presses it (WCAG 2.5.3); with no key it is those words
+ *  alone. With a label it is `main`'s "Edit labels". While a save is in flight the control draws
+ *  `saving_labels` ("Saving labels…") whatever it holds, so the name is those words with their
+ *  trailing ellipsis dropped, then the list's `control_name_of` and the issue's key ("Saving
+ *  labels of CORE-1"), or those words alone with no key. The words are the page's list's, passed
+ *  in rather than imported: the page names the control outside React from the list it imports,
+ *  and this file imports nothing of that list (`components/tooltips.tsx`). */
+export function labelsControlName(
+  issueKey: string | undefined,
+  inside: {
+    readonly labels: readonly string[];
+    readonly saving: boolean;
+    readonly words: Pick<PageWords, "ANSWER_LINES" | "CONTROL_LABELS">;
+  } | null
+): string {
+  if (inside === null) return editLabelsName;
+  const { words } = inside;
+  if (inside.saving) {
+    const said = withoutEllipsis(words.ANSWER_LINES.saving_labels);
+    return issueKey === undefined
+      ? said
+      : `${said} ${words.CONTROL_LABELS.control_name_of} ${issueKey}`;
+  }
+  if (inside.labels.length > 0) return editLabelsName;
+  return issueKey === undefined
+    ? words.CONTROL_LABELS.add_label
+    : `${words.CONTROL_LABELS.add_label} ${words.CONTROL_LABELS.control_name_to} ${issueKey}`;
+}
+
 export interface IssueLabelsProps {
+  /** The shape of each label's chip, for a host that draws labels in a shape of its own (the
+   *  new issue page's Details draws the prototype's `.lchip`). Given, the labels wrap. */
+  readonly chipClassName?: string;
   readonly disabled: boolean;
+  /** The issue's key, `labelsControlName`'s first argument, which ends the control's name inside
+   *  `NoTooltips` while the control draws no label (`displayLabels`: the open popover's draft,
+   *  else `labels`) or a save is in flight. Outside `NoTooltips` it changes nothing. */
+  readonly issueKey?: string;
   readonly labels: readonly string[];
   readonly onSave: (labels: string[]) => Promise<unknown>;
   readonly project: string;
@@ -64,15 +117,19 @@ export interface IssueLabelsProps {
 }
 
 /** The issue header's labels: the current chips and the shared `MultiSelect`, which stages a
- *  draft while open and saves the final draft once, when it closes. */
+ *  draft while open and saves the final draft once, when it closes. Inside `NoTooltips`
+ *  (`components/tooltips.tsx`) it says the new issue page's words with their marks. */
 export function IssueLabels({
+  chipClassName,
   disabled,
+  issueKey,
   labels,
   onSave,
   project,
   saving,
   variant = "default",
 }: IssueLabelsProps): ReactNode {
+  const page = usePageWords();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>([]);
   const [inputError, setInputError] = useState<string | null>(null);
@@ -93,6 +150,15 @@ export function IssueLabels({
     [draft, issues.data, labels]
   );
   const displayLabels = open ? draft : labels;
+  // Inside `NoTooltips` the control's name begins with the words it draws: "Add a label" with no
+  // label (below), as the priority's "Add a priority to CORE-1" does, and "Saving labels…" while it
+  // saves, so a voice user says what they read (WCAG 2.5.3 Label in Name).
+  // `labelsControlName` builds that name, and the page finds the control by it. Given `null`
+  // everywhere outside, it is `main`'s name.
+  const triggerName = labelsControlName(
+    issueKey,
+    page === null ? null : { labels: displayLabels, saving, words: page }
+  );
 
   const setOpenState = useCallback(
     (next: boolean) => {
@@ -137,17 +203,33 @@ export function IssueLabels({
   return (
     <>
       <div
+        // Inside `NoTooltips` the rail's labels wrap with or without a chip shape of the host's:
+        // a label is a value, and a line that keeps its width pushes a long one past its row.
         className={
           variant === "rail"
-            ? "relative flex shrink-0 flex-nowrap items-center gap-1"
+            ? chipClassName === undefined && page === null
+              ? "relative flex shrink-0 flex-nowrap items-center gap-1"
+              : "relative flex min-w-0 flex-wrap items-center gap-1"
             : "relative mt-2 flex flex-wrap items-center gap-2"
         }
         data-testid="issue-labels"
       >
         {displayLabels.map((label) => (
           <span
-            className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`}
+            // Inside `NoTooltips` a chip is never cut: it stays within its line and breaks a
+            // long label anywhere, so a 40-character label with no space wraps inside Details
+            // rather than running past it. Everywhere else it stays whole.
+            className={
+              page === null
+                ? chipClassName === undefined
+                  ? `inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`
+                  : `inline-flex shrink-0 items-center whitespace-nowrap ${chipClassName}`
+                : chipClassName === undefined
+                  ? `inline-flex min-h-11 max-w-full items-center rounded-full px-3 py-1 text-xs font-medium [overflow-wrap:anywhere] sm:min-h-7 sm:px-2 ${pageLabelChip}`
+                  : `inline-flex max-w-full items-center [overflow-wrap:anywhere] ${chipClassName}`
+            }
             key={label}
+            {...page?.authorText}
           >
             {label}
           </span>
@@ -170,10 +252,36 @@ export function IssueLabels({
           options={options}
           searchLabel="Search or create label"
           selected={draft}
-          triggerAriaLabel="Edit labels"
-          triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+          triggerAriaLabel={triggerName}
+          // Inside `NoTooltips` each colour is one of the new issue page's: a label above is
+          // its label chip (the prototype's `.lchip`), and this trigger its secondary control, the
+          // header control's rule and muted words on the paper, with quiet words while it is busy.
+          triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${
+            page === null
+              ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`
+              : `${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`
+          }`}
         >
-          {saving ? "Saving labels…" : displayLabels.length === 0 ? "Labels" : "+"}
+          {page === null ? (
+            saving ? (
+              "Saving labels…"
+            ) : displayLabels.length === 0 ? (
+              "Labels"
+            ) : (
+              "+"
+            )
+          ) : (
+            <span {...page.pageChrome}>
+              {/* With no label the control says what it does, as the priority's says "Add a
+                  priority": its row of Details already names the property, so the property's
+                  name here drew "Labels" twice. */}
+              {saving
+                ? page.ANSWER_LINES.saving_labels
+                : displayLabels.length === 0
+                  ? page.CONTROL_LABELS.add_label
+                  : "+"}
+            </span>
+          )}
         </MultiSelect>
       </div>
       {/* A refused save shows in the shell's pending-writes indicator, with every other write's

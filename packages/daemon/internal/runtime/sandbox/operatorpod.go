@@ -12,12 +12,13 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// imageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
+// ImageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
 // worker.Dockerfile, ENV), which every container inherits, and which a pod's env therefore may not
 // override: AWS_CA_BUNDLE holds the AWS CLI to the system root bundle the image probe verifies;
 // CGO_ENABLED=0 keeps cgo off by default in every process that inherits the image's environment,
@@ -30,9 +31,11 @@ import (
 // LEGION_LEAK_CHECK_TAG is the tag of the shared public leak check the daemon reads and pushes to
 // the pod's launcher, which installs it once for the pod before any role starts
 // (launchers.serveLeakCheck); it is the image's pin and no deployment's to move;
-// and PATH, which the runtime sets as well. TestImageEnvIsWhatTheWorkerImageSets holds the list to
-// the Dockerfile.
-var imageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH"}
+// PATH, which the runtime sets as well; and USER, the runtime user's name, legion, which the
+// skill-scenario rig's scripts read. TestImageEnvIsWhatTheWorkerImageSets holds the list to
+// the Dockerfile. cmd/legion's TLS probe keeps these variables, but gives each client a HOME of
+// its own (tls_probe.go).
+var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod
 // env may set it too: the pod baseline yields to the operator's own value, and the operator's
@@ -47,16 +50,21 @@ type setter struct {
 // store's two variables named apart, since they are Legion's under either store, the controller's
 // Slack channel list, which the runtime sets in the controller's pod alone, Claude Code's three
 // (claudelaunch.Environment) and the session its launcher keeps (claudelaunch.SessionVariable),
-// which it tells a Claude role alone, in its start command, and the name the
+// which it tells a Claude role alone, in its start command, what holds a resumed Oh My Pi to the
+// session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
+// recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
-// image (imageEnv), every launch's spec (the role App's git identity, and each launch secret's
+// image (ImageEnv), every launch's spec (the role App's git identity, and each launch secret's
 // `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
 // of the operator's own value (roleOperatorEnv: the settings overlays, which are hand-added here
 // since `composed` deliberately leaves them out, and every name of `composed`, the spend
 // attributes alone today), and the operator's own pod env. The exchange identity's two variables
 // (exchangeOwned) are the runtime's only where exchange says the deployment names an exchange
 // audience; otherwise nothing of Legion's sets them, and the operator's pod env may, as it could
-// before the key existed. The first setter of a name is the one named.
+// before the key existed. OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the session
+// store's variables though nothing of Legion's sets it: from the pinned Oh My Pi on it replaces the
+// config root the agent directory and a session's path key sit under, so it is refused like them.
+// The first setter of a name is the one named.
 func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {
@@ -68,6 +76,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 		add(name, "Legion sets to place the sessions a resume reads (runtime.kubernetes.session_store)", false)
 	}
 	add(ompsessions.DSNFileName, "is the name the providers volume mounts the session database's URL under (runtime.kubernetes.session_store)", false)
+	add(ompdirs.ConfigRootVariable, "replaces the config root Oh My Pi keeps the agent directory and a session's path key under (Legion's runtime sets none)", false)
 	add(slackChannelsVariable, "Legion's runtime sets for the controller it launches, from the project's slack_channels alone", false)
 	add(launcher.TestPGVariable, "Legion's runtime sets in every role of an issue pod whose deployment serves the pod's own test database (runtime.kubernetes.test_postgres), and refuses here whether or not it does, since a pod env naming another server would point every test at it", false)
 	const claude = "Legion's runtime sets for a role it launches on Claude Code (worker_backends)"
@@ -76,6 +85,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 		add(name, claude, false)
 	}
 	add(claudelaunch.SessionVariable, claude, false)
+	add(runtime.SessionExclusiveVariable, "Legion's runtime sets on every launch that resumes a recorded Oh My Pi session, to hold it to that session", false)
 	// The composed names are this runtime's to compose as well, from the operator's own value and
 	// the launch's issue and role (runtime.SpendResourceAttributes, roleOperatorEnv): the operator
 	// writes the attributes its whole deployment is billed under, and the runtime writes the
@@ -95,7 +105,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 			add(name, "Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience", false)
 		}
 	}
-	for _, name := range imageEnv {
+	for _, name := range ImageEnv {
 		add(name, "the worker image sets (packages/daemon/docker/worker.Dockerfile ENV)", false)
 	}
 	for name := range (runtime.GitIdentity{}).Env() {

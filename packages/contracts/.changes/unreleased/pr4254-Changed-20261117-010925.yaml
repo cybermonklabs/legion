@@ -1,0 +1,5 @@
+kind: Changed
+body: '`gen:go` writes the envelope''s Go mirror into `packages/envoy/listenerwire/envelope_generated.go`, the Envoy listener''s wire package, and names its types as aliases in `packages/envoy/internal/contracts/generated.go`.'
+time: 2026-11-17T01:09:25.26316505Z
+custom:
+    Issue: pr4254

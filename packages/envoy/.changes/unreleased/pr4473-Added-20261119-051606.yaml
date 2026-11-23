@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    envoy-infra's `gcp:Dispatch` can run Dispatch in a GKE cluster and on a Cloud SQL instance that another program makes, and keeps its network when its own cluster goes. A stack that sets none of the three new inputs registers the same resources, with the same inputs and options, as before.
+    `existingCluster` (`{name, location}`, a plain object) makes the component register no Cluster. Before it registers anything, the component looks the cluster up through the consumer's `gcp` provider, which needs `container.clusters.get` on that cluster. It refuses a cluster that has no endpoint or CA certificate, no Workload Identity pool, the Secret Manager add-on off, or no NetworkPolicy enforcement, and one that does not run on the component's own network. Its Kubernetes provider then carries `clusterIdentifier`, the cluster's issuer.
+    `existingDatabaseInstance` (a connection name `<project>:<region>:<instance>`, a Pulumi input) makes the component register no Cloud SQL instance, database or user. The component keeps its generated passwords, so that instance must hold the database and the login `dispatch` with the component's password, as a promoted replica of the component's own instance does. The component refuses `databaseVersion`, `databaseTier`, `databaseAvailabilityType` and `databaseWaitsFor` beside it, and a value that is not a connection name.
+    `regionalNetwork`, true by default, makes the component register no Subnetwork, Router or RouterNat when it is false. Only `existingCluster` allows false. The three new inputs leave the Network, its GlobalAddress and its private services Connection as they are.
+    A running stack that names an existing cluster or instance makes Pulumi delete the resources the component no longer registers. Naming an existing cluster also replaces the Kubernetes provider and every Kubernetes object. The README section "Moving a running stack onto a cluster and a database instance it does not make" says how to keep those resources in state and what each apply does.
+time: 2026-11-19T05:16:06Z
+custom:
+    Issue: pr4473

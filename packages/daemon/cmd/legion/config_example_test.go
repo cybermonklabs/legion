@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -157,6 +158,28 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	}
 }
 
+// The example's commented leak_check block, uncommented with a digest in place of its placeholder,
+// passes the same check and settles on the repository and the manifest digest it names. It needs
+// no volume and no mount: the block names a repository and a digest, not files.
+func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
+	checker := strings.Repeat("5e", 32)
+	config := checkShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"# leak_check:",
+			"#   repository: example-org/deployment",
+			"#   manifest_sha256: <64 hex digits>",
+		)
+		return strings.Replace(example, "manifest_sha256: <64 hex digits>", "manifest_sha256: "+checker, 1)
+	})
+	cfg, err := configpkg.LoadForValidation(config, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.LeakCheck; got.Repository.String() != "example-org/deployment" || got.ManifestSHA256 != checker {
+		t.Errorf("the leak_check block uncommented settles on %+v, want example-org/deployment and %s", got, checker)
+	}
+}
+
 // The example's first commented hook is the hook a file that names no `hooks:` key runs, its
 // words included, so an operator reads the shipped default in the file it edits. Uncommented, it
 // loads as exactly that hook: a default changed in one place and not the other would have the
@@ -233,7 +256,10 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 }
 
 // memoryGuardExampleLines are the example's commented memory_guard block, line by line, as an
-// operator turning it on uncomments it.
+// operator turning it on uncomments it: `issue_pods` first and `controller_pod` after it, in the
+// file's order, since uncommentExample takes the first commented line that starts with each, and
+// the two blocks carry the same members at the same defaults but the wait after a kill, 5 seconds
+// for issue pods and 1 for the controller's pod.
 var memoryGuardExampleLines = []string{
 	"    # memory_guard:",
 	"    #   issue_pods:",
@@ -242,12 +268,18 @@ var memoryGuardExampleLines = []string{
 	"    #     floor_percent: 10",
 	"    #     wait_seconds: 5",
 	"    #     interval_milliseconds: 100",
+	"    #   controller_pod:",
+	"    #     enabled: true",
+	"    #     act_percent: 85",
+	"    #     floor_percent: 10",
+	"    #     wait_seconds: 1",
+	"    #     interval_milliseconds: 100",
 }
 
 // The example's commented memory_guard block, uncommented, passes the same check and settles on
-// the guard on at the defaults the block states, which are the wire's own
+// the guard on for both pod kinds at the defaults the block states, which are the wire's own
 // (config.DefaultMemoryGuard): a default changed in the wire and not in the example would have the
-// example teach a number no daemon runs.
+// example teach a number no daemon runs. The controller pod's wait_seconds is 1.
 func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example, memoryGuardExampleLines...)
@@ -259,37 +291,54 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	if got, want := cfg.Runtime.Kubernetes.MemoryGuard, configpkg.DefaultMemoryGuard(); got != want {
 		t.Errorf("the example's memory_guard block uncommented settles on %+v, want the defaults %+v", got, want)
 	}
-}
-
-// The example's memory_guard block, uncommented with act_percent at 96, one above the wire's range,
-// is refused by the same check: exit 1 and one line naming the whole key and both ends of the range,
-// which is what an operator who edits the shipped block past that range reads. It checks the
-// loader's refusal, not the range the block's own comment states. The block stays commented in the
-// file itself: its values are the defaults, which apply without it.
-func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
-	config := stageShippedExample(t, func(example string) string {
-		example = uncommentExample(t, example, memoryGuardExampleLines...)
-		return strings.Replace(example, "act_percent: 85", "act_percent: 96", 1)
-	})
-
-	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-	t.Logf("legion config check exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
-
-	want := "legion config check: runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95\n"
-	if code != 1 || out.Len() != 0 || errb.String() != want {
-		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+	if got := cfg.Runtime.Kubernetes.MemoryGuard.ControllerPod.WaitSeconds; got != 1 {
+		t.Errorf("the example's controller_pod waits %d seconds after a kill, want 1", got)
 	}
 }
 
-// The example's commented session_database block, uncommented under `session_store: cloudsql-iam`
-// with session_dsn_secret taken out, passes the same check as shipped, with the same stdout. Its
-// impersonate_service_account set to the account's login form rather than its email is refused,
-// naming the member and the value, and a user that is not the account's login is refused, naming
-// the login the account has. The block is where an operator reads what each member takes, so a
-// member it showed wrongly would be an operator's file refused on their first check; here it is
-// this test that fails instead. The block stays commented in the file itself: the shipped store is
-// postgres, and the stdout TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
+// The example's memory_guard block, uncommented with either pod kind's act_percent at 91, one
+// above the 90 both kinds take (INFRA-3531 R4 of spec version 43), is refused by the same check:
+// exit 1 and one line naming that kind's whole key and both ends of its range, which is what an
+// operator who edits the shipped block past that range reads. It checks the loader's refusal, not
+// the range the block's own comment states. The block stays commented in the file itself: its
+// values are the defaults, which apply without it.
+func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
+	for _, kind := range []struct {
+		name string
+		max  int
+	}{{"issue_pods", 90}, {"controller_pod", 90}} {
+		t.Run(kind.name, func(t *testing.T) {
+			config := stageShippedExample(t, func(example string) string {
+				example = uncommentExample(t, example, memoryGuardExampleLines...)
+				// The kind's own act_percent: the first after its key, since both kinds carry 85.
+				at := strings.Index(example, "\n      "+kind.name+":")
+				if at < 0 {
+					t.Fatalf("the uncommented example has no %s block", kind.name)
+				}
+				return example[:at] + strings.Replace(example[at:], "act_percent: 85", fmt.Sprintf("act_percent: %d", kind.max+1), 1)
+			})
+
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+			t.Logf("legion config check exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+
+			want := fmt.Sprintf("legion config check: runtime.kubernetes.memory_guard.%s.act_percent must be between 50 and %d\n", kind.name, kind.max)
+			if code != 1 || out.Len() != 0 || errb.String() != want {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+			}
+		})
+	}
+}
+
+// The example's commented session_database block, its writer_audience included, uncommented under
+// `session_store: cloudsql-iam` with session_dsn_secret taken out, passes the same check as
+// shipped, with the same stdout. Its impersonate_service_account set to the account's login form
+// rather than its email is refused, naming the member and the value, and a user that is not the
+// account's login is refused, naming the login the account has. The block is where an operator
+// reads what each member takes, so a member it showed wrongly would be an operator's file refused
+// on their first check; here it is this test that fails instead. The block stays commented in the
+// file itself: the shipped store is postgres, and the stdout
+// TestShippedLegionYAMLExamplePassesCheckConfig holds is that store's.
 func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAccountsEmailAndLogin(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
@@ -317,6 +366,7 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 					"    #   name: legion_sessions",
 					"    #   user: legion-sessions@example-project.iam",
 					"    #   impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com",
+					"    #   writer_audience: //iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster",
 				)
 				for _, edit := range append([][2]string{
 					{"\n    session_store: postgres ", "\n    session_store: cloudsql-iam "},
@@ -400,8 +450,8 @@ current-context: legion-daemon
 
 // shippedExampleCheckOK is the whole stdout of `legion config check` on the shipped
 // example, the same under either session store the example shows.
-const shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
-	"projects.WIDGETS.production_check: tester — a merge that closes one of its issues opens a production check the tester works\n" +
+var shippedExampleCheckOK = "Config OK: project=WIDGETS design-gate-steps=spec\n" +
+	productionCheckTesterLine("WIDGETS") + defaultStepsTodayLine("WIDGETS") +
 	defaultCacheLine +
 	"plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
 

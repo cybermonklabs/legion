@@ -122,8 +122,7 @@
 #      checked against the bytes it pushed. What it catches is a row left behind at an old
 #      digest. A gate on the bytes would read the attestation's source commit; none exists, by
 #      the controller's decision, no such attack having been seen, and no by-hand reading stands
-#      in for it (one was written and withdrawn, dispatch://INFRA-1443). AGENTS.md states the
-#      same limit in the item after its "Container images" one.
+#      in for it (one was written and withdrawn).
 #
 # CI'S REACH is every .github/workflows/*.yaml, every .github/actions/*/action.yml, and each
 # other file a CI job runs that names an image. The first two kinds come from those two globs;
@@ -338,11 +337,13 @@ REACH = (
     "packages/envoy/internal/testnats/nats.go",
     "packages/envoy/internal/testpg/testpg.go",
     "packages/envoy/internal/tests3/seaweedfs.go",
-    "packages/envoy-client/src/__tests__/nats-server.ts",
+    "packages/envoy-client/test/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
+    ".github/scripts/dispatch-browser-visual-suite.sh",
     "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
+    "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
 )
 
 # A docker command whose image is a variable, and where that variable's value comes from. The
@@ -378,9 +379,13 @@ FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 # installs a fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/),
 # whose cluster.test.sh the envoy-go-checks job runs with a fake `kubectl` on PATH, sources
 # cluster.sh, templates nats.yaml and runs render-nats.sh --pin-from, which takes each digest from
-# the committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at.
+# the committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at;
+# and the legacy-subjects gate (packages/envoy/scripts/legacy-subjects-gate.sh) and its purge
+# driver (legacy-subjects-purge.sh), whose legacy-subjects-gate.test.sh and
+# legacy-subjects-purge.test.sh the envoy-go-checks job runs with a fake `kubectl` on PATH, so the
+# nats-box digest each writes into its Jobs (the deployment's own moveImage pin) is pulled only by
+# the cluster an operator runs the gate against.
 EXCEPTIONS = {
-    "AGENTS.md": NO_CI_JOB,
     "docs/kubernetes.md": NO_CI_JOB,
     "docs/plans/2026-10-14-dispatch-gcp-plan.md": NO_CI_JOB,
     "docs/plans/2026-10-14-envoy-infra-plan.md": NO_CI_JOB,
@@ -415,6 +420,9 @@ EXCEPTIONS = {
     "packages/envoy/loadtest/cluster/render-nats.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/vm/vm.test.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/vm/deployment.example.json": FETCHES_NOTHING,
+    "packages/envoy/scripts/legacy-subjects-gate.sh": FETCHES_NOTHING,
+    "packages/envoy/scripts/legacy-subjects-gate.test.sh": FETCHES_NOTHING,
+    "packages/envoy/scripts/legacy-subjects-purge.sh": FETCHES_NOTHING,
 }
 
 # ---------------------------------------------------------------- reference grammar

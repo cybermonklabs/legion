@@ -48,9 +48,7 @@ func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.
 		Replicas:   3,
 		Metadata:   map[string]string{generationKey: strconv.Itoa(streamConfigGeneration + 1)},
 	}
-	if _, err := js.AddStream(&newer); err != nil {
-		t.Fatalf("the newer build creates the stream: %v", err)
-	}
+	cluster.CreateStream(t, newer)
 	for _, tc := range []struct {
 		name    string
 		options []ConnectOption
@@ -286,7 +284,7 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			if _, err := js.AddStream(&current); err != nil {
 				t.Fatalf("create the stream: %v", err)
 			}
-			client, err := tc.connect([]string{uri}, withStreamSubjectsRefresh(50*time.Millisecond))
+			client, err := tc.connect([]string{uri}, WithStreamSubjectsRefresh(50*time.Millisecond))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -356,7 +354,7 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 			srv.Stop(t)
 
-			client, err := tc.connect([]string{uri}, WithConnectInBackground(), withStreamSubjectsRefresh(time.Hour))
+			client, err := tc.connect([]string{uri}, WithConnectInBackground(), WithStreamSubjectsRefresh(time.Hour))
 			if err != nil {
 				t.Fatalf("connect while the server is down: %v", err)
 			}

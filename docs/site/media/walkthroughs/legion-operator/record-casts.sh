@@ -62,6 +62,12 @@ done
 work=$(mktemp -d /tmp/legion-docs-casts.XXXXXX)
 evidence=$(mktemp -d /tmp/legion-docs-casts-evidence.XXXXXX)
 mkdir -p "$evidence/logs" "$work/bin" "$work/xdg" "$work/tmux"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, scripts/e2e/lib/process-tree.sh); a fork of this
+# shell that execs nothing carries none and is stopped by its pid (run_marks' comment there). The
+# operator's shells and the daemon start under `env -i` (shell_env) and name the mark themselves; a
+# daemon pane carries the XDG_CONFIG_HOME the daemon moves under its state directory, $work/state.
+export LEGION_E2E_RUN=$work
 timeout_hook=
 pg_container=legion-docs-casts-pg-$$
 nats_container=legion-docs-casts-nats-$$
@@ -86,7 +92,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$model_pid"
   stop_pid "$daemon_keeper_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  stop_marked_processes "$work"
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1
   rm -rf "$work"
   echo "evidence: $evidence (logs/daemon.log, logs/listener.log, logs/model.log)"
@@ -208,7 +214,7 @@ EOF
 shell_env=(env -i "PATH=$work/bin:$PATH" "HOME=$omp_home" "OMP_PROFILE=$profile" "TERM=xterm-256color"
   "LANG=C.UTF-8" "XDG_STATE_HOME=$work/xdg" "TMUX_TMPDIR=$work/tmux" "XDG_CONFIG_HOME=$XDG_CONFIG_HOME"
   "MISE_DATA_DIR=$MISE_DATA_DIR" "JJ_CONFIG=$JJ_CONFIG" "LEGION_OMP_PATH=$work/bin/omp"
-  "LEGION_GH_PATH=$legion_gh_path")
+  "LEGION_GH_PATH=$legion_gh_path" "LEGION_E2E_RUN=$work")
 legion() { (cd "$operator" && "${shell_env[@]}" "$work/bin/legion" "$@"); }
 
 check=daemon

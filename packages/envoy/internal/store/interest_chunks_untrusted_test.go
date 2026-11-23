@@ -313,12 +313,12 @@ func TestAWriteOverADamagedManifestDeletesNoChunkItNames(t *testing.T) {
 
 // A manifest copied or borrowed under another session's key names the owner's chunks, so neither
 // the write that replaces it, nor an unsubscribe of the copy's session, nor the deregistration that
-// deletes it deletes them: an exact copy, which the cache joins and holds as a row of its own, and
-// one with a forged SHA-256, which no read joins. Each time the owner's record still reads whole and
-// its chunks stay in the bucket. An exact copy joins into the owner's own record, naming the owner's
-// session, so a registration of the copy's session targets the owner's key at a revision that is
-// not its and is refused; its unsubscribe and its deregistration are its steps here. The control is
-// the owner's own deregistration, which deletes them.
+// deletes it deletes them: an exact copy, which the cache joins and keeps no row for, since the
+// record it joins names the owner's session (ErrInterestUnbound), and one with a forged SHA-256,
+// which no read joins. Each time the owner's record still reads whole and its chunks stay in the
+// bucket. The write of the copy's session lands under its own key (writeRowAt), and the cache
+// still holds the owner's row with the same generation, so the write deletes none of the chunks
+// the copy named (ownLayout). The control is the owner's own deregistration, which deletes them.
 func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	reg := openRegistry(t, conn)
@@ -375,14 +375,15 @@ func TestACopiedOrBorrowedManifestLeavesTheOwnersChunksAlone(t *testing.T) {
 				return err
 			}},
 		} {
-			if what == "an exact copy" && strings.HasPrefix(step.name, "the write") {
-				continue
-			}
-			if _, err := kv.Put("ses_copy", manifest); err != nil {
+			copied, err := kv.Put("ses_copy", manifest)
+			if err != nil {
 				t.Fatalf("store %s: %v", what, err)
 			}
 			if what == "an exact copy" {
-				waitFor(t, 10*time.Second, func() bool { _, ok := reg.Cached("ses_copy"); return ok })
+				awaitInterestApplied(t, reg, "ses_copy", copied)
+				if row, ok := reg.Cached("ses_copy"); ok {
+					t.Fatalf("the cache holds %+v for ses_copy, an exact copy of the owner's manifest, want no row: it names another session", row)
+				}
 			}
 			if err := step.do(); err != nil {
 				t.Fatalf("%s: %v", step.name, err)

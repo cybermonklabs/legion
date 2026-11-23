@@ -17,6 +17,7 @@ import {
   inboxQuery,
   inboxThreadsQuery,
   issueQuery,
+  issueStepsQuery,
   myRepliesCountQuery,
   prioritiesQuery,
   priorityHistoryQuery,
@@ -91,6 +92,10 @@ const READS = {
   comments: { key: ["comments", "CORE-1"] },
   components: { key: ["components", "CORE"] },
   conversationMessages: { key: ["issue-messages", "CORE-1"] },
+  // The issue's decisions: its Decisions view reads them under this key with a query of its own
+  // (`DecisionsPanel.tsx`), and its outline, the margin beside its spec and the spec's marks
+  // through `issueDecisionsQuery`.
+  decisions: { key: ["decisions", "CORE-1"] },
   detail: { key: issueQuery("CORE-1").queryKey },
   docAskPanel: {
     data: { edges: [], node: { id: "ask-7", kind: "ask" } },
@@ -149,6 +154,8 @@ const READS = {
     data: { edges: [], node: { id: "CORE-1/spec#outro", kind: "block" } },
     key: blockQuery("dispatch://CORE-1/spec#b-outro").queryKey,
   },
+  // Another issue's step records, which the Steps tab of CORE-9 reads.
+  otherSteps: { key: issueStepsQuery("CORE-9").queryKey },
   parent: { key: issueQuery("CORE-0").queryKey },
   // CORE-1 is CORE-0's child: CORE-0's panel lists the `child_of` edge from it.
   parentPanel: {
@@ -194,6 +201,8 @@ const READS = {
     data: { edges: [], node: { id: "artifact-3", kind: "artifact" } },
     key: ["references", "to", "dispatch://CORE-1/artifact/spec"],
   },
+  // The Steps tab's read of CORE-1's step records.
+  steps: { key: issueStepsQuery("CORE-1").queryKey },
   summary: { key: issueSummaryQuery("CORE-1").queryKey },
   // The Reply-thread card's reads (`askThreadQuery`, `GET /asks/{id}`), each cut to the fields
   // the rules read: an open question on CORE-1 nobody handed on, one handed on, one answered, an
@@ -460,6 +469,9 @@ const rules: Record<string, Rule> = {
         "priorities",
         "prioritySummary",
         "advancesWork",
+        // The Legion daemon moves the status as an issue's phase moves, and the step records of
+        // the phase it left and the phase it entered come with that move.
+        "steps",
       ],
       spares: [
         "inbox",
@@ -470,6 +482,7 @@ const rules: Record<string, Rule> = {
         "parentPanel",
         "referencesTab",
         "parentSummary",
+        "otherSteps",
       ],
     },
   "a reopen refreshes the whole Inbox and the project counts, since its open asks come back": {
@@ -512,8 +525,9 @@ const rules: Record<string, Rule> = {
       })
     ),
     page: { inboxHolds: false },
-    refreshes: ["detail", "parent", "summary", "projects", "replies", "agentsPicker"],
-    spares: ["inbox", "projectInbox", "unrelatedDetail"],
+    // The close is the merge's end, which the merge step's record comes with.
+    refreshes: ["detail", "parent", "summary", "projects", "replies", "agentsPicker", "steps"],
+    spares: ["inbox", "projectInbox", "unrelatedDetail", "otherSteps"],
   },
   "a close that moves someone else's Replies leaves the viewer's alone": {
     event: event(
@@ -589,6 +603,7 @@ const rules: Record<string, Rule> = {
         "referencePicker",
         "agentsPicker",
         "components",
+        "steps",
       ],
     },
   "a write of any field refreshes every ancestor's children, which show the subtree's newest activity":
@@ -605,6 +620,11 @@ const rules: Record<string, Rule> = {
     event: event("issue.updated", issue({ changed: ["priority"] })),
     refreshes: ["detail", "parent", "grandparent", "unrelatedDetail"],
     spares: ["summary", "pinned"],
+  },
+  "a route move refreshes the issue's steps, since the role that holds it changed": {
+    event: event("issue.updated", issue({ ancestors: ["CORE-0"], changed: ["route"] })),
+    refreshes: ["detail", "steps"],
+    spares: ["otherSteps", "summary"],
   },
   // An assignee write moves the questions nobody has handed on from one person to another, and
   // every reader's Inbox read holds every open question of the issue, so a test against the rows
@@ -706,15 +726,25 @@ const rules: Record<string, Rule> = {
     refreshes: ["parent", "parentPanel"],
     spares: ["issuePanel", "detail"],
   },
-  "a claim refreshes the issue, its collaborators and its project list only": {
+  "a claim refreshes the issue, its collaborators, its steps and its project list only": {
     event: event("issue.claimed", {
       claim: { actor: { id: "planner", kind: "session" }, at: "2026-10-26T00:00:00Z" },
       key: "CORE-1",
       reason: "claimed",
       status: "in_progress",
     }),
-    refreshes: ["collaborators", "detail", "log", "projectList"],
+    refreshes: ["collaborators", "detail", "log", "projectList", "steps"],
     spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
+  },
+  "a release refreshes the issue's steps, since a role's run ended": {
+    event: event("issue.released", { claim: null, key: "CORE-1" }),
+    refreshes: ["detail", "steps"],
+    spares: ["otherSteps", "summary", "pinned"],
+  },
+  "a deploy leaves the issue's steps alone": {
+    event: event("issue.deployed", { number: 1, repo: "acme/widgets" }),
+    refreshes: ["detail", "log"],
+    spares: ["steps", "collaborators"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
     {
@@ -726,11 +756,12 @@ const rules: Record<string, Rule> = {
       refreshes: ["detail", "log", "projectList"],
       spares: ["summary", "pinned", "inbox", "referencePicker", "projects", "replies", "userState"],
     },
-  "a recorded handoff refreshes the issue's handoff list and its log, and no rollup": {
+  "a recorded handoff refreshes the issue's handoff list, its steps and its log, and no rollup": {
     event: event("handoff.recorded", { handoff_id: "handoff-1", phase: "implement", version: 2 }),
-    refreshes: ["handoffs", "detail", "log", "projectList"],
+    refreshes: ["handoffs", "detail", "log", "projectList", "steps"],
     spares: [
       "otherHandoffs",
+      "otherSteps",
       "parent",
       "grandparent",
       "unrelatedDetail",
@@ -775,7 +806,7 @@ const rules: Record<string, Rule> = {
       thread_logins: [],
     }),
     refreshes: ["comment", "rootComment", "comments"],
-    spares: ["inbox", "projectInbox", "ask", "asks", "answers", "replies"],
+    spares: ["inbox", "projectInbox", "ask", "asks", "answers", "replies", "steps"],
   },
   "a reply on an ask refreshes the ask, its Inbox row and the answers page": {
     event: event("comment.created", { anchor: null, ask_id: "ask-1", id: "comment-2" }),
@@ -1044,6 +1075,29 @@ const rules: Record<string, Rule> = {
     refreshes: ["summary", "detail"],
     spares: ["projects", "inbox", "docSummary", "parentSummary"],
   },
+  "the first upload of an issue's decisions document refreshes the issue's decisions": {
+    event: event("artifact.created", {
+      artifact: { id: "artifact-4", name: "decisions.md", role: "decisions", slug: "decisions-md" },
+    }),
+    refreshes: ["decisions", "summary", "detail"],
+    spares: ["projects", "inbox", "docSummary"],
+  },
+  // A server built before document roles sends the decisions document with no role, and names it
+  // by its slug alone.
+  "the first upload of a decisions document with no role refreshes the issue's decisions": {
+    event: event("artifact.created", {
+      artifact: { id: "artifact-4", name: "decisions.md", slug: "decisions-md" },
+    }),
+    refreshes: ["decisions", "summary", "detail"],
+    spares: ["projects", "inbox", "docSummary"],
+  },
+  "the upload of another document of the issue leaves the issue's decisions alone": {
+    event: event("artifact.created", {
+      artifact: { id: "artifact-4", name: "notes.md", slug: "notes-md" },
+    }),
+    refreshes: ["summary", "detail"],
+    spares: ["decisions"],
+  },
   "a version of a project document refreshes that document's summary and page alone": {
     event: event("artifact.version", { artifact_id: "artifact-1", name: "Plan" }, documentOwner),
     refreshes: ["docSummary", "documentPage"],
@@ -1121,14 +1175,16 @@ const rules: Record<string, Rule> = {
     refreshes: ["comment"],
     spares: ["documentPanel"],
   },
-  "a repository mapping refreshes every issue detail": {
+  // A retained event no build writes now: a project's default repository is on the project, so an
+  // event an earlier build stored moves no read.
+  "a retained settings.repo_project.updated refreshes nothing": {
     event: event(
       "settings.repo_project.updated",
       { deleted: false, mapping: { default: true, project: "CORE", repo: "acme/widgets" } },
       { issue_key: null }
     ),
-    refreshes: ["detail", "unrelatedDetail", "projects", "projectList"],
-    spares: ["inbox", "pinned"],
+    refreshes: [],
+    spares: ["detail", "unrelatedDetail", "projects", "projectList", "inbox", "pinned"],
   },
   // The Inbox's thread rows, by the event that moves each of them.
   "an issue-less message.created naming the viewer refreshes the Inbox's Agent rows": {
@@ -1393,7 +1449,7 @@ const rules: Record<string, Rule> = {
       spares: ["threadHandedOn", "threadAnswered", "threadOnOtherProject", "threadOnOtherDocument"],
     },
   // The project list carries no default assignee, so a new project's is in the defaults read
-  // alone; an update of a project moves no default.
+  // alone; an update of a project moves no default assignee.
   "a new project refreshes the defaults read the Settings table reads its default from": {
     event: event(
       "project.created",
@@ -1403,15 +1459,31 @@ const rules: Record<string, Rule> = {
     refreshes: ["projects", "projectDefaultAssignees"],
     spares: ["inbox", "detail"],
   },
-  "a project's update leaves the defaults read alone": {
-    event: event(
-      "project.updated",
-      { created_at: "2026-10-26T00:00:00Z", key: "CORE", name: "Core" },
-      { issue_key: null }
-    ),
-    refreshes: ["projects"],
-    spares: ["projectDefaultAssignees", "inbox", "detail"],
-  },
+  // An update can move the project's default repository, which every issue of the project that
+  // names no repository resolves to: every loaded issue list and issue detail reads again.
+  "a project's update refreshes the project list and every issue list and detail, and leaves the defaults read alone":
+    {
+      event: event(
+        "project.updated",
+        {
+          created_at: "2026-10-26T00:00:00Z",
+          default_repo: "acme/widgets",
+          key: "CORE",
+          name: "Core",
+        },
+        { issue_key: null }
+      ),
+      refreshes: [
+        "projects",
+        "projectList",
+        "otherProjectList",
+        "labelledProjectList",
+        "pinned",
+        "detail",
+        "unrelatedDetail",
+      ],
+      spares: ["projectDefaultAssignees", "inbox"],
+    },
 };
 
 test.each(Object.entries(rules))("%s", (_name, rule) => {

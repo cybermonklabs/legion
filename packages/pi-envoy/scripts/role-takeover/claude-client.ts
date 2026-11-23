@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * claude-client.ts — the `claude` process of one Claude Code session, for
- * `scripts/smoke-role-takeover.sh` only.
+ * `scripts/smoke-role-takeover.sh` and `scripts/e2e/nats-callout-sessions.sh`.
  *
  * It spawns the real channel server (`packages/claude-envoy/bin/envoy-channel.ts`) as its child,
  * exactly as Claude Code spawns its stdio MCP server, and speaks MCP to it over that pipe. Being
@@ -17,14 +17,30 @@
  * Usage:
  *   bun claude-client.ts --server <bin/envoy-channel.ts> --session <id> --state-dir <dir>
  *                        --config-dir <dir> --heartbeat-ms <n> [--stderr <file>]
+ *                        [--env-file <file>] [--inbox <socket path>] [--withhold-inbox-answers true]
+ *
+ * `--env-file` names a file of NAME=VALUE lines added to the server's environment, which is
+ * otherwise only the variables below: a session that trades for a broker token is given the
+ * variables the trade reads that way (AGENT_SECRETS_URL, the machine identity, NATS_AUTH), and
+ * nothing of this process's own environment reaches the server. `--inbox` plays the inbox of
+ * `legion claude-bridge` (LEGION_CLAUDE_INBOX): this process serves that unix socket, takes each
+ * delivery the server writes there (`{id, content}`) and answers it taken (`{id, ok: true}`), as
+ * the bridge does once Claude Code took it, so the server writes every delivery there.
+ * `--withhold-inbox-answers true` takes each delivery and never answers it, so the server never
+ * tells the listener the delivery was taken and the listener acks nothing.
+ *
+ * Its input ending is Claude Code going away: it closes the channel server's stdin, as Claude Code
+ * does, waits up to 10 s for the server to deregister and exit, and exits.
  *
  * Protocol: one JSON object per line on stdin, one answer per line on stdout, matched by `id`.
  *
  *   {"id":"1","op":"tool","name":"envoy_role_set","args":{"role":"reviewer"}}
  *   {"id":"2","op":"clear","session":"<the id Claude Code minted>"}
  *   {"id":"3","op":"kill"}          a crash: the registration outlives the process
+ *   {"id":"4","op":"deliveries"}    every delivery the inbox took, its content, in order
  */
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 
@@ -35,6 +51,9 @@ interface Options {
   readonly configDirectory: string;
   readonly heartbeatMs: string;
   readonly stderr: string | undefined;
+  readonly envFile: string | undefined;
+  readonly inbox: string | undefined;
+  readonly withholdInboxAnswers: boolean;
 }
 
 interface Command {
@@ -72,21 +91,74 @@ function parseOptions(argv: readonly string[]): Options {
     configDirectory,
     heartbeatMs,
     stderr: values.get("stderr"),
+    envFile: values.get("env-file"),
+    inbox: values.get("inbox"),
+    withholdInboxAnswers: values.get("withhold-inbox-answers") === "true",
   };
+}
+
+/** The NAME=VALUE lines of `file`, blank lines and `#` comments skipped. */
+function readEnvFile(file: string | undefined): Record<string, string> {
+  if (file === undefined) return {};
+  const variables: Record<string, string> = {};
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const text = line.trim();
+    if (text === "" || text.startsWith("#")) continue;
+    const equals = text.indexOf("=");
+    if (equals <= 0) throw new Error(`claude-client: ${file} holds a line with no NAME=: ${text}`);
+    variables[text.slice(0, equals)] = text.slice(equals + 1);
+  }
+  return variables;
+}
+
+/** Every delivery the inbox took, its content, in the order the server wrote them. */
+const delivered: string[] = [];
+
+/**
+ * Serves `path` as the bridge's inbox does: one JSON line `{id, content}` per delivery, each
+ * answered `{id, ok: true}` on the connection it came on.
+ */
+function serveInbox(path: string): Promise<void> {
+  const inbox = createServer((connection) => {
+    let buffered = "";
+    connection.on("data", (chunk) => {
+      buffered += chunk.toString("utf8");
+      for (let newline = buffered.indexOf("\n"); newline !== -1; newline = buffered.indexOf("\n")) {
+        const line = JSON.parse(buffered.slice(0, newline)) as {
+          readonly id: string;
+          readonly content: string;
+        };
+        buffered = buffered.slice(newline + 1);
+        delivered.push(line.content);
+        // Withheld, the server is never told the delivery was taken: it sends no `done`, and
+        // the listener acks nothing (nats-callout-sessions.sh's withhold-ack control).
+        if (!options.withholdInboxAnswers) {
+          connection.write(`${JSON.stringify({ id: line.id, ok: true })}\n`);
+        }
+      }
+    });
+  });
+  const listening = Promise.withResolvers<void>();
+  inbox.once("error", listening.reject);
+  inbox.listen(path, listening.resolve);
+  return listening.promise;
 }
 
 const options = parseOptions(process.argv.slice(2));
 const { PATH } = process.env;
+if (options.inbox !== undefined) await serveInbox(options.inbox);
 
 const child: Subprocess<"pipe", "pipe", "pipe"> = Bun.spawn(["bun", options.server], {
   cwd: options.stateDirectory,
   env: {
+    ...readEnvFile(options.envFile),
     PATH: PATH ?? "",
     HOME: options.stateDirectory,
     CLAUDE_CONFIG_DIR: options.configDirectory,
     CLAUDE_CODE_SESSION_ID: options.session,
     CLAUDE_PLUGIN_DATA: options.stateDirectory,
     ENVOY_HEARTBEAT_MS: options.heartbeatMs,
+    ...(options.inbox === undefined ? {} : { LEGION_CLAUDE_INBOX: options.inbox }),
   },
   stdin: "pipe",
   stdout: "pipe",
@@ -170,6 +242,8 @@ async function run(command: Command): Promise<Record<string, unknown>> {
       child.kill("SIGKILL");
       return { exit: await child.exited };
     }
+    case "deliveries":
+      return { deliveries: [...delivered] };
     default:
       throw new Error(`unknown op ${command.op}`);
   }
@@ -199,3 +273,6 @@ for await (const line of console) {
     answer({ id, ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }
+child.stdin.end();
+await Promise.race([child.exited, Bun.sleep(10_000)]);
+process.exit(0);

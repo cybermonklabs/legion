@@ -127,9 +127,7 @@ func TestAReconcileOnTheClusterKeepsTheCopiesTheByteLimitTheIDAndTheLimitsItDoes
 			t.Run(drift.name+"/"+start.name, func(t *testing.T) {
 				cluster, js := startClusterJetStream(t)
 				deployed := deployedClusterStream(drift.change)
-				if _, err := js.AddStream(&deployed); err != nil {
-					t.Fatalf("deploy the stream: %v", err)
-				}
+				cluster.CreateStream(t, deployed)
 				before := testnats.AwaitSettledStream(t, js, Stream).Config
 
 				startOnCluster(t, cluster, start.options...)
@@ -698,11 +696,6 @@ func (js *countingJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOp
 func (js *countingJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
 	js.record("update stream " + cfg.Name)
 	return js.JetStreamContext.UpdateStream(cfg, opts...)
-}
-
-func (js *countingJetStream) CreateKeyValue(cfg *nats.KeyValueConfig) (nats.KeyValue, error) {
-	js.record("create bucket " + cfg.Bucket)
-	return js.JetStreamContext.CreateKeyValue(cfg)
 }
 
 // The reconcile owns the consumer cap as it owns the byte limit, with one question put to the

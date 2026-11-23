@@ -111,8 +111,8 @@ func TestAKeptPodWithoutTheEnrollmentRecordsNoBrokerForItsGeneration(t *testing.
 // (movedEnvironment), and that pod carries no enrollment, so both sides hold no broker URL and
 // the role reads Alive. Reading it StaleAddress instead would have the supervisor repoint the
 // role mid-turn, which the update round exists to prevent before its bound: the pod is replaced
-// once every worker in it has answered the update message and no turn runs, or at the round's
-// bound.
+// once every worker in it has answered the update message, no turn runs and no claim's activity
+// report holds it (internal/daemon's roundEnd.holding), or at the round's bound.
 func TestAKeptPodsGenerationIsNotStaleWhenTheBrokerItNeverHeldMoves(t *testing.T) {
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))

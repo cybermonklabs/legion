@@ -21,6 +21,7 @@ import { bearerCredential } from "@legion/envoy-client/bearer";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   temporaryDirectories,
   temporaryDirectory,
@@ -54,6 +55,9 @@ import { renderTemplate } from "./text";
 
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
+
+/** The Dispatch token the gate's session and the real CLI are handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** Dispatch's answer that the project holds no decision document of the session's name. */
 const NO_DOCUMENT = new DispatchServiceError(
@@ -5673,7 +5677,7 @@ describe("askgate.ts, the entry", () => {
         OMP_ASKGATE_TIMEOUT_MS: "soon",
         OMP_ASKGATE_RECORD_PROJECT: "INFRA",
         DISPATCH_URL: "http://dispatch.test",
-        DISPATCH_TOKEN: "dispatch-token",
+        DISPATCH_TOKEN,
       });
       await loaded.then(
         () => expect.unreachable("the gate loaded"),
@@ -5727,7 +5731,7 @@ describe("askgate.ts, the entry", () => {
       const { loaded, handlers, registration } = await registerOnly({
         OMP_ASKGATE_RECORD_PROJECT: "INFRA",
         DISPATCH_URL: "http://dispatch.test",
-        DISPATCH_TOKEN: "dispatch-token",
+        DISPATCH_TOKEN,
       });
       await loaded;
       // The core's handlers are bound too, and the entry's shutdown handler is still the first.
@@ -5928,7 +5932,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     DISPATCH_SESSION_ID: "ses-real-cli",
     DISPATCH_STATE_DIR: path.join(work, "state"),
     DISPATCH_URL: "http://127.0.0.1:9",
-    DISPATCH_TOKEN: "test-token",
+    DISPATCH_TOKEN,
   };
   // Block mode, so a post that does not use its marker is refused, never posted with a warning:
   // a post that succeeds then proves the marker the gate minted matched. The harness's default

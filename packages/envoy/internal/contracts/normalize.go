@@ -93,6 +93,29 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 	return append(mentions, item)
 }
 
+// CIHead names one pull request head of the CI state aggregator: the identity a record's key is
+// built from (cistore.Key). It is here rather than in cistore so that a writer of the CI store
+// (Dispatch's CI reconcile) can speak to it through an interface without importing the store.
+type CIHead struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number string `json:"number"`
+	SHA    string `json:"sha"`
+}
+
+// CIVerifyRequest is one verify request of the CI store: a head whose settlement a listener holds
+// until Dispatch's CI reconcile has read it from GitHub; the KV revision of the request as the
+// reconcile read it, which its answer carries back (cistore.Writer.MarkVerified); the settlement
+// episode it asks for, the generation of the claim it was written for, which every rewrite of one
+// episode shares; and the identity of the bucket's stream the revision is of (its creation time in
+// Unix nanoseconds), since a revision compares only with revisions of the same stream.
+type CIVerifyRequest struct {
+	Head     CIHead
+	Revision uint64
+	Episode  uint64
+	Stream   int64
+}
+
 // CIObservation is a per-PR check_run or check_suite fact for the CI state
 // aggregator.
 type CIObservation struct {
@@ -115,7 +138,22 @@ type CIObservation struct {
 // GithubCIObservations extracts one CI observation per associated PR. Both
 // check runs and suites are folded into durable per-head state; neither emits a
 // raw webhook envelope.
+//
+// A check_suite delivery whose action is requested or rerequested maps to none. GitHub sends it
+// to the App that owns the suite alone, to ask that App to run its checks: it is an instruction,
+// never a CI result, and the suite it carries is queued with no run. An App that never adds a run
+// leaves that suite queued for ever, and the CI store, which settles no head while a suite of its
+// record holds it (cistore's settlementReady), would hold the head for ever. This mapping is the
+// one place a webhook's CI observations are built (the webhook route's only source of them), so
+// the CI store takes a check suite only once it completes, as Dispatch's CI reconcile records
+// only completed suites.
 func GithubCIObservations(event string, body map[string]any) []CIObservation {
+	if event == "check_suite" {
+		switch stringValue(body["action"]) {
+		case "requested", "rerequested":
+			return nil
+		}
+	}
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
 		// A check suite GitHub runs on a pull request's head carries that head's ref even when it
@@ -129,7 +167,8 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	}
 	owner, repo := githubRepo(body)
 	// The CI event name is also the key of its object in the body.
-	obs, ok := GithubCIObservation(event, mapValue(body[event]), owner, repo, numbers[0])
+	object := mapValue(body[event])
+	obs, ok := GithubCIObservation(event, object, owner, repo, numbers[0])
 	if !ok {
 		return nil
 	}
@@ -195,16 +234,83 @@ func GithubCIObservation(event string, object map[string]any, owner, repo, numbe
 	return obs, true
 }
 
-// checkName is a check's name as the CI store keys it: whole, or past maxEnvelopeTextRunes its first
-// maxEnvelopeTextRunes runes and an ellipsis followed by a digest of the whole name, so two names
-// that share the kept text stay two checks and one name keys the same entry every time. The name is
-// the one text a repository chooses in an observation (a workflow's job names it).
+// checkName is a check's name, or a commit status's context, as the CI store keys it: whole, or
+// past maxEnvelopeTextRunes its first maxEnvelopeTextRunes runes and an ellipsis followed by a
+// digest of the whole name, so two names that share the kept text stay two entries and one name
+// keys the same entry every time. The name is the one text a repository chooses in an observation
+// (a workflow's job names a check run, and whatever posts a status names its context).
 func checkName(name string) string {
 	if utf8.RuneCountInString(name) <= maxEnvelopeTextRunes {
 		return name
 	}
 	digest := sha256.Sum256([]byte(name))
 	return truncateWithEllipsis(name, maxEnvelopeTextRunes) + " " + hex.EncodeToString(digest[:8])
+}
+
+// StatusObservation is one commit status of a pull request's head for the CI state aggregator:
+// the newest status GitHub holds for one context, in a state the record keeps
+// (TerminalStatusState). A status is an entry of its own kind in the record, apart from any check
+// run of the same name.
+type StatusObservation struct {
+	Owner  string
+	Repo   string
+	Number string
+	SHA    string
+	// Context names the status, as the CI store keys it (checkName).
+	Context string
+	// State is success, failure or error, as GitHub's REST answer spells it.
+	State string
+	// CreatedAt is GitHub's created_at, which orders two statuses of one context.
+	CreatedAt   string
+	URL         string
+	Description string
+}
+
+// TerminalStatusState reports whether state is a commit status state the CI record keeps:
+// success, failure or error. GitHub's other states, pending and GraphQL's EXPECTED, say the
+// context has not finished, and the record keeps no such status, so a context that stays pending
+// holds no head back.
+func TerminalStatusState(state string) bool {
+	switch state {
+	case "success", "failure", "error":
+		return true
+	}
+	return false
+}
+
+// GithubStatusObservation maps one commit status object to the observation the CI store records
+// under owner/repo, pull request number and head sha. ok is false for a status with no context or
+// no head, and for one in a state the record does not keep (TerminalStatusState): a pending status
+// is never recorded, so a newer pending status leaves the recorded one in place.
+//
+// object is in the shape GitHub's REST answer GET /repos/{owner}/{repo}/commits/{ref}/status lists
+// each status in: context, state, created_at, target_url and description. Dispatch's CI reconcile
+// maps a status its GraphQL query read into that same shape, as it maps a check run into the
+// webhook's, so one status read either way maps to one observation. The sha and the number come
+// from the caller, because a listed status carries neither. The state is lower-cased, since
+// GraphQL's StatusState is upper case (SUCCESS) where REST's is lower case (success). Each text is
+// capped as a check run's is (GithubCIObservation), and a context past the cap keeps a digest of
+// the whole context after its ellipsis (checkName), because the record is keyed by context.
+func GithubStatusObservation(object map[string]any, owner, repo, number, sha string) (StatusObservation, bool) {
+	name := checkName(stringValue(object["context"]))
+	state := strings.ToLower(stringValue(object["state"]))
+	if sha == "" || name == "" || !TerminalStatusState(state) {
+		return StatusObservation{}, false
+	}
+	text := func(key string) string {
+		return truncateWithEllipsis(stringValue(object[key]), maxEnvelopeTextRunes)
+	}
+	return StatusObservation{
+		Owner:       owner,
+		Repo:        repo,
+		Number:      number,
+		SHA:         sha,
+		Context:     name,
+		State:       state,
+		CreatedAt:   text("created_at"),
+		URL:         text("target_url"),
+		Description: text("description"),
+	}, true
 }
 
 // ReviewerVerdict is what the shared rule says about one check run's name and the App that
@@ -1672,7 +1778,9 @@ func ghostWisprSummary(eventType string, body map[string]any) string {
 // ghostWisprPayload builds the envelope payload from the body's payload object: the session id,
 // its times and links, its title and its duration for every event type, and the summary fields
 // for summary_ready. payloadJSON drops a field the unit did not send. A current unit sends no
-// title or summary text (packages/envoy/AGENTS.md says why), and an older unit's still pass.
+// title or summary text, because the stream keeps an envelope for its whole retention window and
+// no deletion on the unit can recall it, so a reader fetches the current text through the links;
+// an older unit's still pass.
 func ghostWisprPayload(eventType string, body map[string]any) string {
 	normalizedEventType := normalizeGhostWisprEventType(eventType)
 	data := map[string]string{"event_type": normalizedEventType}

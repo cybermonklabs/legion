@@ -32,8 +32,8 @@ func (installedOnBoth) InstalledOwners(context.Context, appauth.AppRole) ([]stri
 func bothInstalledBundle(t *testing.T) (root, defaultDir string) {
 	t.Helper()
 	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
-	repos := func() []ghrepo.Repository { return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")} }
-	credential := appauth.GitHubCredential(installedOnBoth{}, repos, pair, nil, nil, slog.Default())
+	served := servesOneOf([]ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")})
+	credential := appauth.GitHubCredential(installedOnBoth{}, served, pair, nil, nil, slog.Default())
 	bundle, err := credential(context.Background(), legionclaim.RoleImplementer, ghrepo.MustParse("sjawhar/legion"))
 	if err != nil {
 		t.Fatalf("build the bundle: %v", err)
@@ -172,6 +172,9 @@ func bothInstalledGh(t *testing.T) func(t *testing.T, args ...string) (int, stri
 			"GH_CONFIG_DIR=" + defaultDir, "LEGION_GH_OWNERS_DIR=" + root, "LEGION_GH_PATH=" + filepath.Join(bin, "real-gh"),
 			"PUBLIC_LEAK_CHECK=" + check,
 		}
+		// This binary's deadline, which bounds what the `legion gh` the wrapper runs waits for
+		// (boundByTheDeadline).
+		cmd.Env = append(cmd.Env, testDeadlineEnviron()...)
 		out, err := cmd.CombinedOutput()
 		if exit, ok := err.(*exec.ExitError); ok {
 			return exit.ExitCode(), string(out)

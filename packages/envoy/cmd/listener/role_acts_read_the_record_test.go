@@ -220,7 +220,7 @@ func (r *roleActRig) deliver(t *testing.T, role, key string) contracts.Envelope 
 func (r *roleActRig) keep(t *testing.T, role, key string) contracts.Envelope {
 	t.Helper()
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, key)
-	if _, kept := keepRoleMessage(r.cfg, role, item); !kept {
+	if _, err := keepRoleMessage(r.cfg, role, item); err != nil {
 		t.Fatalf("keep a copy on role %s's lane; the listener log says why:\n%s", role, r.harness.logs.String())
 	}
 	return item

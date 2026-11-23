@@ -114,7 +114,12 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 			blocks := size / len(to)
 			headings, rules := []byte(strings.Repeat(from, blocks)), []byte(strings.Repeat(to, blocks))
 			upload := func(name string, body []byte) {
-				response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": name}, "body.md", "text/markdown", body, "alice")
+				owner := "/api/v1/issues/" + issue.Key + "/artifacts"
+				fields := map[string]string{"name": name}
+				if base := uploadBaseNamed(t, handler, owner, name); base != nil {
+					fields["precondition"] = encodeUploadBase(t, base)
+				}
+				response := multipartRequest(t, handler, owner, fields, "body.md", "text/markdown", body, "alice")
 				if response.Code != http.StatusCreated {
 					t.Fatalf("upload %d blocks of %q: status=%d body=%.200s", blocks, body[:len(from)], response.Code, response.Body.String())
 				}
@@ -141,6 +146,7 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 // first rung, even when a prior rung fills the permitted per-step growth. The helper must fail for
 // both an ordinary first sample and one artificial slow first sample.
 func TestGrowsLinearlyRejectsQuadraticFinalRung(t *testing.T) {
+	t.Parallel()
 	for _, slowFirstSample := range []bool{false, true} {
 		t.Run(fmt.Sprintf("slow first sample %t", slowFirstSample), func(t *testing.T) {
 			command := exec.Command(os.Args[0], "-test.run=^TestGrowsLinearlyRejectsQuadraticFinalRungHelper$")
@@ -161,6 +167,7 @@ func TestGrowsLinearlyRejectsQuadraticFinalRung(t *testing.T) {
 const quadraticFinalRung = 64
 
 func TestGrowsLinearlyRejectsQuadraticFinalRungHelper(t *testing.T) {
+	t.Parallel()
 	slowFirstValue, helper := os.LookupEnv("GROWS_LINEARLY_SLOW_FIRST")
 	if !helper {
 		t.Skip("subprocess helper")
@@ -242,6 +249,7 @@ func sizeText(size int) string {
 // with its answer and a message are each found by a word they hold, with the same snippet marks,
 // and a word joined to others by underscores is still found by itself.
 func TestSearchFindsOrdinaryAndUnderscoredTextAfterSearchText(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	corpus := seedSearchCorpus(t, handler)
 	for _, test := range []struct{ query, kind, id string }{
@@ -286,6 +294,7 @@ func TestSearchFindsOrdinaryAndUnderscoredTextAfterSearchText(t *testing.T) {
 // italic spans, held a gigabyte while it was saved (LEGION-481) - is refused as too large to store,
 // naming the limit, on a new document (SeedText) and on a replacement (ReplaceText), never a 500.
 func TestUploadRefusesADocumentTooLargeToStore(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createArtifactIssue(t, handler)
 	body := strings.Repeat(")_", (1<<20)/2)
@@ -302,7 +311,7 @@ func TestUploadRefusesADocumentTooLargeToStore(t *testing.T) {
 	if first := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "body.md", "text/markdown", []byte("# Notes\n"), "alice"); first.Code != http.StatusCreated {
 		t.Fatalf("seed notes.md: status=%d body=%.300s", first.Code, first.Body.String())
 	}
-	response = multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "body.md", "text/markdown", []byte(body), "alice")
+	response = multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md", "precondition": encodeUploadBase(t, uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "notes.md"))}, "body.md", "text/markdown", []byte(body), "alice")
 	if !refusedTooLarge(t, response) || !strings.Contains(response.Body.String(), "more than 65536 elements") {
 		t.Fatalf("replacement by a document too large to store: status=%d body=%.400s, want 413 CAP_EXCEEDED naming the 65536-element limit, as the document service words it", response.Code, response.Body.String())
 	}
@@ -316,6 +325,7 @@ func TestUploadRefusesADocumentTooLargeToStore(t *testing.T) {
 // CAP_EXCEEDED naming the limit, and writes nothing: a spec at issue creation, an issue's and a
 // project's document upload as JSON, and an edit's insert and replace.
 func TestEveryMarkdownWriteRefusesMarkdownPastTheElementLimit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Element limit", "Before.\n")
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DOCS", "name": "Docs"}, "alice"); response.Code != http.StatusCreated {

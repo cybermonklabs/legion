@@ -85,7 +85,13 @@ func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (ti
 	if !query.Has(name) {
 		return fallback, nil
 	}
-	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get(name)))
+	return parseRFC3339(name, query.Get(name))
+}
+
+// parseRFC3339 is text, given for the query parameter name, as an RFC3339 time; its error is the
+// text of the route's 400 INVALID_QUERY, naming the parameter.
+func parseRFC3339(name, text string) (time.Time, error) {
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(text))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%s must be an RFC3339 timestamp", name)
 	}
@@ -99,28 +105,42 @@ const (
 	deliveryNotConfiguredMessage = "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery"
 )
 
-// parseOptionalWindow is a record route's [from, to) window: each bound an RFC3339 time, nil when
-// the query leaves it out or blank, and from before to when both are given. Its error is the text
-// of the route's 400 INVALID_QUERY. The loop's variable is not `name`: the query-key walk
-// (routes_query_keys_test.go) resolves a read by the variable a file ranges over a literal list
-// with, and parseOptionalRFC3339 reads its own `name` parameter, which that walk pins as a read it
-// cannot resolve.
+// parseOptionalWindow is a record route's [from, to) window (parseWindow).
 func parseOptionalWindow(query url.Values) (from, to *time.Time, err error) {
-	bounds := [2]*time.Time{}
-	for index, bound := range []string{"from", "to"} {
-		if strings.TrimSpace(query.Get(bound)) == "" {
-			continue
-		}
-		parsed, err := parseOptionalRFC3339(query, bound, time.Time{})
-		if err != nil {
-			return nil, nil, err
-		}
-		bounds[index] = &parsed
+	return parseWindow(windowBound{name: "from", text: query.Get("from")}, windowBound{name: "to", text: query.Get("to")})
+}
+
+// windowBound is one bound of a route's window: the name of its query parameter and the text the
+// query gives it. The caller reads the text with its literal name, which the query-key walk
+// (routes_query_keys_test.go) resolves.
+type windowBound struct{ name, text string }
+
+// parseWindow is a route's window, [since, until): each bound an RFC3339 time, nil where its text
+// is blank, and since before until where both are given, as the caller wrote them. Its error is
+// the text of the route's 400 INVALID_QUERY, naming the bound.
+func parseWindow(sinceBound, untilBound windowBound) (since, until *time.Time, err error) {
+	if since, err = sinceBound.parsed(); err != nil {
+		return nil, nil, err
 	}
-	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
-		return nil, nil, errors.New("from must be before to")
+	if until, err = untilBound.parsed(); err != nil {
+		return nil, nil, err
 	}
-	return bounds[0], bounds[1], nil
+	if since != nil && until != nil && !since.Before(*until) {
+		return nil, nil, fmt.Errorf("%s must be before %s", sinceBound.name, untilBound.name)
+	}
+	return since, until, nil
+}
+
+// parsed is the bound as an RFC3339 time, nil where its text is blank.
+func (bound windowBound) parsed() (*time.Time, error) {
+	if strings.TrimSpace(bound.text) == "" {
+		return nil, nil
+	}
+	parsed, err := parseRFC3339(bound.name, bound.text)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
 }
 
 // deliverySettings reads the timeline's configuration record, answering 404

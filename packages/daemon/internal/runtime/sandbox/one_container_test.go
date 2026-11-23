@@ -35,10 +35,8 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
 // reads them at, which role-init binds inside the role's namespaces; the role homes volume is a
 // disk emptyDir at /var/run/legion/roles/.homes; the shared mounts are mounted once. The container
-// and both init containers carry the one issue-pod reservation — the third init container a
-// `skills_repository` adds carries it too, which TestASkillsRepositoryAddsTheSkillsInitContainer
-// proves — by default the six roles' former sum: 3 CPU and 19Gi, each requested in full, and an
-// 80Gi disk limit over a 6Gi request.
+// and both init containers carry the one issue-pod reservation, by default the six roles' former
+// sum: 3 CPU and 19Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
@@ -738,6 +736,62 @@ func TestASharedLogsFailedSecondReadKeepsTheFirstRead(t *testing.T) {
 	}
 }
 
+// A read the read bound stops inside a line drops that unfinished line, the bytes after the last
+// newline it took, as a read the byte bound cut drops its unfinished first line: here the bound
+// falls inside the user name of a URL, whose start the URL rule the claim keeps a death cause
+// under (storetext.FarSideText) would read as the URL's host. The quote ends on the last whole
+// line before it, then the note. The kubelet here serves the whole log whatever TailLines asks,
+// so both of readLog's reads stop at the same byte.
+func TestABoundedReadOfTheSharedLogDropsTheLineItStoppedInside(t *testing.T) {
+	labels := claimLabels(claim.RoleTester)
+	name := SandboxName(workerToken)
+	status := corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
+		Name: "roles", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
+	}}}
+	g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeRunning, labels), podObject(name, recorded, sandboxUID, labels, status)}, withoutController())
+	// Whole lines of 32 KiB up to the read bound, then one the bound falls inside, just after the
+	// start of a URL's user name, then the lines the container wrote after it.
+	padding := strings.Repeat("x", 32<<10)
+	var log strings.Builder
+	last := -1
+	for i := 0; ; i++ {
+		line := fmt.Sprintf("tester: line %d %s\n", i, padding)
+		if log.Len()+len(line)+100 > sharedLogReadBytes {
+			break
+		}
+		log.WriteString(line)
+		last = i
+	}
+	// The read takes sharedLogReadBytes+1 bytes off the API, so the unfinished line is filled for
+	// those to end with the start of the URL.
+	head, url := "tester: unfinished ", " https://planted-user"
+	log.WriteString(head + strings.Repeat("y", sharedLogReadBytes+1-log.Len()-len(head)-len(url)) + url)
+	log.WriteString("-1@example.com/path?token=planted-query-token-1\ntester: newest\n")
+	stream := log.String()
+	if !strings.HasSuffix(stream[:sharedLogReadBytes+1], url) {
+		t.Fatalf("the read bound falls after %q, not inside the URL's user name", stream[sharedLogReadBytes-40:sharedLogReadBytes+1])
+	}
+	g.kube.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
+		if action.GetSubresource() != "log" {
+			return false, nil, nil
+		}
+		return true, &k8sruntime.Unknown{Raw: []byte(stream)}, nil
+	})
+	obs, err := g.r.Probe(g.ctx, rolesLocator(workerToken, recorded))
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if at := strings.Index(obs.Detail, "planted-user"); at >= 0 {
+		t.Fatalf("the quote holds %.200q, the start of the URL's user name the read stopped inside", obs.Detail[max(0, at-40):])
+	}
+	if strings.Contains(obs.Detail, "unfinished") {
+		t.Fatalf("the quote holds the line the read stopped inside: %.300q", obs.Detail[max(0, len(obs.Detail)-300):])
+	}
+	if want := fmt.Sprintf("line %d %s\n%s", last, padding, logBoundNote(sharedLogReadBytes)); !strings.HasSuffix(obs.Detail, want) {
+		t.Fatalf("the quote ends %.200q, want the last whole line, line %d, and then %q", obs.Detail[max(0, len(obs.Detail)-200):], last, logBoundNote(sharedLogReadBytes))
+	}
+}
+
 // The one container's log interleaves every role's lines, each prefixed `<role>: ` by the
 // launcher: a role's quote is its own last lines alone, the prefix dropped, and a sibling's, the
 // launcher's own unprefixed ones and a role whose name another's begins with are none of it.
@@ -863,13 +917,13 @@ func TestTheBootCensusPassesBothIssuePodLayouts(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			sandboxes := newDynamic(t, sandboxRunning(t, "legion-legion-legion-208", issue, containers...)).Resource(sandboxGVR).Namespace(testNamespace)
-			if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, slogTo(io.Discard)); err != nil {
+			if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, testOptions().IssueDisks(), slogTo(io.Discard)); err != nil {
 				t.Fatalf("census = %v, want none", err)
 			}
 		})
 	}
 	sandboxes := newDynamic(t, sandboxRunning(t, "legion-legion-legion-208", issue, "roles", "tester")).Resource(sandboxGVR).Namespace(testNamespace)
-	if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, slogTo(io.Discard)); err == nil || !strings.Contains(err.Error(), "legion-legion-legion-208") {
+	if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, testOptions().IssueDisks(), slogTo(io.Discard)); err == nil || !strings.Contains(err.Error(), "legion-legion-legion-208") {
 		t.Fatalf("census of an issue pod running roles and a role container = %v, want it refused by name", err)
 	}
 }

@@ -1,0 +1,257 @@
+name: Dispatch unit suite repeated
+
+# The Dispatch unit suite's three lanes, each under several seeds and the web and harness lanes
+# many times over, to find the rows that fail only sometimes. The web lane is
+# `bun run test:web web/src`, the web-cold lane is
+# `bun run test:web:cold web/src` and the harness lane is `bun run test:harness e2e/__tests__`.
+# Each leg runs one lane under one seed through `bun run test:repeat`
+# (packages/dispatch/e2e/tools/unit-repeat.ts, whose head says what it reads and writes): a web or
+# harness leg with `--rerun-each=20`, a web-cold leg with `--rerun-each=1`. Each leg draws its own
+# seed. Three legs a lane make nine legs a run.
+#
+# What a leg publishes. Its report goes to the step summary. The leg prints one `::error`
+# annotation for each failure that belongs to no row, then one for each failing row. GitHub keeps
+# at most 10 error annotations a step: its REST "Check runs" page says "GitHub Actions are limited
+# to 10 warning annotations and 10 error annotations per step". So the leg prints at most 10
+# errors. When there are more failures, the tenth error says how many more report.md lists. The
+# artifact holds report.md, report.json, junit.xml and bun.log, which is Bun's whole output. The
+# leg fails when a row failed, when Bun exited non-zero, when it read no testcase, when a failure
+# belongs to no row, or when it reached its deadline.
+#
+# A leg's deadline. The step runs the tool under `timeout` with a deadline inside the step's
+# budget, so a leg that hangs or runs long is stopped by a signal the tool reads: its report and
+# its errors name each test file that was running, with the run and the row it was in, and the
+# command that runs it again. A stop that comes after Bun has ended, while the tool writes its
+# report, is named there beside every result Bun wrote. A cancel of the run, or a step that
+# reaches its budget, reaches the tool as a SIGINT and is named the same way when the tool's
+# report comes before the runner's kill 10 s after it; the notes say when it does not. A worker or
+# Bun's test process killed from outside, as the out-of-memory killer kills one, is named by the
+# file and the row it was in.
+# why: .github/ci-notes/dispatch-unit-repeat.md#a-legs-deadline-and-what-a-stopped-leg-names
+#
+# Why a workflow of its own. GitHub starts a `schedule` from the default branch alone. It offers
+# `workflow_dispatch` only once the default branch holds the file. After that,
+# `gh workflow run dispatch-unit-repeat.yaml --ref <branch>` runs a branch's copy, as
+# dispatch-browser-nightly.yaml says of its own. Until this file is on the default branch, the
+# `pull_request` trigger is the only way to run it. That trigger is filtered to this file, the tool
+# and its progress preload, and the web-cold lane's preload, so it also runs the job on a later
+# change to any of them before the merge, and on no other pull request. Main's ruleset does not
+# require its check, so it gates nothing. The other route was a job in
+# dispatch-browser-nightly.yaml. That would need a third cron there and an `if:` on that file's
+# two jobs, since both of its crons start every job. And a dispatch of that file to prove this job
+# would start the eight-runner full browser lane beside it.
+#
+# Why 20 reruns a web or harness leg and three legs a lane. Under one seed every rerun repeats one
+# order (Bun 1.4.4, measured when this workflow was written). So the reruns find a row that fails
+# one run in twenty, and the three rounds give three orders a week. 60 runs a lane a week find such
+# a row with probability 1 - 0.95^60, about 95 per cent, against about 64 per cent for 20 runs. More
+# reruns under one seed buy no new order. More legs buy both.
+#
+# What the web-cold leg finds, and why it runs once. It finds a row that reads text or a part that
+# renders only after a lazy load, the Markdown engine or a page that `lazy()` loads, without
+# waiting for it. `--parallel` runs each test file in a fresh global object, so a file loads each
+# such module once: in the web lane that row fails only when the seed puts it first among the rows
+# of its file that need the module. The web-cold lane's preload,
+# packages/dispatch/web/src/__tests__/hold-lazy-loads.ts, holds back each load of every script
+# module the web app's sources load with `import("<literal>")`, its `lazy()` pages among them,
+# once a test file's rows have begun, for 1 s of real time, so every row that runs while a module
+# is held, not the first alone, finds it unloaded. A rerun of a file keeps the modules its first
+# run loaded, so reruns are warm and buy nothing here: each leg runs the lane once, and each
+# round's own seed is what varies which rows run first.
+#
+# The measured legs, and the budgets measured from them.
+# why: .github/ci-notes/dispatch-unit-repeat.md#the-budgets-measured-from-cis-own-runs
+#
+# What a red run does, and what it does not. The leg fails, and its report and its artifact stay
+# on the run. GitHub's "Events that trigger workflows" page says: "Notifications for scheduled
+# workflows are sent to the user who last modified the cron syntax in the workflow file."
+# Nothing else is told: no check on any pull request, no issue, no message. A reader of scheduled
+# results is a separate piece of work, as dispatch-browser-nightly.yaml's head says of its own, and
+# this workflow builds no second one.
+#
+# How a row is reproduced. The report gives each failing row its file, the leg's seed and the
+# command that runs it again from packages/dispatch, as docs/testing.md ("A Dispatch unit test
+# runs in random order") says: `bun run test:web <file> --seed=<n>`,
+# `bun run test:web:cold <file> --seed=<n>` or `bun run test:harness <file> --seed=<n>`. For a row
+# that passed its first run, the command adds `--rerun-each=<k>`, where k is the run it first
+# failed on. That repeats the order the row failed in. A web-cold leg runs once, so its command
+# never adds it. A row that failed from the leg's load can pass there, and the same section of
+# docs/testing.md says what it needs.
+#
+# What it costs. One scheduled run a week of nine legs, one run of nine legs on each push to a pull
+# request that changes this file, the tool, its progress preload or the web-cold lane's preload,
+# and any `workflow_dispatch`. Every leg runs on a standard GitHub-hosted runner, and this
+# repository is public. GitHub's "Billing and usage" page
+# (https://docs.github.com/en/actions/concepts/billing-and-usage, which the runner pricing
+# reference, https://docs.github.com/en/billing/reference/actions-runner-pricing, links) says:
+# "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
+# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the 31 runs that
+# the notes' measurement reads took 115 to 242 minutes each, and $0, since those minutes are free
+# here.
+
+on:
+  schedule:
+    # Saturday 09:23 UTC, hours from every other schedule of this repository:
+    # dispatch-browser-nightly.yaml's 02:17 and 13:41 daily, e2e.yaml's 04:41 daily and
+    # codeql.yaml's 04:17 on Tuesdays. Nine legs start at once, and a nightly starting beside them
+    # would queue with them for the account's runners. Off the hour, as codeql.yaml's cron is.
+    - cron: "23 9 * * 6"
+  workflow_dispatch:
+  # This file, the tool and its progress preload, and the web-cold lane's preload alone: the run
+  # that proves a change to any of them before main has it.
+  pull_request:
+    paths:
+      - .github/workflows/dispatch-unit-repeat.yaml
+      - packages/dispatch/e2e/tools/unit-repeat.ts
+      - packages/dispatch/e2e/tools/unit-repeat-progress.ts
+      - packages/dispatch/web/src/__tests__/hold-lazy-loads.ts
+
+# A newer push to a pull request cancels the older run, waiting or running: its report answers
+# for a head the pull request no longer has. A running scheduled or dispatched run is never
+# cancelled. At most one more run of the group waits behind it, and a newer run replaces a waiting
+# one. GitHub's "Control the concurrency of workflows and jobs" page says: "When a new job or
+# workflow run is queued, any existing pending job or workflow run in the same group is canceled
+# and replaced".
+concurrency:
+  group: dispatch-unit-repeat-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The job clones the repository and uploads an artifact of its own run. Neither needs more.
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: ${{ matrix.lane }} lane, round ${{ matrix.round }}
+    runs-on: ubuntu-24.04
+    # The job's budget is the matrix's job_minutes, whose arithmetic is beside it.
+    # why: .github/ci-notes/dispatch-unit-repeat.md#the-budgets-measured-from-cis-own-runs
+    timeout-minutes: ${{ matrix.job_minutes }}
+    strategy:
+      # One leg's failure leaves the other legs running, so each one reports its own rows.
+      fail-fast: false
+      matrix:
+        lane: [web, web-cold, harness]
+        # Three legs a lane, each under a seed of its own. The head says why three.
+        round: [1, 2, 3]
+        # Each lane's reruns; its slowest test step and its slowest other steps, each the largest
+        # reading over the 31 runs the notes list, with the run and round that gave it (the harness
+        # slowest leaves out the legs of branches that add harness rows of their own, #4236's and
+        # #4790's, as the notes say); and the deadline, the test step's budget and the job's budget
+        # set from them, with a margin of twice the slowest, each line's arithmetic beside it. The
+        # job takes the other steps twice too, where dispatch-browser.yaml's rule takes them once:
+        # a margin of this file's own, which the notes measure. The step's 60 s of slack, for the
+        # step's own start around `timeout`, rests on no reading: it sits behind the deadline and
+        # the kill-after, so it decides nothing. A budget is a hang guard only, and decides no
+        # verdict. The head says why a web or harness leg runs 20 times and a web-cold leg once.
+        # packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts holds each budget to
+        # exactly its rule over the measurement beside it.
+        # why: .github/ci-notes/dispatch-unit-repeat.md#the-budgets-measured-from-cis-own-runs
+        include:
+          - lane: web
+            reruns: 20
+            slowest_seconds: 1954 # run 44759854373, round 1
+            other_steps_seconds: 37 # run 44751162563, round 3
+            deadline_seconds: 3960 # 2 x 1,954 = 3,908 s, up to the next whole minute
+            step_minutes: 68 # 3,960 + 60 s kill-after + 60 s of slack = 4,080 s
+            job_minutes: 70 # 68 + 2 x 37 s = 74 s, up to the next whole minute, 2
+          - lane: web-cold
+            reruns: 1
+            slowest_seconds: 175 # run 44956324879, round 3
+            other_steps_seconds: 44 # run 44814644776, round 1
+            deadline_seconds: 360 # 2 x 175 = 350 s, up to the next whole minute
+            step_minutes: 8 # 360 + 60 s kill-after + 60 s of slack = 480 s
+            job_minutes: 10 # 8 + 2 x 44 s = 88 s, up to the next whole minute, 2
+          - lane: harness
+            reruns: 20
+            slowest_seconds: 3882 # run 44963607247, round 3, stopped at 3,300 s and estimated (the notes)
+            other_steps_seconds: 229 # run 44709413418, round 1, whose zsh install is most of it
+            deadline_seconds: 7800 # 2 x 3,882 = 7,764 s, up to the next whole minute
+            step_minutes: 132 # 7,800 + 60 s kill-after + 60 s of slack = 7,920 s
+            job_minutes: 140 # 132 + 2 x 229 s = 458 s, up to the next whole minute, 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      # As ci-job-dispatch-ui.yaml's step of this name, for its reason:
+      # e2e/__tests__/outside-path-reach-input.test.ts runs the path-reach driver under zsh, and
+      # outside-edge-refusals-input.test.ts the edge-refusal check, each of which must refuse to run
+      # and name bash; each skips that row where zsh is missing. The runner image has no zsh (dash,
+      # the other shell they run under, is Ubuntu's /bin/sh).
+      - name: Install zsh
+        if: matrix.lane == 'harness'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+      # The harness rows that ci-job-dispatch-ui.yaml skips for want of a database repeat here,
+      # as they run in a pod: e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts's "psql
+      # reads its own stack's database", and the rows of replace-blocks-guard.test.ts that need a
+      # server. Each reads LEGION_TEST_PG_DSN and skips without it. They need a login role that
+      # may create databases: psql-session.test.ts and replace-blocks-guard.test.ts each make a
+      # database of their own and drop it with e2e/psql.ts's dropDatabase, which needs no
+      # superuser (dropDatabase's doc comment says why). They need a database the DSN names:
+      # harness-stacks.test.ts runs `select 1` on it, and replace-blocks-guard.test.ts takes it
+      # for the shared one its guard refuses. They need no extension, as psql-session.test.ts's
+      # head says. psql is on the runner already.
+      #
+      # The runner's own PostgreSQL. GitHub's runner-images readme for Ubuntu 24.04
+      # (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md, "#### PostgreSQL", read on
+      # 2026-11-17) says "PostgreSQL 16.15", "User: postgres", "PostgreSQL service is disabled by
+      # default." and "Use the following command as a part of your job to start the service:
+      # 'sudo systemctl start postgresql.service'". The image's own test then finds the server on
+      # /var/run/postgresql:5432 (images/ubuntu/scripts/tests/Databases.Tests.ps1).
+      #
+      # `ci` is a throwaway password, the one every `postgres:` service of this repository's
+      # workflows uses. It opens a database on this runner that nothing else reaches: the server
+      # listens on the loopback alone, and the runner is discarded after the job.
+      #
+      # e2e/__tests__/second-global-setup.test.ts stays skipped, as it is in CI. It starts two
+      # whole stacks, each a Postgres with the pgvector extension that migration 0072 needs
+      # (e2e/harness-postgres.ts), a Go server and the fakes, and the hook it drives refuses a
+      # run without Chromium. It runs only where DISPATCH_E2E_PG_BIN or DISPATCH_E2E_PG_IMAGE
+      # names a Postgres, and this job sets neither: the runner's PostgreSQL has no pgvector, and
+      # the job builds no server and installs no browser.
+      - name: Start PostgreSQL for the harness rows that need a database
+        if: matrix.lane == 'harness'
+        run: |
+          sudo systemctl start postgresql.service
+          sudo -u postgres psql -X -v ON_ERROR_STOP=1 \
+            -c "create role legion_test login createdb password 'ci'" \
+            -c 'create database legion_test owner legion_test'
+          LEGION_TEST_PG_DSN='postgres://legion_test:ci@127.0.0.1:5432/legion_test?sslmode=disable'
+          echo "LEGION_TEST_PG_DSN=$LEGION_TEST_PG_DSN" >> "$GITHUB_ENV"
+          psql "$LEGION_TEST_PG_DSN" -c 'select 1'
+      # The step runs the tool under `timeout`: at deadline_seconds `timeout` sends `bun run` alone
+      # a SIGTERM, which `bun run` passes on to the tool (measured on Bun 1.4.4, through a
+      # script's `&&` too), on which the tool stops Bun and reports each test file still running,
+      # with its run and its row. `--kill-after=60` ends `bun run` 60 s later if it has not ended
+      # by then, the 60 s the step's budget keeps for the report. `exec` makes `timeout` the
+      # step's top process: GitHub's runner signals only that process when it cancels the step or
+      # the step reaches its budget, and the bash that runs the step's script passes no signal on
+      # to a child it waits for. `timeout` passes it on to `bun run`, and so to the tool.
+      # why: .github/ci-notes/dispatch-unit-repeat.md#a-legs-deadline-and-what-a-stopped-leg-names
+      #
+      # GitHub's runners set CI already. The step writes it too, so the environment the rows run
+      # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
+      # new snapshot (Bun's snapshot documentation).
+      - name: Run the lane under one seed with --reruns ${{ matrix.reruns }}
+        timeout-minutes: ${{ matrix.step_minutes }}
+        run: >-
+          exec timeout --foreground --signal=TERM --kill-after=60 ${{ matrix.deadline_seconds }}
+          bun run test:repeat --lane ${{ matrix.lane }} --reruns ${{ matrix.reruns }}
+          --out "$RUNNER_TEMP/unit-repeat"
+        working-directory: packages/dispatch
+        env:
+          CI: "true"
+      # Uploaded whether or not the leg passed, so a red leg's report reaches the run. Kept four
+      # weeks: four scheduled runs side by side, enough to tell a row that fails every week from
+      # one that failed once, and to read the run before a fix beside the run after it.
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: >-
+            dispatch-unit-repeat-${{ matrix.lane }}-${{ matrix.round }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/unit-repeat
+          if-no-files-found: error
+          retention-days: 28

@@ -168,6 +168,17 @@ func TestSenderLimitSettings(t *testing.T) {
 		}
 	})
 
+	t.Run("start line for 1 message a minute and 1 at once", func(t *testing.T) {
+		limit, err := parseSenderLimit(senderLimitEnv(map[string]string{rate: "1"}))
+		if err != nil {
+			t.Fatalf("refused: %v", err)
+		}
+		const want = "listener sender limit: 1 message a minute, 1 at once, for each agent session in this process"
+		if got := describeSenderLimit(limit); got != want {
+			t.Fatalf("start line %q, want %q", got, want)
+		}
+	})
+
 	t.Run("start line for no limit", func(t *testing.T) {
 		limit, err := parseSenderLimit(senderLimitEnv(nil))
 		if err != nil {
@@ -358,13 +369,13 @@ func (rig *senderLimitRig) requireNoWake(t *testing.T, kind, name string) {
 // interceptForwards has every role forward the rig's routes make go through intercept, handed the
 // forward's number among them, from 1, and the forward itself, which intercept makes or does not,
 // and answers in its place. It answers the count of the forwards the routes made so far.
-func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func() (func() error, error)) (func() error, error)) *int {
+func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error)) *int {
 	forwards := 0
 	delivery := *rig.deps.delivery
 	forwardRole := delivery.forwardRole
-	delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		forwards++
-		return intercept(forwards, func() (func() error, error) { return forwardRole(subject, item, msgID, timeout) })
+		return intercept(forwards, func() (func() (bus.StoredAck, error), error) { return forwardRole(subject, item, msgID, timeout) })
 	}
 	rig.deps.delivery = &delivery
 	return &forwards
@@ -375,7 +386,7 @@ func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func(
 // wait answers natsgo.ErrTimeout, as the wait for an acknowledgement that never arrives ends.
 // Every later forward goes out as it would. It answers the count of the forwards made so far.
 func (rig *senderLimitRig) loseFirstForwardAck(then func()) *int {
-	return rig.interceptForwards(func(n int, forward func() (func() error, error)) (func() error, error) {
+	return rig.interceptForwards(func(n int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
 		if n > 1 {
 			return forward()
 		}
@@ -384,11 +395,11 @@ func (rig *senderLimitRig) loseFirstForwardAck(then func()) *int {
 		if err != nil {
 			return nil, err
 		}
-		if err := wait(); err != nil {
+		if _, err := wait(); err != nil {
 			return nil, err
 		}
 		then()
-		return func() error { return natsgo.ErrTimeout }, nil
+		return func() (bus.StoredAck, error) { return bus.StoredAck{}, natsgo.ErrTimeout }, nil
 	})
 }
 
@@ -924,6 +935,37 @@ func TestSenderLimitCost(t *testing.T) {
 		rig.requireCount(t, sender, false)
 	})
 
+	// A keep whose first send went out unanswered and whose resend the stream refused as in
+	// process may have stored the copy itself, and here it did: the next send's duplicate names
+	// the keep's own copy, which is no repeat (publishPastInProcess answers it Resent), so the
+	// 202 costs one, as a copy the keep stored does, and the wake's mark is not forgiven.
+	t.Run("role message kept after its own unanswered send stored the copy (202) costs one", func(t *testing.T) {
+		rig.limit(4, 1)
+		const sender, role = "ses_cost_kept_own_send", "cost-kept-own-send"
+		original := rig.deps.delivery
+		t.Cleanup(func() { rig.deps.delivery = original })
+		delivery := *original
+		sends := 0
+		delivery.keepPublish = func(ctx context.Context, subject string, item contracts.Envelope, msgID string) (bus.StoredAck, error) {
+			sends++
+			ack, err := original.keepPublish(ctx, subject, item, msgID)
+			if sends == 1 && err == nil {
+				return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrUnacknowledged,
+					fmt.Errorf("%w: nats: duplicate message id is in process", bus.ErrDuplicateInProcess))
+			}
+			return ack, err
+		}
+		rig.deps.delivery = &delivery
+		kept := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
+		kept.requireStatus(t, "the kept message whose first send went unanswered", http.StatusAccepted)
+		if !kept.Kept || sends != 2 {
+			t.Fatalf("the message answered %s after %d keep sends, want kept after two", kept.raw, sends)
+		}
+		kept.requireNamed(t, "the kept message whose first send went unanswered", sender)
+		awaitWake(t, rig.wakes, wakeKindRole, role)
+		rig.requireCount(t, sender, false)
+	})
+
 	t.Run("role message with no holder and keep false (404 after a wake report) costs one", func(t *testing.T) {
 		rig.limit(4, 1)
 		const sender, role = "ses_cost_unkept", "cost-unkept"
@@ -1066,7 +1108,7 @@ func TestSenderLimitCost(t *testing.T) {
 		// out, after the send resolved its holder live, so no acknowledgement arrives and every
 		// later resolution waits out the window.
 		var thaw func()
-		frozen.interceptForwards(func(_ int, forward func() (func() error, error)) (func() error, error) {
+		frozen.interceptForwards(func(_ int, forward func() (func() (bus.StoredAck, error), error)) (func() (bus.StoredAck, error), error) {
 			if thaw == nil {
 				thaw = server.Freeze(t)
 				t.Cleanup(thaw)
@@ -1123,7 +1165,7 @@ func TestSenderLimitCost(t *testing.T) {
 		idempotencyKey := uuid.NewString()
 		earlier := listenerTestEnvelope(contracts.RoleTopicPrefix+role, publishDedupePrefix+idempotencyKey)
 		earlier.SourceSession = sender
-		if _, kept := keepRoleMessage(*released.deps.delivery, role, earlier); !kept {
+		if _, err := keepRoleMessage(*released.deps.delivery, role, earlier); err != nil {
 			t.Fatalf("keep the earlier attempt; the listener log says why:\n%s", released.harness.logs.String())
 		}
 		claimRoleFor(t, released.deps.registry, released.deps.sessions, holder, role, nil)
@@ -1155,7 +1197,8 @@ func TestSenderLimitCost(t *testing.T) {
 
 // TestSenderLimitSenders is check a-senders: the limit counts the session a secrets-broker token
 // proves, else the request's source_session, and only for a message whose source is agent or
-// absent. A message with no sender, or from Dispatch or Envoy itself, takes nothing.
+// absent. A message with no sender takes nothing, and so does one from Dispatch, a person (source
+// human) or Envoy itself, with a secrets-broker token or without one.
 func TestSenderLimitSenders(t *testing.T) {
 	t.Run("a sender a secrets-broker token proves is counted and named in the field sender", func(t *testing.T) {
 		rig := newBrokerRig(t)
@@ -1180,6 +1223,38 @@ func TestSenderLimitSenders(t *testing.T) {
 				first.requireStatus(t, "the token's message", http.StatusOK)
 				first.requireNamed(t, "the token's message", bound)
 				publish().requireRefused(t, "the token's next message", bound, 4, 1, 15)
+			})
+		}
+	})
+
+	t.Run("a secrets-broker token does not make a message with another source count", func(t *testing.T) {
+		rig := newBrokerRig(t)
+		const bound, token = "ses_senders_broker_sources", "access-token-of-a-session-sending-another-source"
+		rig.broker.Says(token, sessionAnswer(bound, "ada@example.com", rig.caller.JKT()))
+		for _, source := range []string{"dispatch", "envoy", "human"} {
+			t.Run("source "+source, func(t *testing.T) {
+				rig.deps.senderLimit = newSenderLimit(4, 1, func() time.Time { return senderLimitStart })
+				topic := "notifications.team.sender-limit-broker-" + source + "-" + id.New()
+				publish := func(fields map[string]any) limitedAnswer {
+					t.Helper()
+					body := messageJSON(t, map[string]any{"topic": topic, "message": countedMessage}, fields)
+					return serveLimited(t, rig.handler, rig.logs.String, brokerTokenRequest(t, rig.caller, http.MethodPost, "/v1/messages/publish", token, body))
+				}
+				// Two messages past a burst of 1, the first naming the token's session and the
+				// second no session: each answers 200, and its line names no sender.
+				for i, fields := range []map[string]any{
+					{"source": source, "source_session": bound},
+					{"source": source},
+				} {
+					what := fmt.Sprintf("the token's %s message %d", source, i+1)
+					message := publish(fields)
+					message.requireStatus(t, what, http.StatusOK)
+					message.requireUnnamed(t, what)
+				}
+				// The count is still full: the token's next message, with no source, takes it.
+				next := publish(nil)
+				next.requireStatus(t, "the token's next message, with no source", http.StatusOK)
+				next.requireNamed(t, "the token's next message, with no source", bound)
 			})
 		}
 	})
@@ -1219,7 +1294,7 @@ func TestSenderLimitSenders(t *testing.T) {
 		requireUncounted(t, "notice", notices)
 	})
 
-	for _, source := range []string{"dispatch", "envoy"} {
+	for _, source := range []string{"dispatch", "envoy", "human"} {
 		t.Run("source "+source+" with a source_session is not counted", func(t *testing.T) {
 			rig.limit(4, 1)
 			sender := "ses_senders_" + source

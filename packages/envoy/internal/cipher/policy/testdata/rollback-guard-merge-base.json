@@ -1,0 +1,58 @@
+{
+  "BARE_ACCOUNT": {
+    "served": true,
+    "outcome": "deny"
+  },
+  "BARE_ADMIN": {
+    "served": true,
+    "outcome": "deny"
+  },
+  "BARE_APP": {
+    "served": true,
+    "outcome": "automatic"
+  },
+  "BARE_CHANNELS": {
+    "served": true,
+    "outcome": "automatic"
+  },
+  "BARE_LISTED": {
+    "served": true,
+    "outcome": "deny"
+  },
+  "BARE_SLACK": {
+    "served": true,
+    "outcome": "automatic"
+  },
+  "BARE_STORED": {
+    "served": true,
+    "outcome": "automatic"
+  },
+  "GUARDED_ACCOUNT": {
+    "served": false,
+    "reason": "requesters-malformed"
+  },
+  "GUARDED_ADMIN": {
+    "served": false,
+    "reason": "requesters-malformed"
+  },
+  "GUARDED_APP": {
+    "served": false,
+    "reason": "requesters-malformed"
+  },
+  "GUARDED_CHANNELS": {
+    "served": false,
+    "reason": "requesters-malformed"
+  },
+  "GUARDED_LISTED": {
+    "served": false,
+    "reason": "requesters-malformed"
+  },
+  "GUARDED_SLACK": {
+    "served": false,
+    "reason": "requesters-malformed"
+  },
+  "GUARDED_STORED": {
+    "served": false,
+    "reason": "requesters-malformed"
+  }
+}

@@ -650,7 +650,11 @@ interface Deps {
    * reads a retyped block's text and an upload's current ask ids through it, and the decision
    * record writes through it.
    */
-  dispatchClient: (directory: string, signal: AbortSignal) => DispatchSession | undefined;
+  dispatchClient: (
+    directory: string,
+    signal: AbortSignal,
+    deadlineMs?: number
+  ) => DispatchSession | undefined;
   /**
    * The session's decision recorder, shared with the host's record of unmarked writes: the gate
    * builds none of its own. Two recorders would each upload the session's document under its name,
@@ -3029,7 +3033,9 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
         return pass("skipped", { reason: `primary on ${ctx.model?.provider ?? "no model"}` });
       // Raced from handler entry, so each render of this call counts against the runner's ceiling too.
       const deadlineMs = callDeadlineMs();
-      stop.arm(Math.max(0, deadlineMs - (deps.now() - started)));
+      const armedMs = Math.max(0, deadlineMs - (deps.now() - started));
+      stop.arm(armedMs);
+      const deadlineAt = deps.now() + armedMs;
       // A model that answers with an error hands the request to the next one in the role's chain, inside
       // the same deadline. Only models on the primary's own account are asked: the transcript stays there.
       const chain = [
@@ -3086,6 +3092,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
           system: ruleSystem,
           context: agentContext,
           signal: stop.signal,
+          deadlineAt,
         }
       );
       const [charterWalk, ruled] = await Promise.all([charterRun, rulesRun]);

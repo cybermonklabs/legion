@@ -1,0 +1,34 @@
+kind: Added
+body: |-
+  The secrets broker can run the Envoy hub's NATS auth service, so a connection reaches only what
+  its own credential allows. With `BROKER_NATS_URLS` and the three seed files
+  (`BROKER_NATS_SEED_FILE`, `BROKER_NATS_ISSUER_SEED_FILE`, `BROKER_NATS_XKEY_SEED_FILE`), every
+  broker replica answers the hub's authorization requests in one queue group: a session presenting
+  its broker access token and a proof of that token's key over the server's own per-connection
+  nonce is admitted to its own delivery channel and its own agent stream, and nothing of another
+  session's; a service presenting a projected Kubernetes or Google identity token for
+  `BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, from an account
+  `BROKER_NATS_SERVICES` lists, is admitted to its kind's grant. Any other connection is refused by
+  one line, and the NATS user each is admitted as expires with the credential it was issued for.
+  Every request a replica takes is answered within 1.5 s of reaching it, admitted or refused. A
+  replica holds at most 1024 requests waiting for a decision and refuses the next at once
+  (`reason="waiting_bound"` in `broker_nats_callout_decisions_total`), with at most 1024 such
+  refusals in flight; past both it drops the request, and the hub refuses that client at its own
+  timeout. A request the hub has already given up on, read from the hub's own clock so no skew
+  between the broker's and the hub's clocks enters, is dropped without a decision. Every drop is
+  counted in `broker_nats_callout_dropped_total` by reason, and the first in a minute logged. The
+  broker's metrics port answers `GET /livez` with 503 once the service's loop has not turned for
+  ten seconds, so a liveness probe restarts a replica that has stalled.
+  Go clients present those credentials through `NATS_SERVICE_TOKEN_FILE` or
+  `NATS_SERVICE_GOOGLE_AUDIENCE` for a service, and through the token client for a session, each
+  reconnecting before its user expires. A service reconnects only once a throwaway connection
+  presenting its new token is admitted, so an outage of the auth service present when that token
+  is due cuts no connection before its user expires; a reconnect that follows the admission can
+  still land on a replica that has hung since, and is cut until a retry is admitted. `natsprobe`
+  tries one subject by hand.
+  `scripts/dev-stack.sh --callout` runs the whole local stack behind the service and
+  `scripts/callout-check.sh` proves it. A hub with no auth service, and clients configured with
+  none, run exactly as before.
+time: 2026-11-16T03:34:48Z
+custom:
+    Issue: pr4139

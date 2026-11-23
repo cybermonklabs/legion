@@ -7,7 +7,7 @@ import { type NamedText, renderPairs, renderReport } from "./render.ts";
 // Turns the three files of the comment delivery audit (#2366) into a document for people,
 // and a TSV file of its pairs: comments.csv from
 // packages/envoy/internal/dispatch/deliveryaudit/comments.sql, and receipts.tsv and
-// receipts-counts.txt from `tq receipts` (theorem-labs/agent-infra transcript-store).
+// receipts-counts.txt from `tq receipts` (example-org/deployment transcript-store).
 // scripts/dispatch/README.md ("Comment delivery") gives the run. Input that does not agree with
 // itself is refused (exit 1, every problem on stderr, nothing on stdout or in the pairs file),
 // never counted.

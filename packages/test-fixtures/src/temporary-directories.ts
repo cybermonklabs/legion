@@ -1,14 +1,18 @@
 import { afterAll, afterEach, beforeAll } from "bun:test";
 import { randomBytes } from "node:crypto";
 import {
+  accessSync,
   chmodSync,
+  constants,
   lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
   type Stats,
+  statfsSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,12 +30,66 @@ export type TemporaryDirectoriesOptions = {
 /** What {@link temporaryDirectory} takes. */
 export type TemporaryDirectoryOptions = {
   /**
-   * Returns the path under `realpathSync` of `tmpdir()`. A macOS `tmpdir()` is a symlink (`/var`
-   * to `/private/var`), so a test that compares a path a child process printed with the path the
-   * fixture returned needs the resolved one.
+   * Returns the path under `realpathSync` of its parent, `root` or else `tmpdir()`. A macOS
+   * `tmpdir()` is a symlink (`/var` to `/private/var`), so a test that compares a path a child
+   * process printed with the path the fixture returned needs the resolved one.
    */
   real?: boolean;
+  /** The directory the one directory is made in, `tmpdir()` by default; see {@link memoryRoot}. */
+  root?: string;
 };
+
+/** What {@link memoryRoot} takes. */
+export type MemoryRootOptions = {
+  /** The bytes the tmpfs must have free, 0 by default: see {@link memoryRoot}. */
+  need?: number;
+  /** The mount table it reads, `/proc/self/mountinfo` by default, for a test of its own. */
+  mountinfo?: string;
+  /** The mount point it judges, `/dev/shm` by default, for a test of its own. */
+  at?: string;
+};
+
+/**
+ * `/dev/shm` where `mountinfo` shows a tmpfs mounted there read-write and without `noexec`, this
+ * process may write in and search it, and it has `need` bytes free; else `tmpdir()`, and `tmpdir()`
+ * when it cannot read `mountinfo`. The last mount at `/dev/shm` in the file is the one a process
+ * sees. A suite that makes or removes many directory entries inside one row's or hook's time passes
+ * it as `root`: on a disk other programs share, one creation can take milliseconds, and the suite's
+ * time then follows what those programs do. `noexec` is refused because a suite may write programs
+ * into its directory and run them. A caller that holds much there passes `need`: the most one run
+ * of its suite holds at once, times the runs that may share the host. A tmpfs is often small (a
+ * Kubernetes pod's `/dev/shm` is 64 MiB), keeps what a stopped run never removed, and fails a write
+ * past its end with ENOSPC; a tmpfs page holds one file's data however short, so the count of files
+ * kept at once sets that most, not their size.
+ */
+export function memoryRoot(options: MemoryRootOptions = {}): string {
+  const at = options.at ?? "/dev/shm";
+  const need = options.need ?? 0;
+  let text: string;
+  try {
+    text = readFileSync(options.mountinfo ?? "/proc/self/mountinfo", "utf8");
+  } catch {
+    return tmpdir();
+  }
+  // A line is the mount's id, its parent's, the device, the root, the mount point, its options,
+  // optional fields, `-`, then the filesystem type.
+  const mount = text
+    .split("\n")
+    .map((line) => line.split(" "))
+    .filter((fields) => fields[4] === at)
+    .at(-1);
+  if (mount === undefined) return tmpdir();
+  const flags = (mount[5] ?? "").split(",");
+  const type = mount[mount.indexOf("-") + 1];
+  if (type !== "tmpfs" || !flags.includes("rw") || flags.includes("noexec")) return tmpdir();
+  try {
+    accessSync(at, constants.W_OK | constants.X_OK);
+    const { bavail, bsize } = statfsSync(at);
+    return bavail * bsize >= need ? at : tmpdir();
+  } catch {
+    return tmpdir();
+  }
+}
 
 /**
  * Makes one fresh directory and returns its path. `suffix` goes into the directory's name, so a
@@ -106,10 +164,10 @@ export function temporaryDirectories(
  * from a test body, or from a hook of its own registered below this call: Bun runs the hooks of a
  * scope in the order they were registered.
  *
- * `real` resolves `tmpdir()` once, at the call, and joins the reserved name onto the resolved
- * parent: `realpathSync` needs a path that exists, and the directory itself does not yet. This
- * form takes no `root`: nothing needs one directory for a whole file on another filesystem, and
- * the maker is what a cross-filesystem row uses.
+ * `root` is the directory the one directory is made in, `tmpdir()` unless given; it must exist
+ * once the `beforeAll` runs. `real` resolves that parent once, at the call, and joins the
+ * reserved name onto the resolved parent: `realpathSync` needs a path that exists, and the
+ * directory itself does not yet, so with `real` the parent must exist at the call.
  *
  * The name is the prefix, a dash and eight random hexadecimal characters, two more than
  * `mkdtemp` adds. The directory is made exclusively, so `mode` applies to it and a path that
@@ -119,7 +177,8 @@ export function temporaryDirectory(
   prefix: string,
   options: TemporaryDirectoryOptions = {}
 ): string {
-  const parent = options.real === true ? realpathSync(tmpdir()) : tmpdir();
+  const root = options.root ?? tmpdir();
+  const parent = options.real === true ? realpathSync(root) : root;
   const directory = join(
     parent,
     `${nameTemplate(prefix, undefined)}${randomBytes(4).toString("hex")}`

@@ -41,10 +41,38 @@ case "$project_status" in
     ;;
 esac
 
+work="$(mktemp -d)"
+readonly work
+trap 'rm -rf "$work"' EXIT
+
+# A run after the first finds the project and the document its last run left, and a replacement
+# names the token of the version it replaces (Dispatch takes one naming none for now, INFRA-4980,
+# and refuses it again once every deployed client sends one), so the upload names that token where
+# the project holds that document; a first run finds none and sends none. Every read of a document
+# goes by its slug: $name is the caller's to set and may carry a space or a `#`, which a path would
+# have to encode and a slug never carries, and an unencoded name would be read as a document the
+# project does not hold, so the upload would replace it naming no token. The listing says which
+# documents the project holds, so a name it does not list is that first run, and any other answer
+# stops the script where it came.
+curl --fail-with-body --silent --show-error --output "$work/documents" "${headers[@]}" \
+  "$DISPATCH_URL/api/v1/projects/$project/artifacts"
+held_slug="$(jq --raw-output --arg name "$name" \
+  'map(select(.issue_key == null and (.name == $name or .slug == $name))) | .[0].slug // empty' \
+  <"$work/documents")"
+readonly held_slug
+if [[ -n "$held_slug" ]]; then
+  curl --fail-with-body --silent --show-error --output "$work/text" "${headers[@]}" \
+    "$DISPATCH_URL/api/v1/projects/$project/artifacts/$held_slug/text"
+  base="$(jq --exit-status --raw-output '.token' <"$work/text")"
+else
+  base=""
+fi
+readonly base
 artifact="$(
   curl --fail-with-body --silent --show-error \
     --request POST "${headers[@]}" \
-    --data "$(jq --null-input --arg name "$name" --arg content $'# Runbook\n\nStep one.\n' '{name: $name, content: $content}')" \
+    --data "$(jq --null-input --arg name "$name" --arg content $'# Runbook\n\nStep one.\n' --arg base "$base" \
+      'if $base == "" then {name: $name, content: $content} else {name: $name, content: $content, precondition: {document: $base}} end')" \
     "$DISPATCH_URL/api/v1/projects/$project/artifacts"
 )"
 readonly artifact

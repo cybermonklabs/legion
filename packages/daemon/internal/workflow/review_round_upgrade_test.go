@@ -45,7 +45,7 @@ func storeBeforeTheReviewedHead(t *testing.T) (*store.Store, *pgxpool.Pool) {
 		if migration.Version == phaseReviewedHeadMigration {
 			continue
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -122,7 +122,7 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 
 	issue := issueRecord(t, pool, "LEGION-208")
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		return engine.SendOwedEntry(ctx, tx, *issue, claim.RoleReviewer, reviewer)
 	})
 	if delivered := deliveredTask(t, pool, "the owed entry after the upgrade"); delivered != want {

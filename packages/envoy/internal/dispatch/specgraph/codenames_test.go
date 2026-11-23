@@ -55,7 +55,7 @@ func TestCodeNames(t *testing.T) {
 		{text: "TestF\u2026 and TestG\u2014then", want: []string{"TestF", "TestG"}},
 		{text: "the \u201creadSet\u201d and \u201epmdoc.ReadSet\u201c names", want: []string{"readSet", "pmdoc.ReadSet"}},
 		{text: "\u201cTest\u201d results of \u201cGitHub\u201d", want: nil},
-		// The examples that doc.go, the action's README and packages/envoy/AGENTS.md give: each
+		// The examples that doc.go and the action's README give: each
 		// word of the first row has a shape of code and is refused, and each of the second has none
 		// or is a product name of productNames.
 		{text: "I/O and/or client/server https://example.com/docs mmHg ownCloud works.Then Three.js TestFlight https://bun.sh",

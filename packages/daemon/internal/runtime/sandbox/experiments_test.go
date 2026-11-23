@@ -252,7 +252,7 @@ func TestAKeptPodMissingOneArmsMountDropsThatArmAndLogsIt(t *testing.T) {
 	}
 	s := &sandbox{Spec: sandboxSpec{PodTemplate: podTemplate{Spec: podOf(t, before, spec)}}}
 	l := launchOf(t, after, spec)
-	kept, readable := after.keptBy(s, l)
+	kept, readable := after.keptBy(s, "", l)
 	if !readable {
 		t.Fatal("keptBy could not read the pod's template")
 	}

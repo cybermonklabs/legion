@@ -28,7 +28,8 @@ import type {
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
  *  names the person by lowercase email, the form issue assignees carry. While it answers
  *  `EVENT_HEAD_UNAVAILABLE` it is asked again for as long as that lasts (`queryRetry`), so the
- *  shell shows its skeleton, never the error page. */
+ *  shell shows its skeleton, never the error page. News that who is signed in may have changed
+ *  asks it again through `askSignInAgain` (`query-client.ts`), never a bare invalidation. */
 export const whoAmIQuery = () =>
   queryOptions({
     queryKey: ["whoami"],
@@ -130,6 +131,18 @@ export const issueCollaboratorsQuery = (key: string | undefined) =>
       if (key === undefined) throw new Error("A collaborators read needs the issue's key.");
       return api.getIssueCollaborators(key);
     },
+  });
+
+/** The step records Legion wrote of one issue (`GET /api/v1/issues/{key}/steps`), which the Steps
+ *  tab draws. A step write appends no event of its own, so the event feed refreshes this key on
+ *  the issue's events that come with a phase moving (`changesSteps` in `event-refresh.ts`), each
+ *  naming it exactly as it names every issue target. The tab reads it through its catch-up,
+ *  which every refresh that reaches the key starts, and through Retry
+ *  (`features/steps/StepsTab.tsx`). */
+export const issueStepsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["issue", key, "steps"],
+    queryFn: () => api.listSteps(key),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
@@ -536,6 +549,19 @@ export const deliverySettingsQuery = () =>
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
   });
+
+/** Where the next page of an offset-paged list starts, for an infinite query's
+ *  `getNextPageParam`: after the rows this page answered, and nowhere once those reach the
+ *  total the answer carries. `GET /api/v1/me/answers` and `GET /api/v1/people/{login}/nodes`
+ *  both answer that shape (api.myAnswersQuery), so both pages read their next page from here. */
+export const nextOffsetPage = (last: {
+  offset: number;
+  rows?: readonly unknown[] | null;
+  total: number;
+}): number | undefined => {
+  const read = last.offset + (last.rows ?? []).length;
+  return read < last.total ? read : undefined;
+};
 
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
  *  project is its own entry: the Settings page's Legion section reads one entry per project

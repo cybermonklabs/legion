@@ -66,7 +66,7 @@ the read's own error unchanged. Only the escalation check itself answers `Forbid
 
 The fix is `packages/envoy/infra/gcp/dispatch_frontdoor.go:556`,
 `pulumi.All(role.ID(), role.Metadata.Name().Elem()).ApplyT(…)`, which is the form
-theorem-labs/agent-infra's `shared/rbac` `ref` already used. `packages/envoy/infra/gcp/dispatch_test.go`
+example-org/deployment's `shared/rbac` `ref` already used. `packages/envoy/infra/gcp/dispatch_test.go`
 pins the apply value (`roleRef` equals `{apiGroup, kind: Role, name: example-dispatch-tailnet-tls}`)
 and asserts the preview value is unknown on both the component and the plugin's `Construct`
 surface.

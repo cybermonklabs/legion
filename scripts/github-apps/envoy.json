@@ -6,7 +6,8 @@
     "contents": "read",
     "issues": "read",
     "metadata": "read",
-    "pull_requests": "read"
+    "pull_requests": "read",
+    "statuses": "read"
   },
   "description": "Envoy and Dispatch: delivers repository webhooks to the Envoy listener and reads GitHub for Dispatch.",
   "default_events": [

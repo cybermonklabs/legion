@@ -22,6 +22,18 @@ type owedClaimWrite struct {
 	// first is still owed adds its report here instead of replacing it, since the two name
 	// different transitions and the daemon acts on each.
 	reports []owedReport
+	// stops are the project pause's stops whose transaction did not land (Deps.PauseStopped,
+	// decision 6 of dispatch://INFRA-3759's plan), oldest first and one per pause, each with the
+	// pause's id and whether the role is owed a launch. While any is owed, every claim write the
+	// machine makes is that transaction (putStops): the repair, and each write that settles this
+	// mark when it lands — putClaim, putClaimAndPending, and retirePending, which writes them
+	// before its retirement — so no write of a stopped claim lands without the pause's records,
+	// and the one that lands is the repair, as this mark's rule is. A write that settles no mark
+	// leaves them where they are: queue, takeBackPending, interrupted and providerErrorClears
+	// write the claim beside a delivery and settle nothing, so the stop stays owed and the next
+	// repair makes it. Each goes off the mark as its own transaction lands, so a stop of one
+	// pause is never written twice for a later one that fails.
+	stops []PauseStop
 }
 
 // owedReport is one report a decision would have made had its write landed, kept until the write
@@ -162,9 +174,14 @@ func (m *Machine) repair(ctx context.Context) {
 		return
 	}
 	method, pending := "PutClaim", m.claim.Pending
-	var err error
 	if pending != nil {
 		method = "PutClaimAndDelivery"
+	}
+	if len(m.owedWrite.stops) > 0 {
+		method = "PauseStopped"
+	}
+	var err error
+	if pending != nil {
 		err = m.putClaimAndPending(ctx)
 	} else {
 		err = m.putClaim(ctx)
@@ -178,7 +195,7 @@ func (m *Machine) repair(ctx context.Context) {
 		return
 	}
 	m.log.Warn(owedWriteLine, "store", method, "error", err, "owed", false,
-		"droppedReports", len(m.owedWrite.reports))
+		"droppedReports", len(m.owedWrite.reports), "droppedStops", len(m.owedWrite.stops))
 	m.owedWrite = nil
 }
 

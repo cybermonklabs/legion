@@ -26,7 +26,9 @@
 # contract bump: a bump relaunches every registered claim in every deployment onto the new
 # plugin, and a comment is not worth that. What this gives up: an edit of that header alone is
 # no longer refused, even one that adds a surface to what the contract names. A copy with no
-# history entry is compared whole.
+# history entry is compared whole. The number the `const` line declares must also have its own
+# `// <number>:` entry, so a bump cannot move the declaration and its fixtures while the history
+# stays silent.
 #
 # The commit this checkout was built on is not always the base: a merge group is the base with
 # the group's entries on top, so there the two are one commit, but a pull request is checked out
@@ -65,12 +67,18 @@
 # and then this file at refs/pull/<number>/head — a ref of this repository, so a fork's head too
 # — for each that changes it. A file list GitHub cut short says nothing about the paths it left
 # out, so that pull request's file is read as well rather than guessed at, and a read that fails
-# refuses the change and names itself.
+# refuses the change and names itself. Each `gh api` runs through gh-read.sh's gh_wait_reset,
+# which waits out a spent API budget within the job's JOB_TIMEOUT_MINUTES and fails by name past
+# it; its own lines reach the step's log as they happen, and gh's words reach the refusal.
 #
 # Run from anywhere: .github/scripts/check-daemon-api-contract.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
 set -euo pipefail
 
+# gh-read.sh beside this script's own file, resolved before the cd: a test fixture links only
+# this script in, and the link leads back to the directory CI runs from.
+GH_READ="$(dirname "$(readlink -f "$0")")/gh-read.sh"
+export GH_READ
 cd "$(dirname "$0")/../.."
 
 python3 <<'PY'
@@ -79,6 +87,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote
@@ -99,8 +108,9 @@ FIELDS = {
 # version.go declares.
 SITES = (DECLARATION, *FIELDS)
 DECLARED = re.compile(r"^const\s+DaemonAPIVersion\s*=\s*(\d+)\s*$", re.M)
-# version.go's first history entry: the first line that starts `// <number>:`.
-HISTORY = re.compile(r"^// \d+:", re.M)
+# version.go's history entries: each line that starts `// <number>: `, the number its group. The
+# blank after the colon keeps out an entry's own prose that wraps at a time of day (`// 22:48Z`).
+HISTORY = re.compile(r"^// (\d+):[ \t]", re.M)
 # One page of the open pull requests, each with its number, its draft mark, its head commit and
 # the paths it changes. Drafts are counted: a draft holds the number it declares as firmly as any
 # other open pull request, and one of the collisions this check exists for was a draft's.
@@ -136,18 +146,25 @@ def fatal(path: str, message: str) -> None:
 
 
 def gh(args: list[str], what: str) -> str:
-    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all."""
-    try:
-        done = subprocess.run(
-            ["gh", "api", *args], capture_output=True, text=True, encoding="utf-8"
-        )
-    except OSError as error:
-        fatal(DECLARATION, f"could not read {what}: gh could not be run ({one_line(error)})")
+    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all, and
+    through gh-read.sh's gh_wait_reset: its own lines (a wait, or a budget spent past the limit)
+    go straight to this step's stderr, and the words gh printed on the call it ended on go to a
+    file, which the refusal quotes."""
+    with tempfile.NamedTemporaryFile(prefix="gh-words.") as words:
+        try:
+            done = subprocess.run(
+                ["bash", "-c", 'source "$0"; gh_wait_reset --stderr "$1" gh api "${@:2}"',
+                 os.environ["GH_READ"], words.name, *args],
+                stdout=subprocess.PIPE, text=True, encoding="utf-8",
+            )
+        except OSError as error:
+            fatal(DECLARATION, f"could not read {what}: gh could not be run ({one_line(error)})")
+        said = Path(words.name).read_text(encoding="utf-8", errors="replace")
     if done.returncode != 0:
         fatal(
             DECLARATION,
             f"could not read {what}: gh api exited {done.returncode} "
-            f"({one_line(done.stderr) or one_line(done.stdout) or 'no output'})",
+            f"({one_line(said) or one_line(done.stdout) or 'no output'})",
         )
     return done.stdout
 
@@ -399,6 +416,15 @@ tree_number, line = number_in(
     f"{DECLARATION} in this checkout",
     lambda: f"; the base, {base_is}, carries {base_number}. {renumber(repository, base_number)}",
 )
+
+if str(tree_number) not in HISTORY.findall(tree_text):
+    fatal(
+        DECLARATION,
+        f"{DECLARATION}:{line}: declares daemon API contract {tree_number}, but its history has "
+        f"no `// {tree_number}:` entry. A bump changes the daemon and plugin together, so record "
+        f"the number in that history before the declaration. The base, {base_is}, carries "
+        f"{base_number}. {renumber(repository, base_number)}",
+    )
 
 # The agreement rule of the header: it runs before the pass for a number above the base's.
 for site in FIELDS:

@@ -53,6 +53,58 @@ func TestViewAnswersWhileARelaunchWaitsInTheRuntime(t *testing.T) {
 	}
 }
 
+// HoldsItsSession never waits on a decision in flight, as View does not (review round 14 of
+// #4220): the outbox asks it before each publish to a claim's role, and a publish that waited out a
+// relaunch in the runtime would hold its issue's lane behind it (LEGION-650). It answers both from
+// the session the store last admitted for the claim and, with that forgotten, from the store
+// itself, while the relaunch holds the machine's lock.
+//
+// The control (the pull request records the run): HoldsItsSession under the machine's lock, as
+// round 14 first wrote it; the read waits for the relaunch, and the test fails.
+func TestHoldsItsSessionAnswersWhileARelaunchWaitsInTheRuntime(t *testing.T) {
+	h := newBareHarness(t)
+	gated := &gatedResume{Runtime: h.rt, entered: make(chan struct{}, 1), release: make(chan struct{})}
+	h.deps.Runtime = gated
+	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(queuedClaim())
+	h.reach(StateIdle)
+	if h.m.View().Session == "" {
+		t.Fatal("the claim records no session, so its hold would be asked of nothing")
+	}
+	dead := h.locator()
+	died := make(chan error, 1)
+	go func() {
+		died <- h.m.Handle(h.ctx, RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}})
+	}()
+	select {
+	case <-gated.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the relaunch never reached the runtime")
+	}
+	for _, from := range []string{"the admitted session", "the store"} {
+		if from == "the store" {
+			h.m.admitted.Store(nil)
+		}
+		answered := make(chan error, 1)
+		go func() { answered <- h.m.HoldsItsSession(h.ctx) }()
+		select {
+		case err := <-answered:
+			if err != nil {
+				t.Errorf("HoldsItsSession from %s answered %v, want nil: the claim holds its own session", from, err)
+			}
+		case <-time.After(time.Second):
+			close(gated.release)
+			t.Fatalf("HoldsItsSession from %s waited on the relaunch in the runtime", from)
+		}
+	}
+	close(gated.release)
+	if err := <-died; err != nil {
+		t.Fatalf("handle the death: %v", err)
+	}
+}
+
 // View says a claim's process is being stopped (ClaimView.Stopping) only while the decision that
 // stops it ends the claim's run, as the operator's suspension does. A process the registration
 // deadline retires is relaunched in the same decision, so its claim keeps its role throughout and

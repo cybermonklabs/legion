@@ -7,6 +7,7 @@ import {
   stringArg,
 } from "./context";
 import { refusalWithCode } from "./failures";
+import { linkFor } from "./links";
 import { namedPerson } from "./render-item";
 
 /** One source's answer to `dispatch architecture-sync`: its imported commit, or the recorded
@@ -47,7 +48,7 @@ export async function projectCommand(context: CommandContext): Promise<DispatchT
     // carry, so the server's own words reach the agent unchanged.
     throw refusalWithCode(error);
   }
-  const href = new URL(`/projects/${encodeURIComponent(project.key)}`, linkBase).toString();
+  const href = linkFor(`/projects/${encodeURIComponent(project.key)}`, linkBase);
   // Every project names a default assignee and the create answers it, so it is absent only from
   // a Dispatch older than that answer, and the output then names nobody rather than a person it
   // was not given.

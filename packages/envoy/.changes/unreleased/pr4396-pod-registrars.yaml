@@ -1,0 +1,20 @@
+kind: Changed
+custom:
+  Issue: pr4396
+body: |-
+  `POST /v1/oauth/exchange/pod-sessions` admits a registration only from a registrar that
+  `BROKER_POD_REGISTRARS` pairs with the pod's account, and answers every other caller
+  `403 POD_REGISTRAR_NOT_LISTED`, naming both accounts. A broker with the list unset admits no
+  registration, so a deployment sets the list before its first daemon sets `exchange_audience`.
+  A session name now belongs for good to the registrar that first registered it: migration 0038
+  records each registration's registrar, and migration 0039 binds each name to its first
+  registrar in the table `pod_session_registrars`, which no sweep and no route changes. Another
+  registrar's registration of a bound name, for any pod, is
+  `409 SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR`, naming the name and the registrar that holds it,
+  and records nothing, whether the holder's registrations of the name are live, lapsed, released
+  or swept; the holder's registration of another pod for the name, as a relaunch does, is
+  admitted. The exchange admits a pod under a name only when the registrar that holds the name
+  registered that pod: it refuses a live registration that another registrar wrote, or one of a
+  name bound to none, with a final `invalid_grant` whose description begins
+  `session_name_not_this_registrars:`, which both clients stop on. Before you roll the broker
+  back past these migrations, unset `exchange_audience` in every daemon.

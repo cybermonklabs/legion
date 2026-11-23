@@ -1,0 +1,75 @@
+{
+  "id": 219325,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 106,
+  "type": "ask.answered",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-11-06T00:19:45.432533Z",
+  "payload": {
+    "anchor": null,
+    "answer": {
+      "at": "2026-11-06T00:19:45.432533Z",
+      "id": "b4",
+      "selected": [],
+      "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+      "user": "alice@example.com"
+    },
+    "artifact_id": null,
+    "author": {
+      "id": "01a1ac3e-65b1-75c4-9647-2abc85cea1ce",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit am",
+        "host": "lor",
+        "machine": "lorem ipsum dolor s",
+        "session_title": "lorem ipsum dolor sit amet lo"
+      }
+    },
+    "block_artifact": {
+      "id": "3e7f933f-9066-4b36-96ac-0abee6edf532",
+      "primary": true,
+      "slug": "lore"
+    },
+    "block_id": "b9a5e61d-9b36-4189-93b0-8301dcbb4a55",
+    "created_at": "2026-11-05T23:38:42.044593Z",
+    "edited_at": null,
+    "id": "694ddac9-e6e5-43fa-bd30-e8ab0c40ae57",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 218346,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit",
+        "id": "b2",
+        "label": "lorem ipsum dolor sit a"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+        "id": "b3",
+        "label": "lorem ipsum dolor sit amet lorem ipsum dolor "
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do",
+    "referenced_by_count": 1,
+    "references_changed": [
+      {
+        "id": "7fc17eeb-a1be-4e34-9886-6595d62c9edd",
+        "issue_key": "ACME-2",
+        "kind": "ask"
+      }
+    ],
+    "revision": 2,
+    "state": "answered",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "urgency": "med"
+  }
+}

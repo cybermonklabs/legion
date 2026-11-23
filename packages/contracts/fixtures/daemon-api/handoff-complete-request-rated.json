@@ -1,0 +1,8 @@
+{
+  "grantId": "grant-for-one-command",
+  "summary": "Retro done.",
+  "verdict": "",
+  "commit": "c0ffee5a1d2b3c4d5e6f708192a3b4c5d6e7f809",
+  "planRating": 3,
+  "planReason": "The tester found the bug the plan had left out."
+}

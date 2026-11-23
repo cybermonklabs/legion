@@ -1,0 +1,52 @@
+{
+  "id": 627067,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 29,
+  "type": "comment.created",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-11-16T18:12:01.629964Z",
+  "payload": {
+    "id": "a189c089-09bd-4d5f-b664-cdd098413573",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit am",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "answers": null,
+    "mentions": [
+      {
+        "target": "session:8d9061f2-26e8-4316-b4e4-f9daeabe2f2d",
+        "delivery": "steer",
+        "session_id": "8d9061f2-26e8-4316-b4e4-f9daeabe2f2d"
+      }
+    ],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-11-16T18:12:01.635332Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "suppress_route": true,
+    "suppressed_route": "session:8d9061f2-26e8-4316-b4e4-f9daeabe2f2d",
+    "mentions_decide_routes": true,
+    "suppressed_route_session_id": "8d9061f2-26e8-4316-b4e4-f9daeabe2f2d"
+  }
+}

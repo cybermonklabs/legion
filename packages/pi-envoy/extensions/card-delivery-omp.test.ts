@@ -10,6 +10,7 @@ import {
   deliveryFor,
   isSummarization,
   messageStream,
+  newestMessage,
   ompNatsGuard,
   ompRoot,
   type Request,
@@ -18,6 +19,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { readCardLines } from "../test/card-entries";
@@ -35,6 +37,8 @@ import { readCardLines } from "../test/card-entries";
 // without both skips, except on GitHub Actions, where the pi-envoy job supplies both
 // (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
+/** The Dispatch token the session is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** What the wake (src/card-wake.ts, `CardWake`) says, in its one- and many-card forms. */
 const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/;
@@ -58,12 +62,6 @@ afterEach(async () => {
 /** A Messages request's conversation, as one string to find texts and their order in. */
 function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
-}
-
-/** The text of a Messages request's last message: what the turn it answers was started on. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
 }
 
 function text(reply: string): Block {
@@ -331,7 +329,7 @@ async function startSession(
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
         DISPATCH_URL: base,
-        DISPATCH_TOKEN: "card-delivery-token",
+        DISPATCH_TOKEN,
       },
       onFrame: (frame) => {
         frames.push(frame);
@@ -533,7 +531,7 @@ async function probe(session: CardSession, expected: number): Promise<Request> {
     const extra = session.turns[expected];
     if (extra !== undefined) {
       throw new Error(
-        `Messages request ${expected} came before the probe, on ${lastMessage(extra.request)}`
+        `Messages request ${expected} came before the probe, on ${newestMessage(extra.request.body)}`
       );
     }
     return (await session.state()).isSettled ? true : undefined;
@@ -543,7 +541,7 @@ async function probe(session: CardSession, expected: number): Promise<Request> {
   await session.command({ type: "prompt", message: prompt });
   const turn = await session.nextTurn("the probe's model request");
   expect(turn.index).toBe(expected);
-  expect(lastMessage(turn.request)).toContain(prompt);
+  expect(newestMessage(turn.request.body)).toContain(prompt);
   turn.reply([text("Probe answered.")]);
   await session.settled();
   expect(session.turns.length).toBe(expected + 1);
@@ -724,7 +722,7 @@ test.skipIf(skip)(
     const first = await session.card("c1");
     const cardTurn = await session.nextTurn("the turn the idle card's wake started");
     expect(conversation(cardTurn.request)).toContain(first);
-    expect(lastMessage(cardTurn.request)).toMatch(WAKE_TEXT);
+    expect(newestMessage(cardTurn.request.body)).toMatch(WAKE_TEXT);
     cardTurn.reply([text("Read the first card.")], 150_000);
 
     const summary = await session.nextTurn("the automatic compaction's summary request");
@@ -741,7 +739,7 @@ test.skipIf(skip)(
       woken = await session.nextTurn("the turn the folded card got");
     }
     expect(conversation(woken.request)).toContain(late);
-    const startedBy = lastMessage(woken.request);
+    const startedBy = newestMessage(woken.request.body);
     expect(WAKE_TEXT.test(startedBy) || startedBy.includes(late)).toBe(true);
     // The card-started run ended with a continuation still owed: the late aside.
     const agentEndsSince = (from: number): object[] =>
@@ -792,13 +790,13 @@ test.skipIf(skip)(
     const first = await session.card("d1");
     const woken = await session.nextTurn("the turn the first idle card's wake started");
     expect(conversation(woken.request)).toContain(first);
-    expect(lastMessage(woken.request)).toMatch(WAKE_TEXT);
+    expect(newestMessage(woken.request.body)).toMatch(WAKE_TEXT);
     woken.reply([text("Read the first card.")]);
     await session.settled();
 
     const card = await session.card("d2");
     const turn = await session.nextTurn("the turn the idle card started");
-    expect(lastMessage(turn.request)).toContain(card);
+    expect(newestMessage(turn.request.body)).toContain(card);
     turn.reply([text("Read the card.")]);
     await probe(session, turn.index + 1);
 
@@ -898,7 +896,7 @@ test.skipIf(skip)(
 // A card that reaches pi-envoy while Oh My Pi starts holds none of the host's RPC input. The
 // stand-in holds the registration envoy.ts's `session_start` awaits, with the relay subject
 // already open (it is opened before the registration that asks for the consumer), so both cards
-// reach pi-envoy inside the host's startup. The pinned build (18.18.6-sami.20261117-013345) reads
+// reach pi-envoy inside the host's startup. The pinned build (18.18.6-sami.20261122-091943) reads
 // RPC input while its startup runs (`rpc-mode.ts` `runRpcMode`): it answers at once a command
 // that starts no turn, as `get_state`, holds one that starts a turn or changes the session
 // (`waitsForStartup`) until its startup is over, and calls `initializeExtensions` with
@@ -925,7 +923,7 @@ test.skipIf(skip)(
 
     const messages = conversation(woken.request);
     for (const card of cards) expect(messages).toContain(card);
-    expect(lastMessage(woken.request)).toMatch(WAKE_TEXT);
+    expect(newestMessage(woken.request.body)).toMatch(WAKE_TEXT);
     woken.reply([text("Read the startup cards.")]);
     await probe(session, woken.index + 1);
   },

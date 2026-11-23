@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -166,9 +167,10 @@ func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 		d.giveBack(msg)
 		return
 	}
-	if err := msg.Ack(); err != nil {
-		slog.Error("dispatch delivery: acknowledge job message", "subject", msg.Subject, "error", err)
-	}
+	// The acknowledgement waits for NATS at most bus.ConnLockWait (callNATS): a stop waits for this
+	// handler. One NATS has not taken by then goes on without it, and a failure is logged, as
+	// before: the event's read below does not depend on it.
+	callNATS("acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
 		slog.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
@@ -259,7 +261,7 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 // only when the same listing shows every job finished, so a listing taken before the run ended
 // never marks the run complete because another consumer recorded its end meanwhile.
 func (j *JobIntake) read(ctx context.Context, key runKey, production Production) {
-	owner, repo, err := splitRepo(key.repo)
+	owner, repo, err := refs.SplitGitHubRepo(key.repo)
 	if err != nil {
 		slog.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
 		return

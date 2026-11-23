@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  `scripts/listener-deploy-probe.sh` prints its summary and its verdict when a signal reaches its
+  whole process group, as Ctrl-C at a terminal and `timeout -s TERM` send one. Such a signal also
+  killed the `sleep` or the request running at that moment, and the probe exited 143 (130 for
+  Ctrl-C) before it printed either. Now a target whose request the signal cut short prints no line
+  for that tick and is not counted, and the summary and the verdict cover every target recorded
+  before it.
+time: 2026-11-19T16:35:30Z
+custom:
+    Issue: pr4524

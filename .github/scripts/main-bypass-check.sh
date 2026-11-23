@@ -7,7 +7,8 @@
 # with no network.
 #
 # What there is to catch: the merge queue tests every change on the tree it lands as, and ci.yaml
-# runs on no push (its header says why), so a commit that reached main another way — an admin
+# runs on no push (.github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others says
+# why), so a commit that reached main another way — an admin
 # merge, a direct push, a ruleset bypass — was tested by nothing at all. This decision is what
 # finds one, and the run the workflow then starts is what tests it.
 #

@@ -97,7 +97,7 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 	logger := logging.NewWithWriter("test", logs)
 	client.Close()
 
-	publishRefusalException(client, logger, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
+	publishRefusalException(client, logger, nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -135,7 +135,7 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 	}
 
 	started := time.Now()
-	publishRefusalException(client, logging.NewWithWriter("test", &cmdtest.LockedBuffer{}), refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
+	publishRefusalException(client, logging.NewWithWriter("test", &cmdtest.LockedBuffer{}), nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
 		t.Fatalf("publishRefusalException took %s against a reconnecting bus, want it back within 500ms: the 404 waits for it",
 			elapsed)
@@ -157,7 +157,7 @@ func TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason(t *testing.T) {
 		t.Fatalf("flush the exception subscription: %v", err)
 	}
 
-	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), item, roles.Resolution{State: roles.State("not_live")})
+	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), nil, item, roles.Resolution{State: roles.State("not_live")})
 
 	if message, err := probe.NextMsg(250 * time.Millisecond); err == nil {
 		t.Fatalf("an unlisted refusal state raised an exception: %s", message.Data)
@@ -182,7 +182,7 @@ func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
 		t.Fatalf("flush the exception subscription: %v", err)
 	}
 
-	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), item, roles.Resolution{State: roles.Unclaimed})
+	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), nil, item, roles.Resolution{State: roles.Unclaimed})
 
 	message, err := probe.NextMsg(5 * time.Second)
 	if err != nil {

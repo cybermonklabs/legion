@@ -5,7 +5,7 @@
  *
  *  Every row here reads what the page draws over one answer - which rows are left, what the
  *  counts say, where the focus is and what the address holds - so each runs against a recording
- *  rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The one row
+ *  rather than against a harness (packages/dispatch/README.md, "The stubbed layer"). The one row
  *  of the family that holds a write open and lets it through stayed in `inbox-search.e2e.ts`.
  *
  *  Two seeds: the file's own eight questions, and the three the last row needs, which must have

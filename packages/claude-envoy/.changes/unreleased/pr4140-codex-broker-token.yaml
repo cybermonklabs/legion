@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  A Codex CLI session's NATS connection takes the session's broker token where its settings say
+  `NATS_AUTH=broker` (or `envoy.natsAuth: broker`), as a Claude Code session's does: it dials
+  through the same path (`dialChannelNats`), keeps the token renewed, and at a `/new` moves the
+  connection to the new session's token before it takes the new session's subjects. The live view
+  takes the new id's control subject only once the connection is admitted as it. A seed, or no
+  credential, dials as before. The plugin's manifest names NATS_AUTH and every other variable the
+  broker token is traded with (the broker's, the pool's, a person's sign-in's and
+  GCE_METADATA_HOST) in `env_vars`, the only variables Codex hands the server beside a few of its
+  own.
+time: 2026-11-19T03:34:32Z
+custom:
+    Issue: pr4140

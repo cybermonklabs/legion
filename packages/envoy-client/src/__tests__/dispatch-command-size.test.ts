@@ -74,8 +74,10 @@ describe("the size of the command dispatcher", () => {
     ).toBeLessThanOrEqual(MODULE_BOUND);
   });
 
-  // The split left 20 modules under `dispatch-commands/`, the longest of them `documents.ts` at
-  // 703 lines, so this walk reads real files where it used to read an empty directory.
+  // The split left modules under `dispatch-commands/`, so this walk reads real files where it
+  // used to read an empty directory. `documents.ts` once crossed the bound, when a forward merge
+  // carried main's additions beside this branch's, and was split along its upload-check seam
+  // (`upload-checks.ts`).
   test("no handler module is longer than the bound", () => {
     const tooLong = sourceFiles(HANDLERS)
       .map((file) => ({

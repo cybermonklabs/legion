@@ -1,0 +1,65 @@
+kind: Changed
+body: |-
+  `POST /api/v1/issues/{key}/results` takes a result at a commit of a repository in which the
+  external links of the check's issue name an open or merged GitHub pull request
+  (`https://github.com/<owner>/<repo>/pull/<n>`), as well as a commit of the repository the
+  check's issue resolves to. So an issue whose work is in two repositories takes a result at the
+  head of the pull request it links in the second repository. Dispatch reads the links only when
+  GitHub does not say that the issue's own repository holds the commit: when it says that it does
+  not, and when its read fails. A pull request that closed without a merge does not count, and
+  neither does one GitHub answers 404 or 410 for, such as a mistyped link, nor one in a
+  repository the GitHub App is not installed on or cannot read (GitHub's 403 that is no rate
+  limit). One record reads at most 10 linked pull requests, and a refusal says how many it left
+  unread past that bound. `400 RESULT_COMMIT_UNKNOWN` names the commit, each repository that
+  Dispatch asked, each linked pull request that Dispatch could not read, at most 10 and a count
+  of the rest, and every linked pull request in whose repository it could not read the commit,
+  since each of those spent one of the record's 10 reads, each as
+  `owner/repo#n (repository_unreadable)`, saying to grant the App that repository or link a
+  readable pull request. A link names a pull request only where its owner is a login GitHub
+  serves and its name holds only letters, digits, `.`, `-` and `_` and is not `.` or `..`; any
+  other link spends no read, and no refusal names it. A linked pull request whose repository's
+  name GitHub's naming rule then refuses, such as one of `acme/.git`, which is empty once `.git`
+  is trimmed, counts for nothing and spends one of the 10 reads, and
+  `400 RESULT_COMMIT_UNKNOWN` names that repository as one whose links Dispatch set aside, which
+  no grant of the App mends. A read of a linked pull request or of a linked repository that does
+  not answer (a rate limit, a 5xx, a timeout), where no repository is shown to hold the commit,
+  refuses the record with `502 GITHUB_UNREADABLE` and stores nothing: the refusal tells the
+  caller to record the result again, and a rate limit names GitHub's wait, in the sentence and
+  in `Retry-After`.
+  Where Dispatch cannot read its own list of the issue's links, the record is refused with
+  `500 INTERNAL` and nothing is stored; before this change such a result was stored, or refused
+  with `400 RESULT_COMMIT_UNKNOWN`.
+  The record's dry run, `POST /api/v1/issues/{key}/results/dry-run`, answers each of these
+  refusals as the record does, and stores nothing.
+  The read of the pull requests GitHub names for the commit, after the write, reads the
+  repository the commit is taken to be of.
+
+  `GET /api/v1/issues/{key}/results` compares a `before_merge` check with the heads of those
+  linked pull requests too, open or merged, as it does with the pull requests attributed to the
+  check's issue. A result at such a head stands `at_basis`, and a push that moves the head leaves
+  it at `other_commit`. A link to a pull request of the issue's own repository adds nothing: the
+  attribution alone decides which pull requests of that repository are the issue's. A result
+  whose commit is taken to be of a linked repository is decided by that repository: a
+  `before_merge` one stands `unknown` where Dispatch cannot read it and `other_commit` where no
+  compared head is its commit, and an `after_merge` or `default_branch` one is compared with that
+  repository's branches: for `after_merge`, the branch its merged linked pull request merged
+  into, then its default branch. Such a result's `other_commit` or `unknown` answer names that
+  repository in `commit_stands.repo`. The record keeps that repository with the result (column
+  `check_results.commit_repo`, migration 20261117093000), and every other result reads as before.
+
+  `PUT /api/v1/settings/repo-projects/{owner}/{repo}` and
+  `GET /api/v1/github/app-installation/{owner}/{repo}` hold the path's repository to the names
+  GitHub allows, and the PUT holds its `renamed_to` to the same rule, which earlier releases read
+  as a reference alone: a path or a `renamed_to` such as `acme/...git` or `acme/.git`, whose name
+  is `..` or empty once `.git` is trimmed, or whose name is longer than 100 characters, is
+  `400 INVALID_REPO_PROJECT`. `DELETE` removes
+  the mapping stored under its path's own spelling, so a mapping stored under such a name is
+  still removed by that name wherever a path spells it, and the CI reconcile's warning names the
+  request that removes it; a mapping stored under an empty name, such as the `acme/` an earlier
+  `PUT` of `acme/.git` stored, is removed by no request, and the warning says to remove it by
+  SQL. Delivery, the CI reconcile, the architecture importer and the results read of a check CI
+  proves each refuse a stored repository name GitHub does not allow, naming it, before they make
+  any GitHub request, so a mapping or a `renamed_to` stored before this release, and a pull
+  request row stored under one, never reaches GitHub. `DISPATCH_REPO_PROJECTS` is held to the
+  same rule: an entry whose repository the rule refuses, such as `acme/.git=KEY`, which reads as
+  `acme/`, or `acme/..=KEY`, stops the boot, naming the entry, where an earlier release seeded it.

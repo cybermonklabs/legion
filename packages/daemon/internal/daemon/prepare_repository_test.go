@@ -18,6 +18,7 @@ import (
 // longer read is applied, for the workflow to keep the record's repository and say the edit was not
 // applied. A retained event of a recorded issue, which names no repository, takes the record's.
 func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -25,7 +26,7 @@ func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 		Generation: 1, Status: "done", Rank: "A", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"})
 	repos := newRepositories("LEGION", ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets")}, {Repo: ghrepo.MustParse("zeta/tools")}}, nil)
+	repos.fill(ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("zeta/tools"))
 	branches := newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)
 	// zeta/tools was read once, long enough ago that preparing an issue on it reads it again, and
 	// GitHub now answers 404 for it.

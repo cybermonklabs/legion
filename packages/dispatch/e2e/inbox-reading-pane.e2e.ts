@@ -1,4 +1,13 @@
-import { getArtifact, getInbox, resolveAsk } from "./api";
+import {
+  createAsk,
+  createIssue,
+  createProject,
+  getArtifact,
+  getInbox,
+  getIssue,
+  patchIssue,
+  resolveAsk,
+} from "./api";
 import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
 import {
   ADDED_WORD,
@@ -18,6 +27,14 @@ import {
   session,
   WINDOW_ANCHOR,
 } from "./inbox-reading-pane";
+import {
+  expectReadWhileHeld,
+  holdIssuePatches,
+  inboxRead,
+  logReads,
+  savesEnded,
+  watchShown,
+} from "./pick-writes";
 import { navigateInApp } from "./sends";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -350,6 +367,60 @@ test("Enter opens the selected decision block's note field and puts the focus in
     await page.keyboard.type("Ledger first, for the lease.");
     await expect(card.locator("[data-ask-answer]")).toHaveValue("Ledger first, for the lease.");
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.decisionAskId);
+  } finally {
+    await alice.close();
+  }
+});
+
+// The row of dispatch://INFRA-299 on the Inbox: below the reading pane's width each row is a
+// card carrying its own priority picker, and while a pick there is live - held by Playwright's
+// route control at least `PICK_HOLD_MS` (`holdIssuePatches`) - the row shows it over every answer
+// of the Inbox's read, which a rename of the issue starts (`api/event-refresh.ts`: an Inbox row
+// shows its issue's title). The row records every value its picker shows, at every animation
+// frame (`watchShown`), from the pick until the save ends.
+// SLOW(>=2s): a save held three seconds while the Inbox reads the issue's rows again.
+test("picker keeps a pick on screen: the priority on an Inbox row, over a read that answers while its save is out", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
+  await patchIssue(issue.key, { priority: 3 });
+  await createAsk(
+    issue.key,
+    { options: [{ label: "Yes" }, { label: "No" }], question: "Ship it behind a flag?" },
+    session
+  );
+  const renamed = "Priority under a held save, renamed while it is out";
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 800, width: 1100 });
+    const shown = await watchShown(page, `Priority of ${issue.key}`);
+    const held = await holdIssuePatches(page, issue.key);
+    const reads = logReads(page, inboxRead);
+    await page.goto(INBOX);
+    const picker = page.getByRole("combobox", { name: `Priority of ${issue.key}` });
+    await expect(picker).toHaveValue("3");
+
+    await picker.selectOption("1");
+    await expect.poll(() => shown.values.at(-1)).toBe("1");
+    const fromPick = shown.values.length - 1;
+    await expect.poll(() => held.sent.length).toBe(1);
+    // A rename of the issue, straight to the server: its live event has the Inbox read the
+    // issue's rows again, and the answer, carrying P3, lands while the pick's save is held.
+    const renamedAt = Date.now();
+    await patchIssue(issue.key, { title: renamed });
+    await expect(page.getByText(renamed).first()).toBeVisible();
+    held.release();
+    await savesEnded(page, held);
+
+    expectReadWhileHeld(reads, held, renamedAt);
+
+    expect(shown.values.slice(fromPick), "every value the row showed from the pick on").toEqual([
+      "1",
+    ]);
+    expect(await getIssue(issue.key)).toMatchObject({ priority: 1 });
+    await expect(picker).toHaveValue("1");
   } finally {
     await alice.close();
   }

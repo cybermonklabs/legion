@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  On AWS, `agent-secrets secret create` says nothing was stored when the SDK retried a
+  `CreateSecret` that Secrets Manager refused before acting on every attempt, such as a
+  `LimitExceededException` the SDK retries as a throttle. It used to say that any create the SDK
+  tried more than once may have stored the secret. A create one of whose attempts ended another way
+  before the SDK retried it still says the store may hold the secret, and names
+  `agent-secrets secret show NAME`.
+custom:
+    Issue: pr4135

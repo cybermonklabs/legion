@@ -37,13 +37,22 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	return database, blockIndexProcess(t, database, "")
+}
+
+// blockIndexProcess is one process's document service on database, serving the build of commit
+// (the empty string: an unstamped build's), whose settle delay is an hour, so no timer settles a
+// document during a test. A test that builds a second one on the same database has a second
+// process of that build start beside the first, or after it.
+func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
+	t.Helper()
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
-	return database, service
+	return service
 }
 
 // createOwedDocument creates document slug of issue (CORE-1 or CORE-2), id its uuid (empty: one
@@ -515,7 +524,10 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 	if service.srv.GetDoc(opened) == nil || !settlementMark(opened).Equal(mark) {
 		t.Fatalf("opening the room of %s left none resident or moved its settlement mark", opened)
 	}
-	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1 where artifact_id = $1`, indexedElsewhere); err != nil {
+	// Another process of this build indexes the fourth document, which settles both marks a
+	// debt of this build carries: the version, and this build's own mark, which the tick's
+	// grammar arm set beside it when it owed the document a re-index (oweDocumentIndex).
+	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1, store_owed_at = null where artifact_id = $1`, indexedElsewhere); err != nil {
 		t.Fatalf("index %s elsewhere: %v", indexedElsewhere, err)
 	}
 
@@ -530,8 +542,9 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 // writeAsAnOlderBuild writes the document's next version as a build without the block index does:
 // the edit (from replaced by to in a text of the live document) reaches the store through the room,
 // and its settlement writes the version, the document's reference to CORE-2 with the old grammar,
-// and the version's artifact.version event, and clears the pending settlement. It indexes no block,
-// and nothing here marks the document owed. It returns the version and its event's id.
+// and the version's artifact.version event, whose seq it takes off the issue's own counter as
+// events.Append does (documentEvent), and clears the pending settlement. It indexes no block, and
+// nothing here marks the document owed. It returns the version and its event's id.
 func writeAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, artifactID, from, to string) (model.Version, int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -570,16 +583,7 @@ func writeAsAnOlderBuild(t *testing.T, database *store.Store, service *Service, 
 	`, artifactID, live).Scan(&version.Number, &version.CreatedAt); err != nil {
 		t.Fatalf("write the version: %v", err)
 	}
-	var eventID int64
-	if err := tx.QueryRow(ctx, `
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', coalesce(max(seq), 0) + 1, 'artifact.version', '{"kind":"user","id":"alice"}',
-		       jsonb_build_object('artifact_id', $1::text, 'name', 'spec.md', 'version', jsonb_build_object('number', $2::int)), false
-		from events where issue_key = 'CORE-1'
-		returning id
-	`, artifactID, version.Number).Scan(&eventID); err != nil {
-		t.Fatalf("append the version's event: %v", err)
-	}
+	eventID := appendDocumentEvent(t, ctx, tx, "artifact.version", versionEventPayload(t, artifactID, "spec.md", version.Number))
 	if _, err := tx.Exec(ctx, `
 		insert into refs (from_kind, from_id, to_kind, to_id, source_seq) values ('artifact', $1, 'issue', 'CORE-2', $2)
 		on conflict do nothing
@@ -653,7 +657,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 	holder := holderOf(t, service, spec, "dispatch://CORE-2")
 
 	before := eventID - 1
-	edges, err := refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
+	edges, err := refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
 	if err != nil {
 		t.Fatalf("read the references to CORE-2 since %d: %v", before, err)
 	}
@@ -661,7 +665,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 		edges[0].SourceSeq == nil || *edges[0].SourceSeq != eventID {
 		t.Fatalf("references to CORE-2 since %d = %#v, want the block %s's mention from event %d", before, edges, holder, eventID)
 	}
-	edges, err = refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
+	edges, err = refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,10 +731,11 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 	}
 }
 
-// An edit of a comment that lands while the tick indexes it is not lost: the tick waits on the row
-// the edit holds, finds the edit moved the comment's owed row once it commits, and so writes
-// nothing and leaves the comment owed; the next tick indexes the edited text and settles it.
-// Neither waits on the other for good.
+// An edit of a comment that lands while the tick indexes it is not lost: the tick waits on the
+// comment's owner lock, which an edit holds from before its first read to its commit, finds the
+// edit moved the comment's owed row once it commits, and so writes nothing and leaves the
+// comment owed; the next tick indexes the edited text and settles it. Neither waits on the
+// other for good.
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -748,6 +753,10 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer writer.Rollback(context.Background())
+	// The edit as a route makes it: the owner's lock first, its write after.
+	if err := store.LockOwner(ctx, writer, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("take the comment's owner lock: %v", err)
+	}
 	if _, err := writer.Exec(ctx, `
 		update comments set body = 'Read dispatch://CORE-1/spec#b-other first.', edited_at = now() where id = $1
 	`, comment); err != nil {
@@ -761,7 +770,7 @@ func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 		tick, err = service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
 		ticked <- err
 	}()
-	waitForLockWait(t, ctx, database, "%from comments where id%", ticked)
+	waitForLockWait(t, ctx, database, "%owner_lock%", ticked)
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
 	}
@@ -1173,7 +1182,7 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 // the stored markdown of the latest version whatever the settlement state, and gives its
 // blocks the ids the index holds for them (windowDocument, closedVersionBlocks).
 //
-// This is what lets a version write leave its windows to the tick (refs.IndexBlocks,
+// This is what lets a version write leave its windows to the tick (refs.BlockIndexing.Queue,
 // INFRA-988). Before it the arm refused such a document - `case pending && markdown !=
 // stored: return false, nil` - which was safe only because the version write had written its
 // windows itself; with the write no longer writing them, that refusal would leave a document
@@ -1196,11 +1205,8 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 
 	// An edit that no settlement has written a version for: the live text is ahead of version
 	// 1, and the document owes a settlement this service never runs.
-	if err := joinedWrite(service, func(ctx context.Context) error {
-		_, err := service.ReplaceText(ctx, document, stored+"\nThe live paragraph.\n",
-			model.Actor{Kind: "user", ID: "alice"})
-		return err
-	}); err != nil {
+	if _, err := joinedReplaceText(service, document, stored+"\nThe live paragraph.\n",
+		model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("edit the document past its latest version: %v", err)
 	}
 	live, _, err := service.TextWithBlocks(ctx, document)
@@ -1257,6 +1263,127 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 		t.Fatalf("list the documents owed their windows: %v", err)
 	} else if slices.Contains(owed, document) {
 		t.Fatalf("the windowed document %s is still owed its windows: %v", document, owed)
+	}
+}
+
+// Both arms of the block-index tick that write a document's rows - the owed arm indexing its
+// blocks (indexOwedDocument) and the window arm writing its windows (windowDocument) - take the
+// document owner's lock before they read what they write from (lockArtifactOwner), the lock every
+// writer of the document holds from before its first read. The test holds that lock and requires
+// the tick to wait for it having written nothing.
+//
+// The window arm writes its windows in one statement and appends no event, so waiting is enough:
+// without the lock it would not wait at all. The owed arm's write phase is a queued batch whose
+// first statements take locks of their own, so an owed arm that lost its read-phase lock still
+// waits, holding no transaction id; what it loses is the re-read under the lock. So the holder is
+// another indexer of the same version: while the arm waits it records the version indexed, as an
+// index of it does, and commits. Read under the lock, the document is owed nothing and the arm
+// indexes nothing; read before it, the arm indexes a version already indexed.
+func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *testing.T) {
+	for _, arm := range []struct {
+		name string
+		// ready leaves the document owed this arm's work and no other's.
+		ready func(t *testing.T, service *Service)
+		// meanwhile, where the row has one, is the other writer's write the holder commits
+		// while the tick waits.
+		meanwhile func(t *testing.T, holder pgx.Tx, document string)
+		// wrote fails the test unless the tick did what it owed once the lock was given back.
+		wrote func(t *testing.T, tick BlockIndexTick)
+	}{
+		{
+			name:  "the owed arm meeting an index written while it waited",
+			ready: func(*testing.T, *Service) {},
+			meanwhile: func(t *testing.T, holder pgx.Tx, document string) {
+				if _, err := holder.Exec(context.Background(), `
+					update document_block_versions set version = (
+						select max(number) from artifact_versions where artifact_id = $1 and markdown is not null
+					) where artifact_id = $1
+				`, document); err != nil {
+					t.Fatalf("record the document's version indexed: %v", err)
+				}
+			},
+			wrote: func(t *testing.T, tick BlockIndexTick) {
+				if tick.Documents != 0 {
+					t.Fatalf("the tick indexed %d documents (%#v) after another writer indexed the held one while it "+
+						"waited, want none: it read what the document owed before the document's owner lock",
+						tick.Documents, tick)
+				}
+			},
+		},
+		{
+			name: "the window arm",
+			ready: func(t *testing.T, service *Service) {
+				if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
+					t.Fatalf("first tick = %#v, want the document's blocks indexed", tick)
+				}
+				// Its windows are dropped and it is marked owed them, as a route that removes
+				// them marks it, so the next tick's one arm with work is the window arm.
+				if _, err := service.store.Pool.Exec(context.Background(),
+					`delete from embeddings where kind = $1`, refs.DocumentWindowKind); err != nil {
+					t.Fatalf("delete the document's windows: %v", err)
+				}
+				if _, err := service.store.Pool.Exec(context.Background(),
+					`update document_block_versions set windows_owed_at = coalesce(windows_owed_at, now())`); err != nil {
+					t.Fatalf("mark the document owed its windows: %v", err)
+				}
+			},
+			wrote: func(t *testing.T, tick BlockIndexTick) {
+				if tick.Windows != 1 {
+					t.Fatalf("the tick windowed %d owners (%#v), want the held document", tick.Windows, tick)
+				}
+			},
+		},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			database, service := blockIndexService(t)
+			ctx := context.Background()
+			document := createOwedDocument(t, database, service, "CORE-1", "", "notes", "# Notes\n\nA paragraph.\n", "")
+			settle(t, database, document)
+			arm.ready(t, service)
+			var issueKey *string
+			if err := database.Pool.QueryRow(ctx, `select issue_key from artifacts where id = $1`, document).Scan(&issueKey); err != nil {
+				t.Fatalf("read the document's owner: %v", err)
+			}
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder: %v", err)
+			}
+			defer holder.Rollback(ctx)
+			if err := store.LockOwner(ctx, holder, *store.OwnerOf(issueKey, &document)); err != nil {
+				t.Fatalf("hold the document's owner lock: %v", err)
+			}
+			type answer struct {
+				tick BlockIndexTick
+				err  error
+			}
+			ticked := make(chan answer, 1)
+			go func() {
+				tick, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
+				ticked <- answer{tick: tick, err: err}
+			}()
+			if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the block-index tick", ticked); answered {
+				t.Fatalf("the tick answered (%#v, %v) while this test held the document's owner lock: %s wrote under no owner lock",
+					early.tick, early.err, arm.name)
+			} else if holdingXid != 0 {
+				t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+			}
+			if arm.meanwhile != nil {
+				arm.meanwhile(t, holder, document)
+			}
+			// Committed: a row's meanwhile is the other writer's write, which the tick must meet.
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatalf("release the owner lock: %v", err)
+			}
+			select {
+			case got := <-ticked:
+				if got.err != nil {
+					t.Fatalf("the tick: %v", got.err)
+				}
+				arm.wrote(t, got.tick)
+			case <-time.After(30 * time.Second):
+				t.Fatal("the tick never finished once the owner lock was released")
+			}
+		})
 	}
 }
 
@@ -1835,12 +1962,13 @@ func requireOwnersReadTheWindowIndex(t *testing.T, database *store.Store, owner 
 // later pass of the window arm pays for and that nothing ever removes - the cost the marker was
 // added to take away, growing with the deployment.
 //
-// A document that holds no block at a version of its own is the case that keeps it. IndexBlocks
-// writes its document_block_versions row with the marker set, and then no arm lists it: the
-// block arm does not, since the document is indexed at its version, and
-// refs.DocumentsOwedWindows does not, since its semi-join asks for a row of document_blocks,
-// which such a document has none of. WriteDocumentWindows is the only statement that clears the
-// marker and it runs only for a document the arm listed, so the row stays marked.
+// A document that holds no block at a version of its own is the case that keeps it. A version
+// write (refs.BlockIndexing.Queue) writes its document_block_versions row with the marker set,
+// and then no arm lists it: the block arm does not, since the document is indexed at its
+// version, and refs.DocumentsOwedWindows does not, since its semi-join asks for a row of
+// document_blocks, which such a document has none of. WriteDocumentWindows is the only
+// statement that clears the marker and it runs only for a document the arm listed, so the row
+// stays marked.
 //
 // A document with no block is ordinary rather than contrived: an issue created with no spec
 // gets a spec.md whose markdown is empty. Driven against a Dispatch built from this head, two
@@ -1849,7 +1977,8 @@ func requireOwnersReadTheWindowIndex(t *testing.T, database *store.Store, owner 
 //
 // The property this holds the index to is the one a marker must have, whichever way it is kept:
 // after the arm has run, no owner is left marked that the arm will not list. Either such a
-// document is listed and windowed (its windows being none), or IndexBlocks leaves it unmarked.
+// document is listed and windowed (its windows being none), or the version write leaves it
+// unmarked.
 func TestNoDocumentKeepsItsWindowMarkerForEver(t *testing.T) {
 	database, service := blockIndexService(t)
 	ctx := context.Background()

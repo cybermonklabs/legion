@@ -29,6 +29,7 @@ import (
 // the requesting agent. Handing the revision back updates the same card and makes the human its
 // next actor again.
 func TestApprovalRequestFollowsDocumentVersions(t *testing.T) {
+	t.Parallel()
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: time.Hour})
@@ -141,6 +142,7 @@ func TestApprovalRequestFollowsDocumentVersions(t *testing.T) {
 // thread records neither, and the next human reply takes the turn back on every read, the Inbox's
 // order and the comment's own event included.
 func TestApprovalHandBackWaitsOnTheHuman(t *testing.T) {
+	t.Parallel()
 	for _, flow := range []struct {
 		name     string
 		move     bool
@@ -313,6 +315,7 @@ func TestApprovalHandBackWaitsOnTheHuman(t *testing.T) {
 // so it adds no entry to the card's edit history, and an answer the human started from the card
 // before the hand-back is saved rather than refused ASK_EDITED.
 func TestARewordlessHandBackKeepsTheQuestionsRevision(t *testing.T) {
+	t.Parallel()
 	for _, flow := range []struct {
 		name    string
 		move    bool
@@ -407,6 +410,7 @@ func TestARewordlessHandBackKeepsTheQuestionsRevision(t *testing.T) {
 // The test parks the hand-back after it has taken the owner row, with a lock on the ask row that
 // OpenApprovalAsk waits for, then starts the human's comment, which queues on the owner row.
 func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	handler, database, deps := newInteractionDeps(t, nil)
 	issue := createInteractionIssue(t, handler, "TEST", "Racing hand-back", "A spec")
@@ -505,6 +509,7 @@ func TestAReplyQueuedBehindAHandBackTakesTheTurn(t *testing.T) {
 // not been handed back. The action answers that same open card and pins its review to the version
 // the human saw, rather than resolving the card and losing its thread.
 func TestHeaderReviewAnswersMovedApprovalAskBeforeTheAgentHandsItBack(t *testing.T) {
+	t.Parallel()
 	for _, review := range []struct {
 		name   string
 		state  string
@@ -573,6 +578,7 @@ func TestHeaderReviewAnswersMovedApprovalAskBeforeTheAgentHandsItBack(t *testing
 // settlement names the latest known browser editor, or SettlementActor when the browser edit was
 // ambiguous.
 func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
+	t.Parallel()
 	asker := model.Actor{Kind: "session", ID: sessionActor()["id"].(string)}
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	bob := model.Actor{Kind: "user", ID: "bob"}
@@ -704,6 +710,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 		{"an upload", time.Hour, func(t *testing.T, doc *document) {
 			if uploaded := sessionRequest(t, doc.handler, http.MethodPost, "/api/v1/issues/"+doc.issueKey+"/artifacts", map[string]any{
 				"actor": sessionActor(), "name": "spec.md", "content": "A revised spec",
+				"precondition": uploadBase(t, doc.handler, doc.artifactID),
 			}); uploaded.Code != http.StatusCreated {
 				t.Fatalf("upload a version: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 			}
@@ -721,10 +728,20 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			defer earlierTx.Rollback(earlierCtx)
 			earlierJoined, earlierLedger := doc.documentService.Join(earlierCtx, earlierTx)
 			defer earlierLedger.Discard()
-			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A temporary spec", alice); err != nil {
+			// The token is read on the joined context, which reads the tree this write works on:
+			// the undo names what the write before it left, not what the room held before both.
+			earlierBase, err := replacementPrecondition(earlierJoined, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A temporary spec", alice, earlierBase); err != nil {
 				t.Fatalf("write the earlier edit: %v", err)
 			}
-			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A spec", alice); err != nil {
+			undoBase, err := replacementPrecondition(earlierJoined, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token for the undo: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A spec", alice, undoBase); err != nil {
 				t.Fatalf("undo the earlier edit: %v", err)
 			}
 			if err := earlierLedger.Commit(earlierCtx); err != nil {
@@ -742,7 +759,11 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			defer tx.Rollback(ctx)
 			joined, ledger := doc.documentService.Join(ctx, tx)
 			defer ledger.Discard()
-			if _, err := doc.documentService.ReplaceText(joined, doc.artifactID, "A revised spec", asker); err != nil {
+			base, err := replacementPrecondition(ctx, doc.documentService, doc.artifactID)
+			if err != nil {
+				t.Fatalf("read the document's token: %v", err)
+			}
+			if _, err := doc.documentService.ReplaceText(joined, doc.artifactID, "A revised spec", asker, base); err != nil {
 				t.Fatalf("the agent's joined write: %v", err)
 			}
 			if err := ledger.Commit(ctx); err != nil {
@@ -848,15 +869,23 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			t.Fatalf("begin: %v", err)
 		}
 		defer tx.Rollback(ctx)
-		moved, err := docs.MoveApprovalAsk(ctx, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, "A spec, as a settlement wrote it.\n", docs.SettlementActor, true, "")
-		if err != nil {
+		joined, ledger := doc.documentService.Join(ctx, tx)
+		defer ledger.Discard()
+		edits := askEventCount(t, doc.database, doc.askID, "ask.edited")
+		if err := docs.MoveApprovalAsk(joined, tx, events.NewBroker(), doc.artifactID, model.Version{Number: 2}, "A spec, as a settlement wrote it.\n", docs.SettlementActor, true, ""); err != nil {
 			t.Fatalf("move with no known writer: %v", err)
 		}
-		if err := tx.Commit(ctx); err != nil {
+		// The move queues its writes on the ledger and appends its event to it, as every document
+		// operation does, so the ledger's Commit is what sends them and publishes the event; the
+		// row it wrote is read back from the table below.
+		if err := ledger.Commit(ctx); err != nil {
 			t.Fatalf("commit: %v", err)
 		}
-		if len(moved) != 1 || !moved[0].Actor.SameAs(docs.SettlementActor) {
-			t.Fatalf("moved events = %#v, want one ask.edited by %#v", moved, docs.SettlementActor)
+		if appended := askEventCount(t, doc.database, doc.askID, "ask.edited") - edits; appended != 1 {
+			t.Fatalf("the move appended %d ask.edited events, want one", appended)
+		}
+		if actor := latestAskEventActor(t, doc.database, doc.askID, "ask.edited"); !actor.SameAs(docs.SettlementActor) {
+			t.Fatalf("the moved ask.edited actor = %#v, want %#v", actor, docs.SettlementActor)
 		}
 		ask := decodeBody[askRead](t, dispatchRequest(t, doc.handler, http.MethodGet, "/api/v1/asks/"+doc.askID, nil, "alice")).Ask
 		if ask.State != "open" || ask.Approval.Version != 2 || ask.Approval.RequestedVersion != 1 {

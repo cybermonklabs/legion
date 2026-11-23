@@ -45,7 +45,7 @@ for a refusal whose production count is zero.
 sjawhar/legion#2674 deleted the Envoy listener's `ENVOY_HOST_BRIDGE` and
 `ENVOY_SUBSCRIBE_ALL_TOPICS`, with the push and the live topics lane they configured.
 
-`gh api search/code` over `theorem-labs/agent-infra` found `ENVOY_SUBSCRIBE_ALL_TOPICS` in five
+`gh api search/code` over `example-org/deployment` found `ENVOY_SUBSCRIBE_ALL_TOPICS` in five
 files, and the one that mattered is `envoy-cluster/listener.go:129`, which sets it to `1` as a
 plain `corev1.EnvVarArgs` on the listener's own Deployment, with `envoy-cluster/main_test.go:870`
 and `:884` asserting it.

@@ -41,10 +41,12 @@ export interface AgentConversation {
   readonly settings?: AgentStreamSettings;
   /** How full the session's context window is, as its newest `context` frame reports it
    *  (INFRA-812); absent until one arrives. A session whose host reports no window, or a window
-   *  of zero, publishes none, and the view then draws no ring and no figure. */
+   *  of zero, sends `context-cleared` instead (INFRA-4325), which takes the figures away, and the
+   *  view then draws no ring and no figure. */
   readonly context?: AgentStreamContextFrame;
   /** The highest `seq` already applied per message id, per tool call id, to the command list, to
-   *  the settings and to the context figures. */
+   *  the settings and to the context figures, a `context` frame and a `context-cleared` frame
+   *  sharing that one slot. */
   readonly applied: Readonly<Record<string, number>>;
 }
 
@@ -157,10 +159,15 @@ export function isRenderableFrame(value: unknown): value is AgentStreamFrame {
   if (frame.kind === "settings") {
     return isSettings(frame as unknown as Record<string, unknown>);
   }
+  if (frame.kind === "context-cleared") {
+    // The frame carries nothing beyond the version and the `seq`, both checked above.
+    return true;
+  }
   if (frame.kind === "context") {
-    // Two finite figures or nothing. A window of zero is no window at all: the contract says a
-    // host reporting one publishes no frame, so a frame carrying one is a publisher this build
-    // does not know, and dropping it leaves the ring absent rather than drawn at 0 percent.
+    // Two finite figures or nothing. A window of zero is no window at all: the contract has a
+    // host reporting one send `context-cleared`, which the view applies as no ring, so a frame
+    // carrying one is a publisher this build does not know, and dropping it keeps the view from
+    // drawing a ring at 0 percent.
     return (
       typeof frame.tokens === "number" &&
       Number.isFinite(frame.tokens) &&
@@ -228,15 +235,15 @@ export function applyFrame(state: AgentConversation, frame: unknown): AgentConve
       settings: frame,
     };
   }
-  if (frame.kind === "context") {
-    // One figure per session, last-writer-wins by `seq` as the settings and the list are.
+  if (frame.kind === "context" || frame.kind === "context-cleared") {
+    // One slot per session, last-writer-wins by `seq` as the settings and the list are: a reading
+    // fills it and a clearing frame empties it, whichever of the two carries the higher `seq`.
     const key = "context";
     if ((state.applied[key] ?? 0) >= frame.seq) return state;
-    return {
-      ...state,
-      applied: { ...state.applied, [key]: frame.seq },
-      context: frame,
-    };
+    const applied = { ...state.applied, [key]: frame.seq };
+    if (frame.kind === "context") return { ...state, applied, context: frame };
+    const { context: _cleared, ...rest } = state;
+    return { ...rest, applied };
   }
   const key = `m:${frame.message.id}`;
   if ((state.applied[key] ?? 0) >= frame.seq) return state;
@@ -369,10 +376,12 @@ export type SessionSettingsView =
  * A picker is offered only where the session lists the built-in a pick runs (`model`, `effort`)
  * and runs it from Dispatch, since a pick is a person's Send of `/model <id>` or `/effort <level>`.
  *
- * A session that is not answering the live view (an older plugin, one started without its plugin,
- * or one no longer running) gets no notice, since the empty transcript's own text already says
- * why; nor does one whose replay has not arrived yet, since the replay is where the frame would
- * be.
+ * A session the relay says is not answering the live view (`responding === false`: an older
+ * plugin, one started without its plugin, or one no longer running) gets no notice, since the
+ * page's not-answering line says why wherever it shows, over an empty transcript or above the
+ * turns it holds. A session silent only by the registry's word still gets its notice: this reads
+ * the relay alone. Nor does one whose replay has not arrived yet get a notice, since the replay is
+ * where the frame would be.
  */
 export function sessionSettingsView(
   state: AgentConversation,
@@ -526,7 +535,8 @@ export function turnSaysBody(turn: DispatchTurn, body: string): boolean {
  * direct message the session took as its own user turn is tagged with its Dispatch id, and the
  * view stops showing Dispatch's stored copy of it once the turn says what the person wrote
  * (`turnSaysBody`). A turn the session left untagged is not in the map, so its stored copy keeps
- * showing beside it (`packages/pi-envoy/AGENTS.md` says which turns go untagged). The bus is open
+ * showing beside it (`packages/pi-envoy/README.md`, "A person's message from Dispatch", says
+ * which turns go untagged). The bus is open
  * to any client, so a tag counts only as the publisher's contract puts it, a string on a user
  * message; any other is ignored rather than taking the message with it, since a message shown
  * twice beats one lost. The text is read from the frame's own parts, which on a user message are

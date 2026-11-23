@@ -24,6 +24,7 @@ import (
 // row by then) or queued behind a lock. A write that waits for the in-memory writer slot while
 // holding a lock the slot's holder needs is a cycle Postgres cannot see, so both would hang.
 func TestProjectDocumentUploadAndAConcurrentWriteBothFinish(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		write func(f *uploadRaceFixture, ctx context.Context, token string) *httptest.ResponseRecorder
@@ -69,8 +70,9 @@ func TestProjectDocumentUploadAndAConcurrentWriteBothFinish(t *testing.T) {
 			f.persistence.holdNextAppend()
 			uploads := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
-				uploads <- f.request(ctx, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]string{
+				uploads <- f.request(ctx, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{
 					"name": f.document.Name, "content": "before\n\nuploaded",
+					"precondition": map[string]string{"document": token},
 				})
 			}()
 			f.persistence.waitHeld(t)

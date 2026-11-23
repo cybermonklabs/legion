@@ -1,0 +1,15 @@
+kind: Changed
+custom:
+  Issue: pr4654
+body: |-
+  The task of each look of a production check makes a requirement that only the deploy can show a
+  `fail` when the look observes it as not met. It also makes such a requirement a `fail` when it is
+  still unobserved when no look follows, whether or not production carries the merge. Before, the
+  task made it a `fail` only when production carried the merge, so the last look of a merge that no
+  release carried ended `pending`, and the check closed as not run. On the last look, `pending` is
+  now only for an issue with none of those requirements, and the agent writes on the pull request
+  why the check did not run within the bound. A look before the last keeps its `pending` for a
+  merge that production does not carry yet. The tester's and the implementer's role prompts, the
+  documentation pages and the tester instructions of the end-to-end proofs state the same rule.
+  The daemon's verdicts and states do not change: a `pending` on the last look, and a last look
+  that nobody reported, still close the check as not run.

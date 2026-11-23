@@ -2,6 +2,7 @@ package refs
 
 import (
 	"context"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -12,12 +13,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 const itemBlockServer = "https://dispatch.example"
 
 // insertIndexedItem inserts a comment or an issue message of issueKey with body and indexes it
-// as a write of this build does (ReplaceCountedItem), returning its id.
+// as a write of this build does (indexItemAsAWriteDoes), returning its id.
 func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -30,9 +32,7 @@ func insertIndexedItem(t *testing.T, tx pgx.Tx, kind ItemKind, issueKey, body st
 	if err := tx.QueryRow(ctx, `insert into `+table+` (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2) returning id::text, created_at`, issueKey, body).Scan(&id, &createdAt); err != nil {
 		t.Fatalf("insert %s: %v", kind, err)
 	}
-	if _, err := ReplaceCountedItem(ctx, tx, kind, id, body, itemBlockServer, createdAt); err != nil {
-		t.Fatalf("index %s %s: %v", kind, id, err)
-	}
+	indexItemAsAWriteDoes(t, tx, kind, id, body, itemBlockServer, createdAt)
 	return id
 }
 
@@ -50,7 +50,7 @@ func edgeSummary(edge model.GraphEdge) string {
 
 func edgeSummaries(t *testing.T, tx pgx.Tx, query Query) []string {
 	t.Helper()
-	edges, err := Edges(context.Background(), tx, query)
+	edges, err := Edges(context.Background(), tx, model.Actor{}, query)
 	if err != nil {
 		t.Fatalf("read %s edges of %s %s: %v", query.Direction, query.Kind, query.ID, err)
 	}
@@ -62,8 +62,8 @@ func edgeSummaries(t *testing.T, tx pgx.Tx, query Query) []string {
 	return summaries
 }
 
-// previousReleaseNodeKinds is every node kind the release before item blocks resolves: its
-// nodeLoaders keys, written out so a change here cannot move them.
+// previousReleaseNodeKinds is every node kind the release before item blocks resolves: the
+// keys its registry carried a loader for, written out so a change here cannot move them.
 var previousReleaseNodeKinds = []string{"artifact", "ask", "block", "comment", "component", "issue", "message", "session"}
 
 // A build that predates item blocks knows none of comment_block, message_block and ask_block:
@@ -92,7 +92,8 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	messageBlock := itemBlockNodeID(ItemMessage, message, "b2")
 	citer := insertIndexedItem(t, tx, ItemComment, "CORE-1", "See dispatch://CORE-1/comment/"+comment+"#b-b2.")
 	ask := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE-2 first?", model.AskOption{Label: "Yes"})
-	if _, err := ReplaceCounted(ctx, tx, NewReader(ctx, tx, "ask", ask.ID, itemBlockServer), ask.Question); err != nil {
+	askMentions := NewReader(ctx, tx, ask.Author, "ask", ask.ID, itemBlockServer).Mentions(ask.Question)
+	if _, err := replaceRefs(ctx, tx, "ask", ask.ID, text.Refs(askMentions), nil); err != nil {
 		t.Fatalf("index the ask's own references: %v", err)
 	}
 	indexAskPartsAt(t, tx, ask, 1)
@@ -114,7 +115,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	if got := edgeSummaries(t, tx, Query{Direction: "out", Kind: "ask", ID: ask.ID, Kinds: []string{"mentions"}}); !slices.Equal(got, []string{"out mentions issue:CORE-2@b1"}) {
 		t.Errorf("this build's ask links = %v; want the mention from its question part", got)
 	}
-	counts, err := BacklinkCounts(ctx, tx, "issue", []string{"CORE-2"}, nil)
+	counts, err := BacklinkCounts(ctx, tx, model.Actor{}, "issue", []string{"CORE-2"}, nil)
 	if err != nil {
 		t.Fatalf("count CORE-2 backlinks: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		t.Errorf("the citing comment's refs row is stored under %q (%v); want %q", cited, err, ItemComment.BlockKind())
 	}
 
-	// The previous release's resolveNodes, which skips a kind its nodeLoaders lacks, resolves
+	// The previous release's resolveNodes, which skips a kind its registry resolves no node of,
 	// every other end of those edges and no item block; this build resolves the blocks.
 	rows, err := tx.Query(ctx, `
 		select from_kind, from_id from graph_edges where from_kind in ('comment', 'message', 'ask', 'comment_block', 'message_block', 'ask_block')
@@ -166,21 +167,27 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 		slices.Sort(kinds)
 		return kinds
 	}
-	current, err := resolveNodes(ctx, tx, false, ends)
+	current, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)
 	if err != nil {
 		t.Fatalf("resolve the ends: %v", err)
 	}
 	if got, want := resolved(current), []string{"ask", "ask_block", "comment", "comment_block", "issue", "message", "message_block"}; !slices.Equal(got, want) {
 		t.Errorf("this build resolves the kinds %v; want %v", got, want)
 	}
-	loaders := nodeLoaders
-	previous := make(map[string]nodeLoader, len(previousReleaseNodeKinds))
-	for _, kind := range previousReleaseNodeKinds {
-		previous[kind] = loaders[kind]
+	registry := nodeRegistry
+	previous := maps.Clone(registry)
+	for kind := range previous {
+		if slices.Contains(previousReleaseNodeKinds, kind) {
+			continue
+		}
+		// That release resolves no node of the kind. Its key stays, and with it the predicate
+		// VisibleKind binds: the registry answered for every kind then as it does now, and only
+		// the loader is the newer build's.
+		previous[kind] = nil
 	}
-	nodeLoaders = previous
-	older, err := resolveNodes(ctx, tx, false, ends)
-	nodeLoaders = loaders
+	nodeRegistry = previous
+	older, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)
+	nodeRegistry = registry
 	if err != nil {
 		t.Fatalf("resolve the ends as the previous release: %v", err)
 	}
@@ -207,14 +214,14 @@ func TestAnItemBlocksLinkReachesItsItem(t *testing.T) {
 	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/handbook-md.")
 	insertIndexedItem(t, tx, ItemComment, "CORE-1", "Cites dispatch://CORE-1/comment/"+comment+"#b-b2.")
 
-	members, truncated, err := Closure(ctx, tx, "CORE-1")
+	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; truncated || !reflect.DeepEqual(members, want) {
-		t.Errorf("closure = %#v (truncated %t); want %#v", members, truncated, want)
+	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "comment", ID: comment}}}; !reflect.DeepEqual(references.Members, want) {
+		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
-	citers, err := ReferencedBy(ctx, tx, handbook)
+	citers, err := ReferencedBy(ctx, tx, model.Actor{}, handbook)
 	if err != nil {
 		t.Fatalf("read referenced-by: %v", err)
 	}
@@ -250,12 +257,12 @@ func TestAnAskOptionsLinkJoinsItsIssuesClosure(t *testing.T) {
 		t.Fatalf("the ask holds %d refs rows of its own; the link is meant to be its option's alone", own)
 	}
 
-	members, truncated, err := Closure(ctx, tx, "CORE-1")
+	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1")
 	if err != nil {
 		t.Fatalf("read closure: %v", err)
 	}
-	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "ask", ID: ask.ID}}}; truncated || !reflect.DeepEqual(members, want) {
-		t.Errorf("closure = %#v (truncated %t); want %#v", members, truncated, want)
+	if want := []Member{{RefKey: handbook, Depth: 1, Via: model.ReferenceVia{Kind: "ask", ID: ask.ID}}}; !reflect.DeepEqual(references.Members, want) {
+		t.Errorf("closure = %#v; want %#v", references.Members, want)
 	}
 }
 
@@ -283,12 +290,12 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	artifact, document := createReferenceArtifact(t, tx, "CORE-1", "CORE", "spec")
 	parts := []part{{"intro", "heading", "# Rollout"}, {"plan", "paragraph", "Ship it on Monday."}}
 	markdown, blocks := documentOf(parts)
-	if _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index version 1 of the document: %v", err)
 	}
 	parts[1].text = "Ship it on Tuesday, after the freeze."
 	markdown, blocks = documentOf(parts)
-	if _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
+	if _, _, _, err := IndexBlocks(ctx, tx, artifact, 2, time.Now(), markdown, blocks, nil, nil); err != nil {
 		t.Fatalf("index version 2 of the document: %v", err)
 	}
 
@@ -299,9 +306,7 @@ func TestBlockTextsReadsEachBlockAsTheOneItemReadsDo(t *testing.T) {
 	if err := tx.QueryRow(ctx, `update comments set body = $2, edited_at = now() where id = $1::uuid returning edited_at`, comment, edited).Scan(&editedAt); err != nil {
 		t.Fatalf("edit the comment: %v", err)
 	}
-	if _, err := ReplaceCountedItemEdit(ctx, tx, ItemComment, comment, written, edited, itemBlockServer, editedAt, nil); err != nil {
-		t.Fatalf("index the comment's edit: %v", err)
-	}
+	indexItemAsAWriteDoes(t, tx, ItemComment, comment, edited, itemBlockServer, editedAt)
 
 	ask := insertAsk(t, tx, "CORE-1", "Which day do we ship?",
 		model.AskOption{Label: "Monday"}, model.AskOption{Label: "Tuesday", Description: "before the freeze"})

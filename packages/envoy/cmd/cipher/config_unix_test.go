@@ -1,0 +1,65 @@
+//go:build unix
+
+// packages/envoy/cmd/cipher/config_unix_test.go
+//
+// The settings file is read only when it is a regular file: a directory is not settings, and a
+// FIFO someone left at the path would hold every command that opens it until somebody writes to
+// it. The read's answer is waited for with no span of its own (testwait.Receive), so a read that
+// waits on the FIFO fails by name before the test binary's deadline, and a slow read passes.
+package main
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/testwait"
+)
+
+// The cases run in a fixed order with the FIFO last: should its read hang, Receive gives up
+// 30 s before the test binary's deadline, and a case run after it would begin with no time left
+// and be blamed for that hang.
+func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		create func(path string) error
+	}{
+		{"a directory", func(path string) error { return os.Mkdir(path, 0o700) }},
+		{"a FIFO", func(path string) error { return syscall.Mkfifo(path, 0o600) }},
+	} {
+		name, create := tc.name, tc.create
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Cleanup(func() { clientConfig = nil })
+			path := filepath.Join(home, ".config", "agent-secrets", "config")
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := create(path); err != nil {
+				t.Fatal(err)
+			}
+			// A FIFO with no writer holds an open for reading until one comes: should the
+			// read block, the wait below fails the row by name, and this cleanup is that
+			// writer, so the read returns.
+			t.Cleanup(func() {
+				if f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+					f.Close()
+				}
+			})
+
+			done := make(chan error, 1)
+			go func() { done <- loadClientConfig() }()
+			err := testwait.Receive(t, "loadClientConfig over "+name+" at "+path, done)
+			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "is not a regular file") {
+				t.Fatalf("loadClientConfig = %v; want an error naming %s as not a regular file", err, path)
+			}
+			if clientConfig != nil || errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("settings %v, error %v; want nothing read and the path refused, not missed", clientConfig, err)
+			}
+		})
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // --- a bus and a listener a test runs a loop session against ----------------------------------
@@ -319,8 +321,14 @@ func TestDriverFollowsItsProposalsThenTheLargestDocuments(t *testing.T) {
 	if id, _ := calls[0].body["session_id"].(string); id != "ses-lg-driver" {
 		t.Fatalf("the driver registered as %q", id)
 	}
-	if driving, _ := calls[0].body["driving"].(bool); !driving {
-		t.Fatalf("the driver registered with driving %v, want true", driving)
+	// The registration is the listener's own body, naming no field its handler does not read: the
+	// driving flag it used to carry was one, and the listener never read it.
+	raw, _ := json.Marshal(calls[0].body)
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	var registration listenerwire.SubscribeRequest
+	if err := decoder.Decode(&registration); err != nil {
+		t.Fatalf("the driver's registration %s is not the listener's body: %v", raw, err)
 	}
 	if s := lp.summary(); s.DriverTopics != 3 || !s.DriverSubscribed {
 		t.Fatalf("driver topics %d subscribed %v, want 3 and true", s.DriverTopics, s.DriverSubscribed)

@@ -44,6 +44,15 @@ test("a user preference stays at its caller default until login, then follows th
     expect(window.localStorage.getItem(undefinedKey)).toBeNull();
 
     await act(async () => whoAmIResult.resolve({ event_head: "0", kind: "user", login: "alice" }));
+    // The click made while the identity was pending left the button at "board" already, so its
+    // text alone does not say the login has resolved: wait for alice's identity, then her value.
+    await waitFor(() =>
+      expect(queryClient.getQueryData<AuthenticatedUser>(["whoami"])).toEqual({
+        event_head: "0",
+        kind: "user",
+        login: "alice",
+      })
+    );
     await waitFor(() => expect(screen.getByRole("button").textContent).toBe("board"));
 
     await user.click(screen.getByRole("button"));

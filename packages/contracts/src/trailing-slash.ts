@@ -4,7 +4,7 @@
 // by hand into a unit file, a pod's environment or a shell, so an address ending in more than
 // one slash is a typo rather than a shape to refuse; two clients that trimmed differently would
 // post `//v1/...` and `/v1/...` for the same configuration. Go's half is
-// `brokerclient.WithoutTrailingSlashes`.
+// `cipherclient.WithoutTrailingSlashes`.
 
 /**
  * `url` without the slashes it ends in, counted from the right.

@@ -11,8 +11,8 @@ import (
 
 // TestCoreAndTheListenerAgreeOnAnAllowedHost (infra/core/allowed_hosts_agreement_test.go) imports
 // the listener's config package, which go list does not count: a non-test import would put it in
-// `go list -deps ./cmd/...`, the path list a plugin release is cut from (AGENTS.md, "Release
-// contract"), so an edit to Envoy's config would cut a plugin release.
+// `go list -deps ./cmd/...`, the path list a plugin release is cut from (README.md, "Changing the
+// module"), so an edit to Envoy's config would cut a plugin release.
 func TestCoreCompilesNoListenerConfigPackage(t *testing.T) {
 	// The two tests of this package each start a `go list -deps`, which is seconds of work and no
 	// shared state, so they run beside each other rather than one after the other.

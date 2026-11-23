@@ -109,6 +109,38 @@ export async function replayCase(row: CaseRow, config?: DispatchConfig): Promise
   return { row, documents, complete: documents.every((one) => one.refusal === null) };
 }
 
+/** One document version as its route answered it: its record and markdown, or why none. */
+export type VersionRead =
+  | { path: string; markdown: string; version: Record<string, unknown> }
+  | { path: string; refusal: string };
+
+/**
+ * One document version, `GET /api/v1/artifacts/{id}/versions/{version}`: the version's own record
+ * and its markdown, or, where the route refuses the read or answers no markdown, why there is
+ * none. Every reader of a version in this directory reads it here (`replayCase`, and
+ * `s10-inputs.ts`, which checks the record's `sha256` against the markdown).
+ */
+export async function readVersion(
+  artifactId: string,
+  version: number,
+  config: DispatchConfig
+): Promise<VersionRead> {
+  const path = `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions/${version}`;
+  let body: unknown;
+  try {
+    body = await readJson<unknown>(path, config);
+  } catch (error) {
+    if (!(error instanceof DispatchRefusedError)) throw error;
+    return { path, refusal: `${error.status} on GET ${path}` };
+  }
+  const record = recordOf(body);
+  const markdown = stringOf(record?.markdown);
+  if (record === null || markdown === null) {
+    return { path, refusal: `GET ${path} answered no markdown` };
+  }
+  return { path, markdown, version: record };
+}
+
 async function replayDocument(
   document: ApprovalDocument,
   config: DispatchConfig
@@ -129,27 +161,17 @@ async function replayDocument(
   if (document.artifactId === null || document.requestedVersion === null) {
     return { ...unread, refusal: "the case names no artifact and version for this document" };
   }
-  const path =
-    `/api/v1/artifacts/${encodeURIComponent(document.artifactId)}` +
-    `/versions/${document.requestedVersion}`;
-  let body: unknown;
-  try {
-    body = await readJson<unknown>(path, config);
-  } catch (error) {
-    if (!(error instanceof DispatchRefusedError)) throw error;
-    return { ...unread, refusal: `${error.status} on GET ${path}` };
-  }
-  const version = recordOf(body);
-  const markdown = stringOf(version?.markdown);
-  if (markdown === null) return { ...unread, refusal: `GET ${path} answered no markdown` };
+  const read = await readVersion(document.artifactId, document.requestedVersion, config);
+  if ("refusal" in read) return { ...unread, refusal: read.refusal };
+  const { markdown, version } = read;
   return {
     ...unread,
     markdown,
     bytes: Buffer.byteLength(markdown, "utf8"),
     sha256: createHash("sha256").update(markdown, "utf8").digest("hex"),
-    versionCreatedAt: stringOf(version?.created_at),
-    named: typeof version?.named === "boolean" ? version.named : null,
-    summary: stringOf(version?.summary),
+    versionCreatedAt: stringOf(version.created_at),
+    named: typeof version.named === "boolean" ? version.named : null,
+    summary: stringOf(version.summary),
   };
 }
 

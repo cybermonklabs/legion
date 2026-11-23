@@ -1,0 +1,5 @@
+kind: Fixed
+body: The check of the packed plugin, `scripts/check-packed-skills.sh`, no longer refuses at random a skill the tarball holds. It looked each member up with `printf … | grep -q`, and under `pipefail` a printf still writing when grep found its match died of SIGPIPE, which read as a missing member. Each lookup now reads the member list from a here-string.
+time: 2026-11-18T04:36:59.565557469Z
+custom:
+    Issue: pr3675

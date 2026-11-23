@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  `bun run build` writes each module to the `dist/<module>.js` its export's `default` condition
+  names, `dist/excerpt.js` among them. It wrote them under `dist/src/`, where no export points, so
+  none of the 37 `default` paths existed after a build, and it did not build `src/excerpt.ts` at
+  all.
+time: 2026-11-18T18:26:18Z
+custom:
+    Issue: pr4140

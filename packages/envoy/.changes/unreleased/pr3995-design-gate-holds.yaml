@@ -1,0 +1,11 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  `PUT /api/v1/issues/{key}/design-gates` takes `holds` on each entry, whether the Legion gate holds
+  the issue's tree on that step, and stores it in the new nullable column `design_gates.holds`
+  (migration `20261114020013_design_gates_holds`). The issue read shows `holds` on each design
+  gate. The `superseded_approval` advice on a new version of an approved document now names a gate
+  whose row holds its tree, so it names a `criteria` gate a root registered while the project's
+  `gated_steps` name `spec` alone, and it leaves out a row whose `holds` is false. A row with no
+  `holds`, which an older daemon publishes, is named where `gated_steps` names its step, as before.

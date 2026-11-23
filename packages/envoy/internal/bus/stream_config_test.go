@@ -19,6 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // capsAnUnsetStream is what a test tells a start (ensureStreamWithConfig) or a keeper pass
@@ -76,20 +78,36 @@ func (js *streamInfoJetStream) ConsumerNames(_ string, _ ...nats.JSOpt) <-chan s
 	return names
 }
 
+// silentServers is how many listeners TestConnectWithContextBoundsMultipleUnresponsiveServers
+// walks: each accepts and never answers, so nats.go waits its whole per-server timeout at each,
+// the 5 s the outer deadline cuts connectTimeout to, and a walk of them all takes about 30 s.
+const silentServers = 6
+
+// A connect whose outer deadline passes while nats.go walks silent servers returns that deadline,
+// and returns it while the walk is still under way. The row tells the two apart by the order of two
+// facts, not by a time: the connect's return against the walk reaching the last of silentServers
+// listeners. A connect that waited out its attempt, as one that no longer selects on its context
+// during the attempt does, returns only after the walk has dialed every server, the last of them
+// about 25 s after the first, and then still returns context.DeadlineExceeded from its later
+// checks; so the deadline's error alone cannot tell it from a bounded one.
 func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
-	accepted := make(chan net.Conn, 32)
-	urls := make([]string, 0, 2)
-	for range 2 {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+	accepted := make(chan net.Conn, 4*silentServers)
+	var reached atomic.Int32
+	urls := make([]string, 0, silentServers)
+	for range silentServers {
+		listener, err := testport.ListenLoopback()
 		if err != nil {
 			t.Fatalf("listen: %v", err)
 		}
 		t.Cleanup(func() { _ = listener.Close() })
 		go func() {
-			for {
+			for first := true; ; first = false {
 				conn, err := listener.Accept()
 				if err != nil {
 					return
+				}
+				if first {
+					reached.Add(1)
 				}
 				accepted <- conn
 			}
@@ -107,27 +125,33 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 		}
 	})
 
+	// The outer deadline is the one under test, and the dial it bounds reaches real sockets: the
+	// connect is given it as a real context, and the row asserts it ended with that deadline
+	// rather than with its ten attempts run out.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	result := make(chan error, 1)
-	started := time.Now()
+	type ended struct {
+		err     error
+		reached int32
+	}
+	result := make(chan ended, 1)
 	go func() {
 		conn, err := connectWithContext(ctx, "deadline-test", urls, nil, nil, nil, nil, nil, nil, nil)
+		reachedAtReturn := reached.Load()
 		if conn != nil {
 			conn.Close()
 		}
-		result <- err
+		result <- ended{err, reachedAtReturn}
 	}()
-	select {
-	case err := <-result:
-		if err == nil {
-			t.Fatal("connect unexpectedly succeeded against unresponsive servers")
-		}
-		if elapsed := time.Since(started); elapsed > 6*time.Second {
-			t.Fatalf("connect returned after %s, want the outer five-second deadline", elapsed)
-		}
-	case <-time.After(6 * time.Second):
-		t.Fatal("connect exceeded the outer deadline while walking NATS URLs")
+	got := testwait.Receive(t, "the connect against unresponsive servers to end at its deadline", result)
+	if got.err == nil {
+		t.Fatal("connect unexpectedly succeeded against unresponsive servers")
+	}
+	if !errors.Is(got.err, context.DeadlineExceeded) {
+		t.Fatalf("connect against unresponsive servers = %v, want its outer deadline", got.err)
+	}
+	if got.reached >= silentServers {
+		t.Fatalf("connect returned its deadline only once the walk had reached all %d silent servers: it waited out the attempt, not its outer deadline", silentServers)
 	}
 }
 
@@ -353,6 +377,7 @@ func TestStreamConfigExcludesRoleLanes(t *testing.T) {
 		"notifications.envoy.exceptions.notifications.team.>",
 		"notifications.envoy.kept.>",
 		"notifications.envoy.resume.>",
+		"notifications.envoy.takeover.>",
 	}
 	if !reflect.DeepEqual(streamCfg.Subjects, wantSubjects) {
 		t.Fatalf("stream subjects = %v, want %v", streamCfg.Subjects, wantSubjects)
@@ -442,6 +467,28 @@ var streamGenerations = map[int]struct {
 			"notifications.envoy.exceptions.notifications.team.>",
 			"notifications.envoy.kept.>",
 			"notifications.envoy.resume.>",
+		},
+	},
+	// Generation 5 adds the listener's takeover lane, the subject the stream carries each role a
+	// session took from another on, with how far the copy of the other's role messages has read
+	// (TakeoverSubjectPrefix, listenerOwnStreamLanes).
+	5: {
+		maxAge:     72 * time.Hour,
+		duplicates: 72 * time.Hour,
+		subjects: []string{
+			"notifications.agent.>",
+			"notifications.dispatch.>",
+			"notifications.github.>",
+			"notifications.slack.>",
+			"notifications.legion.>",
+			"notifications.ghostwispr.>",
+			"notifications.whatsapp.>",
+			"notifications.team.>",
+			"notifications.envoy.exceptions.notifications.agent.>",
+			"notifications.envoy.exceptions.notifications.team.>",
+			"notifications.envoy.kept.>",
+			"notifications.envoy.resume.>",
+			"notifications.envoy.takeover.>",
 		},
 	},
 }
@@ -660,10 +707,10 @@ func TestEnsureStreamWithConfigStartsWhenADeployedSubjectOverlapsItsOwn(t *testi
 }
 
 // capturedLogs collects the default slog logger's JSON records for one test. Its writes and reads
-// share a lock because a bus client an earlier test closed can still be logging: nats.go's close
-// queues the disconnected and closed callbacks on the connection's async dispatcher and returns
-// without waiting for them (nats.go v1.50.0, nats.go:5892-5910), the bus's closed callback logs
-// through the default logger, and every test of the package shares one binary.
+// share a lock because a bus client an earlier test closed can still be logging: nats.go v1.55.0
+// queues the disconnected and closed callbacks on its async dispatcher and returns without waiting
+// for them. The bus's closed callback logs through the default logger, and every test of the
+// package shares one binary.
 type capturedLogs struct {
 	logtest.Buffer
 }

@@ -1,7 +1,7 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_HEADER, IDEMPOTENCY_KEY_PATTERN } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
-import { DISPATCH_WRITE_RETRY, DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
 
 // Every write the `dispatch` command makes carries one key because every request DispatchClient
 // makes goes through its one request function. This drives every method of the class through a
@@ -72,6 +72,14 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       verdict: "pass",
       commit: "1111111111111111111111111111111111111111",
     }),
+  dryRunResult: (client) =>
+    client.dryRunResult("DSP-1", {
+      actor,
+      check: "k1",
+      role: "implementer",
+      verdict: "pass",
+      commit: "1111111111111111111111111111111111111111",
+    }),
   issueResults: (client) => client.issueResults("DSP-1"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
@@ -122,9 +130,13 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listHandoffs: (client) => client.listHandoffs("DSP-1"),
   latestHandoff: (client) => client.latestHandoff("DSP-1", "implement"),
   handoff: (client) => client.handoff("handoff-1"),
+  listSteps: (client) => client.listSteps("DSP-1"),
+  listProjectPlans: (client) =>
+    client.listProjectPlans("DSP", {
+      since: "2026-11-01T00:00:00Z",
+      until: "2026-11-17T00:00:00Z",
+    }),
 };
-
-afterEach(forgetKeyedLayerMemory);
 
 test("every DispatchClient method reaches Dispatch through its one request function, every write keyed", async () => {
   // Every method, which is every own property of the prototype that is one: `token` is an

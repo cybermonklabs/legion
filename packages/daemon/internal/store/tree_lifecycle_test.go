@@ -132,7 +132,7 @@ func TestAReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
 	if _, err := store.OpenTreeLifecycle(ctx, "legion", rootIssue, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatal(err)
 	}
-	tx, err := store.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestCleanupStepsTakeTheSerializerBeforeTheirRows(t *testing.T) {
 func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func() error) {
 	t.Helper()
 	ctx := context.Background()
-	fact, err := store.Pool().Begin(ctx)
+	fact, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,6 +378,59 @@ func TestIssueSandboxHomeIsATreeTheIssueIsInOrCanStillBeAdmittedInto(t *testing.
 	}
 	if got, err := store.IssueSandboxHome(ctx, "legion", "LEGION-999"); err != nil || got != "" {
 		t.Errorf("an issue never recorded: IssueSandboxHome = %q, %v; want no tree", got, err)
+	}
+}
+
+// The operator's spawn of another project's issue runs in a Sandbox of this project's, labelled
+// with that issue and with the spawn's own tree, and the issues table holds the record that
+// project's daemon keeps of the issue. That record is no record of this project's, so this
+// project reads the Sandbox's home as that of an issue it never recorded, no tree, and the orphan
+// sweep deletes the Sandbox once the spawn's own tree is gone, whatever the other project's record
+// says of the issue waiting in its line, lingering or being handed over. The other project's
+// daemon reads its own record as before.
+func TestIssueSandboxHomeReadsNoRecordAnotherProjectKeepsOfTheIssue(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	const other = "OTHER-7"
+	for _, tc := range []struct {
+		name       string
+		status     string
+		handedOver bool
+		lingers    bool
+		fence      bool
+	}{
+		{name: "the other project's record waits in its line", status: "todo", handedOver: true},
+		{name: "the other project's record lingers after its close", status: "done", lingers: true},
+		{name: "the other project's record is being handed over", status: "in_progress", fence: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.Pool().Exec(ctx, `truncate handovers, tree_lifecycles, issues cascade`); err != nil {
+				t.Fatal(err)
+			}
+			var lingerUntil *time.Time
+			if tc.lingers {
+				until := time.Now().Add(time.Hour)
+				lingerUntil = &until
+			}
+			if _, err := store.Pool().Exec(ctx, `insert into issues
+				(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, handed_over, linger_until)
+				values ($1, $1, 'OTHER', 'root', 'implementing', 1, $2, 'B', 1, $3, $4)`,
+				other, tc.status, tc.handedOver, lingerUntil); err != nil {
+				t.Fatal(err)
+			}
+			if tc.fence {
+				if _, err := store.Pool().Exec(ctx, `insert into handovers (issue, tree, linger_generation, cancelled) values ($1, $1, 1, false)`,
+					other); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got, err := store.IssueSandboxHome(ctx, "legion", other); err != nil || got != "" {
+				t.Errorf("legion's IssueSandboxHome of %s = %q, %v; want no tree: OTHER's record of %s is no record of legion's", other, got, err, other)
+			}
+			if got, err := store.IssueSandboxHome(ctx, "other", other); err != nil || got != other {
+				t.Errorf("OTHER's IssueSandboxHome of %s = %q, %v; want %s from its own record", other, got, err, other)
+			}
+		})
 	}
 }
 

@@ -1,0 +1,88 @@
+kind: Fixed
+body: |-
+  A claim can no longer register, or be relaunched into, another claim's session, which took that
+  session's secret grants and its transcript. The daemon holds every name of a session to the
+  first claim of its project that recorded it, whatever that claim's state since (live, suspended,
+  failed or retired), in a new `claim_sessions` table: its id, its file's base name (which holds
+  the path too), the id an Oh My Pi file name gives, and the id a Claude Code transcript is named
+  for. A registration under a name another claim holds is refused with `409 session <name> is
+  recorded for another claim of this daemon; …` before anything is recorded or enrolled, a
+  relaunch whose record names one is refused before anything starts, and a pod's session
+  registration (`exchange_audience`) is made for no such name; a claim's own earlier session
+  and a session no claim has recorded register as before. A session id or a session file's name
+  longer than 255 bytes, and a session file that is not a clean path, are refused with `400`; a
+  claim an earlier daemon recorded under such a name takes nothing under it and is suspended at
+  boot. A registration that would take one claim past
+  2,048 held names is refused with `409`: a claim that records a session still resumes it, and one
+  that needs a new session starts none until an operator runs `legion claims release-names`, which
+  the refusal's log line names: it frees the names of the claim's other sessions once the secrets
+  broker answers that no enrollment of this daemon's login still carries anything for them, and
+  frees nothing while one does; a broker from before this release has no such question and is
+  answered `502`, so roll the broker first. At every boot the daemon holds, in one
+  statement, each name a claim records that no row holds, as after a rollback to a release before
+  this one, and logs at Error each claim whose current session records a name held for another
+  claim, for none or by no row, suspending each it can; a suspension that fails is logged at Error
+  and the boot goes on. Such a claim is contained but not stopped: the enrollment its process
+  holds at the secrets broker is revoked once the broker confirms the revocation, the claim
+  keeping it recorded and asking again at each observation until then (where the broker refuses
+  the revocation for good, the claim records it no longer, logs that at Error, and the process
+  renews it until it stops), and the daemon publishes nothing to its Envoy role, whatever the
+  claim's state, or, for the daemon's own controller, the controller topic, and sends it no task
+  and no compaction. The daemon sends no clean stop of such a claim's Envoy session either, when
+  the boot suspends it or its process dies, since the registration under that id can be the live
+  process of the claim that holds it. The process runs on under the session, and the Envoy
+  listener does not yet withhold the role its session claimed, so a message another session sends
+  to that role reaches the session until it ends. With no process registering the session id, the
+  listener frees the role at the role reaper's first pass after the session's record is gone and
+  the role claim's last renewal is a live window old: at most `max(min(ENVOY_SESSION_MAX_AGE,
+  ENVOY_SESSION_GONE_HORIZON), ENVOY_SESSION_LIVE_WINDOW) + ENVOY_ROLE_CLAIM_REAP_INTERVAL` after
+  the last registration, ten minutes with the defaults and about 65 minutes where the session
+  bucket keeps records past the gone horizon, and later across a listener restart or a reaper
+  read that fails.
+  Where another claim's live process runs under the same session id, as after a rollback, the
+  listener keeps the role with that session while it lives, and the role's messages reach that
+  process, whether the boot suspended the claim or could not. The daemon withholds its own
+  messages from such a claim only while it records that session, so `legion claims
+  forget-session` of a claim recording a session it does not hold first asks the listener which
+  session holds the claim's role, and is refused `409` while the listener names that session as
+  the holder in any state, gone included while its claim stands, or gives no answer; `legion
+  claims retry --fresh-session` asks the same, refused `409` unless the route suspended the claim
+  first (a claim running an agent, or stored working with its process gone), when it answers `200`
+  with the refusal in `phaseNotRestarted`; that suspend sends no clean stop, so the first retry of
+  a claim running its agent is refused until the listener frees the role. The refusal names the
+  claim to suspend when that claim runs (`legion claims suspend --claim <token>`, which stops its
+  process through the daemon); where it is suspended, retired or failed, the process under the
+  session may be the contained claim's own, and only the wait ends it. The forget goes on once
+  `GET /v1/roles/<token>` answers `404` with reason `unclaimed` or names another session, within
+  the bound above; the contained claim is then resumed, and the suspended holder only once the
+  contained claim's role names its new session, since a holder resumed earlier can take that role
+  from a transcript the two claims share. Stopping the contained claim's pod or pane by hand
+  sends a clean stop of its session that can end the rightful holder's registration under the
+  same id until its next heartbeat, about 90 seconds. A lookup the listener refuses the
+  same way every time (a wrong bearer, a claim record it cannot decode) refuses the forget as a
+  fault no suspend fixes. The daemon's own retries of a claim in a new session meet the same
+  refusals: the controller keeper logs the wait for the role once at Warn and a refused lookup
+  once at Error, and a workflow start logs them as a waiting row and a failing one. Each boot tries
+  the suspension again; an
+  operator suspends the claim once its runtime answers, or stops its pod or pane by hand; it takes
+  no `legion claims forget-session` while it is live. Dispatch's role holders name a live claim's
+  session only while the claim holds every name of it, and a step's record in Dispatch names a
+  claim's session only while the claim holds it. `legion claims resume` of a suspended claim
+  recording a session it does not hold is refused `409`, naming the `legion claims forget-session`
+  to run first, and the claim stays suspended, charged nothing; a rule's resume leaves it
+  suspended the same way. For each claim the boot names that is not the rightful holder,
+  an operator runs `legion claims forget-session` as its state allows, then resumes a suspended
+  one, retries a failed one and leaves a retired one as it is, and for a name held for none records
+  the rightful holder (`update claim_sessions set claim = '<token>' where project = E'<project>'
+  and kind = E'<kind>' and name = E'<name>' and claim = '' and '<token>' in (<the line's
+  claims>)`, whose escape string literals read the same whatever standard_conforming_strings the
+  operator's session sets, and which moves no name a claim already holds and to no claim the line
+  does not name; a first run that named the wrong claim is undone by suspending that claim,
+  forgetting its session while it still holds the name, moving the name, and resuming both);
+  docs/kubernetes.md gives the steps whole. A name only an
+  abandoned session records is logged at Warn and suspends nothing. A hold the store does not
+  answer at a relaunch is tried again at the probe interval, charging nothing. A refusal asked
+  again at every sweep is logged at Warn once.
+time: 2026-11-16T15:28:23Z
+custom:
+    Issue: pr4220

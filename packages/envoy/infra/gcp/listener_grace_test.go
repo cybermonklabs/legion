@@ -8,11 +8,16 @@ import (
 	"github.com/sjawhar/envoy/infra/gcp"
 )
 
-// listenerDurableBindDeadlineSeconds is durableBindDeadline, the listener's own
-// (packages/envoy/cmd/listener/durable.go:176), which this package cannot import: it is a
-// constant of package main. A hung pod holds its durable for the whole of its grace, so a
-// listener pod's grace has to stay under this deadline. That is necessary and not sufficient:
-// what has to hold is the replacement pod's time to its first /healthz answer plus that grace.
+// listenerDurableBindDeadlineSeconds is the listener's own durableBindDeadline
+// (packages/envoy/cmd/listener/durable.go), which this package cannot import: it is a constant of
+// package main. The listener starts the bind, and with it the deadline's clock, right after its
+// /v1 opens. A hung pod holds its durable for the whole of its grace, so a listener pod's grace
+// has to stay under this deadline. That is necessary and not sufficient: what has to fit under it
+// is the replacement pod's lag to Ready behind its /v1 open plus that grace. For the clustered
+// hub's listener that lag is its startup probe's, at most one 10 s period, since the probe passes
+// only once /v1 serves. gcp:Dispatch's listener turns Ready on /healthz, which the listener
+// answers 200 "starting" from its first answer, before /v1 opens, so that pod is Ready before its
+// bind's clock starts and has no such lag.
 const listenerDurableBindDeadlineSeconds = 135.0
 
 // One assertion spans two components here because the clustered hub's listener pod and

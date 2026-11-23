@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // GET /v1/sessions lists every live session the session bucket holds, even one whose id the
@@ -122,15 +123,15 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 	}
 
 	before := len(logs.String())
-	recorder := get(sessionsHandler(registry, sessions), "/v1/sessions")
+	recorder := get(sessionsHandler(registry, sessions, nil), "/v1/sessions")
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("GET /v1/sessions: status %d, body %.300s; want 200 listing every session", recorder.Code, recorder.Body.String())
 	}
-	var rows []sessionInfo
+	var rows []listenerwire.SessionInfo
 	if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 		t.Fatalf("decode GET /v1/sessions %.300s: %v", recorder.Body.String(), err)
 	}
-	byID := map[string]sessionInfo{}
+	byID := map[string]listenerwire.SessionInfo{}
 	for _, row := range rows {
 		byID[row.SessionID] = row
 	}
@@ -211,7 +212,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		{invalidKey, http.StatusBadRequest},
 	} {
 		t.Run("interests/"+refused.id[:min(len(refused.id), 8)], func(t *testing.T) {
-			recorder := get(adminInterestsHandler(registry, sessions, nil, logging.New("test")), "/v1/interests/"+refused.id)
+			recorder := get(adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")), "/v1/interests/"+refused.id)
 			if recorder.Code != refused.want {
 				t.Fatalf("GET /v1/interests/<the %d-byte id %.16s>: status %d, body %.300s; want %d", len(refused.id), refused.id, recorder.Code, recorder.Body.String(), refused.want)
 			}

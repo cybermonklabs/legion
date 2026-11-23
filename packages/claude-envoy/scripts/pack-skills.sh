@@ -17,7 +17,9 @@
 # rather than deleting them, and the list of skills is read off the links rather than written out
 # a second time here.
 #
-# Where no postpack runs — bun runs none when a pack fails — `--restore` puts the links back.
+# Where no postpack runs — bun runs none when a pack fails — `--restore` puts the links back. The
+# prepack's last step takes group and other write from every shipped path, so the published modes
+# do not depend on the packer's umask.
 #
 # npm and bun both run these with the package root as the working directory, as that script's
 # header says, so the package is $PWD and the repository $PWD/../..:
@@ -131,11 +133,39 @@ if [ ${#staged[@]} -gt 0 ]; then
   refuse "bash scripts/pack-skills.sh --restore puts those links back"
 fi
 
-# The swap, under a trap that puts back every link it has replaced. What is left to fail here is
-# the filesystem rather than an entry, and a failure between the first swap and the last would
-# leave tracked links as copied directories. The trap is disarmed the moment the loop finishes,
-# and nowhere earlier: the pack this prepack runs for needs the real directories, and the
-# postpack puts the links back after it.
+# The paths the pack ships, read here, before the swap, so that every refusal comes before a link is
+# touched. The tarball keeps each shipped file's mode as it is on disk, and that mode is the
+# packer's umask's: a checkout and a pack under umask 0002, which a systemd user unit runs with,
+# give 0664 and 0775 where umask 022 gives 0644 and 0755, and the copies the swap makes take the
+# packer's umask too. So every path the pack ships loses group and other write after the swap: each
+# `files` entry that exists (a `<dir>/**` entry is its directory), and what `bun pm pack` ships
+# whatever `files` says (bun 1.4.4: the manifest and the root's README*, LICENSE* and LICENCE*
+# files). Every user keeps read, search on each directory and execute on each file already
+# executable (chmod's X).
+command -v jq > /dev/null 2>&1 || refuse "jq is required to set the shipped files' modes"
+files_list=$(jq -r '.files | if type == "array" then .[] else empty end' package.json) ||
+  refuse "package.json could not be read for its files list"
+[ -n "$files_list" ] || refuse "package.json has no files list, or an empty one, to set the shipped files' modes from"
+shopt -s nullglob nocaseglob
+shipped=(package.json README* LICENSE* LICENCE*)
+shopt -u nocaseglob
+while IFS= read -r entry; do
+  case $entry in
+    */\*\*) root=${entry%/\*\*} ;;
+    *[*?[]*) refuse "files entry \"$entry\" is a pattern whose paths this prepack cannot set the modes of; list a path, or a directory as <dir>/**" ;;
+    *) root=$entry ;;
+  esac
+  if [ -e "$root" ]; then
+    shipped+=("$root")
+  fi
+done <<< "$files_list"
+
+# The swap and the modes, under a trap that puts back every link it has replaced. What is left to
+# fail here is the filesystem rather than an entry, and a failure between the first swap and the
+# chmod would leave tracked links as copied directories. The trap is disarmed the moment the chmod
+# has passed, and nowhere earlier: the pack this prepack runs for needs the real directories, and
+# the postpack puts the links back after it. `shipped` names skills/ itself, so the chmod reaches
+# the copies the swap made.
 swapped=()
 trap '[ ${#swapped[@]} -eq 0 ] || link_back "${swapped[@]}"' EXIT
 for name in "${names[@]}"; do
@@ -143,4 +173,5 @@ for name in "${names[@]}"; do
   swapped+=("$name")
   cp -R "$repo_skills/$name" "skills/$name"
 done
+chmod -R go-w,a+rX -- "${shipped[@]}"
 trap - EXIT

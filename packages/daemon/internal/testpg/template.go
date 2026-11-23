@@ -51,8 +51,9 @@ var shared struct {
 }
 
 // Clone is the URL of a database carrying every migration, cloned from this process's template and
-// dropped at the test's end. Without LEGION_TEST_PG_DSN the test is skipped, as testdb.Database's
-// is.
+// dropped at the test's end. A pool opened on it holds testdb.PoolConns connections unless
+// LEGION_TEST_PG_DSN sets a size of its own, which it keeps (testdb.PoolBounded). Without
+// LEGION_TEST_PG_DSN the test is skipped, as testdb.Database's is.
 func Clone(t testing.TB, prefix string) string {
 	t.Helper()
 	if !shared.main {
@@ -72,6 +73,9 @@ func Clone(t testing.TB, prefix string) string {
 	}
 	clone, err := testdb.DatabaseURL(shared.server, name)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if clone, err = testdb.PoolBounded(shared.server, clone); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := shared.admin.Exec(context.Background(), cloneStatement(name)); err != nil {
@@ -94,10 +98,16 @@ func CloneStore(t testing.TB, prefix string) *store.Store {
 }
 
 // ClonePool is Clone opened as a pool, closed when the test ends — before the clone is dropped,
-// since Clone registered that cleanup first.
+// since Clone registered that cleanup first. The pool is built from store.PoolConfig, as the
+// daemon's own is, so a test that wraps it with store.NewPool writes through the store's text
+// rule.
 func ClonePool(t testing.TB, prefix string) *pgxpool.Pool {
 	t.Helper()
-	pool, err := pgxpool.New(context.Background(), Clone(t, prefix))
+	config, err := store.PoolConfig(Clone(t, prefix))
+	if err != nil {
+		t.Fatalf("configure a pool on the cloned database: %v", err)
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool on the cloned database: %v", err)
 	}
@@ -136,8 +146,9 @@ func Main(prefix string, run func() int) int {
 	if shared.template == "" {
 		return code
 	}
-	// No `with (force)`: the template takes no connection (prepare), so there is none to end.
-	if _, err := shared.admin.Exec(context.Background(), "drop database "+shared.template); err != nil {
+	// Through testdb.Drop: the template takes no connection (prepare), so a forced drop of it ends
+	// nothing, and Drop's retry waits out a backend that has not exited yet.
+	if err := testdb.Drop(context.Background(), shared.admin, shared.template); err != nil {
 		fmt.Fprintf(os.Stderr, "testpg: drop the template database %s: %v\n", shared.template, err)
 		if code == 0 {
 			code = 1
@@ -146,12 +157,17 @@ func Main(prefix string, run func() int) int {
 	return code
 }
 
-// dropSlots holds the drops in flight to two of the admin pool's four connections. A clone takes
-// one of those connections too, and a `drop database … with (force)` forces a checkpoint and
-// waits for it: with every slot on drops — a package whose parallel subtests each clone one
-// database queues one drop per subtest that ends — the next clone waits for a checkpoint on its
-// own clock, which is the cost dropInBackground exists to move off it.
-var dropSlots = make(chan struct{}, 2)
+// adminConns is the admin pool's size, whatever pool size LEGION_TEST_PG_DSN sets (adminConfig):
+// the pool is this file's own bookkeeping, sized against dropSlots, not a pool a test opens. On a
+// large machine every package that clones opens one at once on one server, so it stays small.
+const adminConns = 4
+
+// dropSlots holds the drops in flight to half the admin pool's adminConns connections. A clone
+// takes one of those connections too, and a `drop database … with (force)` forces a checkpoint
+// and waits for it: with every connection on drops — a package whose parallel subtests each clone
+// one database queues one drop per subtest that ends — the next clone waits for a checkpoint on
+// its own clock, which is the cost dropInBackground exists to move off it.
+var dropSlots = make(chan struct{}, adminConns/2)
 
 // dropInBackground drops name without waiting for it; Main waits for every drop. Drops in flight
 // together share one checkpoint.
@@ -164,7 +180,8 @@ func dropInBackground(name string) {
 		// member of pg_signal_backend as soon as one session belongs to another role — an
 		// autovacuum worker, which attaches to a database a test has just filled. Every Legion
 		// pod shares one server whose test login holds neither privilege, so without the wait
-		// this drop fails the package (dispatch://INFRA-714 round six).
+		// this drop fails the package (dispatch://INFRA-714 round six). Drop also waits out the
+		// 55006 a forced drop answers while a backend it terminated has not exited yet.
 		if err := testdb.Drop(context.Background(), shared.admin, name); err != nil {
 			shared.dropMu.Lock()
 			shared.dropFails = append(shared.dropFails, fmt.Sprintf("drop the cloned database %s: %v", name, err))
@@ -179,22 +196,17 @@ func dropInBackground(name string) {
 //
 // The admin database's URL and the template's are testdb.DatabaseURL's, as each clone's is
 // (Clone), and this file makes no rewrite of its own: that helper's comment says what it refuses.
+// The template's pool takes the pool keys testdb.PoolBounded gives it; the admin pool takes none
+// of them and holds adminConns connections (adminConfig).
 // The template's URL is made before the `create database`, so a refused rewrite leaves no
 // database behind.
 func prepare(dsn string) error {
 	shared.server = dsn
-	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
+	config, err := adminConfig(dsn)
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
-	config, err := pgxpool.ParseConfig(adminURL)
-	if err != nil {
-		return fmt.Errorf("parse the admin database URL: %w", err)
-	}
-	// Drops run concurrently on this pool. Its default size is the CPU count, and on a large
-	// machine the packages testing against one server at once would exceed its connection limit.
-	config.MaxConns = 4
 	admin, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return fmt.Errorf("open the admin pool: %w", err)
@@ -208,6 +220,10 @@ func prepare(dsn string) error {
 	}
 	templateURL, err := testdb.DatabaseURL(dsn, name)
 	if err != nil {
+		return err
+	}
+	// The template is opened only by the store that migrates it.
+	if templateURL, err = testdb.PoolBounded(dsn, templateURL); err != nil {
 		return err
 	}
 	// A file copy of template1, for the reason each clone of it is one.
@@ -231,4 +247,21 @@ func prepare(dsn string) error {
 		return fmt.Errorf("close the template database to connections: %w", err)
 	}
 	return nil
+}
+
+// adminConfig is the admin pool's configuration on the server dsn names: that server's postgres
+// database through testdb.DatabaseURL, which takes out every pool key the DSN sets, and
+// adminConns connections, so dropSlots' count holds whatever pool size the DSN sets for the tests'
+// own pools.
+func adminConfig(dsn string) (*pgxpool.Config, error) {
+	adminURL, err := testdb.DatabaseURL(dsn, "postgres")
+	if err != nil {
+		return nil, err
+	}
+	config, err := pgxpool.ParseConfig(adminURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse the admin database URL: %w", err)
+	}
+	config.MaxConns = adminConns
+	return config, nil
 }

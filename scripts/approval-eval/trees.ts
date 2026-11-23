@@ -586,14 +586,21 @@ function changeOf(value: unknown): ParentChange | null {
 }
 
 /**
- * The groups a corpus's build wrote. A corpus with no `trees.json`, or one of another shape, was
- * built before the build wrote them, and the claim's draw cannot run over it.
+ * The groups a corpus's build wrote, with the sha256 of the bytes they were read from, which a
+ * claim draw records so the next stage of its run reads the same file. A corpus with no
+ * `trees.json`, or one of another shape, was built before the build wrote them, and the claim's
+ * draw cannot run over it.
  */
-export async function readTrees(corpusDirectory: string): Promise<TreesFile> {
+export async function readTrees(
+  corpusDirectory: string
+): Promise<{ trees: TreesFile; sha256: string }> {
   const path = join(corpusDirectory, TREES_FILE);
   let parsed: unknown;
+  let sha256: string;
   try {
-    parsed = JSON.parse(await readFile(path, "utf8"));
+    const bytes = await readFile(path);
+    sha256 = createHash("sha256").update(bytes).digest("hex");
+    parsed = JSON.parse(bytes.toString("utf8"));
   } catch {
     throw new CorpusError(
       `${path} could not be read: the corpus was built before build-corpus.ts wrote its trees, ` +
@@ -627,5 +634,5 @@ export async function readTrees(corpusDirectory: string): Promise<TreesFile> {
       parentChanges: parentChanges as ParentChange[],
     });
   }
-  return { version: TREES_VERSION, throughEventId, groups };
+  return { trees: { version: TREES_VERSION, throughEventId, groups }, sha256 };
 }

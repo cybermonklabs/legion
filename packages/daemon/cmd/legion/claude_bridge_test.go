@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The command's refusals come before anything starts, each naming what is missing, as a usage error.
@@ -61,7 +62,7 @@ func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stdout.Close()
-	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 300\n", stdout)
+	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nexec sleep 86400\n", stdout)
 	state, left := p.hangUp()
 	// Claude Code's status is the bridge's: the stand-in ended by the bridge's SIGTERM.
 	if code := state.ExitCode(); code != 128+int(syscall.SIGTERM) {
@@ -84,7 +85,7 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := startClaudeBridge(t, "trap 'kill $!; cat "+toolCall+"; exit 0' TERM\n"+
-		"sleep 300 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
+		"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
 	state, left := p.hangUp()
 	if code := state.ExitCode(); code != 0 || !strings.Contains(p.logged(), "could not write to the shim") {
 		t.Errorf("the bridge given SIGHUP with no shim ended %v, want exit 0, Claude Code's status, after logging the frame it could not write:\n%s", state, p.logged())
@@ -165,6 +166,43 @@ func goneShim(t *testing.T) *os.File {
 	return stdout
 }
 
+// The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
+// with the error of the post, which quotes the daemon's URL as the pane names it
+// (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
+// neither the user name nor the query reaches the pane.
+func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
+	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stdout.Close()
+	// A port nothing listens on, so the report's post fails at its dial.
+	const daemon = "127.0.0.1:1"
+	bootToken := filepath.Join(t.TempDir(), "boot-token")
+	if err := os.WriteFile(bootToken, []byte("boot-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The stand-in starts a turn of its own and ends it, which the bridge reports, and waits.
+	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\n"+
+		`printf '%s\n' '{"type":"system","subtype":"init"}' '{"type":"result","subtype":"success","is_error":false}'`+"\n"+
+		"exec sleep 86400\n", stdout,
+		"LEGION_DAEMON_URL=http://legion-reader@"+daemon+"/daemon?token=planted-query-token-3",
+		"LEGION_BOOT_TOKEN_FILE="+bootToken, "LEGION_GENERATION=4")
+	p.await("the failed report logged", func() bool {
+		return strings.Contains(p.logged(), "could not report the outcome of turn 1")
+	})
+	p.hangUp()
+	logged := p.logged()
+	if want := `Post "http://` + daemon + `/daemon"`; !strings.Contains(logged, want) {
+		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
+	}
+	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {
+		if strings.Contains(logged, credential) {
+			t.Errorf("the bridge logged:\n%s\nwhich holds %q", logged, credential)
+		}
+	}
+}
+
 // claudeBridgeProcess is `legion claude-bridge` run as a process of its own (this package's test
 // binary as the real `legion`) on a stand-in Claude Code: a shell script that ignores its arguments
 // and touches $CLAUDE_STANDIN_READY once it is ready for the bridge's signals.
@@ -177,9 +215,9 @@ type claudeBridgeProcess struct {
 	stderr string // the file holding what the bridge logged
 }
 
-// startClaudeBridge starts the bridge on the stand-in script with stdout as its stdout, and returns
-// once its inbox is open and Claude Code is ready.
-func startClaudeBridge(t *testing.T, script string, stdout *os.File) *claudeBridgeProcess {
+// startClaudeBridge starts the bridge on the stand-in script with stdout as its stdout and env
+// added to its environment, and returns once its inbox is open and Claude Code is ready.
+func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...string) *claudeBridgeProcess {
 	t.Helper()
 	dir := t.TempDir()
 	// The bridge runs under a TMPDIR of the test's own, with room for its inbox's socket.
@@ -198,6 +236,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File) *claudeBrid
 	p.cmd = exec.Command(os.Args[0], "claude-bridge", "--", claude, "--resume", "s")
 	p.cmd.Env = append(os.Environ(), testMainEnv+"=1", "TMPDIR="+p.tmp, "CLAUDE_CONFIG_DIR="+t.TempDir(),
 		"LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7", "CLAUDE_STANDIN_READY="+ready)
+	p.cmd.Env = append(p.cmd.Env, env...)
 	p.cmd.Stdout, p.cmd.Stderr = stdout, stderr
 	// Its own process group, so the cleanup kills Claude Code with it whatever the bridge did.
 	p.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -229,16 +268,18 @@ func (p *claudeBridgeProcess) logged() string {
 	return string(raw)
 }
 
-// await waits, at most 30s and failing the test if the bridge exits first, until ok holds.
+// await waits until ok holds, failing the test if the bridge exits first. Its one bound is the
+// test binary's deadline less 30 s, so a step a loaded machine makes slow passes and an ok that
+// never holds still fails, naming what it waited for, before go test's -timeout panics.
 func (p *claudeBridgeProcess) await(what string, ok func() bool) {
 	p.t.Helper()
-	deadline := time.After(30 * time.Second)
+	deadline := time.After(testwait.Bounded(p.t, 1<<60, 30*time.Second))
 	for !ok() {
 		select {
 		case <-p.exited:
 			p.t.Fatalf("the bridge exited (%v) before %s:\n%s", p.cmd.ProcessState, what, p.logged())
 		case <-deadline:
-			p.t.Fatalf("not %s within 30s:\n%s", what, p.logged())
+			p.t.Fatalf("not %s by 30s before the test binary's deadline:\n%s", what, p.logged())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -265,14 +306,14 @@ func (p *claudeBridgeProcess) hangUp() (*os.ProcessState, []string) {
 	return p.exit("SIGHUP")
 }
 
-// exit waits, at most 30s after what ended the bridge, for it to exit; it answers how the bridge
-// exited and what it left of its inbox in TMPDIR.
+// exit waits for the bridge to exit after what ended it, with the test binary's deadline less 30 s
+// as its one bound; it answers how the bridge exited and what it left of its inbox in TMPDIR.
 func (p *claudeBridgeProcess) exit(after string) (*os.ProcessState, []string) {
 	p.t.Helper()
 	select {
 	case <-p.exited:
-	case <-time.After(30 * time.Second):
-		p.t.Fatalf("the bridge did not exit within 30s of %s:\n%s", after, p.logged())
+	case <-time.After(testwait.Bounded(p.t, 1<<60, 30*time.Second)):
+		p.t.Fatalf("the bridge did not exit after %s by 30s before the test binary's deadline:\n%s", after, p.logged())
 	}
 	left, _ := filepath.Glob(filepath.Join(p.tmp, "legion-claude-*"))
 	return p.cmd.ProcessState, left

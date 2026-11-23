@@ -119,7 +119,8 @@ type roomState struct {
 	// arms no second settlement for the document's pending-settlement row (onLoadDocument).
 	settleWarming bool
 	// warmed is the room instance a late departure's settlement loaded (withSettlementLoad): its
-	// warm-up's load, or the load the retire of that room made. It is retired once nothing holds
+	// warm-up's load, or the load the retire of that room made, unless a writer held the record's
+	// writer slot as that load took the record (onLoadDocument). It is retired once nothing holds
 	// the record (retireSettlementRoom). It is forgotten when a browser joins the room or a writer
 	// takes the record's writer slot, which take the room up (takeUpSettlementRoom, openLiveWrite),
 	// and once its load's count has ended, which only that room's leaving ygo's map allows

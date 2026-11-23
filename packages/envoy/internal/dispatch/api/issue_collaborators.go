@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // collaboratorReason is one way a person or an agent worked an issue. The values are bits so a
@@ -231,7 +231,7 @@ func (s *server) tallyCollaboratorEvents(
 
 // issueLegionAgents is the listener's Legion agent registry entries for the issue, or
 // "unavailable" when there is no listener or it did not answer within the client's window.
-func (s *server) issueLegionAgents(ctx context.Context, key string) ([]envoy.LegionAgent, string) {
+func (s *server) issueLegionAgents(ctx context.Context, key string) ([]listenerwire.LegionAgentAnswer, string) {
 	if s.deps.Envoy == nil {
 		return nil, legionRegistryUnavailable
 	}
@@ -248,7 +248,7 @@ func (s *server) issueLegionAgents(ctx context.Context, key string) ([]envoy.Leg
 // newest title the session stamped on anything it wrote (delivery.ResolveSessionTitles), which a
 // later write carrying none does not take away; null for a session that never stamped one.
 func (s *server) collaboratorAgents(
-	ctx context.Context, sessions map[string]*collaboratorTally, registry []envoy.LegionAgent,
+	ctx context.Context, sessions map[string]*collaboratorTally, registry []listenerwire.LegionAgentAnswer,
 ) ([]collaboratorAgent, error) {
 	agents := make([]collaboratorAgent, 0, len(sessions)+len(registry))
 	listed := make(map[string]struct{}, len(sessions)+len(registry))

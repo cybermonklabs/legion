@@ -944,7 +944,7 @@ readonly tunnel_port=16161
 # the ssh target each machine is then reached at. Every one of them is this test's own: the
 # fake curl answers the mint, the import and the profile, and the fake ssh runs what it is
 # given here.
-readonly login_account=lt-oslogin@theorem-agent-infra.iam.gserviceaccount.com
+readonly login_account=lt-oslogin@example-project.iam.gserviceaccount.com
 readonly oslogin_user=sa_101234567890123456789
 readonly app_target=$oslogin_user@10.138.0.21
 readonly gen_target=$oslogin_user@10.138.0.22
@@ -953,13 +953,14 @@ jq -n --arg remote "$remote" --arg loadgen "$bin/loadgen" --arg tunnel "$bin/ppr
   --argjson tunnel_port "$tunnel_port" --arg account "$login_account" \
   --arg dispatch "$dispatch_image" --arg listener "$listener_image" \
   --arg proxy "$proxy_image" --arg nats "$nats_image" '{
-  project: "theorem-agent-infra", zone: "us-west1-a",
+  project: "example-project", zone: "us-west1-a",
   token_url: "http://metadata.example/token",
   sqladmin: "https://sqladmin.googleapis.com",
   compute: "https://compute.googleapis.com",
   iamcredentials: "https://iamcredentials.googleapis.com",
   oslogin: "https://oslogin.googleapis.com",
   login_service_account: $account,
+  dispatch_service_account: "lt-dispatch@example-project.iam.gserviceaccount.com",
   vms: {
     app: {host: "10.138.0.21", instance: "lt-app"},
     generator: {host: "10.138.0.22", instance: "lt-gen"},
@@ -973,7 +974,7 @@ jq -n --arg remote "$remote" --arg loadgen "$bin/loadgen" --arg tunnel "$bin/ppr
     "load-listener-3": "generator", "load-listener-4": "generator"
   },
   cloudsql: {
-    instance: "lt-db", connection_name: "theorem-agent-infra:us-west1:lt-db",
+    instance: "lt-db", connection_name: "example-project:us-west1:lt-db",
     host: "10.139.0.3", port: 5432, user: "dispatch", password: "pg-secret",
     database: "dispatch", template: "dispatch_seed", sslmode: "require", vcpus: 16,
     expect: {databaseVersion: "POSTGRES_18", "settings.edition": "ENTERPRISE",
@@ -2303,7 +2304,7 @@ ssh_at=$(line_at 'ssh	')
 [ -n "$ssh_at" ] || fail "up reached no machine at all"
 ((mint_at < import_at)) && ((import_at < profile_at)) && ((profile_at < ssh_at)) ||
   fail "up's mint ($mint_at), import ($import_at) and profile ($profile_at) did not all come before its first ssh ($ssh_at)"
-grep -q "importSshPublicKey?projectId=theorem-agent-infra" "$fake/actions.log" ||
+grep -q "importSshPublicKey?projectId=example-project" "$fake/actions.log" ||
   fail "the key import does not name the project"
 grep -q "$login_account" "$fake/actions.log" ||
   fail "the OS Login calls do not name the deployment file's login service account"

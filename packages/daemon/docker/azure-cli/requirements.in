@@ -1,0 +1,7 @@
+# azure-cli, which the worker image installs under /opt/azure-cli (packages/daemon/docker/worker.Dockerfile,
+# the toolchain stage). The pin is the newest azure-cli release on PyPI when it was set (2.93.0, read
+# 2026-11-18); a bump reads PyPI again. requirements.txt beside this file is the lock the image installs with
+# --require-hashes and wheels only. It is the output of this command, run in this directory with the uv the
+# image pins (ARG UV_VERSION), and a bump runs it again:
+#   uv pip compile requirements.in --python-version 3.13 --python-platform x86_64-manylinux_2_28 --only-binary :all: --generate-hashes -o requirements.txt
+azure-cli==2.93.0

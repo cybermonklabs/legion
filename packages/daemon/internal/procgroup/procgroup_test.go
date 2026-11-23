@@ -102,8 +102,9 @@ func TestKilledIsWhetherTheContextsEndSignaledTheGroup(t *testing.T) {
 
 // A Cancel whose signal fails with anything but "already gone" still counts as the context's end
 // killing the command: exec then kills the process itself once WaitDelay has passed (watchCtx).
-// A killed that counted only a Cancel that succeeded would call a command its deadline ended an
-// exit of its own, exit -1, where the old reading of the deadline called it a timeout.
+// A killed that counted only a Cancel that succeeded would call a command its deadline ended one a
+// signal ended (`signal: killed`, procgroup.Err), where the old reading of the deadline called it a
+// timeout.
 func TestKilledCountsACancelWhoseSignalFailed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -128,7 +129,9 @@ func TestKilledCountsACancelWhoseSignalFailed(t *testing.T) {
 // cmd.ProcessState.ExitCode() for both. Had Err instead let exec.ErrWaitDelay through unchanged, a
 // caller would propagate it as a real error, reporting a command that actually exited 0 as
 // "run git: exec: WaitDelay expired before I/O complete" rather than reading its own exit code.
-// Anything else — the command never started, or Run failed some other way — is unchanged.
+// A command a signal ended is the exception: it has no exit of its own, so its *exec.ExitError is
+// returned unchanged, naming the signal. Anything else — the command never started, or Run failed
+// some other way — is unchanged.
 func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) {
 	exited := exec.Command("false").Run()
 	if exited == nil {
@@ -149,6 +152,88 @@ func TestErrRecognizesAnOrdinaryExitAndErrWaitDelayButNothingElse(t *testing.T) 
 	other := errors.New("workspace command is not a tool the daemon resolved at boot")
 	if err := Err(other); err != other {
 		t.Errorf("Err(%v) = %v, want it unchanged", other, err)
+	}
+	killed := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	var signalled *exec.ExitError
+	if !errors.As(killed, &signalled) || signalled.ProcessState.Exited() {
+		t.Fatalf("a shell that sent itself SIGTERM ran to %v, want an *exec.ExitError for a signal to test against", killed)
+	}
+	if err := Err(killed); err != killed || err.Error() != "signal: terminated" {
+		t.Errorf("Err(%v) = %v, want it unchanged (signal: terminated): a killed command has no exit to read", killed, err)
+	}
+	if err := Err(fmt.Errorf("run widget: %w", killed)); !errors.Is(err, killed) {
+		t.Errorf("Err on a wrapped signal death = %v, want it unchanged", err)
+	}
+}
+
+// Ended answers an exit of the command's own as its *exec.ExitError, with the status it chose, and
+// a signal's death as the signal's words and no ExitError, wrapped or not; anything else is
+// neither. Its String is the slot a failure's message fills: `exit 3`, or the signal's words. An
+// Ended that answered a signal's ExitError would hand its caller the status -1, which every such
+// caller once printed as `exit -1` or took for an answer.
+func TestEndedTellsAnExitOfTheCommandsOwnFromASignalsDeath(t *testing.T) {
+	exitedThree := exec.Command("sh", "-c", "exit 3").Run()
+	terminated := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	for _, row := range []struct {
+		name       string
+		err        error
+		wantStatus int // -2: no *exec.ExitError
+		wantSignal string
+		wantString string
+	}{
+		{"no error", nil, -2, "", ""},
+		{"an exit of its own", exitedThree, 3, "", "exit 3"},
+		{"a wrapped exit of its own", fmt.Errorf("run widget: %w", exitedThree), 3, "", "exit 3"},
+		{"a signal's death", terminated, -2, "signal: terminated", "signal: terminated"},
+		{"a wrapped signal's death", fmt.Errorf("run widget: %w", terminated), -2, "signal: terminated", "signal: terminated"},
+		{"a start that failed", exec.Command("/nonexistent/widget").Run(), -2, "", ""},
+		{"exec.ErrWaitDelay", exec.ErrWaitDelay, -2, "", ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			end := Ended(row.err)
+			status := -2
+			if end.Exited != nil {
+				status = end.Exited.ExitCode()
+			}
+			if status != row.wantStatus || end.Signal != row.wantSignal || end.String() != row.wantString {
+				t.Errorf("Ended(%v) = status %d, signal %q, String %q; want status %d (-2: no ExitError), signal %q, String %q",
+					row.err, status, end.Signal, end.String(), row.wantStatus, row.wantSignal, row.wantString)
+			}
+		})
+	}
+}
+
+// Said puts what a command a signal ended printed beneath the signal, trimmed and wrapped or not,
+// and leaves every other error as it is: an exit (its caller reads the output beside the status),
+// a start that failed, nil, and a signal's death that printed nothing or only space.
+func TestSaidPutsWhatACommandASignalEndedPrintedBeneathTheSignal(t *testing.T) {
+	terminated := exec.Command("sh", "-c", "kill -TERM $$").Run()
+	exitedThree := exec.Command("sh", "-c", "exit 3").Run()
+	notStarted := exec.Command("/nonexistent/widget").Run()
+	for _, row := range []struct {
+		name   string
+		err    error
+		output string
+		want   string // "" for err unchanged
+	}{
+		{"a signal's death that printed", terminated, "  refused: no server running\n", "signal: terminated\nrefused: no server running"},
+		{"a wrapped signal's death that printed", fmt.Errorf("run widget: %w", terminated), "refused", "run widget: signal: terminated\nrefused"},
+		{"a signal's death that printed only space", terminated, " \n", ""},
+		{"an exit that printed", exitedThree, "refused", ""},
+		{"a start that failed", notStarted, "refused", ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got := Said(row.err, row.output)
+			switch {
+			case row.want == "" && got != row.err:
+				t.Errorf("Said(%v, %q) = %v, want the error unchanged", row.err, row.output, got)
+			case row.want != "" && (got == nil || got.Error() != row.want || !errors.Is(got, terminated)):
+				t.Errorf("Said(%v, %q) = %v, want %q wrapping the signal's error", row.err, row.output, got, row.want)
+			}
+		})
+	}
+	if got := Said(nil, "refused"); got != nil {
+		t.Errorf("Said(nil, …) = %v, want nil", got)
 	}
 }
 

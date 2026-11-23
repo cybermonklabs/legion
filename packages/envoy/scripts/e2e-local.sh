@@ -933,7 +933,7 @@ wait_for_listener_record 'refused send' \
 # session live? The per-session registry read answers with the row GET /v1/sessions would carry,
 # and an id that never registered is refused with the exact reason Dispatch classifies on.
 # dispatch://INFRA-392 gives that refusal the state it was decided on beside the kept "no live
-# session <id>" prefix (noLiveSessionRefusal, cmd/listener/api.go), and a last_seen only when the
+# session <id>" prefix (listenerwire.NoLiveSessionRefusal), and a last_seen only when the
 # listener still remembers a registration: an id nothing ever registered is "gone" with none, so
 # the whole body is the error and that state.
 registry_status="$(curl -sS -o "$registry_session_response_file" -w '%{http_code}' \

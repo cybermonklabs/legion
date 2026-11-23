@@ -138,6 +138,19 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		s.SetAnnotations(annotations)
 		return objects
 	}
+	// ending records, on the Sandbox of objects, end as the end of the pod uid a launch replaced
+	// after it had ended (endedPodAnnotation), beside whatever else the Sandbox is annotated with.
+	ending := func(objects []k8sruntime.Object, uid, end string) []k8sruntime.Object {
+		s := objects[0].(*unstructured.Unstructured)
+		annotations := s.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[endedPodAnnotation], annotations[endedPodEndAnnotation] = uid, end
+		s.SetAnnotations(annotations)
+		return objects
+	}
+	evicted := runtime.PodEnd("Evicted", evictedMessage)
 	deleting := func(p *corev1.Pod) {
 		now := metav1.NewTime(rigNow)
 		p.DeletionTimestamp, p.Finalizers = &now, []string{"test/hold"}
@@ -160,6 +173,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		absent     []string
 		initFailed bool
 		displaced  bool
+		podEnd     string
 	}{
 		{row: "2 sandbox absent", want: runtime.Gone, detail: []string{"sandbox legion/" + name + " is absent"}},
 		{
@@ -187,6 +201,14 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			absent:  []string{"the daemon replaced"},
 		},
 		{
+			row:     "3 no pod while Suspended, after a launch replaced the recorded pod once it had ended, carries that pod's end",
+			objects: ending([]k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeSuspended, labels)}, recorded, evicted),
+			want:    runtime.Gone,
+			podEnd:  evicted,
+			detail:  []string{"operatingMode Suspended", "; pod " + recorded + " had ended before a launch replaced it: " + evicted},
+			absent:  []string{"the daemon replaced"},
+		},
+		{
 			row:     "3 a same-named pod the sandbox does not own is no pod of the claim's",
 			objects: withPod(modeRunning, nil, recorded, "uid-sandbox-earlier", running),
 			want:    runtime.Gone, detail: []string{"pod " + name + " (uid " + recorded + ") holds the name but is not controller-owned by the sandbox (uid " + sandboxUID + ")"},
@@ -202,6 +224,20 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			want:      runtime.NotRecordedProcess,
 			displaced: true,
 			detail:    []string{"is uid uid-pod-newer, not the recorded pod UID " + recorded, "the daemon replaced pod " + recorded},
+		},
+		{
+			row:     "4 another uid, after a launch replaced the recorded pod once it had ended, carries that pod's end",
+			objects: ending(withPod(modeRunning, nil, "uid-pod-newer", sandboxUID, running), recorded, evicted),
+			want:    runtime.NotRecordedProcess,
+			podEnd:  evicted,
+			detail:  []string{"is uid uid-pod-newer, not the recorded pod UID " + recorded, "; pod " + recorded + " had ended before a launch replaced it: " + evicted},
+			absent:  []string{"the daemon replaced"},
+		},
+		{
+			row:     "4 another uid, the Sandbox recording the end of an earlier pod, carries no end",
+			objects: ending(withPod(modeRunning, nil, "uid-pod-newer", sandboxUID, running), "uid-pod-earlier", evicted),
+			want:    runtime.NotRecordedProcess,
+			absent:  []string{"had ended", "Evicted"},
 		},
 		{
 			row:     "5 the pod's one container ended with the pod",
@@ -489,6 +525,9 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			}
 			if obs.Displaced != tc.displaced {
 				t.Errorf("Displaced = %t, want %t (detail: %s)", obs.Displaced, tc.displaced, obs.Detail)
+			}
+			if obs.PodEnd != tc.podEnd {
+				t.Errorf("PodEnd = %q, want %q (detail: %s)", obs.PodEnd, tc.podEnd, obs.Detail)
 			}
 			for _, want := range tc.detail {
 				if !strings.Contains(obs.Detail, want) {

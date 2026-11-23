@@ -3,7 +3,7 @@
 # plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1, the check
 # c-r1-chain). It is a script of its own because the window it measures is longer than any CI job
 # holds: Oh My Pi's own floor for suppressing a model whose error it cannot classify is five
-# minutes (packages/coding-agent/src/session/turn-recovery.ts:2029-2037 at the pinned tag), the
+# minutes (packages/coding-agent/src/session/turn-recovery.ts:2202-2209 at the pinned tag), the
 # plugin's cooldown here is ten, and ci.yaml's pi-legion job has timeout-minutes: 10, so the only
 # way to see that nothing goes back at the five-minute mark and something does after the tenth is
 # to spend the quarter of an hour.
@@ -111,25 +111,26 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-refusal-fallback.XXXXXXXX")
 timeout_hook=
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
-# cleanup reports how the run ended with rc: the script's own status for EXIT, 128 plus the
-# signal's number for INT and TERM, so an interrupted run never reports success. The panes are the
-# driver's own children and it stops them itself. natsd is this script's own, started under
-# start_process's `set -m` in a process group of its own, so nothing else ends it: it is stopped
-# by the pid start_process recorded, and `$work`, which holds only the natsd binary this run built
-# and its JetStream store, goes with it. The evidence directory is not touched: every log, the
-# transcript and each pane's Oh My Pi transcript live there and are the run's record.
+# cleanup prints how the run ended through lib/run-verdict.sh, which exits with rc: the script's own
+# status for EXIT, 128 plus the signal's number for INT and TERM. PASS needs rc 0 and run_end, the
+# script's last statement, so a run that a HUP ended, whose EXIT trap reads 0, reads FAIL as an
+# interrupted run does. The panes are the driver's own children and it stops them itself. natsd is
+# this script's own, started under start_process's `set -m` in a process group of its own, so
+# nothing else ends it: it is stopped by the pid start_process recorded, and `$work`, which holds
+# only the natsd binary this run built and its JetStream store, goes with it. The evidence
+# directory is not touched: every log, the transcript and each pane's Oh My Pi transcript live
+# there and are the run's record.
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM
   stop_pid "${nats_pid:-}"
   [ -z "${work:-}" ] || rm -rf "${work:?}"
-  if [ "$rc" -eq 0 ]; then
-    echo "refusal fallback e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "refusal fallback e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
-  exit "$rc"
+  run_verdict "$rc" \
+    "refusal fallback e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "refusal fallback e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -176,3 +177,4 @@ case "$status" in
   1) fail "an expectation failed (above)" ;;
   *) fail "the driver stopped before its expectations (status $status)" ;;
 esac
+run_end

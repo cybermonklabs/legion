@@ -162,6 +162,7 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) *cmdtest.LockedBuffer 
 		// The listener's clock, and its dead letter's publish, as main.go sets them.
 		now:               time.Now,
 		publishDeadLetter: d.client.PublishStoredAs,
+		keepPublish:       d.client.PublishStoredAck,
 	}
 	// The role lane's forwards run off the handler, as main.go wires them (wireRoleForwarder).
 	config = wireTestRoleForwarder(t, config)
@@ -237,9 +238,9 @@ func queueingDispatchMux(
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	broker := events.NewBroker()
 	caller := identity.HeaderIdentity{Header: rigUserHeader, People: people}
-	// The document service is built here rather than left to NewDeps so this test can shut it
-	// down: an issue's spec schedules a settlement, and a service nobody ended would still be
-	// warming that document after the database pool had closed.
+	// The test shuts the document service NewDeps requires down: an issue's spec schedules a
+	// settlement, and a service nobody ended would still be warming that document after the
+	// database pool had closed.
 	documents := docs.New(docs.Deps{
 		Store:     database,
 		Events:    broker,

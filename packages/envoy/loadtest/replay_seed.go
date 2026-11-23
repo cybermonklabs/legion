@@ -76,7 +76,7 @@ func runReplaySeed(args []string) error {
 	workers := fs.Int("workers", 3, "issues seeded in parallel")
 	opsLog := fs.String("ops-log", "", "CSV file with one row per write")
 	rngSeed := fs.Uint64("rng-seed", 1, "seed of the fallback-anchor and file-byte generators")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {

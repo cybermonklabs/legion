@@ -106,7 +106,7 @@ func assertTableModelMatchesGoldmark(t *testing.T, name string, lines *gmtext.Se
 	// Goldmark's transformer, followed by the splits pmdoc makes in the table it forms
 	// (splitAtEvenEscapedPipes), and the paragraph it leaves of the text before a table goldmark
 	// reads none of (textBeforeTable). It reads a copy of lines, which keep their segments.
-	lazyTableRows{table: tableTransformer}.transform(trial, rows, gmtext.NewReader(source), parser.NewContext())
+	lazyTableRows{table: extension.NewTableParagraphTransformer()}.transform(trial, rows, gmtext.NewReader(source), parser.NewContext())
 	var table *extensionast.Table
 	for child := holder.FirstChild(); child != nil; child = child.NextSibling() {
 		if formed, ok := child.(*extensionast.Table); ok {
