@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reopenedPool opens a second pool on pool's database, from the configuration pool was opened
@@ -83,20 +85,19 @@ func (c *StatementCounter) Count() int64 {
 	return c.count.Load()
 }
 
-// AwaitQuiet waits until counter has counted no statement for quiet, failing once within passes.
-func AwaitQuiet(t testing.TB, counter *StatementCounter, quiet, within time.Duration) {
+// AwaitQuiet waits until counter has counted no statement for quiet, reading it every 20 ms. quiet
+// is the length of the calm the test needs, not a bound: the wait ends only once the statements
+// have stopped that long, however long they run first. Its one bound is the test binary's deadline
+// less testwait's margin, where it fails naming the calm it waited for and the count it last read.
+func AwaitQuiet(t *testing.T, counter *StatementCounter, quiet time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(within)
 	last, since := counter.Count(), time.Now()
-	for time.Since(since) < quiet {
-		if time.Now().After(deadline) {
-			t.Fatalf("statements did not stop for %v within %v", quiet, within)
-		}
-		time.Sleep(20 * time.Millisecond)
+	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("statements to stop for %v (the count last read)", quiet), func() (int64, bool) {
 		if n := counter.Count(); n != last {
 			last, since = n, time.Now()
 		}
-	}
+		return last, time.Since(since) >= quiet
+	})
 }
 
 // RequireNoStatements fails if counter counts any statement over window.
