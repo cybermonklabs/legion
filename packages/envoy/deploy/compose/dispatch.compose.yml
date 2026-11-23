@@ -73,11 +73,6 @@ services:
       # audience, or the token file mounted below at /run/envoy-listener/token.
       ENVOY_ACCOUNT_GOOGLE_AUDIENCE: ${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-}
       ENVOY_ACCOUNT_TOKEN_FILE: ${ENVOY_ACCOUNT_TOKEN_FILE:+/run/envoy-listener/token}
-      # Optional boot seed for mappings absent from the dashboard. Stored
-      # repository mappings are authoritative; DISPATCH_DEFAULT_PROJECT catches
-      # external repositories with no stored mapping.
-      DISPATCH_REPO_PROJECTS: ${DISPATCH_REPO_PROJECTS:-}
-      DISPATCH_DEFAULT_PROJECT: ${DISPATCH_DEFAULT_PROJECT:-}
       # Session cookies are Secure by default; set this when serving the
       # OAuth dashboard over plain HTTP (local/tailnet use).
       DISPATCH_INSECURE_COOKIE: ${DISPATCH_INSECURE_COOKIE:-}

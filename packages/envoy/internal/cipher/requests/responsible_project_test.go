@@ -32,7 +32,9 @@ func wantListed(t *testing.T, m *Machine, recordID string, all, want []string) {
 // none of these rows was on the reader's list, and none asked Dispatch anything. Each now asks
 // whether its own person may see it, but all of them share listFallbackBound: once it is spent,
 // the rest are left off without a question, so the list costs at most the bound's worth of
-// questions, not two per row. It counts the questions Dispatch was asked, not time. Every row the
+// questions, not two per row. It counts the questions Dispatch was asked about projects, not time;
+// the reader's one member-kind read, made before the clock starts (listApprovesSecrets), is
+// answered at once and counted apart (kindApart). Every row the
 // clock left off is off exactly the list it should be off, since its responsible person may see
 // it, so the list writes one line counting them and no line for any one of them.
 func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
@@ -42,13 +44,13 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	for i := range rows {
 		operator := fmt.Sprintf("op%02d@example.com", i)
 		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-slow-%02d", i), new(operator), nil)
-		if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
+		if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), ""); err != nil || req.State != "pending" {
 			t.Fatalf("Create = %+v, %v; want it pending", req, err)
 		}
 	}
 	answerFrom(t, m, dispatchRows(publicTeam))
-	var asked atomic.Int32
-	m.Projects = slowAccess{inner: m.Projects, takes: takes, asked: &asked}
+	var asked, kinds atomic.Int32
+	m.Projects = kindApart{slowAccess: slowAccess{inner: m.Projects, takes: takes, asked: &asked}, inner: m.Projects, kinds: &kinds}
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	listed, err := m.PendingForApprover(t.Context(), insider, PendingStates{})
@@ -56,6 +58,9 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 		t.Fatalf("PendingForApprover(%s) = %d rows, %v; want none: every row is another person's, who may see it", insider, len(listed), err)
 	}
 	t.Logf("the list asked Dispatch %d questions for %d other people's rows", asked.Load(), rows)
+	if n := kinds.Load(); n != 1 {
+		t.Errorf("the list read %s's member kind %d times; want once", insider, n)
+	}
 	// Without the clock the list asks two questions per row (40 here, 12 s). With it, 300 ms
 	// questions start at 0, 300, ..., 1800 ms inside 2 s: 7, the last cut short. A slow box only
 	// lowers the count, since every question takes at least its 300 ms. The test does not read
@@ -75,6 +80,19 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	if err != nil || n < rows-most/2 || n > rows || cut[0]["reader"] != insider || cut[0]["level"] != "WARN" {
 		t.Fatalf("the list's count line = %v; want WARN, reader %s and from %d to %d rows", cut[0], insider, rows-most/2, rows)
 	}
+}
+
+// kindApart is slowAccess with each member-kind read answered at once by inner and counted in
+// kinds, apart from the questions about projects slowAccess counts.
+type kindApart struct {
+	slowAccess
+	inner projectaccess.Access
+	kinds *atomic.Int32
+}
+
+func (k kindApart) MemberKind(ctx context.Context, person string) (string, error) {
+	k.kinds.Add(1)
+	return k.inner.MemberKind(ctx, person)
 }
 
 // failForPerson answers every access question about one person with an error, as a Dispatch that
@@ -105,7 +123,7 @@ func (f failForPerson) States(ctx context.Context, projects []string) (map[strin
 func strandedRow(t *testing.T) (*Machine, string) {
 	t.Helper()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || req.RecordID == nil || req.State != "pending" {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 	}
@@ -154,9 +172,12 @@ func wantUnreadLine(t *testing.T, capture *logtest.Recorder, recordID string) {
 //   - outsider's own read fails: the row stays off outsider's list, though the responsible
 //     person's read would answer;
 //   - the responsible person's read fails: the row stays off insider's list;
-//   - an outage: the stranded row is off insider's list;
-//   - an outage, read on the responsible person's own list: the row is off it, and the line is
-//     the one the reader's own rows write (logRowUnanswered), not the fallback's.
+//   - an outage of Dispatch's project route: the stranded row is off insider's list;
+//   - the same outage, read on the responsible person's own list: the row is off it, and the line
+//     is the one the reader's own rows write (logRowUnanswered), not the fallback's.
+//
+// Dispatch still answers each reader's member kind in both outages; a list whose reader's kind
+// cannot be read holds none of their secret requests (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestTheFallbackFailsClosed(t *testing.T) {
 	t.Run("control", func(t *testing.T) {
 		m, stranded := strandedRow(t)
@@ -184,7 +205,7 @@ func TestTheFallbackFailsClosed(t *testing.T) {
 	t.Run("an outage", func(t *testing.T) {
 		m, stranded := strandedRow(t)
 		dispatch := answerFrom(t, m, dispatchRows(privateTeam(insider)))
-		dispatch.SetDown(true)
+		dispatch.SetProjectsDown(true)
 		capture := &logtest.Recorder{}
 		logtest.SetDefault(t, capture)
 		wantListed(t, m, stranded, []string{insider}, nil)
@@ -193,7 +214,7 @@ func TestTheFallbackFailsClosed(t *testing.T) {
 	t.Run("an outage, on the responsible person's own list", func(t *testing.T) {
 		m, stranded := strandedRow(t)
 		dispatch := answerFrom(t, m, dispatchRows(privateTeam(insider)))
-		dispatch.SetDown(true)
+		dispatch.SetProjectsDown(true)
 		capture := &logtest.Recorder{}
 		logtest.SetDefault(t, capture)
 		wantListed(t, m, stranded, []string{fixtureOperator}, nil)
@@ -210,14 +231,14 @@ func TestTheFallbackFailsClosed(t *testing.T) {
 func TestTheReadersOwnRowsAreNotCutByTheClock(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	mine, mineKey := newEnrollment(t, m.Store, "session", "box-own-row", new(insider), nil)
-	own, err := m.Create(t.Context(), mine, signRequest(t, m, mineKey, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	own, err := m.Create(t.Context(), mine, signRequest(t, m, mineKey, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || own.RecordID == nil {
 		t.Fatalf("Create(own) = %+v, %v; want it pending", own, err)
 	}
 	var others []string
 	for i := range 20 {
 		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-other-%02d", i), new(fmt.Sprintf("op%02d@example.com", i)), nil)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil || req.State != "pending" {
 			t.Fatalf("Create = %+v, %v; want it pending", req, err)
 		}
@@ -244,7 +265,7 @@ func TestTheReadersOwnRowsAreNotCutByTheClock(t *testing.T) {
 // operator's own list holds the row and asks about the operator.
 func TestTheReadersMaySeeIsReadFirst(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || req.RecordID == nil || req.State != "pending" {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 	}
@@ -279,7 +300,7 @@ func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing
 	t.Run("an outsider's request naming a private project's issue", func(t *testing.T) {
 		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 		out, outKey := newEnrollment(t, m.Store, "session", "box-r-outsider", new(outsider), nil)
-		req, err := m.Create(t.Context(), out, signRequest(t, m, outKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), out, signRequest(t, m, outKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil || req.State != "pending" {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 		}
@@ -287,7 +308,7 @@ func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing
 	})
 	t.Run("a project that turns private under its responsible person", func(t *testing.T) {
 		m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil || req.State != "pending" {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 		}
@@ -297,7 +318,7 @@ func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing
 	})
 	t.Run("a responsible person on the private project (control)", func(t *testing.T) {
 		m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "")
 		if err != nil || req.RecordID == nil || req.State != "pending" {
 			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 		}

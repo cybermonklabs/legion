@@ -333,7 +333,10 @@ load_entries() {
   # a listing that may have stopped at the 1,000 entries GitHub lists at most. GitHub lists a
   # submodule as a file with no download URL, so that is refused too.
   if ! names=$(gh api "repos/${deployment}/contents/legion/projects" --jq '.[] | [.type, (if .download_url == null then "none" else "url" end), .name] | @tsv' 2>"$work/err"); then
-    if ! grep -qF 'HTTP 404' "$work/err"; then
+    # A missing directory is gh's own last line for a 404, `gh: <the answer's message> (HTTP 404)`,
+    # as gh 2.98.0 prints it for a path GitHub does not hold; any other refusal, one whose words
+    # quote an HTTP 404 included, is a listing that failed.
+    if ! [[ $(tail -n 1 "$work/err") =~ ^gh:\ .*\(HTTP\ 404\)$ ]]; then
       entries_state=failed
       entries_error="cannot list ${deployment} legion/projects: $(first_line "$work/err")"
       return 0

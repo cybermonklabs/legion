@@ -17,7 +17,8 @@
 # the output alone reads the same in both cases. Only a pull request can be gated that way - on
 # every other event the label term of those expressions is already true, so the output is the
 # filter's verdict and this reading never fires. The verdict itself does not move: such a job
-# was not selected, and ci-ok accepts its skip exactly as before.
+# was not selected, and ci-ok accepts its skip exactly as before. `gated` marks it, so ci-ok.sh
+# can name it apart from the jobs that ran: its paths chose it and it did not run at this head.
 def selection($job; $map; $out; $pr; $event):
   $map[$job] as $output
   | ($out[$output] // "unset") as $value
@@ -25,7 +26,7 @@ def selection($job; $map; $out; $pr; $event):
   | (($out.filter_verdicts | try (fromjson | objects) catch empty) // {}) as $verdicts
   | if $value != "true" then
       if $event == "pull_request" and $verdicts[$output] == "true" then
-        {selected: false, why: "selected by paths, gated by full-ci: runs in the merge queue"}
+        {selected: false, gated: true, why: "selected by paths, gated by full-ci: runs in the merge queue"}
       else {selected: false, why: "needs.changes.outputs.\($output) is \($value)"}
       end
     elif $pr_only and $event != "pull_request" then

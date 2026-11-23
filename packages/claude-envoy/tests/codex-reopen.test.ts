@@ -201,6 +201,8 @@ test(
       prepare: codexSession,
       awaitRegistration: false,
       gateOpen: false,
+      // An address of its own (fakeHost): the count below is the one a stray client inflates.
+      brokerHost: "127.86.0.4",
     })
     const { broker, server, stderr, state } = run
     try {

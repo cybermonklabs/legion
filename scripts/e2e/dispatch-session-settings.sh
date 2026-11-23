@@ -91,12 +91,13 @@ holder_pid=
 # database_created, which the `create database` sets, and never names a database that is not there.
 database=
 database_created=
-ok=
 
 note() { echo "   $*"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
 . "$root/scripts/e2e/lib/dispatch-identity.sh"
 
@@ -112,6 +113,8 @@ stop_omp() {
   stop_pid "$1"
 }
 
+# cleanup stops what the run started, drops its database, and prints its last line through
+# lib/run-verdict.sh: PASS only for a run that reached run_end, the script's last statement.
 cleanup() {
   local status=$? pid start
   set +e
@@ -132,11 +135,9 @@ cleanup() {
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
-  if [ "$status" -eq 0 ] && [ -n "$ok" ]; then
-    echo "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "dispatch session settings e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "dispatch session settings e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -317,4 +318,4 @@ note "setup took $((SECONDS - started))s"
 check=checks
 ANTHROPIC_API_KEY=$anthropic_key OPENAI_API_KEY=$openai_key bun "$driver" run "$work/rig.json" ||
   fail "the driver failed (the failing check is named above)"
-ok=1
+run_end

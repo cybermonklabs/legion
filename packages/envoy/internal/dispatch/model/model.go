@@ -278,8 +278,13 @@ type Project struct {
 	// person must approve before the tree's work runs. The empty list is a deployment that
 	// gates nothing and a deployment that has not published yet alike: neither holds a step
 	// waiting for a person, so a reader need not tell them apart.
-	GatedSteps []string  `json:"gated_steps"`
-	CreatedAt  time.Time `json:"created_at"`
+	GatedSteps []string `json:"gated_steps"`
+	// DefaultRepo is the repository, owner/name, an issue of this project resolves to when
+	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
+	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
+	// carries no member, so a client that does not know the member reads the same project.
+	DefaultRepo *string   `json:"default_repo,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
@@ -436,12 +441,11 @@ type PriorityIssue struct {
 	MovedBy   *Actor         `json:"moved_by"`
 }
 
-// RepoProject assigns an external repository to a native Dispatch project. Default marks the one
-// mapping of the project an issue with no repository of its own, and none on its parent chain,
-// resolves to; at most one mapping of a project is its default. RenamedTo is the full
-// `owner/name` this repository is called today, null for one that was never renamed: Dispatch
-// holds both names of one repository, and the canonical name is what this field reads, else the
-// repository's own (refs.CanonicalRepo).
+// RepoProject is one row of repo_projects. GET /api/v1/settings/repo-projects answers the rows
+// as the last release left them, and nothing writes them now. Default marks the row that was its
+// project's default repository. This release's migration copied it to the project's
+// default_repo. RenamedTo is the full `owner/name` this repository is called today, null for one
+// that was never renamed: the boot reads these pairs once (store.ReadRepoRenames).
 type RepoProject struct {
 	Repo      string    `json:"repo"`
 	Project   string    `json:"project"`
@@ -581,10 +585,10 @@ type Issue struct {
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
-	// or not a project maps it; nil when it inherits.
+	// or not it is any project's default; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default mapping, else nil.
+	// nearest ancestor's, else its project's default repository (Project.DefaultRepo), else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -3484,17 +3488,37 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one artifact in an issue's reference closure.
+// ReferenceMember is one document of an issue's references read: a document its own content
+// links to, always at depth 1. It stays for the clients that read members, beside Links.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
 	Depth    int          `json:"depth"`
 	Via      ReferenceVia `json:"via"`
 }
 
-// IssueReferences is an issue's artifact reference closure.
+// IssueReferences is an issue's references read, one hop in each direction: Links and LinkedFrom,
+// with Members, the documents of Links, and Truncated, always false, kept for the clients that
+// read them.
 type IssueReferences struct {
 	Members   []ReferenceMember `json:"members"`
 	Truncated bool              `json:"truncated"`
+	// Links is every node the issue's own content links to, one hop out. This build writes []
+	// when there is none, never null.
+	Links []ReferenceLink `json:"links"`
+	// LinkedFrom is every node that links to the issue or to its own content, one hop in. This
+	// build writes [] when there is none, never null.
+	LinkedFrom []ReferenceLink `json:"linked_from"`
+}
+
+// ReferenceLink is one node at the other end of a link of an issue's references read: the node as
+// the graph read names it; its name, the words the graph read shows for it (a document's name, an
+// issue's title, the head of an item's text); the distinct kinds of its links, in order; and its
+// via, the lowest of the issue's nodes at the near end of those links.
+type ReferenceLink struct {
+	Node  GraphNode    `json:"node"`
+	Name  string       `json:"name"`
+	Kinds []string     `json:"kinds"`
+	Via   ReferenceVia `json:"via"`
 }
 
 // OutgoingReference is a target edge from an artifact.

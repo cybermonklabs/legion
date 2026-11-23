@@ -140,10 +140,12 @@ func startListenerSubscription(client *bus.Client, consumer string, handler nats
 		// The deliver subject is a random inbox, not a derivable name: on a
 		// shared NATS account a predictable subject would let any client
 		// hold interest on it — shadow-reading deliveries and making the
-		// consumer look push-bound so the listener could never attach.
+		// consumer look push-bound so the listener could never attach. It is
+		// the connection's own inbox, under the connection's inbox prefix, which
+		// an edge listener's grant subscribes in place of every reply inbox.
 		config := nats.ConsumerConfig{
 			Durable:        consumer,
-			DeliverSubject: nats.NewInbox(),
+			DeliverSubject: client.Connection().NewInbox(),
 		}
 		applyListenerConsumerPolicy(&config, subjects)
 		if _, err := client.JS().AddConsumer(bus.Stream, &config); err != nil {

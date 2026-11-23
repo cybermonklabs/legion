@@ -1,0 +1,10 @@
+kind: Fixed
+custom:
+  Issue: pr4891
+body: |-
+  The Claude Code plugin's `bin/dispatch` runs when it is started by a relative path, such as
+  `bin/dispatch` from the plugin's directory, in a shell that exports `CDPATH`. It exited 2 there,
+  saying `dist/dispatch.js` was missing: a `cd` that `CDPATH` resolved printed the directory, which
+  the shim then took as part of its own path. `scripts/verify-build.sh`,
+  `scripts/smoke-session-title.sh` and `scripts/smoke-clear-rebind.sh` clear `CDPATH` for the same
+  `cd`.

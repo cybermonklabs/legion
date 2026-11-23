@@ -155,6 +155,10 @@ type sessionDelivery struct {
 	// consumers has one (startSessionRelays sets it before /v1 opens, and main's start ends when
 	// that relay cannot start), so a registration answered consumer is relayed.
 	relay sessionRelay
+	// admissions is, on an edge listener, the projects of the token each session's latest
+	// registration here was admitted on (subscribeHandler), which the relay holds the session's
+	// frames to (edge_frames.go). Every other listener records none.
+	admissions edgeAdmissions
 	// marks is the last mark taken (mark).
 	marks atomic.Uint64
 	// now is the clock of the no-grant backoff; time.Now unless a test sets it.
@@ -252,6 +256,21 @@ type sessionDelivery struct {
 	noGrantLogged bool
 }
 
+// admitHeld records the projects of r's broker token as sessionID's latest admission at the edge
+// (edgeAdmissions.admit), so its relay holds its frames to those projects and relays nothing to a
+// session it admitted none of. It does nothing for a request no edge listener admitted
+// (heldProjects), which every listener but an edge one is, nor for a nil delivery (a listener built
+// without one). A registration and a role-claim refresh each record the admission of their own
+// token so the relay they start here has it before the session's next registration.
+func (d *sessionDelivery) admitHeld(r *http.Request, sessionID string) {
+	if d == nil {
+		return
+	}
+	if projects, held := heldProjects(r); held {
+		d.admissions.admit(sessionID, projects)
+	}
+}
+
 // connectSessionDelivery opens the session-consumer connection (bus.ConnectSessionConsumers) on
 // urls, with inactiveThreshold the threshold every consumer created on it carries: it is given
 // here, at the connection, because the threshold must be in hand before the first consumer is
@@ -261,12 +280,13 @@ type sessionDelivery struct {
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
 // whose read of the deployed stream's subjects both a registration's stored topics and every
-// consumer filter are judged on (sessionDelivery.stream).
+// consumer filter are judged on (sessionDelivery.stream). options are the connection's own beside
+// its name: in edge mode, the listener's inbox prefix (edgeGrant.connectOptions).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
-func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
-	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
+func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, options ...bus.ConnectOption) (*sessionDelivery, error) {
+	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog(), options...)
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +551,13 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	filter, err := m.storedRowFilter(ctx, d.registry, sessionID, topics)
+	if err != nil {
+		m.logger.Warn("listener could not judge the topics of a session whose consumer it is repairing",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
+		return registeredConsumer{}, registeredReadFailed
+	}
+	return registeredConsumer{filter: filter, start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -1004,13 +1030,24 @@ func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []strin
 }
 
 // storedRowFilter is sessionConsumerFilter of topics, sessionID's interest row as read from
-// registry, and counts each topic of the filter that is in the old form of its name
-// (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of the old
-// form for as long as the row holds one. Every read of a stored row into a filter comes through
-// here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
-// does not, since the subscribe route counted its old forms as it took them.
-func (m *sessionDelivery) storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
+// registry, less each topic reaching a private stream subject that is not the session's own
+// (store.Registry.FollowableTopics), and counts each topic of the filter that is in the old form of
+// its name (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of
+// the old form for as long as the row holds one. Every read of a stored row into a filter comes
+// through here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's
+// own plan does not, since the subscribe route judged its topics and counted their old forms as
+// it took them (store.MergedTopics). A row is a record any writer of the bucket can store, so the
+// rule a registration applies is applied to what is read here again: a row under the session's own
+// key that names another session's inbox would otherwise put that session's messages in this
+// session's consumer at its next restart. The controller roles that rule reads are read within
+// ctx, and an error is returned for a read that did not answer or failed: the caller builds no
+// filter then.
+func (m *sessionDelivery) storedRowFilter(ctx context.Context, registry *store.Registry, sessionID string, topics []string) ([]string, error) {
+	topics, err := registry.FollowableTopics(ctx, sessionID, topics)
+	if err != nil {
+		return nil, err
+	}
 	filter := m.sessionConsumerFilter(sessionID, topics)
 	registry.CountStoredLegacyTopics(sessionID, filter)
-	return filter
+	return filter, nil
 }

@@ -431,7 +431,9 @@ func Quiet(e model.Event) bool {
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
 		// decision and agreed with it, which asks its agent for nothing. A priority's write is
 		// the deployment's own configuration of what work advances, which open pages refetch on
-		// and nobody is asked anything by.
+		// and nobody is asked anything by. This build writes no settings.repo_project.updated;
+		// the case stays for the events and outbox rows an earlier build wrote
+		// (outbox/publisher.go).
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was

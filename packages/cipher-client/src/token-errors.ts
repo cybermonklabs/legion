@@ -35,6 +35,15 @@ const INVALID_GRANT = "invalid_grant";
 /** What the broker answers a trade naming a person Dispatch holds (`oauthwire.MembershipHeld`). */
 const MEMBERSHIP_HELD = "membership_held";
 
+/** How the broker's OAuth library ends its `invalid_request` to a subject token it no longer
+ *  honours: one revoked, or one whose record is already removed. */
+const TOKEN_NOT_VALID = "Token is not valid or has expired.";
+
+/** The hint that ends the broker's `invalid_grant` to a trade of a machine login's access token
+ *  once that login has ended (`oauth/exchange.go`); the broker's library writes its own sentence
+ *  before it (`oauth/testdata/refusal-descriptions.json`). */
+const MACHINE_LOGIN_ENDED = "The machine login the subject token belongs to has ended.";
+
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
@@ -57,6 +66,14 @@ export class BrokerRefusedError extends Error {
    *  The same words under another code, or anywhere but at the start, are some other refusal.
    *  Read from the description as the broker sent it, which is then kept nowhere. */
   readonly podSessionUnregistered: boolean;
+  /** Whether this is the broker's refusal of a subject token it no longer honours, and of nothing
+   *  else: `400 invalid_request` ending "Token is not valid or has expired." (a token revoked, or
+   *  already removed), or `400 invalid_grant` ending "The machine login the subject token belongs
+   *  to has ended.", each after the library's own sentence. A token past its expiry whose record
+   *  still stands is `401 invalid_token`, which is not one: the refresh margin before the expiry
+   *  exists to avoid it. A refusal of the trade's session or projects uses the same codes and is
+   *  not one either. Read from the description as the broker sent it, which is then kept nowhere. */
+  readonly subjectNotHonoured: boolean;
 
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
    *  person's sign-in on it; `context` is what the trade sent that a known refusal may name. */
@@ -86,6 +103,10 @@ export class BrokerRefusedError extends Error {
     this.said = said;
     this.podSessionUnregistered =
       code === INVALID_GRANT && description.startsWith(`${POD_SESSION_NOT_REGISTERED}:`);
+    this.subjectNotHonoured =
+      status === 400 &&
+      ((code === "invalid_request" && description.endsWith(TOKEN_NOT_VALID)) ||
+        (code === INVALID_GRANT && description.endsWith(MACHINE_LOGIN_ENDED)));
   }
 
   /**
@@ -228,15 +249,56 @@ export class SignInEndedError extends Error {
   }
 }
 
+/** The command that logs a machine in at the broker's device grant, which every refusal a new
+ *  device login cures names (`device-login.ts`). */
+export const DEVICE_LOGIN_COMMAND = "dispatch login --device";
+
+/**
+ * A device login the broker no longer honours: its refresh was answered `invalid_grant`, because
+ * its credential was revoked or ran out, or its refresh token was presented again after its
+ * rotation's grace, which revokes the login (`oauthstore.Store.RevokeRefreshToken`). Like a
+ * sign-in the issuer ended it is final ({@link isFinalRefusal}): only a new
+ * {@link DEVICE_LOGIN_COMMAND} cures it. `login` names the login as its source describes it, and
+ * it keeps no cause: the library's error holds the broker's answer.
+ */
+export class DeviceLoginEndedError extends Error {
+  constructor(login: string) {
+    super(
+      `the secrets broker no longer honours ${login}: it was revoked or ran out; run: ${DEVICE_LOGIN_COMMAND}`
+    );
+    this.name = "DeviceLoginEndedError";
+  }
+}
+
+/**
+ * A trade whose time ran out while its identity's source still waited for a lock that another
+ * process of this machine holds (a device login's, `device-login.ts`): no request of the trade
+ * reached the broker, so its text names the lock, never the broker. `lock` names the lock, and
+ * `cause` is the signal's reason. A later trade cures it, once the holder lets go or its lock is
+ * stale and taken.
+ */
+export class LockHeldError extends Error {
+  constructor(lock: string, options?: ErrorOptions) {
+    super(
+      `another process of this machine held ${lock} for all of this trade's time, so nothing was sent to the secrets broker`,
+      options
+    );
+    this.name = "LockHeldError";
+  }
+}
+
 /**
  * Whether `error` ends the identity a client trades for good: a broker's refusal no retry can
- * cure (`BrokerRefusedError.permanent`), or a sign-in the issuer has ended
- * ({@link SignInEndedError}). A client drops the token in hand on one rather than answer it
+ * cure (`BrokerRefusedError.permanent`), a sign-in the issuer has ended
+ * ({@link SignInEndedError}), or a device login the broker has ended
+ * ({@link DeviceLoginEndedError}). A client drops the token in hand on one rather than answer it
  * until it lapses, and a caller that remembers refusals remembers these alone: remembering the
  * broker's 429 or a clock-skewed proof would stop a client a later trade would have answered.
  */
 export function isFinalRefusal(error: unknown): boolean {
   return (
-    (error instanceof BrokerRefusedError && error.permanent) || error instanceof SignInEndedError
+    (error instanceof BrokerRefusedError && error.permanent) ||
+    error instanceof SignInEndedError ||
+    error instanceof DeviceLoginEndedError
   );
 }

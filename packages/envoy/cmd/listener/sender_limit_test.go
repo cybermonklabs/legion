@@ -935,6 +935,37 @@ func TestSenderLimitCost(t *testing.T) {
 		rig.requireCount(t, sender, false)
 	})
 
+	// A keep whose first send went out unanswered and whose resend the stream refused as in
+	// process may have stored the copy itself, and here it did: the next send's duplicate names
+	// the keep's own copy, which is no repeat (publishPastInProcess answers it Resent), so the
+	// 202 costs one, as a copy the keep stored does, and the wake's mark is not forgiven.
+	t.Run("role message kept after its own unanswered send stored the copy (202) costs one", func(t *testing.T) {
+		rig.limit(4, 1)
+		const sender, role = "ses_cost_kept_own_send", "cost-kept-own-send"
+		original := rig.deps.delivery
+		t.Cleanup(func() { rig.deps.delivery = original })
+		delivery := *original
+		sends := 0
+		delivery.keepPublish = func(ctx context.Context, subject string, item contracts.Envelope, msgID string) (bus.StoredAck, error) {
+			sends++
+			ack, err := original.keepPublish(ctx, subject, item, msgID)
+			if sends == 1 && err == nil {
+				return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrUnacknowledged,
+					fmt.Errorf("%w: nats: duplicate message id is in process", bus.ErrDuplicateInProcess))
+			}
+			return ack, err
+		}
+		rig.deps.delivery = &delivery
+		kept := rig.publishFrom(t, sender, contracts.RoleTopicPrefix+role, nil)
+		kept.requireStatus(t, "the kept message whose first send went unanswered", http.StatusAccepted)
+		if !kept.Kept || sends != 2 {
+			t.Fatalf("the message answered %s after %d keep sends, want kept after two", kept.raw, sends)
+		}
+		kept.requireNamed(t, "the kept message whose first send went unanswered", sender)
+		awaitWake(t, rig.wakes, wakeKindRole, role)
+		rig.requireCount(t, sender, false)
+	})
+
 	t.Run("role message with no holder and keep false (404 after a wake report) costs one", func(t *testing.T) {
 		rig.limit(4, 1)
 		const sender, role = "ses_cost_unkept", "cost-unkept"

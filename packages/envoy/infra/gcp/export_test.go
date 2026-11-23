@@ -3,6 +3,15 @@ package gcp
 // CloudConfig is the hub VM's cloud-config document, for the tests outside the package.
 type CloudConfig = cloudConfig
 
+// ShellCommand starts a shell under its test's deadline, and ScriptContext and UntilTheTestDeadline
+// are the deadlines a test gives any other command it starts (shell_test.go), for the tests outside
+// the package.
+var (
+	ShellCommand         = shellCommand
+	ScriptContext        = scriptContext
+	UntilTheTestDeadline = untilTheTestDeadline
+)
+
 // ResolveNatsHub is newSettings' refusal, for gcp_test's refusal table, which needs no engine.
 func ResolveNatsHub(args *NatsHubArgs) error {
 	_, err := newSettings(args)

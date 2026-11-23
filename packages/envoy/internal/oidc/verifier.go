@@ -134,7 +134,8 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 // exchange, to hand the key itself to the OAuth provider (Keys), and building
 // both from one *Keys makes one discovery read at boot, keeps one set in
 // memory, and bounds the reads a token naming an unpublished key id prompts at
-// one per MinRefresh across both of them.
+// one per MinRefresh while reads succeed, and one per FailureSpacing while they
+// fail, across both of them.
 func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
 	return &Verifier{
 		// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the

@@ -8,8 +8,8 @@
 # — so a fix to the loopback guard or to the reset lands in one place. Each proof keeps its own
 # header, its own ports, its own seed and its own cases.
 #
-# Sourced, never run. It sources lib/rig.sh itself, so a proof sources this alone. Before it does,
-# the caller sets what lib/rig.sh asks of it —
+# Sourced, never run. It sources lib/rig.sh and lib/run-verdict.sh itself, so a proof sources this
+# alone. Before it does, the caller sets what lib/rig.sh asks of it —
 #   root           the checkout
 #   evidence       empty; two_builds_build sets it to the work directory
 #   timeout_hook   empty, or a function a timed-out until_true runs before it fails
@@ -17,7 +17,8 @@
 #   check          the check a failure is reported at
 #   started        $SECONDS when the run began
 # and the caller sets its three ports, base_port, head_port and envoy_port, before it calls
-# anything here.
+# anything here. The caller's last statement is run_end (lib/run-verdict.sh), after its last check:
+# cleanup prints PASS only for a run that reached it.
 #
 # What this sets for the caller: base_commit and database_url, work and the pids fake_envoy_pid,
 # base_pid and head_pid (two_builds_setup), base_sha (two_builds_prerequisites), and agent_token,
@@ -33,6 +34,8 @@
 
 # shellcheck source-path=SCRIPTDIR source=rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
 # How long one call waits for an answer. A proof whose reads take longer sets its own.
 call_seconds=20
@@ -88,8 +91,10 @@ two_builds_setup() {
   trap 'cleanup 143' TERM
 }
 
-# cleanup stops what the run started and exits with rc: the script's own status for EXIT, 128 plus
-# the signal's number for INT and TERM, so an interrupted run never reports success.
+# cleanup stops what the run started and prints the run's last line through lib/run-verdict.sh,
+# which exits with rc: the script's own status for EXIT, 128 plus the signal's number for INT and
+# TERM. PASS needs rc 0 and the caller's run_end, so a run that a HUP ended, whose EXIT trap reads
+# 0, reads FAIL as an interrupted run does. The work directory goes with a pass.
 cleanup() {
   local rc=$1
   trap - EXIT INT TERM
@@ -97,16 +102,16 @@ cleanup() {
   stop_pid "$head_pid"
   stop_pid "$base_pid"
   stop_pid "$fake_envoy_pid"
-  if [ -z "$work" ]; then
-    echo "$run_label: FAIL at $check after $((SECONDS - started))s" >&2
-  elif [ "$rc" -eq 0 ]; then
-    rm -rf "$work"
-    echo "$run_label: PASS in $((SECONDS - started))s"
-  else
-    rm -rf "${work:?}/bin" "${work:?}/base"
-    echo "$run_label: FAIL at $check after $((SECONDS - started))s (logs: $work)" >&2
+  if [ -n "$work" ]; then
+    if run_passed "$rc"; then
+      rm -rf "$work"
+    else
+      rm -rf "${work:?}/bin" "${work:?}/base"
+    fi
   fi
-  exit "$rc"
+  run_verdict "$rc" \
+    "$run_label: PASS in $((SECONDS - started))s" \
+    "$run_label: FAIL at $check after $((SECONDS - started))s${work:+ (logs: $work)}"
 }
 
 # call METHOD PATH [BODY] prints what the server on $target_url answers an agent bearer, and

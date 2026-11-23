@@ -173,6 +173,8 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/daemon/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # ci.yaml's go-daemon, restored and never saved: .github/workflows/ci-caches.yaml fills that
       # family on a push to main.
@@ -662,6 +664,8 @@ jobs:
       attestations: write
     # No cache is restored in a job that holds a credential.
     cache-mode: none
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
     outputs:
       # Whether pi-envoy and pi-legion each published or had nothing to release in this run.
       pair_ok: ${{ steps.pair.outputs.ok }}
@@ -1202,6 +1206,7 @@ jobs:
     # No cache is restored in a job that holds a credential.
     cache-mode: none
     env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       IMAGE: ${{ needs.worker_image.outputs.image }}
       DIGEST: ${{ needs.worker_image.outputs.digest }}

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,8 +26,8 @@ type Publisher interface {
 
 // StartSummaryLoop runs the summary loop in a background goroutine until ctx is
 // cancelled. Each pass emits one `pr.<n>.checks` envelope, carrying its SHA, for
-// each commit of a pull request that has been quiet, all of whose recorded
-// suites are complete and all of whose check runs are terminal - the pull
+// each commit of a pull request that has been quiet, none of whose recorded
+// suites holds it (settlementReady) and all of whose check runs are terminal - the pull
 // request's current head or not: a head whose push carried GitHub's skip-checks
 // trailer runs no CI, so the settlement that stands for it is the earlier
 // head's, which can settle after the new head arrives. Consumers decide which
@@ -377,14 +376,13 @@ const heldRunningNamed = 20
 // logHeldLocked logs `checks held a head`, the line that names what holds st, the record cached
 // under key, from the record itself: the head, its generation and its check count; each check that
 // is not terminal as name:status (sorted, the first heldRunningNamed, and running_count); each
-// suite that is not completed as `<id> app=<app id> status=<status> runs=<count>` (sorted by id),
-// its count `unknown` when the record holds none (Suite.RunCount); whether no check has a run id
-// (no_run_id); and the hold Hash does not take: overflowed, no schema (a head-gated listener's
-// leftover, legacy), and a claim held. It is WARN where the record holds a check and every one is
-// terminal (every_check_finished, as terminal reads it), and INFO otherwise, which a long job and a
-// lost completion both give. It logs once for each snapshot and hold (heldLogged): a record filed
-// again with the snapshot and hold it logged logs nothing, so no tick or pass logs it twice, and a
-// change of the hold alone logs once more. Callers hold z.mu.
+// suite that holds it (suiteHolds) as `<id> app=<app id> status=<status>` (sorted by id); whether
+// no check has a run id (no_run_id); and the hold Hash does not take: overflowed, no schema (a
+// head-gated listener's leftover, legacy), and a claim held. It is WARN where the record holds a
+// check and every one is terminal (every_check_finished, as terminal reads it), and INFO
+// otherwise, which a long job and a lost completion both give. It logs once for each snapshot and
+// hold (heldLogged): a record filed again with the snapshot and hold it logged logs nothing, so no
+// tick or pass logs it twice, and a change of the hold alone logs once more. Callers hold z.mu.
 func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State) {
 	mark := heldMark{snapshot: st.Hash(), overflowed: st.Overflowed, legacy: st.Schema == 0, claimed: st.Claim != nil}
 	if z.heldLogged[key] == mark {
@@ -410,7 +408,7 @@ func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State)
 	}
 	suiteIDs := make([]string, 0, len(st.Suites))
 	for id, suite := range st.Suites {
-		if suite.Status != "completed" {
+		if suiteHolds(suite) {
 			suiteIDs = append(suiteIDs, id)
 		}
 	}
@@ -418,11 +416,7 @@ func (z *summarizer) logHeldLocked(logger *logging.Logger, key string, st State)
 	suites := make([]string, len(suiteIDs))
 	for i, id := range suiteIDs {
 		suite := st.Suites[id]
-		runs := "unknown"
-		if suite.RunCount != nil {
-			runs = strconv.Itoa(*suite.RunCount)
-		}
-		suites[i] = fmt.Sprintf("%s app=%s status=%s runs=%s", id, suite.AppID, suite.Status, runs)
+		suites[i] = fmt.Sprintf("%s app=%s status=%s", id, suite.AppID, suite.Status)
 	}
 	everyCheckFinished := len(st.Checks) > 0 && runningCount == 0
 	level := slog.LevelInfo

@@ -14,6 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -76,6 +78,13 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 		{"a record the broker does not have", func(t *testing.T) ciphertest.Response {
 			return b.Get(t, "/approve/"+strings.Repeat("a", 64))
 		}, http.StatusNotFound, "NOT_FOUND"},
+		{"a page a person Dispatch calls a restricted member opens", func(t *testing.T) ciphertest.Response {
+			dispatch := projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberRestricted})
+			restricted := newRig(t, func(s *rigSetup) { s.projects = projectaccess.New(dispatch.URL, dispatch.Account, nil) })
+			viewer := restricted.browser(t)
+			viewer.SignIn(t, a.recordID, person(ada))
+			return viewer.Get(t, page)
+		}, http.StatusForbidden, "NOT_APPROVER"},
 		{"a decision form it cannot read", func(t *testing.T) ciphertest.Response {
 			return b.FromPage(t, "/approve", unreadable)
 		}, http.StatusBadRequest, "FORM_UNREADABLE"},
@@ -104,6 +113,11 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			form.Set("record", later.recordID)
 			return b.FromPage(t, "/approve", form)
 		}, http.StatusForbidden, "RECORD_NOT_PRINTED"},
+		{"an approval of a profile the page printed otherwise", func(t *testing.T) ciphertest.Response {
+			form := decision(formA, "approve")
+			form.Add("profile_digest", a.recordID+" TEST_SECRET "+strings.Repeat("0", 64))
+			return b.FromPage(t, "/approve", form)
+		}, http.StatusForbidden, "PROFILE_CHANGED"},
 		{"a decision from another origin", func(t *testing.T) ciphertest.Response {
 			return b.Post(t, "/approve", decision(formA, "approve"), elsewhere)
 		}, http.StatusForbidden, "ORIGIN_REFUSED"},
@@ -159,8 +173,7 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 			var codes []any
 			for _, record := range capture.Records() {
-				fields := map[string]any{}
-				record.Attrs(func(a slog.Attr) bool { fields[a.Key] = a.Value.Any(); return true })
+				fields := logFields(record)
 				if record.Message == answer.RefusalMessage && fields["answer_id"] == id {
 					if record.Level != slog.LevelWarn {
 						t.Errorf("the refusal's record is at %v, want WARN", record.Level)
@@ -173,8 +186,8 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 			}
 		})
 	}
-	if driven != 18 {
-		t.Fatalf("the table drove %d of the page's 18 refusals", driven)
+	if driven != 20 {
+		t.Fatalf("the table drove %d of the page's 20 refusals", driven)
 	}
 
 	// The page that answers a sign-out refuses nothing, and prints no answer id.

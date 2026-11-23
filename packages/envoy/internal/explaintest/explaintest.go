@@ -3,13 +3,14 @@
 // anywhere in the plan, whether any scan in it reads a relation without an index condition,
 // which index each index scan reads through, under which condition, which relations the plan
 // reads at all, how often each and under which subplan (Scans), every node with the conditions
-// it tests, what an analyzed plan measured of it and the shared buffers it hit and read (Nodes),
-// and each bitmap heap scan with the bitmap it reads its rows through (BitmapHeapScans). It also
-// answers, from the catalog, the first key column of a named index and whether a scan's
-// condition names it, which is what tells a read served by an index from one that reads the
-// whole index and filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds
-// the generic plan a prepared statement settles on, which is the plan an index is lost in,
-// explained (GenericPlan) or run and measured (AnalyzedGenericPlan).
+// it tests, what an analyzed plan measured of it, the rows its Filter and a join's Join Filter
+// removed each time it ran among them, and the shared buffers it hit and read (Nodes), and each
+// bitmap heap scan with the bitmap it reads its rows through (BitmapHeapScans). It also answers,
+// from the catalog, the first key column of a named index and whether a scan's condition names
+// it, which is what tells a read served by an index from one that reads the whole index and
+// filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
+// prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
+// or run and measured (AnalyzedGenericPlan).
 // dispatch/api, dispatch/refs and cipher/requests each pin an index's reach with these checks,
 // so they live here once rather than as a second (or third) hand copy of the same recursive
 // walk; it is an ordinary package rather than a _test.go file because Go cannot share test-only
@@ -37,25 +38,28 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // none, which is not the same as an empty one - the condition it tests every row it reads by
 // (Filter) and the one a bitmap heap scan rechecks a row by, the name of the subplan it begins
 // and its place under its own parent, what an analyzed plan measured of it (its loops and the
-// rows each answered, and the rows an index-only scan fetched from the heap, all 0 in a plan
-// explained without ANALYZE), the shared buffers it and the nodes under it hit and read (0 in a
-// plan explained without BUFFERS), the CTE it scans, and its children.
+// rows each answered, the rows an index-only scan fetched from the heap, and the rows its Filter
+// and a join's Join Filter removed each time it ran, all 0 in a plan explained without ANALYZE),
+// the shared buffers it and the nodes under it hit and read (0 in a plan explained without
+// BUFFERS), the CTE it scans, and its children.
 type planNode struct {
-	NodeType           string            `json:"Node Type"`
-	RelationName       string            `json:"Relation Name"`
-	IndexName          string            `json:"Index Name"`
-	IndexCond          *string           `json:"Index Cond"`
-	Filter             string            `json:"Filter"`
-	RecheckCond        string            `json:"Recheck Cond"`
-	SubplanName        string            `json:"Subplan Name"`
-	ParentRelationship string            `json:"Parent Relationship"`
-	ActualLoops        float64           `json:"Actual Loops"`
-	ActualRows         float64           `json:"Actual Rows"`
-	HeapFetches        float64           `json:"Heap Fetches"`
-	SharedHitBlocks    float64           `json:"Shared Hit Blocks"`
-	SharedReadBlocks   float64           `json:"Shared Read Blocks"`
-	CTEName            string            `json:"CTE Name"`
-	Plans              []json.RawMessage `json:"Plans"`
+	NodeType                string            `json:"Node Type"`
+	RelationName            string            `json:"Relation Name"`
+	IndexName               string            `json:"Index Name"`
+	IndexCond               *string           `json:"Index Cond"`
+	Filter                  string            `json:"Filter"`
+	RecheckCond             string            `json:"Recheck Cond"`
+	SubplanName             string            `json:"Subplan Name"`
+	ParentRelationship      string            `json:"Parent Relationship"`
+	ActualLoops             float64           `json:"Actual Loops"`
+	ActualRows              float64           `json:"Actual Rows"`
+	HeapFetches             float64           `json:"Heap Fetches"`
+	RowsRemovedByFilter     float64           `json:"Rows Removed by Filter"`
+	RowsRemovedByJoinFilter float64           `json:"Rows Removed by Join Filter"`
+	SharedHitBlocks         float64           `json:"Shared Hit Blocks"`
+	SharedReadBlocks        float64           `json:"Shared Read Blocks"`
+	CTEName                 string            `json:"CTE Name"`
+	Plans                   []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
 	// that began it (nodesUnder), and so is no field of the plan's own JSON.
@@ -72,7 +76,8 @@ func (n planNode) asNode() Node {
 		CTE: n.CTEName, Subplan: n.subplan,
 		Loops: n.ActualLoops, Rows: n.ActualRows,
 		Filter: n.Filter, RecheckCond: n.RecheckCond,
-		HeapFetches:     n.HeapFetches,
+		HeapFetches:         n.HeapFetches,
+		RowsRemovedByFilter: n.RowsRemovedByFilter, RowsRemovedByJoinFilter: n.RowsRemovedByJoinFilter,
 		SharedHitBlocks: n.SharedHitBlocks, SharedReadBlocks: n.SharedReadBlocks,
 	}
 	if n.IndexCond != nil {
@@ -245,15 +250,21 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 // each is the plan's own text, empty when the node carries none. Loops is how many times the
 // node ran and Rows how many rows it answered each time; HeapFetches is how many rows an
 // index-only scan fetched from the heap, since the visibility map did not mark their pages
-// all-visible. SharedHitBlocks and SharedReadBlocks are the shared buffers the node and the
-// nodes under it hit in the cache and read into it, which a plan explained with the BUFFERS
-// option carries, and 0 in a plan explained without it.
+// all-visible. RowsRemovedByFilter is how many rows the node's Filter removed each time it ran,
+// and RowsRemovedByJoinFilter how many rows a join's Join Filter removed each time it ran: each is
+// the per-loop figure `EXPLAIN (ANALYZE)` prints ("Rows Removed by Filter", "Rows Removed by Join
+// Filter"), the rows removed over every loop divided by Loops and rounded to a whole number, and
+// 0 where the node prints none, as a node carrying no such filter does. SharedHitBlocks and
+// SharedReadBlocks are the shared buffers the node and the nodes under it hit in the cache and
+// read into it, which a plan explained with the BUFFERS option carries, and 0 in a plan explained
+// without it.
 type Node struct {
-	Type, Relation, Index, CTE, Subplan string
-	Loops, Rows                         float64
-	Filter, IndexCond, RecheckCond      string
-	HeapFetches                         float64
-	SharedHitBlocks, SharedReadBlocks   float64
+	Type, Relation, Index, CTE, Subplan          string
+	Loops, Rows                                  float64
+	Filter, IndexCond, RecheckCond               string
+	HeapFetches                                  float64
+	RowsRemovedByFilter, RowsRemovedByJoinFilter float64
+	SharedHitBlocks, SharedReadBlocks            float64
 }
 
 // String names the node as a failure message cites it: its type, and whichever of the relation,

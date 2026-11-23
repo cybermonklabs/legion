@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+    Dispatch reads a Legion daemon's state of up to 32 MiB, up from 8 MiB, and gives each read 60 s, up from 20 s. The INFRA daemon's state was about 7.6 MB and growing, so its reads would soon have failed and left the Legion board on its last good observations. A body over the cap is still a failed read.
+time: 2026-11-21T16:20:21.000000000Z
+custom:
+    Issue: pr4865

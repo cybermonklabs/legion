@@ -243,6 +243,9 @@ holds the reviewer's prompt to, the GitHub App helper
 internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
+It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
+and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
+patches nats-server with.
 No bun_install and no skills/** - the two pages of skills/ this filter names are all
 this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
@@ -575,6 +578,12 @@ OIDC issuer it trusts, and the seeding step that logs its service in and enrols 
 pods: the packages `go list -deps ./cmd/cipherd ./cmd/dev-oidc-issuer
 ./internal/cipher/ciphertest/requestseed` lists in packages/envoy beyond the
 Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
+
+## envoy_go: Its natslive step runs cmd/listener's natslive tests
+
+Its natslive step runs cmd/listener's natslive tests, so its test build reads the
+fixtures cmd/listener's untagged tests read (api_test.go), which this job must then
+run as well (check-ci-filters.sh's rule 15).
 
 ## envoy_go: internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
 
@@ -1011,8 +1020,11 @@ where a check run posted with POST /repos/.../check-runs joins the Actions App's
 at that commit, which is another workflow's as often as not (.github/scripts/post-check-run.sh's
 header holds the measurement). Every job but `changes` and those CI_OK_EXEMPT names still
 ends with the ci-ok-report step (.github/actions/ci-ok-report), which posts a failing ci-ok
-at once when that job's own result decides a merge-group run, so the queue drops a doomed
-group at the first failure rather than at the end of the run; the ci-ok job's last step then
+at once when that job's own result decides a merge-group run of the queue's front group, so
+the queue drops a doomed group at the first failure rather than at the end of the run; a group
+behind the front posts nothing early, since the queue cannot drop it before the groups in front
+of it end (.github/scripts/ci-ok-report.sh's header says what that costs); the ci-ok job's last
+step then
 sets every ci-ok check run on the head that is not its own to its own conclusion, so one
 verdict stands at the end of every attempt. pr-title, the other check that ruleset requires, is
 the `pr-title` job at the end of this file, in the same shape and for the same reason: it runs
@@ -1316,7 +1328,8 @@ only which lane it runs: that job's `lane:` input reads the label, and
 
 The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
 them on the tree the change lands as, and that is where their result normally comes from;
-a pull request runs them only when it carries the label `full-ci`. Each is false on a
+a pull request runs them only when it carries the label `full-ci`, or one of them when it
+carries that one's `lane:<output>` label (the next entry). Each is false on a
 pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
 it reads any other output, and no job's `if:` knows about the label. The label is read
 from the pull request the run's own event carries, so it takes effect at the next push,
@@ -1325,6 +1338,36 @@ trigger, which would start a run that joins this workflow's concurrency group an
 pull request's run in progress. Take the label off once the run it was added for passes,
 since every later push would run the slow suites again, unless a `ci_check` of the issue
 names one of them, which reads `skipped` on a pull request without the label.
+
+## A lane label turns on one slow suite on a pull request
+
+A pull request label `lane:<output>` turns on that one output of `changes`, where its paths
+matched, as `full-ci` turns on all of them. `<output>` is one of the nine outputs the
+`full-ci` term gates: `envoy_go`, `envoy_go_race`, `envoy_go_race_api`, `envoy_go_claim_model`,
+`envoy_go_race_docs` (which gates envoy-go-race-docs and envoy-go-docs-finalizers both),
+`dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds` and `envoy_smoke`. It is for
+a pull request that needs one slow suite's result at its head - a test that only that suite
+runs, or a `ci_check` naming that job - without running the other nine. Each output's term
+names its own label, so the label that turns an output on is written beside it and nowhere
+else, and the paths term stays: a lane label never runs a suite its filter did not select.
+
+A label that names no such output - a misspelling, a job id such as `lane:envoy-go` where the
+output is `lane:envoy_go`, or an output with no `full-ci` term - turns on nothing and fails
+nothing. The label decides only what runs, never the verdict, and ci-ok's report names each
+job the label held back, so a misspelt label shows as its job not run. Failing the run on such
+a label would fail every check of it for a typo and need a step of its own that reads the
+labels. GitHub compares the label without regard to case. dispatch-browser's lane is not an
+output, and stays the `full-ci` label's to choose.
+
+A lane label is read as `full-ci` is, from the pull request the run's own event carries: it
+takes effect at the next push, reopen or ready-for-review, not when it is added, since this
+workflow takes no `labeled` trigger. On a head with no new commit to push, close the pull
+request and reopen it. Take it off once the run it was added for passes, as `full-ci`.
+.github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
+(.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
+own output and leaves every other output as an unlabelled pull request has it, `full-ci` still
+turns all nine on, the paths term still holds under both, and a label naming no such output
+turns on nothing.
 
 ## Why envoy-go's fast half comes back on every push
 
@@ -1363,6 +1406,18 @@ own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job 
 ci-ok-report.sh both already have it. It is the one filter step's outputs as one object.
 On a dispatched run that step is skipped and this is `{}`, which is right - the label
 holds nothing back there, and the changes job's other outputs are all 'true'.
+
+A job the label held back did not run at this head, and ci-ok passes over its skip, so
+ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
+`not run at this head: <job> (selected by paths, gated by full-ci; runs in the merge queue)`.
+The same lines go to the ci-ok job's summary, apart from the jobs that ran and passed, so a
+green ci-ok on a pull request without the label is not read as those jobs passing.
+dispatch-browser runs there too, but only its two-project pull-request lane
+(.github/ci-notes/ci.md#what-the-lane-input-reads), so the ci-ok job hands ci-ok.sh its name
+in PARTIAL, built from the same label term as its `lane:` input, and a success of it is named
+`ran in part at this head: dispatch-browser (selected by paths, its full lane gated by full-ci;
+runs in the merge queue)` and left out of the jobs that ran and passed. A run in which the
+label held nothing back and trimmed nothing writes no summary.
 
 ## On pull_request dorny/paths-filter reads the file list from the API and reads
 
@@ -2132,10 +2187,17 @@ not run, measured on a probe run of this repository — so a force-cancelled run
 ci-ok, and its ci-ok job, which waits for every job of the run, is left unstarted or
 cancelled rather than concluding one. That is what this act wants: a failing ci-ok on a
 group the queue still holds could
-take an innocent pull request out of the queue. The run of a group whose own job failed
-posts that group's failing ci-ok from that job itself, through the merge-group branch of
-.github/scripts/ci-ok-report.sh, so the queue reads the verdict and rebuilds the groups
-above it without waiting for the rest of that run.
+take an innocent pull request out of the queue. The run of the front group, whose base is the
+tip of main, posts that group's failing ci-ok from the job that failed, through the merge-group
+branch of .github/scripts/ci-ok-report.sh, so the queue reads the verdict and rebuilds the
+groups above it without waiting for the rest of that run. A group behind the front posts
+nothing early: the queue takes its pull request out only once the groups in front of it have
+ended, and a failing ci-ok makes the queue count the group as no longer building and build
+another on it, which built 41 groups in 28 minutes behind one broken entry on 2026-11-22
+(.github/scripts/ci-ok-report.sh's header). Its run's ci-ok job posts its verdict at the end of
+the run. The cost: when the groups in front end before that run does, the entry leaves at the
+run's end, or when a later job of the run fails once the group is the front, rather than the
+moment the groups in front end.
 
 The job follows these rules:
   * it runs only on `merge_group` and only on attempt 1

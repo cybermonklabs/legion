@@ -42,7 +42,8 @@ readonly dispatch_project="deployment-dispatch"
 #     as GitHub serves a file over 1 MB; for a directory, GitHub's listing of it ({name, type,
 #     download_url} for each entry: file, dir or symlink, a file with a download URL, the entries of
 #     FAKE_ROOT/listing-extra.json (a JSON list) added, at most 1,000 of them, as GitHub lists) run
-#     through the --jq query, failing as a server error when FAKE_LIST_DOWN=1;
+#     through the --jq query, failing as a server error when FAKE_LIST_DOWN=1 (gh's line for it is
+#     FAKE_LIST_DOWN_TEXT, `gh: Server Error (HTTP 500)` unless a case names another);
 #   repos/<FAKE_DEPLOYMENT>/commits/HEAD: FAKE_HEAD;
 #   repos/<FAKE_DEPLOYMENT>/git/trees/<sha>: GitHub's recursive tree of FAKE_ROOT/files, each file and
 #     link a blob named by git's own hash of it, with the entries of FAKE_ROOT/tree-extra.json (a JSON
@@ -83,7 +84,7 @@ case "$path" in
   repos/"${FAKE_DEPLOYMENT:?}"/contents/*)
     file="${FAKE_ROOT}/files/${path#repos/"${FAKE_DEPLOYMENT}"/contents/}"
     if [ -d "$file" ]; then
-      [ "${FAKE_LIST_DOWN:-0}" != 1 ] || { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
+      [ "${FAKE_LIST_DOWN:-0}" != 1 ] || { echo "${FAKE_LIST_DOWN_TEXT:-gh: Server Error (HTTP 500)}" >&2; exit 1; }
       extra="${FAKE_ROOT}/listing-extra.json"
       [ -f "$extra" ] || extra=/dev/null
       {

@@ -1,0 +1,909 @@
+package storetest
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
+)
+
+// encoded is the wire bytes of messages, in order.
+func encoded[M interface{ Encode([]byte) ([]byte, error) }](t *testing.T, messages ...M) []byte {
+	t.Helper()
+	var bytes []byte
+	for _, message := range messages {
+		var err error
+		if bytes, err = message.Encode(bytes); err != nil {
+			t.Fatalf("encode %T: %v", message, err)
+		}
+	}
+	return bytes
+}
+
+// fed is a sendingConn on no network connection that has read written as the connection's writes
+// and then answered as the server's answers, each in pieces of width bytes.
+func fed(written, answered []byte, width int) (*SentStatements, *sendingConn) {
+	sent := &SentStatements{}
+	conn := newSendingConn(nil, sent)
+	for start := 0; start < len(written); start += width {
+		conn.readWritten(written[start:min(start+width, len(written))])
+	}
+	for start := 0; start < len(answered); start += width {
+		conn.readAnswered(answered[start:min(start+width, len(answered))])
+	}
+	return sent, conn
+}
+
+// startup is a startup packet of protocol 3.0 with no parameters.
+func startup() []byte {
+	packet := make([]byte, startupHeaderBytes)
+	binary.BigEndian.PutUint32(packet, startupHeaderBytes)
+	binary.BigEndian.PutUint32(packet[4:], 196608)
+	return packet
+}
+
+// The recorder reads a statement whatever the reads and writes cut its bytes into: here a startup,
+// a statement prepared by name, a portal bound to it and a second bound and never run, an Execute
+// of the first, a Sync and a ping, and the server's answers to each, a few bytes at a time at every
+// width. It records the Execute, with the values its portal was bound with, once the server says
+// it ran it, and the ping - not the Bind that nothing ran. An answer nothing waits for, and a run
+// of a portal the server never acknowledged binding, are each something it cannot read, which it
+// reports rather than passing over; an Execute the server refuses is recorded as failed.
+func TestSentStatementsReadEveryWriteWhateverItsCut(t *testing.T) {
+	const query = "select $1::bigint, $2::text"
+	written := append(startup(), encoded[pgproto3.FrontendMessage](t,
+		&pgproto3.Parse{Name: "rule", Query: query},
+		&pgproto3.Bind{DestinationPortal: "named", PreparedStatement: "rule", Parameters: [][]byte{[]byte("42"), []byte("destination")}},
+		&pgproto3.Bind{DestinationPortal: "unused", PreparedStatement: "rule", Parameters: [][]byte{[]byte("7"), []byte("elsewhere")}},
+		&pgproto3.Execute{Portal: "named"},
+		&pgproto3.Sync{},
+		&pgproto3.Query{String: PoolPing},
+	)...)
+	answered := encoded[pgproto3.BackendMessage](t,
+		&pgproto3.AuthenticationOk{},
+		&pgproto3.ReadyForQuery{TxStatus: 'I'},
+		&pgproto3.ParseComplete{},
+		&pgproto3.BindComplete{},
+		&pgproto3.BindComplete{},
+		&pgproto3.DataRow{Values: [][]byte{[]byte("42"), []byte("destination")}},
+		&pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")},
+		&pgproto3.ReadyForQuery{TxStatus: 'I'},
+		&pgproto3.EmptyQueryResponse{},
+		&pgproto3.ReadyForQuery{TxStatus: 'I'},
+	)
+	for width := 1; width <= max(len(written), len(answered)); width++ {
+		sent, _ := fed(written, answered, width)
+		got := sent.Statements()
+		if len(got) != 2 || got[0].SQL != query || got[0].Failed || got[1].SQL != PoolPing || len(sent.Blind()) != 0 {
+			t.Fatalf("read %d bytes at a time: recorded %+v, blind %v; want the Execute and the ping", width, got, sent.Blind())
+		}
+		event, readEvent := got[0].Int8(0)
+		destination, readDestination := got[0].Text(1)
+		if !readEvent || !readDestination || event != 42 || destination != "destination" {
+			t.Fatalf("read %d bytes at a time: the Execute's values read %d %q, want 42 and destination", width, event, destination)
+		}
+	}
+
+	greeted := encoded[pgproto3.BackendMessage](t, &pgproto3.ReadyForQuery{TxStatus: 'I'})
+	sent, _ := fed(startup(), append(greeted, encoded[pgproto3.BackendMessage](t, &pgproto3.BindComplete{})...), 1)
+	if blind := sent.Blind(); len(blind) != 1 {
+		t.Fatalf("an answer nothing sent waits for: blind %v, want it reported", blind)
+	}
+	sent, _ = fed(append(startup(), encoded[pgproto3.FrontendMessage](t, &pgproto3.Execute{Portal: "never bound"}, &pgproto3.Sync{})...),
+		append(greeted, encoded[pgproto3.BackendMessage](t, &pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")})...), 1)
+	if blind := sent.Blind(); len(blind) != 1 || len(sent.Statements()) != 0 {
+		t.Fatalf("a run of a portal never bound: blind %v, recorded %+v; want it reported and nothing recorded", blind, sent.Statements())
+	}
+	sent, _ = fed(append(startup(), encoded[pgproto3.FrontendMessage](t,
+		&pgproto3.Parse{Query: query}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{})...),
+		append(greeted, encoded[pgproto3.BackendMessage](t,
+			&pgproto3.ParseComplete{}, &pgproto3.BindComplete{},
+			&pgproto3.ErrorResponse{Severity: "ERROR", Code: "25P02", Message: "current transaction is aborted"},
+			&pgproto3.ReadyForQuery{TxStatus: 'E'})...), 1)
+	if got := sent.Statements(); len(got) != 1 || !got[0].Failed || got[0].Code != "25P02" || got[0].SQL != query || len(sent.Blind()) != 0 {
+		t.Fatalf("an Execute the server refused: recorded %+v, blind %v; want it recorded as failed, with its code", got, sent.Blind())
+	}
+}
+
+// drain reads the server's messages up to its next ReadyForQuery, failing on an error unless
+// refused, and answers whether it refused one.
+func drain(t *testing.T, frontend *pgproto3.Frontend, refused bool) bool {
+	t.Helper()
+	failed := false
+	for {
+		message, err := frontend.Receive()
+		if err != nil {
+			t.Fatalf("read the server's answer: %v", err)
+		}
+		switch message := message.(type) {
+		case *pgproto3.ErrorResponse:
+			if !refused {
+				t.Fatalf("the server refused: %s %s", message.Code, message.Message)
+			}
+			failed = true
+		case *pgproto3.ReadyForQuery:
+			return failed
+		}
+	}
+}
+
+// counted is how many statements recorded since the before'th one the server ran with the SQL
+// query, and how many it refused.
+func counted(sent *SentStatements, before int, query string) (ran, refused int) {
+	for _, statement := range sent.Statements()[before:] {
+		switch {
+		case statement.Failed:
+			refused++
+		case statement.SQL == query:
+			ran++
+		}
+	}
+	return ran, refused
+}
+
+// The recorder counts what the server runs, which a sequence it advances counts too: each
+// statement is recorded when the server says it ran it, so a portal bound in one round trip of a
+// transaction and run in a later one is recorded in the later, and a Bind nothing runs is not
+// recorded at all. A portal ends with its transaction: once the server says none is open, an
+// Execute of it is one the server refuses, which the recorder records as failed. Every way pgx
+// sends a statement shows - each of its four modes of running a query, a statement prepared and
+// run by name, a batch - and so does the pool's ping, with nothing the recorder could not read.
+func TestSentStatementsCountWhatTheServerRuns(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	sent := &SentStatements{}
+	recorded := SentStore(t, database, sent)
+	conn, err := recorded.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection: %v", err)
+	}
+	defer conn.Release()
+	for _, statement := range []string{"create sequence sent_runs", "create sequence sent_bound", "begin"} {
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	const run, bound = "select nextval('sent_runs')", "select nextval('sent_bound')"
+	frontend := conn.Conn().PgConn().Frontend()
+	before := len(sent.Statements())
+	frontend.Send(&pgproto3.Parse{Name: "runs", Query: run})
+	frontend.Send(&pgproto3.Bind{DestinationPortal: "later", PreparedStatement: "runs"})
+	frontend.Send(&pgproto3.Parse{Name: "bound", Query: bound})
+	frontend.Send(&pgproto3.Bind{DestinationPortal: "never run", PreparedStatement: "bound"})
+	frontend.Send(&pgproto3.Sync{})
+	if err := frontend.Flush(); err != nil {
+		t.Fatalf("bind the portals: %v", err)
+	}
+	drain(t, frontend, false)
+	ranAtBind, _ := counted(sent, before, run)
+	boundAtBind, _ := counted(sent, before, bound)
+	before = len(sent.Statements())
+	frontend.Send(&pgproto3.Execute{Portal: "later"})
+	frontend.Send(&pgproto3.Sync{})
+	if err := frontend.Flush(); err != nil {
+		t.Fatalf("run the portal: %v", err)
+	}
+	drain(t, frontend, false)
+	ranLater, _ := counted(sent, before, run)
+	if _, err := conn.Exec(ctx, "commit"); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	var runs int64
+	var boundCalled bool
+	if err := database.Pool.QueryRow(ctx, `select (select last_value from sent_runs), (select is_called from sent_bound)`).Scan(&runs, &boundCalled); err != nil {
+		t.Fatalf("read the sequences: %v", err)
+	}
+	if runs != 1 || boundCalled || ranAtBind+boundAtBind != 0 || ranLater != 1 {
+		t.Fatalf("the server ran the bound-then-run portal %d times and the never-run one %v; recorded %d at the Binds and %d at the later Execute; want 1, false, 0 and 1",
+			runs, boundCalled, ranAtBind+boundAtBind, ranLater)
+	}
+
+	before = len(sent.Statements())
+	frontend.Send(&pgproto3.Execute{Portal: "later"})
+	frontend.Send(&pgproto3.Sync{})
+	if err := frontend.Flush(); err != nil {
+		t.Fatalf("run the portal after its transaction: %v", err)
+	}
+	if !drain(t, frontend, true) {
+		t.Fatal("control: the server ran a portal whose transaction had ended")
+	}
+	if ran, refused := counted(sent, before, run); ran != 0 || refused != 1 || len(sent.Blind()) != 0 {
+		t.Fatalf("an Execute of a portal whose transaction ended: recorded %d run and %d refused, blind %v; want 0, 1 and nothing it could not read",
+			ran, refused, sent.Blind())
+	}
+
+	sent = &SentStatements{}
+	recorded = SentStore(t, database, sent)
+	const read = "select $1::bigint"
+	ways := 0
+	for _, mode := range []pgx.QueryExecMode{pgx.QueryExecModeCacheStatement, pgx.QueryExecModeCacheDescribe, pgx.QueryExecModeDescribeExec, pgx.QueryExecModeExec} {
+		for range 2 {
+			var value int64
+			if err := recorded.Pool.QueryRow(ctx, read, mode, int64(42)).Scan(&value); err != nil {
+				t.Fatalf("run the read in mode %v: %v", mode, err)
+			}
+			ways++
+		}
+	}
+	named, err := recorded.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection: %v", err)
+	}
+	if _, err := named.Conn().Prepare(ctx, "named", read); err != nil {
+		t.Fatalf("prepare the read by name: %v", err)
+	}
+	for range 2 {
+		var value int64
+		if err := named.QueryRow(ctx, "named", int64(42)).Scan(&value); err != nil {
+			t.Fatalf("run the read by name: %v", err)
+		}
+		ways++
+	}
+	if err := named.Conn().PgConn().Ping(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	named.Release()
+	batch := &pgx.Batch{}
+	batch.Queue(read, int64(42))
+	batch.Queue(read, int64(42))
+	if err := recorded.Pool.SendBatch(ctx, batch).Close(); err != nil {
+		t.Fatalf("run the batch: %v", err)
+	}
+	ways += 2
+	reads, pings := 0, 0
+	for _, statement := range sent.Statements() {
+		switch {
+		case statement.Failed:
+			t.Errorf("the server refused %q (%s), want every statement run", statement.SQL, statement.Code)
+		case statement.SQL == read:
+			reads++
+			if value, readValue := statement.Int8(0); !readValue || value != 42 {
+				t.Errorf("a read was recorded with the value %d (read %v), want 42", value, readValue)
+			}
+		case statement.SQL == PoolPing:
+			pings++
+		}
+	}
+	if reads != ways || pings == 0 || len(sent.Blind()) != 0 {
+		t.Fatalf("recorded %d reads and %d pings, blind %v; want %d reads, the ping and nothing it could not read", reads, pings, sent.Blind(), ways)
+	}
+}
+
+// What the server refuses or skips is not a statement it ran: a Bind it refuses binds nothing, and
+// the Execute after it is skipped with every message up to the Sync; an Execute in a transaction
+// that already failed is refused; an Execute after a Parse the server refuses is skipped. In each
+// the recorder counts as run only what the server ran, keeps the values the portal held before the
+// refused Bind, and records each refused Execute as failed, with nothing it could not read.
+func TestSentStatementsCountNothingTheServerRefuses(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	const read = "select $1::bigint"
+	for _, scenario := range []struct {
+		name         string
+		ran, refused int
+	}{
+		{name: "a Bind refused after the statement is closed", ran: 1},
+		{name: "an Execute in a failed transaction", refused: 1},
+		{name: "an Execute after a refused Parse"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent := &SentStatements{}
+			conn, err := SentStore(t, database, sent).Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection: %v", err)
+			}
+			defer conn.Release()
+			if _, err := conn.Exec(ctx, "begin"); err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			frontend := conn.Conn().PgConn().Frontend()
+			round := func(refused bool, messages ...pgproto3.FrontendMessage) {
+				t.Helper()
+				for _, message := range messages {
+					frontend.Send(message)
+				}
+				if err := frontend.Flush(); err != nil {
+					t.Fatalf("send: %v", err)
+				}
+				if drain(t, frontend, refused) != refused {
+					t.Fatalf("the server refused nothing, want the refusal the scenario makes")
+				}
+			}
+			messages := []pgproto3.FrontendMessage{
+				&pgproto3.Parse{Name: "statement", Query: read},
+				&pgproto3.Bind{DestinationPortal: "portal", PreparedStatement: "statement", Parameters: [][]byte{[]byte("55")}},
+			}
+			switch scenario.name {
+			case "a Bind refused after the statement is closed":
+				messages = append(messages,
+					&pgproto3.Execute{Portal: "portal"},
+					&pgproto3.Close{ObjectType: 'S', Name: "statement"},
+					&pgproto3.Parse{Name: "statement", Query: read},
+					&pgproto3.Bind{DestinationPortal: "portal", PreparedStatement: "statement", Parameters: [][]byte{[]byte("56")}},
+				)
+			case "an Execute in a failed transaction":
+				round(false, append(messages, &pgproto3.Sync{})...)
+				round(true, &pgproto3.Query{String: "select 1/0"})
+				messages = nil
+			case "an Execute after a refused Parse":
+				messages = append(messages, &pgproto3.Parse{Name: "refused", Query: "select ("})
+			}
+			before := len(sent.Statements())
+			round(true, append(messages, &pgproto3.Execute{Portal: "portal"}, &pgproto3.Sync{})...)
+			ran, refused := counted(sent, before, read)
+			if ran != scenario.ran || refused != scenario.refused || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded %d run and %d refused, blind %v; want %d run, %d refused and nothing it could not read",
+					ran, refused, sent.Blind(), scenario.ran, scenario.refused)
+			}
+			for _, statement := range sent.Statements()[before:] {
+				if value, readValue := statement.Int8(0); statement.SQL == read && !statement.Failed && (!readValue || value != 55) {
+					t.Errorf("the run was recorded with the value %d (read %v), want 55, the portal's value before the refused Bind", value, readValue)
+				}
+			}
+		})
+	}
+}
+
+// A Bind the server refuses leaves the portal of its name as it was. Here a portal bound to one
+// statement runs a row of it in a transaction; in a savepoint the client then binds the portal's
+// name to a second statement, which the server refuses - as a portal that already exists, or for a
+// value the statement needs and the Bind lacks - and rolls back to the savepoint, which keeps the
+// portal open. The server's next run of the portal returns the first statement's row, and the
+// recorder records that run as the first statement, never as the second, with nothing it could not
+// read.
+func TestSentStatementsKeepThePortalARefusedBindNames(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	const first, second = "select 'first' from generate_series(1, 3)", "select $1::text"
+	for _, scenario := range []struct {
+		name   string
+		values [][]byte
+		code   string
+	}{
+		{name: "refused as a portal that exists", values: [][]byte{[]byte("second")}, code: "42P03"},
+		{name: "refused for a value it lacks", code: "08P01"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent := &SentStatements{}
+			conn, err := SentStore(t, database, sent).Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection: %v", err)
+			}
+			defer conn.Release()
+			frontend := conn.Conn().PgConn().Frontend()
+			// round sends messages and reads the server's answers up to its ReadyForQuery, failing
+			// unless the server refused one with the code refusal, or refused none when it is
+			// empty, and answers the first value of each row the server returned.
+			round := func(refusal string, messages ...pgproto3.FrontendMessage) []string {
+				t.Helper()
+				for _, message := range messages {
+					frontend.Send(message)
+				}
+				if err := frontend.Flush(); err != nil {
+					t.Fatalf("send: %v", err)
+				}
+				var rows []string
+				code := ""
+				for {
+					message, err := frontend.Receive()
+					if err != nil {
+						t.Fatalf("read the server's answer: %v", err)
+					}
+					switch message := message.(type) {
+					case *pgproto3.DataRow:
+						rows = append(rows, string(message.Values[0]))
+					case *pgproto3.ErrorResponse:
+						code = message.Code
+					case *pgproto3.ReadyForQuery:
+						if code != refusal {
+							t.Fatalf("control: the server refused with the code %q, want %q", code, refusal)
+						}
+						return rows
+					}
+				}
+			}
+			round("", &pgproto3.Query{String: "begin"})
+			before := len(sent.Statements())
+			ranBefore := round("",
+				&pgproto3.Parse{Name: "first", Query: first},
+				&pgproto3.Parse{Name: "second", Query: second},
+				&pgproto3.Bind{DestinationPortal: "portal", PreparedStatement: "first"},
+				&pgproto3.Execute{Portal: "portal", MaxRows: 1},
+				&pgproto3.Sync{},
+			)
+			round("", &pgproto3.Query{String: "savepoint rebind"})
+			round(scenario.code, &pgproto3.Bind{DestinationPortal: "portal", PreparedStatement: "second", Parameters: scenario.values}, &pgproto3.Sync{})
+			round("", &pgproto3.Query{String: "rollback to savepoint rebind"})
+			ranAfter := round("", &pgproto3.Execute{Portal: "portal", MaxRows: 1}, &pgproto3.Sync{})
+			round("", &pgproto3.Query{String: "rollback"})
+			if !slices.Equal(ranBefore, []string{"first"}) || !slices.Equal(ranAfter, []string{"first"}) {
+				t.Fatalf("control: the server ran the portal with the rows %q before the refused Bind and %q after it, want one row of the first statement each",
+					ranBefore, ranAfter)
+			}
+			ranFirst, refused := counted(sent, before, first)
+			seconds := 0
+			for _, statement := range sent.Statements()[before:] {
+				if statement.SQL == second {
+					seconds++
+				}
+			}
+			if ranFirst != 2 || seconds != 0 || refused != 0 || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the first statement %d run, the second %d times and %d statements refused, blind %v; want 2, 0, 0 and nothing it could not read",
+					ranFirst, seconds, refused, sent.Blind())
+			}
+		})
+	}
+}
+
+// A client may send a Sync right after an Execute, before it reads whether the Execute started a
+// COPY FROM, and the server ignores every Sync and Flush it gets in copy-in. The recorder drops
+// those Syncs too, so the statement after the copy pairs with its own answers: here a COPY FROM
+// run with a Sync sent at once and ended by a CopyDone, which the server runs, or by a CopyFail,
+// which it refuses; and then a select, which the recorder records as run either way, with nothing
+// it could not read. Each scenario sends its end of the copy both after reading the
+// CopyInResponse and before it, in the same write as the Execute.
+func TestSentStatementsIgnoreTheSyncsCopyInIgnores(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	const copying, after = "copy copy_sync from stdin", "select 99"
+	for _, scenario := range []struct {
+		name         string
+		end          pgproto3.FrontendMessage
+		ran, refused int
+		early        bool
+	}{
+		{name: "ended by a CopyDone", end: &pgproto3.CopyDone{}, ran: 1},
+		{name: "ended by a CopyFail", end: &pgproto3.CopyFail{Message: "the client gave up"}, refused: 1},
+		{name: "ended by a CopyDone sent with the Execute", end: &pgproto3.CopyDone{}, ran: 1, early: true},
+		{name: "ended by a CopyFail sent with the Execute", end: &pgproto3.CopyFail{Message: "the client gave up"}, refused: 1, early: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent := &SentStatements{}
+			conn, err := SentStore(t, database, sent).Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection: %v", err)
+			}
+			defer conn.Release()
+			if _, err := conn.Exec(ctx, "create temporary table copy_sync (n int)"); err != nil {
+				t.Fatalf("create the table: %v", err)
+			}
+			frontend := conn.Conn().PgConn().Frontend()
+			send := func(messages ...pgproto3.FrontendMessage) {
+				t.Helper()
+				for _, message := range messages {
+					frontend.Send(message)
+				}
+				if err := frontend.Flush(); err != nil {
+					t.Fatalf("send: %v", err)
+				}
+			}
+			before := len(sent.Statements())
+			start := []pgproto3.FrontendMessage{&pgproto3.Parse{Query: copying}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}}
+			end := []pgproto3.FrontendMessage{&pgproto3.CopyData{Data: []byte("1\n")}, scenario.end, &pgproto3.Sync{}}
+			if scenario.early {
+				send(append(start, end...)...)
+			} else {
+				send(start...)
+				for {
+					message, err := frontend.Receive()
+					if err != nil {
+						t.Fatalf("read the server's answer: %v", err)
+					}
+					if refusal, refused := message.(*pgproto3.ErrorResponse); refused {
+						t.Fatalf("the server refused the copy: %s %s", refusal.Code, refusal.Message)
+					}
+					if _, copyIn := message.(*pgproto3.CopyInResponse); copyIn {
+						break
+					}
+				}
+				send(end...)
+			}
+			drain(t, frontend, scenario.refused > 0)
+			send(&pgproto3.Parse{Query: after}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{})
+			drain(t, frontend, false)
+			ranCopy, refused := counted(sent, before, copying)
+			ranAfter, _ := counted(sent, before, after)
+			if ranCopy != scenario.ran || refused != scenario.refused || ranAfter != 1 || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the copy %d run and %d refused, the select after it %d run, blind %v; want %d, %d, 1 and nothing it could not read",
+					ranCopy, refused, ranAfter, sent.Blind(), scenario.ran, scenario.refused)
+			}
+		})
+	}
+}
+
+// A refusal ends a copy, and the recorder forgets it: pgx's own CopyFrom into a table that does not
+// exist, whose data pgx sends before it reads the refusal and whose CopyDone it sends before or
+// after, as its reads fall (TestSentStatementsLeaveNoCopyEndAfterTheRefusal), an extended COPY
+// FROM whose data the server refuses before the client's CopyDone, and one sent in one write with
+// its data, CopyDone and a second Sync. In each the copy is recorded as refused, and the select
+// after it on the same connection as run, with nothing the recorder could not read. A refusal
+// forgets no more than that: a refused simple COPY, a Sync the server refuses (an insert's deferred
+// unique constraint at its implicit commit) and a function call it refuses, each followed in the
+// same write by a one-write COPY the server runs, leave that COPY its end.
+func TestSentStatementsForgetACopyTheServerRefuses(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	const after = "select 1"
+	// thenACopyRuns sends first and, in the same write, an extended COPY into a table of its own
+	// with its data, CopyDone and a second Sync, which the server runs; first must be refused.
+	thenACopyRuns := func(t *testing.T, conn *pgx.Conn, first ...pgproto3.FrontendMessage) {
+		t.Helper()
+		if _, err := conn.Exec(ctx, "create temporary table copy_target (n int)"); err != nil {
+			t.Fatalf("create the table: %v", err)
+		}
+		frontend := conn.PgConn().Frontend()
+		for _, message := range append(first, &pgproto3.Parse{Query: "copy copy_target from stdin"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{},
+			&pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}, &pgproto3.Sync{}) {
+			frontend.Send(message)
+		}
+		if err := frontend.Flush(); err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		if !drain(t, frontend, true) {
+			t.Fatal("control: the server refused nothing before the copy")
+		}
+		drain(t, frontend, false)
+		var copied int
+		if err := conn.QueryRow(ctx, "select count(*) from copy_target").Scan(&copied); err != nil || copied != 1 {
+			t.Fatalf("control: the copy wrote %d rows (%v), want 1", copied, err)
+		}
+	}
+	for _, scenario := range []struct {
+		name    string
+		copy    func(t *testing.T, conn *pgx.Conn)
+		refused int
+	}{
+		{name: "pgx's CopyFrom into a missing table", copy: func(t *testing.T, conn *pgx.Conn) {
+			if _, err := conn.PgConn().CopyFrom(ctx, strings.NewReader("1\n"), "copy no_such_table from stdin"); err == nil {
+				t.Fatal("control: the server took a copy into a table that does not exist")
+			}
+		}, refused: 1},
+		{name: "an extended copy whose data is refused before its CopyDone", copy: func(t *testing.T, conn *pgx.Conn) {
+			if _, err := conn.Exec(ctx, "create temporary table copy_refused (n int)"); err != nil {
+				t.Fatalf("create the table: %v", err)
+			}
+			frontend := conn.PgConn().Frontend()
+			send := func(messages ...pgproto3.FrontendMessage) {
+				t.Helper()
+				for _, message := range messages {
+					frontend.Send(message)
+				}
+				if err := frontend.Flush(); err != nil {
+					t.Fatalf("send: %v", err)
+				}
+			}
+			until := func(want func(pgproto3.BackendMessage) bool) {
+				t.Helper()
+				for {
+					message, err := frontend.Receive()
+					if err != nil {
+						t.Fatalf("read the server's answer: %v", err)
+					}
+					if want(message) {
+						return
+					}
+				}
+			}
+			send(&pgproto3.Parse{Query: "copy copy_refused from stdin"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{})
+			until(func(message pgproto3.BackendMessage) bool {
+				_, copyIn := message.(*pgproto3.CopyInResponse)
+				return copyIn
+			})
+			send(&pgproto3.CopyData{Data: []byte("not a number\n")})
+			until(func(message pgproto3.BackendMessage) bool {
+				_, refused := message.(*pgproto3.ErrorResponse)
+				return refused
+			})
+			send(&pgproto3.Sync{})
+			until(func(message pgproto3.BackendMessage) bool {
+				_, ready := message.(*pgproto3.ReadyForQuery)
+				return ready
+			})
+		}, refused: 1},
+		{name: "an extended copy into a missing table, sent in one write with its data, CopyDone and a second Sync", copy: func(t *testing.T, conn *pgx.Conn) {
+			frontend := conn.PgConn().Frontend()
+			for _, message := range []pgproto3.FrontendMessage{&pgproto3.Parse{Query: "copy no_such_table from stdin"}, &pgproto3.Bind{}, &pgproto3.Execute{},
+				&pgproto3.Sync{}, &pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}, &pgproto3.Sync{}} {
+				frontend.Send(message)
+			}
+			if err := frontend.Flush(); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if !drain(t, frontend, true) {
+				t.Fatal("control: the server took a copy into a table that does not exist")
+			}
+			drain(t, frontend, false)
+		}, refused: 1},
+		{name: "a simple copy into a missing table, then in the same write a one-write extended copy the server runs", copy: func(t *testing.T, conn *pgx.Conn) {
+			thenACopyRuns(t, conn, &pgproto3.Query{String: "copy no_such_table from stdin"})
+		}, refused: 1},
+		{name: "an insert whose Sync the server refuses, then in the same write a one-write extended copy the server runs", copy: func(t *testing.T, conn *pgx.Conn) {
+			if _, err := conn.Exec(ctx, "create temporary table deferred_unique (n int unique deferrable initially deferred)"); err != nil {
+				t.Fatalf("create the table: %v", err)
+			}
+			thenACopyRuns(t, conn, &pgproto3.Parse{Query: "insert into deferred_unique values (1), (1)"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{})
+		}},
+		{name: "a function call the server refuses, then in the same write a one-write extended copy the server runs", copy: func(t *testing.T, conn *pgx.Conn) {
+			thenACopyRuns(t, conn, &pgproto3.FunctionCall{Function: 1, ArgFormatCodes: []uint16{}, Arguments: [][]byte{}})
+		}, refused: 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent := &SentStatements{}
+			conn, err := SentStore(t, database, sent).Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection: %v", err)
+			}
+			defer conn.Release()
+			before := len(sent.Statements())
+			scenario.copy(t, conn.Conn())
+			var one int
+			if err := conn.QueryRow(ctx, after).Scan(&one); err != nil {
+				t.Fatalf("the select after the copy: %v", err)
+			}
+			ran, refused := counted(sent, before, after)
+			if ran != 1 || refused != scenario.refused || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the select after the copy %d run and %d statements refused, blind %v; want 1, %d and nothing it could not read",
+					ran, refused, sent.Blind(), scenario.refused)
+			}
+		})
+	}
+}
+
+// A CopyDone marks where a copy will end only while a copy may still start, and a refusal takes
+// away every mark of the copy it ends. Each order of writes and reads is fed here to a recorder on
+// no network connection, then a select:
+//   - pgx's CopyFrom sends its CopyDone after it reads the server's refusal of the COPY, and
+//     whether the refusal's ReadyForQuery reached the recorder first is timing: a simple COPY
+//     refused with each order, and an extended COPY whose Parse is refused with the CopyDone sent
+//     between the refusal and the ReadyForQuery;
+//   - an extended COPY sent in one write with its data, its CopyDone and a second Sync, refused at
+//     its Execute and at its Parse: the server discards up to the first Sync, the COPY's Execute
+//     among them, and answers each Sync;
+//   - the bound of what a refusal drops: a refused COPY, simple or one-write extended (refused at
+//     its Execute or its Parse), and after it in the same write a one-write extended COPY the
+//     server runs, whose mark the refusal must leave; and the same after a Sync the server
+//     refuses (an insert's deferred unique constraint at its implicit commit) and after a function
+//     call it refuses, neither of which discards what follows;
+//   - and the control that a mark stays where a copy may start: a simple COPY the server runs,
+//     its CopyDone sent before the CopyInResponse.
+//
+// The select after it must be recorded as run, the COPY as the server answered it, and nothing the
+// recorder could not read.
+func TestSentStatementsLeaveNoCopyEndAfterTheRefusal(t *testing.T) {
+	const copying, running, after = "copy no_such_table from stdin", "copy copy_target from stdin", "select 1"
+	type step struct {
+		front []pgproto3.FrontendMessage
+		back  []pgproto3.BackendMessage
+	}
+	write := func(messages ...pgproto3.FrontendMessage) step { return step{front: messages} }
+	read := func(messages ...pgproto3.BackendMessage) step { return step{back: messages} }
+	missing := &pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "42P01", Message: `relation "no_such_table" does not exist`}
+	syntax := &pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "42601", Message: `syntax error at or near "copy"`}
+	ready := &pgproto3.ReadyForQuery{TxStatus: 'I'}
+	simple := &pgproto3.Query{String: copying}
+	extended := []pgproto3.FrontendMessage{&pgproto3.Parse{Query: copying}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}}
+	data, done := &pgproto3.CopyData{Data: []byte("1\n")}, &pgproto3.CopyDone{}
+	// oneWrite is an extended COPY of sql with its data, CopyDone and a second Sync.
+	oneWrite := func(sql string) []pgproto3.FrontendMessage {
+		return []pgproto3.FrontendMessage{&pgproto3.Parse{Query: sql}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}, data, done, &pgproto3.Sync{}}
+	}
+	runs := []pgproto3.BackendMessage{&pgproto3.ParseComplete{}, &pgproto3.BindComplete{}, &pgproto3.CopyInResponse{ColumnFormatCodes: []uint16{0}},
+		&pgproto3.CommandComplete{CommandTag: []byte("COPY 1")}, ready}
+	for _, scenario := range []struct {
+		name         string
+		steps        []step
+		ran, refused int
+	}{
+		{name: "a simple COPY refused, its refusal and ReadyForQuery read before the CopyDone",
+			steps: []step{write(simple), read(missing, ready), write(data, done)}, refused: 1},
+		{name: "a simple COPY refused, the CopyDone sent between its refusal and ReadyForQuery",
+			steps: []step{write(simple), read(missing), write(data, done), read(ready)}, refused: 1},
+		{name: "an extended COPY whose Parse is refused, the CopyDone sent between the refusal and the ReadyForQuery",
+			steps: []step{write(extended...), read(missing), write(data, done), read(ready)}},
+		{name: "an extended COPY sent in one write with its data, CopyDone and a second Sync, refused at its Execute",
+			steps: []step{write(oneWrite(copying)...), read(&pgproto3.ParseComplete{}, &pgproto3.BindComplete{}, missing, ready, ready)}, refused: 1},
+		{name: "an extended COPY sent in one write with its data, CopyDone and a second Sync, refused at its Parse",
+			steps: []step{write(oneWrite(copying)...), read(syntax, ready, ready)}},
+		{name: "a one-write COPY refused at its Execute, then in the same write a one-write COPY the server runs",
+			steps: []step{write(append(oneWrite(copying), oneWrite(running)...)...), read(append([]pgproto3.BackendMessage{&pgproto3.ParseComplete{}, &pgproto3.BindComplete{}, missing, ready, ready}, runs...)...)}, ran: 1, refused: 1},
+		{name: "a one-write COPY refused at its Parse, then in the same write a one-write COPY the server runs",
+			steps: []step{write(append(oneWrite(copying), oneWrite(running)...)...), read(append([]pgproto3.BackendMessage{syntax, ready, ready}, runs...)...)}, ran: 1},
+		{name: "a simple COPY refused, then in the same write a one-write COPY the server runs",
+			steps: []step{write(append([]pgproto3.FrontendMessage{simple}, oneWrite(running)...)...), read(append([]pgproto3.BackendMessage{missing, ready}, runs...)...)}, ran: 1, refused: 1},
+		{name: "an insert whose Sync the server refuses, then in the same write a one-write COPY the server runs",
+			steps: []step{write(append([]pgproto3.FrontendMessage{&pgproto3.Parse{Query: "insert into deferred_unique values (1), (1)"}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}}, oneWrite(running)...)...),
+				read(append([]pgproto3.BackendMessage{&pgproto3.ParseComplete{}, &pgproto3.BindComplete{}, &pgproto3.CommandComplete{CommandTag: []byte("INSERT 0 2")},
+					&pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "23505", Message: `duplicate key value violates unique constraint "deferred_unique_n_key"`}, ready}, runs...)...)}, ran: 1},
+		{name: "a function call the server refuses, then in the same write a one-write COPY the server runs",
+			steps: []step{write(append([]pgproto3.FrontendMessage{&pgproto3.FunctionCall{Function: 1, ArgFormatCodes: []uint16{}, Arguments: [][]byte{}}}, oneWrite(running)...)...),
+				read(append([]pgproto3.BackendMessage{&pgproto3.ErrorResponse{Severity: "ERROR", SeverityUnlocalized: "ERROR", Code: "42883", Message: `function with OID 1 does not exist`}, ready}, runs...)...)}, ran: 1, refused: 1},
+		{name: "a simple COPY the server runs, its CopyDone sent before the CopyInResponse",
+			steps: []step{write(simple, data, done), read(&pgproto3.CopyInResponse{ColumnFormatCodes: []uint16{0}}, &pgproto3.CommandComplete{CommandTag: []byte("COPY 1")}, ready)}, ran: 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent, conn := fed(startup(), encoded[pgproto3.BackendMessage](t, ready), 1)
+			for _, step := range scenario.steps {
+				if step.front != nil {
+					conn.readWritten(encoded(t, step.front...))
+				} else {
+					conn.readAnswered(encoded(t, step.back...))
+				}
+			}
+			conn.readWritten(encoded[pgproto3.FrontendMessage](t, &pgproto3.Parse{Query: after}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}))
+			conn.readAnswered(encoded[pgproto3.BackendMessage](t, &pgproto3.ParseComplete{}, &pgproto3.BindComplete{},
+				&pgproto3.DataRow{Values: [][]byte{[]byte("1")}}, &pgproto3.CommandComplete{CommandTag: []byte("SELECT 1")}, ready))
+			ranCopy, refused := counted(sent, 0, copying)
+			ranRunning, _ := counted(sent, 0, running)
+			ranCopy += ranRunning
+			ranAfter, _ := counted(sent, 0, after)
+			if ranCopy != scenario.ran || refused != scenario.refused || ranAfter != 1 || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the copy %d run and %d statements refused, the select after it %d run, blind %v; want %d, %d, 1 and nothing it could not read",
+					ranCopy, refused, ranAfter, sent.Blind(), scenario.ran, scenario.refused)
+			}
+		})
+	}
+}
+
+// A message other than CopyData, CopyDone, CopyFail, Sync or Flush that the client sends in
+// copy-in ends the copy and the connection: the server refuses the copy, then says it lost the
+// protocol's synchronization and closes the connection, answering nothing more. Here a COPY FROM
+// sent as a simple query or in an extended query, ended after its data by a simple query or by a
+// Parse. The copy is recorded as refused once, the message that ended it not at all, and there is
+// nothing the recorder could not read.
+func TestSentStatementsCountOnceACopyAnotherMessageEnds(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	const copying, ending = "copy copy_ended from stdin", "select 'ends the copy'"
+	for _, scenario := range []struct {
+		name  string
+		start []pgproto3.FrontendMessage
+		end   pgproto3.FrontendMessage
+	}{
+		{name: "a simple copy ended by a simple query", start: []pgproto3.FrontendMessage{&pgproto3.Query{String: copying}}, end: &pgproto3.Query{String: ending}},
+		{name: "a simple copy ended by a Parse", start: []pgproto3.FrontendMessage{&pgproto3.Query{String: copying}}, end: &pgproto3.Parse{Query: ending}},
+		{
+			name:  "an extended copy ended by a Parse",
+			start: []pgproto3.FrontendMessage{&pgproto3.Parse{Query: copying}, &pgproto3.Bind{}, &pgproto3.Execute{}, &pgproto3.Sync{}},
+			end:   &pgproto3.Parse{Query: ending},
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent := &SentStatements{}
+			conn, err := SentStore(t, database, sent).Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection: %v", err)
+			}
+			defer conn.Release()
+			if _, err := conn.Exec(ctx, "create temporary table copy_ended (n int)"); err != nil {
+				t.Fatalf("create the table: %v", err)
+			}
+			frontend := conn.Conn().PgConn().Frontend()
+			send := func(messages ...pgproto3.FrontendMessage) {
+				t.Helper()
+				for _, message := range messages {
+					frontend.Send(message)
+				}
+				if err := frontend.Flush(); err != nil {
+					t.Fatalf("send: %v", err)
+				}
+			}
+			before := len(sent.Statements())
+			send(scenario.start...)
+			for {
+				message, err := frontend.Receive()
+				if err != nil {
+					t.Fatalf("read the server's answer: %v", err)
+				}
+				if refusal, refused := message.(*pgproto3.ErrorResponse); refused {
+					t.Fatalf("the server refused the copy: %s %s", refusal.Code, refusal.Message)
+				}
+				if _, copyIn := message.(*pgproto3.CopyInResponse); copyIn {
+					break
+				}
+			}
+			send(&pgproto3.CopyData{Data: []byte("1\n")}, scenario.end)
+			var answers []string
+			for {
+				message, err := frontend.Receive()
+				if err != nil {
+					break
+				}
+				if refusal, refused := message.(*pgproto3.ErrorResponse); refused {
+					answers = append(answers, refusal.Severity+" "+refusal.Code)
+				} else {
+					answers = append(answers, fmt.Sprintf("%T", message))
+				}
+			}
+			if !slices.Equal(answers, []string{"ERROR 08P01", "FATAL 08P01"}) {
+				t.Fatalf("control: the server answered the message that ended the copy with %q, then closed the connection; want its refusal of the copy and the end of the connection", answers)
+			}
+			ranCopy, refused := counted(sent, before, copying)
+			endings := 0
+			for _, statement := range sent.Statements()[before:] {
+				if statement.SQL == ending {
+					endings++
+				}
+			}
+			if ranCopy != 0 || refused != 1 || endings != 0 || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the copy %d run and %d statements refused, and the message that ended the copy %d times, blind %v; want 0, 1 (the copy), 0 and nothing it could not read",
+					ranCopy, refused, endings, sent.Blind())
+			}
+		})
+	}
+}
+
+// A FATAL error ends the connection, and the recorder counts the statement it ends once: here a
+// query the server is running when a second connection terminates its backend, sent as a simple
+// query and in an extended query. The server answers the query with a FATAL error and closes the
+// connection, and the recorder records the query as refused once, with nothing it could not read.
+//
+// The terminate waits until the backend sleeps in pg_sleep (the wait event PgSleep), which it does
+// only while it runs the query. The server shows an extended query as active, with its text, from
+// the start of its Parse, before its Bind and Execute. So a terminate sent on that alone can end
+// the Parse, Bind or Describe instead, and the recorder rightly records nothing then.
+func TestSentStatementsCountAStatementAFatalErrorEnds(t *testing.T) {
+	ctx := context.Background()
+	database := Open(t)
+	for _, scenario := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{name: "a simple query", query: "select pg_sleep(60)"},
+		{name: "an extended query", query: "select pg_sleep($1)", args: []any{pgx.QueryExecModeExec, float64(60)}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			sent := &SentStatements{}
+			conn, err := SentStore(t, database, sent).Pool.Acquire(ctx)
+			if err != nil {
+				t.Fatalf("acquire a connection: %v", err)
+			}
+			defer conn.Release()
+			pid := conn.Conn().PgConn().PID()
+			before := len(sent.Statements())
+			ended := make(chan error, 1)
+			go func() {
+				_, err := conn.Exec(ctx, scenario.query, scenario.args...)
+				ended <- err
+			}()
+			for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+				var running bool
+				if err := database.Pool.QueryRow(ctx, "select exists (select from pg_stat_activity where pid = $1 and state = 'active' and query = $2 and wait_event_type = 'Timeout' and wait_event = 'PgSleep')",
+					pid, scenario.query).Scan(&running); err != nil {
+					t.Fatalf("read whether the query runs: %v", err)
+				}
+				if running {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the server did not run the query to its pg_sleep within 30 s")
+				}
+			}
+			var terminated bool
+			if err := database.Pool.QueryRow(ctx, "select pg_terminate_backend($1)", pid).Scan(&terminated); err != nil || !terminated {
+				t.Fatalf("terminate the query's backend: %v, terminated %v", err, terminated)
+			}
+			var fatal *pgconn.PgError
+			if err := <-ended; !errors.As(err, &fatal) || fatal.Severity != "FATAL" || fatal.Code != "57P01" {
+				t.Fatalf("control: the query ended with %v, want the server's FATAL 57P01", err)
+			}
+			ran, refused := counted(sent, before, scenario.query)
+			if ran != 0 || refused != 1 || len(sent.Blind()) != 0 {
+				t.Fatalf("recorded the query %d run and %d statements refused, blind %v; want 0, 1 and nothing it could not read", ran, refused, sent.Blind())
+			}
+			for _, statement := range sent.Statements()[before:] {
+				if statement.Failed && (statement.SQL != scenario.query || statement.Code != "57P01") {
+					t.Errorf("recorded the refusal of %q with the code %s, want the query's, with 57P01", statement.SQL, statement.Code)
+				}
+			}
+		})
+	}
+}

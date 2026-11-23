@@ -349,3 +349,174 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		}
 	})
 }
+
+// foreignChildOpenAnswer is the body of a 409 FOREIGN_CHILD_OPEN, declared here rather than taken
+// from the route's own type, so the test reads the wire shape a client reads.
+type foreignChildOpenAnswer struct {
+	Code   string `json:"code"`
+	Error  string `json:"error"`
+	Issues []struct {
+		Key     string `json:"key"`
+		Project string `json:"project"`
+		Status  string `json:"status"`
+	} `json:"issues"`
+}
+
+// TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject: a status write of retro or done that
+// carries refuse_open_foreign_children, which the Legion daemon's sign_off and close_root send, is
+// refused while a child of another project is open. Open is what the daemon's record.ChildOpen
+// says of a child it does not record, which a child of another project always is: any status but
+// done and icebox. A write without the field, a person's, and a write over an open child of the
+// issue's own project, which the parent's own daemon judges, are taken as before.
+func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	core := createListedIssues(t, handler, "CORE", 4)
+	side := createListedIssues(t, handler, "SIDE", 1)
+	parent, child := core[0], side[0]
+	// The routes of this build refuse a parent of another project, so the test writes the link
+	// itself, as a later build's route would.
+	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
+		t.Fatalf("put %s under %s: %v", child, parent, err)
+	}
+	patch := func(t *testing.T, key string, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, body, "alice")
+	}
+	setStatus := func(t *testing.T, key, status string) {
+		t.Helper()
+		if response := patch(t, key, map[string]any{"status": status}); response.Code != http.StatusOK {
+			t.Fatalf("set %s to %s: status=%d body=%s", key, status, response.Code, response.Body.String())
+		}
+	}
+	statusOf := func(t *testing.T, key string) string {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
+		return decodeBody[model.Issue](t, response).Status
+	}
+
+	// Each row is a subtest of its own, so a run against a build without the rule reports every
+	// row: the refused rows fail there, and the taken rows pass, which pins what stays as it was.
+	for _, row := range []struct{ child, write string }{
+		{"triage", "retro"},
+		{"triage", "done"},
+		{"in_progress", "retro"},
+	} {
+		t.Run(row.write+" over a child of another project in "+row.child+" is refused", func(t *testing.T) {
+			setStatus(t, parent, "in_progress")
+			setStatus(t, child, row.child)
+			response := patch(t, parent, map[string]any{"status": row.write, "refuse_open_foreign_children": true})
+			if response.Code != http.StatusConflict {
+				t.Fatalf("status=%d body=%s, want 409 FOREIGN_CHILD_OPEN", response.Code, response.Body.String())
+			}
+			refusal := decodeBody[foreignChildOpenAnswer](t, response)
+			got := make([]string, 0, len(refusal.Issues))
+			for _, issue := range refusal.Issues {
+				got = append(got, issue.Key+" "+issue.Project+" "+issue.Status)
+			}
+			want := []string{child + " SIDE " + row.child}
+			if refusal.Code != "FOREIGN_CHILD_OPEN" || !slices.Equal(got, want) || !strings.Contains(refusal.Error, child) {
+				t.Fatalf("refusal %+v, want FOREIGN_CHILD_OPEN naming %v", refusal, want)
+			}
+			if got := statusOf(t, parent); got != "in_progress" {
+				t.Fatalf("the refused write left %s in %s, want in_progress", parent, got)
+			}
+		})
+	}
+
+	for _, row := range []struct {
+		what, child string
+		field       bool
+	}{
+		{"a child of another project in icebox, which a parent does not count as open", "icebox", true},
+		{"a done child of another project", "done", true},
+		{"an open child of another project, written with no field, as a person writes", "triage", false},
+	} {
+		t.Run("retro over "+row.what+" is taken", func(t *testing.T) {
+			setStatus(t, parent, "in_progress")
+			setStatus(t, child, row.child)
+			body := map[string]any{"status": "retro"}
+			if row.field {
+				body["refuse_open_foreign_children"] = true
+			}
+			if response := patch(t, parent, body); response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
+			}
+			if got := statusOf(t, parent); got != "retro" {
+				t.Fatalf("the write left %s in %s, want retro", parent, got)
+			}
+		})
+	}
+
+	// An open child of the issue's own project is its own daemon's to judge (record.ChildOpen
+	// over the children it records), so Dispatch takes the write.
+	t.Run("retro over an open child of the issue's own project is taken", func(t *testing.T) {
+		ownParent, ownChild := core[2], core[3]
+		if response := patch(t, ownChild, map[string]any{"parent": ownParent}); response.Code != http.StatusOK {
+			t.Fatalf("put %s under %s: status=%d body=%s", ownChild, ownParent, response.Code, response.Body.String())
+		}
+		setStatus(t, ownChild, "in_progress")
+		if response := patch(t, ownParent, map[string]any{"status": "retro", "refuse_open_foreign_children": true}); response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s, want 200", response.Code, response.Body.String())
+		}
+	})
+}
+
+// TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus: refuse_open_foreign_children asks for the
+// check of an acceptance write, so it is refused beside any other status or none.
+func TestAnAcceptanceFieldGoesOnlyWithAnAcceptanceStatus(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	core := createListedIssues(t, handler, "CORE", 1)
+	for _, body := range []map[string]any{
+		{"status": "in_progress", "refuse_open_foreign_children": true},
+		{"title": "Retitled", "refuse_open_foreign_children": true},
+	} {
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0], body, "alice")
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_ISSUE"`) {
+			t.Fatalf("%v: status=%d body=%s, want 400 INVALID_ISSUE", body, response.Code, response.Body.String())
+		}
+	}
+}
+
+// TestAnAcceptanceWriteTakesTheDependencyLock: the acceptance check and its write run under the
+// deployment dependency lock that every parent write takes, so no child is filed between the two.
+// A status write without the field takes no dependency lock, as before.
+func TestAnAcceptanceWriteTakesTheDependencyLock(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	core := createListedIssues(t, handler, "CORE", 2)
+	gate, err := database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(context.Background())
+	if err := lockDeploymentIssueDependencies(context.Background(), gate); err != nil {
+		t.Fatal(err)
+	}
+	plain := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		plain <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[1], map[string]any{"status": "retro"}, "alice")
+	}()
+	if response := awaitResponse(t, plain); response.Code != http.StatusOK {
+		t.Fatalf("a status write with no field while the dependency lock is held: status=%d body=%s", response.Code, response.Body.String())
+	}
+	waiting := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		waiting <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+core[0], map[string]any{
+			"status": "retro", "refuse_open_foreign_children": true,
+		}, "alice")
+	}()
+	waitForDatabaseLocks(t, gate, 1)
+	select {
+	case response := <-waiting:
+		t.Fatalf("the acceptance write was answered while the dependency lock was held: status=%d body=%s", response.Code, response.Body.String())
+	default:
+	}
+	if err := gate.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if response := awaitResponse(t, waiting); response.Code != http.StatusOK {
+		t.Fatalf("the acceptance write after the lock's release: status=%d body=%s", response.Code, response.Body.String())
+	}
+}

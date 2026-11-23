@@ -45,7 +45,7 @@ func ForgetDocument(ctx context.Context, q Execer, artifactID string) error {
 // refs, where a document's, a comment's, a message's and an ask's question's own mentions are;
 // block_refs, where the mentions a document's blocks hold are; and ask_block_refs, where a link
 // written in an option or in the answer of an ask is, since an ask's own refs row holds the links
-// of its question alone (askPartLinks).
+// of its question alone (itemBlockLinks).
 //
 // The document's own mentions are not citations of it: a refs row from it (from_kind 'artifact'
 // with its id) and a block_refs row of one of its own blocks go with it (ForgetDocument, the
