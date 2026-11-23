@@ -101,8 +101,8 @@ func TestWorkspaceInitCacheRefusesBeforeServing(t *testing.T) {
 			name: "a provisioning token file that is absent",
 			env:  func(t *testing.T, v *issueVolume) { t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token+".absent") },
 			code: 1,
-			says: func(v *issueVolume) string {
-				return "LEGION_PROVISION_TOKEN_FILE names " + v.token + ".absent, which could not be read"
+			says: func(*issueVolume) string {
+				return "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: open: no such file or directory"
 			},
 		},
 		{

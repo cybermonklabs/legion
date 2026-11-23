@@ -18,6 +18,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -2256,7 +2257,9 @@ func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connSt
 		if downtime < warnEvery || (!warnedAt.IsZero() && time.Since(warnedAt) < warnEvery) {
 			continue
 		}
-		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", conn.LastError())
+		// The last error by its class (natsurl.ConnectionClass): a failed redial's names the server
+		// by its host and port.
+		w.log.Warn("NATS has not reconnected", "downtime", downtime.Round(time.Second).String(), "error", natsurl.ConnectionClass(conn.LastError()))
 		warnedAt = time.Now()
 	}
 }

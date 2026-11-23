@@ -129,8 +129,8 @@ func TestWorkspaceInitFetchRefusesBeforeFetching(t *testing.T) {
 				t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token+".absent")
 			},
 			code: 3,
-			says: func(v *issueVolume) string {
-				return "LEGION_PROVISION_TOKEN_FILE names " + v.token + ".absent, which could not be read"
+			says: func(*issueVolume) string {
+				return "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: open: no such file or directory"
 			},
 		},
 		{
@@ -823,7 +823,7 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			v.setenv(t)
 			t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token+".absent")
 			return v.fetchArgs()
-		}, code: 3, says: "provision-token.absent, which could not be read"},
+		}, code: 3, says: "LEGION_PROVISION_TOKEN_FILE names a file that could not be read: open: no such file or directory"},
 		{name: "no git on PATH", fetch: func(t *testing.T, v *issueVolume, _ *instantClock) []string {
 			v.setenv(t)
 			t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)

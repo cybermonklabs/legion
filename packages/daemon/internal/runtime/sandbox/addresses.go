@@ -985,7 +985,9 @@ func namedURL(address string) string {
 
 // namedNATSURLs names ENVOY_NATS_URL from the distinct values r.natsURLs holds, the entries
 // readNatsURLs accepted, before mainEnvironment comma-joined them: each is one endpoint, so namedURL
-// parses it whole. The joined value is never split, since raw commas are valid in userinfo.
+// parses it whole. readNatsURLs refuses an entry holding a comma, since the NATS client reads one as
+// the end of a server URL, so the joined value splits back into these entries; it is named from
+// them all the same, never by splitting it.
 func namedNATSURLs(urls []string) string {
 	if len(urls) == 0 {
 		return "(unset)"

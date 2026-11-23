@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,12 +41,13 @@ func VariantInstructionsFile(stateDir, experiment string, variant Variant) strin
 // ReadSecretPointer is the trimmed contents of the file a pointer key names — `variable` is the
 // key as the operator wrote it (`envoy_token_file`, `operator_token_file`), so the refusal reads
 // in their words. A set pointer is authoritative: a missing, unreadable, or blank file is a
-// refusal naming the key and the path, never a fallback to another source. The contents never
-// appear in an error.
+// refusal naming the key, never a fallback to another source. A file that could not be read is
+// named by the key and the system's reason alone (unreadableFile), and a blank one by its path
+// too. The contents never appear in an error.
 func ReadSecretPointer(variable, file string) (string, error) {
 	contents, err := os.ReadFile(file)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", variable, file, err)
+		return "", &unreadableFile{variable, err}
 	}
 	secret := strings.TrimSpace(string(contents))
 	if secret == "" {
@@ -52,6 +55,31 @@ func ReadSecretPointer(variable, file string) (string, error) {
 	}
 	return secret, nil
 }
+
+// unreadableFile is a secret's file that could not be read, refused naming variable, the key or
+// variable that names it, and the system's reason alone ("open: no such file or directory"), never
+// the path or err's own text, which repeats it: a pointer is where a person who pasted the secret
+// itself puts it, an nkey seed or a token, and such a refusal printed it whole, twice. It unwraps
+// to err, so errors.Is(err, fs.ErrNotExist) still holds.
+type unreadableFile struct {
+	variable string
+	err      error
+}
+
+func (u *unreadableFile) Error() string {
+	reason := "the read failed"
+	var path *fs.PathError
+	if errors.As(u.err, &path) {
+		reason = path.Op + " failed"
+		var errno syscall.Errno
+		if errors.As(path.Err, &errno) {
+			reason = path.Op + ": " + errno.Error()
+		}
+	}
+	return u.variable + " names a file that could not be read: " + reason
+}
+
+func (u *unreadableFile) Unwrap() error { return u.err }
 
 // ReadPrivateSecretPointer is ReadSecretPointer for a secret a group- or other-readable copy of
 // would be a second way in — the operator bearer, which buys a controller capability and opens every
@@ -102,16 +130,18 @@ var (
 )
 
 // readSecretFile is ReadPrivateSecretPointer's open, check, and read, refusing the bits of the mode
-// modeFor answers for the open file.
+// modeFor answers for the open file. A file that could not be opened, examined or read is named by
+// variable and the system's reason alone (unreadableFile); one that was opened is named by its path
+// too.
 func readSecretFile(variable, file string, modeFor func(os.FileInfo) secretMode) (string, error) {
 	f, err := os.OpenFile(file, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", variable, file, err)
+		return "", &unreadableFile{variable, err}
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", variable, file, err)
+		return "", &unreadableFile{variable, err}
 	}
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("%s names %s, which is not a regular file", variable, file)
@@ -121,7 +151,7 @@ func readSecretFile(variable, file string, modeFor func(os.FileInfo) secretMode)
 	}
 	contents, err := io.ReadAll(f)
 	if err != nil {
-		return "", fmt.Errorf("%s names %s, which could not be read: %w", variable, file, err)
+		return "", &unreadableFile{variable, err}
 	}
 	token := strings.TrimSpace(string(contents))
 	if token == "" {

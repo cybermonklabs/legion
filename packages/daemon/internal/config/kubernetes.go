@@ -1349,7 +1349,7 @@ func ReadPodFile(path string) (PodConfig, error) {
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(raw, &document); err != nil {
-		return PodConfig{}, fmt.Errorf("parse %s: %w", path, err)
+		return PodConfig{}, fmt.Errorf("parse %s: %s", path, yamlParseRefusal(err))
 	}
 	if len(document.Content) != 1 {
 		return PodConfig{}, fmt.Errorf("%s holds no %s mapping", path, podKey)
@@ -2394,7 +2394,10 @@ func checkPodReachable(cfg Config) error {
 		default:
 			continue
 		}
-		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, address.value, why)
+		// By its scheme and host alone: the refusal is about the host, and the URL's userinfo is
+		// where these keys take a credential, which `legion stop` prints this error with.
+		named := (&url.URL{Scheme: parsed.Scheme, Host: parsed.Host}).String()
+		return fmt.Errorf("%s %s %s; name the host pods reach it at when runtime is kubernetes", address.key, named, why)
 	}
 	return nil
 }

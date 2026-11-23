@@ -73,7 +73,7 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
-		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %w", err)
+		return ControllerConfig{}, fmt.Errorf("Invalid controller configuration: %s", yamlParseRefusal(err))
 	}
 	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
 		return ControllerConfig{}, errors.New("controller.yaml must be a mapping")

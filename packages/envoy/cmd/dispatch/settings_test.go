@@ -956,9 +956,12 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"NATS_SERVICE_TOKEN_FILE": func(t *testing.T) {
+			// A token file that could not be read is named by the variable and the system's reason,
+			// never its path: the path is where a person who pasted the token itself put it.
 			missing := filepath.Join(t.TempDir(), "missing")
-			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names "+missing) {
-				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused", err)
+			err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": missing}, localNATS)
+			if err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE names a service token file that could not be read: open: no such file or directory") || strings.Contains(err.Error(), missing) {
+				t.Errorf("NATS_SERVICE_TOKEN_FILE: err = %v, want the missing token file refused by its variable and reason, not its path", err)
 			}
 			token := writeFile(t, "token", "a.b.c\n")
 			if err := natsConnect(map[string]string{"NATS_SERVICE_TOKEN_FILE": token, "NATS_NKEY_SEED": "not a seed"}, localNATS); err == nil || !strings.Contains(err.Error(), "NATS_SERVICE_TOKEN_FILE and NATS_NKEY_SEED are both set") {
