@@ -16,7 +16,16 @@
  *
  *  Registered on the page before its first load and after the stub fixture's own `/ws/live`
  *  answer, which it replaces for these rows: Playwright reads the last route registered first
- *  (`routeWebSocket` unshifts its handler, playwright-core 1.64.1). */
+ *  (`routeWebSocket` unshifts its handler, playwright-core 1.64.1).
+ *
+ *  On replay it also answers one write the recording does not hold: the reader's read mark on an
+ *  issue (`PUT /api/v1/me/issues/{key}/state`). A replayed issue page sends it and the HAR holds
+ *  no answer, so the stub aborted it. A read mark is a kept write
+ *  (`features/writes/write-storage.ts`): the page sent it again on each load and each retry - six
+ *  times in one replayed `issue-conversation` row - and each is a request under `/api/v1/me/`,
+ *  which the settle wait counts as moving the Inbox number (`e2e/review-routes.ts`). One of the
+ *  six, sent as the row moved to its next load, was never answered, and the wait timed out on it.
+ *  Answered here as the server answers it, the mark lands once and nothing is sent again. */
 import { readFileSync, writeFileSync } from "node:fs";
 import type { Page, TestInfo, WebSocketRoute } from "@playwright/test";
 
@@ -160,5 +169,17 @@ async function replay(page: Page, testInfo: TestInfo): Promise<void> {
 export async function routeLayoutSockets(page: Page, testInfo: TestInfo): Promise<() => void> {
   if (stubRecording()) return await record(page, testInfo);
   await replay(page, testInfo);
+  await page.route(/\/api\/v1\/me\/issues\/[^/]+\/state$/, async (route) => {
+    if (route.request().method() !== "PUT") {
+      await route.fallback();
+      return;
+    }
+    // The server's `UserIssueState`, the fields the mark wrote over what a new reader holds.
+    const wrote = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+    await route.fulfill({
+      contentType: "application/json",
+      json: { dismissed: [], last_read_seq: 0, pinned: false, seq: 0, ...wrote },
+    });
+  });
   return () => undefined;
 }
