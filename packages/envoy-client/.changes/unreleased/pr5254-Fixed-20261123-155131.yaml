@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    The README and `DispatchWriteRetry`'s comment no longer say an upload on a slow line is never
+    cut off for silence. The silence bound counts the client's reads of the body, which come only
+    as the connection's buffers take bytes, so an upload is cut off while it is still going out
+    when its next read, or the rest of its bytes and Dispatch's answer after its last read, take
+    longer than `silenceMs`.
+time: 2026-11-23T15:51:31Z
+custom:
+    Issue: pr5254
