@@ -43,7 +43,7 @@ Do these steps in this order, at the head you review. `<head>` is that head, in 
 
 Record the final list before you submit the review of the head. Dispatch judges the issue's conclusion against your final list at the head that merges, and the merge waits while that head has none. When the head moves, do the three steps again at the new head.
 
-When step 2 prints no author's list at that head, do not write the final list. Tell the implementer with `envoy_publish` to its role topic to record the author's list at that head, and write the final list when the author's list is there. Dispatch refuses a final list while the pull request has no author's list (`OUTCOME_AUTHOR_LIST_FIRST`), and a list from a session that wrote another role's list of the same pull request (`OUTCOME_LIST_BY_AUTHOR`, `OUTCOME_LIST_BY_REVIEWER`). Tell the architect of that second refusal: your session cannot judge a change it wrote the author's list for.
+When step 2 prints no author's list at that head, do not write the final list. Tell the implementer with `envoy_publish` to its role topic to record the author's list at that head, and write the final list when the author's list is there. Dispatch refuses a final list while the pull request has no author's list at that head (`OUTCOME_AUTHOR_LIST_FIRST`), and a list from a session that wrote another role's list of the same pull request, on whichever issue of the tree it wrote it (`OUTCOME_LIST_BY_AUTHOR`, `OUTCOME_LIST_BY_REVIEWER`). Tell the architect of that second refusal: your session cannot judge a change it wrote the author's list for.
 
 ## Later rounds
 

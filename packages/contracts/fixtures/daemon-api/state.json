@@ -102,6 +102,8 @@
           "currentVersion": 4,
           "approvedVersion": 4,
           "exemptVersion": null,
+          "verificationVersion": 0,
+          "checksUnapproved": false,
           "status": "approved"
         }
       ],
@@ -269,7 +271,9 @@
         "currentVersion": 7,
         "approvedVersion": 6,
         "exemptVersion": null,
-        "rule": "approval"
+        "rule": "approval",
+        "verificationVersion": 0,
+        "checksUnapproved": false
       },
       "gatedSteps": [
         {
@@ -278,6 +282,8 @@
           "currentVersion": 7,
           "approvedVersion": 6,
           "exemptVersion": null,
+          "verificationVersion": 0,
+          "checksUnapproved": false,
           "status": "waiting"
         }
       ],
@@ -379,6 +385,8 @@
           "step": "spec",
           "approvedVersion": null,
           "exemptVersion": null,
+          "verificationVersion": 0,
+          "checksUnapproved": false,
           "status": "unregistered"
         }
       ],
@@ -436,6 +444,8 @@
           "currentVersion": 3,
           "approvedVersion": 3,
           "exemptVersion": null,
+          "verificationVersion": 0,
+          "checksUnapproved": false,
           "status": "approved"
         }
       ],
@@ -477,6 +487,8 @@
           "currentVersion": 2,
           "approvedVersion": null,
           "exemptVersion": null,
+          "verificationVersion": 0,
+          "checksUnapproved": false,
           "status": "changes_requested",
           "changesReason": "name the rollback path for the schema change"
         }
@@ -563,6 +575,8 @@
           "currentVersion": 5,
           "approvedVersion": 5,
           "exemptVersion": null,
+          "verificationVersion": 0,
+          "checksUnapproved": false,
           "status": "approved"
         }
       ],
@@ -623,6 +637,8 @@
           "currentVersion": 2,
           "approvedVersion": 2,
           "exemptVersion": null,
+          "verificationVersion": 0,
+          "checksUnapproved": false,
           "status": "approved"
         }
       ],

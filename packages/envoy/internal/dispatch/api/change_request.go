@@ -42,13 +42,15 @@ const (
 	outcomeListFinal    = "final"
 )
 
-// The reasons the ending of a change waits (D10).
+// The reasons the ending of a change waits (D10, R25).
 const (
-	endingNoFinalListForHead       = "no_final_list_for_head"
-	endingFinalListOfAnotherHead   = "final_list_of_another_head"
-	endingNoConclusion             = "no_conclusion"
-	endingIncomplete               = "incomplete"
-	endingUncoveredWithoutApproval = "uncovered_without_approval"
+	endingNoFinalListForHead           = "no_final_list_for_head"
+	endingFinalListOfAnotherHead       = "final_list_of_another_head"
+	endingNoConclusion                 = "no_conclusion"
+	endingIncomplete                   = "incomplete"
+	endingUncoveredWithoutApproval     = "uncovered_without_approval"
+	endingProposesWithoutApproval      = "proposes_without_approval"
+	endingChangesChecksWithoutApproval = "changes_checks_without_approval"
 )
 
 // recordOutcomesInput is the body of POST /api/v1/issues/{key}/outcomes.
@@ -148,14 +150,17 @@ func issueNotFound(key string) error {
 // recordOutcomes records one list of outcomes of a pull request's head for the issue, as a row of
 // its own, and appends spec.outcomes_recorded on the issue in the same transaction. A writer of
 // the issue records it: a person, or a session naming itself in actor. The lists are R27's three,
-// and only an independent reviewer writes the final list, so the record refuses, under the issue's
-// owner lock, so that two records of one pull request are judged one after the other: a reviewer
-// or final list from an actor that recorded the author's list of the pull request (403
+// and only an independent reviewer writes the final list. The ending reads the final list from
+// any issue of the tree (finalListQuery), so who wrote what of a pull request is read from every
+// record of that pull request, whichever issue holds it, under a lock on the pull request, so that
+// two records of one pull request are judged one after the other. The record refuses a reviewer or
+// final list from an actor that recorded the author's list of the pull request (403
 // OUTCOME_LIST_BY_AUTHOR), an author's list from an actor that recorded a reviewer or final list
-// of it (403 OUTCOME_LIST_BY_REVIEWER), a final list while no author's list of the pull request is
-// recorded (409 OUTCOME_AUTHOR_LIST_FIRST), and a final list from an actor that recorded no
-// reviewer's list at that head (409 OUTCOME_REVIEWER_LIST_FIRST). A closed issue takes a record
-// too: the list of a merged head is a fact of the merge.
+// of it (403 OUTCOME_LIST_BY_REVIEWER), a final list while no author's list of the pull request at
+// that head is recorded (409 OUTCOME_AUTHOR_LIST_FIRST), and a final list from an actor that
+// recorded no reviewer's list at that head (409 OUTCOME_REVIEWER_LIST_FIRST). The reviewer's own
+// list needs no author's list: the reviewer writes it before it reads the author's. A closed issue
+// takes a record too: the list of a merged head is a fact of the merge.
 func (s *server) recordOutcomes(w http.ResponseWriter, r *http.Request) {
 	var input recordOutcomesInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -191,8 +196,9 @@ func (s *server) recordOutcomes(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusCreated, written)
 }
 
-// writeOutcomeRecord writes record and its event in one transaction under the issue's owner lock,
-// after the refusals recordOutcomes names, and answers the row and the event to publish.
+// writeOutcomeRecord writes record and its event in one transaction under the issue's owner lock
+// and the pull request's lock (lockPullRequestOutcomes), after the refusals recordOutcomes names,
+// and answers the row and the event to publish.
 func (s *server) writeOutcomeRecord(ctx context.Context, record model.SpecOutcomeRecord) (model.SpecOutcomeRecord, model.Event, error) {
 	outcomes, err := json.Marshal(record.Outcomes)
 	if err != nil {
@@ -212,37 +218,41 @@ func (s *server) writeOutcomeRecord(ctx context.Context, record model.SpecOutcom
 	} else if err != nil {
 		return model.SpecOutcomeRecord{}, model.Event{}, err
 	}
-	// What the actor and every writer recorded of this pull request before, read after the lock:
-	// whether the actor recorded the author's list, a reviewer's or final list, or a reviewer's
-	// list at this head, and whether anyone recorded the author's list.
+	if err := lockPullRequestOutcomes(ctx, tx, record.PullRequest); err != nil {
+		return model.SpecOutcomeRecord{}, model.Event{}, err
+	}
+	// What the actor and every writer recorded of this pull request before, on any issue, read
+	// after the lock: whether the actor recorded the author's list, a reviewer's or final list, or
+	// a reviewer's list at this head, and whether anyone recorded the author's list at this head.
 	var authored, reviewed, reviewedHead, authorListed bool
 	if err := tx.QueryRow(ctx, `
 		select
 			coalesce(bool_or(list = 'author' and mine), false),
 			coalesce(bool_or(list in ('reviewer', 'final') and mine), false),
-			coalesce(bool_or(list = 'reviewer' and head = $5 and mine), false),
-			coalesce(bool_or(list = 'author'), false)
+			coalesce(bool_or(list = 'reviewer' and head = $4 and mine), false),
+			coalesce(bool_or(list = 'author' and head = $4), false)
 		from (
-			select list, head, actor->>'kind' = $3 and actor->>'id' = $4 as mine
-			from spec_outcome_records where issue_key = $1 and pull_request = $2
+			select list, head, actor->>'kind' = $2 and actor->>'id' = $3 as mine
+			from spec_outcome_records where pull_request = $1
 		) held
-	`, record.Issue, record.PullRequest, record.Actor.Kind, record.Actor.ID, record.Head).Scan(&authored, &reviewed, &reviewedHead, &authorListed); err != nil {
-		return model.SpecOutcomeRecord{}, model.Event{}, fmt.Errorf("read the lists of %s recorded for %s: %w", record.PullRequest, record.Issue, err)
+	`, record.PullRequest, record.Actor.Kind, record.Actor.ID, record.Head).Scan(&authored, &reviewed, &reviewedHead, &authorListed); err != nil {
+		return model.SpecOutcomeRecord{}, model.Event{}, fmt.Errorf("read the lists recorded of %s: %w", record.PullRequest, err)
 	}
 	switch {
 	case record.List == outcomeListAuthor && reviewed:
 		return model.SpecOutcomeRecord{}, model.Event{}, errorf(http.StatusForbidden, "OUTCOME_LIST_BY_REVIEWER",
-			"you recorded a reviewer's list of %s for %s, so you cannot record its author's list. The author records it.", record.PullRequest, record.Issue)
+			"you recorded a reviewer's list of %s, so you cannot record its author's list. The author records it.", record.PullRequest)
 	case record.List != outcomeListAuthor && authored:
 		return model.SpecOutcomeRecord{}, model.Event{}, errorf(http.StatusForbidden, "OUTCOME_LIST_BY_AUTHOR",
-			"you recorded the author's list of %s for %s, so you cannot record its %s list. An independent reviewer records it.", record.PullRequest, record.Issue, record.List)
+			"you recorded the author's list of %s, so you cannot record its %s list. An independent reviewer records it.", record.PullRequest, record.List)
 	case record.List == outcomeListFinal && !authorListed:
 		return model.SpecOutcomeRecord{}, model.Event{}, errorf(http.StatusConflict, "OUTCOME_AUTHOR_LIST_FIRST",
-			"no author's list of %s is recorded for %s. The author records its list first; then record the final list.", record.PullRequest, record.Issue)
+			"no author's list of %s at head %s is recorded. The author records its list at that head first; then record the final list.",
+			record.PullRequest, record.Head)
 	case record.List == outcomeListFinal && !reviewedHead:
 		return model.SpecOutcomeRecord{}, model.Event{}, errorf(http.StatusConflict, "OUTCOME_REVIEWER_LIST_FIRST",
-			"you recorded no reviewer's list of %s at head %s for %s. Record your own list at that head before you read the author's list; then record the final list.",
-			record.PullRequest, record.Head, record.Issue)
+			"you recorded no reviewer's list of %s at head %s. Record your own list at that head before you read the author's list; then record the final list.",
+			record.PullRequest, record.Head)
 	}
 	if err := tx.QueryRow(ctx, `
 		insert into spec_outcome_records (issue_key, pull_request, head, list, outcomes, actor)
@@ -261,6 +271,19 @@ func (s *server) writeOutcomeRecord(ctx context.Context, record model.SpecOutcom
 		return model.SpecOutcomeRecord{}, model.Event{}, err
 	}
 	return record, event, nil
+}
+
+// lockPullRequestOutcomes takes, for the rest of tx, the lock on the lists of outcomes of
+// pullRequest, in the form a record stores it (pullRequestOf): the scope its writer refusals read,
+// every issue of every tree, so two records of one pull request on two issues are judged one after
+// the other. It is taken after the issue's owner lock (lockIssue), the one order every writer of a
+// record takes the two in. hashtext is 32 bits wide, so two pull requests can share the key; they
+// then take turns on their records and on nothing else.
+func lockPullRequestOutcomes(ctx context.Context, tx pgx.Tx, pullRequest string) error {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-spec-outcomes'), hashtext($1))`, pullRequest); err != nil {
+		return fmt.Errorf("lock the lists of outcomes of %s: %w", pullRequest, err)
+	}
+	return nil
 }
 
 // GET /api/v1/issues/{key}/outcomes
@@ -417,9 +440,12 @@ func (s *server) getChangeRequest(w http.ResponseWriter, r *http.Request) {
 // component and interface of its spec that adds, changes, removes or is stale against the
 // approved spec of that repository (specchange.Classify), and changes each check of its
 // Verification document's latest settled version that does the same; a fault of a block counts as
-// a proposal of its document's kind. Any other issue proposes nothing and changes no check, and
-// its conclusion is judged with nothing approved. A version Dispatch cannot read is refused 409
-// CHANGE_REQUEST_UNREADABLE, never read as one that proposes nothing.
+// a proposal of its document's kind. A stale node the approved spec already holds as the block
+// writes it — the issue's own request once a person's approval wrote it — is approved; every other
+// proposal and changed check, and every such fault, waits for a person's approval
+// (ProposesUnapproved, ChangesChecksUnapproved, R25). Any other issue proposes nothing and changes
+// no check, and its conclusion is judged with nothing approved. A version Dispatch cannot read is
+// refused 409 CHANGE_REQUEST_UNREADABLE, never read as one that proposes nothing.
 func (s *server) readChangeRequest(ctx context.Context, q queryer, key string, version int, head string) (changeRequestState, error) {
 	issue, err := s.loadIssue(ctx, q, key)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -525,9 +551,10 @@ func (s *server) readChangeRequest(ctx context.Context, q queryer, key string, v
 }
 
 // proposalsOf fills read's proposals, changed checks and problems from request, compared with the
-// approved spec state holds, in the order of the request's blocks. A check is read from the
-// Verification document, whose address is verification, so a fault of a block there is a fault of
-// the checks, and every other fault one of the statements, components and interfaces.
+// approved spec state holds, in the order of the request's blocks, and whether a proposal or a
+// changed check waits for a person (heldAsWritten). A check is read from the Verification
+// document, whose address is verification, so a fault of a block there is a fault of the checks,
+// and every other fault one of the statements, components and interfaces.
 func proposalsOf(read *model.ChangeRequestRead, request specchange.Request, approved specgraph.Approved, state specstore.State, verification string) error {
 	// The issue's own acceptance checks are no part of the change request (specchange.OfTheSpec,
 	// the rule the approval's write judges by too), so they hold no gate.
@@ -564,7 +591,12 @@ func proposalsOf(read *model.ChangeRequestRead, request specchange.Request, appr
 	for _, proposal := range request.Proposals {
 		if node, isStale := staleOf[proposal.ID]; isStale {
 			delete(staleOf, proposal.ID)
-			add(proposal.Kind, model.ChangeRequestNode{ID: proposal.ID, Kind: proposal.Kind, What: "stale", Base: node.Base, Current: node.Current, Block: proposal.Block})
+			approvedAsWritten, err := heldAsWritten(approved, proposal, node)
+			if err != nil {
+				return err
+			}
+			add(proposal.Kind, model.ChangeRequestNode{ID: proposal.ID, Kind: proposal.Kind, What: "stale", Base: node.Base, Current: node.Current,
+				Block: proposal.Block, Approved: approvedAsWritten})
 			continue
 		}
 		change, held := changed[proposal.ID]
@@ -583,14 +615,38 @@ func proposalsOf(read *model.ChangeRequestRead, request specchange.Request, appr
 			continue
 		}
 		if strings.HasPrefix(problem.Pos.File, verification+"#") {
-			read.ChangesChecks = true
+			read.ChangesChecks, read.ChangesChecksUnapproved = true, true
 		} else {
-			read.Proposes = true
+			read.Proposes, read.ProposesUnapproved = true, true
 		}
 	}
+	unapproved := func(node model.ChangeRequestNode) bool { return !node.Approved }
 	read.Proposes = read.Proposes || len(read.Proposals) > 0
 	read.ChangesChecks = read.ChangesChecks || len(read.ChangedChecks) > 0
+	read.ProposesUnapproved = read.ProposesUnapproved || slices.ContainsFunc(read.Proposals, unapproved)
+	read.ChangesChecksUnapproved = read.ChangesChecksUnapproved || slices.ContainsFunc(read.ChangedChecks, unapproved)
 	return nil
+}
+
+// heldAsWritten says whether approved holds proposal, a stale node, as its block writes it, so no
+// person's approval is owed for it: the approved spec removed the node and the block removes it
+// too, or the approved spec's current version of the node is the block's node (specchange.Digest,
+// which reads no base). A person's approval of the request writes it so and leaves the block's base
+// behind. A node the approved spec holds otherwise — changed by another approval, or never held —
+// waits for the person.
+func heldAsWritten(approved specgraph.Approved, proposal specchange.Proposal, stale specchange.Stale) (bool, error) {
+	if stale.RemovedNode {
+		return proposal.Removes, nil
+	}
+	node, held := approved.Nodes[proposal.ID]
+	if !held || proposal.Removes || len(node.Versions) == 0 {
+		return false, nil
+	}
+	current, err := specchange.VersionNode(proposal.ID, node.Versions[len(node.Versions)-1])
+	if err != nil {
+		return false, err
+	}
+	return specchange.Digest(current) == specchange.Digest(proposal.Node), nil
 }
 
 // conclusionRead is conclusion as the read answers it, with no answer yet (conclusionAnswers).
@@ -644,14 +700,17 @@ func (s *server) conclusionAnswers(ctx context.Context, q queryer, key, specID, 
 // GET /api/v1/issues/{key}/change-request/ending
 //
 // getChangeRequestEnding answers whether the change of the issue may land at ?head= (D10). The
-// spec is read at its latest version, and its conclusion judged against the final list recorded
-// at head for the issue or an issue under it, else against none. Its reasons, in this order: no
-// final list anywhere (no_final_list_for_head), or final lists of other heads alone
-// (final_list_of_another_head); then no conclusion (no_conclusion), an incomplete one
-// (incomplete), or an uncovered one with no standing approval of the latest spec version by a
-// person (uncovered_without_approval). The exemption that let the change start with no person
-// counts for nothing here: an uncovered outcome waits for the person's approval of the whole spec
-// (R26). It is ready exactly when no reason holds.
+// spec is read at its latest version, and its checks at the Verification document's latest
+// settled version; its conclusion is judged against the final list recorded at head for the issue
+// or an issue under it, else against none. Its reasons, in this order: no final list anywhere
+// (no_final_list_for_head), or final lists of other heads alone (final_list_of_another_head); then
+// no conclusion (no_conclusion), an incomplete one (incomplete), or an uncovered one with no
+// standing approval of the latest spec version by a person (uncovered_without_approval); then a
+// proposal the approved spec does not hold as written (proposes_without_approval), and a changed
+// check it does not hold as written (changes_checks_without_approval, R25). The exemption that let
+// the change start with no person counts for nothing here: an uncovered outcome waits for the
+// person's approval of the whole spec (R26), and a proposal or a changed check waits until a
+// person's approval writes it into the approved spec. It is ready exactly when no reason holds.
 func (s *server) getChangeRequestEnding(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -715,6 +774,14 @@ func (s *server) changeRequestEnding(ctx context.Context, q queryer, key, head s
 			wait(endingUncoveredWithoutApproval, "An outcome is behaviour that no approved statement covers, and no person approved version %d of the spec of %s. Request the person's approval of the whole spec.",
 				read.Version, key)
 		}
+	}
+	if read.ProposesUnapproved {
+		wait(endingProposesWithoutApproval, "Version %d of the spec of %s proposes a statement, component or interface that the approved spec does not hold. "+
+			"No person approved it. Request the person's approval of the whole spec.", read.Version, key)
+	}
+	if read.ChangesChecksUnapproved {
+		wait(endingChangesChecksWithoutApproval, "Version %d of the Verification document of %s changes a check of the approved spec. "+
+			"No person approved the change. Request the person's approval of the whole spec, with its Verification document.", read.VerificationVersion, key)
 	}
 	ending.State = "waiting"
 	if len(ending.Reasons) == 0 {

@@ -3,6 +3,9 @@ body: |-
   Dispatch reads the change request of an issue and judges its end.
   `GET /api/v1/issues/{key}/change-request` answers what a version of the spec proposes against
   the approved spec of the repository and which approved checks its Verification document changes.
+  Each node says whether the approved spec already holds it as the block writes it (`approved`: a
+  person's approval of the request wrote it), and `proposes_unapproved` and
+  `changes_checks_unapproved` say whether a proposal or a changed check still waits for a person.
   It also gives the conclusion block, with the comments anchored to it, and the judgment of that
   block (none, incomplete, uncovered or complete) against the reviewer's final list. A version that
   Dispatch cannot read is 409 CHANGE_REQUEST_UNREADABLE.
@@ -17,12 +20,17 @@ body: |-
   pull request head: the author's list, the reviewer's own list and the reviewer's final list. Each
   record is a row of the new table `spec_outcome_records` (migration
   `20261122110014_spec_outcome_records`), and each record appends `spec.outcomes_recorded` on the
-  issue. Dispatch refuses an author's reviewer or final list with 403 OUTCOME_LIST_BY_AUTHOR and a
-  reviewer's author list with 403 OUTCOME_LIST_BY_REVIEWER. It refuses a final list before an
-  author list with 409 OUTCOME_AUTHOR_LIST_FIRST, and before the reviewer's own list at that head
-  with 409 OUTCOME_REVIEWER_LIST_FIRST. `GET /api/v1/issues/{key}/change-request/ending?head=`
-  answers ready, or waiting with each reason: no_final_list_for_head, final_list_of_another_head,
-  no_conclusion, incomplete or uncovered_without_approval.
+  issue. Who recorded which list is read from every record of the pull request, on every issue
+  that records it. Dispatch refuses an author's reviewer or final list with 403
+  OUTCOME_LIST_BY_AUTHOR and a reviewer's author list with 403 OUTCOME_LIST_BY_REVIEWER. It refuses
+  a final list before the author's list at that head with 409 OUTCOME_AUTHOR_LIST_FIRST, and before
+  the reviewer's own list at that head with 409 OUTCOME_REVIEWER_LIST_FIRST.
+  `GET /api/v1/issues/{key}/change-request/ending?head=` answers ready, or waiting with each
+  reason: no_final_list_for_head, final_list_of_another_head, no_conclusion, incomplete,
+  uncovered_without_approval, proposes_without_approval or changes_checks_without_approval. The
+  last two hold a proposal or a changed check of the latest spec and Verification versions until a
+  person's approval writes it into the approved spec; an approval of the Verification document alone
+  writes nothing there.
 time: 2026-11-22T12:24:18Z
 custom:
     Issue: pr4984

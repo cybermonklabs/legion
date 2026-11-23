@@ -403,8 +403,9 @@ func (e SpecEnding) Ready() bool { return e.State == SpecEndingReady }
 const SpecEndingReady = "ready"
 
 // EndingReason is one reason the ending condition does not hold at a head: its code
-// (`no_final_list_for_head`, `final_list_of_another_head`, `no_conclusion`, `incomplete` or
-// `uncovered_without_approval`) and Dispatch's one sentence of it.
+// (`no_final_list_for_head`, `final_list_of_another_head`, `no_conclusion`, `incomplete`,
+// `uncovered_without_approval`, `proposes_without_approval` or `changes_checks_without_approval`)
+// and Dispatch's one sentence of it.
 type EndingReason struct {
 	Code   string
 	Detail string

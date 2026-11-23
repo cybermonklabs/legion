@@ -2669,10 +2669,11 @@ export const dispatchToolSpecs = [
       "`<text>` for an outcome that no approved statement covers. An empty body records an empty " +
       "list. Write the list to a file outside your workspace and give it with --body-file (- reads " +
       "stdin). Each list is a new record; the newest final list at a head is the final list of " +
-      "that head. Dispatch refuses an author's reviewer or final list (403 " +
-      "OUTCOME_LIST_BY_AUTHOR), a reviewer's author list (403 OUTCOME_LIST_BY_REVIEWER), a final " +
-      "list before an author list of the pull request (409 OUTCOME_AUTHOR_LIST_FIRST), and a " +
-      "final list before the reviewer's own list at that head (409 OUTCOME_REVIEWER_LIST_FIRST). " +
+      "that head. Who recorded which list of a pull request is read on every issue that records " +
+      "it. Dispatch refuses an author's reviewer or final list (403 OUTCOME_LIST_BY_AUTHOR), a " +
+      "reviewer's author list (403 OUTCOME_LIST_BY_REVIEWER), a final list before the author's " +
+      "list at that head (409 OUTCOME_AUTHOR_LIST_FIRST), and a final list before the reviewer's " +
+      "own list at that head (409 OUTCOME_REVIEWER_LIST_FIRST). " +
       "Without body, it prints each list recorded for the issue, oldest first: the list, the pull " +
       "request, the head, who recorded it and when, then each outcome in the line form; " +
       `pull_request, head and list narrow it. ${ISSUE_REFERENCE}`,
@@ -2721,7 +2722,11 @@ export const dispatchToolSpecs = [
       "reviewer records its final list at this head), no_conclusion (the spec holds no " +
       "conclusion block), incomplete (the conclusion breaks a rule: correct it), " +
       "uncovered_without_approval (an outcome no approved statement covers, and no person " +
-      "approved the latest spec: request approval of the whole spec). Then each reason of the " +
+      "approved the latest spec: request approval of the whole spec), proposes_without_approval " +
+      "(the spec proposes a statement, component or interface no person approved: request " +
+      "approval of the whole spec), changes_checks_without_approval (the Verification document " +
+      "changes an approved check, and no person approved the change: request approval of the " +
+      "whole spec with its Verification document). Then each reason of the " +
       "judgment of the conclusion, `<code>: <detail>`. Run it before each merge and each enqueue " +
       "of a change whose design gate opened with no person's approval, and merge or enqueue only " +
       "when the first line reads ready. It exits 0 for ready and for waiting. json prints the " +

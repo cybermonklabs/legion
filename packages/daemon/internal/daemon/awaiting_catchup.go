@@ -504,24 +504,24 @@ func (w *workflowRuntime) catchUpWindow(ctx context.Context, root catchUpRoot, f
 		if fact == nil {
 			continue
 		}
-		// A version is applied as the live event's preparation applies it: one of a document the
-		// root's spec gate holds under the rule of a change request carries the change request read
-		// at that version (changeRequestOfGate). A read that fails is read again at the next boot.
-		if version, ok := fact.(intake.DispatchArtifact); ok && version.Kind == intake.DispatchArtifactVersion {
-			read, err := changeRequestOfGate(ctx, w.log, w.pool, w.records, w.dispatch, version.Key, version.ArtifactID, version.Version)
+		// An artifact event is applied as the live event's preparation applies it: one of an issue
+		// whose spec gate is under the rule of a change request carries the change request
+		// (changeRequestOfGate). A read that fails is read again at the next boot.
+		if artifact, ok := fact.(intake.DispatchArtifact); ok {
+			read, err := changeRequestOfGate(ctx, w.log, w.pool, w.records, w.dispatch, artifact)
 			if err != nil {
 				if ctx.Err() != nil {
 					return 0, 0, err
 				}
-				w.log.Error("boot catch-up could not read the change request of a version, and reads it again at the next boot", "issue", root.issue.Key,
+				w.log.Error("boot catch-up could not read the change request of an artifact event, and reads it again at the next boot", "issue", root.issue.Key,
 					"seq", event.seq, "error", err)
 				if failed == 0 || event.seq < failed {
 					failed = event.seq
 				}
 				continue
 			}
-			version.ChangeRequest = read
-			fact = version
+			artifact.ChangeRequest = read
+			fact = artifact
 		}
 		if err := w.applyCatchUp(ctx, event.id, fact); err != nil {
 			if ctx.Err() != nil {

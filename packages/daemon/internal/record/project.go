@@ -727,16 +727,29 @@ func GateOpen(gate DesignGate) bool {
 }
 
 // GateApproved is whether a person's approval stands on the gate's current document version.
+// Under the rule of a change request it stands on the checks the issue's Verification document
+// held when the person approved too: a later version of that document that changes a check of The
+// Spec no person approved (ChecksHeld) leaves the approval recorded and standing on nothing, until
+// a read finds the change approved (R25).
 func GateApproved(gate DesignGate) bool {
-	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion
+	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion && !ChecksHeld(gate)
 }
 
 // GateExempt is whether the gate stands open by exemption: it is under the rule of a change
-// request, and its current version is the version Dispatch read as proposing nothing (R23). A
+// request, and its current version is the version Dispatch read as proposing nothing (R23), with
+// no changed check holding it (ChecksHeld; a read that finds one also takes the exemption back). A
 // person's approval of that version beside it changes nothing: the exemption that let the issue
 // start still asks for the ending condition before anything of its tree lands (D10).
 func GateExempt(gate DesignGate) bool {
-	return gate.Rule == GateRuleChangeRequest && gate.ExemptVersion != nil && *gate.ExemptVersion == gate.LatestVersion
+	return gate.Rule == GateRuleChangeRequest && gate.ExemptVersion != nil && *gate.ExemptVersion == gate.LatestVersion && !ChecksHeld(gate)
+}
+
+// ChecksHeld is whether a check of The Spec that the issue's Verification document changes, and no
+// person approved, holds the gate closed: under the rule of a change request, the read at the
+// gate's Verification version found one (DesignGate.ChecksUnapproved, R25). A gate under the rule
+// of a person's approval reads no Verification document, so nothing holds it this way (R24).
+func ChecksHeld(gate DesignGate) bool {
+	return gate.Rule == GateRuleChangeRequest && gate.ChecksUnapproved
 }
 
 // SpecGateExempt is whether gates, the rows a tree's root holds by step, hold a spec gate

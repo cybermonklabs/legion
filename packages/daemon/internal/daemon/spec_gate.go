@@ -18,19 +18,32 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// changeRequestOfGate is what a version of key's document artifactID carries of key's change
-// request at version, read before the version is applied, since the workflow performs no I/O: the
-// read when key's spec gate holds that document under the rule of a change request (R23), and nil
-// for every other document and gate. It is nil too for a Dispatch older than the route
-// (dispatch.NoRoute), and for a read Dispatch refuses for good (dispatch.PermanentRefusal: a
-// version whose text does not parse, CHANGE_REQUEST_UNREADABLE, or one Dispatch does not hold,
-// VERSION_NOT_FOUND), which is logged: no later read of that version answers otherwise, so the
-// version closes the gate as a version always has, rather than wait unapplied while the gate
-// stays open at an older version. Any other read Dispatch fails is an error, so the caller reads
-// again rather than apply the version unread. The live event's preparation, the gate seed and the
-// boot catch-up all read through it, so every path that applies a version of such a document
-// reads it the same way.
-func changeRequestOfGate(ctx context.Context, log *slog.Logger, pool *store.Pool, records record.Store, client dispatch.Client, key, artifactID string, version int) (*intake.ChangeRequestRead, error) {
+// changeRequestOfGate is what an artifact event of key carries of key's change request, read
+// before the event is applied, since the workflow performs no I/O, when key's spec gate is under
+// the rule of a change request (R23, R25), and nil for every other gate: for a version of the
+// gate's own document, the read at that version; for an approval of that document, and for a
+// version or an approval of any other document of the issue, the read at the gate's current
+// version. The request reads its checks from the issue's Verification document, and an event names
+// no document's role, so every other document's event is read, and the read's Verification
+// version says whether that document moved (the workflow's verificationRead). A changes request
+// reads nothing: it closes the gate whatever the request holds. Another event of the gate's own
+// document — a review of an older version — reads at the gate's version too, and the workflow
+// takes nothing from a read of a version it does not apply.
+//
+// The read is nil too for a Dispatch older than the route (dispatch.NoRoute), and for a read
+// Dispatch refuses for good (dispatch.PermanentRefusal: a version whose text does not parse,
+// CHANGE_REQUEST_UNREADABLE, or one Dispatch does not hold, VERSION_NOT_FOUND), which is logged:
+// no later read of that version answers otherwise, so the version closes the gate as a version
+// always has, rather than wait unapplied while the gate stays open at an older version. Any other
+// read Dispatch fails is an error, so the caller reads again rather than apply the event unread.
+// The live event's preparation, the gate seed and the boot catch-up all read through it, so every
+// path that applies an event of such an issue reads it the same way.
+func changeRequestOfGate(ctx context.Context, log *slog.Logger, pool *store.Pool, records record.Store, client dispatch.Client,
+	fact intake.DispatchArtifact) (*intake.ChangeRequestRead, error) {
+	if fact.Kind == intake.DispatchArtifactChangesRequested {
+		return nil, nil
+	}
+	key := fact.Key
 	var gate *record.DesignGate
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		gates, err := records.GatesOf(ctx, tx, key)
@@ -39,16 +52,20 @@ func changeRequestOfGate(ctx context.Context, log *slog.Logger, pool *store.Pool
 	}); err != nil {
 		return nil, fmt.Errorf("read the spec gate of %s: %w", key, err)
 	}
-	if gate == nil || gate.ArtifactID != artifactID || gate.Rule != record.GateRuleChangeRequest {
+	if gate == nil || gate.Rule != record.GateRuleChangeRequest {
 		return nil, nil
+	}
+	version := gate.LatestVersion
+	if fact.ArtifactID == gate.ArtifactID && fact.Kind == intake.DispatchArtifactVersion {
+		version = fact.Version
 	}
 	read, err := client.ChangeRequest(ctx, key, version)
 	if dispatch.NoRoute(err) {
 		return nil, nil
 	}
 	if refusal, permanent := dispatch.PermanentRefusal(err); permanent {
-		log.Warn("the change request of a version is refused by Dispatch for good; the version is applied unread and closes the gate",
-			"issue", key, "artifact", artifactID, "version", version, "status", refusal.Status, "code", refusal.Code, "error", err)
+		log.Warn("the change request of a version is refused by Dispatch for good; the event is applied unread",
+			"issue", key, "artifact", fact.ArtifactID, "event", fact.Kind, "version", version, "status", refusal.Status, "code", refusal.Code, "error", err)
 		return nil, nil
 	}
 	if err != nil {

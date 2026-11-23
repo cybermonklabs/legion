@@ -974,13 +974,16 @@ func servedShape(want map[string]any, contract int) {
 		// withoutExemptStatus).
 		if contract < specGateContract {
 			if gate, carries := issue["designGate"].(map[string]any); carries {
-				delete(gate, "exemptVersion")
-				delete(gate, "rule")
+				for _, key := range []string{"exemptVersion", "rule", "verificationVersion", "checksUnapproved"} {
+					delete(gate, key)
+				}
 			}
 			steps, _ := issue["gatedSteps"].([]any)
 			for _, step := range steps {
 				step := step.(map[string]any)
-				delete(step, "exemptVersion")
+				for _, key := range []string{"exemptVersion", "verificationVersion", "checksUnapproved"} {
+					delete(step, key)
+				}
 				if step["status"] == string(GatedStepExempt) {
 					delete(step, "status")
 				}

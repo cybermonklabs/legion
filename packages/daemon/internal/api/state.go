@@ -1323,24 +1323,29 @@ func (p PullRequestView) MarshalJSON() ([]byte, error) {
 }
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, the
-// version a human approved, the version that opened the gate with no person, and the rule the
-// gate started under (`approval` or `change_request`, record.GateRule.Word; contract 232).
+// version a human approved, the version that opened the gate with no person, the rule the gate
+// started under (`approval` or `change_request`, record.GateRule.Word; contract 232), the version
+// of the issue's Verification document its change request was read at (0 for none), and whether
+// that read found a check of The Spec the document changes that no person approved (R25).
 // ApprovedVersion is nil until someone approves one, and ExemptVersion until a version Dispatch
 // read as proposing nothing opens the gate under the rule of a change request; the gate is open
-// exactly when either equals CurrentVersion, the second only under that rule.
+// exactly when either equals CurrentVersion, the second only under that rule, and ChecksUnapproved
+// is false (record.GateOpen).
 type GateView struct {
-	ArtifactID      string `json:"artifactId"`
-	CurrentVersion  int    `json:"currentVersion"`
-	ApprovedVersion *int   `json:"approvedVersion"`
-	ExemptVersion   *int   `json:"exemptVersion"`
-	Rule            string `json:"rule"`
-	// exemptionLeftOff leaves exemptVersion and rule off the wire, for a caller below
-	// specGateContract (shaping.go's withoutGateExemption); the two keys are written on every
-	// other body, null and `approval` included.
+	ArtifactID          string `json:"artifactId"`
+	CurrentVersion      int    `json:"currentVersion"`
+	ApprovedVersion     *int   `json:"approvedVersion"`
+	ExemptVersion       *int   `json:"exemptVersion"`
+	Rule                string `json:"rule"`
+	VerificationVersion int    `json:"verificationVersion"`
+	ChecksUnapproved    bool   `json:"checksUnapproved"`
+	// exemptionLeftOff leaves exemptVersion, rule, verificationVersion and checksUnapproved off the
+	// wire, for a caller below specGateContract (shaping.go's withoutGateExemption); the keys are
+	// written on every other body, null, 0, false and `approval` included.
 	exemptionLeftOff bool
 }
 
-// MarshalJSON writes the gate, without exemptVersion and rule where the band left them off.
+// MarshalJSON writes the gate, without the keys of specGateContract where the band left them off.
 func (g GateView) MarshalJSON() ([]byte, error) {
 	if !g.exemptionLeftOff {
 		type wire GateView
@@ -1359,7 +1364,7 @@ func GateViewOf(gate *record.DesignGate) *GateView {
 		return nil
 	}
 	return &GateView{ArtifactID: gate.ArtifactID, CurrentVersion: gate.LatestVersion, ApprovedVersion: gate.ApprovedVersion,
-		ExemptVersion: gate.ExemptVersion, Rule: gate.Rule.Word()}
+		ExemptVersion: gate.ExemptVersion, Rule: gate.Rule.Word(), VerificationVersion: gate.VerificationVersion, ChecksUnapproved: gate.ChecksUnapproved}
 }
 
 // GatedStepStatus is where one gated step of a deployment stands, as the issue's gate records say
@@ -1371,12 +1376,14 @@ const (
 	// for: its architect has registered no document for that step, and the step holds the tree's
 	// work until it does.
 	GatedStepUnregistered GatedStepStatus = "unregistered"
-	// GatedStepWaiting is a registered step whose current document version no person has reviewed:
-	// the approval or the changes request it records, if any, is of a version below the current
-	// one, which a newer version of the document left behind. It waits on a person.
+	// GatedStepWaiting is a registered step whose current document version no person's review
+	// stands on: the approval or the changes request it records, if any, is of a version below the
+	// current one, which a newer version of the document left behind, or the approval of the
+	// current version stands on nothing while a check of The Spec its Verification document changes
+	// waits for the person (checksUnapproved, R25). It waits on a person.
 	GatedStepWaiting GatedStepStatus = "waiting"
 	// GatedStepApproved is a step a person approved at its current document version, which lets
-	// the tree's work past the step (classify.DesignGateOpen).
+	// the tree's work past the step (classify.DesignGateOpen, record.GateApproved).
 	GatedStepApproved GatedStepStatus = "approved"
 	// GatedStepExempt is a step open by exemption: under the rule of a change request, its current
 	// version proposes nothing, so it opened with no person (record.GateExempt, R23; contract 232).
@@ -1390,24 +1397,28 @@ const (
 
 // GatedStepView is one step of the deployment's design gate as one issue stands in it: the step,
 // the document its architect registered for the step, that document's current version, the
-// version a person approved, the version that opened it with no person, where the step stands
-// and, for a step whose reviewer asked for changes, the reason they gave. A step nobody has
-// registered carries no document, no version and no approval. Status is left off only by the
-// value strip of a status a caller's reader does not admit (shaping.go's withoutExemptStatus).
+// version a person approved, the version that opened it with no person, the Verification version
+// its change request was read at and whether that read found a changed check no person approved,
+// where the step stands and, for a step whose reviewer asked for changes, the reason they gave. A
+// step nobody has registered carries no document, no version and no approval. Status is left off
+// only by the value strip of a status a caller's reader does not admit (shaping.go's
+// withoutExemptStatus).
 type GatedStepView struct {
-	Step            record.DesignStep `json:"step"`
-	ArtifactID      string            `json:"artifactId,omitempty"`
-	CurrentVersion  int               `json:"currentVersion,omitempty"`
-	ApprovedVersion *int              `json:"approvedVersion"`
-	ExemptVersion   *int              `json:"exemptVersion"`
-	Status          GatedStepStatus   `json:"status,omitempty"`
-	ChangesReason   string            `json:"changesReason,omitempty"`
-	// exemptionLeftOff leaves exemptVersion off the wire, for a caller below specGateContract
-	// (shaping.go's withoutGateExemption).
+	Step                record.DesignStep `json:"step"`
+	ArtifactID          string            `json:"artifactId,omitempty"`
+	CurrentVersion      int               `json:"currentVersion,omitempty"`
+	ApprovedVersion     *int              `json:"approvedVersion"`
+	ExemptVersion       *int              `json:"exemptVersion"`
+	VerificationVersion int               `json:"verificationVersion"`
+	ChecksUnapproved    bool              `json:"checksUnapproved"`
+	Status              GatedStepStatus   `json:"status,omitempty"`
+	ChangesReason       string            `json:"changesReason,omitempty"`
+	// exemptionLeftOff leaves exemptVersion, verificationVersion and checksUnapproved off the wire,
+	// for a caller below specGateContract (shaping.go's withoutGateExemption).
 	exemptionLeftOff bool
 }
 
-// MarshalJSON writes the step, without exemptVersion where the band left it off.
+// MarshalJSON writes the step, without the keys of specGateContract where the band left them off.
 func (v GatedStepView) MarshalJSON() ([]byte, error) {
 	if !v.exemptionLeftOff {
 		type wire GatedStepView
@@ -1443,12 +1454,14 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 			continue
 		}
 		view := GatedStepView{
-			Step:            step,
-			ArtifactID:      gate.ArtifactID,
-			CurrentVersion:  gate.LatestVersion,
-			ApprovedVersion: gate.ApprovedVersion,
-			ExemptVersion:   gate.ExemptVersion,
-			Status:          GatedStepWaiting,
+			Step:                step,
+			ArtifactID:          gate.ArtifactID,
+			CurrentVersion:      gate.LatestVersion,
+			ApprovedVersion:     gate.ApprovedVersion,
+			ExemptVersion:       gate.ExemptVersion,
+			VerificationVersion: gate.VerificationVersion,
+			ChecksUnapproved:    gate.ChecksUnapproved,
+			Status:              GatedStepWaiting,
 		}
 		switch {
 		case record.GateApproved(gate):

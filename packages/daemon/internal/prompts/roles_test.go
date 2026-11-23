@@ -822,8 +822,8 @@ func TestTheOutcomeListsAreWrittenByTheirOwnRoleInTheirOrder(t *testing.T) {
 		}
 		last = at
 	}
-	for _, want := range append([]string{specSource, "`OUTCOME_AUTHOR_LIST_FIRST`",
-		"Record the final list before you submit the review of the head."}, lineForms...) {
+	for _, want := range append([]string{specSource, "no author's list at that head (`OUTCOME_AUTHOR_LIST_FIRST`)",
+		"on whichever issue of the tree it wrote it", "Record the final list before you submit the review of the head."}, lineForms...) {
 		if !strings.Contains(reviewer, want) {
 			t.Errorf("roles/reviewer.md does not say %q", want)
 		}
@@ -833,7 +833,7 @@ func TestTheOutcomeListsAreWrittenByTheirOwnRoleInTheirOrder(t *testing.T) {
 	}
 	implementer := foldWhitespace(rolePart(t, "implementer.md"))
 	for _, want := range append([]string{specSource, list + "author --body-file -",
-		"at each head you hand to review", "`OUTCOME_AUTHOR_LIST_FIRST`"}, lineForms...) {
+		"at each head you hand to review", "no author's list at that head (`OUTCOME_AUTHOR_LIST_FIRST`)"}, lineForms...) {
 		if !strings.Contains(implementer, want) {
 			t.Errorf("roles/implementer.md does not say %q", want)
 		}
@@ -868,6 +868,10 @@ func TestTheMergerReadsTheEndingConditionBeforeEachMergeAndEnqueue(t *testing.T)
 		// An opening by a person's approval of another step while the change request proposes
 		// nothing releases the merge on the ending condition alone, and the merger's copy says so.
 		"Its change request proposes nothing, so a merge also waits until the ending condition of the change request holds.",
+		// A version of the Verification document that changes an approved check closes the gate,
+		// whichever way it opened, and the merger takes that message by its opening words too (R25).
+		"The design gate of <tree> closed: version <n> of its Verification document changes an approved check, and no person approved the change.",
+		"or a proposal or a changed check that no person approved",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)
@@ -890,7 +894,7 @@ func TestTheMergerReadsTheEndingConditionBeforeEachMergeAndEnqueue(t *testing.T)
 // because the approved spec moved under the request, which the architect answers by writing the
 // request again with each node's `base` at its current approved version and opening a new
 // approval request; a `spec-ending-waits` notice names one reason the ending condition does not
-// hold, and each of its five codes asks one thing, so the paragraph names every code; and a
+// hold, and each of its seven codes asks one thing, so the paragraph names every code; and a
 // `design-approved` notice of an opening with no person carries no actor and a reason that starts
 // `no proposal:`, which follows a registration that requested no approval. A `check` block is a
 // node of The Spec only when its `statement` names a statement the spec proposes or the approved
@@ -918,6 +922,10 @@ func TestTheRootArchitectKnowsWhatEachChangeRequestNoticeAsks(t *testing.T) {
 		// The notice prints a removed node as `<id> (base <n>, removed from the approved spec)`
 		// (workflow's staleRequestSummary), so the part names that case in those words.
 		"A node that the notice names as removed from the approved spec",
+		// A version of the Verification document that changes an approved check closes the gate,
+		// whichever way it opened (R25), and the role message says so in these words.
+		"The design gate of <tree> closed: version <n> of its Verification document changes an approved check",
+		"A check that names no statement is the root's own acceptance check, and an edit of it closes nothing.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("roles/architect-root.md does not say %q", want)
@@ -939,8 +947,9 @@ func TestTheRootArchitectKnowsWhatEachChangeRequestNoticeAsks(t *testing.T) {
 		t.Fatalf("roles/architect-root.md holds %d paragraphs on the spec-ending-waits notice, want one", len(waits))
 	}
 	for _, want := range []string{"`no_conclusion`", "`incomplete`", "`no_final_list_for_head`",
-		"`final_list_of_another_head`", "`uncovered_without_approval`",
-		"write the `conclusion` block", "record its final list at that head", "`dispatch request-approval`"} {
+		"`final_list_of_another_head`", "`uncovered_without_approval`", "`proposes_without_approval`", "`changes_checks_without_approval`",
+		"write the `conclusion` block", "record its final list at that head", "`dispatch request-approval`",
+		"`dispatch request-approval --include-verification`"} {
 		if !strings.Contains(waits[0], want) {
 			t.Errorf("the spec-ending-waits paragraph of roles/architect-root.md does not say %q: %s", want, waits[0])
 		}

@@ -1572,7 +1572,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The change request of the issue at a version of its spec (?version=, the latest by default): {issue, version, spec_source, repo, verification_version, proposes, changes_checks, proposals, changed_checks, problems, conclusion, judgment, judgment_reasons, final_list}. An issue whose repository is an enabled spec source of its project proposes each statement, component and interface of its spec that it adds, changes, removes or wrote against a version that is no longer the approved one (stale), against that repository's approved spec, and changes each such check of its Verification document's latest settled version (verification_version, 0 where it holds none); each is {id, kind, what, base, current, block}, and a fault of a block is a problem {block, rule, detail}. A fault that loses its block's node counts as a proposal of its document's kind; a fault of form that keeps the node, such as a claim of two sentences, is listed and counts as none. Any other issue proposes nothing and changes no check. The spec's conclusion block {block, statement, difference, no_statement, evidence, outcomes, answers}, answers being each comment anchored to its block, oldest first, is judged none, incomplete, uncovered or complete, with each reason, against the newest final list of outcomes recorded for the issue or an issue under it, at ?head= where given (final_list, null where none). Refused 404 ISSUE_NOT_FOUND, 400 INVALID_VERSION, 404 VERSION_NOT_FOUND, 400 INVALID_HEAD, and 409 CHANGE_REQUEST_UNREADABLE for a version whose text Dispatch cannot read: never an empty answer. */
+    /** @description The change request of the issue at a version of its spec (?version=, the latest by default): {issue, version, spec_source, repo, verification_version, proposes, changes_checks, proposes_unapproved, changes_checks_unapproved, proposals, changed_checks, problems, conclusion, judgment, judgment_reasons, final_list}. An issue whose repository is an enabled spec source of its project proposes each statement, component and interface of its spec that it adds, changes, removes or wrote against a version that is no longer the approved one (stale), against that repository's approved spec, and changes each such check of its Verification document's latest settled version (verification_version, 0 where it holds none); each is {id, kind, what, base, current, block, approved}, approved being true for a stale node the approved spec already holds as the block writes it (a person's approval of the request wrote it), and a fault of a block is a problem {block, rule, detail}. A fault that loses its block's node counts as a proposal of its document's kind; a fault of form that keeps the node, such as a claim of two sentences, is listed and counts as none. proposes_unapproved and changes_checks_unapproved are true when a proposal or a changed check is not approved, or a fault loses a node of that kind: it waits for a person's approval. Any other issue proposes nothing and changes no check. The spec's conclusion block {block, statement, difference, no_statement, evidence, outcomes, answers}, answers being each comment anchored to its block, oldest first, is judged none, incomplete, uncovered or complete, with each reason, against the newest final list of outcomes recorded for the issue or an issue under it, at ?head= where given (final_list, null where none). Refused 404 ISSUE_NOT_FOUND, 400 INVALID_VERSION, 404 VERSION_NOT_FOUND, 400 INVALID_HEAD, and 409 CHANGE_REQUEST_UNREADABLE for a version whose text Dispatch cannot read: never an empty answer. */
     get: operations["getApiV1IssuesByKeyChangeRequest"];
     put?: never;
     post?: never;
@@ -1589,7 +1589,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether the change of the issue may land at ?head=, a whole commit id (400 INVALID_HEAD otherwise): {issue, head, version, state, reasons, judgment, judgment_reasons, approved, final_list}. The spec is read at its latest version, and its conclusion judged against the newest final list recorded at head for the issue or an issue under it. reasons, in order: no_final_list_for_head (no final list anywhere) or final_list_of_another_head (final lists of other heads alone); then no_conclusion, incomplete, or uncovered_without_approval (an outcome no approved statement covers while no person's approval of the latest spec version stands, which approved says). state is ready exactly when reasons is empty, else waiting. 404 ISSUE_NOT_FOUND and 409 CHANGE_REQUEST_UNREADABLE as the change request read. */
+    /** @description Whether the change of the issue may land at ?head=, a whole commit id (400 INVALID_HEAD otherwise): {issue, head, version, state, reasons, judgment, judgment_reasons, approved, final_list}. The spec is read at its latest version and its checks at the Verification document's latest settled version, and its conclusion judged against the newest final list recorded at head for the issue or an issue under it. reasons, in order: no_final_list_for_head (no final list anywhere) or final_list_of_another_head (final lists of other heads alone); then no_conclusion, incomplete, or uncovered_without_approval (an outcome no approved statement covers while no person's approval of the latest spec version stands, which approved says); then proposes_without_approval (the change request's proposes_unapproved) and changes_checks_without_approval (its changes_checks_unapproved: a check of the approved spec changed, and no person's approval wrote the change). state is ready exactly when reasons is empty, else waiting. 404 ISSUE_NOT_FOUND and 409 CHANGE_REQUEST_UNREADABLE as the change request read. */
     get: operations["getApiV1IssuesByKeyChangeRequestEnding"];
     put?: never;
     post?: never;
@@ -1919,7 +1919,7 @@ export interface paths {
     /** @description Every list of outcomes recorded for the issue, oldest first, each {id, issue, pull_request, head, list, outcomes, actor, recorded_at}, narrowed by ?pull_request=, ?head= and ?list= where given (400 INVALID_PULL_REQUEST, INVALID_HEAD or INVALID_LIST for a malformed one); 404 ISSUE_NOT_FOUND for an issue Dispatch does not hold. */
     get: operations["getApiV1IssuesByKeyOutcomes"];
     put?: never;
-    /** @description Record one list of outcomes of a pull request's head for the issue {pull_request, head, list, outcomes, actor?}: pull_request owner/repo#number (400 INVALID_PULL_REQUEST otherwise), head a whole commit id (400 INVALID_HEAD), list author, reviewer or final (400 INVALID_LIST), and outcomes each {text, statement?, restored?}, [] for an empty list (400 INVALID_OUTCOME for a blank text, a line break, both markers, a statement that is no id, a text that opens with a marker, or two outcomes of one key). Each record is a new row, and the newest final record at a head is that head's final list. Refused 403 OUTCOME_LIST_BY_AUTHOR for a reviewer or final list from the actor that recorded the author's list of the pull request, 403 OUTCOME_LIST_BY_REVIEWER for an author's list from one that recorded a reviewer or final list of it, 409 OUTCOME_AUTHOR_LIST_FIRST for a final list while no author's list of it is recorded, and 409 OUTCOME_REVIEWER_LIST_FIRST for a final list from an actor that recorded no reviewer's list at that head. Answers 201 the record {id, issue, pull_request, head, list, outcomes, actor, recorded_at}, and appends spec.outcomes_recorded on the issue {issue, record, pull_request, head, list, outcomes}, outcomes their count. */
+    /** @description Record one list of outcomes of a pull request's head for the issue {pull_request, head, list, outcomes, actor?}: pull_request owner/repo#number (400 INVALID_PULL_REQUEST otherwise), head a whole commit id (400 INVALID_HEAD), list author, reviewer or final (400 INVALID_LIST), and outcomes each {text, statement?, restored?}, [] for an empty list (400 INVALID_OUTCOME for a blank text, a line break, both markers, a statement that is no id, a text that opens with a marker, or two outcomes of one key). Each record is a new row, and the newest final record at a head is that head's final list. Who recorded which list of a pull request is read from every record of it, whichever issue it was recorded for, since the ending reads final lists from every issue of the tree. Refused 403 OUTCOME_LIST_BY_AUTHOR for a reviewer or final list from the actor that recorded the author's list of the pull request, 403 OUTCOME_LIST_BY_REVIEWER for an author's list from one that recorded a reviewer or final list of it, 409 OUTCOME_AUTHOR_LIST_FIRST for a final list while no author's list of it at that head is recorded, and 409 OUTCOME_REVIEWER_LIST_FIRST for a final list from an actor that recorded no reviewer's list at that head; the reviewer's own list needs no author's list, since the reviewer writes it before it reads the author's. Answers 201 the record {id, issue, pull_request, head, list, outcomes, actor, recorded_at}, and appends spec.outcomes_recorded on the issue {issue, record, pull_request, head, list, outcomes}, outcomes their count. */
     post: operations["postApiV1IssuesByKeyOutcomes"];
     delete?: never;
     options?: never;
@@ -4377,7 +4377,9 @@ export interface components {
         | "final_list_of_another_head"
         | "no_conclusion"
         | "incomplete"
-        | "uncovered_without_approval";
+        | "uncovered_without_approval"
+        | "proposes_without_approval"
+        | "changes_checks_without_approval";
       detail: string;
     };
     ChangeRequestJudgmentReason: {
@@ -4394,6 +4396,7 @@ export interface components {
       outcome?: string;
     };
     ChangeRequestNode: {
+      approved: boolean;
       base: number;
       block: string;
       current: number;
@@ -4411,6 +4414,7 @@ export interface components {
     ChangeRequestRead: {
       changed_checks: components["schemas"]["ChangeRequestNode"][] | null;
       changes_checks: boolean;
+      changes_checks_unapproved: boolean;
       conclusion: components["schemas"]["ChangeRequestConclusion"] | null;
       final_list: components["schemas"]["SpecFinalList"] | null;
       issue: string;
@@ -4420,6 +4424,7 @@ export interface components {
       problems: components["schemas"]["ChangeRequestProblem"][] | null;
       proposals: components["schemas"]["ChangeRequestNode"][] | null;
       proposes: boolean;
+      proposes_unapproved: boolean;
       repo: string;
       spec_source: boolean;
       verification_version: number;

@@ -45,15 +45,19 @@ type SpecOutcomesRecordedEventPayload struct {
 
 // ChangeRequestNode is one node a change request proposes, or one check it changes: its id, its
 // kind, how it stands to the approved spec, the approved version its writer read (0 for none), the
-// approved spec's current version of it (0 where it holds none), and the block it is read from,
-// `<document>#<block>`.
+// approved spec's current version of it (0 where it holds none), the block it is read from,
+// `<document>#<block>`, and whether the approved spec already holds it as the block writes it
+// (Approved): a stale node whose current approved version a person's approval wrote with this
+// very text, such as the issue's own request once a person approved it. Every other node waits for
+// a person's approval.
 type ChangeRequestNode struct {
-	ID      string `json:"id"`
-	Kind    string `json:"kind" enum:"statement,component,interface,check"`
-	What    string `json:"what" enum:"added,changed,removed,stale"`
-	Base    int    `json:"base"`
-	Current int    `json:"current"`
-	Block   string `json:"block"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind" enum:"statement,component,interface,check"`
+	What     string `json:"what" enum:"added,changed,removed,stale"`
+	Base     int    `json:"base"`
+	Current  int    `json:"current"`
+	Block    string `json:"block"`
+	Approved bool   `json:"approved"`
 }
 
 // ChangeRequestProblem is one fault of a block of a change request: the block, the rule it breaks
@@ -107,29 +111,33 @@ type SpecFinalList struct {
 // ChangeRequestRead is the change request of an issue at a version of its spec: whether its
 // repository is a spec source of its project, what it proposes against that repository's approved
 // spec (statements, components and interfaces) and which approved checks its Verification
-// document changes, each fault of its blocks, its conclusion, and the judgment of that conclusion
-// against the final list it read.
+// document changes, whether a proposal or a changed check is one the approved spec does not hold as
+// written (ProposesUnapproved, ChangesChecksUnapproved: no person's approval wrote it), each fault
+// of its blocks, its conclusion, and the judgment of that conclusion against the final list it
+// read.
 type ChangeRequestRead struct {
-	Issue               string                        `json:"issue"`
-	Version             int                           `json:"version"`
-	SpecSource          bool                          `json:"spec_source"`
-	Repo                string                        `json:"repo"`
-	VerificationVersion int                           `json:"verification_version"`
-	Proposes            bool                          `json:"proposes"`
-	ChangesChecks       bool                          `json:"changes_checks"`
-	Proposals           []ChangeRequestNode           `json:"proposals"`
-	ChangedChecks       []ChangeRequestNode           `json:"changed_checks"`
-	Problems            []ChangeRequestProblem        `json:"problems"`
-	Conclusion          *ChangeRequestConclusion      `json:"conclusion"`
-	Judgment            string                        `json:"judgment" enum:"none,incomplete,uncovered,complete"`
-	JudgmentReasons     []ChangeRequestJudgmentReason `json:"judgment_reasons"`
-	FinalList           *SpecFinalList                `json:"final_list"`
+	Issue                   string                        `json:"issue"`
+	Version                 int                           `json:"version"`
+	SpecSource              bool                          `json:"spec_source"`
+	Repo                    string                        `json:"repo"`
+	VerificationVersion     int                           `json:"verification_version"`
+	Proposes                bool                          `json:"proposes"`
+	ChangesChecks           bool                          `json:"changes_checks"`
+	ProposesUnapproved      bool                          `json:"proposes_unapproved"`
+	ChangesChecksUnapproved bool                          `json:"changes_checks_unapproved"`
+	Proposals               []ChangeRequestNode           `json:"proposals"`
+	ChangedChecks           []ChangeRequestNode           `json:"changed_checks"`
+	Problems                []ChangeRequestProblem        `json:"problems"`
+	Conclusion              *ChangeRequestConclusion      `json:"conclusion"`
+	Judgment                string                        `json:"judgment" enum:"none,incomplete,uncovered,complete"`
+	JudgmentReasons         []ChangeRequestJudgmentReason `json:"judgment_reasons"`
+	FinalList               *SpecFinalList                `json:"final_list"`
 }
 
 // ChangeRequestEndingReason is one reason the change of an issue may not land at a head: its code
 // and one sentence on what the owner does.
 type ChangeRequestEndingReason struct {
-	Code   string `json:"code" enum:"no_final_list_for_head,final_list_of_another_head,no_conclusion,incomplete,uncovered_without_approval"`
+	Code   string `json:"code" enum:"no_final_list_for_head,final_list_of_another_head,no_conclusion,incomplete,uncovered_without_approval,proposes_without_approval,changes_checks_without_approval"`
 	Detail string `json:"detail"`
 }
 

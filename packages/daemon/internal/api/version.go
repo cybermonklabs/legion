@@ -3076,10 +3076,14 @@ package api
 // request that proposes nothing (R23), and its tree lands nothing until Dispatch's ending
 // condition holds at the head that would land (D10). `GET /legion/v1/state` gains, on each
 // issue's `designGate`, `exemptVersion` (the version that opened the gate with no person, null
-// for none) and `rule` (`approval` or `change_request`, the rule the gate started under, which a
-// later registration keeps, R24), and on each `gatedSteps` entry `exemptVersion` and the status
-// `exempt` (api.GateView, api.GatedStepView). A caller below 232 is served the three keys left
-// off (shaping.go's withoutGateExemption) and a step in `exempt` without its `status`
+// for none), `rule` (`approval` or `change_request`, the rule the gate started under, which a
+// later registration keeps, R24), `verificationVersion` (the version of the issue's Verification
+// document the gate's change request was read at, 0 for none) and `checksUnapproved` (whether
+// that read found a check of The Spec the document changes that no person approved, which holds
+// the gate closed whatever approval or exemption stands, R25), and on each `gatedSteps` entry
+// `exemptVersion`, `verificationVersion`, `checksUnapproved` and the status `exempt`
+// (api.GateView, api.GatedStepView). A caller below 232 is served those keys left off
+// (shaping.go's withoutGateExemption) and a step in `exempt` without its `status`
 // (withoutExemptStatus), which its schema reads as optional. No request shape moves:
 // `POST /legion/v1/gates/register` takes what it took, and reads Dispatch's change request for
 // the spec step of a deployment that gates it, refusing a version Dispatch will not read

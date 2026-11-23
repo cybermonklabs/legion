@@ -470,13 +470,18 @@ const legionMergeWaitView = z.object({
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * `exemptVersion` until a version of a spec-source root's change request that proposes nothing
  * opens it with no person (contract 232). `rule` is the rule the gate started under, `approval`
- * or `change_request`. The gate is open exactly when either version equals `currentVersion`. */
+ * or `change_request`. `verificationVersion` is the version of the root's Verification document
+ * its change request was read at (0 for none), and `checksUnapproved` whether that read found a
+ * check of The Spec the document changes that no person approved (contract 232). The gate is open
+ * exactly when either version equals `currentVersion` and `checksUnapproved` is false. */
 const legionGateView = z.object({
   artifactId: nonEmptyString.optional(),
   currentVersion: z.number().int().positive().optional(),
   approvedVersion: z.number().int().positive().nullable().optional(),
   exemptVersion: z.number().int().positive().nullable().optional(),
   rule: nonEmptyString.optional(),
+  verificationVersion: z.number().int().nonnegative().optional(),
+  checksUnapproved: z.boolean().optional(),
 });
 
 /** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
@@ -488,22 +493,27 @@ const legionDesignStep = z.enum(DESIGN_GATE_STEPS);
  * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for
  * the step and that document's current version, absent until one is registered; `approvedVersion`
  * is the version a person approved, null until one does, and `exemptVersion` the version that
- * opened it with no person, null for none (contract 232). `status` is where the step stands:
- * `unregistered` (the deployment gates it and the issue holds no record of it, so it holds the
- * tree's work), `waiting` (registered, and no person has reviewed its current version),
- * `approved` (a person approved its current version), `exempt` (its current version proposes
- * nothing, so it opened with no person; contract 232) or `changes_requested` (its reviewer asked
- * for changes at its current version, with `changesReason` the reason they gave; absent under
- * every other status). `approved` and `exempt` let the work past the step. `step` reads
- * GATED_STEPS, the gone `decisions` included: the daemon sends one of DESIGN_GATE_STEPS, and its
- * record of every contract since 55 still admits `decisions`, which this reader parses so that
- * the view's enumeration is the daemon's own (legion-api.test.ts). */
+ * opened it with no person, null for none; `verificationVersion` and `checksUnapproved` are the
+ * Verification version its change request was read at and whether that read found a changed
+ * check no person approved (contract 232). `status` is where the step stands: `unregistered` (the
+ * deployment gates it and the issue holds no record of it, so it holds the tree's work), `waiting`
+ * (registered, and no person's review stands on its current version, which includes an approval
+ * a changed check holds), `approved` (a person approved its current version), `exempt` (its
+ * current version proposes nothing, so it opened with no person; contract 232) or
+ * `changes_requested` (its reviewer asked for changes at its current version, with
+ * `changesReason` the reason they gave; absent under every other status). `approved` and `exempt`
+ * let the work past the step. `step` reads GATED_STEPS, the gone `decisions` included: the daemon
+ * sends one of DESIGN_GATE_STEPS, and its record of every contract since 55 still admits
+ * `decisions`, which this reader parses so that the view's enumeration is the daemon's own
+ * (legion-api.test.ts). */
 const legionGatedStepView = z.object({
   step: z.enum(GATED_STEPS).optional(),
   artifactId: nonEmptyString.optional(),
   currentVersion: z.number().int().positive().optional(),
   approvedVersion: z.number().int().positive().nullable().optional(),
   exemptVersion: z.number().int().positive().nullable().optional(),
+  verificationVersion: z.number().int().nonnegative().optional(),
+  checksUnapproved: z.boolean().optional(),
   status: z.enum(["unregistered", "waiting", "approved", "exempt", "changes_requested"]).optional(),
   changesReason: nonEmptyString.optional(),
 });

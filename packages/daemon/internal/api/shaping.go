@@ -559,7 +559,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: repositoriesLiveContract, state: withoutRepositoriesLive,
 		dropped: "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"},
 	{contract: specGateContract, issue: withoutGateExemption,
-		dropped: "the issues' designGate.exemptVersion and designGate.rule, and the gated steps' exemptVersion"},
+		dropped: "the issues' designGate.exemptVersion, designGate.rule, designGate.verificationVersion and designGate.checksUnapproved, and the gated steps' exemptVersion, verificationVersion and checksUnapproved"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -659,8 +659,9 @@ const (
 )
 
 // specGateContract is the daemon contract that added the gate's exemption and rule to the state
-// (version.go's 232): `designGate.exemptVersion` and `designGate.rule`, each gated step's
-// `exemptVersion`, and the gated step status `exempt`. A plugin before it reads the gated step's
+// (version.go's 232): `designGate.exemptVersion`, `designGate.rule`, `designGate.verificationVersion`
+// and `designGate.checksUnapproved`, each gated step's `exemptVersion`, `verificationVersion` and
+// `checksUnapproved`, and the gated step status `exempt`. A plugin before it reads the gated step's
 // `status` with an enumeration that does not name `exempt`, and one before 49 refuses the keys.
 const specGateContract = 232
 
@@ -1406,10 +1407,11 @@ func withoutWaitingOnIssue(issue Issue, restore int) (Issue, bool) {
 	return issue, true
 }
 
-// withoutGateExemption is the issue with no `designGate.exemptVersion`, `designGate.rule` or
-// gated step `exemptVersion`, the keys specGateContract added. Each is written on every body
-// (null and `approval` included), so the band sets the flag that leaves them off, and reports a
-// move whenever the issue carries the gate or a gated step.
+// withoutGateExemption is the issue with none of the keys specGateContract added to the gate and
+// the gated steps: `exemptVersion`, `rule` (the gate's alone), `verificationVersion` and
+// `checksUnapproved`. Each is written on every body (null, 0, false and `approval` included), so
+// the band sets the flag that leaves them off, and reports a move whenever the issue carries the
+// gate or a gated step.
 func withoutGateExemption(issue Issue) (Issue, bool) {
 	moved := false
 	if issue.DesignGate != nil {

@@ -182,6 +182,21 @@ code, and its `summary` is the detail. Each code asks one thing of you:
   approval of the whole spec. Run the two reviews, then request approval of the spec with
   `dispatch request-approval` and a `--summary` that names each uncovered outcome. The merge waits
   for that approval.
+- `proposes_without_approval`: the spec proposes a statement, component or interface that no
+  person approved. Run the two reviews, then request approval of the spec with
+  `dispatch request-approval`. The merge waits for that approval.
+- `changes_checks_without_approval`: the Verification document changes a check of the approved
+  spec, and no person approved the change. Run the two reviews, then request approval of both
+  documents with `dispatch request-approval --include-verification`. The merge waits for that
+  approval.
+
+A version of the Verification document that changes an approved check also closes the design gate,
+whether a person's approval or the change request opened it, and the daemon tells you so: a role
+message reading `The design gate of <tree> closed: version <n> of its Verification document changes
+an approved check`. Request approval of both documents with
+`dispatch request-approval --include-verification`. If the change was a mistake, write the check
+back as the approved spec holds it, then register the spec again. A check that names no statement
+is the root's own acceptance check, and an edit of it closes nothing.
 
 The notice moves nothing. The daemon reads the condition again at each new head, final list, spec
 version and approval, and starts or releases the merger once the condition holds.

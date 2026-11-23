@@ -3752,16 +3752,17 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 	case approval.LatestVersion == payload.Version:
 		return nil
 	}
-	// A version the seed applies to a gate under the rule of a change request carries what Dispatch
-	// reads of that version, so a version that proposes nothing keeps the gate open, or opens it,
-	// with no person (R23); the reset of a gate above Dispatch reads it the same way.
-	if fact.Kind == intake.DispatchArtifactVersion {
-		read, err := changeRequestOfGate(ctx, r.log, r.pool, r.records, r.dispatch, row.Issue, payload.ArtifactID, fact.Version)
-		if err != nil {
-			return err
-		}
-		fact.ChangeRequest = read
+	// A fact the seed applies to a gate under the rule of a change request carries what Dispatch
+	// reads of the change request, as the live event's would (changeRequestOfGate): a version, so
+	// that a version that proposes nothing keeps the gate open, or opens it, with no person (R23),
+	// and an approval, so that an approval which wrote a changed check into the approved spec
+	// releases the gate that check held (R25). The reset of a gate above Dispatch reads it the same
+	// way.
+	read, err := changeRequestOfGate(ctx, r.log, r.pool, r.records, r.dispatch, fact)
+	if err != nil {
+		return err
 	}
+	fact.ChangeRequest = read
 	if approval.LatestVersion < payload.Version {
 		id := fmt.Sprintf("gate-above:%s:%d:%s:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, payload.Version, fact.Kind, fact.Version, fact.Mark.ID())
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.GateAboveDispatch{Generation: payload.Generation, Above: payload.Version, Read: fact}, r.handlers...); err != nil {

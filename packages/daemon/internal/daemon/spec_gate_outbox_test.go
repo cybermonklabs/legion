@@ -194,22 +194,31 @@ func TestTheGateSeedReadsTheChangeRequestOfAVersionItApplies(t *testing.T) {
 }
 
 // The live event's prepare stage reads the change request of a version of a document a gate under
-// the rule of a change request holds, and carries what it read; a version of any other document,
-// and a read an older Dispatch answers with no route, carry none, and a read Dispatch fails fails
-// the preparation, so the event is delivered again.
+// the rule of a change request holds, and carries what it read. A version of another document of
+// the issue — its Verification document, from which the request reads its checks, and the event
+// names no document's role — reads the request at the gate's current version (R25); a changes
+// request reads nothing; a read an older Dispatch answers with no route carries none; and a read
+// Dispatch fails fails the preparation, so the event is delivered again.
 func TestPrepareArtifactReadsTheChangeRequestOfAVersionOfAnExemptRulesDocument(t *testing.T) {
 	r := newExemptGateRig(t, phase.Planning, record.GateRuleChangeRequest)
 	w := &workflowRuntime{pool: r.pool, records: r.records, dispatch: r.client, log: quietLogger()}
 	version := intake.DispatchArtifact{Key: specGateRoot, ArtifactID: "the-roots-spec", Kind: intake.DispatchArtifactVersion, Version: 4}
-	r.client.changeRequests = map[string]dispatch.ChangeRequest{specGateRoot: {SpecSource: true}}
+	r.client.changeRequests = map[string]dispatch.ChangeRequest{specGateRoot: {SpecSource: true, VerificationVersion: 2}}
 	got, err := w.prepareArtifact(context.Background(), version)
 	if err != nil || got.ChangeRequest == nil || !got.ChangeRequest.ExemptsVersion(4) {
 		t.Fatalf("prepareArtifact = %+v, %v; want the read of version 4 carried", got.ChangeRequest, err)
 	}
 	other := version
-	other.ArtifactID = "artifact-other"
-	if got, err := w.prepareArtifact(context.Background(), other); err != nil || got.ChangeRequest != nil || len(r.client.changeReads) != 1 {
-		t.Fatalf("a version of another document = %+v, %v, reads %q; want no read", got.ChangeRequest, err, r.client.changeReads)
+	other.ArtifactID = "artifact-verification"
+	got, err = w.prepareArtifact(context.Background(), other)
+	if err != nil || got.ChangeRequest == nil || got.ChangeRequest.Version != 3 || got.ChangeRequest.VerificationVersion != 2 ||
+		!slices.Equal(r.client.changeReads, []string{specGateRoot + "@4", specGateRoot + "@3"}) {
+		t.Fatalf("a version of another document = %+v, %v, reads %q; want the read at the gate's version 3 carried", got.ChangeRequest, err, r.client.changeReads)
+	}
+	changes := version
+	changes.Kind = intake.DispatchArtifactChangesRequested
+	if got, err := w.prepareArtifact(context.Background(), changes); err != nil || got.ChangeRequest != nil || len(r.client.changeReads) != 2 {
+		t.Fatalf("a changes request = %+v, %v, reads %q; want no read", got.ChangeRequest, err, r.client.changeReads)
 	}
 	r.client.changeRequests = nil
 	if got, err := w.prepareArtifact(context.Background(), version); err != nil || got.ChangeRequest != nil {
