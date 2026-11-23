@@ -9,11 +9,21 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// largeArgumentStatement takes three arguments and reads the second, as a row's write takes its
-// body among other columns. A connection that ran it with a large second argument still keeps that
-// argument after a later statement of one argument (argumentReleaser), so a release that
-// overwrote only one argument would leave it held.
-const largeArgumentStatement = "select length($1::text) + length($2::text) + $3::int"
+// largeArgumentRows is each kind of argument a store write passes large, as a statement that takes
+// three arguments and reads the second, as a row's write takes its body among other columns. A
+// connection that ran one with a large second argument still keeps that argument after a later
+// statement of one argument (argumentReleaser), so a release that overwrote only one argument
+// would leave it held. The block-text writes bind their texts as a slice of pointers to strings,
+// a NULL where a block has no text.
+var largeArgumentRows = []struct {
+	name      string
+	statement string
+	argument  func(text string) any
+}{
+	{"a string", "select length($1::text) + length($2::text) + $3::int", func(text string) any { return text }},
+	{"a slice of pointers to strings", "select length($1::text) + cardinality($2::text[]) + $3::int",
+		func(text string) any { return []*string{&text, nil} }},
+}
 
 // A pooled connection keeps no statement's large arguments once it is back in its pool. pgx keeps
 // a statement's encoded arguments on its connection until a later statement overwrites them
@@ -22,41 +32,47 @@ const largeArgumentStatement = "select length($1::text) + length($2::text) + $3:
 // Pool.separate opens its pools, so the statement runs on the connection the pool then holds idle,
 // and the pool must keep that connection rather than drop the arguments by destroying it.
 func TestAReleasedConnectionKeepsNoLargeArguments(t *testing.T) {
-	ctx := context.Background()
-	config := openTestStore(t).Pool.Config().Copy()
-	config.MaxConns = 1
-	opened, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatalf("open a one-connection pool: %v", err)
-	}
-	pool := NewPool(opened)
-	t.Cleanup(pool.Close)
-	// The connection is dialled and the statement prepared before the first measurement, so
-	// neither counts as growth.
-	if _, err := pool.Exec(ctx, largeArgumentStatement, "a", "b", 0); err != nil {
-		t.Fatalf("run the statement with small arguments: %v", err)
-	}
-	made := pool.Stat().NewConnsCount()
+	database := openTestStore(t)
+	for _, row := range largeArgumentRows {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := context.Background()
+			config := database.Pool.Config().Copy()
+			config.MaxConns = 1
+			opened, err := pgxpool.NewWithConfig(ctx, config)
+			if err != nil {
+				t.Fatalf("open a one-connection pool: %v", err)
+			}
+			pool := NewPool(opened)
+			t.Cleanup(pool.Close)
+			// The connection is dialled and the statement prepared before the first
+			// measurement, so neither counts as growth.
+			if _, err := pool.Exec(ctx, row.statement, "a", row.argument("b"), 0); err != nil {
+				t.Fatalf("run the statement with small arguments: %v", err)
+			}
+			made := pool.Stat().NewConnsCount()
 
-	before := liveHeap()
-	runWithLargeArgument(ctx, t, pool)
-	after := liveHeap()
+			before := liveHeap()
+			runWithLargeArgument(ctx, t, pool, row.statement, row.argument)
+			after := liveHeap()
 
-	if stat := pool.Stat(); stat.IdleConns() != 1 || stat.NewConnsCount() != made {
-		t.Fatalf("after the release the pool holds %d idle connections and made %d new ones, want its one connection kept",
-			stat.IdleConns(), stat.NewConnsCount()-made)
-	}
-	if grown := int64(after) - int64(before); grown > 2<<20 {
-		t.Fatalf("the live heap is %.1f MiB above its level before the statement once its connection is back in the pool, want within 2 MiB",
-			float64(grown)/(1<<20))
+			if stat := pool.Stat(); stat.IdleConns() != 1 || stat.NewConnsCount() != made {
+				t.Fatalf("after the release the pool holds %d idle connections and made %d new ones, want its one connection kept",
+					stat.IdleConns(), stat.NewConnsCount()-made)
+			}
+			if grown := int64(after) - int64(before); grown > 2<<20 {
+				t.Fatalf("the live heap is %.1f MiB above its level before the statement once its connection is back in the pool, want within 2 MiB",
+					float64(grown)/(1<<20))
+			}
+		})
 	}
 }
 
-// runWithLargeArgument runs largeArgumentStatement on pool with an 8 MiB second argument, and keeps
-// no copy of that argument once it returns, so what stays live is what the connection keeps.
-func runWithLargeArgument(ctx context.Context, t *testing.T, pool *Pool) {
+// runWithLargeArgument runs statement on pool with an 8 MiB text, passed as argument makes it, as
+// its second argument, and keeps no copy of that argument once it returns, so what stays live is
+// what the connection keeps.
+func runWithLargeArgument(ctx context.Context, t *testing.T, pool *Pool, statement string, argument func(text string) any) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, largeArgumentStatement, "a", strings.Repeat("x", 8<<20), 0); err != nil {
+	if _, err := pool.Exec(ctx, statement, "a", argument(strings.Repeat("x", 8<<20)), 0); err != nil {
 		t.Fatalf("run the statement with an 8 MiB argument: %v", err)
 	}
 }

@@ -75,8 +75,10 @@ const largeArgumentsKey = "dispatch.store.largeArguments"
 // tracer, so it has no overwrite.
 //
 // Only arguments whose size the tracer reads cheaply count: strings, byte slices and raw JSON,
-// pointers to strings and byte slices, and slices of strings or byte slices. A value pgx encodes by
-// marshalling it, such as a struct for a jsonb column, does not count.
+// pointers to strings and byte slices, and slices of strings, of pointers to strings or of byte
+// slices. A value pgx encodes by marshalling it, such as a struct for a jsonb column, does not
+// count, and no write of the store passes one large (api's
+// TestNoLargeStoreWritePassesAnArgumentTheReleaseCannotCount).
 type argumentReleaser struct{}
 
 // withArgumentRelease returns tracer with argumentReleaser added: argumentReleaser alone when
@@ -180,6 +182,15 @@ func cheapArgumentBytes(arg any) int {
 		size := 0
 		for _, element := range value {
 			size += len(element)
+		}
+		return size
+	// The block-text writes bind their texts so, a NULL where a block has no text.
+	case []*string:
+		size := 0
+		for _, element := range value {
+			if element != nil {
+				size += len(*element)
+			}
 		}
 		return size
 	case [][]byte:
