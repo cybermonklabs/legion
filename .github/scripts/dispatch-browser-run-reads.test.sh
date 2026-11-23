@@ -284,9 +284,16 @@ timed_waits() {
 # own n-th call rather than attempt n + 1, and in a case that mixes the two the two
 # numberings drift apart. `fixture` removes those files again, and a call no file was written
 # for runs the real timeout this execs, so that attempt's gh is bounded as the script asked.
+#
+# gh-read.sh's own read of the rate_limit route, `timeout 30 gh api rate_limit ...`, is no
+# attempt: the helper makes it after an attempt that exited 1, since a paginated read leaves it
+# no answer to read. It goes to the real timeout unrecorded, and the stand-in gh answers it apart.
 cat > "$work/bin/timeout" <<TIMEOUT
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "\${2:-} \${3:-} \${4:-}" = "gh api rate_limit" ]; then
+  exec $real_timeout "\$@"
+fi
 calls=\$(find "$work/timeout-calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/timeout-calls/call.\$calls"
 if [ ! -f "$work/stub-timeout.\$calls" ]; then
@@ -855,9 +862,10 @@ TRACE
 # RATE_LIMITED: the jobs read refused for the repository's spent API budget, as run 44995550797's
 # merge job was at 07:10:31Z on 2026-11-22 (`gh: API rate limit exceeded for installation (HTTP
 # 403)`), where main's ladder made its three attempts in seconds and decided the read failed. The
-# read goes through gh_read and so through gh-read.sh's gh_wait_reset, which reads the reset from
-# `gh api rate_limit` and waits for it when it falls at least 30 s before the job's limit. The
-# stand-in `sleep` records the wait and returns at once, so no case waits it out.
+# read goes through gh_read and so through gh-read.sh's gh_wait_reset. A paginated read leaves it
+# no answer of its own to read, so it reads the spent budget and its reset from `gh api
+# rate_limit`, not from gh's words, and waits for the reset when it falls at least 30 s before the
+# job's limit. The stand-in `sleep` records the wait and returns at once, so no case waits it out.
 rate_limited="gh: API rate limit exceeded for installation (HTTP 403)"
 
 echo "case: RATE_LIMITED, the reset before the job's limit: the read waits for it and answers"

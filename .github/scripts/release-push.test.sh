@@ -853,10 +853,13 @@ echo "Case 11: release creates a missing release, publishes a draft, and reuses 
 # when $GH_TEST_FAIL names it, and the file an
 # edit's --notes-file names is copied to $GH_TEST_DIR/edited.md, the body that
 # edit would write. Any other call fails as unexpected, so a call the command
-# should not make shows up as an error.
+# should not make shows up as an error. gh-read.sh's own read of the rate_limit
+# route, which it makes after a gh release command exits 1 (an answer it cannot
+# read), is answered apart: no budget spent, and no line in the log.
 mkdir -p "$work/bin"
 cat > "$work/bin/gh" <<'GH'
 #!/usr/bin/env bash
+[ "$1 $2" != "api rate_limit" ] || { echo 0; exit 0; }
 { printf '[%s]' "$@"; printf '\n'; } >> "$GH_TEST_DIR/calls"
 case "$1 $2" in
   "release view")
@@ -1138,10 +1141,12 @@ echo "Case 11b: restart leaves the release to a later unfinished run that holds 
 # lands a merge on origin's main from that clone, as a merge landing while the runs are listed
 # does, and lists that merge's queued run, number 101. `gh workflow run` prints a run URL, as gh
 # 2.102.0 does (nothing when $GH_TEST_QUIET is set). Either fails when $GH_TEST_FAIL names it
-# (list or run). Any other call fails as unexpected.
+# (list or run). Any other call fails as unexpected; gh-read.sh's read of the rate_limit route
+# after a call that exits 1 is answered apart, as in the stub above.
 mkdir -p "$work/restart-bin"
 cat > "$work/restart-bin/gh" <<'GH'
 #!/usr/bin/env bash
+[ "$1 $2" != "api rate_limit" ] || { echo 0; exit 0; }
 { printf '[%s]' "$@"; printf '\n'; } >> "$GH_TEST_DIR/calls"
 case "$1 $2" in
   "run list")
