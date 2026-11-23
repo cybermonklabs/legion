@@ -304,7 +304,7 @@ func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing
 	harness := newListenerDeliveryHarnessOn(t, client)
 	deps := harness.publishDeps(t)
 	deps.known = known
-	recipients, connected := recipientCounts(deps, "notifications.team.deploy-squad", "ses_sender")
+	recipients, connected := recipientCounts(t.Context(), deps, "notifications.team.deploy-squad", "ses_sender")
 	if recipients != nil || connected != nil {
 		t.Errorf("the counts are %v and %v, want both left out while the bucket is not open", recipients, connected)
 	}

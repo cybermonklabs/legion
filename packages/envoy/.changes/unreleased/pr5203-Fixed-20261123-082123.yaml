@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+  A publish's `recipients` and `recipients_connected` count a session only when its consumer would
+  receive the message. A session whose interest row or known-session record follows the topic
+  only through a topic the filter built from its stored row drops is no longer counted: a Legion
+  controller notice lane whose role the session does not hold (an earlier build's row, or the
+  record of a session that lost the role, which a stopped session kept for 30 days), another
+  session's inbox, a failed-delivery lane, a wildcard reaching one, or a topic the deployed stream
+  does not store. Such a publish answered `recipients 1` for a message no consumer delivered; it
+  now answers `recipients 0` where no other session follows the topic. The count and every stored
+  row's filter judge a stored topic with one function. A controller lane's claim is read from the
+  role bucket stream's leader, for the count (within 500 ms; a read that does not answer leaves
+  both counts out) and for every filter and row decision, so a copy of a replicated role bucket one
+  write behind a takeover no longer keeps the lane with the former holder. A claim that takes a
+  Legion controller role from another session now filters that session's consumer on its stored
+  row again, and rewrites its known-session record, before the claim is answered and within the
+  claim's 3.5 s budget, so a notice published on the lane after the answer reaches the new holder
+  alone rather than the former holder until its next heartbeat; a narrowing that does not land is
+  logged at WARN (`listener role takeover left the former holder's consumer filter unnarrowed`)
+  with the role, the lane and both sessions.
+time: 2026-11-23T08:21:23Z
+custom:
+    Issue: pr5203

@@ -239,6 +239,11 @@ type takeoverTries struct {
 	cfg      listenerDeliveryHandlerConfig
 	claimant string
 	role     string
+	// replaced is the session other than the claimant that the claim record the last try read
+	// names as the holder, empty for none: a write lands only over the record its try read
+	// (store.Registry.SetRoleWithPrevious), so once the claim lands this is the session it took the
+	// role from, whose consumer the claim route narrows (roleSetHandler).
+	replaced string
 }
 
 // beforeTry runs before each try of the claim's write: when the claim record that try read names a
@@ -247,11 +252,13 @@ type takeoverTries struct {
 // with nothing written (errTakeoverUnrecorded), which the claim route answers 503, and its client
 // claims again: a full stream refuses the claim for as long as it refuses every other write, and
 // the role stays with the holder the claim read until then.
-func (t takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) error {
+func (t *takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) error {
 	previous := read.HolderSessionID
+	t.replaced = ""
 	if previous == "" || previous == t.claimant {
 		return nil
 	}
+	t.replaced = previous
 	if err := publishTakeover(ctx, t.cfg, t.role, previous); err != nil {
 		return takeoverUnrecordedError{previous: previous, err: err}
 	}
@@ -259,6 +266,51 @@ func (t takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) erro
 		return hook(t.role, previous)
 	}
 	return nil
+}
+
+// narrowFormerHolder narrows former, the session a claim of role by claimant has just taken the
+// role from (takeoverTries.replaced), when role is a Legion controller role whose notice lane
+// former's consumer may filter on (bus.ControllerNoticeLane); a claim of any other role leaves
+// former's consumer alone, since no role lane is ever in a consumer filter. Its known-session
+// record is written from its stored row (recordFollowedTopics), and its consumer is filtered on
+// that row again (storedFilterWrite), as an unsubscribe does: the claim took the role's topic off
+// the row, and the filter built from it drops the lane, since the claim, read from the role
+// bucket stream's leader, names claimant now (storedRowFilter). The route runs it before it
+// answers, so a notice published once the claim is answered reaches the new holder alone.
+//
+// Both run within ctx's deadline, the claim route's budget (sendRequestBudget): the record
+// within ctx itself, and the filter on a context detached from the request, so a client that
+// hangs up does not cut the write short, bounded by that same deadline and by
+// sessionConsumerCallTimeout, the wait for former's session lock included (storedFilterWrite). So
+// the window in which a notice on the lane can still reach former runs from the claim's write to,
+// at the latest, the end of the claim route's budget, 3.5 s after the request arrived. Every end
+// that may leave the lane on former's consumer - the lock not free in time, the row or the claim
+// unread, a consumer call the server refused or did not answer, the fence ending on an older row -
+// is logged here at WARN, naming role, lane, former and claimant, since the lane then stays on
+// former's consumer until its next registration (a heartbeat, at most 90 s,
+// contracts.SessionHeartbeat) or its relay's restart. The filter write does not read former's
+// session entry, so a session this listener's cache does not hold is narrowed all the same, and a
+// session with no consumer is answered as having none to narrow.
+func narrowFormerHolder(ctx context.Context, d *listenerDeps, logger *logging.Logger, role, claimant, former string) {
+	lane, controller := bus.ControllerNoticeLane(role)
+	if !controller {
+		return
+	}
+	recordFollowedTopics(ctx, d, former, logger)
+	narrowCtx := context.WithoutCancel(ctx)
+	if deadline, bounded := ctx.Deadline(); bounded {
+		var cancel context.CancelFunc
+		narrowCtx, cancel = context.WithDeadline(narrowCtx, deadline)
+		defer cancel()
+	}
+	if err := d.consumers.storedFilterWrite(narrowCtx, d.registry, former, filterAfterTakeover); err != nil {
+		logger.Warn("listener role takeover left the former holder's consumer filter unnarrowed; the role's notice lane may reach that session until its next registration or relay restart",
+			slog.String("role", role),
+			slog.String("lane", lane),
+			slog.String("session_id", former),
+			slog.String("claimant_session_id", claimant),
+			slog.String("error", err.Error()))
+	}
 }
 
 // publishTakeover writes the takeover record of role taken from previous, on a subject of its own
