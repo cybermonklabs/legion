@@ -54,6 +54,15 @@ func WithBoundEnd(ctx context.Context, t testing.TB, bound time.Duration) (conte
 	return context.WithCancel(ctx)
 }
 
+// BoundArm is the arm a product that takes one in place of its fixed bounds is handed in t
+// (cistore.WithWaitArm, oidc.WithWaitArm): given the caller's context and the product's bound, it
+// returns the context bounded at BoundEnd(t, bound), read when the wait begins (WithBoundEnd).
+func BoundArm(t testing.TB) func(context.Context, time.Duration) (context.Context, context.CancelFunc) {
+	return func(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
+		return WithBoundEnd(ctx, t, bound)
+	}
+}
+
 // UntilBoundEnd waits until read reports true, asking every Poll, and returns what it read then.
 // It gives up at BoundEnd(t, bound), read when it begins, in place of a fixed bound the wait had
 // before; giving up, it writes its line to stderr at once and fails t with the same text, as Until

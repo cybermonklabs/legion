@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // endableIdentity names one person until their session ends.
@@ -153,12 +155,18 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 
 			end(t, rig)
 			ended := time.Now()
-			select {
-			case <-peer.connection().Ended:
-				t.Logf("the document socket closed %s after the session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
-			case <-time.After(heartbeat + time.Second):
-				t.Fatalf("the document socket stayed open %s after its person's session ended", time.Since(ended).Round(time.Millisecond))
-			}
+			// The close comes at the next heartbeat that finds them out, whose check of the sign-in
+			// pool answers in the machine's time: the row waits for it until the bound end of the
+			// heartbeat and a second (testwait.UntilBoundEnd), not on the wall clock alone.
+			testwait.UntilBoundEnd(t, heartbeat+time.Second, "the document socket to close after its person's session ended", func() (string, bool) {
+				select {
+				case <-peer.connection().Ended:
+					return "closed", true
+				default:
+					return fmt.Sprintf("open %s after the session ended", time.Since(ended).Round(time.Millisecond)), false
+				}
+			})
+			t.Logf("the document socket closed %s after the session ended (heartbeat %s)", time.Since(ended).Round(time.Millisecond), heartbeat)
 			if generation, _, err := rig.sessions.CurrentSessionGeneration(context.Background(), rig.email); err != nil || generation != rig.generation+1 {
 				t.Fatalf("session generation after the session ended = %d (%v), want %d", generation, err, rig.generation+1)
 			}
@@ -206,7 +214,7 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	ctx := context.Background()
 	rig := &documentSocketRig{pool: oidctest.New(t), email: "alice@d.example"}
 	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
-	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "")
+	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "", oidc.WithWaitArm(testwait.BoundArm(t)))
 	const redirect = "https://dispatch.example/auth/callback"
 	rig.pool.SignInAs(map[string]any{
 		"sub":              "person-subject",

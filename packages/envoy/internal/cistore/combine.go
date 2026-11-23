@@ -94,10 +94,10 @@ func (s *Store) update(ctx context.Context, owner, repo, number, sha, status str
 }
 
 // recordWaitContext is ctx bounded by the wait of one Record or RecordSuite: recordWait from now,
-// or the bound a test armed in its place (Store.armRecordWait).
+// or what the store's arm gives for recordWait (WithWaitArm).
 func (s *Store) recordWaitContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	if s.armRecordWait != nil {
-		return s.armRecordWait(ctx)
+	if s.waitArm != nil {
+		return s.waitArm(ctx, recordWait)
 	}
 	return context.WithTimeout(ctx, recordWait)
 }

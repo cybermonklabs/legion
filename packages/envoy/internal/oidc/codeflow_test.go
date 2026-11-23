@@ -19,6 +19,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -38,14 +39,12 @@ func newCodeFlowFor(t *testing.T) (*oidctest.Issuer, *CodeFlow) {
 
 // newCodeFlowForDomain starts a code-flow issuer for flowClientID and a code flow for it for the
 // hosted domain, empty for group mode. The flow discovers the issuer on its first call, and waits
-// for its issuer until the bound end of each of the flow's own bounds (armBoundEnds).
+// for its issuer until the bound end of its own bounds (testwait.BoundArm).
 func newCodeFlowForDomain(t *testing.T, domain string) (*oidctest.Issuer, *CodeFlow) {
 	t.Helper()
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
-	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, domain)
-	armBoundEnds(t, flow)
-	return issuer, flow
+	return issuer, NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, domain, WithWaitArm(testwait.BoundArm(t)))
 }
 
 // authURL is flow's authorization URL for flowRedirect, failing the test when there is none.
@@ -395,7 +394,7 @@ func TestCodeFlowAuthenticatesAtTheTokenEndpointAsTheDiscoveryDocumentLists(t *t
 				t.Fatalf("Refresh with a revoked refresh token: err = %v, want ErrGrantRefused", err)
 			}
 			requests("the refused refresh on the flow that signed in", tc.signedIn)
-			restarted := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+			restarted := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 			if _, err := restarted.Refresh(context.Background(), session.RefreshToken); !errors.Is(err, ErrGrantRefused) {
 				t.Fatalf("Refresh with a revoked refresh token on a flow made after the sign-in: err = %v, want ErrGrantRefused", err)
 			}
@@ -530,7 +529,7 @@ func TestCodeFlowSendsASecretTheFormReservesByHTTPBasic(t *testing.T) {
 	const secret = "s+e/c=r%t &x"
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, secret)
-	flow := NewCodeFlow(issuer.URL(), flowClientID, secret, "")
+	flow := NewCodeFlow(issuer.URL(), flowClientID, secret, "", WithWaitArm(testwait.BoundArm(t)))
 	session := exchange(t, issuer, flow, personClaims("dispatch-members"))
 	if _, err := flow.Refresh(context.Background(), session.RefreshToken); err != nil {
 		t.Fatalf("Refresh: %v", err)
@@ -607,7 +606,7 @@ func TestCodeFlowRevokeFailsAgainstAnIssuerWithNoRevocationEndpoint(t *testing.T
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
 	issuer.OmitRevocationEndpoint()
-	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 	if err := flow.Revoke(context.Background(), "plain-refresh-token"); err == nil || !strings.Contains(err.Error(), "revocation_endpoint") {
 		t.Fatalf("Revoke against an issuer with no revocation endpoint: err = %v, want one naming revocation_endpoint", err)
 	}
@@ -622,7 +621,7 @@ func TestCodeFlowDiscoveryRefusesAnIssuerWithNoCodeFlowEndpoints(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.PublishKey(t, "signing-key")
 	issuer.OmitCodeFlowEndpoints()
-	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
+	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 	err := flow.Discover(context.Background())
 	if !errors.Is(err, ErrIssuerUnavailable) || !strings.Contains(err.Error(), "token_endpoint") {
 		t.Fatalf("Discover against an issuer with no code-flow endpoints: err = %v, want ErrIssuerUnavailable naming token_endpoint", err)
@@ -648,7 +647,7 @@ func TestCodeFlowDiscoveryRefusesATokenAuthMethodsListItCannotRead(t *testing.T)
 			`"token_endpoint_auth_methods_supported":"client_secret_basic"}`))
 	}))
 	t.Cleanup(server.Close)
-	flow := NewCodeFlow(server.URL, flowClientID, flowClientSecret, "")
+	flow := NewCodeFlow(server.URL, flowClientID, flowClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 	err := flow.Discover(context.Background())
 	if !errors.Is(err, ErrIssuerUnavailable) || !strings.Contains(err.Error(), "token_endpoint_auth_methods_supported") {
 		t.Fatalf("Discover against a document whose list is a string: err = %v, want ErrIssuerUnavailable naming token_endpoint_auth_methods_supported", err)
@@ -740,7 +739,7 @@ func TestCodeFlowOnlineExchangeSignsInWithNoRefreshToken(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
 	issuer.OmitRefreshTokens()
-	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, flowDomain)
+	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, flowDomain, WithWaitArm(testwait.BoundArm(t)))
 
 	issuer.SignInAs(googleClaims(true))
 	signIn := onlineSignIn("nonce-1")
@@ -845,7 +844,7 @@ func TestCodeFlowOnlineExchangeRefusesAnIDTokenNotForThisSignIn(t *testing.T) {
 		// A foreign key under the published key's id: the key set resolves, and only the
 		// signature fails.
 		issuer.EnableCodeFlow(oidctest.NewKey(t, published.KeyID()), flowClientID, flowClientSecret)
-		flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, flowDomain)
+		flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, flowDomain, WithWaitArm(testwait.BoundArm(t)))
 		issuer.SignInAs(googleClaims(true))
 		signIn := onlineSignIn("nonce-1")
 		code, _ := issuer.Authorize(t, onlineAuthURL(t, flow, signIn))

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -126,7 +127,7 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 			Limits: limits,
 			// The writer is bound by the first pass that finds NATS connected and the bucket
 			// made, as the running pass binds it, rather than here.
-			Open:          openWriter(client),
+			Open:          openWriter(t, client),
 			ReviewerAppID: reviewer,
 			Logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 			// A test waits for no pace.
@@ -136,10 +137,12 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 }
 
 // openWriter is the Open a Reconciler of this harness binds through: cistore's own writer, which
-// creates no bucket and so fails until the listener has made one.
-func openWriter(client *bus.Client) func() (Writer, error) {
+// creates no bucket and so fails until the listener has made one. Its record waits end at their
+// bound end in t (testwait.BoundArm): the passes' records set up what a test asserts, and under
+// load a KV call takes the machine's time.
+func openWriter(t testing.TB, client *bus.Client) func() (Writer, error) {
 	return func() (Writer, error) {
-		writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+		writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithWaitArm(testwait.BoundArm(t)))
 		if err != nil {
 			return nil, err
 		}
@@ -188,11 +191,11 @@ func (w *holdingWriter) Record(ctx context.Context, observation contracts.CIObse
 // to make this listener settle, and a record alone does not prove that.
 func (h *harness) startListener() {
 	h.t.Helper()
-	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	listener, err := cistore.Open(h.ctx, h.bus.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithWaitArm(testwait.BoundArm(h.t)))
 	if err != nil {
 		h.t.Fatalf("open the listener's CI store: %v", err)
 	}
-	ready, cancelReady := context.WithTimeout(h.ctx, 10*time.Second)
+	ready, cancelReady := testwait.WithBoundEnd(h.ctx, h.t, 10*time.Second)
 	defer cancelReady()
 	if err := listener.WaitForCacheReady(ready); err != nil {
 		h.t.Fatalf("the listener's cache is not ready: %v", err)
@@ -215,7 +218,7 @@ func (h *harness) replica() *Reconciler {
 		Pool:          h.pool,
 		GitHub:        h.github.client(limits),
 		Limits:        limits,
-		Open:          openWriter(h.bus),
+		Open:          openWriter(h.t, h.bus),
 		ReviewerAppID: h.reviewer,
 		Logger:        slog.New(slog.NewJSONHandler(&syncBuffer{}, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Pace:          0,

@@ -49,10 +49,7 @@ type discovery[T any] struct {
 	now    func() time.Time
 	flight singleflight.Group
 	// armAttempt, when set, arms the bound of one read of the discovery document (attemptContext)
-	// in place of discoveryAttemptTimeout. Only a test sets it, to the bound end of
-	// discoveryAttemptTimeout (issuer_bounds_test.go's armBoundEnds, testwait.BoundEndAt): the
-	// product's bound is for an issuer that accepts a read and never answers, and on a loaded
-	// machine the time a test's read of its own issuer takes is the machine's.
+	// in place of discoveryAttemptTimeout (the code flow's WithWaitArm).
 	armAttempt func(context.Context) (context.Context, context.CancelFunc)
 
 	mu         sync.Mutex
@@ -65,6 +62,14 @@ type discovery[T any] struct {
 
 func newDiscovery[T any](issuer string, read func(ctx context.Context) (T, error)) *discovery[T] {
 	return &discovery[T]{issuer: issuer, read: read, now: time.Now}
+}
+
+// armWith arms each read of the discovery document with arm, given discoveryAttemptTimeout
+// (WithWaitArm).
+func (d *discovery[T]) armWith(arm WaitArm) {
+	d.armAttempt = func(ctx context.Context) (context.Context, context.CancelFunc) {
+		return arm(ctx, discoveryAttemptTimeout)
+	}
 }
 
 // done reports whether an attempt has succeeded.
@@ -177,14 +182,38 @@ func (d *discovery[T]) logFailure(err error) {
 // down. Until the discovery document has been read, Verify fails with ErrIssuerUnavailable.
 type LazyVerifier struct {
 	discovery *discovery[*Verifier]
+	// arm is the arm the verifier was given (WithWaitArm), nil for the product's bounds.
+	arm WaitArm
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
-// discovery document is read by Discover, by Run, or by the first Verify.
-func NewLazyVerifier(issuer, audience string) *LazyVerifier {
-	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
-		return New(ctx, issuer, audience)
+// discovery document is read by Discover, by Run, or by the first Verify. Of opts, WithWaitArm
+// arms each read of the discovery document, each read of the key set, and each caller's wait its
+// caller bounds through WaitWithin.
+func NewLazyVerifier(issuer, audience string, opts ...Option) *LazyVerifier {
+	arm := collectOptions(opts).waitArm
+	verifier := &LazyVerifier{arm: arm, discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
+		keys, err := NewKeys(ctx, issuer)
+		if err != nil {
+			return nil, err
+		}
+		keys.armFetch = arm
+		return NewWithKeys(issuer, audience, keys), nil
 	})}
+	if arm != nil {
+		verifier.discovery.armWith(arm)
+	}
+	return verifier
+}
+
+// WaitWithin is ctx bounded for a caller's wait on the verifier's issuer that its caller bounds by
+// bound (the listener's identityBudget): bound from now, or what the verifier's arm gives for bound
+// (WithWaitArm).
+func (v *LazyVerifier) WaitWithin(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
+	if v.arm != nil {
+		return v.arm(ctx, bound)
+	}
+	return context.WithTimeout(ctx, bound)
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not
@@ -223,14 +252,16 @@ func (v *LazyVerifier) Issues(raw string) bool {
 
 // DiscoveredVerifier is a LazyVerifier whose issuer is discovered already, verifying with v: for a
 // caller that builds a Verifier itself, from keys it holds (NewWithKeys), and hands it where a
-// LazyVerifier is taken. It is nil for a nil v, so an unconfigured verifier stays one.
-func DiscoveredVerifier(v *Verifier) *LazyVerifier {
+// LazyVerifier is taken. It is nil for a nil v, so an unconfigured verifier stays one. Of opts,
+// WithWaitArm arms each wait its caller bounds through WaitWithin; the keys v holds take their own
+// (NewKeys).
+func DiscoveredVerifier(v *Verifier, opts ...Option) *LazyVerifier {
 	if v == nil {
 		return nil
 	}
 	discovered := newDiscovery(v.issuer, func(context.Context) (*Verifier, error) { return v, nil })
 	discovered.value, discovered.discovered = v, true
-	return &LazyVerifier{discovery: discovered}
+	return &LazyVerifier{discovery: discovered, arm: collectOptions(opts).waitArm}
 }
 
 // Discover reads the issuer's discovery document unless it has been read; its error matches

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -71,7 +72,7 @@ func newMembershipRigFor(t *testing.T, rule SignInRule, hostedDomain string, cla
 	t.Helper()
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
-	flow := oidc.NewCodeFlow(issuer.URL(), "dispatch-client", "dispatch-secret", hostedDomain)
+	flow := oidc.NewCodeFlow(issuer.URL(), "dispatch-client", "dispatch-secret", hostedDomain, oidc.WithWaitArm(testwait.BoundArm(t)))
 	issuer.SignInAs(claims)
 	authURL, err := flow.AuthURL(context.Background(), memberRedirect, "state", "nonce")
 	if err != nil {

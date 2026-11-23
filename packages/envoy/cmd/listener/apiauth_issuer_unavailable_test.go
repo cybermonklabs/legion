@@ -13,6 +13,7 @@ import (
 
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An identity token the listener reaches no verdict on, because its issuer's key set cannot be
@@ -61,16 +62,24 @@ func TestAnIdentityTokenTheListenerCouldNotCheckIsNoRefusal(t *testing.T) {
 				_, _ = w.Write(recorder.Body.Bytes())
 			}))
 			t.Cleanup(server.Close)
+			// The client's window on the listener (5 s, the client's defaultTimeout) and the send's
+			// own 10 s end at their bound ends (testwait.BoundEnd): the listener answers once its
+			// check of the issuer, armed the same way (newClusterIssuer), is done, in the machine's
+			// time.
+			var window time.Duration
+			if end, bounded := testwait.BoundEnd(t, 5*time.Second); bounded {
+				window = time.Until(end)
+			}
 			client := dispatchenvoy.New(server.URL,
 				dispatchenvoy.WithAccountTokenFile(rig.accountTokenFile(t, issuer.token(t, rigDispatchPrincipal))),
-				dispatchenvoy.WithToken(rigSharedToken))
+				dispatchenvoy.WithToken(rigSharedToken), dispatchenvoy.WithTimeout(window))
 
 			a := rig.register(t, "ses_issuer_a_"+tag, "A")
 			rig.claim(t, a.id, role)
 			b := rig.register(t, "ses_issuer_b_"+tag, "B")
 			rig.claim(t, b.id, role)
 			text := "issuer message " + tag
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := testwait.WithBoundEnd(context.Background(), t, 10*time.Second)
 			defer cancel()
 			result, err := client.Send(ctx, dispatchenvoy.SendInput{
 				TargetSession: a.id, Message: text, Payload: json.RawMessage(`{}`),

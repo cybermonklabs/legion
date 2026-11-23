@@ -355,7 +355,7 @@ func TestTheCodeFlowSignsInTheDefaultPersonUntilAnotherIsQueued(t *testing.T) {
 		t.Fatalf("token exchange with another secret: status %d, body %s, want 401 invalid_client", status, body)
 	}
 
-	flow := oidc.NewCodeFlow(issuerURL, testClientID, testClientSecret, testDomain)
+	flow := oidc.NewCodeFlow(issuerURL, testClientID, testClientSecret, testDomain, oidc.WithWaitArm(testwait.BoundArm(t)))
 	authURL, err := flow.AuthURL(ctx, testRedirect, "state-3", "nonce-3")
 	if err != nil {
 		t.Fatal(err)

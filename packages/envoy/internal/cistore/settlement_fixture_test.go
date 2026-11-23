@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -172,18 +173,18 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 		t.Fatalf("bus connect: %v", err)
 	}
 	defer client.Close()
-	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
 	}
-	readyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	readyCtx, cancel := testwait.WithBoundEnd(ctx, t, 10*time.Second)
 	defer cancel()
 	if err := store.WaitForCacheReady(readyCtx); err != nil {
 		t.Fatalf("cache ready: %v", err)
 	}
 	// The reconcile's writer, which records the statuses Dispatch reads of GitHub into the same
 	// bucket the listener's store settles from.
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("reconcile"))
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("reconcile"), cistore.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("open the reconcile's writer: %v", err)
 	}

@@ -16,17 +16,18 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // openListener opens the listener's own store, which creates the CI bucket and starts the cache
 // watcher a writer has not got, and waits for its cache.
 func openListener(t *testing.T, conn *natsgo.Conn) *cistore.Store {
 	t.Helper()
-	store, err := cistore.Open(t.Context(), conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), cistore.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("open the listener's cistore: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := testwait.WithBoundEnd(context.Background(), t, 10*time.Second)
 	defer cancel()
 	if err := store.WaitForCacheReady(ctx); err != nil {
 		t.Fatalf("the listener's cache is not ready: %v", err)
@@ -48,7 +49,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 	}
 	defer client.Close()
 	store := openListener(t, client.Conn)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestHasRecordReadsTheBucketRatherThanACache(t *testing.T) {
 	}
 	defer client.Close()
 	store := openListener(t, client.Conn)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -235,7 +236,7 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 	// The listener's store makes the bucket a writer only binds; no cache of this test's own is
 	// read, since the writer answers from what it wrote.
 	openListener(t, client.Conn)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -303,7 +304,7 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 	// The listener's store makes the bucket a writer only binds; the record itself is read out of
 	// that bucket below, since a writer keeps no cache to read it from.
 	openListener(t, client.Conn)
-	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"))
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), cistore.WithWaitArm(testwait.BoundArm(t)))
 	if err != nil {
 		t.Fatalf("open the writer: %v", err)
 	}
@@ -419,5 +420,39 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 	}
 	if _, ok := state.Suites[newSuite.SuiteID]; !ok {
 		t.Fatalf("the record holds no %s suite: %+v", newSuite.SuiteID, state.Suites)
+	}
+}
+
+// A store and a writer opened with an arm (cistore.WithWaitArm) wait on the arm in place of their
+// own record wait: armed with a deadline already past, a record whose KV answers at once gives up
+// before any KV call. A store or a writer that dropped the option would record it.
+func TestAStoreAndAWriterOpenedWithAnArmWaitOnTheArm(t *testing.T) {
+	_, uri := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("bus connect: %v", err)
+	}
+	defer client.Close()
+	past := cistore.WithWaitArm(func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+		return context.WithDeadline(ctx, time.Now().Add(-time.Second))
+	})
+	store, err := cistore.Open(t.Context(), client.Conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour), past)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	writer, err := cistore.OpenWriter(client.Connection(), client.JS(), logging.New("writer"), past)
+	if err != nil {
+		t.Fatalf("open the writer: %v", err)
+	}
+	observation := contracts.CIObservation{
+		Owner: "example-org", Repo: "example-repo", Number: "42", SHA: "dddddddddddddddddddddddddddddddddddddddd",
+		CheckName: "build", CheckRunID: 8, URL: "https://github.com/example-org/example-repo/runs/8",
+		Status: "completed", Conclusion: "success", ObservedAt: "2026-09-07T03:01:00Z",
+	}
+	if err := store.Record(context.Background(), observation); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("the store's record answered %v, want the arm's end (%v)", err, context.DeadlineExceeded)
+	}
+	if _, err := writer.Record(context.Background(), observation); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("the writer's record answered %v, want the arm's end (%v)", err, context.DeadlineExceeded)
 	}
 }

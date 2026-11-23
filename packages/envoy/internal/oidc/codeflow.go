@@ -69,10 +69,7 @@ type CodeFlow struct {
 	// group mode, a Cognito sign-in pool's.
 	hostedDomain string
 	// http is the client of every call to the issuer's token and revocation endpoints, bounded by
-	// its Timeout, TokenTimeout (tokenClient). Only a test replaces that bound, with the bound end
-	// of TokenTimeout (issuer_bounds_test.go's armBoundEnds, testwait.BoundEndAt): TokenTimeout is
-	// for an issuer that accepts a call and never answers, and on a loaded machine the time a
-	// test's call to its own issuer takes is the machine's.
+	// its Timeout, TokenTimeout (tokenClient), or by the flow's arm in its place (WithWaitArm).
 	http *http.Client
 }
 
@@ -90,14 +87,90 @@ type codeFlowIssuer struct {
 // document is read by Discover, by Run, or by the first call that needs it. hostedDomain is the
 // Google Workspace domain of a domain-mode flow (Google's issuer), which asks for offline access
 // and reads the Workspace claims; empty, the flow is a Cognito sign-in pool's and does neither.
-func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow {
-	return &CodeFlow{
+func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string, opts ...Option) *CodeFlow {
+	flow := &CodeFlow{
 		discovery: newDiscovery(issuer, func(ctx context.Context) (*codeFlowIssuer, error) {
 			return discoverCodeFlow(ctx, issuer, clientID, clientSecret)
 		}),
 		hostedDomain: hostedDomain,
 		http:         tokenClient(),
 	}
+	if arm := collectOptions(opts).waitArm; arm != nil {
+		flow.discovery.armWith(arm)
+		base := flow.http.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		flow.http.Timeout = 0
+		flow.http.Transport = armedTransport{base: base, arm: arm, bound: TokenTimeout}
+	}
+	return flow
+}
+
+// Option configures NewCodeFlow and NewLazyVerifier.
+type Option func(*options)
+
+type options struct {
+	waitArm WaitArm
+}
+
+func collectOptions(opts []Option) options {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+// WaitArm bounds a call to an issuer: given the call's context and the bound the caller would give
+// the call itself, it returns the context the call runs within, and the function that releases it.
+type WaitArm func(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc)
+
+// WithWaitArm arms each read of the issuer's discovery document with arm, given
+// discoveryAttemptTimeout; for a code flow, each call to the token or revocation endpoint, given
+// TokenTimeout; and for a lazy verifier, each read of the key set, given Keys.FetchTimeout, and
+// each wait a caller bounds through WaitWithin, given its bound; in place of those bounds
+// themselves. No deployment passes it: the bounds are for an issuer that accepts a call and never
+// answers. A test's own issuer answers in the
+// machine's time, which on a loaded machine can be longer, and a test of how a call fails would
+// read the bound's timeout as the issuer's answer, so it passes testwait.BoundArm. A nil arm leaves
+// the bounds.
+func WithWaitArm(arm WaitArm) Option {
+	return func(o *options) {
+		o.waitArm = arm
+	}
+}
+
+// armedTransport is the transport of a flow's client under WithWaitArm: each request runs within
+// what arm gives for bound, read when the request starts, where the client's Timeout is one span
+// from each request's start. The response's body releases that bound when it is closed.
+type armedTransport struct {
+	base  http.RoundTripper
+	arm   WaitArm
+	bound time.Duration
+}
+
+func (a armedTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	ctx, cancel := a.arm(request.Context(), a.bound)
+	response, err := a.base.RoundTrip(request.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	response.Body = cancelOnClose{ReadCloser: response.Body, cancel: cancel}
+	return response, nil
+}
+
+// cancelOnClose is a response body that releases its request's bound when it is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b cancelOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // discoverCodeFlow reads issuer's discovery document. An issuer whose document names no

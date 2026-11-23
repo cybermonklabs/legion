@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -27,7 +28,7 @@ func TestAPIAuth(t *testing.T) {
 
 	issuer := oidctest.New(t)
 	signing := issuer.PublishKey(t, "listener-test-key")
-	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience, oidc.WithWaitArm(testwait.BoundArm(t)))
 
 	serviceToken := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
 

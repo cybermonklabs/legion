@@ -360,12 +360,9 @@ type Store struct {
 	combineMu sync.Mutex
 	combiners map[string]*keyCombiner
 
-	// armRecordWait, when set, arms the wait of one Record or RecordSuite (recordWaitContext) in
-	// place of recordWait. Only a test sets it: recordWait bounds each record a webhook delivery
-	// makes, and a test whose records set up what it tests arms the bound end of recordWait instead
-	// (openStore, testwait.BoundEndAt), since on a loaded machine the time a KV call takes is the
-	// machine's.
-	armRecordWait func(context.Context) (context.Context, context.CancelFunc)
+	// waitArm, when set, arms the wait of one Record or RecordSuite (recordWaitContext) in place
+	// of recordWait (WithWaitArm).
+	waitArm WaitArm
 
 	// logger writes the store's JSON lines, which an alarm can count (write).
 	logger *logging.Logger
@@ -374,6 +371,7 @@ type Store struct {
 type openOpts struct {
 	replicas int
 	ttl      time.Duration
+	waitArm  WaitArm
 }
 
 // Option configures Open.
@@ -397,6 +395,22 @@ func WithTTL(d time.Duration) Option {
 		if d > 0 {
 			o.ttl = d
 		}
+	}
+}
+
+// WaitArm bounds a wait of the store's: given the caller's context and the bound the store would
+// give the wait itself, it returns the context the wait runs within, and the function that
+// releases it.
+type WaitArm func(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc)
+
+// WithWaitArm has the store arm each Record and RecordSuite's wait with arm, given recordWait, in
+// place of recordWait itself. No deployment passes it: recordWait bounds each record a webhook
+// delivery makes, for a bus that never answers. A test that records to set up what it tests does
+// not measure that bound, and on a loaded machine a KV call takes the machine's time, so it passes
+// testwait.BoundArm. A nil arm leaves recordWait.
+func WithWaitArm(arm WaitArm) Option {
+	return func(o *openOpts) {
+		o.waitArm = arm
 	}
 }
 
@@ -427,6 +441,7 @@ func Open(ctx context.Context, nc *nats.Conn, logger *logging.Logger, opts ...Op
 		rewatched:   make(chan struct{}),
 		changedWake: make(chan struct{}, 1),
 		logger:      logger,
+		waitArm:     o.waitArm,
 	}
 	s.cache = newCICopy(s)
 	s.watcher = kvwatch.New("cistore", kv, ciCache{s}, kvwatch.WithLogger(logger.Slog()))
@@ -469,7 +484,14 @@ type Writer struct {
 // write of its own is never given up on for a rewatch (kvCall); it is given up on only when its
 // caller's context ends. The handle stays usable across a reconnect, since nats.go reconnects the
 // same *nats.Conn under it.
-func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logger) (*Writer, error) {
+//
+// Of opts only WithWaitArm reaches a writer: the bucket's copies and its TTL are the listener's
+// Open's, and a writer sets neither.
+func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logger, opts ...Option) (*Writer, error) {
+	var o openOpts
+	for _, f := range opts {
+		f(&o)
+	}
 	kv, err := bus.OpenKeyValue(context.Background(), conn, js, bus.CIStateBucket)
 	if err != nil {
 		return nil, err
@@ -478,6 +500,7 @@ func OpenWriter(conn *nats.Conn, js nats.JetStreamContext, logger *logging.Logge
 		combiners: map[string]*keyCombiner{},
 		rewatched: make(chan struct{}),
 		logger:    logger,
+		waitArm:   o.waitArm,
 	}
 	// One handle for the store's life: nothing moves it, since a writer has no watcher to
 	// rewatch. The cache stays its zero value, since nothing a writer calls reads or writes it.

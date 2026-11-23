@@ -95,6 +95,9 @@ type Keys struct {
 	HTTPClient *http.Client
 
 	jwksURI string
+	// armFetch, when set, arms each read's bound (fetchContext) in place of FetchTimeout: a lazy
+	// verifier given an arm (WithWaitArm) sets it.
+	armFetch WaitArm
 
 	mu       sync.Mutex
 	keys     []jose.JSONWebKey
@@ -120,8 +123,9 @@ type keysFetch struct {
 // NewKeys reads issuer's OIDC discovery document now and returns the key source for the keys it
 // names, so a caller configures an issuer and nothing else. It refuses, naming the issuer, one
 // whose discovery document cannot be read or names no jwks_uri. No key is fetched here: the first
-// Key reads the set, and ctx bounds discovery alone.
-func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
+// Key reads the set, and ctx bounds discovery alone. Of opts, WithWaitArm arms each read of the
+// key set (fetchContext).
+func NewKeys(ctx context.Context, issuer string, opts ...Option) (*Keys, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
 		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
@@ -135,7 +139,9 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	if discovery.JWKSURI == "" {
 		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
 	}
-	return NewKeysAt(discovery.JWKSURI), nil
+	keys := NewKeysAt(discovery.JWKSURI)
+	keys.armFetch = collectOptions(opts).waitArm
+	return keys, nil
 }
 
 // NewKeysAt returns the key source for the key set published at jwksURI, for an issuer that
@@ -317,6 +323,15 @@ func (k *Keys) spacedLocked() bool {
 	return k.failure != nil && time.Since(k.failedAt) < k.FailureSpacing
 }
 
+// fetchContext is ctx bounded for one read of the key set: FetchTimeout from now, or what the
+// keys' arm gives for FetchTimeout (armFetch).
+func (k *Keys) fetchContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if k.armFetch != nil {
+		return k.armFetch(ctx, k.FetchTimeout)
+	}
+	return context.WithTimeout(ctx, k.FetchTimeout)
+}
+
 // startReadLocked makes a new read the read in flight and starts it on a context detached from
 // ctx, bounded by FetchTimeout alone (complete): the one way a read starts, so every read is
 // detached from the caller that started it. k.mu is held and k.inflight is nil: one read runs at a
@@ -400,7 +415,7 @@ func keysDeadline(ctx context.Context) (time.Time, bool) {
 // read fetches and parses the issuer's key set once, under FetchTimeout and the detached context
 // it is given (startReadLocked), never a caller's.
 func (k *Keys) read(ctx context.Context) ([]jose.JSONWebKey, error) {
-	ctx, cancel := context.WithTimeout(ctx, k.FetchTimeout)
+	ctx, cancel := k.fetchContext(ctx)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, k.jwksURI, nil)
 	if err != nil {

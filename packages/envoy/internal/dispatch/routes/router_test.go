@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testSigningKeyValue is the one key of testSigningKey, the set the package's session cookies are
@@ -242,7 +243,7 @@ func newSignInRigFor(t *testing.T, serverURL string, rule identity.SignInRule, h
 	t.Helper()
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), rigClientID, "dispatch-secret")
-	flow := oidc.NewCodeFlow(issuer.URL(), rigClientID, "dispatch-secret", hostedDomain)
+	flow := oidc.NewCodeFlow(issuer.URL(), rigClientID, "dispatch-secret", hostedDomain, oidc.WithWaitArm(testwait.BoundArm(t)))
 	rig := &signInRig{issuer: issuer, people: newMemoryPeople(), sessions: &memorySessionStore{generations: map[string]int64{}}, now: time.Now()}
 	rig.people.sessions = rig.sessions
 	rig.people.now = rig.clock

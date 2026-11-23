@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A sign-in and a confirmation are each dated by the database's now(), and Membership answers the
@@ -115,7 +116,7 @@ func revokingPool(t *testing.T) (*oidctest.Issuer, *oidc.CodeFlow) {
 	t.Helper()
 	pool := oidctest.New(t)
 	pool.EnableCodeFlow(pool.PublishKey(t, "pool-key"), "dispatch-client", "client-secret")
-	return pool, oidc.NewCodeFlow(pool.URL(), "dispatch-client", "client-secret", "")
+	return pool, oidc.NewCodeFlow(pool.URL(), "dispatch-client", "client-secret", "", oidc.WithWaitArm(testwait.BoundArm(t)))
 }
 
 // storePlainRefreshToken stores token for email in plain text with the statement the release

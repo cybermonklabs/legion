@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -122,7 +123,7 @@ func TestCheckClientSpendsNoCodeOfItsOwnIssuer(t *testing.T) {
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "signing-key")
 	issuer.EnableCodeFlow(key, checkClientID, checkClientSecret)
-	flow := NewCodeFlow(issuer.URL(), checkClientID, checkClientSecret, "")
+	flow := NewCodeFlow(issuer.URL(), checkClientID, checkClientSecret, "", WithWaitArm(testwait.BoundArm(t)))
 	ctx := context.Background()
 	signIn := OnlineSignIn{State: "state", Nonce: "nonce", Verifier: "verifier-verifier-verifier-verifier-ve"}
 	redirectURL := "https://broker.example/signin/callback"

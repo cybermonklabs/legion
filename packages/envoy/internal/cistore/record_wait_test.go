@@ -29,7 +29,7 @@ func TestARecordOfAStoreNoTestArmedGivesUpAtRecordWait(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s := openStore(t, conn)
-	s.armRecordWait = nil
+	s.waitArm = nil
 	held := make(chan struct{})
 	var release sync.Once
 	t.Cleanup(func() { release.Do(func() { close(held) }) })
@@ -71,7 +71,7 @@ func TestARecordOfAnArmedStoreEndsAtTheArmedWait(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	s := openStore(t, conn)
-	s.armRecordWait = func(ctx context.Context) (context.Context, context.CancelFunc) {
+	s.waitArm = func(ctx context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
 		return context.WithDeadline(ctx, time.Now().Add(-time.Second))
 	}
 	err := s.Record(context.Background(), recordWaitObservation("2222222222222222222222222222222222222222"))

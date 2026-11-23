@@ -196,15 +196,21 @@ const identityBudget = 4 * time.Second
 // deadline (oidc.WithKeysDeadline). Its error matches oidc.ErrIssuerUnavailable. The budget never
 // ends that context itself: a verification whose context ends is oidc.ErrCancelled, which is a
 // 401, while a key read cut short by the keys deadline is oidc.ErrIssuerUnavailable, the 503.
+//
+// A verifier a test armed (oidc.WithWaitArm) gives the budget its arm's end in place of
+// identityBudget (LazyVerifier.WaitWithin); armed with no end, under -timeout 0, the check sets no
+// keys deadline.
 func identityCheck(r *http.Request, verifier *oidc.LazyVerifier) (context.Context, error) {
-	deadline := time.Now().Add(identityBudget)
+	budget, cancel := verifier.WaitWithin(r.Context(), identityBudget)
+	defer cancel()
 	if !verifier.Discovered() {
-		wait, cancel := context.WithDeadline(r.Context(), deadline)
-		err := verifier.Discover(wait)
-		cancel()
-		if err != nil {
+		if err := verifier.Discover(budget); err != nil {
 			return nil, err
 		}
+	}
+	deadline, bounded := budget.Deadline()
+	if !bounded {
+		return r.Context(), nil
 	}
 	return oidc.WithKeysDeadline(r.Context(), deadline), nil
 }

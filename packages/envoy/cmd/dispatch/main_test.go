@@ -753,8 +753,8 @@ func TestDispatchHandlerReportsEachIssuersDiscovery(t *testing.T) {
 	signInIssuer.EnableCodeFlow(signInIssuer.PublishKey(t, "signing-key"), "dispatch-client", "client-secret")
 	serviceTokenIssuer.PublishKey(t, "signing-key")
 	configured := issuers{
-		signIn:        oidc.NewCodeFlow(signInIssuer.URL(), "dispatch-client", "client-secret", ""),
-		serviceTokens: oidc.NewLazyVerifier(serviceTokenIssuer.URL(), "dispatch"),
+		signIn:        oidc.NewCodeFlow(signInIssuer.URL(), "dispatch-client", "client-secret", "", oidc.WithWaitArm(testwait.BoundArm(t))),
+		serviceTokens: oidc.NewLazyVerifier(serviceTokenIssuer.URL(), "dispatch", oidc.WithWaitArm(testwait.BoundArm(t))),
 	}
 	if status, health := probe(configured); status != http.StatusOK || health["ok"] != true || health["signin"] != false || health["service_tokens"] != false {
 		t.Fatalf("healthz before either issuer is discovered: %d %v, want 200 ok with signin and service_tokens false", status, health)

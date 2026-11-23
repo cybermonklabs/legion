@@ -39,14 +39,13 @@ func connectNATS(t testing.TB) (*natsgo.Conn, func()) {
 // benchmark keeps recordWait: it measures the store under the product's own bound.
 func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	t.Helper()
-	st, err := Open(t.Context(), conn, logging.New("test"), WithReplicas(1), WithTTL(time.Hour))
+	options := []Option{WithReplicas(1), WithTTL(time.Hour)}
+	if _, isTest := t.(*testing.T); isTest {
+		options = append(options, WithWaitArm(testwait.BoundArm(t)))
+	}
+	st, err := Open(t.Context(), conn, logging.New("test"), options...)
 	if err != nil {
 		t.Fatalf("open cistore: %v", err)
-	}
-	if _, isTest := t.(*testing.T); isTest {
-		st.armRecordWait = func(ctx context.Context) (context.Context, context.CancelFunc) {
-			return testwait.WithBoundEnd(ctx, t, recordWait)
-		}
 	}
 	t.Cleanup(func() { forgetTestSummarizer(st) })
 	ctx, cancel := testwait.WithBoundEnd(context.Background(), t, 10*time.Second)

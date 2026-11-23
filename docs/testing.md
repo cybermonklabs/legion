@@ -480,6 +480,30 @@ A settlement timer's callback therefore holds the service and the room's state w
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
 A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes with a detector job of its own, in the same pull request.
 
+## A product bound a test does not measure
+
+Some product code bounds a call to a remote by a fixed span, for a remote that accepts the call and
+never answers: the CI store gives up a record after 4 s (`recordWait`); a sign-in code flow or a
+lazy verifier gives up a read of its issuer's discovery document, its key set or its token endpoint
+after 10 s; and the listener answers an identity token 503 once its check has waited 4 s
+(`identityBudget`). A test
+whose own remote answers in the machine's time, a test NATS or a test issuer, does not measure that
+bound, and on a loaded machine its call can take longer: the row then fails on the bound, not on
+what it tests.
+
+- Such a test hands the product an arm in place of the bound: `cistore.WithWaitArm` on `Open` and
+  `OpenWriter`, and `oidc.WithWaitArm` on `NewCodeFlow`, `NewLazyVerifier`, `NewKeys` and
+  `DiscoveredVerifier`, each given `testwait.BoundArm(t)`. A lazy verifier's arm also bounds the
+  listener's identity check of its tokens (`LazyVerifier.WaitWithin`).
+- The arm ends each wait at `testwait.BoundEndAt`: 30 s before the test binary's deadline, never
+  sooner than the product's own bound after the wait began, and never past the deadline. So under a
+  short `-timeout` a wait still has the time the product gave it.
+- A test of the bound itself (a row that freezes the bus and asserts the record gives up, or that a
+  slow token endpoint outlasts the bound) keeps the product's bound and passes no arm.
+- A fixed wait of the test's own that stood in for such a bound (a 5 s or 10 s guard around a
+  record or a cache read) waits through `testwait.UntilBoundEnd` or `testwait.WithBoundEnd` with the
+  span it had.
+
 ## A database a Go test creates
 
 A Go test that creates a Postgres database writes `create database … strategy file_copy`, as
