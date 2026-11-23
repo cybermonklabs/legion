@@ -30,11 +30,11 @@ func valueDigest(value string) string {
 func grantAndRelease(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, secret secrets.LocalSecret, name string) string {
 	t.Helper()
 	retag(t, m, secret)
-	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "", nil)
+	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "")
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%s) = state %q, grant %v, %v; want an automatic grant", name, request.State, request.GrantID, err)
 	}
-	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values(%s): %v", name, err)
 	}
@@ -111,7 +111,7 @@ func wantTrimLog(t *testing.T, captured string, changed, unchanged []string) {
 func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
 	logged := policytest.CaptureLog(t)
-	m, enrollmentID, key, _ := newFixture(t)
+	m, enrollmentID, key, _ := newAppFixture(t, "MINTED_INPUT_KEY")
 
 	for _, c := range []struct{ row, secret, stored, want string }{
 		{"token-and-a-line-feed", "LINE_FEED_KEY", "tok\n", "tok"},

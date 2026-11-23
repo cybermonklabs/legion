@@ -48,7 +48,7 @@ func requireNoPrivateReference(t *testing.T, line string) {
 func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
-	createProjects(t, handler, "ACME", "KERNEL")
+	createTestProject(t, handler, "ACME", "KERNEL")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
 	long := "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case."
@@ -264,7 +264,7 @@ func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 func TestThePullRequestLineCarriesNoRunAndNoNegativeControl(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
-	createProjects(t, handler, "ACME")
+	createTestProject(t, handler, "ACME")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
 	recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, map[string]any{

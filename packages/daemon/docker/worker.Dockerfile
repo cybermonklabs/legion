@@ -114,14 +114,15 @@ ARG GH_TOOL=gh@2.98.0
 # archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
-# Each was read on 2026-11-21, and jj's again on 2026-11-22 at the 0.46 pin, as the `digest`
-# GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
-# '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
-# stage reads. gh's is also its line in the
-# release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo cli/cli`
-# verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj releases
-# carry no attestation (the same command answers 404 for both). A bump repeats those reads.
-ARG OMP_SHA256=9fd84e4ff44cddef87f323100e5cb30ca235284033c8a05192f90c69481fea68
+# Each was read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin, jj's at its
+# 0.46.0-sami.20261120-120102 pin, gh's at 2.98.0) as the `digest` GitHub's API gives the release
+# asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the
+# sha256 of the archive downloaded from the address the tools stage reads. gh's is also its line
+# in the release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo
+# cli/cli` verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj
+# releases carry no attestation (the same command answers 404 for both). A bump repeats those
+# reads.
+ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
 ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
@@ -1641,6 +1642,22 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
+# Each client plugin's build-commit stamp: the commit this image is built from, written beside the
+# bundle of pi-envoy and of claude-envoy, which the plugin names after its NATS connection's name
+# (@legion/envoy-client's clientBuild: a plugin this image packs from its checkout carries that
+# checkout's manifest version, not a release's), and which legacy-subjects-gate.sh reads from the
+# hub's census of connections. Root's and mode 0444, as every plugin file is root's alone (the check
+# below). A revision that is no whole commit id writes none. pi-envoy then names its packed
+# manifest's version, @sjawhar/pi-envoy@<version>, which the gate judges by that release's tag, not
+# by this checkout's commit, so a tag behind the new-form commit shuts it; claude-envoy, which reads
+# a version only from a plugin cache's path, names no build, which the gate reads as unknown.
+USER root
+RUN if printf '%s\n' "$LEGION_REVISION" | grep -Eqx '[0-9a-f]{40}'; then \
+      for dir in /opt/legion/pi-envoy/dist /opt/legion/claude-envoy/dist; do \
+        printf '%s\n' "$LEGION_REVISION" > "$dir/build-commit" && chmod 0444 "$dir/build-commit"; \
+      done; \
+    fi
+USER 1000:1000
 RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/pi-envoy.json \
     --mount=type=bind,source=packages/pi-legion/package.json,target=/tmp/source/pi-legion.json \
     set -eu; \

@@ -550,8 +550,9 @@ until then. A pass writes the record when it changed it (a new sequence, a misse
 record finished) and otherwise only once its last write is fifteen minutes old, so a record nothing
 moves costs four writes an hour however many listeners sweep it, and never ages out while a pass
 needs it. A role message is one whose topic is the role's, or whose `role` field names it. A pass,
-the relay and the kept lane's walk tell it by one read (`readRoleFrame`): past a leading UTF-8 byte
-order mark, the message's top-level fields are split by their brackets and strings, at any depth,
+the relay, the kept lane's walk and an edge listener's frame rule tell it by one read
+(`readRoleFrame`): past a leading UTF-8 byte order mark, the message's top-level fields are split
+by their brackets and strings, at any depth,
 as the plugins' `JSON.parse` splits them, and only its `topic` and `role` fields are read, each by
 its exact key, the last of a repeated key winning. The plugins read `topic` the same way; they
 never read `role` from an inbound frame, so the rule for it is the listener's own. So a later
@@ -721,7 +722,11 @@ topic elsewhere and a topic reaching the fanout is never a control topic.
 A role lane publishes its exception on the attempt itself, since nothing redelivers a core message.
 The `no_holder` exception the durable path stores carries
 `Nats-Msg-Id` `exception.no_holder.<origin>` (the message's own `Nats-Msg-Id`, else its stream
-sequence), so the stream keeps one copy however many listeners give the message up.
+sequence), so the stream keeps one copy however many listeners give the message up. A clustered
+stream still storing one listener's copy refuses another's as still in process
+(`bus.ErrDuplicateInProcess`); that listener logs WARN `listener exception publish in process`
+rather than the ERROR line the publish-failure alarm counts, since the first copy is the one the
+stream keeps.
 
 Role exceptions use core NATS with the role lane. Other control exceptions retain ordinary
 JetStream transport. Exception topics do not produce further exception events.

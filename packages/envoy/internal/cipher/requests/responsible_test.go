@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -32,11 +33,13 @@ const (
 // standInAssignees answers every issue's assignee as answer, or err, recording each key it was
 // asked for. With block set it answers only once block is closed, which the row that sets it does
 // when it ends. It ignores its context on purpose, as a Dispatch that never answers does, so a row
-// that waits on it proves the caller's own bound and not the stand-in's courtesy.
+// that waits on it proves the caller's own bound and not the stand-in's courtesy. With panics set
+// it panics with that value instead of answering.
 type standInAssignees struct {
 	answer string
 	err    error
 	block  chan struct{}
+	panics any
 
 	mu    sync.Mutex
 	asked []string
@@ -48,6 +51,9 @@ func (s *standInAssignees) Assignee(_ context.Context, issueKey string) (string,
 	s.mu.Unlock()
 	if s.block != nil {
 		<-s.block
+	}
+	if s.panics != nil {
+		panic(s.panics)
 	}
 	return s.answer, s.err
 }
@@ -75,7 +81,7 @@ func newClaimPod(t *testing.T, m *Machine, claim string) (string, *ecdsa.Private
 // fails t unless the request is pending on record.AnyoneApprover.
 func askShared(t *testing.T, m *Machine, enrollment string, key *ecdsa.PrivateKey) Request {
 	t.Helper()
-	req, err := m.Create(context.Background(), enrollment, signRequest(t, m, key, "need the shared key", "SHARED_KEY"), "", nil)
+	req, err := m.Create(context.Background(), enrollment, signRequest(t, m, key, "need the shared key", "SHARED_KEY"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != record.AnyoneApprover {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending on %s", req, err, record.AnyoneApprover)
 	}
@@ -165,10 +171,10 @@ func TestASharedRequestIsListedForTheClaimIssuesAssignee(t *testing.T) {
 // TestASharedRequestWithNoResponsiblePersonIsListedForEveryone is case 4: wherever no step names
 // a person, the request is everyone's to see, as it was before, so no request waits where nobody
 // sees it. A Dispatch that does not answer in time names nobody too, and Create does not wait for
-// it much past its bound. A read that failed or ran out of its bound logs one
+// it much past its bound. A read that failed, ran out of its bound or panicked logs one
 // AssigneeUnreadMessage WARN naming the issue, the enrollment, the error and whether the bound was
-// reached, so an operator sees that the step is off; a row that read nothing, or read an issue
-// nobody is assigned to, logs none.
+// reached, so an operator sees that the step is off, and the line holds nothing of what the read
+// held; a row that read nothing, or read an issue nobody is assigned to, logs none.
 func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) {
 	for _, c := range []struct {
 		name      string
@@ -189,6 +195,11 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 		{name: "the issue has no assignee", claim: legionPlanner, assignees: &standInAssignees{}},
 		{name: "Dispatch answers too late", claim: legionPlanner, assignees: &standInAssignees{answer: dave, block: make(chan struct{})},
 			warned: true, boundReached: true, errorText: context.DeadlineExceeded.Error()},
+		// The read panics with a value naming the reader's token, as a defect could: the request
+		// is listed as a failed read leaves it, and the line says the read panicked and nothing of
+		// the value. Unrecovered, the panic ends the test binary, as it would the broker.
+		{name: "the read panics", claim: legionPlanner, assignees: &standInAssignees{panics: "the reader's token is the-dispatch-token"},
+			warned: true, errorText: "the assignee read panicked: a panic of type string"},
 		{name: "a machine whose fleet names no person", machine: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -236,6 +247,9 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 				line.attrs["bound_reached"] != c.boundReached || !strings.Contains(errorText, c.errorText) {
 				t.Fatalf("the %q line is %v at %s; want a WARN naming issue ACME-1, enrollment %s, bound_reached=%t and an error holding %q",
 					AssigneeUnreadMessage, line.attrs, line.level, enrollment, c.boundReached, c.errorText)
+			}
+			if strings.Contains(fmt.Sprint(line.attrs), "the-dispatch-token") {
+				t.Fatalf("the %q line is %v; want no part of what the read held", AssigneeUnreadMessage, line.attrs)
 			}
 		})
 	}
@@ -285,7 +299,7 @@ func TestAPersonsOwnSecretIsListedForItsOwnerAlone(t *testing.T) {
 		name, enrollment string
 		key              *ecdsa.PrivateKey
 	}{{"alice's session", session, sessionKey}, {"a Legion pod", pod, podKey}} {
-		req, err := m.Create(context.Background(), asker.enrollment, signRequest(t, m, asker.key, "need the owner's key", "DEEL_API_KEY"), "", nil)
+		req, err := m.Create(context.Background(), asker.enrollment, signRequest(t, m, asker.key, "need the owner's key", "DEEL_API_KEY"), "")
 		if err != nil || req.State != "pending" || req.RecordID == nil {
 			t.Fatalf("Create(DEEL_API_KEY) as %s = %+v, %v; want it pending on %s", asker.name, req, err, owner)
 		}
@@ -304,7 +318,7 @@ func TestAnAgentTierPodRequestReadsNoAssignee(t *testing.T) {
 	assignees := &standInAssignees{answer: dave}
 	m.Assignees = assignees
 	pod, key := newClaimPod(t, m, legionPlanner)
-	req, err := m.Create(context.Background(), pod, signRequest(t, m, key, "need the shared token", sharedToken), "", nil)
+	req, err := m.Create(context.Background(), pod, signRequest(t, m, key, "need the shared token", sharedToken), "")
 	if err != nil || req.State != "granted" {
 		t.Fatalf("Create(%s) = %+v, %v; want it granted at once", sharedToken, req, err)
 	}
@@ -323,14 +337,14 @@ func TestAWithheldSharedAgentTierRequestIsListedForTheResponsiblePerson(t *testi
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(%s) = %+v, %v; want granted at once", sharedToken, auto, err)
 	}
 	if err := m.RevokeByApprover(ctx, *auto.GrantID, operator, record.HumanActor(operator)); err != nil {
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "")
 	if err != nil || again.State != "pending" || again.RecordID == nil || recordApprover(t, m, again) != record.AnyoneApprover {
 		t.Fatalf("Create(%s) after the withhold = %+v, %v; want it pending on %s", sharedToken, again, err, record.AnyoneApprover)
 	}

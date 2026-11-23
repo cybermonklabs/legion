@@ -19,8 +19,8 @@ Read, against the goal, every check and every requirement:
 3. the reviewer's approval of the head its Legion footer names, never its `commit_id`
    (`skill://legion-worker/references/merge-gate.md`);
 4. each claim of the reviewer's prose, against the code at that head;
-5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head gets no CI
-   (*A conflicting head*, below).
+5. `gh pr view <n> --json mergeable,mergeStateStatus`: a `CONFLICTING` head whose checks passed
+   is accepted as any other, and the merger merges the base forward (*A conflicting head*, below).
 
 - `sign_off` works only in `accepting`, where the Dispatch status reads `needs_review`; your
   `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`).
@@ -66,36 +66,37 @@ Retro runs, then the merger merges the approved head under the repository's own 
 none of it. A person's request after your sign-off is a requirement of this issue: the role that
 holds the phase makes the `request_backward_move`. When the merger reports:
 
-- a failed verification: tell it to move the issue back with `request_backward_move`, naming what
-  failed;
+- the issue moved back with `request_backward_move`: its reason says why the fix is a change to
+  the change's own logic that no merge of the base resolves; you start nothing;
 - a merge GitHub refuses for a repository setting or an App permission: open a `dispatch ask`
   naming the pull request, the head and GitHub's refusal, and never bypass a rule;
 - a squash into a base other than the default branch: tell the implementer of each open pull
   request of the tree built on that branch whose issue is yours and still in `implementing` to
   merge that base forward in its implementing round. Past `implementing`, the daemon asks for that
-  merge itself (*A conflicting head*, below).
+  merge itself, and past the review the merger makes it (*A conflicting head*, below).
 
 ## A conflicting head
 
-A head that conflicts with its base keeps the issue in its phase. The daemon asks the implementer
-to merge the base forward only when the next step needs a mergeable head (*The daemon's ask* in
-`skill://legion-worker/references/conflicts-and-rewrites.md`). A conflict it does not act on yet
-is recorded: the tester and the reviewer go on at that head, an approval of it ends the review
-round, and the daemon acts when the issue enters `accepting`. When it asks outside
-`implementing`, it tells you once by `checks-red`, naming the phase the issue stays in, the head,
-the base and why; in `implementing` no notice comes. You start nothing for the merge.
+A head that conflicts with its base keeps the issue in its phase. Before the review the daemon asks
+the implementer to merge the base forward only when the next step needs a mergeable head (*The
+daemon's ask* in `skill://legion-worker/references/conflicts-and-rewrites.md`). A conflict it does
+not act on yet is recorded: the tester and the reviewer go on at that head, and an approval of it
+ends the review round. Past the review the merge is the merger's: in `accepting` and `retro` the
+conflict waits, so accept the head as any other, and once the issue enters `merging` the daemon
+asks the merger to merge the base forward; a check the base's newer code breaks is the merger's to
+fix in that merge too. When it asks, the daemon tells you once by `checks-red`, naming the phase the
+issue stays in, the role asked, the head, the base and why; in `implementing` no notice comes. You
+start nothing for the merge.
 
 Past review, the daemon also asks the reviewer to read the merge and approve the new head by its
-SHA, or request changes. In `accepting`, wait for that approval of the new head before
-`sign_off`, and send the issue back with `request_backward_move` when the reviewer requests
-changes.
+SHA, or request changes; the merger merges the new head only once that approval is on the pull
+request.
 
 ## A review thread GitHub will not resolve
 
 Only the pull request author's App resolves a thread, so the implementer resolves them all. When
 GitHub refuses its `resolveReviewThread`, open a `dispatch ask` with the thread's URL and GitHub's
-message, for a person to resolve it, with the options resolved and could not. The merger does not
-complete while it is open.
+message, for a person to resolve it, with the options resolved and could not.
 
 ## The close
 

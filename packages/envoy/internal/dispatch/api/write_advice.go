@@ -1039,15 +1039,11 @@ func (response advisedResponse) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	encoded := make([]byte, 0, len(payload)+len(advice)+11)
-	encoded = append(encoded, payload[:len(payload)-1]...)
+	key := `"advice":`
 	if len(payload) > 2 {
-		encoded = append(encoded, ',')
+		key = "," + key
 	}
-	encoded = append(encoded, `"advice":`...)
-	encoded = append(encoded, advice...)
-	encoded = append(encoded, '}')
-	return encoded, nil
+	return slices.Concat(payload[:len(payload)-1], []byte(key), advice, []byte("}")), nil
 }
 
 func withAdvice(payload any, advice *writeAdvice) any {
