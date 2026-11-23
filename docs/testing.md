@@ -405,7 +405,7 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
 ## A test in `internal/dispatch/api` runs beside the others
 
 Every top-level test of `packages/envoy/internal/dispatch/api` calls `t.Parallel()` as its first
-statement, and the package's `TestMain` runs 16 of them at once. Each test already has a database
+statement, and the package's `TestMain` runs 8 of them at once. Each test already has a database
 and a server of its own (`storetest.Open`), so run alone it spends most of its time waiting on
 Postgres while the machine's other cores sit idle.
 

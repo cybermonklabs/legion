@@ -47,14 +47,20 @@ import (
 // apiTestParallelism is how many of this package's tests run at once when the command line names
 // no -parallel. Every test of the package calls t.Parallel but those that change or measure
 // something the whole process shares (the default logger, the environment, a package variable,
-// heap statistics), which stay serial and run before the rest. A test spends almost all of its
+// heap statistics), which stay serial and run before the rest. Alone, a test spends most of its
 // time waiting on Postgres, not on a core, so go test's default of GOMAXPROCS (four on CI's arm
 // runner) leaves the runner idle, and on a dev box with hundreds of cores it would open more
 // connections than the test server allows: each test has a database and pools of its own
 // (storetest.Open), and testlimits.ServerConnections sizes the server for a few at once.
 //
+// Eight, not sixteen: at sixteen on the 4-vCPU race runner, each of three runs failed a different
+// test that holds a wall-clock bound (a 500 ms answer, a cold document read answering 503, a
+// meaning search's candidates), with no data race and the service at 159 of its 483 connections
+// (envoy-go-race-api jobs 137359069610, 137391716843 and 137399725401). The cores, not the
+// connections, were what ran out.
+//
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
-const apiTestParallelism = 16
+const apiTestParallelism = 8
 
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
