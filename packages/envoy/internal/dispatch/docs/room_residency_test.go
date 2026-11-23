@@ -1192,11 +1192,12 @@ func parkedCommitTrial() (int, bool) {
 // A write whose commit never returns is the defect TestAWriteSurvivesItsIssueClosingAsItPublishes
 // exists to catch, and the case must report it and end rather than hold its package's cleanup:
 // storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result
-// (storetest.go:90), and the pool's Close waits for every connection in use, so a transaction
+// (storetest's clone), and the pool's Close waits for every connection in use, so a transaction
 // left open there costs the whole run its deadline - the -timeout .github/workflows/ci.yaml gives
 // envoy-go-race-docs and envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs
 // the case in a child process of this test binary with one trial's commit parked for good and
-// requires the child to print the case's own --- FAIL line inside a deadline of its own.
+// requires the child to print the case's own --- FAIL line inside a deadline of its own, and to
+// exit within a fixed spare after that deadline.
 func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	if os.Getenv(storetest.DatabaseURLEnv) == "" {
 		t.Skip(storetest.DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
@@ -1214,20 +1215,37 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	// pod under -race and six busy loops on two CPUs, and 47.75 s plain, of which that guard was 30 s
 	// and storetest's retried drop of the clone after it 15 s (dropWindow: the parked commit's
 	// connection is still open on the clone, so the plain drop is answered 55006 and tried again
-	// before it is forced, storetest.go:132, :147-161): under ten seconds for that setup, which the
+	// before it is forced, storetest's dropDatabase): under ten seconds for that setup, which the
 	// 70 s it has here covers seven times over. 120 s is minutes below the deadline of any run that
 	// holds this package (the -timeout .github/workflows/ci.yaml gives envoy-go-docs-finalizers and
 	// envoy-go-race-docs).
 	const childDeadline = 120 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
-	// the deadline above watches none of what the child does after them: storetest.Main's wait for
-	// those drops (storetest.go:110), the admin Exec that drops the template on
-	// context.Background(), the leak report. A child stuck in one of those would hold this row
-	// until the run that holds this package reached its own deadline and panicked there with no
-	// line naming it, so the child is bounded from here too: at this binary's deadline less
-	// testwait's margin (testwait.Context), where a child that has not exited is killed and this
-	// row fails by name. A child a loaded machine is merely slow to tear down is waited for.
-	killing := testwait.Context(t)
+	// the deadline above watches none of what the child does after them: storetest.Run's wait for
+	// those drops, the admin Exec that drops the template on context.Background(), the leak report
+	// (reportLeakedServices). A child stuck in one of those is the wedge this row exists to catch,
+	// in the one place the child's own deadline cannot see it: left alone, it would hold the run
+	// that holds this package until that run's own deadline, and the run would panic there with no
+	// line naming it. So the child is bounded from here too, at childDeadline and childTeardown
+	// after it: a child that has not exited by then is killed, and this row fails by name.
+	//
+	// A loaded machine cannot fail a correct child at that bound. The child's tests cannot outlast
+	// childDeadline, because the child's own alarm fires there and the child exits; the check on
+	// its "panic: test timed out" below then fails the row, which is the child's own bound and the
+	// subject of this row. What the child does after its tests has bounds of its own: the plain
+	// drop of its clone is tried again for dropWindow (15 s) before the forced drop, the template's
+	// drop is one statement, and the leak report stops waiting leakReportSpare before the child's
+	// own deadline (testwait.BinaryRemaining). childTeardown is the spare for that and for the
+	// child's report: a minute, nearly four times the 15.87 s the child spent outside its tests at
+	// most over three runs in a build pod under -race and six busy loops on two CPUs, of which the
+	// drop's retries were 15 s (dispatch://INFRA-3904).
+	const childTeardown = time.Minute
+	outlived := errors.New("the child outlived childDeadline and childTeardown")
+	// The kill also comes at this binary's deadline less testwait's margin (testwait.Context) when
+	// that is sooner, so a -timeout too short for this row reports the kill rather than the
+	// binary's panic.
+	killing, stopKilling := context.WithTimeoutCause(testwait.Context(t), childDeadline+childTeardown, outlived)
+	defer stopKilling()
 	command := exec.CommandContext(killing, os.Args[0],
 		"-test.run=^TestAWriteSurvivesItsIssueClosingAsItPublishes$/^20_paragraphs$",
 		"-test.timeout="+childDeadline.String())
@@ -1254,7 +1272,10 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 		t.Fatalf("read the child's output: %v", readErr)
 	}
 	if killing.Err() != nil {
-		t.Fatalf("the child had not exited %v in, at this test binary's deadline less testwait's margin, and was killed, so it wedged past the end of its tests, where its own %v -test.timeout no longer watches it:\n%s", took, childDeadline, output)
+		if errors.Is(context.Cause(killing), outlived) {
+			t.Fatalf("the child had not exited %v in and was killed: it outlived its own %v -test.timeout and the %v of teardown after it, so it wedged outside its tests, where that -test.timeout does not watch it:\n%s", took, childDeadline, childTeardown, output)
+		}
+		t.Fatalf("the child had not exited %v in, at this test binary's deadline less testwait's margin, which came before the %v this row gives the child, and was killed:\n%s", took, childDeadline+childTeardown, output)
 	}
 	if err == nil {
 		t.Fatalf("the case passed in %v with trial 0's commit parked, so the park reached no trial:\n%s", took, output)
@@ -1275,7 +1296,7 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	if !strings.Contains(string(output), "never returned from its commit") {
 		t.Fatalf("the child failed in %v for something other than the parked commit:\n%s", took, output)
 	}
-	t.Logf("the child reported its parked commit and exited in %v under its %v -test.timeout", took, childDeadline)
+	t.Logf("the child reported its parked commit and exited in %v, under its %v -test.timeout and the %v of teardown after it", took, childDeadline, childTeardown)
 }
 
 // goroutinesIn counts the goroutines whose stacks name every one of functions.
