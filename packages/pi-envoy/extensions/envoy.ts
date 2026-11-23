@@ -139,6 +139,8 @@ import { createTmuxPlaceCache } from "@legion/envoy-client/tmux-place-cache";
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   type MessageMetadataArguments,
   parseEnvoyToolArguments,
   publishConfirmationText,
@@ -5493,6 +5495,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             ...(typeof idempotencyKey === "string" ? { idempotencyKey } : {}),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_send"), keyTakenDetails(result));
+          }
           return toolSuccess(sendConfirmationText(result), {
             event_id: result.envelope.event_id,
             recipient: result.recipient,
@@ -5512,6 +5517,9 @@ export default function envoyExtension(hostApi: PiApi): void {
             message: stringFor(parameters, "message"),
             ...toMessageMetadata(parameters as MessageMetadataArguments),
           });
+          if (result.keyTaken !== undefined) {
+            return toolSuccess(keyTakenText(result, "envoy_publish"), keyTakenDetails(result));
+          }
           // The skip is the listener's own delivery: the role lane skips the holder it resolved
           // when that holder is the message's source, and the fanout skips every interest whose
           // session is that source. The session still gets its own publish from its own

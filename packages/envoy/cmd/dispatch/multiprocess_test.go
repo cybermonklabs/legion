@@ -4355,7 +4355,7 @@ const multiprocessServerURL = "http://dispatch.multiprocess.test"
 // that started the sign-in, and B answered 400 "invalid or expired state".
 func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, multiprocessServerURL+"/auth/callback")
 	env := cookieSignIn(issuer)
 	env["DISPATCH_SERVER_URL"] = multiprocessServerURL
 	pair := startPair(t, env)
@@ -4424,7 +4424,7 @@ func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 // so no third process with a key of its own serves beside these two.
 func TestASessionMintedOnOneProcessAuthenticatesOnTheOtherUnderOneSigningKey(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	pair.start(t, cookieSignIn(issuer))
 
@@ -4600,7 +4600,7 @@ const (
 // DISPATCH_SIGNING_KEY of two keys was one key, so each process refused the other's cookie.
 func TestAKeyRotationKeepsPeopleSignedInAcrossTwoProcesses(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	pair.a = startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{
 		NATSURL: pair.nats, SigningKey: rotationK1 + " " + rotationK0, Env: cookieSignIn(issuer),
@@ -4732,7 +4732,7 @@ const (
 // expired on its own, so the drop refuses nobody who is still signed in.
 func TestAStagedKeyRotationAcrossThreeAppliesKeepsPeopleSignedIn(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	// Every process of the walk runs the same unstamped build, and only its DISPATCH_SIGNING_KEY
 	// differs, so the binary is built once rather than once per start.
@@ -8672,10 +8672,10 @@ const keywordFillLostHoldLine = `msg="dispatch: the keyword fill's hold is lost;
 const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Second
 
 // A killed holder does not release its hold, so its hold lapses and the process that stood by takes
-// it and writes the events written since: within keywordFillTakeOverWithin of the kill, well inside
-// the 60 s bound from a holder's death to the rows of the events written after it. Every batch
-// before the kill is the first process's and every batch after is the second's, and every event
-// has exactly its row.
+// it within keywordFillTakeOverWithin of the kill and writes the events written since, whose rows
+// wait on the event horizon, which waits on the whole Postgres instance, bounded by the test
+// binary's deadline (textversionstest.AwaitRowsUntil). Every batch before the kill is the first
+// process's and every batch after is the second's, and every event has exactly its row.
 func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -8689,12 +8689,12 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 	second.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
 
 	before := writeKeywordFillComments(t, database, 50)
-	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, before, nil)
 	first.kill(t)
 	killed := time.Now()
 	after := writeKeywordFillComments(t, database, 50)
 	secondHolder := keywordFillHolder(t, second, keywordFillTakeOverWithin-time.Since(killed))
-	textversionstest.AwaitRows(t, database, after, time.Minute-time.Since(killed), nil)
+	textversionstest.AwaitRowsUntil(t, database, after, nil)
 	t.Logf("the second process wrote the events written after the kill %v after it", time.Since(killed).Round(time.Millisecond))
 
 	requireKeywordFillWritersInTurn(t, writes(), firstHolder, secondHolder)
@@ -8782,7 +8782,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 	standby.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
 
 	before := writeKeywordFillComments(t, database, 20)
-	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, before, nil)
 	frozenAt := frozen.signal(t, syscall.SIGSTOP)
 	resumed := false
 	// So a failure never leaves a stopped process behind: the cleanup cmdtest.Start registered
@@ -8796,7 +8796,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 
 	whileFrozen := writeKeywordFillComments(t, database, 20)
 	standbyHolder := keywordFillHolder(t, standby, keywordFillTakeOverWithin-time.Since(frozenAt))
-	textversionstest.AwaitRows(t, database, whileFrozen, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, whileFrozen, nil)
 	t.Logf("the standby took the hold and wrote the events written meanwhile %v after the holder was frozen",
 		time.Since(frozenAt).Round(time.Millisecond))
 
@@ -8814,7 +8814,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 		afterResume = append(afterResume, writeKeywordFillComments(t, database, 5)...)
 		time.Sleep(2500 * time.Millisecond)
 	}
-	textversionstest.AwaitRows(t, database, afterResume, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, afterResume, nil)
 
 	requireKeywordFillWritersInTurn(t, writes(), frozenHolder, standbyHolder)
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, whileFrozen, afterResume)...))

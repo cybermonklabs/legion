@@ -4325,8 +4325,9 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/auth/_dev/signin` (GET; none; `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header)
 
-  Sign in the person `login` names, lowercased, without the sign-in issuer: `302` to the sanitized `next` (default `/`) with the session cookie.
-  `400 DEV_SIGNIN_INPUT` without `login`, `403 DEV_SIGNIN_FORBIDDEN` for a non-loopback peer or a request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via`.
+  Sign in the person `login` names, lowercased, without the sign-in issuer: `302` with the session cookie to the page `next` names on the dashboard origin, as an absolute URL of that origin (default its `/`).
+  `next` is a path, or an absolute URL of the dashboard origin.
+  `400 DEV_SIGNIN_INPUT` without `login`, or for a `next` off the dashboard origin (another host, port or scheme, `//host`, userinfo, a relative path, a backslash), before anyone is recorded or any cookie minted; `403 DEV_SIGNIN_FORBIDDEN` for a non-loopback peer or a request carrying `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-IP` or `Via`.
   Each mint logs at WARN with the email and the peer.
   Not mounted otherwise.
 

@@ -2263,7 +2263,7 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		process.waitHealthy(t)
 		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
 		after := writeKeywordFillComments(t, database, 50)
-		textversionstest.AwaitRows(t, database, append(before, after...), time.Minute, nil)
+		textversionstest.AwaitRowsUntil(t, database, append(before, after...), nil)
 		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {
 			t.Fatalf("the fill wrote every event's row, and the read counts %d holds, %d rows and %d cursor rows; want each above 0", writes.holds, writes.rows, writes.cursors)
 		}

@@ -205,9 +205,9 @@ func newDocumentSocketRig(t *testing.T, heartbeat time.Duration) *documentSocket
 	t.Helper()
 	ctx := context.Background()
 	rig := &documentSocketRig{pool: oidctest.New(t), email: "alice@d.example"}
-	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret")
-	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "")
 	const redirect = "https://dispatch.example/auth/callback"
+	rig.pool.EnableCodeFlow(rig.pool.PublishKey(t, "signing-key"), "dispatch-client", "dispatch-secret", redirect)
+	flow := oidc.NewCodeFlow(rig.pool.URL(), "dispatch-client", "dispatch-secret", "")
 	rig.pool.SignInAs(map[string]any{
 		"sub":              "person-subject",
 		"cognito:username": "ExampleIdP_" + rig.email,

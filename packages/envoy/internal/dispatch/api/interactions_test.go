@@ -39,6 +39,7 @@ func newInteractionDeps(t *testing.T, makeDocs func(*store.Store) docs.API) (htt
 
 // newInteractionServer is newInteractionDeps, answering also the server it registered, for a test
 // that waits out the writes its requests leave running past their answers (awaitBackgroundWrites).
+// A nil makeDocs serves the document service withDocumentService builds.
 func newInteractionServer(t testing.TB, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store, Deps, *server) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -47,13 +48,17 @@ func newInteractionServer(t testing.TB, makeDocs func(*store.Store) docs.API) (h
 		docsAPI = makeDocs(database)
 	}
 	seedPeople(t, database, "alice", "bob")
-	deps, err := NewDeps(DepsInput{
+	input := DepsInput{
 		Store:       database,
 		Identity:    headerIdentity(database),
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs:        docsAPI,
 		ServerURL:   "https://dispatch.example",
-	})
+	}
+	if docsAPI == nil {
+		input = withDocumentService(t, input)
+	}
+	deps, err := NewDeps(input)
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
