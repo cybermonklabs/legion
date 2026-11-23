@@ -1217,16 +1217,19 @@ def reduce_line(line: str) -> tuple:
 # The only env: names a step, its job or the workflow may set while a go command of the step stays
 # reduced, or a step an exact entry pins stays unrefused: names that cannot change what the command
 # compiles or which tests it runs. Any other name falls to everything, or refuses the pinned step,
-# among them GO* and CGO_*, BASH_ENV and ENV (which bash sources before the script), HOME and
-# XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from $XDG_CONFIG_HOME/go/env or else
-# $HOME/.config/go/env) and PATH (which chooses the go binary). Add a name here only when go
-# compiles the same files with it set as without, and runs the same tests.
+# among them every other GO* name and CGO_*, BASH_ENV and ENV (which bash sources before the
+# script), HOME and XDG_CONFIG_HOME (go reads its env file, GOFLAGS among it, from
+# $XDG_CONFIG_HOME/go/env or else $HOME/.config/go/env) and PATH (which chooses the go binary).
+# Add a name here only when go compiles the same files with it set as without, and runs the same
+# tests.
 #
-# GOPROXY is the one name go itself reads that is here. It says where a module's bytes come from,
-# never which version: the module files this check already reads decide that, and go.sum holds
-# each module's hash whichever source serves it. This check's own go commands run with
-# GOPROXY=off over an empty module cache (Go.env below), so a workflow's value never reaches
-# them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN and CI_OK_EXEMPT are
+# GOPROXY and GOCACHE are the two names go itself reads that are here. GOCACHE says where go
+# keeps what it built (its line below says why that changes nothing go compiles). GOPROXY says
+# where a module's bytes come from, never which version: the module files this check already
+# reads decide that, and go.sum holds each module's hash whichever source serves it. This check's
+# own go commands run with GOPROXY=off over an empty module cache (Go.env below), so a workflow's
+# value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN
+# and CI_OK_EXEMPT are
 # ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
 # to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
@@ -1248,6 +1251,11 @@ ENV_ALLOWED = frozenset({
     # without this name here every go command of that script would count as unreduced and
     # go_notices would have to match every Go file of the repository again. go reads it nowhere.
     "GH_TOKEN",
+    # Where go keeps what it compiled and the test results it caches, both found by a hash of
+    # their inputs, so go compiles the same files and runs the same tests whatever directory it
+    # names. envoy-go-checks' darwin vet sets it in its step's env, so that vet's darwin objects
+    # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
+    "GOCACHE",
     "GOPROXY",
     # The job's timeout-minutes, which .github/scripts/gh-read.sh's wait for a spent API budget
     # stays within. Every job whose steps call GitHub's API sets it in its own env, the jobs that

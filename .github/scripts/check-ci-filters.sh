@@ -368,7 +368,8 @@
 # script (split at \n alone, stripped of spaces and tabs, comments and blank lines aside; a
 # script holding any character outside printable ASCII, tab and \n is not simple), with no shell:
 # on the step and no defaults.run.shell on the job or the workflow, no container: on the job, no
-# name outside ENV_ALLOWED (test configuration go never reads; GO*, CGO_*, BASH_ENV, ENV, HOME,
+# name outside ENV_ALLOWED (test configuration go never reads, and GOPROXY and GOCACHE; any other
+# GO* name, CGO_*, BASH_ENV, ENV, HOME,
 # XDG_CONFIG_HOME and PATH are outside it) in the workflow's, job's or step's env or in front of
 # the command itself, no step of the job up to and including its own writing $GITHUB_ENV or
 # $GITHUB_PATH or running `go env -w` on a line of its script that is not a comment (each reaches

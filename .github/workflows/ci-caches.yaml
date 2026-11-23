@@ -15,7 +15,7 @@ name: CI caches
 # request lands in that run's own scope, which the next pull request's run cannot read, so it
 # would reach nobody.
 #
-# Five Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
+# Six Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 # architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 # of its module files too, for the reason its job gives): go-notices (lint's notices step),
 # go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks,
@@ -25,8 +25,9 @@ name: CI caches
 # and the binaries, multiprocess and visual jobs of
 # .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those three
 # build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
-# build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go, and
-# the build job of release-envoy-infra.yaml).
+# build of the listener and natsd alone does not hold), go-envoy-darwin-vet (envoy-go-checks'
+# darwin vet, whose build cache is a directory of its own, the GOCACHE of that step's env) and
+# go-envoy-infra (envoy-infra-go, and the build job of release-envoy-infra.yaml).
 # The key carries `runner.arch` because Go's build cache holds the objects of the architecture
 # that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
 # its objects. So each family is filled on every architecture one of its readers runs on, one
@@ -34,19 +35,22 @@ name: CI caches
 # go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
 # each has a reader on each (typecheck and the envoy lanes but one on the first; daemon-go,
 # plugin-pack, pi-legion, envoy-go-checks, envoy-go-claim-model, the browser lane and the release
-# builds on the second). A leg builds
+# builds on the second), and go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-go-checks
+# runs. A leg builds
 # what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
 # arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
 # go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
-# other four after it: the go-notices entry holds go-licenses, a program lint's notices step
+# other five after it: the go-notices entry holds go-licenses, a program lint's notices step
 # runs, and a run of a workflow file older than the architecture in the key restores by
 # go-notices-<os>-, which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what
 # that did). One
 # Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
 # go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
-# module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra.
+# module's for go-envoy, go-envoy-test and go-envoy-darwin-vet; the infra module's for
+# go-envoy-infra.
 #
-# go-daemon, go-notices, go-envoy and go-envoy-test are filled again on every push to main. The
+# go-daemon, go-notices, go-envoy, go-envoy-test and go-envoy-darwin-vet are filled again on
+# every push to main. The
 # fill restores the newest entry of its family, runs on it the build the ci.yaml job runs, which
 # compiles only what changed since that entry was saved, and saves the result under the key
 # ci.yaml's readers restore followed by the commit (`-${{ github.sha }}`). The fill's restore
@@ -87,7 +91,7 @@ name: CI caches
 # the other running (`fail-fast: false`): a cancelled leg saves nothing, and one architecture's
 # fill has no reason to cost the other's.
 #
-# Beside those five, the architecture-check job fills
+# Beside those six, the architecture-check job fills
 # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
 # .github/actions/architecture-check, and the spec-check job fills
 # spec-check-<os>-<arch>-go<version>-<hash>, the family of .github/actions/spec-check; ci.yaml's
@@ -120,7 +124,7 @@ name: CI caches
 # writes it on main, and five workflows that run there call it.
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
-# by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: the four
+# by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: the five
 # families filled on every push hold the build of every package of a module and of the modules it
 # imports, so nearly any change to Go code is theirs, and a push that changes none of it compiles
 # nothing on the restored entry; the other keys hold a Go version, that toolchain file's hash, the
@@ -354,9 +358,9 @@ jobs:
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
       # listener and the in-process NATS server's natsd. An -o ending in a separator names a
       # directory, as envoy-stack.ts's build does, so both main packages build in one command.
-      # envoy-go-checks' darwin vet is left out: its darwin objects, about 1.6 GB of build cache on
-      # a devbox, would ride in an entry every job that restores go-envoy downloads, and the step
-      # builds them in under three minutes (run 43990864191).
+      # envoy-go-checks' darwin vet is left out: its darwin objects, about 1.7 GB of build cache on
+      # a devbox, would ride in an entry every job that restores go-envoy downloads. They have a
+      # family of their own, go-envoy-darwin-vet, which the envoy-darwin-vet job fills.
       - name: Build the listener and natsd of the envoy module
         run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
@@ -416,7 +420,81 @@ jobs:
           KEY: ${{ steps.go-envoy-test.outputs.cache-primary-key }}-${{ github.sha }}
         run: echo "go-envoy-test-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
 
-  # The entries of go-daemon, go-notices, go-envoy and go-envoy-test that the fills above replaced,
+  # go-envoy-darwin-vet: what envoy-go-checks' "Vet envoy for darwin, its tagged tests included"
+  # compiles, the standard library and every package the envoy module builds for darwin/arm64, in
+  # a build cache directory of its own, the GOCACHE that step's env names, so neither this entry
+  # nor go-envoy's carries the other's objects. Restored from nothing, that vet compiled all of it
+  # on every run: 137.9 s of envoy-go-checks job 137308591036, 172 s at the median of 550 pull
+  # request runs; on a devbox, 803 s cold against 82 s on a warm cache of 1.7 GB. Each push fills
+  # it again from its newest entry, as the header says. It restores go-envoy first, as
+  # envoy-go-checks does, for the module cache the vet reads. It runs on ubuntu-24.04 alone, the
+  # runner envoy-go-checks runs on, and its key carries that runner's architecture as every
+  # family's does. A job of its own, so neither this fill nor the envoy job's can stop the other.
+  envoy-darwin-vet:
+    runs-on: ubuntu-24.04
+    # The vet from nothing is the long case: 803 s on a devbox, 172 s at the median in
+    # envoy-go-checks.
+    timeout-minutes: 30
+    outputs:
+      # The key this job saved, named by family and architecture as the other fills' are.
+      go-envoy-darwin-vet-x64: ${{ steps.saved.outputs.go-envoy-darwin-vet-x64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+
+      # The module cache the vet reads, from go-envoy's newest entry, as envoy-go-checks has it.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+      # The newest entry of the family, found as the daemon job's restore finds its own.
+      - id: go-envoy-darwin-vet
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-build-darwin
+          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
+
+      # envoy-go-checks' vet, its env and its script as that step has them (ci_job_reads.py's
+      # darwin_vet_script is the text check-ci-filters.sh holds that step to), so the entry holds
+      # each tag set it vets.
+      - name: Vet the envoy module for darwin, as envoy-go-checks does
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-darwin
+        run: |
+          flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
+          while IFS= read -r flag; do
+            echo "Vetting for darwin with $flag"
+            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+          done <<< "$flags"
+        working-directory: packages/envoy
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/go-build-darwin
+          key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ github.sha }}
+
+      - name: Name the key this job saved by its architecture
+        id: saved
+        env:
+          KEY: ${{ steps.go-envoy-darwin-vet.outputs.cache-primary-key }}-${{ github.sha }}
+        run: echo "go-envoy-darwin-vet-${RUNNER_ARCH,,}=$KEY" >>"$GITHUB_OUTPUT"
+
+  # The entries of go-daemon, go-notices, go-envoy, go-envoy-test and go-envoy-darwin-vet that the
+  # fills above replaced,
   # deleted once each fill has saved its new one. Each fill saves a new entry, over a gigabyte for
   # most families, so without this the entries would pile up: GitHub drops an entry only after
   # seven days unread, and over the repository's cache limit it evicts the least recently used
@@ -440,7 +518,7 @@ jobs:
   # does not stop the others' deletes. Every leg runs on ubuntu-24.04-arm: gh and jq need nothing
   # of an x64 machine.
   refill-superseded:
-    needs: [daemon, notices, envoy]
+    needs: [daemon, notices, envoy, envoy-darwin-vet]
     if: ${{ !cancelled() }}
     strategy:
       fail-fast: false
@@ -453,6 +531,7 @@ jobs:
           - { job: envoy, family: go-envoy, arch: arm64 }
           - { job: envoy, family: go-envoy-test, arch: x64 }
           - { job: envoy, family: go-envoy-test, arch: arm64 }
+          - { job: envoy-darwin-vet, family: go-envoy-darwin-vet, arch: x64 }
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     env:

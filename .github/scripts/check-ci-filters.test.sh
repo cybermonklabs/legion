@@ -1874,6 +1874,18 @@ run_check "$root"
 check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
 check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 
+# GOCACHE names where go keeps what it compiled, keyed on the inputs, so a step that sets it in
+# its env - as envoy-go-checks' darwin vet does, for a build cache of its own - still compiles
+# what the bare command compiles.
+echo "case: a GOCACHE in a claimed simple go command's step env"
+root=$(fixture gocache-env)
+replace "$root/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
+  $'        env:\n          GOCACHE: ${{ runner.temp }}/go-build-app\n        run: go test ./cmd/app ./lib'
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+check "and the step does carry the env" "$(contains "$(<"$root/.github/workflows/ci.yaml")" 'GOCACHE: \${{ runner.temp }}/go-build-app')"
+
 echo "case: an assignment outside ENV_ALLOWED in front of a claimed simple go command"
 root=$(fixture goos-assignment)
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: GOOS=linux go test ./cmd/app ./lib"
@@ -2595,7 +2607,7 @@ check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
 # refill_workflow <root>: cache_workflow's shape with the fill made again on every push, as
-# ci-caches.yaml's go-daemon, go-notices, go-envoy and go-envoy-test fills are: the fill's restore
+# ci-caches.yaml's Go families but go-envoy-infra are filled: the fill's restore
 # downloads the family's newest entry (no lookup-only, and its key and a `-` as restore-keys), its
 # builds and its save run on every push, and its save names the commit after the key ci.yaml
 # restores.
