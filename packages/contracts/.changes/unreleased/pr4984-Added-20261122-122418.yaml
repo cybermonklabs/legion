@@ -1,17 +1,20 @@
 kind: Added
 body: |-
-  The contracts add the event `spec.outcomes_recorded` and its payload, the tools
-  `dispatch_outcomes` and `dispatch_spec_ending`, and the parser of the outcome line form
-  (`parseOutcomeLine`, `parseOutcomeLines`, `outcomeLine`). An outcome line is
-  `(requires <statement-id>) <text>`, `(restored) <text>` or `<text>`.
+  The contracts add the events `spec.outcomes_recorded` and `spec.approved_written` and their
+  payloads, the tools `dispatch_outcomes` and `dispatch_spec_ending`, and the parser of the outcome
+  line form (`parseOutcomeLine`, `parseOutcomeLines`, `outcomeLine`). An outcome line is
+  `(requires <statement-id>) <text>`, `(restored) <text>` or `<text>`. The change-request read
+  gains `approved_spec_mark`, the approved spec it compared against.
 
   Daemon API contract 232. The state's `designGate` gains `exemptVersion` (number or null),
-  `rule` (`approval` or `change_request`), `verificationVersion` (the version of the root's
-  Verification document its change request was read at, 0 for none) and `checksUnapproved`
-  (whether that read found a changed check of the approved spec that no person approved, which
+  `rule` (`approval` or `change_request`), `verificationVersion` and `approvedSpecMark` (the version
+  of the root's Verification document and the approved spec its change request was read at, 0 for
+  none), and `checksUnapproved` and `proposesUnapproved` (whether that read found a changed check,
+  or a proposal, that the approved spec does not hold as written and no person approved, which
   holds the gate closed). Each gated step gains `exemptVersion`, `verificationVersion`,
-  `checksUnapproved` and the status `exempt`: a spec-source root's step that a version proposing
-  nothing opened with no person. The fixtures declare contract 232 (`version.json`, and
+  `approvedSpecMark`, `checksUnapproved`, `proposesUnapproved` and the status `exempt`: a
+  spec-source root's step that a version proposing nothing opened with no person. The fixtures
+  declare contract 232 (`version.json`, and
   `state.json`'s `contract`), and `contract-shapes.json` records the new keys and the new value at
   232. The tool `dispatch_spec_ending` names the ending reasons `proposes_without_approval` and
   `changes_checks_without_approval`, and `dispatch_outcomes` says that a final list waits for the

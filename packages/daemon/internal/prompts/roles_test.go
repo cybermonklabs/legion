@@ -871,6 +871,10 @@ func TestTheMergerReadsTheEndingConditionBeforeEachMergeAndEnqueue(t *testing.T)
 		// A version of the Verification document that changes an approved check closes the gate,
 		// whichever way it opened, and the merger takes that message by its opening words too (R25).
 		"The design gate of <tree> closed: version <n> of its Verification document changes an approved check, and no person approved the change.",
+		// Another issue's approval that changes a node the change request holds closes the gate
+		// with no event of the root's own (R22, R25), and the merger takes that message by its
+		// opening words too.
+		"The design gate of <tree> closed: the approved spec of <repo> changed under its change request",
 		"or a proposal or a changed check that no person approved",
 	} {
 		if !strings.Contains(merger, want) {
@@ -926,6 +930,10 @@ func TestTheRootArchitectKnowsWhatEachChangeRequestNoticeAsks(t *testing.T) {
 		// whichever way it opened (R25), and the role message says so in these words.
 		"The design gate of <tree> closed: version <n> of its Verification document changes an approved check",
 		"A check that names no statement is the root's own acceptance check, and an edit of it closes nothing.",
+		// Another issue's approval that changes a node the request holds closes the gate too, and
+		// the architect writes the request again against the approved spec.
+		"The design gate of <tree> closed: the approved spec of <repo> changed under its change request",
+		"Write the request again against the approved spec, as for a `spec-request-stale` notice below",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("roles/architect-root.md does not say %q", want)

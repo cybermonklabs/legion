@@ -198,6 +198,16 @@ an approved check`. Request approval of both documents with
 back as the approved spec holds it, then register the spec again. A check that names no statement
 is the root's own acceptance check, and an edit of it closes nothing.
 
+Another issue's approval, or an import of an approved level, can change a node of the approved spec
+that your change request holds, while neither of your documents moves. The daemon reads your request
+again then, and when the approved spec no longer holds it as written it closes the design gate,
+whichever way the gate opened, with a role message reading `The design gate of <tree> closed: the
+approved spec of <repo> changed under its change request`. Read the change request again, as above,
+to see each node it names. Write the request again against the approved spec, as for a
+`spec-request-stale` notice below, then run the two reviews, request approval with
+`dispatch request-approval` (with `--include-verification` for a changed check), and register the
+version it returned.
+
 The notice moves nothing. The daemon reads the condition again at each new head, final list, spec
 version and approval, and starts or releases the merger once the condition holds.
 

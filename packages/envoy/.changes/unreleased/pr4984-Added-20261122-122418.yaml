@@ -8,7 +8,12 @@ body: |-
   `changes_checks_unapproved` say whether a proposal or a changed check still waits for a person.
   It also gives the conclusion block, with the comments anchored to it, and the judgment of that
   block (none, incomplete, uncovered or complete) against the reviewer's final list. A version that
-  Dispatch cannot read is 409 CHANGE_REQUEST_UNREADABLE.
+  Dispatch cannot read is 409 CHANGE_REQUEST_UNREADABLE. `approved_spec_mark` names the approved
+  spec the read compared against: it rises with each write of that repository's approved spec, so
+  of two reads of the same versions the one of the higher mark is the newer. Each approval and each
+  import that writes the approved spec appends `spec.approved_written` on its own issue {issue,
+  repo, act, nodes}, since every other issue of the repository reads its change request against
+  what it wrote.
 
   A check block is a check of The Spec only when its `statement` names a statement that the change
   request proposes or that the approved spec holds. Any other check block is the issue's own
