@@ -415,7 +415,9 @@ func TestARebuildFromAVersionHoldingAnElementThisBuildCannotCreateRestoresIt(t *
 // the route answers it 413 CAP_EXCEEDED rather than 500. 160,000 empty list items make about 1.12
 // million items, from 320 KB of markdown, and replace no history.
 func TestARebuildWhoseSeedPassesTheItemCapIsRefusedAsTooLarge(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it is one of the tests at the race binary's highest samples when the
+	// package runs six at once (build-cluster runs legion-race-docsiso6c-1 and -2, 7.3 and 9.5 GB
+	// against the step's 8 GB), as it grows a document's history or room far past the others'.
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	items := strings.Repeat("-\n", 160_000)

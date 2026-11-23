@@ -632,7 +632,9 @@ func TestAnUploadOnOneProcessClearsTheAuthorItReadFromTheStore(t *testing.T) {
 // made on the room it holds. A row another process's append wrote afterwards, at a version this
 // room never took, stays pending through it.
 func TestARoomsHeldUpdatesStayBoundedAcrossManyAppendsAndAnUpload(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it is one of the tests at the race binary's highest samples when the
+	// package runs six at once (build-cluster runs legion-race-docsiso6c-1 and -2, 7.3 and 9.5 GB
+	// against the step's 8 GB), as it grows a document's history or room far past the others'.
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
