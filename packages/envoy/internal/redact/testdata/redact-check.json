@@ -5756,6 +5756,13 @@
       "production": "workspace cacheClient: follows no redirect, so no transport failure net/http names by a Location (its user name and query) becomes the health's not-ready reason"
     },
     {
+      "id": "workspace-git-redirect-location",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestARunFromGitHubPrintsNoRedirectTargetsCredentials",
+      "production": "workspace fetchCredential.scrub and remote.scrub: a run under the one-shot credential gives its stderr through the URL rule (redact.URLCredentials) after the token scrub, so git's refusal of a redirect names its Location with no query value or user information in Fetch's error and log lines, the shared clone's fetch's and its clone's"
+    },
+    {
       "id": "sandbox-status-line-repository-status",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
@@ -9098,6 +9105,11 @@
       "site": "workspace askCache: after a followed redirect, net/http's url.Error named the Location (its user name and query), returned as the health's not-ready reason that the wait logs",
       "source": "the class search of round 6's redirect finding",
       "guard": "workspace-status-line-health-redirect-unanswered"
+    },
+    {
+      "site": "workspace transfers from GitHub: git's refusal of a redirect (unable to update url base from redirection) names the Location with its query, and every run under the one-shot credential scrubbed only the token from its stderr, so Fetch's error and retry log lines, and the shared clone's fetch's and clone's errors, printed it",
+      "source": "the class search of round 6's redirect finding (git's own redirect, measured with git 2.43)",
+      "guard": "workspace-git-redirect-location"
     },
     {
       "site": "sandbox cacheHealthClient followed redirects: cacheHealthOf read a redirect target's health as the cache's, and returned net/http's url.Error naming the Location (its user name and query) to readCacheHealth, which keeps it through storetext.FarSideError, and to cacheStreams, which logs it",

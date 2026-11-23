@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
@@ -48,13 +49,16 @@ type remote struct {
 }
 
 // scrub is text with the credential's token replaced by ***, so that nothing a run under the
-// credential returns carries it, wherever git echoed it. Fetch, which rewrites the token before each
-// transfer (setToken), scrubs every token it has held itself (fetchCredential.scrub).
+// credential returns carries it, wherever git echoed it, and then through the URL rule
+// (redact.URLCredentials): git names a redirect's Location as GitHub, or whatever answers in its
+// place, wrote it, query values and user information and all, and that text is not the token's.
+// Fetch, which rewrites the token before each transfer (setToken), scrubs every token it has held
+// itself (fetchCredential.scrub), under the same rule.
 func (r remote) scrub(text string) string {
-	if r.token == "" {
-		return text
+	if r.token != "" {
+		text = strings.ReplaceAll(text, r.token, "***")
 	}
-	return strings.ReplaceAll(text, r.token, "***")
+	return redact.URLCredentials(text)
 }
 
 // newProvisioningCredential ports workspace.ts's createProvisioningCredential, the one-shot

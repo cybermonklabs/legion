@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
@@ -195,8 +196,9 @@ type FetchReport struct {
 // fetchBackoff's waits, once per wait, its failure logged and whatever a failed clone left removed
 // first, and no retry starts past the bound. A transfer still failing after the last wait, and
 // every other failure, is the answer at once. Each attempt's stderr has every token the fetch has
-// read replaced by *** as soon as the attempt returns, so nothing Fetch logs or returns carries
-// one, wherever git echoed it.
+// read replaced by *** as soon as the attempt returns, and then goes through the URL rule, so
+// nothing Fetch logs or returns carries one, wherever git echoed it, nor a query value or user
+// information of any URL git names, a redirect's Location among them.
 //
 // A failure whose cause is outside the issue's volume wraps ErrOutsideVolume, and keeps its text:
 // a read of the provisioning token that failed, a cache named without its token, the wait for the
@@ -1226,12 +1228,14 @@ func (c *fetchCredential) renew() error {
 	return nil
 }
 
-// scrub is text with every token the credential has held replaced by ***.
+// scrub is text with every token the credential has held replaced by ***, and then through the URL
+// rule (redact.URLCredentials), as remote.scrub gives it: a redirect's Location that git names keeps
+// no query value or user information.
 func (c *fetchCredential) scrub(text string) string {
 	for _, token := range c.held {
 		text = strings.ReplaceAll(text, token, "***")
 	}
-	return text
+	return redact.URLCredentials(text)
 }
 
 // Clock is the time Fetch's retries read and wait on: WallClock, or a test's own.

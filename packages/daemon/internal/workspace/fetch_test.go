@@ -1445,7 +1445,7 @@ func TestFetchScrubsTheTokenFromATransferASignalEnded(t *testing.T) {
 	if strings.Contains(err.Error(), testInstallationToken) {
 		t.Errorf("Fetch's error carries the provisioning token: %v", err)
 	}
-	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://x-access-token:***@github.com/acme/widgets/'") {
+	if !strings.Contains(err.Error(), ": signal: killed\nfatal: unable to access 'https://github.com/acme/widgets/'") {
 		t.Errorf("Fetch = %v, want the transfer's signal and its line with the token scrubbed", err)
 	}
 }
