@@ -635,9 +635,12 @@ echo "case: a python3 after the stub that starts the interpreter with a PATH of 
 resetting=$work/resetting-python
 mkdir -p "$resetting/probe"
 printf '%s' "$PATH" > "$resetting/path"
+# Each path goes into the stand-in as one shell word: TMPDIR may hold a space or a quote.
+quoted_path=$(printf %q "$resetting/path")
+quoted_python=$(printf %q "$python")
 cat > "$resetting/python3" <<EOF
 #!/bin/sh
-PATH=\$(cat '$resetting/path') exec '$python' "\$@"
+PATH=\$(cat $quoted_path) exec $quoted_python "\$@"
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$resetting/probe/gh"
 chmod +x "$resetting/python3" "$resetting/probe/gh"

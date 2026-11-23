@@ -248,6 +248,10 @@ def bundle_files(entry: str) -> list | None:
         try:
             inputs = list(json.loads((Path(scratch) / "meta.json").read_text())["inputs"])
         except (OSError, ValueError, KeyError, TypeError) as exc:
+            if isinstance(exc, OSError) and exc.filename:
+                # The name scrubbed before Python quotes it: a name holding ' is quoted with ", so
+                # quoting the raw name would make the refusal's text depend on TMPDIR.
+                exc = type(exc)(exc.errno, exc.strerror, scrubbed(exc.filename, scratch))
             problems.append(engine.error(entry, f"`{shown}` exited 0 and left no metafile whose `inputs` this check "
                                                 f"can read ({type(exc).__name__}: {scrubbed(str(exc), scratch)}), so "
                                                 f"the files its bundle loads are unknown"))
