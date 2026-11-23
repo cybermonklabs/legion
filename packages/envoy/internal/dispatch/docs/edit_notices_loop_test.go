@@ -92,7 +92,7 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	leases := excerptLeases(t, counted)
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.RunEditNotices(ctx, leases, nil) })
 
-	storetest.AwaitQuiet(t, counter, time.Second, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, time.Second)
 	if counter.Count() == 0 {
 		t.Fatal("the sweep made no statement at all, so it never ran its boot pass")
 	}
@@ -127,7 +127,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 	schedule := editNoticeSchedule{minGap: 200 * time.Millisecond}
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.runEditNotices(ctx, leases, wake, schedule) })
 	// The boot pass and the one the hub's signal after its LISTEN earns, then nothing.
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, 500*time.Millisecond)
 
 	woken := counter.Count()
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -139,7 +139,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 	}
 	due := time.Now().Add(row.dueAt.Sub(row.now))
 	waitFor(t, 5*time.Second, "the notice's wake to run a sweep", func() bool { return counter.Count() > woken })
-	storetest.AwaitQuiet(t, counter, 300*time.Millisecond, 5*time.Second)
+	storetest.AwaitQuiet(t, counter, 300*time.Millisecond)
 	if edits := humanEdits(t, service.store, artifactID); len(edits) != 0 {
 		t.Fatalf("the woken sweep sent %d notices inside the quiet window; want none before it ends", len(edits))
 	}

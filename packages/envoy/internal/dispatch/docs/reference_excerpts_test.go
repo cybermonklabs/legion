@@ -401,7 +401,7 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
 	waitFor(t, 15*time.Second, "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
-	storetest.AwaitQuiet(t, counter, time.Second, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, time.Second)
 	storetest.RequireNoStatements(t, counter, 3*time.Second, "the reconciliation with nothing owed")
 	if next := service.reconcileExcerptPass(context.Background(), referenceExcerptSchedule); !next.IsZero() {
 		t.Fatalf("a pass with nothing owed asked to run again at %v; want no timer", next)
@@ -449,7 +449,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the
 	// boot pass began; after it the loop is idle.
 	time.Sleep(time.Until(started.Add(referenceExcerptSchedule.minGap + time.Second)))
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, 500*time.Millisecond)
 
 	ctx := context.Background()
 	for name, leaveOwed := range map[string]func() error{
