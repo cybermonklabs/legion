@@ -177,7 +177,7 @@ func (s *Store) requestVerify(ctx context.Context, st State, generation uint64) 
 	}
 	kv := s.kv()
 	key := verifyKey(st.Owner, st.Repo, st.Number, st.SHA)
-	return kvCall(ctx, s.logger, s.nextRewatch(), func() (uint64, error) { return kv.Put(key, buf) })
+	return kvCall(ctx, s.logger, s.nextRewatch(), func() (uint64, error) { return kv.Put(ctx, key, buf) })
 }
 
 // dropRequest deletes the verify request of the record under key where the bucket still holds it
@@ -188,7 +188,7 @@ func (s *Store) dropRequest(key string, revision uint64) {
 	defer cancel()
 	kv := s.kv()
 	_, err := kvCall(ctx, s.logger, s.nextRewatch(), func() (struct{}, error) {
-		return struct{}{}, kv.Delete(verifyKeyPrefix+"."+key, nats.LastRevision(revision))
+		return struct{}{}, kv.Delete(ctx, verifyKeyPrefix+"."+key, nats.LastRevision(revision))
 	})
 	if err != nil && !bus.IsCASConflict(err) && !errors.Is(err, nats.ErrKeyNotFound) {
 		s.logger.Warn("checks verify request not deleted", slog.String("key", key), slog.Uint64("request", revision), slog.String("error", err.Error()))
@@ -251,7 +251,9 @@ func streamIdentity(ctx context.Context, kv bus.KeyValue) (int64, error) {
 // VerifyRequests lists every verify request the bucket holds, each with the revision it holds it
 // at, the episode it asks for, and the identity of the stream it was read in: what an answer to it
 // carries (MarkVerified). It reads the stream's identity, then the requests in one watch, within
-// ctx and recordWait, and a watch that ends before it has delivered every request is an error.
+// ctx and recordWait, and a watch that ends before it has delivered every request is an error. The
+// complete watch is stopped within the same bound and the connection's life (bus.KeyValue.StopWatcher),
+// since the stop's consumer delete would otherwise wait out nats.go's own 5 s past recordWait.
 func (w *Writer) VerifyRequests(ctx context.Context) ([]contracts.CIVerifyRequest, error) {
 	ctx, cancel := context.WithTimeout(ctx, recordWait)
 	defer cancel()
@@ -267,7 +269,7 @@ func (w *Writer) VerifyRequests(ctx context.Context) ([]contracts.CIVerifyReques
 	var requests []contracts.CIVerifyRequest
 	for entry := range watcher.Updates() {
 		if entry == nil {
-			_ = watcher.Stop()
+			_ = kv.StopWatcher(ctx, watcher, nil)
 			go bus.DrainWatcher(watcher)
 			return requests, nil
 		}
@@ -336,7 +338,7 @@ func (w *Writer) DoneVerifying(ctx context.Context, head contracts.CIHead, revis
 	kv := w.store.kv()
 	key := verifyKey(head.Owner, head.Repo, head.Number, head.SHA)
 	_, err := kvCall(ctx, w.store.logger, w.store.nextRewatch(), func() (struct{}, error) {
-		return struct{}{}, kv.Delete(key, nats.LastRevision(revision))
+		return struct{}{}, kv.Delete(ctx, key, nats.LastRevision(revision))
 	})
 	if err == nil || bus.IsCASConflict(err) || errors.Is(err, nats.ErrKeyNotFound) {
 		return nil

@@ -45,7 +45,7 @@ func TestEnsureKeyValueCreatesAThreeCopyBucketWhoseFirstElectionIsSlow(t *testin
 	if err != nil {
 		t.Fatalf("ensure a three-copy bucket: %v", err)
 	}
-	if _, err := kv.Put("key", []byte("value")); err != nil {
+	if _, err := kv.Put(t.Context(), "key", []byte("value")); err != nil {
 		t.Fatalf("put into the bucket the start created: %v", err)
 	}
 	if copies := testnats.Copies(testnats.AwaitSettledStream(t, cluster.JetStream(t), "KV_"+bucket).Cluster); copies != 3 {
@@ -122,7 +122,7 @@ func TestAStartThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *testing.T) {
 	if !hasLeader(t, js, "KV_"+bucket) {
 		t.Fatal("the start answered while the raised bucket's stream had no leader")
 	}
-	if _, err := kv.Put("key", []byte("value")); err != nil {
+	if _, err := kv.Put(t.Context(), "key", []byte("value")); err != nil {
 		t.Fatalf("the first put after the start: %v", err)
 	}
 }
@@ -148,7 +148,7 @@ func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *tes
 	if !hasLeader(t, js, "KV_"+bucket) {
 		t.Fatal("the start at one copy answered while the raised bucket's stream had no leader")
 	}
-	if _, err := kv.Put("key", []byte("value")); err != nil {
+	if _, err := kv.Put(t.Context(), "key", []byte("value")); err != nil {
 		t.Fatalf("the first put after the start: %v", err)
 	}
 }
@@ -233,7 +233,7 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 	if info.Cluster == nil || info.Cluster.Leader == "" {
 		t.Fatal("the start at one copy answered while the other start's stream had no leader")
 	}
-	if _, err := kv.Put("key", []byte("value")); err != nil {
+	if _, err := kv.Put(t.Context(), "key", []byte("value")); err != nil {
 		t.Fatalf("the first put after the start: %v", err)
 	}
 }

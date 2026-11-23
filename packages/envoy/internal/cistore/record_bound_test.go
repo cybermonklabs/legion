@@ -64,7 +64,7 @@ func TestACommitRecordRefusesACheckPastItsBoundsAndNeverSettles(t *testing.T) {
 				t.Fatalf("after %d checks the store answered %v, want a check past the %s's bound refused with bus.ErrTooLarge", recorded, refused, tc.bound)
 			}
 
-			entry, err := store.watcher.KV().Get(Key(owner, repo, number, sha))
+			entry, err := store.watcher.KV().Get(t.Context(), Key(owner, repo, number, sha))
 			if err != nil {
 				t.Fatalf("read the record: %v", err)
 			}

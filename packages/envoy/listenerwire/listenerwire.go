@@ -163,19 +163,23 @@ type PublishRequest struct {
 // request presents one; the key-taken answer, for a request that names ReadsKeyTaken
 // (ReadsHeader); and the envelope the listener built for this request, for any other, which no
 // stored message carries. A copy that names no session is whole only for its own request (the
-// same event_id). A verdict that names this request's own copy, which a resend after a closed
-// connection can, answers that copy with no Duplicate. A copy that cannot be read is the 503 with
-// Retry-After: 1 that the listener writes under its storedCopyUnreadablePrefix, never an envelope
-// the stream does not hold.
+// same event_id). A verdict that names this request's own copy answers that copy with no
+// Duplicate: a send the listener made again after the stream refused an earlier send of it as
+// still in process (bus.StoredAck.Resent) can get one, and so can a topic publish no sender limit
+// counts, which the bus sends again after a lost answer (bus.Client.PublishResendingWithin). A copy
+// that cannot be read is the 503 with Retry-After: 1 that the listener writes under its
+// storedCopyUnreadablePrefix, never an envelope the stream does not hold.
 // What recognises that repeat, and for how long, is stated on DELIVERY_DUPLICATE_WINDOW_MS in
 // @legion/contracts (contracts.DeliveryDuplicateWindow in the listener's module). It can only be
 // true for a send whose dedupe key names the upstream event
 // (contracts.DedupeKeyNamesTheUpstreamEvent): one of Dispatch's, and an agent's send under a key
 // minted once for its message, which @legion/envoy-client mints for every send that names none,
-// so a repeat of either gets it. The listener's sender limit reads the same verdict and charges
-// such a repeat nothing (its senderCharge.published), unless the verdict answers the bus's resend
-// after a closed connection (bus.StoredAck.Resent). Absent means false, which is what an older
-// listener's answer reads as.
+// so a repeat of either gets it. The listener's bus sends the publish once
+// (bus.Client.PublishAckWithin), so it never names the copy an earlier send of this one stored.
+// The listener's sender limit reads the same verdict and charges such a repeat nothing (its
+// senderCharge.published), unless the verdict answers a publish the listener made again after the
+// stream refused, as still in process, a send of it that nothing answered (bus.StoredAck.Resent).
+// Absent means false, which is what an older listener's answer reads as.
 type SendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply: the answered envelope's, written in the

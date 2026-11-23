@@ -130,7 +130,7 @@ func TestADeliveryExceptionOnALaneOnlyTheDeployedStreamCapturesIsStoredOnce(t *t
 	item := listenerTestEnvelope(topic, "exception-deployed-lane")
 	// Two listeners raise the exception for the one stored message, each from its own durable.
 	for range 2 {
-		if err := publishDeliveryException(client, item, reason, "ses_deployed_exception", origin); err != nil {
+		if err := publishDeliveryException(t.Context(), client, item, reason, "ses_deployed_exception", origin); err != nil {
 			t.Fatalf("publish the delivery exception: %v", err)
 		}
 	}

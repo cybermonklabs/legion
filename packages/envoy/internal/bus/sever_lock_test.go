@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,22 +17,23 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// Sever does not wait for the client's own lock. A caller of Client.Connected holds that lock
-// while it reads nats.go's status, which waits for nats.go's lock: an intake's stop leaves such
-// reads running (its drain wait and mayHandBack) once a write holds nats.go's lock. A Sever that took
-// the client's lock to find the connection waited behind that read for as long as the write held,
-// and once the link moved, the publish that waited behind the write went out before the sever.
-// Two subtests: with no such read (the control), and with one left waiting for nats.go's lock, which
-// the row waits for until the client's lock stays taken. Each requires that Sever returns while the
-// write still holds the lock, and that the publish that waited behind the write never reaches the
-// server: once the client has a connection of its own again, a second marker published and flushed
-// on it is the first the subscriber receives.
+// Sever does not wait for the client's own lock. A caller can hold that lock while it waits for
+// nats.go's: an intake's stop leaves reads of the connection running (its drain wait and
+// mayHandBack) once a write holds nats.go's lock. A Sever that took the client's lock to find the
+// connection would wait behind such a caller for as long as the write held, and once the link
+// moved, the publish that waited behind the write would go out before the sever. Client.Connected
+// itself reads nats.go's status outside the client's lock (Client.Connected), so the row stands in
+// for such a caller by holding the client's lock itself. Two subtests: with the client's lock free
+// (the control), and with the row holding it across Sever. Each requires that Sever returns while
+// the write still holds nats.go's lock, and that the publish that waited behind the write never
+// reaches the server: once the client has a connection of its own again, a second marker published
+// and flushed on it is the first the subscriber receives.
 func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 	const subject = "testbus.sever.locked-marker"
-	for _, withRead := range []bool{false, true} {
-		name := "no read of the connection waits"
-		if withRead {
-			name = "a Connected read waits for nats.go's lock"
+	for _, holdLock := range []bool{false, true} {
+		name := "the client's lock is free"
+		if holdLock {
+			name = "a caller holds the client's lock"
 		}
 		t.Run(name, func(t *testing.T) {
 			client, hold := heldHandshakeClient(t)
@@ -47,30 +49,12 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 			thaw := hold.HoldStalledWrite(t, conn)
 			go func() { _ = conn.Publish(subject, []byte("before")) }()
 			testnats.RequireLockHeld(t, conn)
-			if withRead {
-				read := make(chan struct{})
-				go func() {
-					client.Connected()
-					close(read)
-				}()
-				// The read holds the client's lock while it waits for nats.go's. The row polls until
-				// the lock stays taken across three polls, which no caller that holds it only briefly
-				// does, so Sever runs once the read holds it.
-				taken := 0
-				testwait.WithinPolling(t, 10*time.Second, 5*time.Millisecond, "the Connected read holding the client's lock", func() bool {
-					select {
-					case <-read:
-						t.Fatal("control: Connected answered while a write held nats.go's lock")
-					default:
-					}
-					if client.mu.TryLock() {
-						client.mu.Unlock()
-						taken = 0
-						return false
-					}
-					taken++
-					return taken >= 3
-				})
+			unlock := func() {}
+			if holdLock {
+				client.mu.Lock()
+				var once sync.Once
+				unlock = func() { once.Do(client.mu.Unlock) }
+				t.Cleanup(unlock)
 			}
 			severed := make(chan struct{})
 			go func() {
@@ -80,9 +64,14 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 			select {
 			case <-severed:
 			case <-time.After(10 * time.Second):
+				unlock()
 				thaw()
-				t.Fatal("Sever did not return within 10 s while the write held nats.go's lock: it waited for the client's lock")
+				if holdLock {
+					t.Fatal("Sever did not return within 10 s while a caller held the client's lock and a write held nats.go's: it waited for the client's lock")
+				}
+				t.Fatal("control: Sever did not return within 10 s while a write held nats.go's lock")
 			}
+			unlock()
 			thaw()
 			testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client's connection of its own after the sever", func() bool {
 				return client.Connected() && client.Connection() != conn

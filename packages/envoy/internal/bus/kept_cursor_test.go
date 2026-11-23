@@ -29,6 +29,7 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "delivery_mode"}, `{"kept":11,"claiming":12,"dead_letter":"delivery_mode"}`},
 		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "expired_unconfirmed"}, `{"kept":11,"claiming":12,"dead_letter":"expired_unconfirmed"}`},
 		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "delivery_mode_unconfirmed"}, `{"kept":11,"claiming":12,"dead_letter":"delivery_mode_unconfirmed"}`},
+		{bus.KeptRoleCursor{Kept: 11, Confirm: "token"}, `{"kept":11,"claiming":0,"confirm":"token"}`},
 	} {
 		body, err := json.Marshal(tc.written)
 		if err != nil {
@@ -64,6 +65,49 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 	}
 	if want := (bus.KeptRoleCursor{Kept: 7, Claiming: 8}); forward != want {
 		t.Fatalf("a claim written with no dead_letter decoded as %+v, want %+v with no DeadLetter reason", forward, want)
+	}
+}
+
+// During a rollout a listener that writes a confirm's token (Confirm) and one built before it share
+// a role's kept lane, and each reads the other's cursor writes. The earlier listener's cursor has
+// no Confirm field (earlierKeptRoleCursor, its struct as it stands on main): a confirm with a token
+// decodes there as the plain cursor {kept} with nothing claimed, which is what its own confirm's
+// read-back compares (kept equal, nothing claimed), what its walk resumes from and what Dispatch's
+// outbox reads (kept and claiming alone). The earlier listener's confirm, written with no token,
+// decodes here with an empty Confirm, which no confirm of this build carries, so a settle of this
+// build never takes that write for its own (cmd/listener's keptRoleOwed.settle), and the copy is
+// counted by the listener whose write it is.
+//
+// The control gives the token the tag kept: the two fields then cancel each other in
+// encoding/json, the body carries no kept, and the earlier listener reads its lane as drained to
+// its start; the row fails at its read of that body.
+func TestAConfirmsTokenReadsAsAPlainCursorToAListenerBuiltBeforeIt(t *testing.T) {
+	type earlierKeptRoleCursor struct {
+		Kept       uint64 `json:"kept"`
+		Claiming   uint64 `json:"claiming"`
+		DeadLetter string `json:"dead_letter,omitempty"`
+	}
+	body, err := json.Marshal(bus.KeptRoleCursor{Kept: 9, Confirm: "token"})
+	if err != nil {
+		t.Fatalf("encode a confirm with its token: %v", err)
+	}
+	var earlier earlierKeptRoleCursor
+	if err := json.Unmarshal(body, &earlier); err != nil {
+		t.Fatalf("decode %s as an earlier listener does: %v", body, err)
+	}
+	if want := (earlierKeptRoleCursor{Kept: 9}); earlier != want {
+		t.Fatalf("an earlier listener reads the confirm %s as %+v, want the plain cursor %+v", body, earlier, want)
+	}
+	earlierBody, err := json.Marshal(earlierKeptRoleCursor{Kept: 9})
+	if err != nil {
+		t.Fatalf("encode an earlier listener's confirm: %v", err)
+	}
+	var current bus.KeptRoleCursor
+	if err := json.Unmarshal(earlierBody, &current); err != nil {
+		t.Fatalf("decode an earlier listener's confirm %s: %v", earlierBody, err)
+	}
+	if want := (bus.KeptRoleCursor{Kept: 9}); current != want || current.Confirm != "" {
+		t.Fatalf("an earlier listener's confirm %s decodes as %+v, want %+v with no token", earlierBody, current, want)
 	}
 }
 

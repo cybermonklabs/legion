@@ -41,7 +41,7 @@ func recordRunsCheck(name string, id uint64, status, conclusion, observedAt stri
 // recordRunsStored is recordRunsHead's record as the bucket holds it, with its revision.
 func recordRunsStored(t *testing.T, s *Store) (State, uint64) {
 	t.Helper()
-	entry, err := s.watcher.KV().Get(Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA))
+	entry, err := s.watcher.KV().Get(t.Context(), Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, recordRunsSHA))
 	if err != nil {
 		t.Fatalf("read the record: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestRecordRunsRefusesTheRunsOfTwoHeads(t *testing.T) {
 		t.Fatalf("recordRuns of two heads = %v, %v; want a refusal", changed, err)
 	}
 	for _, sha := range []string{recordRunsSHA, other.SHA} {
-		if _, err := s.watcher.KV().Get(Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, sha)); err == nil {
+		if _, err := s.watcher.KV().Get(t.Context(), Key(recordRunsOwner, recordRunsRepo, recordRunsNumber, sha)); err == nil {
 			t.Fatalf("head %s has a record after a refused write", sha)
 		}
 	}

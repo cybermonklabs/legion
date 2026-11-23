@@ -42,7 +42,7 @@ func TestARetryOfAGitHubDeliveryTheFullClusterStreamRefusedIsStoredOnceTheStream
 			t.Fatalf("a push to %s makes %d envelopes, want 1", branch, len(items))
 		}
 		if !contracts.DedupeKeyNamesTheUpstreamEvent(items[0]) {
-			t.Fatalf("the delivery %s publishes under no MsgId", id)
+			t.Fatalf("the delivery %s's dedupe key names no event, so it publishes under its event id's MsgId and not its key's", id)
 		}
 		return items[0]
 	}
@@ -174,7 +174,7 @@ func TestAWindowSendTheFullStreamRefusedIsStoredOnceAndAPassedDeadlineSendsNothi
 		Topic: "notifications.dispatch.issue.T-1.comment.created", DedupeKey: "dispatch.event.fenced",
 	}
 	if !contracts.DedupeKeyNamesTheUpstreamEvent(item) {
-		t.Fatal("the envelope publishes under no MsgId")
+		t.Fatal("the envelope's dedupe key names no event, so it publishes under its event id's MsgId and not its key's")
 	}
 	for filled := 0; ; filled++ {
 		if filled == 1024 {

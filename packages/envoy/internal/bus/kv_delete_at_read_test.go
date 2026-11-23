@@ -63,7 +63,7 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 		t.Fatalf("the delete read revision %d, want 0: its read found the key absent", revision)
 	}
 
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("%s after the delete: %v, want the row written under its read kept", key, err)
 	}
@@ -104,16 +104,16 @@ func TestADeleteAtReadDeletesACopyAtItsTrueSequence(t *testing.T) {
 	const bucket = "kv_delete_at_read_copy"
 	_, kv := leaderReadBucket(t, bucket)
 	conn := kv.Streams().Conn()
-	source, err := kv.Put("ses_source", []byte("the source's record"))
+	source, err := kv.Put(t.Context(), "ses_source", []byte("the source's record"))
 	if err != nil {
 		t.Fatalf("put ses_source: %v", err)
 	}
 	refused := testnats.ServerCopiesKey(t, conn, bucket, "ses_copy", bucket, "ses_source")
-	reported, err := kv.Get("ses_copy")
+	reported, err := kv.Get(t.Context(), "ses_copy")
 	if err != nil || reported.Revision() != source {
 		t.Fatalf("a direct get of ses_copy = revision %v (%v), want the source's %d: the control shows nothing to correct", reported, err, source)
 	}
-	if err := kv.Delete("ses_copy", nats.LastRevision(reported.Revision())); !errors.Is(err, nats.ErrKeyExists) {
+	if err := kv.Delete(t.Context(), "ses_copy", nats.LastRevision(reported.Revision())); !errors.Is(err, nats.ErrKeyExists) {
 		t.Fatalf("a delete of ses_copy fenced on the direct get's revision = %v, want %v", err, nats.ErrKeyExists)
 	}
 	if stored := testnats.LastSequence(t, conn, bucket, "ses_copy"); stored != refused {
@@ -135,22 +135,22 @@ func TestADeleteAtReadDeletesACopyAtItsTrueSequence(t *testing.T) {
 		if err != nil || revision != copied {
 			t.Fatalf("DeleteAtRead(%s) = revision %d, %v; want the copy deleted at %d, the sequence it is stored at", tc.key, revision, err, copied)
 		}
-		if _, err := kv.Get(tc.key); !errors.Is(err, nats.ErrKeyNotFound) {
+		if _, err := kv.Get(t.Context(), tc.key); !errors.Is(err, nats.ErrKeyNotFound) {
 			t.Fatalf("Get(%s) after the delete = %v, want %v", tc.key, err, nats.ErrKeyNotFound)
 		}
 	}
-	if entry, err := kv.Get("ses_source"); err != nil || entry.Revision() != source {
+	if entry, err := kv.Get(t.Context(), "ses_source"); err != nil || entry.Revision() != source {
 		t.Fatalf("ses_source after the deletes is %v (%v), want its record kept at %d", entry, err, source)
 	}
 
-	if _, err := kv.Put("ses_raced_live", []byte("read")); err != nil {
+	if _, err := kv.Put(t.Context(), "ses_raced_live", []byte("read")); err != nil {
 		t.Fatalf("put ses_raced_live: %v", err)
 	}
 	racing := &writingOnGet{KeyValue: kv.Legacy(), value: []byte("registered since")}
 	if _, err := NewKeyValue(racing, kv.WatchHandle(), kv.Streams()).DeleteAtRead(t.Context(), "ses_raced_live", nil); !IsCASConflict(err) || racing.err != nil {
 		t.Fatalf("DeleteAtRead(ses_raced_live) under a write = %v (the write: %v), want the refusal of a fence a writer moved", err, racing.err)
 	}
-	if entry, err := kv.Get("ses_raced_live"); err != nil || string(entry.Value()) != "registered since" {
+	if entry, err := kv.Get(t.Context(), "ses_raced_live"); err != nil || string(entry.Value()) != "registered since" {
 		t.Fatalf("ses_raced_live after the refused delete is %v (%v), want the record written under the delete's read", entry, err)
 	}
 }

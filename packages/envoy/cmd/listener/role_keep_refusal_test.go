@@ -46,7 +46,7 @@ func TestAHandoverEndsAtAForwardTheGrantRefuses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*roleKeepDrainRetryPause)
 	defer cancel()
 	started := time.Now()
-	_, err := handOverKeptRole(ctx, cfg, role, time.Now)
+	_, err := handOverKeptRole(ctx, cfg, role, time.Now, newKeptRoleOwed(ctx, cfg, role))
 	elapsed := time.Since(started)
 	if !errors.Is(err, bus.ErrPublishDenied) {
 		t.Fatalf("the handover whose forward the grant refuses = %v, want the refusal carried out", err)
@@ -82,7 +82,7 @@ func TestAHandoverEndsAtAWalkTheGrantRefusesWhileItsHolderReadFailed(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	pastItsHour := func() time.Time { return time.Now().Add(2 * roleKeepWindow) }
-	_, err := handOverKeptRole(ctx, harness.config, role, pastItsHour)
+	_, err := handOverKeptRole(ctx, harness.config, role, pastItsHour, newKeptRoleOwed(ctx, harness.config, role))
 	if !errors.Is(err, bus.ErrPublishDenied) {
 		t.Fatalf("the handover whose walk the grant refuses = %v, want the refusal carried out:\n%s", err, harness.logs.String())
 	}

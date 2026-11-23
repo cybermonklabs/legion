@@ -102,7 +102,7 @@ func putHeadGatedRecord(t *testing.T, s *Store, h head, lastEventAt int64, edit 
 	if err != nil {
 		t.Fatalf("encode the head-gated record: %v", err)
 	}
-	if _, err := s.watcher.KV().Put(h.key(), raw); err != nil {
+	if _, err := s.watcher.KV().Put(t.Context(), h.key(), raw); err != nil {
 		t.Fatalf("store the head-gated record: %v", err)
 	}
 	waitCached(t, s, h.key(), func(st State) bool { return st.LastEventAt == lastEventAt })
@@ -129,7 +129,7 @@ func waitCached(t *testing.T, s *Store, key string, ok func(State) bool) {
 // storedSchema is the schema field of key's stored record as the bucket holds it, 0 when absent.
 func storedSchema(t *testing.T, s *Store, key string) (int, uint64) {
 	t.Helper()
-	entry, err := s.watcher.KV().Get(key)
+	entry, err := s.watcher.KV().Get(t.Context(), key)
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestAHeadGatedListenerDecodesAStampedRecord(t *testing.T) {
 	if pub.count() != 1 {
 		t.Fatalf("published %d settlements, want 1", pub.count())
 	}
-	entry, err := store.watcher.KV().Get(legacyHead.key())
+	entry, err := store.watcher.KV().Get(t.Context(), legacyHead.key())
 	if err != nil {
 		t.Fatalf("kv get: %v", err)
 	}

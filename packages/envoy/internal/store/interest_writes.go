@@ -67,7 +67,7 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 	}
 	kv, epoch := r.watcher.Handle()
 	_, answered, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, kv.Delete(sessionID, nats.LastRevision(revision))
+		return struct{}{}, kv.Delete(ctx, sessionID, nats.LastRevision(revision))
 	})
 	if !answered {
 		return false, fmt.Errorf("delete %s's interest record at revision %d: %w", sessionID, revision, err)
@@ -389,7 +389,7 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []
 		if revision == 0 {
 			return createInterest(ctx, kv, sessionID, value)
 		}
-		return kv.Update(sessionID, value, revision)
+		return kv.Update(ctx, sessionID, value, revision)
 	})
 	if !answered {
 		return 0, epoch, false, fmt.Errorf("write %s's interest record at revision %d: %w", sessionID, revision, err)
@@ -418,9 +418,9 @@ func createInterest(ctx context.Context, kv bus.KeyValue, sessionID string, valu
 	case err != nil:
 		return 0, err
 	case leader.Kind == bus.LeaderMarker:
-		return kv.Update(sessionID, value, leader.Revision)
+		return kv.Update(ctx, sessionID, value, leader.Revision)
 	}
-	return kv.Create(sessionID, value)
+	return kv.Create(ctx, sessionID, value)
 }
 
 // mergeForUpsert computes the Interest to persist by reconciling the requested

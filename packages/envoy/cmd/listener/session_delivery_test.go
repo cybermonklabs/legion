@@ -905,19 +905,19 @@ func lockUsers(locks *sessionLocks, sessionID string) int {
 	return 0
 }
 
-// awaitLockUsers waits up to 10 s for exactly n callers to hold or wait for sessionID's consumer
-// lock: a test that holds it learns that the call it started waits for it (2), and that the call
-// is done with it (0).
+// awaitLockUsers waits, until the test's deadline, for exactly n callers to hold or wait for
+// sessionID's consumer lock: a test that holds it learns that the call it started waits for it (2),
+// and that the call is done with it (0).
 func awaitLockUsers(t *testing.T, locks *sessionLocks, sessionID string, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testnats.Remaining(t))
 	for {
 		users := lockUsers(locks, sessionID)
 		if users == n {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d callers hold or wait for the consumer lock of %s after 10s, want %d", users, sessionID, n)
+			t.Fatalf("%d callers hold or wait for the consumer lock of %s at the test's deadline, want %d", users, sessionID, n)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

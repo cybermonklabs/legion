@@ -4,6 +4,7 @@
 package bus
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,7 +20,9 @@ var lifeCheckEvery atomic.Int64
 
 func init() { lifeCheckEvery.Store(int64(10 * time.Second)) }
 
-// connLife follows one NATS connection through its lives. A life ends when nats.go reports the
+// connLife answers whether the life a publish window pinned has ended (window.current). It
+// follows one NATS connection through its lives, and the client holds one for its current
+// connection beside its prober (Client.windowLife). A life ends when nats.go reports the
 // connection reconnecting, disconnected or closed, which it does from inside its own status change
 // (changeConnStatus sends to a status listener under its connection lock, before it starts any
 // reconnect attempt), and not from its callback goroutine, where the client hears of the same
@@ -40,9 +43,12 @@ func init() { lifeCheckEvery.Store(int64(10 * time.Second)) }
 // count it read to the drain, which ends a life at it only between two reports (check).
 type connLife struct {
 	conn *nats.Conn
-	// reports is the listener the drain takes nats.go's reports from, and checks carries the
-	// watch's reads of the reconnect count to the drain. quit closes when the connection closes, and
-	// ends the drain.
+	// registered is closed once the status listener is registered and the drain and the watch run
+	// (follow); reports is set before then.
+	registered chan struct{}
+	// reports is the listener the drain takes nats.go's reports from, set once by follow before the
+	// drain starts, and checks carries the watch's reads of the reconnect count to the drain. quit
+	// closes when the connection closes, and ends the drain.
 	reports chan nats.Status
 	checks  chan reconnectRead
 	quit    chan struct{}
@@ -68,39 +74,38 @@ type reconnectRead struct {
 	acted      chan struct{}
 }
 
-// connLives holds the life of every connection some window has pinned, until nats.go closes it.
-var connLives struct {
-	mu sync.Mutex
-	of map[*nats.Conn]*connLife
+// newConnLife is the life of conn, which follows it from now on (follow). It calls nothing of
+// nats.go's, so the client makes it under its own lock (Client.windowLifeLocked): registering the
+// status listener can wait for nats.go's connection lock, which a reconnect's dial and handshake
+// hold, so the life registers it on a goroutine of its own, and a window waits for that within its
+// bound (awaitRegistered). followGate, a test's seam, runs on that goroutine before the
+// registration; it is nil outside tests.
+func newConnLife(conn *nats.Conn, followGate func()) *connLife {
+	l := &connLife{conn: conn, registered: make(chan struct{}), checks: make(chan reconnectRead), quit: make(chan struct{}), life: make(chan struct{})}
+	go l.follow(followGate)
+	return l
 }
 
-// lifeOf returns conn's life, following it from now on when nothing follows it yet. Registering the
-// status listener can wait for nats.go's connection lock, so a caller that must not wait for that
-// lock makes it inside a bound (Bounded), as window.pinFirst does. connLives' lock is not held
-// across that registration.
-func lifeOf(conn *nats.Conn) *connLife {
-	connLives.mu.Lock()
-	life := connLives.of[conn]
-	connLives.mu.Unlock()
-	if life != nil {
-		return life
+// follow registers the life's status listener, then runs its drain and its watch.
+func (l *connLife) follow(gate func()) {
+	if gate != nil {
+		gate()
 	}
-	reports := conn.StatusChanged(nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
-	connLives.mu.Lock()
-	if existing := connLives.of[conn]; existing != nil {
-		connLives.mu.Unlock()
-		go conn.RemoveStatusListener(reports)
-		return existing
+	l.reports = l.conn.StatusChanged(nats.RECONNECTING, nats.DISCONNECTED, nats.CLOSED)
+	close(l.registered)
+	go l.drain()
+	l.watch(time.Duration(lifeCheckEvery.Load()))
+}
+
+// awaitRegistered waits until the life's status listener is registered, so a drop after it ends
+// the life, or until ctx ends.
+func (l *connLife) awaitRegistered(ctx context.Context) error {
+	select {
+	case <-l.registered:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	if connLives.of == nil {
-		connLives.of = map[*nats.Conn]*connLife{}
-	}
-	life = &connLife{conn: conn, reports: reports, checks: make(chan reconnectRead), quit: make(chan struct{}), life: make(chan struct{})}
-	connLives.of[conn] = life
-	connLives.mu.Unlock()
-	go life.drain()
-	go life.watch(time.Duration(lifeCheckEvery.Load()))
-	return life
 }
 
 // pinIf records reconnects for ch's life only while ch is still current and unpinned. pinFirst
@@ -216,13 +221,6 @@ func (l *connLife) end(status nats.Status) bool {
 	}
 	l.endLocked()
 	l.mu.Unlock()
-	if closed {
-		connLives.mu.Lock()
-		if connLives.of[l.conn] == l {
-			delete(connLives.of, l.conn)
-		}
-		connLives.mu.Unlock()
-	}
 	return closed
 }
 

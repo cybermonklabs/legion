@@ -378,13 +378,13 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	first := make(chan ended, 1)
 	var forwards atomic.Int32
 	forward := rig.d.delivery.forwardRole
-	rig.d.delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	rig.d.delivery.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		n := forwards.Add(1)
 		if n != 2 {
-			return forward(subject, item, msgID, timeout)
+			return forward(ctx, subject, item, msgID, timeout)
 		}
 		started := time.Now()
-		wait, err := forward(subject, item, msgID, inProcessForwardWindow)
+		wait, err := forward(ctx, subject, item, msgID, inProcessForwardWindow)
 		if err != nil {
 			first <- ended{err, time.Since(started)}
 			return nil, err
@@ -428,6 +428,111 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	if got := rig.forwardAttempts(key); !slices.Contains(got, 2) {
 		t.Errorf("the role sends' delivery lines name attempts %v, want the resend's 2", got)
 	}
+}
+
+// A role forward whose caller's context ends while the stream still refuses the forward as in
+// process under an earlier forward is still sent again until the stream answers it, inside the
+// forward's own window: a forward's bound is its timeout, not its caller's context, which a
+// handover's walk ends (forwardAndWait) and a role send's client ends by going away
+// (bus.Client.StartRequestStoredTo), so the wait's resends take the caller's mark of a lock it
+// holds and not its end (startRoleForward). The rig's forward seam ends the context it hands the
+// resend's forward once that forward is sent, before its wait reads the first refusal, and holds
+// the routes frozen until the leader is handed the wait's own send of the forward again: the proof
+// that the wait read the stream's in-process refusal and came through the pause that refusal starts
+// (inProcessPause) with its caller's context ended. The forward's wait then answers the stream's
+// duplicate once the routes thaw, and the resend makes no other forward.
+//
+// The control is startRoleForward's wait bound to the caller's context (context.WithDeadline(ctx,
+// deadline)): the pause after the first refusal ends with that context, so the wait sends nothing
+// again and fails as one whose earlier forward was still in process (earlierAttemptInProcess), and
+// the resend makes a third forward. Neither outcome waits on a clock: the row waits for the send
+// again or for the wait's end, whichever comes first, so a slow box cannot let the routes thaw
+// before the refusal and pass the control.
+func TestARoleForwardWhoseCallerEndsWhileItIsInProcessIsAnsweredWithinItsOwnWindow(t *testing.T) {
+	rig := newInProcessRig(t)
+	const holder = "ses_in_process_caller_holder"
+	role := "in-process-caller-" + id.New()[:8]
+	claimRoleFor(t, rig.harness.registry, rig.harness.sessions, holder, role, nil)
+	path := roleInProcessPath(role, holder)
+	callerEnded := make(chan struct{})
+	waited := make(chan error, 1)
+	var forwards atomic.Int32
+	forward := rig.d.delivery.forwardRole
+	rig.d.delivery.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+		if forwards.Add(1) != 2 {
+			return forward(ctx, subject, item, msgID, timeout)
+		}
+		caller, end := context.WithCancel(ctx)
+		wait, err := forward(caller, subject, item, msgID, timeout)
+		end()
+		close(callerEnded)
+		if err != nil {
+			waited <- err
+			return nil, err
+		}
+		return func() (bus.StoredAck, error) {
+			ack, err := wait()
+			waited <- err
+			return ack, err
+		}, nil
+	}
+	rig.requireLeader(t)
+	heard, before := rig.hear(t, path.subject), rig.copies(t, path.subject)
+	sender, key := "ses_in_process_caller_"+id.New()[:8], id.New()
+	body := messageJSON(t, path.body(sender, key), nil)
+	thaw := rig.cluster.FreezeRoutes(t)
+	t.Cleanup(thaw)
+	earlier := rig.attempt(context.Background(), path.route, body)
+	awaitHanded(t, heard, 1)
+	resend := rig.attempt(context.Background(), path.route, body)
+	select {
+	case <-callerEnded:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the resend made no forward of its own")
+	}
+	// The leader is handed the resend's forward and then, after the stream refused it as in process
+	// and the pause it starts, the wait's own send of it again; a wait whose pause ended with its
+	// caller's context sends nothing again and ends instead.
+	sentAgain := make(chan error, 1)
+	go func() {
+		for range 2 {
+			if _, err := heard.NextMsg(10 * time.Second); err != nil {
+				sentAgain <- err
+				return
+			}
+		}
+		sentAgain <- nil
+	}()
+	var err error
+	ended := false
+	select {
+	case heardErr := <-sentAgain:
+		if heardErr != nil {
+			t.Fatalf("the leader was not handed the resend's forward and the wait's send of it again: %v", heardErr)
+		}
+	case err = <-waited:
+		ended = true
+	}
+	thaw()
+	if !ended {
+		select {
+		case err = <-waited:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the resend's forward did not end")
+		}
+	}
+	for name, answer := range map[string]<-chan *httptest.ResponseRecorder{"the earlier send": earlier, "the resend": resend} {
+		if answer := <-answer; answer.Code != http.StatusOK {
+			t.Errorf("%s was answered %d %s; want 200", name, answer.Code, strings.TrimSpace(answer.Body.String()))
+		}
+	}
+	if err != nil {
+		t.Errorf("the resend's forward, whose caller's context ended while it was in process, ended with %v; want the stream's answer once the routes thawed, inside its own window", err)
+	}
+	if n := forwards.Load(); n != 2 {
+		t.Errorf("the two sends made %d forwards, want 2: the earlier send's and the resend's, answered within its window", n)
+	}
+	rig.requireOneCopy(t, path.subject, before)
 }
 
 // inProcessBudget is the request deadline a request whose budget ends in process is sent under.
@@ -617,9 +722,9 @@ func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.
 				thaw := rig.cluster.FreezeRoutes(t)
 				t.Cleanup(thaw)
 				other := make(chan error, 1)
-				go func() { other <- publishDeliveryException(rig.d.client, item, reason, recipient, origin) }()
+				go func() { other <- publishDeliveryException(t.Context(), rig.d.client, item, reason, recipient, origin) }()
 				awaitHanded(t, heard, 1)
-				applyDeliveryOutcome(cfg, item, outcome)
+				applyDeliveryOutcome(t.Context(), cfg, item, outcome)
 				thaw()
 				if err := <-other; err != nil {
 					t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
@@ -627,7 +732,7 @@ func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.
 				rig.requireOneCopy(t, lane, before)
 			} else {
 				item.Payload = strings.Repeat("p", int(rig.d.client.Conn.MaxPayload()))
-				applyDeliveryOutcome(cfg, item, outcome)
+				applyDeliveryOutcome(t.Context(), cfg, item, outcome)
 			}
 			var counted, refusals []string
 			for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {

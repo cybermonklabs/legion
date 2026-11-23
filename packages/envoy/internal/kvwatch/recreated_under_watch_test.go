@@ -37,7 +37,7 @@ func TestABucketRecreatedUnderALiveWatcherIsReadWholeWithoutCheck(t *testing.T) 
 			uri := testnats.URL(t)
 			conn, kv := bucket(t, uri)
 			for i := range shape.oldWrites {
-				if _, err := kv.Put("ghost", fmt.Appendf(nil, "%d", i)); err != nil {
+				if _, err := kv.Put(t.Context(), "ghost", fmt.Appendf(nil, "%d", i)); err != nil {
 					t.Fatalf("put ghost: %v", err)
 				}
 			}

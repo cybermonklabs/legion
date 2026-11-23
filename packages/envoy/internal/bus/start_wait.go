@@ -156,10 +156,14 @@ func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step strea
 // member that has not yet applied a create, which answers "stream not found" for it
 // (bucketAppliedInterval): after a create (streamStep.awaitsApply) that answer is read again. A
 // read the server leaves unanswered (unanswered) says nothing of the stream, so it is read again,
-// as sentAgain sends a request again. Each read is waited for up to the read limit of ctx's run of
-// reads (limitedRead), so one lost read costs the start a fraction of a second rather than the
-// caller's whole ten second wait after the fact it waits for is true; a read in flight when ctx
-// ends is abandoned too.
+// as sentAgain sends a request again. A read the connection's loss cut off (ErrConnectionLost,
+// which unanswered counts) is read again once the client is connected again, or once
+// awaitReconnect's RequestTimeout has passed, whichever comes first (awaitReconnect), as sentAgain
+// sends one: a read made while the connection is down fails at once, unsent, so a pause alone
+// would read every bucketAppliedInterval for the whole outage. Each read is waited for up to the
+// read limit of ctx's run of reads (limitedRead), so one lost read costs the start a fraction of a
+// second rather than the caller's whole ten second wait after the fact it waits for is true; a
+// read in flight when ctx ends is abandoned too.
 func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
 	behind := "no read of the stream answered yet"
 	limits := readLimitOf(ctx)
@@ -187,6 +191,9 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep,
 				slog.String("stream", stream),
 				slog.String("behind", behind),
 				slog.String("retry_in", bucketAppliedInterval.String()))
+		}
+		if errors.Is(err, ErrConnectionLost) {
+			awaitReconnect(ctx, err)
 		}
 		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
 			return fmt.Errorf("%s %s: %s when the wait ended: %s: %w", step, stream, want, behind, ended)
@@ -255,6 +262,11 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep,
 //
 // So a start that sent a request once through a member in one of those states waited that send's
 // bound out, and ended the program over a send that was never going to be answered.
+//
+// A send the connection's loss cut off (ErrConnectionLost, which unanswered counts) is sent again
+// too, once the client is connected again, a wait of at most RequestTimeout that ends with ctx as
+// well (awaitReconnect), so a start whose connection drops under one of its requests waits no
+// longer than a send that drew no answer, and goes on once the bus is back.
 func sentAgain[T any](ctx context.Context, request string, send func() (T, error)) (T, error) {
 	var last T
 	var lastErr error
@@ -269,16 +281,26 @@ func sentAgain[T any](ctx context.Context, request string, send func() (T, error
 		last, lastErr = answer, err
 		slog.Warn("envoy nats stream request unanswered; sending it again",
 			slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
+		awaitReconnect(ctx, err)
 		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
 			return last, unansweredUntil(sends, lastErr, ended)
 		}
 	}
 }
 
+// awaitReconnect waits, at most RequestTimeout and no longer than ctx, for the client a request
+// the connection's loss cut off (err) was sent through to be connected again (Reconnected); it
+// returns at once for any other err.
+func awaitReconnect(ctx context.Context, err error) {
+	ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
+	defer cancel()
+	Reconnected(ctx, err)
+}
+
 // unansweredUntil is sentAgain's error once ended, its context's cause, stopped it: the sends it
-// made with no answer and the last of those sends' errors, nats.ErrTimeout or
-// context.DeadlineExceeded, which unanswered() still reads through it, beside ended. The caller
-// names the request (namedRequest), as it names the server's answers to it.
+// made with no answer and the last of those sends' errors, nats.ErrTimeout,
+// context.DeadlineExceeded or ErrConnectionLost, which unanswered() still reads through it, beside
+// ended. The caller names the request (namedRequest), as it names the server's answers to it.
 func unansweredUntil(sends int, last, ended error) error {
 	if last == nil {
 		return fmt.Errorf("no send answered when the wait ended: %w", ended)
@@ -367,19 +389,23 @@ func (r *readLimit) answered(took time.Duration) {
 // limitedRead is one send of read, a read of a stream's state, waited for up to limit's limit and
 // then abandoned, its answer dropped (Bounded), and it sets limit for the next read of the run
 // from what this one came to: a read the server left unanswered (lost) or one it answered
-// (answered), an error of the server's included. answered is false when the limit or ctx passed
-// first, and wait is the limit the read had, so a caller's error names it. Its callers are the
-// reads a start makes of one request, sent again while unanswered (readAgain), and the reads of a
-// wait on a stream (awaitStream).
+// (answered), an error of the server's included. A read the connection's loss cut off, or one
+// made while the connection was down and so not sent (ErrConnectionLost), leaves limit as it was:
+// it says nothing of how long the server takes to answer. answered is false when the limit or ctx
+// passed first, and wait is the limit the read had, so a caller's error names it. Its callers are
+// the reads a start makes of one request, sent again while unanswered (readAgain), and the reads
+// of a wait on a stream (awaitStream).
 func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, error)) (value T, wait time.Duration, answered bool, err error) {
 	wait = limit.limit
 	readCtx, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	sent := time.Now()
 	value, answered, err = Bounded(readCtx, read)
-	if !answered || unanswered(err) {
+	switch {
+	case answered && errors.Is(err, ErrConnectionLost):
+	case !answered || unanswered(err):
 		limit.lost()
-	} else {
+	default:
 		limit.answered(time.Since(sent))
 	}
 	return value, wait, answered, err

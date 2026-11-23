@@ -295,7 +295,7 @@ func TestSessionRegistryDeleteIf_DeletesTheSameInstancesEntry(t *testing.T) {
 	if outcome != EntryDeleted {
 		t.Fatalf("DeleteIf = %s, want %s for an entry its own client instance deregistered", outcome, EntryDeleted)
 	}
-	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := reg.watcher.KV().Get(t.Context(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 	}
 	if _, err := reg.Get(sessionID); err == nil {
@@ -411,7 +411,7 @@ func TestSessionRegistryDeleteIf_RetriesOnceAfterALostCompareAndSwap(t *testing.
 	if got := race.reads(); got != 2 {
 		t.Fatalf("read the entry %d times, want the one retry (2)", got)
 	}
-	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := reg.watcher.KV().Get(t.Context(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 	}
 	if _, err := reg.Get(sessionID); err == nil {
@@ -427,7 +427,7 @@ func TestSessionRegistryDeleteIf_DeletesAMalformedValueThatNamesAnotherInstance(
 	logs := captureSessionRegistryLogs(t)
 	reg := openRegistryForInstanceDelete(t)
 	const sessionID = "ses_instance_malformed"
-	if _, err := reg.watcher.KV().Put(sessionID, []byte(`{"client_instance_id":"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2","port":"not a port"}`)); err != nil {
+	if _, err := reg.watcher.KV().Put(t.Context(), sessionID, []byte(`{"client_instance_id":"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2","port":"not a port"}`)); err != nil {
 		t.Fatalf("put the malformed value: %v", err)
 	}
 
@@ -438,7 +438,7 @@ func TestSessionRegistryDeleteIf_DeletesAMalformedValueThatNamesAnotherInstance(
 	if outcome != EntryDeleted {
 		t.Fatalf("DeleteIf = %s, want %s for a value this build cannot read", outcome, EntryDeleted)
 	}
-	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := reg.watcher.KV().Get(t.Context(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 	}
 	waitFor(t, 5*time.Second, func() bool {
@@ -479,7 +479,7 @@ func TestSessionRegistryDeleteIf_KeepsTheEntryAfterTwoLostCompareAndSwaps(t *tes
 	if got := race.reads(); got != 2 {
 		t.Fatalf("read the entry %d times, want the one retry (2)", got)
 	}
-	if _, err := reg.watcher.KV().Get(sessionID); err != nil {
+	if _, err := reg.watcher.KV().Get(t.Context(), sessionID); err != nil {
 		t.Fatalf("read the entry that stayed: %v, want it still stored", err)
 	}
 }
@@ -503,7 +503,7 @@ func TestSessionRegistryDeleteIf_KeepsARegistrationWrittenAfterTheMoment(t *test
 	if outcome != EntryKeptForALaterRegistration {
 		t.Fatalf("DeleteIf = %s, want %s for a registration newer than the stop", outcome, EntryKeptForALaterRegistration)
 	}
-	kept, err := reg.watcher.KV().Get(sessionID)
+	kept, err := reg.watcher.KV().Get(t.Context(), sessionID)
 	if err != nil {
 		t.Fatalf("read the registration that stayed: %v, want it still stored", err)
 	}
@@ -530,7 +530,7 @@ func TestSessionRegistryDeleteIf_DeletesARegistrationNoNewerThanTheMoment(t *tes
 	if outcome != EntryDeleted {
 		t.Fatalf("DeleteIf = %s, want %s for the registration the stop belongs to", outcome, EntryDeleted)
 	}
-	if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := reg.watcher.KV().Get(t.Context(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 	}
 }
@@ -662,7 +662,7 @@ func TestSessionRegistryWatcherEvictsMalformedValue(t *testing.T) {
 	if err := reg.Put(sessionID, SessionEntry{Port: 13381, MachineID: "example-host", Dir: "/example"}); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	revision, err := reg.watcher.KV().Put(sessionID, []byte("{"))
+	revision, err := reg.watcher.KV().Put(ctx, sessionID, []byte("{"))
 	if err != nil {
 		t.Fatalf("put malformed value: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestSessionRegistryPutDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshal remote entry: %v", err)
 			}
-			if _, err := raw.Put(sessionID, buf); err != nil {
+			if _, err := raw.Put(ctx, sessionID, buf); err != nil {
 				t.Fatalf("put remote entry: %v", err)
 			}
 			waitFor(t, 5*time.Second, func() bool {
@@ -741,7 +741,7 @@ func TestSessionRegistryDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *test
 	if err := reg.Put(sessionID, item); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	entry, err := reg.watcher.KV().Get(sessionID)
+	entry, err := reg.watcher.KV().Get(ctx, sessionID)
 	if err != nil {
 		t.Fatalf("Get seeded entry: %v", err)
 	}

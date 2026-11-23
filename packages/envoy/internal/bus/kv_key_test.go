@@ -59,7 +59,7 @@ func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string
 	t.Helper()
 
 	calls := map[string]func(key string) error{
-		"Get": func(key string) error { _, err := kv.Get(key); return err },
+		"Get": func(key string) error { _, err := kv.Get(t.Context(), key); return err },
 		// The leader-answered read builds its own request rather than letting nats.go build one,
 		// so it refuses the keys Get refuses itself, before anything is sent (RefusesRead).
 		"GetFromLeader": func(key string) error {
@@ -68,12 +68,12 @@ func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string
 			_, err := kv.GetFromLeader(ctx, key)
 			return err
 		},
-		"Put":       func(key string) error { _, err := kv.Put(key, []byte("v")); return err },
-		"PutString": func(key string) error { _, err := kv.PutString(key, "v"); return err },
-		"Create":    func(key string) error { _, err := kv.Create(key, []byte("v")); return err },
-		"Update":    func(key string) error { _, err := kv.Update(key, []byte("v"), 1); return err },
-		"Delete":    func(key string) error { return kv.Delete(key) },
-		"Purge":     func(key string) error { return kv.Purge(key) },
+		"Put":       func(key string) error { _, err := kv.Put(t.Context(), key, []byte("v")); return err },
+		"PutString": func(key string) error { _, err := kv.PutString(t.Context(), key, "v"); return err },
+		"Create":    func(key string) error { _, err := kv.Create(t.Context(), key, []byte("v")); return err },
+		"Update":    func(key string) error { _, err := kv.Update(t.Context(), key, []byte("v"), 1); return err },
+		"Delete":    func(key string) error { return kv.Delete(t.Context(), key) },
+		"Purge":     func(key string) error { return kv.Purge(t.Context(), key) },
 		"ReadHistory": func(key string) error {
 			_, err := kv.ReadHistory(context.Background(), key)
 			return err
@@ -91,7 +91,7 @@ func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string
 	// A get by revision names the revision, not the key, in its subject, so only nats.go's alphabet
 	// check refuses a key there.
 	everyCall := maps.Clone(calls)
-	everyCall["GetRevision"] = func(key string) error { _, err := kv.GetRevision(key, 1); return err }
+	everyCall["GetRevision"] = func(key string) error { _, err := kv.GetRevision(t.Context(), key, 1); return err }
 	for _, tc := range []struct {
 		name string
 		key  string
@@ -134,14 +134,14 @@ func requireKeysChecked(t *testing.T, client *Client, kv KeyValue, letter string
 	// watches it through the jetstream handle.
 	longest := strings.Repeat(letter, maxSubjectBytes-watchOverhead("kv_key_check"))
 	for _, key := range []string{"fits-" + letter, longest} {
-		revision, err := kv.Put(key, []byte("v"))
+		revision, err := kv.Put(t.Context(), key, []byte("v"))
 		if err != nil {
 			t.Fatalf("put %d-byte key: %v", len(key), err)
 		}
-		if _, err := kv.Get(key); err != nil {
+		if _, err := kv.Get(t.Context(), key); err != nil {
 			t.Fatalf("get %d-byte key: %v", len(key), err)
 		}
-		if entry, err := kv.GetRevision(key, revision); err != nil || entry.Revision() != revision {
+		if entry, err := kv.GetRevision(t.Context(), key, revision); err != nil || entry.Revision() != revision {
 			t.Fatalf("get %d-byte key at revision %d = %v; want that revision", len(key), revision, err)
 		}
 		history, err := kv.ReadHistory(context.Background(), key)
@@ -203,7 +203,7 @@ func TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers(t *testing.T) {
 	// The keys whose character the alphabet accepts are stored, so the get each row compares
 	// RefusesRead against reaches the bucket and answers a value rather than ErrKeyNotFound.
 	for _, key := range []string{"fits-r", "ses/sub", "ses_sub", "ses=sub", "ses.sub", "0123456789"} {
-		if _, err := kv.Put(key, []byte("v")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("v")); err != nil {
 			t.Fatalf("put the %q key, which nats.go's alphabet accepts: %v", key, err)
 		}
 	}
@@ -236,7 +236,7 @@ func TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			answered := kv.RefusesRead(tc.key)
-			_, err := kv.Get(tc.key)
+			_, err := kv.Get(t.Context(), tc.key)
 			refused := errors.Is(err, ErrRefused)
 			if err != nil && !refused && !errors.Is(err, nats.ErrKeyNotFound) {
 				t.Fatalf("get of the %d-byte key = %v; want its value, a refusal or ErrKeyNotFound", len(tc.key), err)
@@ -311,7 +311,7 @@ func TestRefusesWriteAnswersTheSameRefusalAPutOfTheKeyAnswers(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			answered := kv.RefusesWrite(tc.key)
-			_, err := kv.Put(tc.key, []byte("v"))
+			_, err := kv.Put(t.Context(), tc.key, []byte("v"))
 			refused := errors.Is(err, ErrRefused)
 			if err != nil && !refused {
 				t.Fatalf("put of the %d-byte key = %v; want it written or refused", len(tc.key), err)
@@ -372,22 +372,22 @@ func TestAKeyAnEarlierListenerStoredStaysListableAndDeletable(t *testing.T) {
 	}
 
 	for _, key := range []string{readable, unreadable} {
-		if _, err := kv.Put(key, []byte("again")); !errors.Is(err, ErrTooLarge) {
+		if _, err := kv.Put(t.Context(), key, []byte("again")); !errors.Is(err, ErrTooLarge) {
 			t.Fatalf("put of the stored %d-byte key = %v, want ErrTooLarge", len(key), err)
 		}
 	}
-	entry, err := kv.Get(readable)
+	entry, err := kv.Get(t.Context(), readable)
 	if err != nil || string(entry.Value()) != "legacy" {
 		t.Fatalf("get of the stored %d-byte key = %v, want its value", len(readable), err)
 	}
-	if _, err := kv.Get(unreadable); !errors.Is(err, ErrTooLarge) {
+	if _, err := kv.Get(t.Context(), unreadable); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("get of the stored %d-byte key = %v, want ErrTooLarge", len(unreadable), err)
 	}
 	if keys := listedKeys(t, kv); len(keys) != 2 {
 		t.Fatalf("keys = %d; want both stored keys", len(keys))
 	}
 	for _, key := range []string{unreadable, readable} {
-		if err := kv.Delete(key); err != nil {
+		if err := kv.Delete(t.Context(), key); err != nil {
 			t.Fatalf("delete of the stored %d-byte key: %v", len(key), err)
 		}
 	}

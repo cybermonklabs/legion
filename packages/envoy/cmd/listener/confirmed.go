@@ -100,8 +100,8 @@ func pauseBeforeRetry(ctx context.Context) bool {
 // role lane hands the wait over and reports it later. The outcome is the stream's acknowledgement
 // that it stored the forward, nothing more: the holder answers no receipt and reads the stored
 // copy from its session consumer (startRoleForward).
-func (cfg listenerDeliveryHandlerConfig) forwardAndWait(subject string, item contracts.Envelope, msgID string, window time.Duration) (bus.StoredAck, error) {
-	wait, err := cfg.forwardRole(subject, item, msgID, window)
+func (cfg listenerDeliveryHandlerConfig) forwardAndWait(ctx context.Context, subject string, item contracts.Envelope, msgID string, window time.Duration) (bus.StoredAck, error) {
+	wait, err := cfg.forwardRole(ctx, subject, item, msgID, window)
 	if err != nil {
 		return bus.StoredAck{}, err
 	}
@@ -650,7 +650,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 			// The forward carries the same Nats-Msg-Id on every attempt, so the stream, which
 			// captures agent subjects, keeps one copy of it per message and recipient however
 			// many attempts this send makes.
-			ack, err := d.delivery.forwardAndWait(subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
+			ack, err := d.delivery.forwardAndWait(ctx, subject, forwarded, bus.ForwardMsgID(forwarded.DedupeKey, subject), window)
 			if err == nil {
 				d.confirm(item, send.holder, ack.Sequence)
 				send.record.charge.stored()

@@ -1344,7 +1344,22 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(sendRequestBudget))
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-		duplicate, err := publishHeld(ctx, d.client, d.client.PublishAckWithin, record, senderOf(r, item), &item)
+		// The stream's duplicate verdict answers a repeat under the same key with the copy the
+		// stream holds (publishHeld). A message the sender limit counts reads that verdict for its
+		// charge too (senderCharge.published), so it is published with the verdict
+		// (PublishAckWithin), which the bus sends once and answers a lost answer as the 503 it
+		// costs one for. Any other is sent again after a lost answer, as the route always sent it
+		// (PublishResendingWithin): the stream stores it once under its message id
+		// (bus.envelopeMsgID), and a duplicate verdict that names the copy this request's first
+		// send stored is read back as this request's own copy, since that copy carries its
+		// event_id (requestRecord.answerStored). Each is made through publishPastInProcess, so a
+		// send a clustered stream refuses as still in process under an earlier publish under its
+		// message id is answered with that publish's copy.
+		publish := d.client.PublishAckWithin
+		if charge == nil {
+			publish = d.client.PublishResendingWithin
+		}
+		duplicate, err := publishHeld(ctx, d.client, publish, record, senderOf(r, item), &item)
 		if err != nil {
 			record.refuseBusUnavailable(w, err)
 			return
@@ -2263,7 +2278,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				held = edgeScopeOf(r, nil).roles(held)
 				for _, role := range held {
 					if !landed || role != body.Role {
-						go runKeptRoleDrain(*d.delivery, role)
+						startKeptRoleDrain(*d.delivery, role)
 					}
 				}
 			}()
@@ -2504,7 +2519,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			landed = true
-			go runTakenRoleDrain(*d.delivery, body.Role)
+			startTakenRoleDrain(*d.delivery, body.Role)
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
 				answer.Warnings = []string{roleWarning}
@@ -2937,6 +2952,13 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 // again after a conflict, is held to it before its filter or its row is written
 // (edgeTopicHold.holdPlan), since each merges in the stored row, which another writer may have
 // given a topic the session may not follow here.
+//
+// A store request whose connection was lost (bus.ErrConnectionLost) - a read, or a write whose
+// answer the loss took - is no answer: the registration waits for the connection inside ctx's
+// budget, holding nothing, since the pass that sent it released the session's lock, and plans
+// again from the row the bucket holds (PlanInterestAfterConflict), which is the row such a write
+// may have stored. Those passes are not counted against registrationPlanAttempts, which bounds the
+// passes another writer's row outran.
 func (d *listenerDeps) registerSession(
 	ctx, registerCtx context.Context,
 	machineID string,
@@ -2994,11 +3016,14 @@ func (d *listenerDeps) registerSession(
 		}
 		d.consumers.storedFilterWrite(settleCtx, d.registry, body.SessionID, filterAfterUnansweredRegistration)
 	}()
-	for attempt := 1; attempt <= registrationPlanAttempts; attempt++ {
+	// replanned is set once a pass is made again after a lost connection, so every plan after it
+	// reads the row from the bucket.
+	replanned := false
+	for attempt := 1; attempt <= registrationPlanAttempts; {
 		plan := store.InterestPlan{}
 		var dropped []string
 		var err error
-		if attempt == 1 {
+		if attempt == 1 && !replanned {
 			plan, err = d.registry.PlanInterest(ctx, body.SessionID, planned)
 		} else {
 			plan, err = d.registry.PlanInterestAfterConflict(ctx, body.SessionID, planned)
@@ -3007,6 +3032,10 @@ func (d *listenerDeps) registerSession(
 			plan, dropped, err = hold.holdPlan(ctx, plan)
 		}
 		if err != nil {
+			if registersAgain(ctx, body.SessionID, err, logger) {
+				replanned = true
+				continue
+			}
 			return registeredSession{}, nil, err
 		}
 		registered, answeredPass, refusal, err := d.registerPass(ctx, registerCtx, machineID, body, plan, projects)
@@ -3037,15 +3066,31 @@ func (d *listenerDeps) registerSession(
 		case err == nil:
 			logger.Warn("listener plans the session's interest again: the row it stored is not the one it filtered on",
 				slog.String("session_id", body.SessionID), slog.Int("plans", attempt))
+			attempt++
 		case errors.Is(err, store.ErrInterestPlanConflict):
 			logger.Warn("listener plans the session's interest again: another writer stored the row",
 				slog.String("session_id", body.SessionID), slog.Int("plans", attempt))
+			attempt++
+		case registersAgain(ctx, body.SessionID, err, logger):
+			replanned = true
 		default:
 			return registeredSession{}, nil, err
 		}
 	}
 	return registeredSession{}, nil, fmt.Errorf("write %s's interest record: %w after %d plans",
 		body.SessionID, store.ErrInterestPlanConflict, registrationPlanAttempts)
+}
+
+// registersAgain reports whether err, a registration pass's, is a store request whose connection
+// was lost and that connection is back within ctx (bus.Reconnected), so the registration makes the
+// pass again; it logs the pass it makes again.
+func registersAgain(ctx context.Context, sessionID string, err error, logger *logging.Logger) bool {
+	if !bus.Reconnected(ctx, err) {
+		return false
+	}
+	logger.Warn("listener registers the session again: a store request lost its NATS connection, which is back",
+		slog.String("session_id", sessionID), slog.String("error", err.Error()))
+	return true
 }
 
 // registerPass is one pass of a registration: it filters the session's consumer on plan, the
@@ -3057,7 +3102,10 @@ func (d *listenerDeps) registerSession(
 // (sessionDelivery.register returns it held, as the func that releases it) and released when
 // this function returns, on every path out of it and on a panic with it. It is no re-entrant
 // lock, so the pass takes it once and releases it once. A refusal is decided before it is taken
-// and hands back noUnlock, which releases nothing.
+// and hands back noUnlock, which releases nothing. The one exception is the confirm after the
+// entry write: a confirm whose connection was lost releases the lock while it waits for the
+// connection and takes it again to confirm (confirmRegistered), once the row and the entry this
+// lock was held for are written.
 //
 // What the lock closes is the window from that filter to the row and the entry written under it.
 // A relay restart rebuilds the filter from the stored row (sessionRelays.restart), so one
@@ -3091,12 +3139,26 @@ func (d *listenerDeps) registerPass(
 	body listenerwire.SubscribeRequest, plan store.InterestPlan, projects []string,
 ) (registeredSession, bool, *deliveryRefusal, error) {
 	outcome, refusal, unlock := d.consumers.register(registerCtx, body, plan.Topics)
-	defer unlock()
+	// A deferred func rather than the release itself: the confirm below can release the lock while
+	// it waits for a lost connection and take it again (confirmRegistered), and this release is
+	// of the lock it holds then.
+	defer func() { unlock() }()
 	if refusal != nil {
 		return registeredSession{}, false, refusal, nil
 	}
 	registered := registeredSession{plan: plan, delivery: outcome}
-	row, err := d.registry.UpsertPlanned(ctx, store.Interest{
+	// From here the pass holds the session's lock: every call it makes on the main client is made
+	// under locked, a context marked as made under a lock (bus.WithLockHeld), and each write asks
+	// that client first whether its connection is up (sessionDelivery.mainLost). Both reads of the
+	// connection's state are bounded by the probe's budget, so a reconnect's handshake under way
+	// at either costs the lock that budget; one that starts after an "up" answer can still hold
+	// the write itself for its handshake (bus.Client.LostNow). A loss goes the way a lost write
+	// here goes, to the caller's registersAgain.
+	locked := bus.WithLockHeld(ctx)
+	if lost := d.consumers.mainLost(); lost != nil {
+		return registered, false, nil, lost
+	}
+	row, err := d.registry.UpsertPlanned(locked, store.Interest{
 		SessionID: body.SessionID,
 		MachineID: machineID,
 		Dir:       body.Dir,
@@ -3129,23 +3191,28 @@ func (d *listenerDeps) registerPass(
 		previous, err := d.sessions.Get(body.SessionID)
 		registered.epochChanged = err != nil || previous.Delivery != session.DeliveryConsumer || previous.Epoch != outcome.epoch
 	}
+	if lost := d.consumers.mainLost(); lost != nil {
+		return registeredSession{}, false, nil, &sessionEntryWriteError{cause: lost}
+	}
 	// The gap mark the session is owed (session.SessionEntry.RepositoryGap) is the write's own to
 	// carry over from the entry it replaces, read at the revision it writes over
 	// (session.SessionRegistry.PutWithin), so a registration never clears a mark no frame has
 	// carried, also one another listener set after this listener's copy last read the entry.
 	entry := sessionEntryFromSubscribe(body, machineID, outcome, projects)
-	if err := d.sessions.PutWithin(ctx, body.SessionID, entry); err != nil {
+	if err := d.sessions.PutWithin(locked, body.SessionID, entry); err != nil {
 		// The row is stored and nothing tells another reader the session is here, so the
 		// registration travels as this error alone and no caller is handed it. The pass
-		// answers nothing: the error is the registration's, and the caller's switch over it
-		// returns it rather than planning again.
+		// answers nothing: the error is the registration's. The caller's switch over it returns
+		// it, except when the write lost its connection and that connection is back
+		// (registersAgain): the registration then plans again from the bucket's row and makes the
+		// pass again, the entry write with it.
 		return registeredSession{}, false, nil, &sessionEntryWriteError{cause: err}
 	}
 	if outcome.relayed() {
 		// The write stands whatever the client does with the answer, so the consumer this
 		// entry promises is confirmed on a context the client's own cannot cancel, as the
 		// consumer delete of a deregistration is (sessionDelivery.deleteAfterAnswer).
-		d.consumers.confirmRegistered(context.WithoutCancel(registerCtx), d, body.SessionID, outcome.ackFloor)
+		d.consumers.confirmRegistered(context.WithoutCancel(registerCtx), d, body.SessionID, outcome.ackFloor, &unlock)
 	}
 	return registered, true, nil, nil
 }
@@ -3465,7 +3532,7 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// (registeredSession.returning).
 		if registered.returning {
 			for _, role := range renewal.Set {
-				go runKeptRoleDrain(*d.delivery, role)
+				startKeptRoleDrain(*d.delivery, role)
 			}
 		}
 		// The session is known for the next 30 days, with the topics just stored, which are the

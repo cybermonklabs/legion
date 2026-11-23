@@ -92,7 +92,7 @@ func TestAKeyWrittenThroughBetweenAReadsCreateAndItsBeginSurvivesTheRead(t *test
 	w.Start()
 	testwait.Receive(t, "the read's watcher to receive its whole scan", held.scanned)
 
-	revision, err := kv.Put("written-through", []byte("1"))
+	revision, err := kv.Put(t.Context(), "written-through", []byte("1"))
 	if err != nil {
 		t.Fatalf("put written-through: %v", err)
 	}

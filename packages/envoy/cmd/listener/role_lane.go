@@ -123,6 +123,9 @@ func (f *roleForwarder) enqueue(forward roleForward) {
 // holder's subject for its record's life, and a forward started on a fresher resolution is stored
 // where that copy reads it.
 func (f *roleForwarder) publish(sessionID string) {
+	// The role lane's forwarder holds no lock across a forward and answers no caller, so its
+	// forwards and their outcomes run under a context of its own; each keeps its own bound.
+	ctx := context.Background()
 	for {
 		f.mu.Lock()
 		queue := f.queues[sessionID]
@@ -137,7 +140,7 @@ func (f *roleForwarder) publish(sessionID string) {
 		f.mu.Unlock()
 
 		if roles.ResolutionTooOld(forward.resolvedAt, f.cfg.now()) {
-			refreshed, ok := refreshStaleRoleForward(f.cfg, forward)
+			refreshed, ok := refreshStaleRoleForward(ctx, f.cfg, forward)
 			if !ok {
 				f.release()
 				continue
@@ -145,25 +148,25 @@ func (f *roleForwarder) publish(sessionID string) {
 			forward = refreshed
 		}
 		subject := contracts.LegacyAgentSubject(forward.sessionID)
-		wait, err := f.cfg.forwardRole(subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
+		wait, err := f.cfg.forwardRole(ctx, subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
 		if err != nil {
-			f.finish(forward, err)
+			f.finish(ctx, forward, err)
 			continue
 		}
 		go func() {
 			_, err := wait()
-			f.finish(forward, err)
+			f.finish(ctx, forward, err)
 		}()
 	}
 }
 
-// refreshStaleRoleForward resolves the holder of forward's role again, for a forward whose
-// resolution was roles.ForwardFenceAge old when its publish started, by the rules the lane's own
-// delivery resolves and judges by (resolveRoleForward), and reports the forward to make and
+// refreshStaleRoleForward resolves the holder of forward's role again, under ctx, for a forward
+// whose resolution was roles.ForwardFenceAge old when its publish started, by the rules the lane's
+// own delivery resolves and judges by (resolveRoleForward), and reports the forward to make and
 // whether to make one. A role with no live holder now has the message kept as the lane keeps it,
 // and a holder beforeForward refuses has it refused as the lane refuses it, each with the lane's
 // own outcome, and no forward is made.
-func refreshStaleRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward) (roleForward, bool) {
+func refreshStaleRoleForward(ctx context.Context, cfg listenerDeliveryHandlerConfig, forward roleForward) (roleForward, bool) {
 	item := forward.item
 	cfg.attemptCache.Clear(item.DedupeKey, forward.sessionID)
 	cfg.logger.LogEvent(slog.LevelInfo, "listener role forward resolves its role's holder again: its resolution is too old to forward on",
@@ -171,7 +174,7 @@ func refreshStaleRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForw
 		slog.String("session_id", forward.sessionID),
 		slog.String("topic", item.Topic),
 		slog.Duration("age", cfg.now().Sub(forward.resolvedAt)))
-	return resolveRoleForward(cfg, item)
+	return resolveRoleForward(ctx, cfg, item)
 }
 
 // release frees the slot of a forward that ends with no publish and no outcome of its own to
@@ -182,9 +185,9 @@ func (f *roleForwarder) release() {
 	f.pending.Done()
 }
 
-// finish reports forward's outcome and frees its slot.
-func (f *roleForwarder) finish(forward roleForward, err error) {
-	finishRoleForward(f.cfg, forward, err)
+// finish reports forward's outcome, under ctx, and frees its slot.
+func (f *roleForwarder) finish(ctx context.Context, forward roleForward, err error) {
+	finishRoleForward(ctx, f.cfg, forward, err)
 	f.release()
 }
 
@@ -213,21 +216,24 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // earlier forward under msgID through publishPastInProcess, inside the forward's own timeout: it
 // sends the forward again until the stream acknowledges it as that earlier forward's duplicate,
 // so every caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal
-// one way, as one forward, and none counts it a forward that failed.
-func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+// one way, as one forward, and none counts it a forward that failed. Its resends are bound by that
+// timeout and not by ctx, as the forward itself is (bus.Client.StartRequestStoredTo): a handover's
+// walk ends its context while forwards it started still wait, and a role send's client may go
+// away; only ctx's mark of a lock its caller holds (bus.WithLockHeld) carries over.
+func startRoleForward(client *bus.Client) func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		deadline := time.Now().Add(timeout)
-		forward, err := client.StartRequestStoredTo(subject, item, msgID, timeout)
+		forward, err := client.StartRequestStoredTo(ctx, subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
 		return func() (bus.StoredAck, error) {
-			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			waitCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
 			defer cancel()
-			return publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+			return publishPastInProcess(waitCtx, func() (bus.StoredAck, error) {
 				if forward == nil {
 					var err error
-					if forward, err = client.StartRequestStoredTo(subject, item, msgID, time.Until(deadline)); err != nil {
+					if forward, err = client.StartRequestStoredTo(waitCtx, subject, item, msgID, time.Until(deadline)); err != nil {
 						return bus.StoredAck{}, err
 					}
 				}

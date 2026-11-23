@@ -51,22 +51,22 @@ func TestAConditionalWriteThatLosesToAReplicatingWriteIsACASConflict(t *testing.
 		keyExists bool
 	}{
 		{"a create of the key", "create", func(key string, _ uint64) error {
-			_, err := kv.Create(key, []byte("x"))
+			_, err := kv.Create(t.Context(), key, []byte("x"))
 			return err
 		}, true},
 		{"an update at the key's revision", "update", func(key string, revision uint64) error {
-			_, err := kv.Update(key, []byte("x"), revision)
+			_, err := kv.Update(t.Context(), key, []byte("x"), revision)
 			return err
 		}, false},
 		{"a delete at the key's revision", "delete", func(key string, revision uint64) error {
-			return kv.Delete(key, nats.LastRevision(revision))
+			return kv.Delete(t.Context(), key, nats.LastRevision(revision))
 		}, false},
 		{"a purge at the key's revision", "purge", func(key string, revision uint64) error {
-			return kv.Purge(key, nats.LastRevision(revision))
+			return kv.Purge(t.Context(), key, nats.LastRevision(revision))
 		}, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			revision, err := kv.Put(row.key, []byte("v"))
+			revision, err := kv.Put(t.Context(), row.key, []byte("v"))
 			if err != nil {
 				t.Fatalf("put %s: %v", row.key, err)
 			}
@@ -130,16 +130,16 @@ func TestACreateOverADeleteMarkerThatLosesToAReplicatingWriteIsACASConflict(t *t
 		t.Fatalf("open the bucket with no direct gets: %v", err)
 	}
 	kv := NewKeyValue(legacy, opened.WatchHandle(), opened.Streams())
-	if _, err := kv.Put("marked", []byte("v")); err != nil {
+	if _, err := kv.Put(t.Context(), "marked", []byte("v")); err != nil {
 		t.Fatalf("put the key: %v", err)
 	}
-	if err := kv.Delete("marked"); err != nil {
+	if err := kv.Delete(t.Context(), "marked"); err != nil {
 		t.Fatalf("delete the key: %v", err)
 	}
 	cluster.AwaitReplicated(t, "KV_"+bucket)
 
 	release := cluster.HoldReplicatingWrite(t, "KV_"+bucket, "$KV."+bucket+".marked")
-	_, err = kv.Create("marked", []byte("x"))
+	_, err = kv.Create(t.Context(), "marked", []byte("x"))
 	release()
 	if !errors.Is(err, replicatedConflict) {
 		t.Fatalf("the create = %v, want the replicated stream's wrong last sequence, 10164", err)
@@ -154,7 +154,7 @@ func TestACreateOverADeleteMarkerThatLosesToAReplicatingWriteIsACASConflict(t *t
 	}
 	// The write the Create lost to rewrote the delete marker, so the key is still deleted: a read
 	// answers no key, and the record it stands at is a delete marker.
-	if entry, err := kv.Get("marked"); !errors.Is(err, nats.ErrKeyNotFound) {
+	if entry, err := kv.Get(t.Context(), "marked"); !errors.Is(err, nats.ErrKeyNotFound) {
 		t.Fatalf("read the key after the race = %v, %v; want nats.ErrKeyNotFound, the key still deleted", entry, err)
 	}
 	last, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+".marked")

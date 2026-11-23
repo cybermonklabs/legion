@@ -3313,10 +3313,12 @@ func TestRegisterV1Routes_UnknownRouteReturnsJSONError(t *testing.T) {
 // cannot tell whether the message landed. Its retry under the same idempotency key is a
 // JetStream duplicate, which the stream stores no second time; the answer has to say so, or
 // Dispatch records the retry as an ordinary send and the attempt history claims a delivery that
-// never happened. A send under a key its caller chose carries no MsgId, so it can never be one;
-// a key minted once for its message can. Each send names the key-taken answer as one it reads,
-// as Dispatch's client does: a Dispatch copy names no session, so its repeat is answered with the
-// copy's ids alone (requestSender.answer), whose event_id is the first send's.
+// never happened. A send under a key its caller chose is stored under its own event id instead
+// (bus.envelopeMsgID), which each request mints afresh, so a repeat request can never be one; a
+// key minted once for its message can.
+// Each send names the key-taken answer as one it reads, as Dispatch's client does: a Dispatch
+// copy names no session, so its repeat is answered with the copy's ids alone
+// (requestSender.answer), whose event_id is the first send's.
 func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
@@ -3356,8 +3358,8 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 		t.Fatalf("a different idempotency key must not answer duplicate: %+v", fresh)
 	}
 
-	// An agent-sourced send under a key its caller chose carries no MsgId, so the stream cannot
-	// recognise a repeat.
+	// An agent-sourced send under a key its caller chose is stored under the event id this request
+	// minted, so the stream cannot recognise a second request as a repeat.
 	const agentSend = `{"target_session":"ses_target","source":"agent","message":"ship it","idempotency_key":"agent-dup:steer"}`
 	send(t, agentSend)
 	if repeated := send(t, agentSend); repeated.Duplicate {

@@ -37,7 +37,7 @@ func TestAWatcherARewatchInstalledOutlivesTheRunThatInstalledIt(t *testing.T) {
 	if err := w.Err(); err != nil {
 		t.Fatalf("the watcher ended with the run that installed it: %v", err)
 	}
-	if _, err := w.KV().Put("after-the-run", []byte("1")); err != nil {
+	if _, err := w.KV().Put(t.Context(), "after-the-run", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	eventually(t, "the watcher to deliver a write made after its run ended", func() bool { return into.has("after-the-run") })

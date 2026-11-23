@@ -36,11 +36,12 @@ func unacknowledgedEnvelope(topic string) contracts.Envelope {
 // in the stream, and its error says so (bus.ErrUnacknowledged) beside the error it wraps; one that
 // sent nothing, or that the server refused, does not. The listener's sender limit charges a
 // sender for the first and not for the others (cmd/listener), so a message the stream may hold is
-// never free and one it cannot hold never costs. A publish whose connection closed under it is sent
-// again, and its acknowledgement says so (StoredAck.Resent), since the copy the stream names may
-// be the first send's. Each case reads the stream to show what the error claims: the stream stores
-// what an unacknowledged publish sent once the server answers again, and holds nothing of a
-// publish that waited for a reconnect.
+// never free and one it cannot hold never costs. A publish whose caller reads the duplicate verdict
+// and whose connection closed under it is not sent again, since a second send would answer the
+// first send's copy as a duplicate, and its error says the stream may hold it, so the listener
+// charges it. Each case reads the stream to show what the error claims: the stream stores what an
+// unacknowledged publish sent once the server answers again, and holds nothing of a publish that
+// waited for a reconnect.
 func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) {
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -99,52 +100,56 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			func() bool { return storedOn(t, topic) == 1 })
 	})
 
-	t.Run("a publish whose connection closed under it is sent again and its acknowledgement says so", func(t *testing.T) {
-		topic := contracts.LegacyAgentSubject("ses_unacknowledged_resent")
+	t.Run("a publish whose connection closed under it is sent once and is ErrUnacknowledged", func(t *testing.T) {
+		topic := contracts.LegacyAgentSubject("ses_unacknowledged_closed")
 		thaw := server.Freeze(t)
 		t.Cleanup(thaw)
 		closing := client.Connection()
 		before := closing.Stats().OutMsgs
-		type answer struct {
-			ack bus.StoredAck
-			err error
-		}
-		answered := make(chan answer, 1)
+		answered := make(chan error, 1)
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			ack, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
-			answered <- answer{ack, err}
+			_, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
+			answered <- err
 		}()
 		// The send is out on the frozen connection, its request waiting for an answer, when the
-		// connection closes: the request fails with nats.ErrConnectionClosed and the bus sends it
-		// again on the connection it dials in its place once the server answers again.
+		// connection closes: the request answers bus.ErrConnectionLost, since the client is still
+		// running, whichever of nats.go's answer and the end of the connection's life comes first
+		// (closedUnder), and the bus sends it no second time, since the caller reads the duplicate
+		// verdict a second send would answer for the first send's copy.
 		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the publish to go out on the frozen connection",
 			func() bool { return closing.Stats().OutMsgs > before })
 		closing.Close()
 		thaw()
-		var got answer
+		var err error
 		select {
-		case got = <-answered:
+		case err = <-answered:
 		case <-time.After(15 * time.Second):
 			t.Fatal("the publish whose connection closed under it did not return")
 		}
-		if got.err != nil {
-			t.Fatalf("a publish sent again after its connection closed = %v, want it acknowledged", got.err)
+		// An error, and no acknowledgement, is what shows the publish was not sent again: a second
+		// send would have been acknowledged, a duplicate of the first send's copy where the frozen
+		// server read that send before the close. The frozen server may or may not have read it, so
+		// the stream may hold its copy, and the error says so.
+		if !errors.Is(err, bus.ErrUnacknowledged) || !errors.Is(err, bus.ErrConnectionLost) {
+			t.Errorf("a publish whose connection closed under it = %v, want ErrUnacknowledged around ErrConnectionLost", err)
 		}
-		if !got.ack.Resent {
-			t.Fatalf("a publish sent again after its connection closed answered %+v, want Resent", got.ack)
-		}
-		// The first send reached the stream after the thaw too, or the stream stored the second
-		// alone; under one Nats-Msg-Id it holds one copy either way, and the second's verdict says
-		// which (Duplicate).
-		t.Logf("the resend's acknowledgement: %+v", got.ack)
-		if stored := storedOn(t, topic); stored != 1 {
-			t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", stored, topic)
-		}
+		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client to answer again after the close",
+			func() bool {
+				_, err := client.JS().StreamInfo(bus.Stream)
+				return client.Connected() && err == nil
+			})
 	})
 
-	t.Run("a publish interrupted by reconnect is sent again after its first copy is stored", func(t *testing.T) {
+	// A publish whose answer a forced reconnect cut off is a loss of its connection, as one a close
+	// cut off is: the reconnect ends the connection's life before the publish reads its answer, so
+	// the bus answers ErrConnectionLost (bindRequest), whatever nats.go answered. So the publish,
+	// whose caller reads the duplicate verdict, is sent once, and its error is ErrUnacknowledged
+	// around ErrConnectionLost: the stream may hold its copy, and here it does. nats.go v1.55.0's
+	// own answer for such a request, nats.ErrDisconnected, is read by the direct-call row
+	// (TestADirectCallAForcedReconnectCutOffIsLostOnceTheConnectionIsBack).
+	t.Run("a publish a forced reconnect cut off is sent once and is ErrUnacknowledged around ErrConnectionLost", func(t *testing.T) {
 		topic := contracts.LegacyAgentSubject("ses_unacknowledged_reconnect")
 		proxy := testnats.StartProxy(t, uri)
 		reconnecting, err := bus.ConnectOwningStream([]string{proxy.URL()}, bus.WithReplicas(1))
@@ -167,10 +172,6 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		}()
 		testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the publish to reach the server before reconnecting",
 			func() bool { return reconnecting.Connection().Stats().OutMsgs > before && storedOn(t, topic) == 1 })
-		first, err := client.JS().GetLastMsg(bus.Stream, topic)
-		if err != nil {
-			t.Fatalf("read the first stored copy: %v", err)
-		}
 		if err := reconnecting.Connection().ForceReconnect(); err != nil {
 			t.Fatalf("force reconnect: %v", err)
 		}
@@ -179,23 +180,20 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 		select {
 		case got = <-answered:
 		case <-time.After(15 * time.Second):
-			t.Fatal("the publish interrupted by reconnect did not return")
+			t.Fatal("the publish a forced reconnect cut off did not return")
 		}
-		if got.err != nil {
-			t.Fatalf("a publish sent again after reconnect = %v, want it acknowledged", got.err)
-		}
-		if !got.ack.Resent || !got.ack.Duplicate || got.ack.Sequence != first.Sequence {
-			t.Fatalf("a publish sent again after reconnect answered %+v, want resent duplicate at sequence %d", got.ack, first.Sequence)
+		if !errors.Is(got.err, bus.ErrUnacknowledged) || !errors.Is(got.err, bus.ErrConnectionLost) {
+			t.Fatalf("a publish a forced reconnect cut off answered %+v, %v; want ErrUnacknowledged around ErrConnectionLost", got.ack, got.err)
 		}
 		if stored := storedOn(t, topic); stored != 1 {
-			t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent twice", stored, topic)
+			t.Fatalf("the stream holds %d messages on %s, want the one copy of the publish sent once", stored, topic)
 		}
 	})
 
-	// A cursor write under a precondition is sent again after a reconnect cuts its answer, and the
-	// stream refuses the resend because the first send already moved the cursor. That refusal is
-	// no ErrCursorMoved, which says the write stored nothing: the error wraps ErrUnacknowledged, so
-	// the listener reads the cursor back (roleKeepLaneCursor.confirm) and finds this write.
+	// A cursor write under a precondition is sent once, so a forced reconnect that cuts its answer
+	// leaves no resend for the stream to refuse: the error wraps ErrUnacknowledged, not
+	// ErrCursorMoved, which says the write stored nothing, so the listener reads the cursor back
+	// (roleKeepLaneCursor.confirm) and finds this write.
 	t.Run("a cursor write stored before a reconnect cut its answer is no ErrCursorMoved", func(t *testing.T) {
 		subject := bus.KeptRoleCursorSubject("unacknowledged-cursor-reconnect")
 		proxy := testnats.StartProxy(t, uri)

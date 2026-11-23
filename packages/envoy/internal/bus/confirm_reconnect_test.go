@@ -274,7 +274,7 @@ func TestAnUnconfirmedForwardTheStreamStoredIsDelivered(t *testing.T) {
 	conn := answeringServer(t, "notifications.other", storedAck)
 	client := &Client{Conn: conn}
 
-	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
+	forward, err := client.StartRequestStoredTo(t.Context(), "notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 2*time.Second)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestAnUnconfirmedForwardWithoutTheStreamsAcknowledgementIsNotStored(t *test
 	conn := answeringServer(t, "notifications.other", "")
 	client := &Client{Conn: conn}
 
-	forward, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 300*time.Millisecond)
+	forward, err := client.StartRequestStoredTo(t.Context(), "notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), 300*time.Millisecond)
 	if err != nil {
 		t.Fatalf("an unconfirmed forward was refused outright: %v", err)
 	}
@@ -316,12 +316,13 @@ func TestAForwardsWaitReturnsTheStreamsVerdict(t *testing.T) {
 	forward := func(t *testing.T, ack string) (StoredAck, bool, error) {
 		t.Helper()
 		client := &Client{Conn: answeringServer(t, "", ack)}
-		pending, err := client.StartRequestStoredTo("notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), window)
+		pending, err := client.StartRequestStoredTo(t.Context(), "notifications.agent.holder", contracts.Envelope{EventID: "e", Topic: "notifications.role.r"}, ForwardMsgID("e", "notifications.agent.holder"), window)
 		if err != nil {
 			t.Fatalf("the forward was refused outright: %v", err)
 		}
 		got, err := pending.Wait()
-		return got, time.Now().Before(pending.deadline), err
+		deadline, _ := pending.ctx.Deadline()
+		return got, time.Now().Before(deadline), err
 	}
 	if got, _, err := forward(t, `{"stream":"ENVOY_NOTIFICATIONS","seq":7,"duplicate":true}`); err != nil || got != (StoredAck{Sequence: 7, Duplicate: true}) {
 		t.Fatalf("a duplicate forward's wait = %+v (%v), want sequence 7 and Duplicate", got, err)

@@ -149,7 +149,7 @@ func newBrokerTokens(config listenerBrokerConfig) *brokerTokens {
 // falling back to a store in its own memory, which would let one replica accept a proof another
 // replica had already spent. ctx is the start's (bus.EnsureKeyValue).
 func (b *brokerTokens) open(ctx context.Context, conn *nats.Conn, replicas int) error {
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		if b == nil {
 			return fmt.Errorf("JetStream for the spent-proof bucket %s: %w", bus.DPoPProofBucket, err)
@@ -303,7 +303,7 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	// does; the abandoned create may still land, which is the right way round for a record whose
 	// whole purpose is to be there.
 	revision, _, err := bus.Bounded(ctx, func() (uint64, error) {
-		return s.kv.Create(key, nil)
+		return s.kv.Create(ctx, key, nil)
 	})
 	if bus.IsCASConflict(err) {
 		return true, nil
@@ -354,7 +354,7 @@ func (s *proofSpend) release(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), proofReleaseBudget)
 	defer cancel()
 	_, _, err := bus.Bounded(ctx, func() (struct{}, error) {
-		return struct{}{}, s.kv.Delete(s.key, nats.LastRevision(s.revision))
+		return struct{}{}, s.kv.Delete(ctx, s.key, nats.LastRevision(s.revision))
 	})
 	s.key = ""
 	return err

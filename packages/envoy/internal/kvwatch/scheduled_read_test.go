@@ -25,7 +25,7 @@ const scheduledEvery = 45 * time.Second
 func putKeys(t *testing.T, kv bus.KeyValue, keys ...string) {
 	t.Helper()
 	for _, key := range keys {
-		if _, err := kv.Put(key, []byte("1")); err != nil {
+		if _, err := kv.Put(t.Context(), key, []byte("1")); err != nil {
 			t.Fatalf("put %s: %v", key, err)
 		}
 	}

@@ -295,7 +295,7 @@ func TestEdgeReleaseDeletesOnlyTheRecordItsRequestWrote(t *testing.T) {
 	if present(withProofSpend(t.Context(), spend)) {
 		t.Fatal("the first presentation read as a replay")
 	}
-	if err := kv.Delete(spend.key); err != nil {
+	if err := kv.Delete(t.Context(), spend.key); err != nil {
 		t.Fatalf("let the first record leave the bucket: %v", err)
 	}
 	if present(t.Context()) {

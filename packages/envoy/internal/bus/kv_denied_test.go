@@ -198,8 +198,8 @@ func TestAKeyReadWriteAndWatchTheGrantRefusesNameTheRefusal(t *testing.T) {
 			}
 			return err
 		}},
-		{"put", "$KV." + bucket + ".key", RequestTimeout + refusalAnswerBound, func() error { _, err := kv.Put("key", []byte("value")); return err }},
-		{"get", jsAPI("DIRECT.GET", stream, "$KV."+bucket+".key"), RequestTimeout + refusalAnswerBound, func() error { _, err := kv.Get("key"); return err }},
+		{"put", "$KV." + bucket + ".key", RequestTimeout + refusalAnswerBound, func() error { _, err := kv.Put(t.Context(), "key", []byte("value")); return err }},
+		{"get", jsAPI("DIRECT.GET", stream, "$KV."+bucket+".key"), RequestTimeout + refusalAnswerBound, func() error { _, err := kv.Get(t.Context(), "key"); return err }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			started := time.Now()
@@ -283,7 +283,7 @@ func TestARefusalOfASubjectAReadDoesNotSendAnswersItNothing(t *testing.T) {
 	}
 	sentAt := time.Now()
 	refusing := NewKeyValue(refusingGetLegacy{KeyValue: kv.Legacy(), conn: conn, owner: owner, subject: bare, wait: testwait.Bounded(t, 5*time.Second, time.Second)}, kv.WatchHandle(), kv.Streams())
-	_, err = refusing.Get("key")
+	_, err = refusing.Get(t.Context(), "key")
 	if errors.Is(err, ErrPublishDenied) || !errors.Is(err, nats.ErrTimeout) {
 		t.Fatalf("a Get that drew no answer beside a refusal of %s, which a Get never sends = %v, want its own nats.ErrTimeout", bare, err)
 	}

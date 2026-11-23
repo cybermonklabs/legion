@@ -52,33 +52,33 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
-	revision, err := kv.Put(key, []byte("live"))
+	revision, err := kv.Put(t.Context(), key, []byte("live"))
 	if err != nil {
 		t.Fatalf("put %s: %v", key, err)
 	}
-	entry, err := kv.Get(key)
+	entry, err := kv.Get(t.Context(), key)
 	if err != nil || string(entry.Value()) != "live" || entry.Revision() != revision {
 		t.Fatalf("Get(%s) = %v, %v; want %q at revision %d", key, entry, err, "live", revision)
 	}
-	if entry, err := kv.GetRevision(key, revision); err != nil || string(entry.Value()) != "live" {
+	if entry, err := kv.GetRevision(t.Context(), key, revision); err != nil || string(entry.Value()) != "live" {
 		t.Fatalf("GetRevision(%s, %d) = %v, %v; want %q", key, revision, entry, err, "live")
 	}
-	if _, err := kv.Get("ses_absent"); !errors.Is(err, nats.ErrKeyNotFound) {
+	if _, err := kv.Get(t.Context(), "ses_absent"); !errors.Is(err, nats.ErrKeyNotFound) {
 		t.Fatalf("Get(ses_absent) answered %v, want nats.ErrKeyNotFound", err)
 	}
-	if err := kv.Delete(key); err != nil {
+	if err := kv.Delete(t.Context(), key); err != nil {
 		t.Fatalf("delete %s: %v", key, err)
 	}
-	if _, err := kv.Get(key); !errors.Is(err, nats.ErrKeyNotFound) {
+	if _, err := kv.Get(t.Context(), key); !errors.Is(err, nats.ErrKeyNotFound) {
 		t.Fatalf("Get(%s) after its delete answered %v, want nats.ErrKeyNotFound", key, err)
 	}
-	if _, err := kv.Create(key, []byte("again")); err != nil {
+	if _, err := kv.Create(t.Context(), key, []byte("again")); err != nil {
 		t.Fatalf("Create(%s) over its delete marker: %v", key, err)
 	}
-	if entry, err := kv.Get(key); err != nil || string(entry.Value()) != "again" {
+	if entry, err := kv.Get(t.Context(), key); err != nil || string(entry.Value()) != "again" {
 		t.Fatalf("Get(%s) after Create = %v, %v; want %q", key, entry, err, "again")
 	}
-	if _, err := kv.Create(key, []byte("third")); !errors.Is(err, nats.ErrKeyExists) || !IsCASConflict(err) {
+	if _, err := kv.Create(t.Context(), key, []byte("third")); !errors.Is(err, nats.ErrKeyExists) || !IsCASConflict(err) {
 		t.Fatalf("Create(%s) over a live value answered %v, want nats.ErrKeyExists", key, err)
 	}
 
@@ -97,7 +97,7 @@ func TestAClientWithStreamMessageReadsReadsAndCreatesWithNoDirectGet(t *testing.
 	if err != nil {
 		t.Fatalf("open %s on the second connection: %v", bucket, err)
 	}
-	if _, err := plain.Get(key); err != nil {
+	if _, err := plain.Get(t.Context(), key); err != nil {
 		t.Fatalf("the plain client's Get(%s): %v", key, err)
 	}
 	if requestFor(t, directGets, stream, noRequestFor*10) == nil {

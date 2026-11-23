@@ -219,7 +219,7 @@ func putRecord(t *testing.T, s *Store, h head, edit func(st *State)) {
 	if raw, err = json.Marshal(wire); err != nil {
 		t.Fatalf("encode the record: %v", err)
 	}
-	if _, err := s.watcher.KV().Put(h.key(), raw); err != nil {
+	if _, err := s.watcher.KV().Put(t.Context(), h.key(), raw); err != nil {
 		t.Fatalf("store the record: %v", err)
 	}
 	waitCached(t, s, h.key(), func(cached State) bool {

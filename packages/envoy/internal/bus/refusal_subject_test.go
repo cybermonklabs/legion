@@ -176,8 +176,10 @@ func TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends(t *testing.T) {
 	directByKey := jsAPI("DIRECT.GET", stream, "$KV."+bucket+"."+key)
 	directBySequence := jsAPI("DIRECT.GET", stream)
 	fromLeader := jsAPI("STREAM.MSG.GET", stream)
-	get := func(kv KeyValue, _ uint64) (nats.KeyValueEntry, error) { return kv.Get(key) }
-	getRevision := func(kv KeyValue, revision uint64) (nats.KeyValueEntry, error) { return kv.GetRevision(key, revision) }
+	get := func(kv KeyValue, _ uint64) (nats.KeyValueEntry, error) { return kv.Get(t.Context(), key) }
+	getRevision := func(kv KeyValue, revision uint64) (nats.KeyValueEntry, error) {
+		return kv.GetRevision(t.Context(), key, revision)
+	}
 	messageReads := []ConnectOption{WithStreamMessageReads()}
 	for _, read := range []struct {
 		name       string
@@ -316,9 +318,11 @@ func TestAConsumerCreateTakesOnlyTheRefusalOfTheSubjectItSends(t *testing.T) {
 
 // A create on a connection that has not connected yet, a client's that connects in the background
 // (WithConnectInBackground) to a server that is not there, reads no server version, which nats.go
-// reads as an older server's (consumerCreateSubject). It sends nothing: a bus connection buffers
-// nothing until it is connected, so nats.go fails the create at once with its own error, and the
-// create neither waits for an answer nor takes a refusal.
+// reads as an older server's (consumerCreateSubject). It sends nothing: the client's JetStream
+// context binds each request to its connection's life (bindJetStream), and a connection that has
+// never connected has no running life, so the request is not sent and answers ErrConnectionLost,
+// marked unsent (Request, endedLife), at once; the create neither waits for an answer nor takes a
+// refusal.
 func TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError(t *testing.T) {
 	client, err := Connect([]string{"nats://127.0.0.1:1"}, WithEnvironment(seedLookup("")), WithConnectInBackground())
 	if err != nil {
@@ -336,11 +340,11 @@ func TestACreateBeforeTheFirstConnectEndsAtOnceWithItsOwnError(t *testing.T) {
 		started := time.Now()
 		err := call()
 		took := time.Since(started)
-		if !errors.Is(err, nats.ErrReconnectBufExceeded) || errors.Is(err, ErrPublishDenied) {
-			t.Errorf("%s before the first connect = %v, want nats.ErrReconnectBufExceeded: nothing is sent, so nothing is refused", name, err)
+		if !errors.Is(err, ErrConnectionLost) || !requestUnsent(err) || errors.Is(err, ErrPublishDenied) {
+			t.Errorf("%s before the first connect = %v, want ErrConnectionLost, unsent: nothing is sent, so nothing is refused", name, err)
 		}
 		if took > refusalAnswerBound {
-			t.Errorf("%s before the first connect ended after %s, want within %s: nats.go sends nothing and fails it at once", name, took, refusalAnswerBound)
+			t.Errorf("%s before the first connect ended after %s, want within %s: the request is not sent and fails at once", name, took, refusalAnswerBound)
 		}
 	}
 }

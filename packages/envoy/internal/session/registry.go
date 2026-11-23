@@ -483,7 +483,7 @@ func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...Sessio
 	for _, o := range options {
 		o(&opts)
 	}
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return nil, err
 	}
@@ -510,7 +510,7 @@ func OpenSessionRegistry(ctx context.Context, conn *nats.Conn, options ...Sessio
 	// configured ttl if it fails or reports no TTL. Every read of the bucket adopts its MaxAge
 	// again (sessionCache.BeginRead), so a bucket recreated with another TTL expires by its own.
 	ttl := opts.ttl
-	if status, statusErr := kv.Status(); statusErr == nil {
+	if status, statusErr := kv.Status(ctx); statusErr == nil {
 		if bucketTTL := status.TTL(); bucketTTL > 0 {
 			ttl = bucketTTL
 		}
@@ -791,7 +791,7 @@ func (r *SessionRegistry) applyMaxAge(ctx context.Context) error {
 		return nil
 	}
 	kv, _ := r.watcher.Handle()
-	status, err := kv.Status()
+	status, err := kv.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("read the %s bucket's maximum age: %w", bus.SessionBucket, err)
 	}
@@ -1032,7 +1032,7 @@ var errUndecodableEntry = errors.New("the stored value is no session entry")
 // refused for good, since the record carries another stream's first Nats-Sequence header; PutWithin
 // reads the stream leader on the retry (readEntryFromLeader), which reports the true sequence.
 func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionEntry, uint64, error) {
-	got, _, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, _, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(ctx, sessionID) })
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return SessionEntry{}, 0, nil
 	}
@@ -1069,9 +1069,9 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 	}
 	written, _, err := bus.Bounded(ctx, func() (uint64, error) {
 		if revision == 0 {
-			return kv.Create(sessionID, buf)
+			return kv.Create(ctx, sessionID, buf)
 		}
-		return kv.Update(sessionID, buf, revision)
+		return kv.Update(ctx, sessionID, buf, revision)
 	})
 	if err != nil {
 		if bus.IsCASConflict(err) {
@@ -1291,7 +1291,7 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 // marker, a value that does not decode and a row past its TTL are not found.
 func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (SessionEntry, error) {
 	kv, epoch := r.watcher.Handle()
-	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
+	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(ctx, sessionID) })
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}

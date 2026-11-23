@@ -33,7 +33,7 @@ func TestARequestAnswersUnavailableOnceItsWindowsLifeEndsBeforeTheClientHearsOfT
 	const subject = "notifications.role.request-life"
 	item := contracts.Envelope{EventID: "evt-life", Source: "dispatch", SourceEventID: "src-life", Topic: subject, DedupeKey: "envoy.role.forward.dispatch-life", IssuedAt: contracts.NowMillis()}
 	pending := w.Request(subject, item, RequestOptions{MsgID: ForwardMsgID("life", subject), Timeout: 24 * time.Hour})
-	lifeOf(w.conn).end(nats.RECONNECTING)
+	windowLifeOf(t, client).end(nats.RECONNECTING)
 
 	if err := testwait.Receive(t, "the answer of the Request whose window's life ended", pending); !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrNotAcknowledged) {
 		t.Fatalf("a Request whose window's life ended returned %v, want ErrUnavailable", err)

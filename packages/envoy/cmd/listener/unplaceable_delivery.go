@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -160,7 +161,7 @@ func (d *unplaceableDeferrals) sweepLocked(now time.Time) {
 // unplaceableAgentDelivery answers an agent delivery that nothing placed and nothing failed hard
 // enough to NAK (agentSubjectDelivery's undelivered, error-free result). It either defers the
 // message for redelivery or gives it up with its record, and finalizes the message either way.
-func unplaceableAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, metadata *nats.MsgMetadata) {
+func unplaceableAgentDelivery(ctx context.Context, cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, metadata *nats.MsgMetadata) {
 	// Nothing placed this message and nothing failed hard enough to NAK: this listener found no
 	// session record it could deliver through - no entry at all, or an entry that records no way
 	// the session receives a message (session.ErrNoSessionRecord). Either can be true of a
@@ -202,7 +203,7 @@ func unplaceableAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliver
 		// The line carries the two numbers the decision was made on. It carried the
 		// message's stream age before, which no longer bounds anything: a line naming it
 		// would invite exactly the reading this clock was changed to end.
-		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+		applyDeliveryOutcome(ctx, cfg, item, deliveryOutcome{
 			sessionID: sessionID,
 			log: func(logger *logging.Logger) {
 				logger.DeliveryLog(slog.LevelInfo, "listener agent delivery deferred", sessionID, item.Topic, item.EventID, "deferred",
@@ -245,7 +246,7 @@ func unplaceableAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliver
 	// original payload, so an envelope near the server's max payload yields a notice refused
 	// bus.ErrTooLarge on every attempt - which ran the message to the durable's MaxDeliver
 	// with no give-up record at all.
-	applyDeliveryOutcome(cfg, item, deliveryOutcome{
+	applyDeliveryOutcome(ctx, cfg, item, deliveryOutcome{
 		sessionID:    sessionID,
 		metricStatus: "unplaceable_no_record",
 		log: func(logger *logging.Logger) {

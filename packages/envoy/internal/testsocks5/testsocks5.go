@@ -36,10 +36,11 @@ type Server struct {
 
 	target   string
 	reply    byte
-	listener net.Listener
 	accepted atomic.Int64
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// listener is the one the server serves now: Start's, or Reopen's once Close let it go.
+	listener net.Listener
 	requests []Request
 	relayed  []net.Conn
 }
@@ -63,10 +64,28 @@ func start(t testing.TB, server *Server) *Server {
 	if err != nil {
 		t.Fatalf("listen for the SOCKS5 test server: %v", err)
 	}
-	server.Addr, server.listener = listener.Addr().String(), listener
-	go server.serve()
+	server.Addr = listener.Addr().String()
+	server.mu.Lock()
+	server.listener = listener
+	server.mu.Unlock()
+	go server.serve(listener)
 	t.Cleanup(server.Close)
 	return server
+}
+
+// Reopen serves again on Addr after Close, as it served before, so a client whose proxy setting
+// names that address reaches the server through it again at its next dial, as a proxy that comes
+// back does.
+func (s *Server) Reopen(t testing.TB) {
+	t.Helper()
+	listener, err := net.Listen("tcp", s.Addr)
+	if err != nil {
+		t.Fatalf("listen again on the SOCKS5 test server's address %s: %v", s.Addr, err)
+	}
+	s.mu.Lock()
+	s.listener = listener
+	s.mu.Unlock()
+	go s.serve(listener)
 }
 
 // Requests returns every request the server has received, oldest first.
@@ -94,13 +113,16 @@ func (s *Server) DropAll() {
 
 // Close stops the server: it accepts nothing more, and every connection it relays is closed.
 func (s *Server) Close() {
-	_ = s.listener.Close()
+	s.mu.Lock()
+	listener := s.listener
+	s.mu.Unlock()
+	_ = listener.Close()
 	s.DropAll()
 }
 
-func (s *Server) serve() {
+func (s *Server) serve(listener net.Listener) {
 	for {
-		client, err := s.listener.Accept()
+		client, err := listener.Accept()
 		if err != nil {
 			return
 		}

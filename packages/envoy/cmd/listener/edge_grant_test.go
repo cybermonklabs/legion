@@ -92,7 +92,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence != 0 {
 		t.Fatalf("role %s's drain cursor after the edge's handover is %+v (%v), want none written", role, cursor, err)
 	}
-	runTakenRoleDrain(edge, role)
+	runTakenRoleDrain(ctx, edge, role)
 	select {
 	case key := <-forwards:
 		t.Fatalf("the handover of the edge's claim of role %s handed over %s, which its grant may not write a cursor of", role, key)
@@ -199,13 +199,13 @@ func TestAnEdgeListenerPublishesNoDeliveryExceptionItsGrantDoesNotHold(t *testin
 	const recipient = "ses_edge_refused"
 
 	github := listenerTestEnvelope("notifications.github.acme.pub.pr.1.opened", "edge-github-"+id.New())
-	applyDeliveryOutcome(edge, github, fanoutRefusalOutcome(recipient, github, followedTopicModeUnreadable, "", false))
+	applyDeliveryOutcome(t.Context(), edge, github, fanoutRefusalOutcome(recipient, github, followedTopicModeUnreadable, "", false))
 	dispatch := listenerTestEnvelope("notifications.dispatch.issue.PRIV.PRIV-1.comment.created", "edge-dispatch-"+id.New())
-	applyDeliveryOutcome(edge, dispatch, fanoutRefusalOutcome(recipient, dispatch, followedTopicModeNotAdvertised, "bogus", false))
+	applyDeliveryOutcome(t.Context(), edge, dispatch, fanoutRefusalOutcome(recipient, dispatch, followedTopicModeNotAdvertised, "bogus", false))
 	agent := listenerTestEnvelope(contracts.LegacyAgentSubject(recipient), "edge-agent-"+id.New())
-	applyDeliveryOutcome(edge, agent, deliveryOutcome{sessionID: recipient, exceptionReason: "delivery_failed"})
+	applyDeliveryOutcome(t.Context(), edge, agent, deliveryOutcome{sessionID: recipient, exceptionReason: "delivery_failed"})
 	shared := listenerTestEnvelope("notifications.github.acme.pub.pr.2.opened", "shared-github-"+id.New())
-	applyDeliveryOutcome(harness.config, shared, fanoutRefusalOutcome(recipient, shared, followedTopicModeUnreadable, "", false))
+	applyDeliveryOutcome(t.Context(), harness.config, shared, fanoutRefusalOutcome(recipient, shared, followedTopicModeUnreadable, "", false))
 
 	for _, want := range []string{bus.ExceptionTopicPrefix + agent.Topic, bus.ExceptionTopicPrefix + shared.Topic} {
 		message, err := exceptions.NextMsg(10 * time.Second)

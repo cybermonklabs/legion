@@ -54,7 +54,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encode %s's record: %v", sessionID, err)
 		}
-		revision, err := reg.watcher.KV().Put(sessionID, value)
+		revision, err := reg.watcher.KV().Put(t.Context(), sessionID, value)
 		if err != nil {
 			t.Fatalf("put %s's record: %v", sessionID, err)
 		}
@@ -84,7 +84,7 @@ func TestAWriteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		if race.Lost() != 1 {
 			t.Fatalf("%d deletes lost the race, want 1", race.Lost())
 		}
-		if _, err := reg.watcher.KV().Get(sessionID); err != nil {
+		if _, err := reg.watcher.KV().Get(t.Context(), sessionID); err != nil {
 			t.Fatalf("read the kept record: %v", err)
 		}
 	})

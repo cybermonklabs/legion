@@ -145,37 +145,44 @@ func RequireFirstStartAtOneCopyAndNoSecondWrite(t testing.TB, url string, stream
 	}
 }
 
-// FillStream publishes messages of a kibibyte each through client, on subjects the stream captures
+// FillStream publishes messages through client, on subjects the stream captures
 // (notifications.github.fill.<n>), until the stream refuses one because it is full
-// (bus.ErrStreamFull). The test must start the client on a stream whose byte limit is small
-// (bus.WithStreamMaxBytes), or the fill never ends: most bounds the publishes, and a run that
+// (bus.ErrStreamFull): first of a kibibyte each, and then, each time the stream refuses one, of a
+// smaller payload, down to none, so that what is left of the byte limit is less than the smallest
+// envelope a test publishes. A stream that refuses a kibibyte can still take a smaller message,
+// and how much room the kibibytes leave depends on every byte a stored copy carries, its
+// Nats-Msg-Id header among them. The test must start the client on a stream whose byte limit is
+// small (bus.WithStreamMaxBytes), or the fill never ends: most bounds the publishes, and a run that
 // reaches it fails the test. A publish that fails for any other reason fails the test too.
 //
-// internal/webhook's two full-stream tests call it: the one whose delivery is answered 503
-// (TestADeliveryToAFullStreamIsAnswered503) and the one whose delivery is stored on a redelivery
-// once the stream has room (TestAGitHubDeliveryTheFullStreamRefusedIsStoredOnARedeliveryOnceTheStreamHasRoom).
-// The bus's own tests keep their copies of this loop, because package bus cannot import this
-// package.
+// The full-stream tests of internal/webhook (the delivery answered 503, and the one stored on a
+// redelivery once the stream has room), of the bus's window requests, of the listener's sender
+// limit and of Dispatch's outbox role forwards call it. The bus's package-internal tests keep
+// their copies of this loop, because package bus cannot import this package.
 func FillStream(t testing.TB, client *bus.Client, most int) {
 	t.Helper()
-	payload := strings.Repeat("x", 1<<10)
-	for filled := 0; ; filled++ {
-		if filled == most {
-			t.Fatalf("the stream took %d messages of a kibibyte, want it full within %d", filled, most)
+	filled := 0
+	for _, size := range []int{1 << 10, 1 << 8, 1 << 4, 0} {
+		payload := strings.Repeat("x", size)
+		for ; ; filled++ {
+			if filled == most {
+				t.Fatalf("the stream took %d messages, want it full within %d", filled, most)
+			}
+			err := client.Publish(contracts.Envelope{
+				EventID:        fmt.Sprintf("fill-%d", filled),
+				Source:         "github",
+				Topic:          fmt.Sprintf("notifications.github.fill.%d", filled),
+				DedupeKey:      fmt.Sprintf("fill.%d", filled),
+				PayloadSummary: payload,
+			})
+			if err == nil {
+				continue
+			}
+			if !errors.Is(err, bus.ErrStreamFull) {
+				t.Fatalf("fill publish %d = %v, want nil or bus.ErrStreamFull", filled, err)
+			}
+			filled++
+			break
 		}
-		err := client.Publish(contracts.Envelope{
-			EventID:        fmt.Sprintf("fill-%d", filled),
-			Source:         "github",
-			Topic:          fmt.Sprintf("notifications.github.fill.%d", filled),
-			DedupeKey:      fmt.Sprintf("fill.%d", filled),
-			PayloadSummary: payload,
-		})
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, bus.ErrStreamFull) {
-			t.Fatalf("fill publish %d = %v, want nil or bus.ErrStreamFull", filled, err)
-		}
-		return
 	}
 }

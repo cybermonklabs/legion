@@ -834,7 +834,7 @@ func TestRoleClaimReadsAnUndecodableRecordAsErrMalformedRoleClaim(t *testing.T) 
 		`{"holder_session_id":7}`:  "malformed role claim: json: ",
 		"  ":                       "malformed role claim: a legacy record with an empty holder",
 	} {
-		if _, err := reg.roleKV.Put("reviewer", []byte(record)); err != nil {
+		if _, err := reg.roleKV.Put(t.Context(), "reviewer", []byte(record)); err != nil {
 			t.Fatalf("store the claim record %q: %v", record, err)
 		}
 		_, err := reg.RoleClaim(context.Background(), "reviewer")
@@ -888,7 +888,7 @@ func storeUndecodableInterest(t *testing.T, reg *Registry, kv natsgo.KeyValue, s
 	if err != nil {
 		t.Fatalf("encode the claim on %s: %v", role, err)
 	}
-	if _, err := reg.roleKV.Put(role, claim); err != nil {
+	if _, err := reg.roleKV.Put(t.Context(), role, claim); err != nil {
 		t.Fatalf("store the claim on %s: %v", role, err)
 	}
 }
@@ -1569,7 +1569,7 @@ func TestSetRole_ClaimNewRole(t *testing.T) {
 		t.Fatalf("expected role topic on returned interest, got %v", got.Topics)
 	}
 
-	entry, err := reg.roleKV.Get("legion-controller")
+	entry, err := reg.roleKV.Get(t.Context(), "legion-controller")
 	if err != nil {
 		t.Fatalf("roleKV.Get failed: %v", err)
 	}
@@ -1598,7 +1598,7 @@ func TestSetRole_PersistsClaimMetadata(t *testing.T) {
 		t.Fatalf("SetRole: %v", err)
 	}
 
-	entry, err := reg.roleKV.Get("legion-controller")
+	entry, err := reg.roleKV.Get(t.Context(), "legion-controller")
 	if err != nil {
 		t.Fatalf("get persisted role claim: %v", err)
 	}
@@ -1622,7 +1622,7 @@ func TestSetRole_TransferRole(t *testing.T) {
 
 	reg, kv := coldRegistry(t, conn)
 	putInterest(t, kv, Interest{SessionID: "ses_old", MachineID: "m1", Topics: []string{"notifications.role.legion-controller", "notifications.slack.>"}})
-	if _, err := reg.roleKV.Put("legion-controller", []byte("ses_old")); err != nil {
+	if _, err := reg.roleKV.Put(t.Context(), "legion-controller", []byte("ses_old")); err != nil {
 		t.Fatalf("failed to seed role bucket: %v", err)
 	}
 
@@ -1662,7 +1662,7 @@ func TestSetRole_TransferRole(t *testing.T) {
 		t.Fatalf("expected new holder to gain role topic, got %v", newHolder.Topics)
 	}
 
-	entry, err := reg.roleKV.Get("legion-controller")
+	entry, err := reg.roleKV.Get(t.Context(), "legion-controller")
 	if err != nil {
 		t.Fatalf("roleKV.Get failed: %v", err)
 	}
@@ -1681,7 +1681,7 @@ func TestSetRole_Idempotent(t *testing.T) {
 
 	reg, kv := coldRegistry(t, conn)
 	putInterest(t, kv, Interest{SessionID: "ses_same", MachineID: "m1", Topics: []string{"notifications.role.legion-controller"}})
-	if _, err := reg.roleKV.Put("legion-controller", []byte("ses_same")); err != nil {
+	if _, err := reg.roleKV.Put(t.Context(), "legion-controller", []byte("ses_same")); err != nil {
 		t.Fatalf("failed to seed role bucket: %v", err)
 	}
 
@@ -1714,7 +1714,7 @@ func TestRemove_ReleasesRoleClaimAfterSameSessionReplacement(t *testing.T) {
 		t.Fatalf("Remove controller role: %v", err)
 	}
 
-	if _, err := reg.roleKV.Get("legion-controller"); !errors.Is(err, natsgo.ErrKeyNotFound) {
+	if _, err := reg.roleKV.Get(t.Context(), "legion-controller"); !errors.Is(err, natsgo.ErrKeyNotFound) {
 		t.Fatalf("controller role holder still exists: %v", err)
 	}
 }
@@ -1724,7 +1724,7 @@ func TestSetRole_OldHolderMissing(t *testing.T) {
 	defer cleanup()
 
 	reg, _ := coldRegistry(t, conn)
-	if _, err := reg.roleKV.Put("legion-controller", []byte("ses_missing")); err != nil {
+	if _, err := reg.roleKV.Put(t.Context(), "legion-controller", []byte("ses_missing")); err != nil {
 		t.Fatalf("failed to seed role bucket: %v", err)
 	}
 
@@ -1807,11 +1807,11 @@ func TestReapKeepsRoleClaimsForSessionRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal stale interest: %v", err)
 	}
-	entry, err := reg.watcher.KV().Get(sessionID)
+	entry, err := reg.watcher.KV().Get(t.Context(), sessionID)
 	if err != nil {
 		t.Fatalf("get durable interest: %v", err)
 	}
-	revision, err := reg.watcher.KV().Update(sessionID, raw, entry.Revision())
+	revision, err := reg.watcher.KV().Update(t.Context(), sessionID, raw, entry.Revision())
 	if err != nil {
 		t.Fatalf("make interest stale: %v", err)
 	}
@@ -1861,7 +1861,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentChange(t 
 	registry.roleKV = bus.NewKeyValue(&racingDeleteKeyValue{
 		KeyValue: roleKV.Legacy(),
 		beforeFirstDelete: func() {
-			entry, err := roleKV.Get(role)
+			entry, err := roleKV.Get(t.Context(), role)
 			if err != nil {
 				t.Fatalf("read lapsed role claim: %v", err)
 			}
@@ -1872,7 +1872,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentChange(t 
 			if err != nil {
 				t.Fatalf("marshal replacement role claim: %v", err)
 			}
-			if _, err := roleKV.Update(role, replacement, entry.Revision()); err != nil {
+			if _, err := roleKV.Update(t.Context(), role, replacement, entry.Revision()); err != nil {
 				t.Fatalf("replace lapsed role claim: %v", err)
 			}
 		},
@@ -1908,11 +1908,11 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentRemoval(t
 	registry.roleKV = bus.NewKeyValue(&racingDeleteKeyValue{
 		KeyValue: roleKV.Legacy(),
 		beforeFirstDelete: func() {
-			entry, err := roleKV.Get(role)
+			entry, err := roleKV.Get(t.Context(), role)
 			if err != nil {
 				t.Fatalf("read lapsed role claim: %v", err)
 			}
-			if err := roleKV.Delete(role, natsgo.LastRevision(entry.Revision())); err != nil {
+			if err := roleKV.Delete(t.Context(), role, natsgo.LastRevision(entry.Revision())); err != nil {
 				t.Fatalf("remove lapsed role claim: %v", err)
 			}
 		},
@@ -2429,7 +2429,7 @@ func TestRemoveAllReleasesRoleClaimMissingFromInterest(t *testing.T) {
 	if _, err := reg.Upsert(Interest{SessionID: sessionID, MachineID: "example-host"}, []string{"notifications.agent." + sessionID}); err != nil {
 		t.Fatalf("Upsert interest: %v", err)
 	}
-	if _, err := reg.roleKV.Put(role, []byte(sessionID)); err != nil {
+	if _, err := reg.roleKV.Put(t.Context(), role, []byte(sessionID)); err != nil {
 		t.Fatalf("seed orphaned role claim: %v", err)
 	}
 	if _, err := reg.Remove(context.Background(), sessionID, nil, RoleReleaseAuthority{Force: true}); err != nil {
@@ -2454,7 +2454,7 @@ func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
 		MachineID: "example-host",
 		Topics:    []string{roleTopic, "notifications.slack.>"},
 	})
-	if _, err := reg.roleKV.Put(role, []byte(oldSession)); err != nil {
+	if _, err := reg.roleKV.Put(t.Context(), role, []byte(oldSession)); err != nil {
 		t.Fatalf("seed role claim: %v", err)
 	}
 
@@ -2493,7 +2493,7 @@ func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 		MachineID: "example-host",
 		Topics:    []string{roleTopic, "notifications.slack.>"},
 	})
-	if _, err := reg.roleKV.Put(role, []byte(oldSession)); err != nil {
+	if _, err := reg.roleKV.Put(t.Context(), role, []byte(oldSession)); err != nil {
 		t.Fatalf("seed role claim: %v", err)
 	}
 
@@ -2555,7 +2555,7 @@ func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
 		MachineID: "example-host",
 		Topics:    []string{roleTopic, "notifications.slack.>"},
 	})
-	if _, err := reg.roleKV.Put(role, []byte(oldSession)); err != nil {
+	if _, err := reg.roleKV.Put(t.Context(), role, []byte(oldSession)); err != nil {
 		t.Fatalf("seed role claim: %v", err)
 	}
 
@@ -2607,7 +2607,7 @@ func TestWatcherEvictsMalformedValue(t *testing.T) {
 	}
 	pollMatch(t, reg, machineID, topic, 1, 5*time.Second)
 
-	revision, err := reg.watcher.KV().Put(sessionID, []byte("{"))
+	revision, err := reg.watcher.KV().Put(ctx, sessionID, []byte("{"))
 	if err != nil {
 		t.Fatalf("put malformed value: %v", err)
 	}

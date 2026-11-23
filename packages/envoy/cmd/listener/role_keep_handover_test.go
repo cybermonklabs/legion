@@ -281,42 +281,83 @@ func TestADrainStopsWhenTheRoleChangesHolderUnderIt(t *testing.T) {
 // answered 202 kept and a live holder waiting - was stranded until it expired too. A walk that
 // moved the role's cursor made progress, so the handover goes on to the copies behind them.
 func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) {
+	walkPastExpiredCopies(t, "kept-handover-expired", false)
+}
+
+// The same lane, where one copy is judged twice: the walk's first cursor write reads a false
+// "down" under the role's guard (the probe's seam, keyed to roleKeepLaneCursor.write's frames), so
+// that walk ends on the loss and the next walk judges its copy again, as a walk whose window ends
+// inside a copy's writes, or whose probe read is slow under load, does. A copy judged past the keep
+// window is past it on any later judgement, so the same copies are forwarded. The row wants a
+// judgement made twice, so it cannot pass without one.
+//
+// The control is the row's clock at abc56ca0c7, which counted its own reads rather than reading
+// each copy's age: one copy judged twice moved the count, the last expired copy was judged fresh
+// and forwarded, and the row fails at its check of the forwards, as the -race run at abc56ca0c7
+// did.
+func TestAHandoverWalksPastExpiredCopiesThoughOneIsJudgedTwice(t *testing.T) {
+	walkPastExpiredCopies(t, "kept-handover-expired-rejudged", true)
+}
+
+// walkPastExpiredCopies keeps more expired copies of role than a handover's idle walks read and a
+// few fresh ones behind them, hands the lane over, and wants the fresh ones forwarded, and only
+// they. With rejudge set, the walk's first cursor write reads a false "down", so one copy is
+// judged twice.
+func walkPastExpiredCopies(t *testing.T, role string, rejudge bool) {
+	t.Helper()
 	harness := newListenerDeliveryHarness(t)
 	const (
-		role    = "kept-handover-expired"
-		holder  = "ses_kept_handover_expired"
 		expired = (roleKeepDrainIdleRounds + 1) * roleKeepScanMax
 		fresh   = 3
+		// gap is the time between the last expired copy's keep and the first fresh one's, and
+		// margin how far into it the clock reads: every copy stored before the gap is past the
+		// keep window at the clock's time, and every copy stored after it inside the window.
+		gap    = 200 * time.Millisecond
+		margin = gap / 2
 	)
+	holder := "ses_" + strings.ReplaceAll(role, "-", "_")
 	cfg := harness.config
+	var mu sync.Mutex
 	var forwarded []string
 	cfg.forwardRole = inlineForward(func(_ string, item contracts.Envelope, _ string, _ time.Duration) error {
+		mu.Lock()
 		forwarded = append(forwarded, item.DedupeKey)
+		mu.Unlock()
 		return nil
 	})
-	var want []string
-	for i := range expired + fresh {
-		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-handover-expired-%04d", i))
+	keep := func(i int) contracts.Envelope {
+		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("%s-%04d", role, i))
 		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
 		}
-		if i >= expired {
-			want = append(want, roleForwardDedupePrefix+item.DedupeKey)
-		}
+		return item
 	}
-	// The drain's clock, read once for each copy it judges and in the order the copies lie on the
-	// lane: the first expired of them are read as past the keep window, the rest as fresh. The
-	// age is the stream's own store time, which no caller may choose, so the clock moves rather
-	// than the copies aging.
-	judged := 0
+	for i := range expired {
+		keep(i)
+	}
+	// The age of a copy is the stream's own store time, which no caller may choose, so the clock
+	// moves rather than the copies aging: it reads cut, taken after every expired copy is stored,
+	// moved on by the keep window and margin. That decides each copy by its own store time, however
+	// many times the copy is judged.
+	cut := time.Now()
+	time.Sleep(gap)
+	var want []string
+	for i := expired; i < expired+fresh; i++ {
+		want = append(want, roleForwardDedupePrefix+keep(i).DedupeKey)
+	}
+	var judged atomic.Int32
 	now := func() time.Time {
-		judged++
-		if judged <= expired {
-			return time.Now().Add(roleKeepWindow + time.Minute)
-		}
-		return time.Now()
+		judged.Add(1)
+		return cut.Add(roleKeepWindow + margin)
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
+	if rejudge {
+		var writes atomic.Int32
+		restore := harness.client.ProbeReadsDownForTest(func() bool {
+			return inFrame(listenerPackage+".(*roleKeepLaneCursor).write") && writes.Add(1) == 1
+		})
+		defer restore()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -324,8 +365,13 @@ func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) 
 		t.Fatalf("drain role %s's kept lane: %v", role, err)
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
 	if !slices.Equal(forwarded, want) {
 		t.Fatalf("the handover forwarded %v, want the %d copies lying behind %d expired ones: %v", forwarded, fresh, expired, want)
+	}
+	if n := int(judged.Load()); rejudge && n <= expired+fresh {
+		t.Fatalf("the drain judged %d copies' ages for %d copies: no copy was judged twice, so the row did not reach the judgement it means", n, expired+fresh)
 	}
 }
 

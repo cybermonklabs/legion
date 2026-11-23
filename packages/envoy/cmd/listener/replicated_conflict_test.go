@@ -31,7 +31,7 @@ func TestALostConditionalWriteOnAReplicatedBucketIsTheStoresAnswer(t *testing.T)
 		t.Fatalf("create the three-copy bucket: %v", err)
 	}
 	cluster.MoveStreamLeader(t, "KV_"+bucket, 0)
-	revision, err := kv.Put("role", []byte("claim"))
+	revision, err := kv.Put(t.Context(), "role", []byte("claim"))
 	if err != nil {
 		t.Fatalf("put the record: %v", err)
 	}

@@ -64,7 +64,7 @@ func TestASessionDeleteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 			t.Fatalf("%d deletes lost the race, want 1", race.Lost())
 		}
 		replicated(t)
-		if _, err := reg.watcher.KV().Get(sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
+		if _, err := reg.watcher.KV().Get(t.Context(), sessionID); !errors.Is(err, natsgo.ErrKeyNotFound) {
 			t.Fatalf("read the deleted key: %v, want nats.ErrKeyNotFound", err)
 		}
 	})
@@ -73,7 +73,7 @@ func TestASessionDeleteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		const sessionID = "ses_replicated_gone"
 		putForInstanceDelete(t, reg, sessionID, instanceID)
 		replicated(t)
-		entry, err := reg.watcher.KV().Get(sessionID)
+		entry, err := reg.watcher.KV().Get(t.Context(), sessionID)
 		if err != nil {
 			t.Fatalf("read the registration: %v", err)
 		}
@@ -87,7 +87,7 @@ func TestASessionDeleteThatLosesToAReplicatingWriteIsALostRace(t *testing.T) {
 		if race.Lost() != 1 {
 			t.Fatalf("%d deletes lost the race, want 1", race.Lost())
 		}
-		if _, err := reg.watcher.KV().Get(sessionID); err != nil {
+		if _, err := reg.watcher.KV().Get(t.Context(), sessionID); err != nil {
 			t.Fatalf("read the kept registration: %v", err)
 		}
 	})
