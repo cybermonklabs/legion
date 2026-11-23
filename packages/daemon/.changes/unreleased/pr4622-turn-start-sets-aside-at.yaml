@@ -1,0 +1,10 @@
+kind: Changed
+custom:
+  Issue: pr4622
+body: |-
+  The role prompts' turn-start step no longer says that a working copy that is not empty holds only
+  the role's own edits. The role reads `jj diff -r @`. When it wrote every change in it, it runs
+  `jj new`, then `jj squash --from @- --into @`, so its own edits stay in the working copy and reach
+  its push. Otherwise, or when it is not sure, it runs `jj new @-`, which sets that change aside, so
+  the role's first commit of a turn carries no edit another role left in the working copy; where
+  that change also holds the role's own edits, they go aside with it.

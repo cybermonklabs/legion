@@ -157,6 +157,7 @@ import { type AcceptedUserTurnDelivery, acceptUserTurn } from "@legion/pi-shared
 import {
   AgentStreamPublisher,
   type AgentStreamSettingsState,
+  type DispatchMessageCardDetails,
   modelReference,
 } from "@legion/pi-shared/agent-stream";
 import {
@@ -1465,21 +1466,29 @@ export default function envoyExtension(hostApi: PiApi): void {
   });
 
   // A card's message: its `details` name the frame (`ledgerIdentity`), which the host keeps
-  // on the message it writes, beside the wake's card marker. An `inert` card is a steer that starts
-  // no turn on an idle host; a turn streaming when it is handed takes it and runs another model
-  // turn for it, so `UnwrittenFrames` hands an inert card only to a settled host (`hostSettled`).
-  // It carries `details` of its own all the same, the hand-over state `inert`, so a reading of the
-  // stored transcripts says which state held every waiting card; it carries no `envoyCard`, since
-  // the wake tracks no inert card and an id there would name nothing.
+  // on the message it writes, beside the wake's card marker, and the Dispatch message the card
+  // delivers to the session, if it delivers one: the live view draws that message from Dispatch's
+  // store, so the agent stream leaves its card out (`DispatchMessageCardDetails`). An `inert` card
+  // is a steer that starts no turn on an idle host; a turn streaming when it is handed takes it and
+  // runs another model turn for it, so `UnwrittenFrames` hands an inert card only to a settled host
+  // (`hostSettled`). It carries `details` of its own all the same, the hand-over state `inert`, so
+  // a reading of the stored transcripts says which state held every waiting card; it carries no
+  // `envoyCard`, since the wake tracks no inert card and an id there would name nothing.
   // Every other card goes as the wake says (`CardWake.deliveryFor`): an aside with `triggerTurn`,
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
   // records a startup card, which goes as a follow-up, before the host has it.
   const handCard = (
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
-    identity: DedupeIdentity | undefined
+    identity: DedupeIdentity | undefined,
+    dispatchMessageId: string | undefined
   ): void => {
-    const known = identity === undefined ? {} : ledgerIdentity(identity);
+    const known = {
+      ...(identity === undefined ? {} : ledgerIdentity(identity)),
+      ...(dispatchMessageId === undefined
+        ? {}
+        : ({ dispatchMessageId } satisfies DispatchMessageCardDetails)),
+    };
     if (deliverAs === "inert") {
       pi.sendMessage(
         {
@@ -1768,12 +1777,19 @@ export default function envoyExtension(hostApi: PiApi): void {
             turn.messageId
           );
         }
+        // The agent's copy names the person's message it answers: a host busy with a turn writes
+        // it at its next prompt and fires `message_end` for it then, and the live view already
+        // holds the report above, keyed on that message, so the stream leaves the copy out
+        // (`DispatchMessageCardDetails`).
         if (handed) {
           pi.sendMessage(
             {
               content: shellCommandMessage(report),
               customType: "envoy-message",
-              details: LOCAL_ENVOY_NOTICE,
+              details: {
+                ...LOCAL_ENVOY_NOTICE,
+                ...({ dispatchMessageId: turn.messageId } satisfies DispatchMessageCardDetails),
+              },
               display: true,
             },
             { deliverAs: "nextTurn", triggerTurn: false }
@@ -2071,6 +2087,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       if (body !== undefined) rendered = renderInbound(raw, session, subject, body);
     }
     const envelope = rendered.envelope;
+    // The Dispatch message a card of this frame delivers to the session, which its `details` name
+    // (`handCard`): a targeted message's delivery, which Dispatch stores for the session. A
+    // targeted comment is no message the session's message list holds.
+    const deliveredMessage =
+      rendered.delivery?.resource === "message" ? rendered.delivery.id : undefined;
     if (envelope !== undefined) noteInbox(envelope);
     // The host wrote the frame, or handled it without writing anything: the ledger records it,
     // so no redelivery shows it again, here or after a restart, and the claim is settled, so
@@ -2162,7 +2183,8 @@ export default function envoyExtension(hostApi: PiApi): void {
           `${storedText(rendered.content, relayed.storedAt)}\n${LATE_BTW_NOTE}`,
           "inert",
           identity,
-          claim
+          claim,
+          deliveredMessage
         );
       } else if (rendered.delivery?.mode === "btw") {
         // A BTW is answered on Dispatch or refused there, never shown as a card: a redelivery
@@ -2255,7 +2277,8 @@ export default function envoyExtension(hostApi: PiApi): void {
             card.content,
             rendered.delivery?.mode === "aside" ? "aside" : "card",
             identity,
-            claim
+            claim,
+            deliveredMessage
           );
           if (outcome !== "closed") markPicturesShown(shownPictures(sessionID), card.shown);
         } else {
