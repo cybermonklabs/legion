@@ -16,6 +16,7 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -25,12 +26,22 @@ const workspaceProvisionUsage = "legion workspace-init provision --issue <KEY> -
 // provisionTokenFileEnv points `workspace-init fetch` at the mounted provisioning token.
 const provisionTokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
 
-// provisionBudget is the runner's slow-command budget for `provision`, workspace.CommandTimeout:
-// what the runner gives a command carrying no bound of its own, the commands that carry one being
-// the exceptions workspace.CommandTimeout names. A test shortens it to prove the issue's checkout
-// takes no part of it, holding workspace.CheckoutTimeout of its own instead (workspace.Provision,
-// Request.CheckoutBound).
-var provisionBudget = workspace.CommandTimeout
+// newProvisionRunner is the runner `provision`'s commands run under, workspace.NewRunner given
+// commandBudget: the slow-command budget of every command carrying no bound of its own, the
+// commands that carry one being the exceptions workspace.CommandTimeout names, the issue's
+// checkout among them (workspace.Provision, Request.CheckoutBound). This package's tests wrap it to
+// read the bound each command was given.
+var newProvisionRunner = workspace.NewRunner
+
+// commandBudget is the slow-command budget of the runners workspace-init's provision, fetch and
+// cache run their commands under: workspace.CommandTimeout, 5 min. It is a variable so that this
+// package's tests can give it their own deadline (programbound): a stand-in jj that a loaded machine
+// made slower than the budget would be killed, and the row would read the kill.
+var commandBudget = workspace.CommandTimeout
+
+func init() {
+	programbound.Register(&commandBudget)
+}
 
 // secretFileFromEnv is the secret file the environment variable name points at, once it reads
 // (config.ReadSecretPointer); an error when name is not set or its file does not read.
@@ -150,7 +161,7 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	if err := workspace.RemoveStaleGitLocks(inputs.located, time.Now(), log); err != nil {
 		return err
 	}
-	run := workspace.NewRunner(provisionBudget, inputs.tools)
+	run := newProvisionRunner(programbound.Of(&commandBudget), inputs.tools)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
 		StateDir: root, Repo: inputs.repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
 		Source: workspace.FromFeed(feed), Log: log,

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // syncBuffer is a bytes.Buffer the launcher writes from its role goroutines while a test reads it.
@@ -40,7 +41,10 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+	// Each wait below for what the launcher does has no span of its own: its one bound is what is
+	// left of the test binary's deadline less 30 s (testwait), so a launcher a loaded machine makes
+	// slow passes, and one that never dials, never logs its connection or never leaves fails by name.
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(testwait.Bounded(t, 1<<60, 30*time.Second))); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("POD_UID", "pod-7")
@@ -84,21 +88,14 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 			t.Fatalf("role %s hello = %#v, want its own token, the sandbox and POD_UID's pod", role, hello)
 		}
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(stderr.String(), "tester: launcher: connected") || !strings.Contains(stderr.String(), "reviewer: launcher: connected") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher logged %q, want each role's acknowledged hello behind its role's name", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, func() bool {
+		return strings.Contains(stderr.String(), "tester: launcher: connected") && strings.Contains(stderr.String(), "reviewer: launcher: connected")
+	}) {
+		t.Fatalf("the launcher logged %q, want each role's acknowledged hello behind its role's name", stderr.String())
 	}
 	cancel()
-	select {
-	case code := <-exited:
-		if code != 0 {
-			t.Fatalf("exit %d at the container's stop; stderr: %s", code, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the launcher did not leave at the container's stop")
+	if code := testwait.Receive(t, "the launcher's exit at the container's stop", exited); code != 0 {
+		t.Fatalf("exit %d at the container's stop; stderr: %s", code, stderr.String())
 	}
 }
 
@@ -161,7 +158,7 @@ func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *te
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := refusalContext(t)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, []string{
@@ -186,7 +183,7 @@ func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := refusalContext(t)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, []string{
@@ -203,13 +200,16 @@ func TestTheLauncherCommandRefusesAWriterAudienceInTheSingleRoleForm(t *testing.
 	}
 }
 
-// The metadata endpoint is a microVM issue pod's alone and named whole: both of its flags, with
-// --microvm and --roles-dir. Each other mixture is refused before anything is dialled or listened
-// on, naming what it lacks, which proves each flag reaches the launcher: one it did not know would
-// exit 2 on its usage, and one it dropped would change the refusal or dial the unreachable daemon
-// until the context ends. The controller's form with --microvm is refused for its roles directory
-// alone, so --microvm reached it too.
-func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *testing.T) {
+// The metadata endpoint is a microVM pod's alone, in either of the launcher's forms, and named
+// whole: both of its flags, with --microvm. Each other mixture is refused before anything is
+// dialled or listened on, naming what it lacks, which proves each flag reaches the launcher: one
+// it did not know would exit 2 on its usage, and one it dropped would change the refusal or dial
+// the unreachable daemon until the context ends. The controller's form without --microvm is
+// refused as an issue pod's is, so the metadata flags reach that form too. Its acceptance with
+// --microvm is TestMetadataIsRefusedOutsideAMicroVMPodOrNamedInPart's (internal/launcher), through
+// the configuration's own check: an accepted run here would start the launcher, which listens on
+// the endpoint's fixed address and names it in this process's environment.
+func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMPod(t *testing.T) {
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -229,11 +229,11 @@ func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *
 			"the metadata endpoint is named in part: no --metadata-workload-pool"},
 		{"a gVisor pod", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
 			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
-		{"the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--microvm", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
-			"the metadata endpoint is an issue pod's container: it needs --roles-dir"},
+		{"the controller's form in a gVisor pod", []string{"--token-file", token, "--role", "controller", "--private-dir", t.TempDir(), "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
+			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := refusalContext(t)
 			defer cancel()
 			var stdout, stderr bytes.Buffer
 			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
@@ -267,6 +267,32 @@ func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 	code := run(context.Background(), []string{"legion", "launcher", "role-init", "--roles-dir", t.TempDir(), "--role", "a", "--generation", "1", "--status-fd", "3", "--", "/bin/true"}, &stdout, &stderr)
 	if code != launcher.RoleInitSetupFailedExit || !strings.Contains(stderr.String(), "role-init: not the init of a PID namespace of its own") {
 		t.Fatalf("role-init outside a role's namespaces: exit %d, %q; want a refusal with exit %d", code, stderr.String(), launcher.RoleInitSetupFailedExit)
+	}
+}
+
+// role-init's own lines pass the URL rule, though the stderr it is handed goes to the role's shim
+// as it is (newRoleInitCommand): a flag's value it cannot read, quoted in its refusal, keeps no
+// userinfo and no query, so a URL with a token in either reaches the launcher's log with neither,
+// its host and path kept.
+func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
+	const token = "FAKEtok3nZQ9x"
+	for _, value := range []string{
+		"https://legion-reader:" + token + "@d.example/status",
+		"https://d.example/status?token=" + token,
+	} {
+		var stdout, stderr bytes.Buffer
+		code := run(context.Background(), []string{"legion", "launcher", "role-init", "--status-fd", value}, &stdout, &stderr)
+		printed := stdout.String() + stderr.String()
+		shown := strings.ReplaceAll(printed, token, "<the token>")
+		if code != launcher.RoleInitSetupFailedExit {
+			t.Errorf("role-init --status-fd <a URL> = exit %d, %q; want %d", code, shown, launcher.RoleInitSetupFailedExit)
+		}
+		if strings.Contains(printed, token) {
+			t.Errorf("role-init printed the token its flag's value carries: %s", shown)
+		}
+		if want := `"https://d.example/status"`; !strings.Contains(stderr.String(), want) {
+			t.Errorf("role-init printed %q, want it to quote the value as %s", shown, want)
+		}
 	}
 }
 
@@ -398,22 +424,16 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			go func() {
 				exited <- run(ctx, append([]string{"legion", "launcher", "--sandbox", "s", "--pod-uid", "p", "--stop-grace", "2s"}, tc.args...), &stdout, &stderr)
 			}()
+			// The log and the exit are each waited for with no span of their own (testwait), so a
+			// launcher a loaded machine makes slow passes and one that never gets there fails by
+			// name before the test binary's deadline.
 			if tc.until != "" {
-				deadline := time.Now().Add(10 * time.Second)
-				for !strings.Contains(stderr.String(), tc.until) {
-					if time.Now().After(deadline) {
-						t.Fatalf("the launcher logged %q, want %q", stderr.String(), tc.until)
-					}
-					time.Sleep(10 * time.Millisecond)
+				if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, func() bool { return strings.Contains(stderr.String(), tc.until) }) {
+					t.Fatalf("the launcher logged %q, want %q", stderr.String(), tc.until)
 				}
 				cancel()
 			}
-			var code int
-			select {
-			case code = <-exited:
-			case <-time.After(10 * time.Second):
-				t.Fatal("the launcher did not exit")
-			}
+			code := testwait.Receive(t, "the launcher's exit", exited)
 			logged := stdout.String() + stderr.String()
 			if code != tc.code {
 				t.Fatalf("exit %d, want %d; the launcher wrote %q", code, tc.code, logged)
@@ -454,25 +474,32 @@ func TestTheLauncherCommandWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
 		exited <- run(ctx, []string{"legion", "launcher", "--sandbox", "s", "--pod-uid", "p", "--stop-grace", "2s",
 			"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()}, &stdout, &stderr)
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for !strings.Contains(stderr.String(), "launcher: daemon connection:") {
-		if time.Now().After(deadline) {
-			t.Fatalf("the launcher logged %q, want its failed daemon connection", stderr.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The log and the exit are each waited for with no span of their own (testwait), so a launcher
+	// a loaded machine makes slow passes and one that never gets there fails by name before the
+	// test binary's deadline.
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), testwait.Poll, func() bool {
+		return strings.Contains(stderr.String(), "launcher: daemon connection:")
+	}) {
+		t.Fatalf("the launcher logged %q, want its failed daemon connection", stderr.String())
 	}
 	cancel()
-	select {
-	case <-exited:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the launcher did not exit")
-	}
+	testwait.Receive(t, "the launcher's exit", exited)
 	logged := stdout.String() + stderr.String()
 	for _, credential := range []string{user, pass[:12]} {
 		if strings.Contains(logged, credential) {
 			t.Errorf("the launcher wrote %q, which holds %q", logged, credential)
 		}
 	}
+}
+
+// refusalContext is the context of a launcher run that must refuse what launcher.Run refuses. The
+// command writes that refusal only while its context is live: an error once the context has ended
+// is the container's stop, which exits 0 (newLauncherCommand). So the context has no span of its
+// own, which a refusal a loaded machine makes slow would outlast; its one bound is what is left of
+// the test binary's deadline less 30 s (testwait.Bounded), so a launcher that dials the unreachable
+// daemon instead of refusing still ends, and the row fails naming the refusal it wanted.
+func refusalContext(t *testing.T) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), testwait.Bounded(t, 1<<60, 30*time.Second))
 }
 
 // notADaemon is a far side at a launcher's --connect that is no daemon: it answers every hello

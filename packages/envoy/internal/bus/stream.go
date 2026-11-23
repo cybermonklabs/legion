@@ -63,14 +63,16 @@ const (
 	// the proof's 'jti' and target URI, so a captured proof presented a second time inside its
 	// acceptance window is refused by whichever listener of a deployment receives it
 	// (cmd/listener/brokerauth.go). Its records are the only ones Envoy keeps on a bucket TTL
-	// alone: nothing reads a record back, and a key that has outlived the window its proof could
-	// be presented in says nothing, so each key expires rather than being deleted.
+	// alone: nothing but a create of the same key reads a record back, and a key that has outlived
+	// the window its proof could be presented in says nothing, so each key expires rather than being
+	// deleted, except the record an edge listener deletes to give a proof back after a 503 it
+	// answered before serving anything (proofSpend.release in cmd/listener).
 	DPoPProofBucket = "envoy_dpop_proofs"
 	// WebhookRedeliveryBucket holds the cursor and records of Dispatch's sweep of the GitHub App
 	// webhook's failed deliveries (internal/dispatch/redeliver).
 	WebhookRedeliveryBucket = "envoy_webhook_redelivery"
 	// PrivateProjectsBucket holds one key per private project, its value the repositories
-	// Dispatch maps to it, and a key exists exactly while its project is private: Dispatch writes
+	// Dispatch names for it, and a key exists exactly while its project is private: Dispatch writes
 	// it and the listeners read it to hold each session to its token's projects
 	// (dispatch://INFRA-3862). It is deliberately in no list of the buckets a static grant
 	// reaches (ListenerBuckets): only the auth service grants its calls, so a hub that runs none
@@ -157,10 +159,11 @@ func DeliverSubject(sessionID string) string {
 // (relayreply.<machine>.<nuid>.<session id>.<token>; natsgrant.EdgeRelayReplyPrefix).
 // Its grant subscribes only its own machine's and publishes every machine's, since the listener
 // serving a session's relay socket answers on the family of the machine holding the session's
-// consumer (natsgrant.Edge). The relay socket of #4819 is the first to use it; at this head no
-// program names a receipt here, and the edge's session relay takes its receipts under its
-// connection's inbox. No stream subject captures it (StreamCaptures), so a receipt travels over
-// core NATS, as the frame does, and the stream stores none.
+// consumer (natsgrant.Edge). The edge's session relay names its frames' receipts here, and the
+// relay socket publishes each receipt its client sends on the subject the frame named
+// (cmd/listener's startSessionRelays and relay_socket.go). No stream subject captures it
+// (StreamCaptures), so a receipt travels over core NATS, as the frame does, and the stream stores
+// none.
 const RelayReplyPrefix = NotificationTopicPrefix + "envoy.relayreply."
 
 // SessionReplySubject is the reply subject of one request made of session sessionID,

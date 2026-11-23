@@ -231,7 +231,6 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/busy-relaunch-delivery.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/busy-relaunch-delivery.sh")
 	key := func(n int) string { return fmt.Sprintf("%s-%d", proof.cfg.Project, n) }
 	r := &busyRelaunchLive{
@@ -339,7 +338,7 @@ func (r *busyRelaunchLive) seed() {
 	for _, pane := range r.panes {
 		r.board.show(pane.issue, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		keys := make([]string, 0, len(r.panes))
 		for _, pane := range r.panes {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{

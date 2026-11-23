@@ -190,8 +190,8 @@ func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) 
 		if says := "The requested URL returned error: 403"; code != 1 || !strings.Contains(stderr.String(), says) {
 			t.Fatalf("cache exited %d, stderr %q; want 1 naming %q", code, stderr.String(), says)
 		}
-	case <-time.After(winitWait):
-		t.Fatalf("cache did not end after GitHub refused its first clone: stdout %q, stderr %q", stdout.String(), stderr.String())
+	case <-time.After(testwait.Bounded(t, 1<<60, 30*time.Second)):
+		t.Fatalf("cache did not end after GitHub refused its first clone, before the test binary's deadline: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	if got := cloneAttempts(t, attempts); got != 1 {
 		t.Fatalf("git cloned %d times, want 1", got)
@@ -217,8 +217,7 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	}()
 
 	address := ""
-	deadline := time.Now().Add(winitWait)
-	if !testwait.Holds(winitWait, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, 30*time.Second), 10*time.Millisecond, func() bool {
 		for _, line := range strings.Split(stdout.String(), "\n") {
 			if found, ok := strings.CutPrefix(line, "workspace-init cache: serving acme/widgets on "); ok {
 				address = found
@@ -229,14 +228,20 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 		t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	var health repocache.Health
-	if !testwait.Holds(time.Until(deadline), 20*time.Millisecond, func() bool {
-		request, err := http.NewRequest(http.MethodGet, "http://"+address+"/healthz", nil)
+	// Each read of /healthz, and the wait for one that says ready, ends when what is left of the
+	// test binary's deadline less 30 s has passed: a /healthz that takes the connection and never
+	// answers fails the row by name, where a request with no bound hung it to go test's alarm.
+	wait := testwait.Bounded(t, 1<<60, 30*time.Second)
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), wait)
+	defer readyCancel()
+	if !testwait.Holds(wait, 20*time.Millisecond, func() bool {
+		request, err := http.NewRequestWithContext(readyCtx, http.MethodGet, "http://"+address+"/healthz", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("GET /healthz: %v (each read's bound ends %s before the test binary's deadline); stdout %q, stderr %q", err, 30*time.Second, stdout.String(), stderr.String())
 		}
 		err = json.NewDecoder(response.Body).Decode(&health)
 		response.Body.Close()
@@ -264,13 +269,8 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	holdsNoToken(t, v.root, "while the cache serves")
 
 	cancel()
-	select {
-	case code := <-exited:
-		if code != 0 {
-			t.Fatalf("cache exited %d once stopped, stderr %q", code, stderr.String())
-		}
-	case <-time.After(winitWait):
-		t.Fatal("cache did not stop with its context")
+	if code := testwait.Receive(t, "the cache to stop with its context", exited); code != 0 {
+		t.Fatalf("cache exited %d once stopped, stderr %q", code, stderr.String())
 	}
 	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
 		t.Fatalf("TMPDIR holds %v (%v) once the cache stopped, want its credential gone", entries, err)

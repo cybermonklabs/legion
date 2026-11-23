@@ -35,16 +35,21 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 	parent := ParentOf(carriedOr(reading.Parent, ""))
 	// Each value carried is inserted at the reading's sequence, and each one not carried at 0.
 	// Over a row that exists, each value the reading carries changes, with its sequence, only where
-	// no reading has written it (0) or an older one did; the where clause skips a reading that
-	// changes no value, so the project and the row's sequence move only with a value.
+	// no reading has written it (0) or an older one did. The applied sequence rises to the
+	// reading's own only for an applied reading, and only where it stands lower: an issue fact is
+	// applied at a sequence the values may already hold, from a turn's re-read or a listing that
+	// read the issue after the fact was published, so it is fenced apart from them. The where clause
+	// skips a reading that would replace no value and raise no applied sequence, so the project and
+	// the row's sequence move only with one of those.
 	if _, err := tx.Exec(ctx, `insert into dispatch_issues as held (key, project, dispatch_seq,
-			status, status_seq, parent, parent_seq, blockers, blockers_seq, labels, labels_seq, rank, rank_seq)
+			status, status_seq, parent, parent_seq, blockers, blockers_seq, labels, labels_seq, rank, rank_seq, applied_seq)
 		values ($1, $2, $3::bigint,
 			$4, case when $5 then $3 else 0 end,
 			$6, case when $7 then $3 else 0 end,
 			$8, case when $9 then $3 else 0 end,
 			$10, case when $11 then $3 else 0 end,
-			$12, case when $13 then $3 else 0 end)
+			$12, case when $13 then $3 else 0 end,
+			case when $14 then $3 else 0 end)
 		on conflict (key) do update set project = excluded.project,
 			dispatch_seq = greatest(held.dispatch_seq, excluded.dispatch_seq),
 			status = case when $5 and (held.status_seq = 0 or held.status_seq < $3) then excluded.status else held.status end,
@@ -56,18 +61,21 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading Disp
 			labels = case when $11 and (held.labels_seq = 0 or held.labels_seq < $3) then excluded.labels else held.labels end,
 			labels_seq = case when $11 and (held.labels_seq = 0 or held.labels_seq < $3) then $3 else held.labels_seq end,
 			rank = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then excluded.rank else held.rank end,
-			rank_seq = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then $3 else held.rank_seq end
+			rank_seq = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then $3 else held.rank_seq end,
+			applied_seq = greatest(held.applied_seq, excluded.applied_seq)
 		where ($5 and (held.status_seq = 0 or held.status_seq < $3))
 			or ($7 and (held.parent_seq = 0 or held.parent_seq < $3))
 			or ($9 and (held.blockers_seq = 0 or held.blockers_seq < $3))
 			or ($11 and (held.labels_seq = 0 or held.labels_seq < $3))
-			or ($13 and (held.rank_seq = 0 or held.rank_seq < $3))`,
+			or ($13 and (held.rank_seq = 0 or held.rank_seq < $3))
+			or ($14 and held.applied_seq < $3)`,
 		reading.Key, reading.Project, reading.Seq,
 		status, reading.Status.Carried,
 		parent, reading.Parent.Carried,
 		blockers, reading.Blockers.Carried,
 		labels, reading.Labels.Carried,
-		rank, reading.Rank.Carried); err != nil {
+		rank, reading.Rank.Carried,
+		reading.Applied); err != nil {
 		return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
 	}
 	return s.PutDispatchClaim(ctx, tx, reading.Key, reading.ClaimedBy, reading.ClaimSeq)
@@ -115,18 +123,16 @@ func (s *Postgres) PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder 
 	return nil
 }
 
-// DispatchIssueSeq is the highest sequence of any reading of key the copy took, and whether it
-// holds a row of key: every issue event the daemon applies writes its row first (blockers.Mirror).
-func (s *Postgres) DispatchIssueSeq(ctx context.Context, tx pgx.Tx, key string) (int64, bool, error) {
+func (s *Postgres) DispatchIssueApplied(ctx context.Context, tx pgx.Tx, key string) (int64, error) {
 	var seq int64
-	err := tx.QueryRow(ctx, `select dispatch_seq from dispatch_issues where key = $1`, key).Scan(&seq)
+	err := tx.QueryRow(ctx, `select applied_seq from dispatch_issues where key = $1`, key).Scan(&seq)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		return 0, false, nil
+		return 0, nil
 	case err != nil:
-		return 0, false, fmt.Errorf("read the Dispatch mirror sequence of %s: %w", key, err)
+		return 0, fmt.Errorf("read the sequence of the newest issue fact of %s the daemon applied: %w", key, err)
 	}
-	return seq, true, nil
+	return seq, nil
 }
 
 func (s *Postgres) DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error) {

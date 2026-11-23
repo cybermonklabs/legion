@@ -9,6 +9,9 @@ plain user turn in this session other than the start message or a task an operat
 `legion claims deliver` is a person writing from Dispatch's Agents page: answer it first, in the
 conversation.
 
+If a skill disagrees with the code, a command's output or its `--help`, follow those and say which
+line of the skill is wrong.
+
 Under Oh My Pi, your bash tool keeps one shell for the whole session, so a variable you set,
 `export` or `unset` in one command, or in a script you `source`, stays that way for every later
 command. Never change or unset `DISPATCH_URL`, `DISPATCH_HOST`, `DISPATCH_SESSION_ID`,

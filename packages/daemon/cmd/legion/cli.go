@@ -17,7 +17,7 @@ import (
 // else: every error is run's to print, so a command that fails prints one line in one shape.
 //
 // What a command writes to stderr itself passes the URL rule (redact.Writer), so every URL in it
-// keeps no userinfo and no credential-named query value: no command can print a credential a URL
+// keeps no userinfo, and no query but a `file:` URL's: no command can print a credential a URL
 // carries, such as a remote's URL `git remote -v` lists, a flag's value or an error quoting
 // either. Standard output stays as written, since it carries what a caller parses (`legion gh`'s
 // answer, `legion git-credential`'s token to git). Three commands get stderr as it is as well,

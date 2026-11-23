@@ -7,8 +7,8 @@ package natsgrant
 // token and which Dispatch's proof client presents; and PrivacyRequiredSuffix, which a listener
 // puts at the end of its connections' client names. A package this one imports, internal/bus and
 // internal/contracts among them, and natscred, which internal/bus imports, cannot import it back,
-// so such a package takes the name from its caller. Nothing reads them yet: the auth service's
-// private-hub admission, the hub writer's tag, Dispatch's projection and proof client, and the
+// so such a package takes the name from its caller. Only the hub's renderer takes one yet: the
+// auth service's private-hub admission, Dispatch's projection and proof client, and the
 // listener's required mode are later work.
 const (
 	// PrivateProjectsServerTag is the server_tags entry a hub's nats-server configuration carries

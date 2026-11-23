@@ -64,6 +64,8 @@ import {
 import {
   EnvoyToolOperation,
   envoyToolSpecs,
+  keyTakenDetails,
+  keyTakenText,
   publishConfirmationText,
   publishResultDetails,
   sendConfirmationText,
@@ -114,7 +116,7 @@ import {
 } from "./channel-topics"
 import { claudeProjectDirectory, claudeSessionId, configuredValue } from "./claude-session"
 import { inboundOffChannelSession, serveEnvoyOff } from "./envoy-off"
-import { installedPluginVersion } from "./installed-build"
+import { channelConnectionName, installedPluginVersion } from "./installed-build"
 import {
   endPane,
   type LegionClaim,
@@ -2325,6 +2327,9 @@ export async function executeEnvoyTool(
         ...(args.idempotency_key === undefined ? {} : { idempotencyKey: args.idempotency_key }),
         ...toMessageMetadata(args),
       })
+      if (result.keyTaken !== undefined) {
+        return { message: keyTakenText(result, "envoy_send"), ...keyTakenDetails(result) }
+      }
       return {
         message: sendConfirmationText(result),
         event_id: result.envelope.event_id,
@@ -2349,6 +2354,9 @@ export async function executeEnvoyTool(
       // plugin uses (`publishConfirmationText`). This server always names its own session as the
       // source, so the listener sends that session a message for a kept copy no session took,
       // unless it drops the copy more than an hour late, and the line says so.
+      if (result.keyTaken !== undefined) {
+        return { message: keyTakenText(result, "envoy_publish"), ...keyTakenDetails(result) }
+      }
       return {
         message: publishConfirmationText(result, { senderNamed: true }),
         event_id: result.envelope.event_id,
@@ -2809,7 +2817,11 @@ export async function runEnvoyChannelServer(): Promise<void> {
           : inbound.natsCredential.kind === "broker"
             ? "it waits for this session's broker token, and its stderr says what each trade came to"
             : "it connects to NATS"
-      const natsName = `claude-envoy-channel-${identity.id}`
+      const natsName = channelConnectionName(
+        `claude-envoy-channel-${identity.id}`,
+        bundlePath,
+        packageName,
+      )
       const dialled = await dialChannelInbound(
         inbound,
         envoy.url,

@@ -174,7 +174,6 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/claim-compaction.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/claim-compaction.sh")
 	r := &claimCompactionLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
@@ -359,7 +358,7 @@ func (r *claimCompactionLive) seed() {
 	for _, seeded := range r.seededPanes() {
 		r.board.show(seeded.issue, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range r.seededPanes() {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
 				Key: seeded.issue, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: seeded.issue,

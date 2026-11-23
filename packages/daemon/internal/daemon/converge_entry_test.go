@@ -92,7 +92,7 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 	}
 	const entry = 2
 	task := "Continue the member. Issue: " + member.Key + ". Phase: testing."
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -216,14 +216,14 @@ func TestTheEntrySweepAppliesNoFactWhileNoRoleIsBehindItsEntry(t *testing.T) {
 	task := "Continue the member. Issue: " + member.Key + ". Phase: testing."
 	phaseRow := func(at int64) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			return records.PutPhase(ctx, tx, record.PhaseRow{Issue: member.Key, Role: claim.RoleTester, Claim: token,
 				Entry: at, EntryTask: task, EntryRaisedAt: time.Now().UTC()})
 		}); err != nil {
 			t.Fatalf("record the tester's phases row at entry %d: %v", at, err)
 		}
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}
@@ -325,7 +325,7 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 	task := "Continue the member. Issue: " + member.Key + ". Phase: testing."
 	testerRow := func(at int64) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			return records.PutPhase(ctx, tx, record.PhaseRow{Issue: member.Key, Role: claim.RoleTester, Claim: tester,
 				Entry: at, EntryTask: task, EntryRaisedAt: time.Now().UTC()})
 		}); err != nil {
@@ -334,7 +334,7 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 	}
 	held := func(token claim.Token, role claim.Role, state supervise.ClaimState, given int64) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
 				serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry)
 				values ($1, $2, $3, $4, $5, 1, 'ses', '/sessions/ses.jsonl', $6, 1, 0, 0, 0, 0, $7)`,
@@ -344,7 +344,7 @@ func TestTheEntrySweepAppliesNoFactForARolePastThePhaseItsIssueStandsIn(t *testi
 			t.Fatalf("record the %s's claim: %v", role, err)
 		}
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err
 		}

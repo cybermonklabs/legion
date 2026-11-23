@@ -262,13 +262,15 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 //
 //   - a stored secret and a google-login access token are one string, so they are the value
 //     slot's placeholder alone;
-//   - a github-app profile whose github.value is token (gitHubValue, githubname.ValueToken) is
-//     released as the one account's bare token, which is one string too, so it is the value
-//     slot's placeholder alone;
+//   - a GitHub profile whose github.value is token (gitHubValue, githubname.ValueToken), of a
+//     github-app or a github-installations source (policy.ServesGitHubTokens), is released as the
+//     one account's bare token, which is one string too, so it is the value slot's placeholder
+//     alone;
 //   - a stored AWS key pair, which the entry marks kind "aws", is the stored object re-emitted
 //     with each of its three credential fields replaced;
-//   - a github-app's minted installations and an azure-login's minted identity are re-emitted
-//     with the token fields replaced and every other field as the minter wrote it.
+//   - the installations object of a GitHub profile of either source, and an azure-login's minted
+//     identity, are re-emitted with the token fields replaced and every other field as the
+//     release wrote it.
 //
 // The policy type and the profile's value form decide first and the entry's kind only for a
 // stored secret, because they are what says how the broker built the value, where the entry
@@ -279,9 +281,9 @@ func airlockSplitOf(entryKind, secretType, gitHubValue, value string) (airlockSp
 	var split airlockSplit
 	var err error
 	switch {
-	case secretType == policy.TypeGitHubApp && gitHubValue == githubname.ValueToken:
+	case policy.ServesGitHubTokens(secretType) && gitHubValue == githubname.ValueToken:
 		return valueSplit(value), nil
-	case secretType == policy.TypeGitHubApp:
+	case policy.ServesGitHubTokens(secretType):
 		split, err = githubAppSplit(value)
 	case secretType == policy.TypeAzureLogin:
 		split, err = azureLoginSplit(value)

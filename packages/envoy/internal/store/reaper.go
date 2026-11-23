@@ -121,7 +121,7 @@ func (r *Registry) reapInterest(ctx context.Context, sessionID string, judged in
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	if revision == 0 {
-		item, read, err := r.getWithRevision(ctx, sessionID, true)
+		item, read, err := r.getWithRevision(ctx, sessionID, readBucket)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrMalformedInterest):
 			return false, nil

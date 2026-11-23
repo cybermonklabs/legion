@@ -155,7 +155,7 @@ func seedStartedWaiter(t *testing.T, pool *store.Pool, key, blocker string) {
 	if err != nil {
 		t.Fatalf("project token: %v", err)
 	}
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		at := time.Now().UTC()
 		// The tree runs: the slot rule counts an issue of a live tree alone (record.NeedsSlot).
@@ -176,7 +176,7 @@ func seedStartedWaiter(t *testing.T, pool *store.Pool, key, blocker string) {
 // same table.
 func seedForeignMirror(t *testing.T, pool *store.Pool, key, status string, seq int64) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: key, Project: foreignProject, Seq: seq,
 			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
@@ -190,7 +190,7 @@ func seedForeignMirror(t *testing.T, pool *store.Pool, key, status string, seq i
 func foreignMirrored(t *testing.T, pool *store.Pool) map[string]record.DispatchIssueRow {
 	t.Helper()
 	var mirrored []record.DispatchIssueRow
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		mirrored, err = record.NewStore().DispatchIssues(context.Background(), tx, foreignProject)
 		return err

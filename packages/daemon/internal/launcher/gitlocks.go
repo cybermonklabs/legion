@@ -68,6 +68,14 @@ var gitLockRemove = os.Remove
 // open files the test cannot read, which keeps every lock the row planted (holders).
 var gitLockProc = "/proc"
 
+// gitLockServed is handed the channel serve answers for the sweep serveGitLockSweep starts, which
+// is closed once that sweep's ticker goroutine has returned. It does nothing in the launcher; it
+// is a variable for the row that holds Run to waiting for that goroutine before it returns
+// (TestTheSweepStopsWithTheContainerContextBeforeRunReturns), which reads the channel once Run has
+// returned: closed, no pass of the sweep can run any more. It is read in the caller's goroutine,
+// for the reason newGitLockSweep reads the variables above there.
+var gitLockServed = func(<-chan struct{}) {}
+
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
 // decides. It exists for the reason testPGBound exists: the first pass runs before the launcher
 // serves any role, the daemon's boot timeout for a pod is 120 s by default, and a pass that goes
@@ -199,7 +207,9 @@ func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{}
 	for _, m := range managers {
 		m.gitLocks = sweep
 	}
-	return sweep.serve(ctx)
+	done := sweep.serve(ctx)
+	gitLockServed(done)
+	return done
 }
 
 // newGitLockSweep is the roles container's sweep over the workspace its own working directory is:

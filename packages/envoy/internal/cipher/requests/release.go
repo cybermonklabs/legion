@@ -11,6 +11,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime"
+	"runtime/debug"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -197,6 +199,9 @@ func gitHubValueOf(served policy.Secret) string {
 // give-back that waited on GitHub, up to its bound for each installation of each value, could
 // hold a session's release past the time its client gives the call. Each GiveBack bounds its own
 // revokes; one a stopping broker cuts short leaves its token to lapse, as before the give-back.
+// A GiveBack that panics leaves its value to lapse too, logged (recoverGiveBack), and the
+// give-back goes on to the next value: net/http recovers a panic only on a handler's own
+// goroutine, so one here would end the broker.
 func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	type minted struct {
 		giveBack          GiveBack
@@ -216,9 +221,36 @@ func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 	go func() {
 		defer m.givingBack.Done()
 		for _, each := range back {
-			each.giveBack(detached, each.name, each.value, each.form)
+			func() {
+				defer recoverGiveBack(each.name)
+				each.giveBack(detached, each.name, each.value, each.form)
+			}()
 		}
 	}()
+}
+
+// giveBackPanickedMessage is logged, at ERROR, each time a GiveBack panics (recoverGiveBack),
+// followed by name=<the secret's name>, error=<what panicText says of the panic> and stack=<the
+// goroutine's stack>, which hold no part of the value it was giving back. That value is left to
+// lapse.
+const giveBackPanickedMessage = "broker: a give-back of a minted value panicked; the value is left to lapse"
+
+// recoverGiveBack, deferred directly around one value's GiveBack (giveBack), logs a panic there
+// (giveBackPanickedMessage) and lets the give-back go on to the next value.
+func recoverGiveBack(name string) {
+	if p := recover(); p != nil {
+		slog.Error(giveBackPanickedMessage, "name", name, "error", panicText(p), "stack", string(debug.Stack()))
+	}
+}
+
+// panicText is what a log line or an error says of the panic p, from code that may hold a secret
+// value or a token: a runtime error's message, which names types and indexes and no data, or else
+// the panic value's type alone, since a value a panic was given can be anything that code held.
+func panicText(p any) string {
+	if err, ok := p.(runtime.Error); ok {
+		return err.Error()
+	}
+	return fmt.Sprintf("a panic of type %T", p)
 }
 
 // heldBack is the names in read the airlock holds back. A session's release reads or mints each

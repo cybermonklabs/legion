@@ -179,7 +179,7 @@ func reopenTheIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 	reopened := recordOf(t, pool, records, issue)
 	reopened.Generation, reopened.Phase, reopened.Status = reopened.Generation+1, phase.Implementing, "in_progress"
 	reopened.LingerUntil = nil
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(context.Background(), tx, reopened)
 	}); err != nil {
 		t.Fatalf("reopen the issue: %v", err)
@@ -191,7 +191,7 @@ func reopenTheIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: issue, Project: "LEGION", Title: issue, Phase: phase.Merging, Generation: 1,
 			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"}); err != nil {
@@ -214,7 +214,7 @@ func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, e
 func architectClosesTheRoot(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: issue, Project: "LEGION", Title: issue, Phase: phase.Admitted, Generation: 1,
 			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
