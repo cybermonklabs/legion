@@ -1,6 +1,7 @@
 // The leader-answered reads of one key of a KV bucket (KeyValue.GetFromLeader,
-// KeyValue.NewestFromLeader), beside their test: the reads of this package that may not be a
-// direct get, because what they decide is a delete or the revision a write is fenced on.
+// KeyValue.NewestFromLeader and KeyValue.HeldFromLeader), beside their test: the reads of this
+// package that may not be direct gets, because what each decides is a delete, a removal or the
+// revision a write is fenced on.
 
 package bus
 
@@ -195,6 +196,40 @@ func (kv KeyValue) NewestFromLeader(ctx context.Context, key string) (nats.KeyVa
 	if err := kv.RefusesRead(key); err != nil {
 		return nil, err
 	}
+	return kv.latestFromLeader(ctx, key)
+}
+
+// HeldFromLeader is GetFromLeader for a key a copy of the bucket already holds, which this package
+// may never have written: one stored by a listener built before the KV key check, up to the
+// server's 4 KiB control line (testnats.LegacyKeys), which RefusesRead refuses because a direct
+// get would put it in the request's subject. The stream message get puts it in the request's body
+// instead (`{"last_by_subj":"$KV.<bucket>.<key>"}`, nats.go@v1.53.1 jsm.go:1242-1294), so the
+// leader reads every key the stream holds. It refuses only what no record of the bucket can be
+// stored under: the read barrier's key (ErrReservedKey) and a key that is no valid subject token
+// (ErrInvalidSubject). kvwatch reads with it each key a read did not deliver, a row of its copy or
+// a key the stream lists (StoredKeys), before it removes any (Watcher.verifyUnmarked): a refusal
+// there would keep the row and fail every read.
+func (kv KeyValue) HeldFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
+	if key == BarrierKey {
+		return nil, fmt.Errorf("%w: key %q", ErrReservedKey, key)
+	}
+	if !validSubject(key) {
+		return nil, fmt.Errorf("%w: key %q", ErrInvalidSubject, key)
+	}
+	entry, err := kv.latestFromLeader(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	if entry.Operation() != nats.KeyValuePut {
+		return nil, nats.ErrKeyNotFound
+	}
+	return entry, nil
+}
+
+// latestFromLeader is the stream message get of key's newest message that NewestFromLeader and
+// HeldFromLeader send, answered as NewestFromLeader documents: GetFromLeader and HeldFromLeader
+// answer a delete or purge marker as nats.ErrKeyNotFound.
+func (kv KeyValue) latestFromLeader(ctx context.Context, key string) (nats.KeyValueEntry, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, RequestTimeout)

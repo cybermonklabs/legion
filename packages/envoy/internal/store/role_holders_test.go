@@ -67,6 +67,10 @@ func (g gatedRoleClaims) Apply(entry kvwatch.Entry, read kvwatch.Read) {
 
 func (g gatedRoleClaims) CompleteRead(read kvwatch.Read) { roleCache{g.r}.CompleteRead(read) }
 
+func (g gatedRoleClaims) Unmarked(stored []string) []string {
+	return roleCache{g.r}.Unmarked(stored)
+}
+
 // stallFirstKV stalls the first watch it hands out after `after` entries, as a first scan that
 // delivers part of the bucket and then nothing does (earlyEndKV), and hands the real bucket's
 // watcher to every watch after it: the watcher reads the bucket again itself once its first read

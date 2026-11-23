@@ -52,6 +52,12 @@ func (s *seen) BeginRead(read kvwatch.Read) {
 	s.begun = append(s.begun, read)
 }
 
+func (s *seen) Unmarked(stored []string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.keys.Unmarked(stored)
+}
+
 func (s *seen) CompleteRead(read kvwatch.Read) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -744,6 +750,8 @@ func TestARewatchOntoARecreatedBucketKeepsTheCopyUntilTheReadCompletes(t *testin
 
 	end.let()
 	wait(t, end.handled, "the new read's end to be handled")
+	// The read completes once its consumer is past the barrier its end writes, after the end.
+	eventually(t, "the new read's completion", func() bool { return w.Following() && !into.has("ghost") })
 	if into.has("ghost") || !into.has("both") || !into.has("fresh") || !w.Following() {
 		t.Fatalf("after the new read completed: ghost %v, both %v, fresh %v, Following %v; want the ghost swept and the rest kept",
 			into.has("ghost"), into.has("both"), into.has("fresh"), w.Following())
@@ -931,6 +939,7 @@ func TestAHeldReadReleasedTooLateNeitherCompletesNorRestoresServing(t *testing.T
 			}
 			restorer.let()
 			wait(t, restorer.handled, "the newer read's end to be handled")
+			eventually(t, "the newer read's completion", func() bool { return len(into.completions()) == 2 && w.Following() })
 			if done := len(into.completions()); done != 2 || !w.Following() || !into.has("kept") {
 				t.Fatalf("after the newer read's end: %d reads completed, Following %v, kept %v; want two, following, kept",
 					done, w.Following(), into.has("kept"))
@@ -1185,6 +1194,7 @@ func TestABucketRecreatedWithAShorterTTLShortensTheStaleBound(t *testing.T) {
 	refuses(t, w, "31 s into a stale episode on a bucket with a 1-minute TTL")
 	shorter.let()
 	wait(t, shorter.handled, "the recreated bucket's read end to be handled")
+	eventually(t, "the recreated bucket's read to complete", func() bool { return w.Servable() == nil })
 	serves(t, w, "after the recreated bucket's read completed")
 }
 
