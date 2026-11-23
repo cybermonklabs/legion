@@ -767,6 +767,9 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
+		// The ending of a change request is read at a head, a whole commit id; any one reads the
+		// seeded issue's spec and answers its ending.
+		"GET /api/v1/issues/{key}/change-request/ending": url.Values{"head": {strings.Repeat("0", 40)}}.Encode(),
 	}
 }
 
