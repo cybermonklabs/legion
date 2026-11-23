@@ -59,12 +59,17 @@ func readEditNotice(t *testing.T, service *Service, artifactID string) (editNoti
 	return row, true
 }
 
-// requireDueWithin requires the notice to be due quiet after the database's now() at the read,
-// within slack: the settlement that wrote it set due_at to now() + quiet a moment before.
-func requireDueWithin(t *testing.T, row editNoticeRow, quiet, slack time.Duration) {
+// requireDueQuietAfterItsWrite requires the notice to be due quiet after the moment the statement
+// that wrote it ran, which lies between before, a read of the database's clock taken before the
+// test made the edit that statement records, and the database's now() at the notice's read: the
+// writer sets due_at to clock_timestamp() + quiet (openEditNotice). Every one of those times is
+// on the database's clock, the clock due_at is stamped on and the sweep judges it by, so a slow
+// machine only widens the span between the two reads and never fails a notice due on time.
+func requireDueQuietAfterItsWrite(t *testing.T, row editNoticeRow, before time.Time, quiet time.Duration) {
 	t.Helper()
-	if gap := row.dueAt.Sub(row.now); gap > quiet || gap < quiet-slack {
-		t.Fatalf("the notice is due %v after the read, want within %v of %v", gap, slack, quiet)
+	if earliest, latest := before.Add(quiet), row.now.Add(quiet); row.dueAt.Before(earliest) || row.dueAt.After(latest) {
+		t.Fatalf("the notice is due at %v; want %v after its write, so from %v (that after the database's clock before the edit) to %v (that after the notice's read)",
+			row.dueAt, quiet, earliest, latest)
 	}
 }
 
@@ -84,6 +89,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	before := latestVersionNumber(t, service, artifactID)
 
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
+	beforeAlice := databaseNow(t, service.store)
 	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("First.", "First, edited."))
 	settleCurrentGeneration(t, service, artifactID)
 	first := latestVersionNumber(t, service, artifactID)
@@ -97,9 +103,10 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	if row.from != first-1 || row.to != first || !slices.Equal(row.editors, []string{alice.ID}) || row.lastEditor != alice {
 		t.Fatalf("notice after alice = from %d to %d editors %v last %+v, want from %d to %d naming alice", row.from, row.to, row.editors, row.lastEditor, first-1, first)
 	}
-	requireDueWithin(t, row, 30*time.Second, 2*time.Second)
+	requireDueQuietAfterItsWrite(t, row, beforeAlice, 30*time.Second)
 
 	bob := model.Actor{Kind: "user", ID: "bob@example.com"}
+	beforeBob := databaseNow(t, service.store)
 	editAsConnectedPeer(t, service, artifactID, 2, bob, replaceRun("Second.", "Second, edited."))
 	settleCurrentGeneration(t, service, artifactID)
 	second := latestVersionNumber(t, service, artifactID)
@@ -113,7 +120,7 @@ func TestEditNoticeAPersonsSettledEditOpensAndExtendsTheWindow(t *testing.T) {
 	if extended.from != first-1 || extended.to != second || !slices.Equal(extended.editors, []string{alice.ID, bob.ID}) || extended.lastEditor != bob {
 		t.Fatalf("notice after bob = from %d to %d editors %v last %+v, want from %d to %d naming alice and bob, bob last", extended.from, extended.to, extended.editors, extended.lastEditor, first-1, second)
 	}
-	requireDueWithin(t, extended, 30*time.Second, 2*time.Second)
+	requireDueQuietAfterItsWrite(t, extended, beforeBob, 30*time.Second)
 	if !extended.dueAt.After(row.dueAt) {
 		t.Fatalf("bob's edit left the notice due at %v, want after alice's %v", extended.dueAt, row.dueAt)
 	}
@@ -142,35 +149,60 @@ func TestEditNoticeNamesThePersonWhoEditedLast(t *testing.T) {
 }
 
 // The quiet window starts when the settlement writes the notice, not when its transaction began:
-// a settlement that waited on its locks longer than the quiet time still commits a notice that is
-// not due yet, so the card never goes out before the document has been quiet that long.
+// a settlement that waited on its locks longer than the quiet time still commits a notice due a
+// quiet time after that wait, so the card never goes out before the document has been quiet that
+// long. The wait's end and the notice's due time are both read on the database's clock, the one
+// the sweep judges a notice due by, so the row holds at any pace: a slow machine makes the read
+// and the sweep later, never the notice's due time earlier.
 func TestEditNoticeQuietStartsWhenTheNoticeIsWrittenNotWhenItsTransactionBegan(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	service.editNoticeQuiet = 500 * time.Millisecond
+	const quiet = 500 * time.Millisecond
+	service.editNoticeQuiet = quiet
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("First.", "First, edited."))
+	// waited is the database's clock as the settlement's wait ended, and waitedErr that read's
+	// failure: the hook runs on the settlement's goroutine, which may not fail the test.
+	var waited time.Time
+	var waitedErr error
 	service.afterSettleVersionWrite = func(room string) error {
 		if room == artifactID {
 			// The settlement's transaction began before this wait, as it begins before the owner
-			// and advisory locks a busy document makes it wait on.
+			// and advisory locks a busy document makes it wait on. The notice's statement runs
+			// after this hook, in the settlement's write phase.
 			time.Sleep(time.Second)
+			waited, waitedErr = readDatabaseClock(service.store)
 		}
 		return nil
 	}
 	settleCurrentGeneration(t, service, artifactID)
 	service.afterSettleVersionWrite = nil
+	if waitedErr != nil {
+		t.Fatalf("read the database's clock as the settlement's wait ended: %v", waitedErr)
+	}
+	if waited.IsZero() {
+		t.Fatal("alice's settlement never reached the window after its version write")
+	}
 	row, open := readEditNotice(t, service, artifactID)
 	if !open {
 		t.Fatal("alice's settled edit opened no edit notice")
 	}
-	if !row.dueAt.After(row.now) {
-		t.Fatalf("the notice was due at %v, %v before it could be read, want it still inside its quiet window", row.dueAt, row.now.Sub(row.dueAt))
+	// A window counted from the transaction's start, before the wait, ends at least a second
+	// sooner than this: before the wait was over, so before the notice even committed.
+	quietFrom := waited.Add(quiet)
+	if row.dueAt.Before(quietFrom) {
+		t.Fatalf("the notice is due at %v, %v before a quiet time after the settlement's wait ended (%v); want it counted from its write, after the wait",
+			row.dueAt, quietFrom.Sub(row.dueAt), quietFrom)
 	}
-	if sent, err := service.sendDueEditNotices(context.Background()); err != nil || sent != 0 {
-		t.Fatalf("a sweep right after the settlement = %d sent, %v; want none sent", sent, err)
+	if _, err := service.sendDueEditNotices(context.Background()); err != nil {
+		t.Fatalf("a sweep after the settlement: %v", err)
+	}
+	// The sweep may run after the window has ended, and then it sends the notice; what it may not
+	// do is send one the database wrote before the document had been quiet that long.
+	if sent := noticesSentBefore(t, service.store, artifactID, quietFrom); sent != 0 {
+		t.Fatalf("a sweep after the settlement sent %d notices before %v, a quiet time after the settlement's wait ended; want none", sent, quietFrom)
 	}
 }
 

@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -21,10 +23,11 @@ import (
 
 // newEditNoticeSweeper is a second document service on database that only sweeps, as another
 // process's would: given a traced store, every statement its loop makes is counted apart from the
-// settlements the test drives through its own service.
-func newEditNoticeSweeper(t *testing.T, database *store.Store) *Service {
+// settlements the test drives through its own service. clk is its clock (Deps.Clock), nil for the
+// real one.
+func newEditNoticeSweeper(t *testing.T, database *store.Store, clk clock.Clock) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: clk})
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
@@ -73,6 +76,52 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 	return wake
 }
 
+// relayWakes hands each signal of wake on to the wake it returns, a buffer of one as a
+// pglisten.Hub's is, until the stop it returns is called; a signal after that is taken off wake
+// and dropped. A test that makes a notice due by writing its row, which notifies the hub as every
+// writer's does, stops the relay first, so the loop it feeds sweeps on its own timer alone.
+func relayWakes(t *testing.T, wake <-chan struct{}) (<-chan struct{}, func()) {
+	t.Helper()
+	relayed := make(chan struct{}, 1)
+	var stopped atomic.Bool
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-wake:
+				if stopped.Load() {
+					continue
+				}
+				select {
+				case relayed <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	return relayed, func() { stopped.Store(true) }
+}
+
+// awaitArmed waits until the deadlines armed on clk answer want, and returns them; what names the
+// wait. It sets no span of its own (testwait.UntilPolling, at waitUntil's pace), so a loop slow to
+// arm its timer passes, and one that never arms what the test expects fails by name with the
+// deadlines it had armed.
+func awaitArmed(t *testing.T, clk *clocktest.Fake, what string, want func(armed []time.Time) bool) []time.Time {
+	t.Helper()
+	return testwait.UntilPolling(t, 5*time.Millisecond, what, func() ([]time.Time, bool) {
+		armed := clk.Armed()
+		return armed, want(armed)
+	})
+}
+
 // leasedPassStatements counts every statement a leased loop's pools start, as
 // storetest.StatementCounter does, and the leases those statements free. duty frees a leased pass's
 // lease with the pass's last statement (freeLeaseOn, deferred until the pass has returned), and the
@@ -108,26 +157,6 @@ func (s *leasedPassStatements) awaitPasses(t *testing.T, passes int64) {
 	})
 }
 
-// requireNoStatementsBefore fails the test if the sweep starts a statement from now until end;
-// what names the window. It reads the count before the clock, so a statement it counts started
-// before a clock reading that was still short of end: a slow machine reads later, which only
-// shortens the span the window sees, and never counts a statement started after end.
-func (s *leasedPassStatements) requireNoStatementsBefore(t *testing.T, end time.Time, what string) {
-	t.Helper()
-	before := s.Count()
-	for {
-		made := s.Count() - before
-		now := time.Now()
-		if !now.Before(end) {
-			return
-		}
-		if made != 0 {
-			t.Fatalf("%s: %d statements %v before the window's end, want none", what, made, end.Sub(now).Round(time.Millisecond))
-		}
-		time.Sleep(testwait.Poll)
-	}
-}
-
 // noticesSentBefore counts the notices about document whose event the database wrote before at,
 // on its own clock: a count that a sweep running after at cannot change, as it changes a count of
 // every notice sent.
@@ -161,7 +190,7 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 	}
 	statements := &leasedPassStatements{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
-	sweeper := newEditNoticeSweeper(t, counted)
+	sweeper := newEditNoticeSweeper(t, counted, nil)
 	leases := excerptLeases(t, counted)
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.RunEditNotices(ctx, leases, nil) })
 
@@ -180,63 +209,84 @@ func TestEditNoticeSweepMakesNoStatementWithNothingDue(t *testing.T) {
 }
 
 // A person's settled edit while the sweep is idle wakes it through the notice's notification on a
-// real pglisten.Hub; that sweep finds nothing due yet, arms one timer for the notice's due time and
-// makes no statement until then, and the notice goes once its quiet window ends, not before. The
-// loop had no due time before the edit, so only the wake can have scheduled the sweep that sends
-// it. The sweep here starts passes 200 ms apart, not five seconds.
+// real pglisten.Hub; that sweep finds nothing due yet, arms one timer, for the notice's due time,
+// and makes no statement until the timer fires, even once the notice is due on the database's
+// clock; then the notice goes. The loop had no due time before the edit, so only the wake can
+// have scheduled the sweep that sends it. The loop runs on a fake clock the test moves
+// (Deps.Clock), so when it sweeps is the timer it armed and never the machine's pace. The quiet
+// time is an hour, so the woken sweep finds the notice not yet due however late it runs, and the
+// test makes the notice due by moving its row into the past (makeEditNoticeDue), as the quiet
+// time passing does: a fake Go clock does not move the database's, which judges a notice due.
 func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	const quiet = 3 * time.Second
-	service.editNoticeQuiet = quiet
+	service.editNoticeQuiet = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)
 
-	wake := startEditNoticeHub(t, service.store)
+	wake, stopWakes := relayWakes(t, startEditNoticeHub(t, service.store))
 	statements := &leasedPassStatements{}
 	counted := &store.Store{Pool: storetest.Traced(t, service.store.Pool, statements, nil)}
-	sweeper := newEditNoticeSweeper(t, counted)
+	booted := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	clk := clocktest.New(booted)
+	sweeper := newEditNoticeSweeper(t, counted, clk)
 	leases := excerptLeases(t, counted)
 	schedule := editNoticeSchedule{minGap: 200 * time.Millisecond}
 	runEditNoticeLoop(t, func(ctx context.Context) { sweeper.runEditNotices(ctx, leases, wake, schedule) })
-	// The boot pass, then nothing: the hub's signal after its LISTEN was taken off the wake.
+	// The boot pass, then nothing: the hub's signal after its LISTEN was taken off the wake, and a
+	// pass that finds no notice arms no timer.
 	statements.awaitPasses(t, 1)
 
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
 	editAsConnectedPeer(t, service, artifactID, 1, alice, replaceRun("First.", "First, edited."))
 	settleCurrentGeneration(t, service, artifactID)
-	// due is at or before the notice's due time on this process's clock: the read's now() is
-	// taken after readAt, so readAt and what was left of the window at that now() come to no
-	// later than the window's end, however long the read took.
-	readAt := time.Now()
 	row, open := readEditNotice(t, service, artifactID)
 	if !open {
 		t.Fatal("alice's settled edit opened no edit notice")
 	}
-	due := readAt.Add(row.dueAt.Sub(row.now))
-	// The notice's notification wakes the sweep, whose pass finds nothing due yet and arms one
-	// timer for the notice's due time.
+	// The notice's notification wakes the loop, which holds its next pass to the gap after its
+	// boot pass began.
+	gapEnd := booted.Add(schedule.minGap)
+	awaitArmed(t, clk, "the woken loop to arm its timer for the end of its gap", func(deadlines []time.Time) bool {
+		return len(deadlines) == 1 && deadlines[0].Equal(gapEnd)
+	})
+	// The woken pass reads how long the notice has left between these two reads of the database's
+	// clock, the one due_at is judged by.
+	beforePass := databaseNow(t, service.store)
+	clk.Set(gapEnd)
+	armed := awaitArmed(t, clk, "the woken pass to arm the loop's timer for the notice's due time", func(deadlines []time.Time) bool {
+		return len(deadlines) == 1 && deadlines[0].After(gapEnd)
+	})
+	afterPass := databaseNow(t, service.store)
 	statements.awaitPasses(t, 2)
-	if sent := noticesSentBefore(t, service.store, artifactID, row.dueAt); sent != 0 {
-		t.Fatalf("the woken sweep sent %d notices inside the quiet window; want none before it ends", sent)
+	if edits := humanEdits(t, service.store, artifactID); len(edits) != 0 {
+		t.Fatalf("the woken sweep sent %d notices inside the notice's hour of quiet; want none before it ends", len(edits))
 	}
-	// Until the due time the sweep holds its timer and asks nothing. A slow machine cannot fail
-	// this window on a correct run: the window ends at or before the due time, the timer fires at
-	// or after it, and a later reading only shortens what the window sees.
-	statements.requireNoStatementsBefore(t, due, "the edit notice sweep waiting for a notice's due time")
+	// The timer is the notice's due time on the loop's clock: the pass began at gapEnd and added
+	// what the notice had left as the pass read it, due_at less the database's now() rounded up to
+	// a microsecond (nextEditNoticeDue).
+	if left, least, most := armed[0].Sub(gapEnd), row.dueAt.Sub(afterPass), row.dueAt.Sub(beforePass)+time.Microsecond; left < least || left > most {
+		t.Fatalf("the woken pass armed the loop's timer %v after the pass began; want what the notice had left as the pass read it, %v to %v", left, least, most)
+	}
 
-	waitUntil(t, "the notice to go once its quiet window ended", func() bool {
+	// Due on the database's clock now, the notice still waits for the loop's timer: the sweep makes
+	// no statement until the fake clock reaches it. The row's write notifies the hub as every
+	// writer's does, so the relay stops first and drops that signal, leaving the loop its timer
+	// alone.
+	stopWakes()
+	idle := statements.Count()
+	makeEditNoticeDue(t, service.store, artifactID)
+	// A slow machine cannot fail this window on a correct run: the loop's one timer is on the fake
+	// clock, which nothing moves during it, so a slower run only shortens what the window sees.
+	storetest.RequireNoStatements(t, &statements.StatementCounter, 5*schedule.minGap, "the edit notice sweep waiting for its timer while its notice is due")
+	if made := statements.Count() - idle; made != 0 {
+		t.Fatalf("the edit notice sweep made %d statements once its notice was due and before its timer fired; want none", made)
+	}
+
+	clk.Set(armed[0])
+	waitUntil(t, "the notice to go once the loop's timer for its due time fired", func() bool {
 		return len(humanEdits(t, service.store, artifactID)) == 1
 	})
-	var sentAt time.Time
-	if err := service.store.Pool.QueryRow(context.Background(), `
-		select created_at from events where type = 'artifact.human_edited' and payload->>'artifact_id' = $1
-	`, artifactID).Scan(&sentAt); err != nil {
-		t.Fatalf("read when the notice went: %v", err)
-	}
-	if late := sentAt.Sub(row.dueAt); late < 0 || late > schedule.minGap+time.Second {
-		t.Fatalf("the notice went %v after its due time; want at it, within the sweep's gap and a second", late)
-	}
 	if edit := humanEdits(t, service.store, artifactID)[0]; !edit.actor.SameAs(alice) {
 		t.Fatalf("the notice names %+v; want alice", edit.actor)
 	}
@@ -261,7 +311,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	}()
 	testwait.Receive(t, "the other caller to take the edit-notices lease", taken)
 
-	sweeper := newEditNoticeSweeper(t, database)
+	sweeper := newEditNoticeSweeper(t, database, nil)
 	runEditNoticeLoop(t, func(ctx context.Context) {
 		sweeper.runEditNotices(ctx, leases, nil, editNoticeSchedule{minGap: 100 * time.Millisecond})
 	})
