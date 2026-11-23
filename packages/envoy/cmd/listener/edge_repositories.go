@@ -96,6 +96,16 @@ type edgeRepositories struct {
 
 	mu      sync.Mutex
 	answers map[string]repositoryAnswer
+	// unread counts, for each served project whose refresh reads have failed since its last good
+	// one, the reads that failed (noteRefresh), so a run of them is logged when it starts and when
+	// it ends rather than at every refresh.
+	unread map[string]int
+	// unlisted counts the refresh passes in a row that could not list the interest records, and
+	// unremoved holds each session whose interests in a repository that left its projects the last
+	// pass that weighed them could not remove (pruneEdgeInterests), so each run of failures is logged
+	// when it starts rather than at every pass.
+	unlisted  int
+	unremoved map[string]bool
 	// passes counts the refresh passes that have finished (runEdgeRepositories), so a test
 	// orders a publish after one.
 	passes atomic.Uint64
@@ -172,6 +182,9 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 	e.mu.Lock()
 	e.answers[project] = repositoryAnswer{repositories: *answer.Repositories, readAt: e.now()}
 	e.mu.Unlock()
+	// A good read ends the project's run of failed refresh reads, whoever made it: a
+	// registration's read keeps an answer as a refresh's does (noteRefresh).
+	e.noteRefresh(project, nil)
 	return *answer.Repositories, nil
 }
 
@@ -190,14 +203,51 @@ func (e *edgeRepositories) readFresh(ctx context.Context, projects []string) ([]
 }
 
 // refresh reads the answer of every project the edge serves again. A read that fails keeps the
-// last answer, which ages out at edgeRepositoryAnswerLife, and is logged.
+// last answer, which ages out at edgeRepositoryAnswerLife, and a run of failed reads of a project
+// is logged when it starts and when a good read of the project, a refresh's or a registration's,
+// ends it (noteRefresh).
 func (e *edgeRepositories) refresh(ctx context.Context) {
 	_, errs := e.readEach(ctx, e.projects)
 	for i, err := range errs {
 		if err != nil {
-			e.logger.Warn("edge listener could not read its project's repositories; GitHub events wait for the next answer",
-				slog.String("project", e.projects[i]), slog.String("error", err.Error()))
+			e.noteRefresh(e.projects[i], err)
 		}
+	}
+}
+
+// noteRefresh logs what a read of project, which ended with err, starts or ends: a WARN for a
+// refresh's failed read that starts a run of them, an INFO for a good read (read, whoever asked
+// it) that ends one, and nothing for any other read, so a broker that stays away logs two lines per
+// project, not one at every refresh. The WARN names when the project's sessions lose their GitHub
+// events (withheld_from): the last answer decides them until it is edgeRepositoryAnswerLife old,
+// so a failed read withholds nothing while a fresh answer stands, and with no answer read they are
+// withheld from the read on.
+func (e *edgeRepositories) noteRefresh(project string, err error) {
+	e.mu.Lock()
+	failed, failing := e.unread[project]
+	answer, answered := e.answers[project]
+	now := e.now()
+	switch {
+	case err != nil:
+		if e.unread == nil {
+			e.unread = map[string]int{}
+		}
+		e.unread[project] = failed + 1
+	case failing:
+		delete(e.unread, project)
+	}
+	e.mu.Unlock()
+	switch {
+	case err != nil && !failing:
+		withheldFrom := now
+		if answered {
+			withheldFrom = answer.readAt.Add(edgeRepositoryAnswerLife)
+		}
+		e.logger.Warn("edge listener could not read its project's repositories; its last answer, if any, decides its sessions' GitHub events until withheld_from, they are withheld from then until a read succeeds, and the listener logs again once one does",
+			slog.String("project", project), slog.Time("withheld_from", withheldFrom), slog.String("error", err.Error()))
+	case err == nil && failing:
+		e.logger.Info("edge listener read its project's repositories again; its sessions' GitHub events are decided by the new answer",
+			slog.String("project", project), slog.Int("failed_reads", failed))
 	}
 }
 
@@ -267,10 +317,10 @@ func (e *edgeRepositories) relayVerdict(projects []string, subject string, data 
 	}
 	repositories, complete := e.standing(projects)
 	if repositoryNamed(repositories, owner, name) {
-		return framePasses()
+		return frameVerdict{action: framePass, answered: true}
 	}
 	if complete {
-		return frameDrops(withheldNotInProject)
+		return frameVerdict{action: frameDrop, reason: withheldNotInProject, answered: true}
 	}
 	return frameAnswerUnknownVerdict()
 }

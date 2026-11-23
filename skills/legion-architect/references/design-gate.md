@@ -112,9 +112,11 @@ For each gated step, once every child is filed:
 
 ## After approval
 
-An approval is pinned to its version: any new version closes that step, with no wake. Two keep it:
-a version whose only change is a person's answer to a decision block, and one equal to the approved
-text (an accidental edit undone exactly).
+An approval is pinned to its version: any new version closes that step, with no wake. Three keep it:
+a version whose only change is the approver's answer to a decision block, given after the
+approval at a browser or under a credential with the approve scope; one equal to the approved text
+(an accidental edit undone exactly) with no decision block in it decided since; and, after a close
+and a reopen, the approved text with only the questions the close withdrew open again.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as a decision block at the end of the section it

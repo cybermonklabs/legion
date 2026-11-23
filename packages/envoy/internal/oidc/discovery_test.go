@@ -53,7 +53,7 @@ func TestNothingIsDiscoveredAtConstruction(t *testing.T) {
 // answers, the next call discovers it and works.
 func TestCodeFlowFailsUnavailableUntilDiscoveredAndWorksAfter(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret, flowRedirect)
 	issuer.FailDiscovery(http.StatusServiceUnavailable)
 	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, "")
 	clock := newTestClock()

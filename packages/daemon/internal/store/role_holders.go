@@ -141,15 +141,11 @@ func (s *Store) queuesRoleHolders(c supervise.Claim) bool {
 	return s.roleHoldersQueued.Load() != nil && holdsIssueRole(c) && claim.KeyOfProject(c.Project, c.Issue)
 }
 
-// CommittedClaim is told each claim write whose transaction has committed, queued whether that
-// write queued the publication of its issue: the store's own claim writes tell it, and a caller
-// that wrote a claim in its own transaction (PutClaimTx, PutClaimAndDeliveryTx) tells it after
-// its commit.
-func (s *Store) CommittedClaim(c supervise.Claim, queued bool) {
-	if !queued {
-		return
-	}
+// wakeRoleHolders tells the daemon's wake (PublishRoleHolders) issue, whose publication a claim
+// write queued, once that write's transaction has committed: the hook putClaim registers, the one
+// wake of that publication.
+func (s *Store) wakeRoleHolders(issue string) {
 	if woken := s.roleHoldersQueued.Load(); woken != nil {
-		(*woken)(c.Issue)
+		(*woken)(issue)
 	}
 }

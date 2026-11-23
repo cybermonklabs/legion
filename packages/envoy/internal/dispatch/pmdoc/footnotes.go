@@ -12,12 +12,22 @@ import (
 	"golang.org/x/text/language"
 )
 
-// footnoteReferenceParser is goldmark's footnote reference parser, with a reference whose label
-// matches a definition's only up to case (footnoteLabelKey) resolved to that definition, as the
-// browser editor's parser resolves it: goldmark matches a label byte for byte, and read `[^A]` as
-// text beside `[^a]: `. Such a reference carries its label as written (referenceLabelAttr), which
-// the browser editor keeps on it.
-type footnoteReferenceParser struct{ parser.InlineParser }
+// footnoteReferenceParser reads a footnote reference, `[^label]`, or `![^label]` after an image's
+// bang, and resolves its label from maps of the parse's definitions built once
+// (footnoteDefinitionsOf): a label equal byte for byte to a definition's resolves to the first such
+// definition, as goldmark's footnote parser resolves it, and one that matches a definition's only
+// up to case (footnoteLabelKey) to the first definition with that key, as the browser editor's
+// parser resolves it, where goldmark read `[^A]` as text beside `[^a]: `. Such a reference carries
+// its label as written (referenceLabelAttr), which the browser editor keeps on it. It is a parser
+// of its own, not goldmark's wrapped: goldmark's found the definition by walking every one of them
+// for each reference, so a body of n references and their n definitions cost it n²/2 comparisons,
+// and after a bang it read the third byte as the caret without asking whether the second opened
+// the label, so `!x^a]` beside `[^a]: ` lost its `x` to a reference and every `!x^` scanned the
+// rest of its line for a closer.
+type footnoteReferenceParser struct{}
+
+// Trigger is the bytes a reference starts with: the label's opener, or an image's bang before it.
+func (footnoteReferenceParser) Trigger() []byte { return []byte{'!', '['} }
 
 // footnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
 // mapping, lowered and then uppercased, so `ß` matches `SS` and `İ` matches `i̇`, which simple case
@@ -26,21 +36,19 @@ func footnoteLabelKey(label string) string {
 	return cases.Upper(language.Und).String(cases.Lower(language.Und).String(label))
 }
 
-// referenceLabelAttr is the label a reference resolved by footnoteReferenceParser is written with.
+// referenceLabelAttr is the label a reference resolved by footnoteReferenceParser only up to case
+// is written with.
 var referenceLabelAttr = []byte("pmdoc-reference-label")
 
-func (p footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc parser.Context) ast.Node {
-	row, position := block.Position()
-	if node := p.InlineParser.Parse(parent, block, pc); node != nil {
-		return node
-	}
-	block.SetPosition(row, position)
+func (footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc parser.Context) ast.Node {
 	line, segment := block.PeekLine()
-	start := 1
+	opener := 0
 	if len(line) > 0 && line[0] == '!' {
-		start++
+		opener++
 	}
-	if start+1 >= len(line) || line[start] != '^' {
+	// start is the caret's index, after the opener.
+	start := opener + 1
+	if start+1 >= len(line) || line[opener] != '[' || line[start] != '^' {
 		return nil
 	}
 	closure := util.FindClosure(line[start+1:], '[', ']', false, false) //nolint:staticcheck
@@ -48,7 +56,13 @@ func (p footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc 
 		return nil
 	}
 	label := line[start+1 : start+1+closure]
-	definition := footnoteDefinitionsByKey(pc)[footnoteLabelKey(string(label))]
+	definitions := footnoteDefinitionsOf(pc)
+	// Goldmark compares the label as its reader gives the segment's value back.
+	written := block.Value(gmtext.NewSegment(segment.Start+start+1, segment.Start+start+1+closure))
+	definition, exact := definitions.byLabel[string(written)], true
+	if definition == nil {
+		definition, exact = definitions.byKey[footnoteLabelKey(string(label))], false
+	}
 	if definition == nil {
 		return nil
 	}
@@ -59,26 +73,37 @@ func (p footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc 
 	}
 	block.Advance(start + 1 + closure + 1)
 	link := extensionast.NewFootnoteLink(definition.Index)
-	link.SetAttribute(referenceLabelAttr, string(label))
+	if !exact {
+		link.SetAttribute(referenceLabelAttr, string(label))
+	}
 	if line[0] == '!' {
 		parent.AppendChild(parent, ast.NewTextSegment(gmtext.NewSegment(segment.Start, segment.Start+1)))
 	}
 	return link
 }
 
-// footnoteKeysKey holds a parse's footnoteDefinitionsByKey.
+// footnoteDefinitions is each footnote definition in goldmark's list by its label as written
+// (byLabel) and by its label's key (byKey, footnoteLabelKey), the first in the list where two share
+// one: goldmark's list holds them in the order they close, which is the order of their slots.
+type footnoteDefinitions struct {
+	byLabel, byKey map[string]*extensionast.Footnote
+}
+
+// footnoteKeysKey holds a parse's footnoteDefinitionsOf.
 var footnoteKeysKey = parser.NewContextKey()
 
-// footnoteDefinitionsByKey is each footnote definition in goldmark's list by its label's key
-// (footnoteLabelKey), the first in the document where two share one. It is built once per parse,
-// on the first reference goldmark's parser leaves unresolved: inline text is parsed after every
-// block has closed, so each definition has its slot by then.
-func footnoteDefinitionsByKey(pc parser.Context) map[string]*extensionast.Footnote {
-	if byKey, ok := pc.Get(footnoteKeysKey).(map[string]*extensionast.Footnote); ok {
-		return byKey
+// footnoteDefinitionsOf is the parse's footnoteDefinitions. It is built once per parse, on its
+// first reference: inline text is parsed after every block has closed, so each definition has its
+// slot by then.
+func footnoteDefinitionsOf(pc parser.Context) footnoteDefinitions {
+	if definitions, ok := pc.Get(footnoteKeysKey).(footnoteDefinitions); ok {
+		return definitions
 	}
 	slots, _ := pc.Get(footnoteSlotsKey).([]*footnoteSlot)
-	byKey := make(map[string]*extensionast.Footnote, len(slots))
+	definitions := footnoteDefinitions{
+		byLabel: make(map[string]*extensionast.Footnote, len(slots)),
+		byKey:   make(map[string]*extensionast.Footnote, len(slots)),
+	}
 	for _, slot := range slots {
 		definition, ok := slot.definition.(*extensionast.Footnote)
 		if !ok {
@@ -87,13 +112,16 @@ func footnoteDefinitionsByKey(pc parser.Context) map[string]*extensionast.Footno
 		if _, listed := definition.Parent().(*extensionast.FootnoteList); !listed {
 			continue
 		}
+		if _, seen := definitions.byLabel[string(definition.Ref)]; !seen {
+			definitions.byLabel[string(definition.Ref)] = definition
+		}
 		key := footnoteLabelKey(string(definition.Ref))
-		if _, first := byKey[key]; !first {
-			byKey[key] = definition
+		if _, seen := definitions.byKey[key]; !seen {
+			definitions.byKey[key] = definition
 		}
 	}
-	pc.Set(footnoteKeysKey, byKey)
-	return byKey
+	pc.Set(footnoteKeysKey, definitions)
+	return definitions
 }
 
 // footnotes is goldmark's footnote extension with its definition parser taking every space and
@@ -109,14 +137,14 @@ func (footnotes) Extend(m goldmark.Markdown) {
 }
 
 // footnoteParserOptions registers footnotes: the definition parser (footnoteDefinitionParser) and
-// goldmark's reference parser (footnoteReferenceParser), which numbers the definitions it refers
-// to. Goldmark's footnote transformer is left out: it only orders the definitions, drops those
-// nothing refers to and appends backlinks, and the parser keeps every definition where it is
-// written (definitionsInPlace) and writes no backlink.
+// the reference parser (footnoteReferenceParser), which numbers the definitions it refers to.
+// Goldmark's footnote transformer is left out: it only orders the definitions, drops those nothing
+// refers to and appends backlinks, and the parser keeps every definition where it is written
+// (definitionsInPlace) and writes no backlink.
 func footnoteParserOptions() []parser.Option {
 	return []parser.Option{
 		parser.WithBlockParsers(util.Prioritized(frontmatterAttempt{endsContainers{footnoteDefinitionParser{nestingGuard{BlockParser: extension.NewFootnoteBlockParser()}}}}, 999)),
-		parser.WithInlineParsers(util.Prioritized(footnoteReferenceParser{extension.NewFootnoteParser()}, 101)),
+		parser.WithInlineParsers(util.Prioritized(footnoteReferenceParser{}, 101)),
 	}
 }
 

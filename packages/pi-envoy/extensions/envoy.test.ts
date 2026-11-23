@@ -31,6 +31,7 @@ import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
   canonicalTopic,
+  EnvelopeSchema,
   type Envelope,
   legacyDispatchIssueSubject,
   type SessionAnswer,
@@ -54,7 +55,11 @@ import { forgetShownPictures, shownPictures } from "@legion/envoy-client/dispatc
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
-import { NATS_DIAL_PLAN, NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
+import {
+  NATS_DIAL_PLAN,
+  NATS_DIAL_TOKEN_DROPPED,
+  natsConnectionOptions,
+} from "@legion/envoy-client/nats-connection";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
@@ -66,6 +71,15 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import {
+  NATS_START_HOOK_MS,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServerWithConfig,
+  sessionGrantConfig,
+  useNatsServerDirectory,
+} from "@legion/envoy-client/test/nats-server";
+import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
@@ -14630,6 +14644,97 @@ console.log(JSON.stringify(args));
       });
     }
 
+    // The live view draws the Envoy cards the session displays from its stream, and a person's
+    // Dispatch message from Dispatch's store (dispatch://INFRA-5271, R1). So a card that delivers
+    // a Dispatch message to the session names that message in its `details`, and the stream
+    // leaves the card out; every other card is streamed as the terminal shows it.
+    const cardFrames = () =>
+      natsState.published
+        .filter((published) => published.subject === "agentstream.ses_delivery.frames")
+        .map((published) => JSON.parse(new TextDecoder().decode(published.data)))
+        .filter((frame) => frame.kind === "message");
+
+    /** Hands the session `envelope` while a viewer watches, and writes the card it shows as the
+     *  host does, through `message_start` and `message_end`. */
+    async function writeCard(query: string, envelope: string) {
+      const { agent, context, delivered, fixture } = await bootDirectSession(query, {
+        accept: () => ({ code: "UNAUTHORIZED", status: 401 }),
+      });
+      natsState.controls
+        .get("agentstream.ses_delivery.control")
+        ?.push(JSON.stringify({ type: "watch", v: 1 }));
+      agent.push(envelope);
+      await delivered(1);
+      const [card] = fixture.deliveries;
+      if (card === undefined) throw new Error("the session showed no card");
+      const message = { ...card, role: "custom", timestamp: 10 };
+      await fixture.handlers.get("message_start")?.({ message }, context);
+      await fixture.handlers.get("message_end")?.({ message }, context);
+      return card;
+    }
+
+    for (const [name, envelope, messageID] of [
+      [
+        "an issue message to the session",
+        targetedDispatchEnvelope("steer", "card-stream-issue"),
+        "11111111-1111-4111-8111-111111111111",
+      ],
+      [
+        "a person's direct message Dispatch did not accept as a turn",
+        directDispatchEnvelope("steer", "card-stream-direct"),
+        DIRECT_MESSAGE_ID,
+      ],
+    ] as const) {
+      test(`${name} keeps its card, which names the message, out of the live stream`, async () => {
+        const card = await writeCard(`card-stream-${name}`, envelope);
+
+        expect(card.details).toMatchObject({ dispatchMessageId: messageID });
+        expect(cardFrames()).toEqual([]);
+      });
+    }
+
+    const peerWords = "Two findings:\n\n1. one\n2. two";
+    for (const [name, envelope, text] of [
+      [
+        "a comment that mentions the session",
+        targetedCommentEnvelope("aside", "card-stream-comment"),
+        (content: string) => `Envoy message from dispatch:\n\n\`\`\`\n${content}\n\`\`\``,
+      ],
+      [
+        "another agent's message",
+        JSON.stringify({
+          event_id: "evt-card-stream-peer",
+          source: "agent",
+          source_event_id: "source-card-stream-peer",
+          source_session: "ses_peer",
+          topic: "notifications.agent.ses_delivery",
+          dedupe_key: `agent.ses_peer.${createHash("sha256").update("card-stream-peer").digest("hex").slice(0, 32)}`,
+          issued_at: 1,
+          payload: peerWords,
+          payload_summary: "Two findings: …",
+          trace_id: "trace-card-stream-peer",
+        }),
+        () => `Envoy message from ses_peer:\n\n${peerWords}`,
+      ],
+    ] as const) {
+      test(`${name} reaches the live stream as one user message saying who sent it`, async () => {
+        const card = await writeCard(`card-stream-${name}`, envelope);
+
+        expect(card.details).not.toHaveProperty("dispatchMessageId");
+        const frames = cardFrames();
+        // The card's start and its end, one message.
+        expect(frames).toHaveLength(2);
+        expect(new Set(frames.map((frame) => frame.message.id)).size).toBe(1);
+        expect(frames[1]?.message).toMatchObject({
+          at: 10,
+          parts: [{ text: text(card.content), type: "text" }],
+          role: "user",
+          streaming: false,
+        });
+        expect(frames[1]?.message.dispatchMessageId).toBeUndefined();
+      });
+    }
+
     // On a host with `pi.sendUserInput` (our fork, can1357/oh-my-pi#14323) a person's accepted
     // Send or Aside runs as typed at the terminal: a command, a skill, a template or a prompt.
     // Whatever a command printed, or why it did not run, is the session's reply on Dispatch, which
@@ -15297,6 +15402,32 @@ console.log(JSON.stringify(args));
           () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-ran"),
           "the shell command's message to be recorded as taken"
         );
+      }, 20_000);
+
+      // A host busy with a turn as the command ends queues the agent's copy for its next prompt
+      // and fires `message_start` and `message_end` for it then (dispatch://INFRA-5271 review).
+      // The live view holds the report already, keyed on the person's message, so the copy names
+      // that message and the stream leaves it out: the report is drawn once.
+      test("the agent's copy of the report, written by a busy host at its next prompt, adds nothing to the live stream", async () => {
+        const { agent, context, fixture, replied } = await bootShellSession(
+          "shell-command-copy-written",
+          { accept: () => ({ accepted: true, body: "!printf hi" }) }
+        );
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-copy-written"));
+        await replied(1);
+        const copy = fixture.deliveries.at(-1);
+        if (copy === undefined) throw new Error("the agent was handed no copy of the report");
+
+        const message = { ...copy, role: "custom", timestamp: Date.now() + 1 };
+        await fixture.handlers.get("message_start")?.({ message }, context);
+        await fixture.handlers.get("message_end")?.({ message }, context);
+
+        // The report's own frame, once, and no frame of the copy.
+        expect(
+          streamFrames().map((frame) => [frame.message.dispatchMessageId, frame.message.parts])
+        ).toEqual([[DIRECT_MESSAGE_ID, [{ text: "!printf hi\n\n```\nhi\n```", type: "text" }]]]);
+        expect(copy.details).toEqual({ ...LOCAL_ENVOY_NOTICE, dispatchMessageId: DIRECT_MESSAGE_ID });
       }, 20_000);
 
       test("runs it in the directory the session's context names", async () => {
@@ -21551,6 +21682,55 @@ console.log(JSON.stringify(args));
     });
   }, 30_000);
 
+  // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
+  // of connections lists: the image's build-commit stamp, else a packed build's release version,
+  // else none.
+  test("the connection name the server sees ends with the plugin's build", async () => {
+    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
+      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      const names: string[] = [];
+      setNatsConnectForTests(
+        (async (options: ConnectionOptions) => {
+          names.push(options.name ?? "");
+          throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
+        }) as unknown as typeof realConnect,
+        NATS_DIAL_PLAN
+      );
+      const stampDirectory = mkdtempSync(join(tmpdir(), "pi-envoy-build-"));
+      try {
+        // An instance of its own (the query), as each row of this file loads one: the build source
+        // it is given is that instance's module state.
+        const entry = await import("./envoy.ts?connection-build");
+        const commit = "0123456789abcdef0123456789abcdef01234567";
+        const rows = [
+          { stamp: `${commit}\n`, packed: true, want: `omp-ses_build legion@${commit}` },
+          { stamp: undefined, packed: true, want: `omp-ses_build @sjawhar/pi-envoy@${packageVersion}` },
+          { stamp: undefined, packed: false, want: "omp-ses_build" },
+        ];
+        for (const [index, row] of rows.entries()) {
+          const stamp = join(stampDirectory, `build-commit-${index}`);
+          if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
+          entry.setBuildSourceForTests({ stamp, packed: row.packed });
+          const context: SessionContext = {
+            cwd: "/tmp/envoy-omp-test",
+            sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
+            setInterval: () => {},
+            ui: sessionContext().ui,
+          };
+          const fixture = createPi();
+          entry.default(fixture.pi);
+          names.length = 0;
+          await fixture.handlers.get("session_start")?.({}, context);
+          await fixture.handlers.get("session_shutdown")?.({}, context);
+          expect(names[0]).toBe(row.want);
+        }
+      } finally {
+        rmSync(stampDirectory, { recursive: true, force: true });
+        setNatsConnectForTests(natsStandInConnect);
+      }
+    });
+  }, 30_000);
+
   for (const { row, error, shown, withheld } of [
     {
       row: "names the NATS failure in the refused registration and in every part of the notice",
@@ -24663,6 +24843,76 @@ describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", (
   }, 120_000);
 });
 
+// The live view's replay answer (`pumpAgentStreamControl`) through a real nats-server, on the
+// session's own connection authenticated as a session user holding the grant the NATS auth
+// service gives a session (`sessionGrantConfig`, `natsgrant.Session` itself): publish its replies
+// under `_INBOX.*.<session id>.>` alone. The scenario is the one claude-envoy's row runs too
+// (`runReplayGrantScenario`): a replay asked on a reply subject naming the session is answered;
+// one asked on nats.go's own request inbox, the subject Dispatch used before, is refused by the
+// server and reaches nobody; the session then answers on its own prefix again. This row keeps the
+// extension's own boot, connection and shutdown. Docker-backed: the pi-envoy job runs this suite
+// with LEGION_E2E=1, its NATS service having pulled the image.
+const replyGrantServerDirectory = useNatsServerDirectory();
+
+describe.skipIf(process.env.LEGION_E2E !== "1")(
+  "the replay answer under a session's own NATS grant",
+  () => {
+    const SESSION = "ses_reply_grant";
+    const sessionUser = nkeys.createUser();
+    const requesterUser = nkeys.createUser();
+    const server = natsServerWithConfig(
+      replyGrantServerDirectory,
+      sessionGrantConfig({
+        sessionID: SESSION,
+        sessionKey: sessionUser.getPublicKey(),
+        requesterKey: requesterUser.getPublicKey(),
+      })
+    );
+
+    beforeAll(() => server.start(natsHookDeadline(NATS_START_HOOK_MS)), NATS_START_HOOK_MS);
+    afterAll(() => server.stop(natsHookDeadline(NATS_STOP_HOOK_MS)), NATS_STOP_HOOK_MS);
+
+    test("answers a replay asked on its own reply prefix, and nothing on nats.go's request inbox", async () => {
+      const decoder = new TextDecoder();
+      const originalSeed = process.env.NATS_NKEY_SEED;
+      process.env.ENVOY_NATS_URL = server.url;
+      process.env.NATS_NKEY_SEED = decoder.decode(sessionUser.getSeed());
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
+        responseWithRegistration(input, init, [])) as typeof fetch;
+      natsState.realConnect = true;
+      const requester = await realConnect({
+        ...natsConnectionOptions({
+          servers: [server.url],
+          name: "pi-envoy-reply-grant-requester",
+          credential: {
+            kind: "seed",
+            seed: {
+              value: decoder.decode(requesterUser.getSeed()),
+              source: "the row's requester user",
+            },
+          },
+        }),
+        reconnect: false,
+      });
+      // A module instance of its own, as every row here takes one: the extension keeps its
+      // session's state, so a static import would share it with every other row of the file.
+      const { default: envoyExtension } = await import("./envoy.ts?reply-grant");
+      const fixture = createPi();
+      envoyExtension(fixture.pi);
+      const context = sessionContext(SESSION);
+      try {
+        await fixture.handlers.get("session_start")?.({}, context);
+        await runReplayGrantScenario({ requester, server, sessionID: SESSION });
+      } finally {
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+        await requester.close();
+        if (originalSeed === undefined) delete process.env.NATS_NKEY_SEED;
+        else process.env.NATS_NKEY_SEED = originalSeed;
+      }
+    }, 60_000);
+  }
+);
+
 // What the envoy_send and envoy_publish tools tell the model about where a message went
 // (INFRA-626): a send to a stopped session is queued and never sent, and a publish counts the
 // other sessions it reaches, or says it reaches none.
@@ -24776,6 +25026,52 @@ describe("the send and publish answers", () => {
           event_id: "evt_text",
           topic: "notifications.team.test",
           ...published.counts,
+        });
+      } finally {
+        await session.stop();
+      }
+    });
+  }
+
+  // The listener answers a repeat of another sender's key with that message's ids and times
+  // alone, its text fields empty: both tools report it as not delivered, naming that message's
+  // event id. The control is the envelope schema every answer was read by before, which throws
+  // on it.
+  for (const tool of ["envoy_send", "envoy_publish"] as const) {
+    test(`${tool} reports a key another sender's message holds as not delivered`, async () => {
+      const taken = {
+        event_id: "evt_alice",
+        source: "",
+        source_event_id: "",
+        topic: "notifications.team.test",
+        dedupe_key: "publish.key",
+        issued_at: 1,
+        payload_summary: "",
+        trace_id: "",
+        recipient: "ses_target",
+        duplicate: true,
+      };
+      expect(() => EnvelopeSchema.parse(taken)).toThrow();
+      const session = await bootTool(`answers-key-taken-${tool}`, taken);
+
+      try {
+        const result = await session.fixture.tools
+          .find((candidate) => candidate.name === tool)
+          ?.execute(
+            "",
+            tool === "envoy_send"
+              ? { session_id: "ses_target", message: "bob's words" }
+              : { topic: "notifications.team.test", message: "bob's words" }
+          );
+
+        expect(result?.content[0]?.text).toBe(
+          `not delivered: another sender's message (evt_alice) already holds this idempotency_key, so Envoy stored nothing for you; ${tool === "envoy_send" ? "send it again without an idempotency_key; Envoy gives it a new one" : "publish it again; Envoy gives every publish a new idempotency_key"}`
+        );
+        expect(result?.details).toStrictEqual({
+          event_id: "evt_alice",
+          topic: "notifications.team.test",
+          delivered: false,
+          key_taken: true,
         });
       } finally {
         await session.stop();

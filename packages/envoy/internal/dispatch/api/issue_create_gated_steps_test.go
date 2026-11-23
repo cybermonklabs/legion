@@ -72,6 +72,7 @@ func (h *heldStatement) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tr
 // publish goes on. Both must succeed, and the issue must be the one the session asked for,
 // assigned to the person the project names.
 func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t *testing.T) {
+	t.Parallel()
 	held := newHeldStatement(t, "update projects set gated_steps")
 	handler, database, _ := newTestServer(t, testServerOptions{tracer: held})
 	const project = "HANDOVER"

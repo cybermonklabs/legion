@@ -27,6 +27,7 @@ import (
 // (blockers.waitsOf), so a repair that read the root's slot passed such a child over, which is
 // why the deployment's twelve stood.
 func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -78,7 +79,7 @@ func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {
 // it a slot: a running root can hold none, as while it waits on another issue.
 func openStatusRepairLifecycle(t *testing.T, pool *store.Pool, records record.Store, tree string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		project, err := claim.ProjectToken("LEGION")
 		if err != nil {
 			return err
@@ -97,6 +98,7 @@ func openStatusRepairLifecycle(t *testing.T, pool *store.Pool, records record.St
 // write. That is the cost the design accepts for reading one field of the record rather than the
 // board, and this test is what records it.
 func TestTheStatusRepairKeepsQueuingARowTheOutboxWillNotWrite(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -135,6 +137,7 @@ func TestTheStatusRepairKeepsQueuingARowTheOutboxWillNotWrite(t *testing.T) {
 // the row was queued against, which is the guard that keeps a stale row off a person's move. The
 // record and the board both stay where they were.
 func TestTheStatusRepairWritesNothingOverAStatusTheDaemonNeverSaw(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -170,6 +173,7 @@ func TestTheStatusRepairWritesNothingOverAStatusTheDaemonNeverSaw(t *testing.T) 
 // event, or a boot listing — so the record still reads todo here, and the next repair run queues
 // the write again until that event arrives.
 func TestNoOutboxFinishWritesTheRecordsDispatchStatus(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -211,7 +215,7 @@ func staleStatusIssue(at phase.Phase, status, shown string) record.Issue {
 // granted a slot and nothing else would describe a tree the daemon reads as never opened.
 func putStatusRepairSlot(t *testing.T, pool *store.Pool, records record.Store, issue string) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: issue, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {
 			return err
 		}

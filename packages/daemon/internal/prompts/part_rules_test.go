@@ -184,7 +184,9 @@ func TestTheComposedPromptsAnswerAnApprovedNewVersion(t *testing.T) {
 			summary   = "`A person approved a new version of the design of <tree>.`"
 			message   = "Request no approval for it."
 		)
-		answers := []string{accepting, "`planning`, `implementing` or `testing`", "a `reason` that names the version and the change"}
+		// The moves back name planning as main's news rule does, and each step a task may lack only
+		// where the task has it, as the owner's plan reads them (TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns).
+		answers := []string{accepting, "`implementing`, or to `planning` or `testing` where its task has that step", "a `reason` that names the version and the change"}
 		duty := []string{summary, "a merged change never moves back", "whose pull request is still open", "`dispatch ask` the person on the root"}
 		r4 := []string{message, "`envoy_publish` to the role topic of the phase holder of each issue the version changes, naming the version and what changed"}
 		ruleIn(t, "go/architect-common.md", accepting, answers...)

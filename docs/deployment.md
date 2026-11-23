@@ -123,7 +123,10 @@ They resolve that App's key on the driver, from the operator's `LEGION_E2E_REVIE
 
 The daemon runs the command with `sh -c` whenever it needs a lease: at boot, and again once fewer
 than 20 minutes remain on a lease it holds.
-Its environment is the daemon's, less the NATS seeds and every variable whose name starts
+At boot it runs each App's command once to read the App's login and once more to prove its key.
+A login read that fails after the release, and is tried again, reads under the same token until
+fewer than 20 minutes remain on it, and an App whose login was read is not read again.
+The command's environment is the daemon's, less the NATS seeds and every variable whose name starts
 `LEGION_GITHUB_`, with two variables the daemon sets:
 `LEGION_GITHUB_OWNER`, the account whose installation token the daemon wants (empty for every
 installation the command may release, which the boot's read of the App's login asks for), and
@@ -487,6 +490,13 @@ record and exits 1, and boot refuses with `scrub the private tmux server's envir
 trusted`. Put a real tmux binary first on the daemon's `PATH`
 (`mise which tmux` prints its install path), as the live proofs do with `real_bin_path`
 (`scripts/e2e/README.md`).
+
+The private server reads no tmux configuration file: the command that starts it carries
+`-f /dev/null`, so the server's start does not run, or wait for, the operator's `~/.tmux.conf`
+or its plugins. An operator who attaches with `tmux -L legion-<project> attach` gets tmux's
+default keys and options. `source-file` in that client is not local to the client: tmux runs the
+file's commands on the daemon's server, so the file's options, key bindings and plugins then
+apply to that server and to the daemon's sessions and windows.
 
 ## What a pane's Dispatch credential is
 

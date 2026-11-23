@@ -64,6 +64,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -2462,7 +2463,7 @@ func storedCopiesOf(t *testing.T, js natsgo.JetStreamContext, head uint64, subje
 // sweep, so a row about that lease reads the count rather than the log alone. It counts the pull
 // requests the processes fetch for the same reason: one envelope handed to one intake is one
 // fetch, and the count is the only thing that tells one bound subscriber from two
-// (TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt).
+// (TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce).
 type githubFake struct {
 	server  *httptest.Server
 	release chan struct{}
@@ -4063,10 +4064,11 @@ func waitForPassBehind(
 
 // The first statement of each pass this test waits for, as pg_stat_activity shows it: the
 // reference-excerpt pass's write (refs.MarkStaleExcerpts) and the block-index pass's read of the
-// documents owed an index (docs' owedDocuments).
+// documents owed an index (docs' owedDocuments), which reads each of its two partial indexes in a
+// branch of its own and holds this text in both.
 const (
 	referenceExcerptPassStatement = "update refs r set excerpt_version = null"
-	blockIndexPassStatement       = "from document_block_versions b"
+	blockIndexPassStatement       = "select artifact_id from document_block_versions"
 )
 
 // Every leased maintenance loop takes a named lease for the length of its pass, so the second
@@ -4353,7 +4355,7 @@ const multiprocessServerURL = "http://dispatch.multiprocess.test"
 // that started the sign-in, and B answered 400 "invalid or expired state".
 func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, multiprocessServerURL+"/auth/callback")
 	env := cookieSignIn(issuer)
 	env["DISPATCH_SERVER_URL"] = multiprocessServerURL
 	pair := startPair(t, env)
@@ -4422,7 +4424,7 @@ func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 // so no third process with a key of its own serves beside these two.
 func TestASessionMintedOnOneProcessAuthenticatesOnTheOtherUnderOneSigningKey(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	pair.start(t, cookieSignIn(issuer))
 
@@ -4598,7 +4600,7 @@ const (
 // DISPATCH_SIGNING_KEY of two keys was one key, so each process refused the other's cookie.
 func TestAKeyRotationKeepsPeopleSignedInAcrossTwoProcesses(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	pair.a = startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{
 		NATSURL: pair.nats, SigningKey: rotationK1 + " " + rotationK0, Env: cookieSignIn(issuer),
@@ -4730,7 +4732,7 @@ const (
 // expired on its own, so the drop refuses nobody who is still signed in.
 func TestAStagedKeyRotationAcrossThreeAppliesKeepsPeopleSignedIn(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	// Every process of the walk runs the same unstamped build, and only its DISPATCH_SIGNING_KEY
 	// differs, so the binary is built once rather than once per start.
@@ -4851,7 +4853,8 @@ const fleetQuiet = 2*5*time.Second + time.Second
 // process start: two processes stamped C1 put one envelope on the stream; B restarted on C1 puts
 // none; B replaced by a C2 binary while A still runs C1 is a roll halfway through and puts none;
 // A replaced by C2 completes it and puts one for C2. Each process's /healthz fleet_commit follows
-// the announcements, whichever build that process itself runs.
+// the announcements, whichever build that process itself runs. Each announcement row the two
+// builds' own main wrote lists refs.TupleKinds, the relation kinds graph_edges' tuple arm renders.
 func TestTwoProcessesAnnounceTheirBuildOnce(t *testing.T) {
 	pair := newPair(t)
 	c1 := cmdtest.BuildStamped(t, "envoy-dispatch-c1", fleetBuildC1)
@@ -4901,9 +4904,50 @@ func TestTwoProcessesAnnounceTheirBuildOnce(t *testing.T) {
 
 	a = replace(a, "A", c2)
 	waitForAnnouncements(t, announced, fleetBuildC1, fleetBuildC2)
+	requireAnnouncedTupleKinds(t, pair.database, fleetBuildC1, fleetBuildC2)
 	waitForFleetCommit(t, fleetBuildC2, a, b)
 	time.Sleep(fleetQuiet)
 	requireAnnouncements(t, announced(), fleetBuildC1, fleetBuildC2)
+}
+
+// requireAnnouncedTupleKinds reads server_build_announcements in seq order and requires one row
+// per commit of commits, in that order, each listing refs.TupleKinds as its tuple_kinds. The rows
+// are the ones the server's own main wrote through the announcer it wires, so a main that passes
+// the announcer another list, or none, fails here where a test that builds its own announcer
+// cannot.
+func requireAnnouncedTupleKinds(t *testing.T, database *store.Store, commits ...string) {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `select commit, tuple_kinds from server_build_announcements order by seq`)
+	if err != nil {
+		t.Fatalf("read the announcements: %v", err)
+	}
+	type announcement struct {
+		commit string
+		kinds  []string
+	}
+	read, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (announcement, error) {
+		var a announcement
+		err := row.Scan(&a.commit, &a.kinds)
+		return a, err
+	})
+	if err != nil {
+		t.Fatalf("scan the announcements: %v", err)
+	}
+	// The rows are held to the commits the stream announced, so a table that holds no row
+	// cannot pass the check of the kinds by having nothing to check.
+	if len(read) != len(commits) {
+		t.Fatalf("server_build_announcements holds %d rows, want %d naming %v: %+v", len(read), len(commits), commits, read)
+	}
+	want := refs.TupleKinds()
+	for i, row := range read {
+		if row.commit != commits[i] {
+			t.Errorf("announcement %d names the commit %s, want %s", i, row.commit, commits[i])
+		}
+		if !slices.Equal(row.kinds, want) {
+			t.Errorf("announcement %d, of %s, lists the tuple kinds %v; want %v, refs.TupleKinds, the list main wires into its announcer",
+				i, row.commit, row.kinds, want)
+		}
+	}
 }
 
 // waitForAnnouncements waits up to thirty seconds for the stream to hold as many server.started
@@ -8628,10 +8672,10 @@ const keywordFillLostHoldLine = `msg="dispatch: the keyword fill's hold is lost;
 const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Second
 
 // A killed holder does not release its hold, so its hold lapses and the process that stood by takes
-// it and writes the events written since: within keywordFillTakeOverWithin of the kill, well inside
-// the 60 s bound from a holder's death to the rows of the events written after it. Every batch
-// before the kill is the first process's and every batch after is the second's, and every event
-// has exactly its row.
+// it within keywordFillTakeOverWithin of the kill and writes the events written since, whose rows
+// wait on the event horizon, which waits on the whole Postgres instance, bounded by the test
+// binary's deadline (textversionstest.AwaitRowsUntil). Every batch before the kill is the first
+// process's and every batch after is the second's, and every event has exactly its row.
 func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T) {
 	database := storetest.Open(t)
 	textversionstest.SeedIssue(t, database)
@@ -8645,12 +8689,12 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 	second.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
 
 	before := writeKeywordFillComments(t, database, 50)
-	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, before, nil)
 	first.kill(t)
 	killed := time.Now()
 	after := writeKeywordFillComments(t, database, 50)
 	secondHolder := keywordFillHolder(t, second, keywordFillTakeOverWithin-time.Since(killed))
-	textversionstest.AwaitRows(t, database, after, time.Minute-time.Since(killed), nil)
+	textversionstest.AwaitRowsUntil(t, database, after, nil)
 	t.Logf("the second process wrote the events written after the kill %v after it", time.Since(killed).Round(time.Millisecond))
 
 	requireKeywordFillWritersInTurn(t, writes(), firstHolder, secondHolder)
@@ -8738,7 +8782,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 	standby.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
 
 	before := writeKeywordFillComments(t, database, 20)
-	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, before, nil)
 	frozenAt := frozen.signal(t, syscall.SIGSTOP)
 	resumed := false
 	// So a failure never leaves a stopped process behind: the cleanup cmdtest.Start registered
@@ -8752,7 +8796,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 
 	whileFrozen := writeKeywordFillComments(t, database, 20)
 	standbyHolder := keywordFillHolder(t, standby, keywordFillTakeOverWithin-time.Since(frozenAt))
-	textversionstest.AwaitRows(t, database, whileFrozen, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, whileFrozen, nil)
 	t.Logf("the standby took the hold and wrote the events written meanwhile %v after the holder was frozen",
 		time.Since(frozenAt).Round(time.Millisecond))
 
@@ -8770,7 +8814,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 		afterResume = append(afterResume, writeKeywordFillComments(t, database, 5)...)
 		time.Sleep(2500 * time.Millisecond)
 	}
-	textversionstest.AwaitRows(t, database, afterResume, time.Minute, nil)
+	textversionstest.AwaitRowsUntil(t, database, afterResume, nil)
 
 	requireKeywordFillWritersInTurn(t, writes(), frozenHolder, standbyHolder)
 	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, whileFrozen, afterResume)...))

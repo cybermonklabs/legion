@@ -51,11 +51,17 @@ const (
 	frameAnswerUnknown
 )
 
-// frameVerdict is the edge's decision on one frame: its action, and the metric label (reason) a
-// counted drop or a withhold logs under.
+// frameVerdict is the edge's decision on one frame: its action, the metric label (reason) a
+// counted drop or a withhold logs under, and whether a fresh repository answer made it (answered):
+// a GitHub event relayed because a fresh answer names its repository, or dropped because every
+// answer of the session's projects is fresh and none names it (relayVerdict). Only such a verdict
+// ends a run of GitHub frames given back for want of an answer (sessionRelays.endGiveBacks,
+// relaySocket.endUnknownNaks); a drop of an event that names no repository, or of an envelope that
+// is no GitHub event, says nothing of the answer.
 type frameVerdict struct {
-	action frameAction
-	reason string
+	action   frameAction
+	reason   string
+	answered bool
 }
 
 func framePasses() frameVerdict             { return frameVerdict{action: framePass} }
@@ -71,14 +77,15 @@ func frameAnswerUnknownVerdict() frameVerdict {
 //   - a GitHub event is the repository rule's (relayVerdict), with no reader withheld
 //     answer_unknown, and one whose envelope names a topic that is no GitHub event's is withheld;
 //   - a message on an agent subject passes only on the session's own (ownFrameAgentSubject): a
-//     role message - a role-lane forward or a role-marked send - passes only for the project its
-//     role's claim works for (roleOfProjects), judged by the role and not by the
-//     subject it is stored on, since a forged role claim or a kept or taken copy can store
-//     another project's role's message on the session's own subject; any other frame passes by
-//     the topic its envelope names: the session's own agent subject is a message to the session,
-//     a send or a dead letter, which passes, and any other topic is judged as a frame of that
-//     topic. A forward of a GitHub event or of another agent subject, and an envelope that does
-//     not decode, are withheld;
+//     role message - a role-lane forward or a role-marked send, told by the read the session
+//     relay tells one by (readRoleFrame) - passes only for the project its role's claim works for
+//     (roleOfProjects), judged by the role and not by the subject it is stored on, since a forged
+//     role claim or a kept or taken copy can store another project's role's message on the
+//     session's own subject; any other frame, a message whose role that read cannot tell among
+//     them, as the relay sends one, passes by the topic its envelope names: the session's own
+//     agent subject is a message to the session, a send or a dead letter, which passes, and any
+//     other topic is judged as a frame of that topic. A forward of a GitHub event or of another
+//     agent subject, and an envelope that names no topic, are withheld;
 //   - every other frame passes when contracts.SubjectProject gives it a project the token lists
 //     and, where its envelope names a topic, that topic is of the same project: the subject a
 //     relay header names and the envelope it carries are both what a publisher on the relay
@@ -96,22 +103,29 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		return repositories.relayVerdict(projects, subject, data)
 	}
 	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
-		if !ownFrameAgentSubject(sessionID, projects, subject) || !named {
+		if !ownFrameAgentSubject(sessionID, projects, subject) {
 			return frameDrops(withheldProjectNotHeld)
 		}
 		// A role message - a role-lane forward, whose topic names the lane, or a role-marked
-		// send, whose role mark names the role (roleOfMessage.role) - is judged by the project
-		// its role's claim works for (roleOfProjects), not by the
-		// subject the frame is stored on. A forged role claim can name the session for another
-		// project's role and have Dispatch send that role's message on the session's own subject,
-		// and a kept or a taken copy of the session's own project's role keeps the previous
-		// holder's subject as its topic; both reach the session on its own agent subject. Reading
-		// the role is how the role lane, the relay and a takeover read one, and it holds a role
-		// lane to the project edgeTopicRule does (contracts.RoleClaimOf).
-		if role, _, isRole := decodeRoleMark(data); isRole {
-			if roleOfProjects(role, projects) {
+		// send, whose role mark names the role - is judged by the project its role's claim works
+		// for (roleOfProjects), not by the subject the frame is stored on. A forged role claim can
+		// name the session for another project's role and have Dispatch send that role's message
+		// on the session's own subject, and a kept or a taken copy of the session's own project's
+		// role keeps the previous holder's subject as its topic; both reach the session on its own
+		// agent subject. The role is read as the session relay, a takeover pass and the kept
+		// lane's walk read it (readRoleFrame): by the exact keys the plugins' transport reads,
+		// past a byte order mark and at any depth, so a frame the session's plugin reads as a
+		// role's message is judged by that role here, whatever encoding/json makes of its other
+		// fields or its case-folded keys. It holds a role lane to the project edgeTopicRule does
+		// (contracts.RoleClaimOf). A message whose role that read cannot tell is no role message,
+		// as the relay sends it, and is judged by its topic below.
+		if frame, err := readRoleFrame(data); err == nil && frame.role != "" {
+			if roleOfProjects(frame.role, projects) {
 				return framePasses()
 			}
+			return frameDrops(withheldProjectNotHeld)
+		}
+		if !named {
 			return frameDrops(withheldProjectNotHeld)
 		}
 		if ownFrameAgentSubject(sessionID, projects, topic) {

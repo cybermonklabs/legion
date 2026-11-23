@@ -324,7 +324,10 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
-// myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
+// myAnswersQuery is the offset page GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
+// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
+// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -483,6 +486,13 @@ type artifactVersionQuery struct {
 	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
 	// JSON that wraps it. Any other value answers as without it.
 	Download bool `query:"download"`
+	// Blocks, `true`, carries a document version's typed blocks beside its markdown, each read
+	// from that version's own text under the id its opening line writes, with its attributes and
+	// its byte range in the markdown the answer carries: the version as this build renders it,
+	// which is the stored text unless an earlier renderer wrote it otherwise, with the sha256 and
+	// the size of that text. A block's references read zero and it carries no embedding state:
+	// both describe the live document, not a version. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
 }
 
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
@@ -803,6 +813,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
