@@ -440,12 +440,15 @@ type AgentSecretsConfig struct {
 	ExchangeAudience   string
 }
 
+// DefaultAgentSecretsAudience is the audience an agent_secrets block that names none settles on,
+// Cipher's; the key table prints it as the block's default.
+const DefaultAgentSecretsAudience = "cipher"
+
 const (
-	agentSecretsKey             = kubernetesKey + ".agent_secrets"
-	defaultAgentSecretsAudience = "cipher"
-	defaultTokenExpirySeconds   = 3600
-	minTokenExpirySeconds       = 600
-	maxTokenExpirySeconds       = 3600
+	agentSecretsKey           = kubernetesKey + ".agent_secrets"
+	defaultTokenExpirySeconds = 3600
+	minTokenExpirySeconds     = 600
+	maxTokenExpirySeconds     = 3600
 )
 
 // readAgentSecrets reads `runtime.kubernetes.agent_secrets`: nil when absent, every member checked.
@@ -463,7 +466,7 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 	if fields["operator"] != nil {
 		return nil, fmt.Errorf("%s.operator was removed (LEGION-664): the daemon logs in with its own ServiceAccount token (token_file), which no person approves, so it names no approver; delete the key", agentSecretsKey)
 	}
-	block := &AgentSecretsConfig{Audience: defaultAgentSecretsAudience, TokenExpirySeconds: defaultTokenExpirySeconds}
+	block := &AgentSecretsConfig{Audience: DefaultAgentSecretsAudience, TokenExpirySeconds: defaultTokenExpirySeconds}
 	if block.URL, err = requiredString(fields["url"], agentSecretsKey+".url", ""); err != nil {
 		return nil, err
 	}

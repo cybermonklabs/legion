@@ -111,11 +111,10 @@
 # BROKER_SERVICE_LOGINS lets log in as legion-daemon and no pod runs as: each account holds one
 # launcher credential, so logging in as a running daemon's account would take that daemon's). The
 # run logs in as the daemon does, with that account's token, which the operator context mints with
-# `kubectl create token` for the audience a daemon gives an agent_secrets block that names none (as
-# `legion config reference` prints it), an hour long, and mints again every half hour while the
-# run lasts; no person approves it. The run asks nothing of a person: secrets-approval-ask cancels
-# the one request it makes rather than waiting for an approval. See scripts/e2e/README.md's Stage
-# 4a section.
+# `kubectl create token` for the broker audience the namespace's daemons use
+# (lib/broker-audience.ts), an hour long, and mints again every half hour while the run lasts; no
+# person approves it. The run asks nothing of a person: secrets-approval-ask cancels the one request
+# it makes rather than waiting for an approval. See scripts/e2e/README.md's Stage 4a section.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -315,9 +314,9 @@ if [ -n "$agent_secrets_account" ]; then
   # operator context for the broker's audience and written owner-only; never printed. The broker
   # refuses a token that lives longer than an hour, so the run mints one every half hour, and its
   # login reads the file afresh each time, as the daemon reads the kubelet's. The audience is the
-  # one a daemon gives an agent_secrets block that names none, read from `legion config reference`
-  # as the harness reads it from the same key table (agentSecretsDefaultAudience): a broker that
-  # verifies another refuses the login, and the secrets-* checks report that refusal.
+  # one the namespace's daemons use, read from their ConfigMaps' legion.yaml, or the daemon's default
+  # where none names one, as the harness reads it for the pods it enrolls: the run proves enrollment
+  # against the broker the deployment enrolls with.
   account_namespace=${agent_secrets_account%%/*}
   account_name=${agent_secrets_account#*/}
   [ -n "$account_namespace" ] && [ -n "$account_name" ] && [ "$account_namespace" != "$agent_secrets_account" ] ||
@@ -328,11 +327,12 @@ if [ -n "$agent_secrets_account" ]; then
   [ -z "$account_pods" ] ||
     fail "LEGION_E2E_AGENT_SECRETS_ACCOUNT $agent_secrets_account is the account pod(s) ${account_pods% } run as: a login as it would take that daemon's one launcher credential; list a ServiceAccount of the proof's own in BROKER_SERVICE_LOGINS and name it here"
   # shellcheck disable=SC2016  # the key table's literal backquotes around the value, not an expansion
-  agent_secrets_audience=$(go -C "$root/packages/daemon" run ./cmd/legion config reference --json |
+  agent_secrets_default=$(go -C "$root/packages/daemon" run ./cmd/legion config reference --json |
     jq -r '.[].nested[] | select(.path == "runtime.kubernetes.agent_secrets" and .name == "audience") | .default | ltrimstr("`") | rtrimstr("`")') ||
     fail "reading the daemon's default broker audience from legion config reference failed"
-  [[ $agent_secrets_audience =~ ^[^[:space:]]+$ ]] ||
-    fail "legion config reference gives no one default audience for runtime.kubernetes.agent_secrets, but '$agent_secrets_audience'"
+  agent_secrets_audience=$(op get configmaps -o json | bun "$root/scripts/e2e/lib/broker-audience.ts" "$agent_secrets_default") ||
+    fail "the namespace's daemons name no one broker audience to mint the run's login token for (the reason is above)"
+  note "[operator] the namespace's daemons enroll their pods for the broker audience $agent_secrets_audience; the run's login token is minted for it"
   agent_secrets_token_file=$work/agent-secrets-token
   mint_agent_secrets_token() {
     (
