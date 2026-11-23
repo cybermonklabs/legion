@@ -42,7 +42,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -50,6 +49,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -325,15 +325,11 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return b.buf.Write(p)
 }
 
-// tokenPattern matches the GitHub token forms (installation, OAuth, user-to-server, refresh,
-// personal, fine-grained personal), which a command's stderr may carry and no log or error may.
-var tokenPattern = regexp.MustCompile(`(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})`)
-
 // redactingLines writes each whole line of a command's stderr to out, and to keep for the failure's
-// message, with every GitHub token in it replaced, so `agent-secrets`' line naming a pending request
-// reaches the daemon's log as it is written while a token never does; flush writes a last line with
-// no newline. Past limit bytes in all it marks the stream overflowed, calls overflow, which ends the
-// command, and relays nothing more.
+// message, with every GitHub token form in it replaced (githubrest.RedactTokens), so
+// `agent-secrets`' line naming a pending request reaches the daemon's log as it is written while a
+// token never does; flush writes a last line with no newline. Past limit bytes in all it marks the
+// stream overflowed, calls overflow, which ends the command, and relays nothing more.
 type redactingLines struct {
 	out        io.Writer
 	keep       *bytes.Buffer
@@ -367,7 +363,7 @@ func (r *redactingLines) Write(p []byte) (int, error) {
 }
 
 func (r *redactingLines) emit(line []byte) {
-	clean := tokenPattern.ReplaceAll(line, []byte("[redacted]"))
+	clean := githubrest.RedactTokens(line)
 	_, _ = r.out.Write(clean)
 	r.keep.Write(clean)
 }
@@ -379,17 +375,12 @@ func (r *redactingLines) flush() {
 	r.pending = nil
 }
 
-// loginPattern is a GitHub account login, ghrepo's ownerName: what a release may name an
-// installation by, and the only owner text a refusal of a release quotes. It is a letter or digit
-// and then up to 38 letters, digits, hyphens and underscores. An underscore is admitted because a
-// managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and the broker releases such an
-// account's installation like any other: a rule here narrower than ghrepo's refused the whole
-// release, so no owner of it was minted for. The 39 characters are GitHub's own bound, which no
-// login exceeds.
-var loginPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$`)
-
 // parseRelease reads a token_command's stdout as the broker's release. Every refusal names the
-// field and the account and never quotes the output, which holds tokens.
+// field and the account and never quotes the output, which holds tokens. A release names each
+// installation by its account's login (ghrepo.IsLogin), and that is the only owner text a refusal
+// of a release quotes. A managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and the
+// broker releases such an account's installation like any other: a rule narrower than ghrepo's
+// refused the whole release, so no owner of it was minted for.
 func parseRelease(output []byte, field string, now time.Time) (map[string]releasedInstallation, error) {
 	var release struct {
 		Installations map[string]struct {
@@ -406,12 +397,12 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 	installations := make(map[string]releasedInstallation, len(release.Installations))
 	for owner, entry := range release.Installations {
 		// Every refusal after this one quotes the key, and a token's text is what no error may
-		// carry, so a key holding a token form tokenPattern names is refused here, unquoted. A
-		// real token is 40 characters or more and already fails loginPattern's 39; this closes
-		// the shorter text spelled as one, which the underscore a login holds would otherwise let
-		// through. A login that merely opens like a token (`ghs_acme`) holds no token form and is
-		// read.
-		if !loginPattern.MatchString(owner) || tokenPattern.MatchString(owner) {
+		// carry, so a key holding a GitHub token form (githubrest.HoldsToken) is refused here,
+		// unquoted. A real token is 40 characters or more and already fails a login's 39; this
+		// closes the shorter text spelled as one, which the underscore a login holds would
+		// otherwise let through. A login that merely opens like a token (`ghs_acme`) holds no
+		// token form and is read.
+		if !ghrepo.IsLogin(owner) || githubrest.HoldsToken(owner) {
 			return nil, fmt.Errorf("%s released an installation whose account is not a GitHub login", field)
 		}
 		if _, err := installationID(entry.InstallationID); err != nil {

@@ -10,10 +10,12 @@ import (
 
 // A sha, a word or a login a GitHub answer names prints only in the shape GitHub gives it: a
 // commit's forty lowercase hex digits, one of the words GitHub documents for the member, a login
-// GitHub allows. Anything else - here the probe, words that quote a URL carrying made-up
-// credentials, and an installation token echoed back - prints as a fixed phrase. An event id names
-// a sha that is not one by a digest: two such answers make two ids, and neither names what the
-// answer wrote.
+// GitHub serves - older logins ending in a hyphen or holding a double one and a managed user's
+// `_<shortcode>` among them - that holds no GitHub token form. Anything else - here the probe,
+// words that quote a URL carrying made-up credentials, an installation token echoed back, and a
+// token form short enough to pass a login's 39 characters - prints as a fixed phrase. An event id
+// names a sha that is not one by a digest: two such answers make two ids, and neither names what
+// the answer wrote.
 func TestAMemberOfGitHubsAnswerPrintsOnlyInItsShape(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	echoed := githubtest.InstallationToken(t.Name())
@@ -34,9 +36,16 @@ func TestAMemberOfGitHubsAnswerPrintsOnlyInItsShape(t *testing.T) {
 		{"a login of 39 characters", ShownLogin(strings.Repeat("a", 39)), strings.Repeat("a", 39)},
 		{"a login of 40 characters", ShownLogin(strings.Repeat("a", 40)), NotALogin},
 		{"an App's bot account", ShownLogin("legion-reviewer[bot]"), "legion-reviewer[bot]"},
-		{"a login with a double hyphen", ShownLogin("a--writer"), NotALogin},
-		{"a login ending in a hyphen", ShownLogin("writer-"), NotALogin},
+		{"a login with a double hyphen", ShownLogin("a--writer"), "a--writer"},
+		{"a login ending in a hyphen", ShownLogin("writer-"), "writer-"},
+		{"a managed user's login", ShownLogin("mona-cat_octo"), "mona-cat_octo"},
+		{"a login that opens like a token", ShownLogin("ghs_acme"), "ghs_acme"},
+		{"a login opening with a hyphen", ShownLogin("-writer"), NotALogin},
+		{"a login opening with an underscore", ShownLogin("_writer"), NotALogin},
 		{"an echoed token for a login", ShownLogin(echoed), NotALogin},
+		{"a token form within a login's 39 characters", ShownLogin(echoed[:30]), NotALogin},
+		{"a token form as an App's bot account", ShownLogin(echoed[:30] + "[bot]"), NotALogin},
+		{"a fine-grained token's form within 39 characters", ShownLogin("github_pat_0123456789abcdef"), NotALogin},
 		{"the probe for a login", ShownLogin(oauth2calltest.Words), NotALogin},
 	} {
 		if c.got != c.want {

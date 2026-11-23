@@ -7,7 +7,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
@@ -47,21 +46,20 @@ type Bundle struct {
 	Pairs   []ghrepo.Rename
 }
 
-// ownerLogin is a lowercased GitHub login, ghrepo's ownerName lowercased: a letter or digit and
-// then up to 38 letters, digits, hyphens and underscores. An underscore is admitted because a
-// managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and a repository of such an
-// account is one ghrepo parses and the daemon admits an issue on: a rule here narrower than
-// ghrepo's left that issue with no directory for its own repository, so no role of it launched.
-// The 39 characters are GitHub's own bound, which no login exceeds. A login is a path segment
-// under a bundle's root, so nothing else is one.
-var ownerLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,38}$`)
-
-// IsOwner says whether owner is a lowercased GitHub login, and so a directory a bundle may hold.
+// IsOwner says whether owner is a lowercased GitHub login, and so a directory a bundle may hold:
+// ghrepo's login grammar (ghrepo.IsLogin) in lower case, a letter or digit and then up to 38
+// letters, digits, hyphens and underscores. An underscore is admitted because a managed user's
+// login ends in `_<shortcode>` (`mona-cat_octo`), and a repository of such an account is one
+// ghrepo parses and the daemon admits an issue on: a rule here narrower than ghrepo's left that
+// issue with no directory for its own repository, so no role of it launched. The 39 characters
+// are GitHub's own bound, which no login exceeds. A login is a path segment under a bundle's
+// root, so nothing else is one.
+//
 // It is the rule for every directory of a bundle, its Default among them, and for the owner a
 // `gh` or a git-credential request names: a bundle's directory is one owner's whole lease, so
 // there is no narrower name for one to have. PairsFile can never collide with it: its name holds
 // a dot, which no GitHub login does.
-func IsOwner(owner string) bool { return ownerLogin.MatchString(owner) }
+func IsOwner(owner string) bool { return ghrepo.IsLogin(owner) && owner == strings.ToLower(owner) }
 
 // Dir is the directory an owner's two gh files live in under a bundle root: <root>/<owner>.
 func Dir(root, name string) string { return filepath.Join(root, name) }

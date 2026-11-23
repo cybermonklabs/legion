@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // A member of a GitHub answer that the daemon decodes as a plain string and decides on as it came -
@@ -70,17 +72,28 @@ func ShownWord(word string, documented ...string) string {
 // NotALogin is what ShownLogin prints in place of a login GitHub does not allow.
 const NotALogin = "(a login GitHub does not allow)"
 
-// loginName is a GitHub account's name as GitHub allows one: letters, digits and single hyphens,
-// with no hyphen first or last.
-var loginName = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`)
-
 // ShownLogin is login, an account a GitHub answer names, as a message may print it: login where it
-// is one GitHub allows - a name of at most 39 letters, digits and single hyphens, neither first nor
-// last, or an App's bot account, its slug and "[bot]" - and NotALogin otherwise.
+// is one GitHub serves (ghrepo.IsLogin: a letter or digit, then up to 38 letters, digits, hyphens
+// and underscores), or an App's bot account, its slug and "[bot]", and holds no GitHub token form
+// (HoldsToken); NotALogin otherwise. The grammar is the one GitHub serves, not its sign-up form's:
+// older logins GitHub still serves end in a hyphen or hold a double one, and a managed user's ends
+// in `_<shortcode>`, and a message that named such an account as no login would say what is
+// false. A token GitHub mints is 40 characters or more and fails the grammar's 39, but a shorter
+// text spelled as one passes the underscore the grammar admits, so the token test refuses it.
 func ShownLogin(login string) string {
-	name := strings.TrimSuffix(login, "[bot]")
-	if len(name) <= 39 && loginName.MatchString(name) {
+	if ghrepo.IsLogin(strings.TrimSuffix(login, "[bot]")) && !HoldsToken(login) {
 		return login
 	}
 	return NotALogin
 }
+
+// tokenForm matches the GitHub token forms: installation, OAuth, user-to-server, refresh and
+// personal (gh[opsur]_), and fine-grained personal (github_pat_).
+var tokenForm = regexp.MustCompile(`(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})`)
+
+// HoldsToken says whether text holds a GitHub token form anywhere in it. A text that merely opens
+// like one (`ghs_acme`) holds none.
+func HoldsToken(text string) bool { return tokenForm.MatchString(text) }
+
+// RedactTokens is text with every GitHub token form in it (HoldsToken) replaced by "[redacted]".
+func RedactTokens(text []byte) []byte { return tokenForm.ReplaceAll(text, []byte("[redacted]")) }
