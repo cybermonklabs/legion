@@ -564,20 +564,6 @@ async function probe(session: CardSession, expected: number): Promise<Request> {
   return turn.request;
 }
 
-/**
- * Resolves as `promise` does, or fails on `what` once `ms` have passed without it settling. A
- * real timer, as what it bounds is the real binary's answer time; a passing case never waits on it.
- */
-async function within<T>(what: string, ms: number, promise: Promise<T>): Promise<T> {
-  const late = Promise.withResolvers<never>();
-  const timer = setTimeout(() => late.reject(new Error(`${what}: no answer within ${ms} ms`)), ms);
-  try {
-    return await Promise.race([promise, late.promise]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 // A card queued while a turn runs used to be a steer, and the host drains its steering queue one
 // message per step, first in first out: five cards ahead of a person's Send held the Send back
 // five steps. As asides, the cards wait behind the Send, which reaches the model at the first step
@@ -919,14 +905,14 @@ test.skipIf(skip)(
 test.skipIf(skip)("a card that arrives while the session starts holds no RPC input", async () => {
   const session = await startSession({ holdStartup: true });
   const cards = [await session.card("s1"), await session.card("s2")];
-  await within("get_state written while the startup is held", 5_000, session.state());
+  await settled("get_state written while the startup is held", session.state());
   // The cards wait for the startup: neither has started a turn while it is held.
   expect(session.turns).toHaveLength(0);
   session.releaseStartup();
 
   // The cards' turn is held at its model request, and the host still answers RPC commands.
   const woken = await session.nextTurn("the turn the startup cards' wake started");
-  await within("get_state written while the turn is held", 5_000, session.state());
+  await settled("get_state written while the turn is held", session.state());
 
   const messages = conversation(woken.request);
   for (const card of cards) expect(messages).toContain(card);

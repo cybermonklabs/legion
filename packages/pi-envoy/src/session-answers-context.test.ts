@@ -10,6 +10,7 @@ import {
   sessionAnswersFailureLine,
   sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
+import { realTimeDeadline } from "@legion/test-fixtures/deadline";
 import {
   answersSentEntry,
   ask,
@@ -1342,6 +1343,22 @@ afterEach(() => {
   for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+/**
+ * Resolves as `promise` does, or fails naming `what` once the row's deadline has passed in real
+ * time. For a row that holds Bun's fake clock, under which the shared wait refuses to start and no
+ * timer of the row's runs: the deadline is the one the row-deadline preload armed in real time
+ * (`realTimeDeadline`), so a wait that never ends fails by name before Bun's guard ends the row.
+ */
+async function beforeTheRowsDeadline<T>(what: string, promise: Promise<T>): Promise<T> {
+  const deadline = realTimeDeadline(what);
+  return await Promise.race([
+    promise,
+    deadline.reached.then((): never => {
+      throw new Error(`${what} had not happened by the row's deadline, ${deadline.source}`);
+    }),
+  ]);
+}
+
 test("two copies of the extension and an empty list: one HTTP read, answered inside its deadline", async () => {
   const stateRoot = mkdtempSync(join(tmpdir(), "session-answers-context-"));
   stateRoots.push(stateRoot);
@@ -1382,14 +1399,27 @@ test("two copies of the extension and an empty list: one HTTP read, answered ins
   try {
     // Copy A's handler, its read in flight to Dispatch and its deadline armed.
     const copyA = withSessionAnswers(messages, requestOf(read, noBranch));
-    await asked.promise;
+    await beforeTheRowsDeadline(
+      "copy A's handler asking Dispatch",
+      Promise.race([
+        asked.promise,
+        copyA.then((): never => {
+          throw new Error("copy A's handler returned without asking Dispatch");
+        }),
+      ])
+    );
     // Dispatch answers 600 ms in: the deadline has not run out by then.
     jest.advanceTimersByTime(600);
     answer.resolve();
-    expect(await copyA).toBeUndefined();
+    expect(await beforeTheRowsDeadline("copy A's handler returning", copyA)).toBeUndefined();
     expect(sources).toEqual(["fresh"]);
     // Copy B's, on the array A passed on, with the clock where Dispatch answered.
-    expect(await withSessionAnswers(messages, requestOf(read, noBranch))).toBeUndefined();
+    expect(
+      await beforeTheRowsDeadline(
+        "copy B's handler returning",
+        withSessionAnswers(messages, requestOf(read, noBranch))
+      )
+    ).toBeUndefined();
   } finally {
     jest.useRealTimers();
   }

@@ -9,6 +9,10 @@
       "types": "./src/bun-child-environment.ts",
       "bun": "./src/bun-child-environment.ts"
     },
+    "./deadline": {
+      "types": "./src/deadline.ts",
+      "bun": "./src/deadline.ts"
+    },
     "./environment": {
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
@@ -59,11 +63,11 @@
     }
   },
   "//": [
-    "test: --timeout 10000 is at least twice the slowest row of this package, read on a 288-CPU dev box on 2026-11-22: row-deadline.test.ts's a wait ends at the deadline of a file's afterEach that follows a row, which runs a bun test of its own, took 2,560.28, 2,543.41 and 2,540.19 ms in three runs of this command at a one-minute load of 690 to 721, and 3,234.59 ms in a run of bare bun test at a load of about 950; 10000 holds that 3.09 times. A row that runs a bun test of its own is the machine's, and its guard is an open risk: at a load of 1,393 a row of that shape (fake-clock.test.ts's wait that never ends, as #4437 rewrites it) took 10,646 ms against this guard."
+    "test: --timeout 30000 is at least twice the slowest row of this package, read in a build-cluster pod (7 CPUs, gVisor) on 2026-11-23: row-deadline.test.ts's rows whose child spends a 4500 ms span and then waits out its 7000 ms deadline (a file's afterEach that follows a row, a describe's beforeAll that follows a row, a later file's beforeAll) took 11,511.81 to 11,512.89 ms in three runs of this command; 30000 holds that 2.61 times. Most of each such row is its child's own wait to that deadline, a span and a deadline the row sets; with each child stalled 1500 ms before each span, the whole file still passed, in 84 s."
   ],
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 10000 --preload @legion/test-fixtures/row-deadline",
+    "test": "bun test --timeout 30000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/"
   },
   "devDependencies": {

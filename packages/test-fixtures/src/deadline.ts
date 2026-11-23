@@ -76,15 +76,17 @@ let runner: Runner | undefined;
 let newestMark: number | undefined;
 
 /**
- * A real-time alarm: `passed` turns true once its delay has gone by in real time. Bun's fake clock
- * (`jest.useFakeTimers()`) holds every clock a row could read, `performance.now()`, `Date.now()`,
- * `process.hrtime` and `Bun.nanoseconds()` alike, and every timer the row sets (measured on Bun
- * 1.4.4), but not the timeout of `Atomics.waitAsync`, which the alarm waits on. A pending alarm
- * holds no process open.
+ * A real-time alarm: `passed` turns true, and `reached` resolves, once its delay has gone by in
+ * real time. Bun's fake clock (`jest.useFakeTimers()`) holds every clock a row could read,
+ * `performance.now()`, `Date.now()`, `process.hrtime` and `Bun.nanoseconds()` alike, and every
+ * timer the row sets (measured on Bun 1.4.4), but not the timeout of `Atomics.waitAsync`, which the
+ * alarm waits on. A pending alarm holds no process open. An alarm woken early (a later mark's)
+ * never passes, and its `reached` never resolves.
  */
 interface Alarm {
   readonly cell: Int32Array;
   passed: boolean;
+  readonly reached: Promise<void>;
 }
 
 /** `Atomics.waitAsync` (ES2024)'s result: settled at the call, or a promise of how it ended. */
@@ -105,14 +107,21 @@ const atomics = Atomics as unknown as {
 
 /** An alarm that passes once `ms` of real time have gone by. */
 function alarmAfter(ms: number): Alarm {
-  const alarm: Alarm = { cell: new Int32Array(new SharedArrayBuffer(4)), passed: false };
-  const waited = atomics.waitAsync(alarm.cell, 0, 0, Math.max(0, ms));
+  const cell = new Int32Array(new SharedArrayBuffer(4));
+  const reached = Promise.withResolvers<void>();
+  const alarm: Alarm = { cell, passed: false, reached: reached.promise };
+  const waited = atomics.waitAsync(cell, 0, 0, Math.max(0, ms));
   if (!waited.async) {
-    alarm.passed = waited.value === "timed-out";
+    if (waited.value === "timed-out") {
+      alarm.passed = true;
+      reached.resolve();
+    }
     return alarm;
   }
   void waited.value.then((outcome) => {
-    if (outcome === "timed-out") alarm.passed = true;
+    if (outcome !== "timed-out") return;
+    alarm.passed = true;
+    reached.resolve();
   });
   return alarm;
 }
@@ -132,13 +141,14 @@ export function markRow(): void {
 
 /**
  * The row's deadline as a wait under Bun's fake clock reads it (`./fake-clock`'s `turnsUntil`):
- * whether it has passed in real time, and the words a failure says that with. It is the newest
- * mark's deadline, which the mark armed in real time when it was taken, before the row's fake
- * clock stood still; with no mark it counts from the call. Outside `bun test` no fake clock runs,
- * so it throws.
+ * whether it has passed in real time, a promise that resolves when it does, and the words a
+ * failure says that with. It is the newest mark's deadline, which the mark armed in real time when
+ * it was taken, before the row's fake clock stood still; with no mark it counts from the call.
+ * Under `bun test --timeout 0` it never passes. Outside `bun test` no fake clock runs, so it throws.
  */
 export function realTimeDeadline(caller: string): {
   readonly passed: () => boolean;
+  readonly reached: Promise<void>;
   readonly source: string;
 } {
   runner ??= runnerFrom(ownCommandLine());
@@ -146,9 +156,10 @@ export function realTimeDeadline(caller: string): {
     throw new Error(`${caller} waits on Bun's fake clock, which only \`bun test\` runs`);
   }
   const { at, source } = deadlineFor(newestMark ?? 0, caller);
-  if (!Number.isFinite(at)) return { passed: () => false, source };
+  const never = new Promise<void>(() => undefined);
+  if (!Number.isFinite(at)) return { passed: () => false, reached: never, source };
   const alarm = newestMark === undefined ? alarmAfter(at) : markAlarm;
-  return { passed: () => alarm?.passed === true, source };
+  return { passed: () => alarm?.passed === true, reached: alarm?.reached ?? never, source };
 }
 
 /**
