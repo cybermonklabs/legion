@@ -26,7 +26,10 @@ import (
 // the settlement's start (beforeSettleStart), in process: a bound on the version's write would
 // also time the settlement's own database work, which says nothing about how it is woken.
 func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds the settlement's start to within 50 ms of the append's commit, in
+	// process, and among the package's parallel tests under the race detector on 4 vCPU the start
+	// came 66 ms after (build-cluster run legion-race-docsfive6-1): the scheduler's delay, not the
+	// drain's. Alone, the bound still tells a woken wait from one that polls.
 	const held = 500 * time.Millisecond
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
