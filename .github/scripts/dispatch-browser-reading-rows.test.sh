@@ -556,7 +556,7 @@ for shape in not-json array string-count; do
   check "$shape: naming the stats jq could not sum, and the report" \
     "$(contains "$(error_line)" "::error::jq could not sum the stats of the merged report $root/temp/report.json (jq's own message is above)")"
   # jq 1.7 begins each message with "jq: "; jq 1.6, Debian 12's, prints a parse error without it.
-  check "$shape: with jq's own message in the output" "$(contains "$out" '^\(jq: \)\{0,1\}\(parse \)\{0,1\}error')"
+  check "$shape: with jq's own message in the output" "$(contains "$out" '^\(jq: \)\{0,1\}\(parse error\|error (at\)')"
   check "$shape: and claiming nothing of the report's syntax" \
     "$(is "$(contains "$(error_line)" 'not JSON')" false)"
   check "$shape: the notice says this job could not sum the stats" \
