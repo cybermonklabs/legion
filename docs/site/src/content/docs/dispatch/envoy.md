@@ -766,7 +766,7 @@ install it, what each component deploys and which settings it sets.
 | `200` `starting` | The listener is still binding its durable consumer. |
 | `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
 | `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
-| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. |
+| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. While that lasts, the listener's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the listener for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. |
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
 every role claim from NATS again one minute after each full read completes, and each such read
@@ -792,6 +792,16 @@ watch the timestamp's age. No setting changes the minute or the 2-minute bound.
 cache ping and no read of the durable consumer. A liveness or startup probe reads it, so a bus
 outage or a warming cache restarts no listener. Readiness stays on `/healthz`, whose status tells
 a starting listener from a serving one.
+
+`GET /readyz` needs no credential either. It answers whether /v1 can serve, and a load balancer's
+health check reads it: `503 {"status":"starting"}` until the /v1 gate opens; after that
+`503 {"status":"unavailable","error":"nats unavailable"}` while the bus does not answer, the check
+that turns `/healthz` `503`, and `200 {"status":"serving"}` otherwise, again as soon as the bus
+answers. It reads no store. It is the path for a balancer that sends requests to `/v1`, such as
+the edge listener's, since `/healthz` answers `200` `starting` from the listener's first answer,
+while `/v1` still answers `503`. It also takes a listener whose bus is cut out of the balancer's
+backends, which the pod's readiness does not: GKE's standalone network endpoint groups keep an
+endpoint whose readiness fails.
 
 After a NATS reconnect the listener rebuilds the key-value watches its caches read through. A
 rebuild that fails is tried again within seconds, so one that fails and then succeeds inside that

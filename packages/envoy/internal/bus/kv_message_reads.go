@@ -58,6 +58,12 @@ func (kv streamMessageReads) GetRevision(key string, revision uint64) (nats.KeyV
 	return entry, err
 }
 
+// readsDirectly is false (statedReads): Get and GetRevision send a get from the stream's leader
+// whatever the stream's AllowDirect, where the nats.go handle this wraps, built from that
+// AllowDirect, would send a direct get. So a read whose own request drew no answer takes the
+// refusal of that get, and of no direct get (readsDirect).
+func (streamMessageReads) readsDirectly() bool { return false }
+
 // Create writes value to key when the bucket holds no live value of it, as nats.go's Create does:
 // a write at revision 0, and when that is refused, a write over the key's delete or purge marker
 // at the marker's revision. A key whose newest message is a live value is refused with

@@ -2,6 +2,7 @@ import {
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -158,12 +159,17 @@ export function queryTyped(query: string): boolean {
  * proves this".
  */
 export function VerificationFilterBody({
+  addressed,
   checks,
   context,
   reads,
   view,
   whole,
 }: {
+  /** The node the address names (`named`, its id) and the call told whether the body draws a row
+   *  of it with the reader's chip applied (`tell`), before the browser paints and again as what
+   *  it draws changes, once all three reads have answered (`slots/view-verification.tsx`). */
+  addressed?: { readonly named: ReadonlySet<string>; readonly tell: (drawn: boolean) => void };
   /** The issue's checks with the results recorded against them, as the results read answers
    *  them (`GET /api/v1/issues/{key}/results`), which the page has already read for its tree. */
   checks: readonly CheckBlock[];
@@ -205,10 +211,12 @@ export function VerificationFilterBody({
   // narrowed until they press one.
   const [only, setOnly] = useState<StatementState | undefined>(undefined);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
-  const shown =
-    only === undefined ? statements : statements.filter((statement) => statement.state === only);
-  const loose = only === undefined ? table.loose : [];
-  const others = only === undefined ? table.others : [];
+  const shown = useMemo(
+    () => (only === undefined ? statements : statements.filter(({ state }) => state === only)),
+    [only, statements]
+  );
+  const loose = only === undefined ? table.loose : NO_ROWS;
+  const others = only === undefined ? table.others : NO_ROWS;
   // The issue's row is drawn where the issue holds a row of any kind, so an issue with no
   // statement and no check draws no row at all, only the page's line that it has no checks,
   // with a query typed or not. It is read from the issue's reading and not the query's: a query
@@ -222,6 +230,13 @@ export function VerificationFilterBody({
   // Each read that failed before it first answered, by its name with the press that asks it
   // alone again and whether it runs again, which the body says over the tree.
   const failed = reads.state === "failed" ? reads.failed : undefined;
+  // Whether a row of the address's node is drawn: a statement, a check, or another row.
+  useLayoutEffect(() => {
+    if (!answered || addressed === undefined) return;
+    const readings = [...shown, ...shown.flatMap((statement) => statement.checks), ...loose];
+    const nodes = [...readings.map(({ node }) => node), ...others];
+    addressed.tell(nodes.some(({ id }) => addressed.named.has(id)));
+  }, [addressed, answered, loose, others, shown]);
   // Each statement of the issue by its address, named by its first words, which "Also under"
   // names a check's other statements by (`AlsoUnder`). Every statement a check is drawn under is
   // one of the issue's, whatever a query or a chip left of them.
@@ -547,6 +562,9 @@ function drawnTable(
  *  alone until the reader opens its line of earlier results. */
 const NO_KEPT_CHECKS: ReadonlyMap<string, ReadonlySet<string>> = new Map();
 const NO_KEPT_RESULTS: ReadonlySet<string> = new Set();
+
+/** What a chip leaves of the loose checks and the other rows: one empty list for every render. */
+const NO_ROWS: readonly never[] = [];
 
 /**
  * The checks one part of the body draws under a query, a statement's or the table's own, in the

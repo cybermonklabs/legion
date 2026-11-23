@@ -101,7 +101,7 @@ func TestTheStateRouteEndsItsTransactionAtItsDeadline(t *testing.T) {
 	state := &heldState{}
 	state.held.Store(true)
 	handler := api.NewServer("127.0.0.1", 0, api.Options{
-		State: state, StateTransactions: st, StateReadBound: bound, Log: quietLogger(),
+		State: state, StateTransactions: st.Pool(), StateReadBound: bound, Log: quietLogger(),
 	}).Handler
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)

@@ -518,15 +518,28 @@ schema.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
-`internal/store`'s own tests take that same `Database`, from the leaf package
+`internal/store`'s own tests take that same `Database`, from the package
 `packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
 to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
-imports nothing of the module and so is open to every package of it.
+imports no package of the module except `internal/testwait`, which imports none, and so is open to
+every package of it.
 A package whose tests migrate into the database their DSN names, rather than taking one each,
 takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
 `testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
 database they are given).
+
+A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
+its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
+of 4 and the machine's CPU count, so on a large machine one test could ask for more connections
+than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` gives a
+URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` where it sets no size;
+`testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
+`internal/store` answer such URLs. A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or
+another child process reads takes `testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which
+hold none of pgxpool's keys even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a
+key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets
+`pool_max_conns`.
 
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test

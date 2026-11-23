@@ -27,7 +27,13 @@ import (
 // stopped when the test ends, and returns once its subscription has reached the server.
 func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps, decide decideFunc) *Service {
 	t.Helper()
-	service, err := start(t.Context(), serviceSettings(t, url, keys), deps, decide)
+	return startServiceWith(t, serviceSettings(t, url, keys), deps, decide)
+}
+
+// startServiceWith is startService with settings of the test's own.
+func startServiceWith(t *testing.T, settings Settings, deps Deps, decide decideFunc) *Service {
+	t.Helper()
+	service, err := start(t.Context(), settings, deps, decide)
 	require.NoError(t, err)
 	t.Cleanup(service.Close)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)

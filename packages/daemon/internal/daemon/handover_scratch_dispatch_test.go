@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A finished root's hand-over of a child it leaves mid-run is one write to Dispatch, so the one
@@ -54,7 +55,7 @@ func TestAHandOverReachesScratchDispatchAsOneEventCarryingTheTodoAndTheLabel(t *
 	const root = "LEGION-900"
 	until := time.Now().UTC()
 	parent := root
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: root, Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}); err != nil {
 			return err
 		}

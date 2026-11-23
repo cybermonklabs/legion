@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
@@ -147,14 +149,16 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 // only when what it exercises is per-database rather than per-schema, and two things are.
 // LISTEN/NOTIFY is one: a channel name is a database-wide identifier, so every schema on one
 // server hears every other's notifications on the one channel constant a feature listens to, and
-// a test on a schema would hear a sibling test's sends. The migration advisory lock is the
-// other: Migrate takes it database-wide, so two processes migrating their own schemas of one
-// database still serialize on each other.
+// a test on a schema would hear a sibling test's sends. The broker's advisory locks are the
+// other: an advisory lock's key is database-wide, so two processes migrating their own schemas of
+// one database still serialize on Migrate's lock, and a test that holds Migrate's lock or a
+// serving beat's lock (enroll's servingLock) while it waits holds up every other test's broker on
+// that database for as long.
 //
-// The DSN is unmigrated because that is what both callers need: a LISTEN/NOTIFY test, which
-// reads no table at all, and a test that starts two broker processes against a database neither
-// has migrated yet, which is the race those two processes are there to settle. A caller that
-// wants tables runs store.Migrate on it itself.
+// The DSN is unmigrated because some callers need it so: a LISTEN/NOTIFY test, which reads no
+// table at all, and a test that starts two broker processes against a database neither has
+// migrated yet, which is the race those two processes are there to settle. A caller that wants
+// tables runs store.Migrate on it itself.
 func DatabaseURL(t testing.TB) string {
 	t.Helper()
 	return testdb.DatabaseOn(t, serverURL(t), "broker_test")
@@ -180,27 +184,24 @@ type Querier interface {
 }
 
 // AwaitLockWaiters waits until n backends wait on a lock behind holder's backend and answers their
-// pids, failing t after ten seconds. A backend counts when it waits on a lock (wait_event_type
-// 'Lock') that holder's backend holds, or that a backend already counted holds or is ahead of it
-// in the queue for: a second waiter for one row waits on the first waiter's tuple lock, and
-// pg_blocking_pids names only that first waiter, never the holder. Waiters behind other holders,
-// in other tests on the same server, never count.
-func AwaitLockWaiters(t testing.TB, q Querier, holder pgx.Tx, n int) []uint32 {
+// pids. It waits through testwait.Until, so its one bound is the test binary's deadline less
+// testwait's margin, and a wait that gives up prints the waiters it read last. A backend counts
+// when it waits on a lock (wait_event_type 'Lock') that holder's backend holds, or that a backend
+// already counted holds or is ahead of it in the queue for: a second waiter for one row waits on
+// the first waiter's tuple lock, and pg_blocking_pids names only that first waiter, never the
+// holder. Waiters behind other holders, in other tests on the same server, never count.
+func AwaitLockWaiters(t *testing.T, q Querier, holder pgx.Tx, n int) []uint32 {
 	t.Helper()
 	pid := holder.Conn().PgConn().PID()
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	waiting := testwait.Until(t, fmt.Sprintf("%d backends to wait on a lock behind %d", n, pid), func() ([]int32, bool) {
 		waiting := LockWaitersBehind(t, q, pid)
-		if len(waiting) >= n {
-			pids := make([]uint32, len(waiting))
-			for i, w := range waiting {
-				pids[i] = uint32(w)
-			}
-			return pids
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%d backends waited on a lock behind %d, want %d", len(waiting), pid, n)
-		}
+		return waiting, len(waiting) >= n
+	})
+	pids := make([]uint32, len(waiting))
+	for i, w := range waiting {
+		pids[i] = uint32(w)
 	}
+	return pids
 }
 
 // LockWaitersBehind is every backend that waits on a lock behind pid's backend, read once and in

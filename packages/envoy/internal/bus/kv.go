@@ -257,18 +257,26 @@ var natsPackage = reflect.TypeFor[nats.Conn]().PkgPath()
 
 // readsDirect reports whether legacy, a legacy KV handle, sends its reads of a key and of a
 // revision as direct gets, which any copy of the bucket answers, rather than as gets from the
-// stream's leader. nats.go decides that once, as it builds the handle, from its stream's
+// stream's leader. A handle this package wraps around nats.go's states it (statedReads), and is
+// asked first: an edge listener's (streamMessageReads, WithStreamMessageReads) sends every read
+// as a get from the stream's leader whatever its stream allows, so the nats.go handle inside it,
+// built for a stream that allows direct gets, would answer for a request it never sends. nats.go
+// decides that for its own handle once, as it builds the handle, from its stream's
 // AllowDirect, keeps it in the handle's unexported useDirect, and reports it through no method
 // (nats.go@v1.55.0 kv.go:562-574, 642-668, 1353-1364), so it is read off the handle: a read of the
 // stream now would cost a request, and could answer otherwise than the read the handle was built
 // from. Only an unanswered read asks this (refusedAfter), so a read the server answers pays
 // nothing for it.
 //
-// A handle nats.go did not build, a test's double (NewKeyValue), is taken to read directly, as
-// every handle on a bucket this build creates does (Get). So is a nats.go handle that holds no
-// such field: TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends fails on it, since its handle
-// on a stream without AllowDirect would then be read as a direct one.
+// Any other handle nats.go did not build, a test's double (NewKeyValue), states nothing and is
+// taken to read directly, whatever handle it wraps, as nats.go's handle on every bucket this build
+// creates does (Get). So is a nats.go handle that holds no such field:
+// TestAReadTakesOnlyTheRefusalOfTheRequestItsHandleSends fails on it, since its handle on a stream
+// without AllowDirect would then be read as a direct one.
 func readsDirect(legacy nats.KeyValue) bool {
+	if stated, ok := legacy.(statedReads); ok {
+		return stated.readsDirectly()
+	}
 	handle := reflect.ValueOf(legacy)
 	if handle.Kind() != reflect.Pointer || handle.IsNil() {
 		return true
@@ -282,6 +290,14 @@ func readsDirect(legacy nats.KeyValue) bool {
 		return true
 	}
 	return useDirect.Bool()
+}
+
+// statedReads is a legacy KV handle that states how it sends its reads of a key and of a revision,
+// which readsDirect asks before it reads nats.go's handle: one this package wraps around nats.go's
+// whose reads are not the requests nats.go's handle would send (streamMessageReads).
+type statedReads interface {
+	// readsDirectly reports whether the handle sends its reads as direct gets.
+	readsDirectly() bool
 }
 
 // watchCreate is the shape of the request a watch sends to create its consumer, as nats.go builds
@@ -438,7 +454,8 @@ func invalidKey(key any, err error) error {
 
 // Get reads key's latest value from the bucket.
 //
-// The read is a direct get, as every read of this build's buckets is: nats.go sends a KV get
+// The read is a direct get, as every read of this build's buckets is but an edge listener's, which
+// is a get from the stream's leader (WithStreamMessageReads): nats.go sends a KV get
 // to the stream's $JS.API.DIRECT.GET subject whenever that stream carries AllowDirect, and every
 // bucket here carries it. A start creates its buckets with AllowDirect set, as nats.go's
 // CreateKeyValue does (bucketStreamConfig), and nats.KeyValueConfig holds no field that unsets it;
@@ -454,11 +471,11 @@ func invalidKey(key any, err error) error {
 // bucket's leader. No test here reads a lagging copy: that takes a cluster, and these tests run
 // one server.
 //
-// A read the stream's leader answers exists, and this build makes none: js.GetLastMsg(stream,
-// subject) without nats.DirectGet is a STREAM.MSG.GET, which the leader answers, and the
-// listener's grant holds $JS.API.STREAM.MSG.GET.KV_<bucket> for every bucket it opens
-// (infra/core's bucketPermissions), so it is this build's choice and not its permissions. What
-// that read answers is a raw stream message rather than a KV entry, so each caller would decode
+// A read the stream's leader answers exists, and Get makes none outside an edge listener:
+// js.GetLastMsg(stream, subject) without nats.DirectGet is a STREAM.MSG.GET, which the leader
+// answers, and the listener's grant holds $JS.API.STREAM.MSG.GET.KV_<bucket> for every bucket it
+// opens (infra/core's bucketPermissions), so it is this build's choice and not its permissions.
+// What that read answers is a raw stream message rather than a KV entry, so each caller would decode
 // the KV operation markers nats.go's KV decodes for it today -- the KV-Operation header's DEL and
 // PURGE, which the legacy kvs.get and the jetstream package's own kvs.get both answer
 // ErrKeyDeleted for -- to tell a deleted record from a live one, in each of the two reads the

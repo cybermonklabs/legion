@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -71,8 +73,8 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 	}
 
 	const unknown = "LEGION-699"
-	err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		_, err := readOwedHolders(r.ctx, tx, r.records, newNewsClaims(root, nil),
+	err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := readOwedHolders(ctx, tx, r.records, newNewsClaims(root, nil),
 			[]toldKey{{unknown, record.AudienceHolder}})
 		return err
 	})
