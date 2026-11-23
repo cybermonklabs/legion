@@ -13,6 +13,13 @@ name: CI job envoy-infra-go
 on:
   workflow_call:
     inputs:
+      lane:
+        description: >-
+          `full` runs the natslive step; `pull-request` leaves it to the merge queue and runs the
+          format check, the vets and the unit tests alone
+          (.github/ci-notes/ci.md#what-the-lane-input-reads).
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
@@ -70,7 +77,9 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
           restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
+      # Only the natslive step below starts a container, so the images come with it.
       - name: Pull the NATS and Postgres test container images
+        if: inputs.lane == 'full'
         uses: ./.github/actions/pull-test-images
         with:
           consts: |
@@ -119,7 +128,10 @@ jobs:
       - name: Unit test envoy-infra
         run: scripts/race-unit.sh run
         working-directory: packages/envoy/infra
+      # Its 11 minutes are a slow suite's, so it runs in the merge queue and on a pull request
+      # labelled full-ci (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
       - name: Live tests of envoy-infra against nats-server (natslive)
+        if: inputs.lane == 'full'
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go
         # install first, minutes on a cold cache, so the package gets more than go test's 10 m.
         # One call per package, never one union -run over the three: a name an untagged test of

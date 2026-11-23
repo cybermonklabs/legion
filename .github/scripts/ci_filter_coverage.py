@@ -1253,7 +1253,7 @@ ENV_ALLOWED = frozenset({
     "GH_TOKEN",
     # Where go keeps what it compiled and the test results it caches, both found by a hash of
     # their inputs, so go compiles the same files and runs the same tests whatever directory it
-    # names. envoy-go-checks' darwin vet sets it in its step's env, so that vet's darwin objects
+    # names. envoy-go-build's darwin vet sets it in its step's env, so that vet's darwin objects
     # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
     "GOCACHE",
     "GOPROXY",
@@ -1263,7 +1263,7 @@ ENV_ALLOWED = frozenset({
     "JOB_TIMEOUT_MINUTES",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
-    # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:
+    # The commit envoy-go-build's edited-migrations step compares a bypass run's tree with:
     # .github/scripts/edited-migrations-base.sh, which that step runs, reads it and hands the base
     # it picks to the command as an argument, and go reads it nowhere.
     "MIGRATION_BASE",

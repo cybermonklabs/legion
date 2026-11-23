@@ -1971,7 +1971,7 @@ check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
 check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 
 # GOCACHE names where go keeps what it compiled, keyed on the inputs, so a step that sets it in
-# its env - as envoy-go-checks' darwin vet does, for a build cache of its own - still compiles
+# its env - as envoy-go-build's darwin vet does, for a build cache of its own - still compiles
 # what the bare command compiles.
 echo "case: a GOCACHE in a claimed simple go command's step env"
 root=$(fixture gocache-env)

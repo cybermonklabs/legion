@@ -1074,7 +1074,7 @@ def go_notices_runs():
     return out
 
 
-# The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks'
+# The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
@@ -1718,7 +1718,7 @@ def race_step(job):
     return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
 
 
-# The architecture-note and spec-file rules and the commands that run them, which envoy-go-checks
+# The architecture-note and spec-file rules and the commands that run them, which envoy-go-build
 # tests in a step of their own: they need no database, so they run there on every push, and that
 # step is their one run. Both that step's package list and the unit step's exclusion of them are
 # built from this list, so go-test-step-expansion.py finds no pair the two steps both run and
@@ -1729,7 +1729,7 @@ NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their c
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
 NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
 
-# listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-checks runs
+# listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-build runs
 # in a step of their own, their one run. clients_test.go type-checks the daemon's listener clients
 # (its RULES entry), so run in envoy-go's unit step a change to one of those daemon packages would
 # start that whole job, its database and its 20-minute unit step, for one type check. They need no
@@ -1825,7 +1825,7 @@ hold_database_skips_packages()
 # The unit step runs the module less six things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
 # checks, which the text-check job runs, the architecture-note and spec-file packages and
-# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs, and the
+# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs, and the
 # broker's tree and command, which envoy-go's database-skips step runs. Its `grep -Ev` is
 # `/integration`, then the text checks, then those packages, each the package alone, then the
 # broker's tree and its command, then, in the lane's own order, each package in the form go
@@ -1873,7 +1873,7 @@ WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
 # The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
 # they move no closure: the whole pmdoc package compiles, whichever test the run selects.
 FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
-# pmdoc's readers on tables in a build made without inlining (-gcflags=all=-l), envoy-go-checks'
+# pmdoc's readers on tables in a build made without inlining (-gcflags=all=-l), envoy-go-build's
 # step of its own: goldmark builds pmdoc's readers through an interface, which Go's initialization
 # order does not look through, so a reader that copies a variable of pmdoc can be handed nil in
 # that build alone. The table tests read through the block reader, and the display fixture test
@@ -1923,7 +1923,7 @@ def hold_web_fixture_tests():
     gate whose reads are keyed on test names, the plugin-pack gate declaring the lockfile,
     skills/ and the prepack because those three tests read them, while this gate's reads are
     keyed on the package - the fixture step's Run is ./internal/dispatch/pmdoc/ and
-    envoy-go-checks' filter carries packages/envoy/** - so no read moves with a name here. Its
+    envoy-go-build's filter carries packages/envoy/** - so no read moves with a name here. Its
     own: what this list takes out of the unit step is one test's second run rather than a file's
     tests, and every other test of web_fixtures_test.go runs in the unit step, which is where
     every test of this module runs unless something takes it out, so demanding the whole file
@@ -3359,19 +3359,19 @@ GATES = [
         # The module but the race lane's packages, internal/integration, which the integration
         # step tests, the text checks, which the text-check job runs, the architecture-note and
         # spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which
-        # envoy-go-checks runs, and the broker's tree, which the database-skips step below runs.
+        # envoy-go-build runs, and the broker's tree, which the database-skips step below runs.
         # The Run names the packages the step's own `grep -Ev` keeps (packages_kept over
         # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
         # beside it. A Run saying more would credit this job with tests other jobs run: the race
         # lane's are envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the text checks
-        # are the text-check job's, those packages are envoy-go-checks', and the closure of ./...
+        # are the text-check job's, those packages are envoy-go-build's, and the closure of ./...
         # would put their test files and the files only those tests read on this job's filter, so a
         # change to one of them would start a job that does not run the test it touches.
         # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
         # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
         # so a second run here asks nothing and can only pass, and
         # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, a read this job
-        # need not carry; the fixture step of envoy-go-checks runs both, with the check that
+        # need not carry; the fixture step of envoy-go-build runs both, with the check that
         # makes the first a requirement. It also takes the backend count's tests of
         # cmd/cipher out (BACKEND_COUNT_TESTS), which the count step runs in this same job
         # and environment. The tests stay compiled into this step's binary, which is what a
@@ -3424,29 +3424,29 @@ GATES = [
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
     ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
 
-    # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
-    # the vet of the module as darwin compiles it, and the build and pack of the envoy commands
-    # (.github/ci-notes/ci.md#envoy-gos-fast-half-the-go-format-check-the-two-generated-code-checks-the
-    # says why they are split out), with the tests of the
+    # envoy's Go build, vet, format, generated-code and migration checks, the half of the old
+    # envoy-go-checks job a pull request runs
+    # (.github/ci-notes/ci.md#envoy-go-build-envoys-go-build-vet-format-generated-code-and-migration-checks
+    # says what it holds), with the tests of the
     # architecture-note and spec-file rules and their commands, the note check over this
     # repository's notes through the composite action, the spec-file check over its spec
     # directory through the other one, and the guard that no CI file compares the spec files with
     # the approved spec. Its gofmt step reads the whole module, so no closure stands for it.
-    gate("envoy_go_checks", "envoy-go-checks", runs=[
-        step_run("envoy-go-checks", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
+    gate("envoy_go_build", "envoy-go-build", runs=[
+        step_run("envoy-go-build", "Build envoy services", "go build ./cmd/dispatch ./cmd/listener", ENVOY,
                  ["./cmd/dispatch", "./cmd/listener"], mode="build"),
         # The architecture-note and spec-file rules and their commands: the closure of the five
         # packages, tests, testdata and all, built from the list the unit step's `grep -Ev` leaves
         # them out by.
-        step_run("envoy-go-checks", NOTE_AND_SPEC_STEP, NOTE_AND_SPEC_TEXT, ENVOY, NOTE_AND_SPEC_PKGS),
+        step_run("envoy-go-build", NOTE_AND_SPEC_STEP, NOTE_AND_SPEC_TEXT, ENVOY, NOTE_AND_SPEC_PKGS),
         # LISTENERWIRE_PACKAGES' tests (listenerwire's, its clients test's type check of the daemon's
         # listener clients among them, and internal/wirecheck's), built from the list the unit
         # step's `grep -Ev` leaves them out by.
-        step_run("envoy-go-checks", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
+        step_run("envoy-go-build", LISTENERWIRE_STEP, LISTENERWIRE_TEXT, ENVOY, LISTENERWIRE_PKGS),
     ], exact=[
         # `go run` is not one of the three forms the reducer reads, so the step is pinned whole
         # and this Run stands for the command it compiles.
-        pinned_step("envoy-go-checks", "Check the OpenAPI document is generated from the route table", ENVOY,
+        pinned_step("envoy-go-build", "Check the OpenAPI document is generated from the route table", ENVOY,
                     "go run ./cmd/dispatch openapi --check", [
                         (ENVOY, ["./cmd/dispatch"],
                          "go run ./cmd/dispatch openapi --check, which emits the document from the "
@@ -3454,45 +3454,45 @@ GATES = [
                     ]),
         # The guard that no CI file runs the comparison of the spec files with the approved spec:
         # `go run` again, so pinned whole, and the Run stands for the command it builds.
-        pinned_step("envoy-go-checks", "Check that no CI file of this repository compares the spec files", ENVOY,
+        pinned_step("envoy-go-build", "Check that no CI file of this repository compares the spec files", ENVOY,
                     "go run ./cmd/spec-check guard --root ../..", [
                         (ENVOY, ["./cmd/spec-check"],
                          "go run ./cmd/spec-check guard, which builds the command and runs it over the "
                          "repository root", {"mode": "build"}),
                     ]),
-        pinned_step("envoy-go-checks", EDITED_MIGRATIONS_STEP, ENVOY, EDITED_MIGRATIONS_SCRIPT, [
+        pinned_step("envoy-go-build", EDITED_MIGRATIONS_STEP, ENVOY, EDITED_MIGRATIONS_SCRIPT, [
             (ENVOY, ["./internal/pgmigrate/cmd/edited-migrations"],
              "go build of ./internal/pgmigrate/cmd/edited-migrations, whose binary the step then runs to "
              "compare each store's migrations with the base's", {"mode": "build"}),
         ]),
         # One linux build of the listener per architecture the loop reads from the target list.
-        pinned_step("envoy-go-checks", PACK_STEP, ENVOY, PACK_SCRIPT, [
+        pinned_step("envoy-go-build", PACK_STEP, ENVOY, PACK_SCRIPT, [
             (ENVOY, ["./cmd/listener"], f"GOOS=linux GOARCH={arch} go build ./cmd/listener",
              {"mode": "build", "env": {"GOOS": "linux", "GOARCH": arch}})
             for arch in targets(GO_TARGETS, "envoy")
         ]),
         # The display-tree fixture check: one test of pmdoc, which compiles that package.
-        pinned_step("envoy-go-checks", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
+        pinned_step("envoy-go-build", FIXTURE_STEP, ENVOY, FIXTURE_SCRIPT, [
             (ENVOY, ["./internal/dispatch/pmdoc/"], "go test ./internal/dispatch/pmdoc/", {}),
         ]),
         # The table tests of pmdoc in a build without inlining: the same package, compiled again
         # with -gcflags=all=-l.
-        pinned_step("envoy-go-checks", NO_INLINE_TABLE_STEP, ENVOY, NO_INLINE_TABLE_SCRIPT, [
+        pinned_step("envoy-go-build", NO_INLINE_TABLE_STEP, ENVOY, NO_INLINE_TABLE_SCRIPT, [
             (ENVOY, ["./internal/dispatch/pmdoc/"], "go test -gcflags=all=-l ./internal/dispatch/pmdoc/", {}),
         ]),
-        darwin_vet("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY),
+        darwin_vet("envoy-go-build", ENVOY_DARWIN_VET, ENVOY),
     ], reads=reads(
-        (f"{ENVOY}/**", f"{at('envoy-go-checks', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included; the script tests below live here too"),
-        ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-checks', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
+        (f"{ENVOY}/**", f"{at('envoy-go-build', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included"),
+        ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-build', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
         ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/"),
         # The pinned step above compares the emitter's bytes with this file, so an edit of it alone
         # must start this job: the Run stands for what the command compiles, never for what it reads.
         ("packages/contracts/schemas/dispatch-openapi.json",
-         f"{at('envoy-go-checks', 'Check the OpenAPI document is generated from the route table')}: "
+         f"{at('envoy-go-build', 'Check the OpenAPI document is generated from the route table')}: "
          "cmd/dispatch/subcommands.go:127 reads the committed document to compare it (:173 only builds a "
          "candidate path for it)"),
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
-        (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-build', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),
         # The web app's display-tree fixture, whose content the fixture step's --check compares the
         # trees it builds with, and whose existence the other test of WEB_FIXTURE_TESTS,
@@ -3502,8 +3502,52 @@ GATES = [
         # compiles pmdoc's tests, envoy-go's unit step among them, which skips both tests and so
         # touches the file in no way. The fixture is this job's read alone.
         ("packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json",
-         f"{at('envoy-go-checks', FIXTURE_STEP)}: internal/dispatch/pmdoc/web_fixtures_test.go:40-45 "
+         f"{at('envoy-go-build', FIXTURE_STEP)}: internal/dispatch/pmdoc/web_fixtures_test.go:40-45 "
          "webFixturePath joins it under pmdocSourceDir, and --check reads its content to compare"),
+        (NOTICES, f"{at('envoy-go-build', 'Pack envoy binaries')} runs it"),
+        (GO_TARGETS, f"{at('envoy-go-build', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
+        # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
+        # go.sum and the command's packages, all under the packages/envoy/** read; what is outside
+        # packages/envoy is the action itself, the build script both actions run, and the files
+        # it judges.
+        (".github/actions/architecture-check/action.yml",
+         f"{at('envoy-go-build', './.github/actions/architecture-check')} runs the action it defines"),
+        (".github/actions/architecture-check/check.sh",
+         f"{at('envoy-go-build', './.github/actions/architecture-check')}: "
+         ".github/actions/architecture-check/action.yml:68, :133 and :159 run it"),
+        (".dispatch/architecture/**",
+         f"{at('envoy-go-build', './.github/actions/architecture-check')} judges the action's default path "
+         "(.github/actions/architecture-check/action.yml:23), which check.sh:73 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:85 reads"),
+        (".github/actions/spec-check/action.yml",
+         f"{at('envoy-go-build', './.github/actions/spec-check')} runs the action it defines"),
+        (".github/actions/spec-check/check.sh",
+         f"{at('envoy-go-build', './.github/actions/spec-check')}: "
+         ".github/actions/spec-check/action.yml:90 and :115 run it"),
+        (".github/scripts/build-envoy-command.sh",
+         f"{at('envoy-go-build', './.github/actions/architecture-check')} and "
+         f"{at('envoy-go-build', './.github/actions/spec-check')}: "
+         ".github/actions/architecture-check/check.sh:67 and .github/actions/spec-check/check.sh:62 run it"),
+        (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-build', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
+        # The step judges the action's default path, .dispatch/spec, which holds no file on main;
+        # the read names .dispatch whole because a read that matches no file is refused, and the
+        # envoy_go_build filter names .dispatch whole too.
+        (".dispatch/**",
+         f"{at('envoy-go-build', './.github/actions/spec-check')} judges the action's default path "
+         "(.github/actions/spec-check/action.yml:17), which check.sh:70 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:80 reads"),
+        *[(glob, f"{at('envoy-go-build', 'Check that no CI file of this repository compares the spec files')}: "
+                 "spec-check guard reads every file under it")
+          for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
+    ) + setup_go("envoy-go-build", f"{ENVOY}/go.mod") + bun_job("envoy-go-build")
+      + darwin_vet_reads("envoy-go-build", ENVOY_DARWIN_VET, ENVOY)),
+
+    # envoy's script tests, the merge-queue half of the old envoy-go-checks job
+    # (.github/ci-notes/ci.md#envoy-go-checks-envoys-script-tests-in-the-merge-queue-only): each
+    # step runs a bash harness of packages/envoy over fakes, and none starts a go command.
+    gate("envoy_go_checks", "envoy-go-checks", reads=reads(
+        (f"{ENVOY}/**", "every step runs a harness under packages/envoy (scripts/, loadtest/ and deploy/scripts/), "
+                        "which runs, sources and reads the scripts, fixtures and compose files beside it"),
         (f"{ENVOY}/loadtest/run-step.test.sh", at("envoy-go-checks", LOADTEST_RUN_STEP)),
         (f"{ENVOY}/loadtest/run-step.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/run-series.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
@@ -3518,43 +3562,7 @@ GATES = [
         (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
                                         "reads that row's two sources"),
-        (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
-        (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
-        # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
-        # go.sum and the command's packages, all under the packages/envoy/** read; what is outside
-        # packages/envoy is the action itself, the build script both actions run, and the files
-        # it judges.
-        (".github/actions/architecture-check/action.yml",
-         f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
-        (".github/actions/architecture-check/check.sh",
-         f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
-         ".github/actions/architecture-check/action.yml:68, :133 and :159 run it"),
-        (".dispatch/architecture/**",
-         f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-         "(.github/actions/architecture-check/action.yml:23), which check.sh:73 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:85 reads"),
-        (".github/actions/spec-check/action.yml",
-         f"{at('envoy-go-checks', './.github/actions/spec-check')} runs the action it defines"),
-        (".github/actions/spec-check/check.sh",
-         f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-         ".github/actions/spec-check/action.yml:90 and :115 run it"),
-        (".github/scripts/build-envoy-command.sh",
-         f"{at('envoy-go-checks', './.github/actions/architecture-check')} and "
-         f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-         ".github/actions/architecture-check/check.sh:67 and .github/actions/spec-check/check.sh:62 run it"),
-        (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-checks', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
-        # The step judges the action's default path, .dispatch/spec, which holds no file on main;
-        # the read names .dispatch whole because a read that matches no file is refused, and the
-        # envoy_go_checks filter names .dispatch whole too.
-        (".dispatch/**",
-         f"{at('envoy-go-checks', './.github/actions/spec-check')} judges the action's default path "
-         "(.github/actions/spec-check/action.yml:17), which check.sh:70 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:80 reads"),
-        *[(glob, f"{at('envoy-go-checks', 'Check that no CI file of this repository compares the spec files')}: "
-                 "spec-check guard reads every file under it")
-          for glob in (".github/workflows/**", ".github/actions/**", ".github/scripts/**", "scripts/**")],
-    ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")
-      + darwin_vet_reads("envoy-go-checks", ENVOY_DARWIN_VET, ENVOY)),
+    ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")),
 
 
     gate("envoy_infra_go", "envoy-infra-go", runs=[

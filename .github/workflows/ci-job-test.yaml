@@ -29,12 +29,24 @@ name: CI job test
 # runs whenever `changes` failed, which is what the job did before the gates were written; lint
 # spells the same term for its own two steps. A gated step added here takes both halves.
 #
+# Every test step also reads `lane`: on a pull request without the label full-ci it is
+# `pull-request`, and the job runs its build, check, lint and typecheck steps alone, leaving its
+# tests to the merge queue (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+# A test step added here reads it too.
+#
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
+      lane:
+        description: >-
+          `full` runs every step; `pull-request` runs the build, check, lint and typecheck steps
+          alone and leaves the test steps to the merge queue
+          (.github/ci-notes/ci.md#what-the-lane-input-reads).
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
@@ -339,22 +351,25 @@ jobs:
           .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
 
       - name: Test release scripts
-        if: inputs.changes-result != 'success' || inputs.release_push_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.release_push_test == 'true')
         run: .github/scripts/release-push.test.sh
 
       - name: Test the release version bump
-        if: inputs.changes-result != 'success' || inputs.release_bump_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.release_bump_test == 'true')
         run: .github/scripts/release-bump.test.sh
 
       - name: Test third-party notices
+        if: inputs.lane == 'full'
         run: bun test scripts/third-party-notices.test.ts
 
       - name: Test the semantic line-break checker
+        if: inputs.lane == 'full'
         run: bun test scripts/semantic-line-breaks.test.ts
 
       # The seed that writes the first priorities from the table kept by hand, driven against a
       # fake Dispatch of the test's own: it reaches no network and no deployment.
       - name: Test the priorities seed
+        if: inputs.lane == 'full'
         run: bun test scripts/priorities-seed.test.ts
 
       # The guides' own layout, in this job because it installs Bun's dependencies, which the
@@ -367,43 +382,43 @@ jobs:
         run: bun test scripts/semantic-line-breaks.guides.test.ts
 
       - name: Test the Bun pin check
-        if: inputs.changes-result != 'success' || inputs.check_bun_version_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_bun_version_test == 'true')
         run: .github/scripts/check-bun-version.test.sh
 
       - name: Test the Playwright version check
-        if: inputs.changes-result != 'success' || inputs.check_playwright_version_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_playwright_version_test == 'true')
         run: .github/scripts/check-playwright-version.test.sh
 
       - name: Test the frozen Bun workspace manifest check
-        if: inputs.changes-result != 'success' || inputs.check_bun_workspace_manifests_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_bun_workspace_manifests_test == 'true')
         run: .github/scripts/check-bun-workspace-manifests.test.sh
 
       - name: Test the zod version check
-        if: inputs.changes-result != 'success' || inputs.check_zod_version_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_zod_version_test == 'true')
         run: .github/scripts/check-zod-version.test.sh
 
       - name: Test the gh version check
-        if: inputs.changes-result != 'success' || inputs.check_gh_version_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_gh_version_test == 'true')
         run: .github/scripts/check-gh-version.test.sh
 
       - name: Test the gitleaks version check
-        if: inputs.changes-result != 'success' || inputs.check_gitleaks_version_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_gitleaks_version_test == 'true')
         run: .github/scripts/check-gitleaks-version.test.sh
 
       - name: Test the workflow path model the path checks import
-        if: inputs.changes-result != 'success' || inputs.workflow_paths_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.workflow_paths_test == 'true')
         run: .github/scripts/workflow_paths.test.sh
 
       - name: Test the image trigger path check
-        if: inputs.changes-result != 'success' || inputs.check_image_trigger_paths_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_image_trigger_paths_test == 'true')
         run: .github/scripts/check-image-trigger-paths.test.sh
 
       - name: Test the CI image check
-        if: inputs.changes-result != 'success' || inputs.check_ci_images_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_ci_images_test == 'true')
         run: .github/scripts/check-ci-images.test.sh
 
       - name: Test the CI image mirror
-        if: inputs.changes-result != 'success' || inputs.mirror_ci_images_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.mirror_ci_images_test == 'true')
         run: .github/scripts/mirror-ci-images.test.sh
 
       # The tool scripts, in the order they depend on each other: the fetch helper every
@@ -411,107 +426,107 @@ jobs:
       # gate that holds every row to its pin, and the rig that drives that helper against a
       # fault in the tool-fallback job.
       - name: Test the tool fetch helper
-        if: inputs.changes-result != 'success' || inputs.ci_tools_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.ci_tools_test == 'true')
         run: .github/scripts/ci-tools.test.sh
 
       - name: Test the tool copy filler
-        if: inputs.changes-result != 'success' || inputs.mirror_ci_tools_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.mirror_ci_tools_test == 'true')
         run: .github/scripts/mirror-ci-tools.test.sh
 
       - name: Test the tool manifest check
-        if: inputs.changes-result != 'success' || inputs.check_ci_tools_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_ci_tools_test == 'true')
         run: .github/scripts/check-ci-tools.test.sh
 
       - name: Test the tool fallback rig
-        if: inputs.changes-result != 'success' || inputs.ci_tools_proof_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.ci_tools_proof_test == 'true')
         run: .github/scripts/ci-tools-proof.test.sh
 
       - name: Test the action pin check
-        if: inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true')
         run: .github/scripts/check-action-pins.test.sh
 
       - name: Test the workflow file check
-        if: inputs.changes-result != 'success' || inputs.check_workflow_files_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_workflow_files_test == 'true')
         run: .github/scripts/check-workflow-files.test.sh
 
       - name: Test the private-name check
-        if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_private_names_test == 'true')
         run: .github/scripts/check-private-names.test.sh
 
       - name: Test the private-name check's term list
-        if: inputs.changes-result != 'success' || inputs.check_private_names_terms_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_private_names_terms_test == 'true')
         run: .github/scripts/check-private-names-terms.test.sh
 
       - name: Test the private-name check's issue-key rule
-        if: inputs.changes-result != 'success' || inputs.check_private_names_keys_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_private_names_keys_test == 'true')
         run: .github/scripts/check-private-names-keys.test.sh
 
       - name: Test the plugin-name check
-        if: inputs.changes-result != 'success' || inputs.check_plugin_names_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_plugin_names_test == 'true')
         run: .github/scripts/check-plugin-names.test.sh
 
       - name: Test the fireEvent reason check
-        if: inputs.changes-result != 'success' || inputs.check_fireevent_reasons_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_fireevent_reasons_test == 'true')
         run: .github/scripts/check-fireevent-reasons.test.sh
 
       - name: Test the daemon API contract number check
-        if: inputs.changes-result != 'success' || inputs.check_daemon_api_contract_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_daemon_api_contract_test == 'true')
         run: .github/scripts/check-daemon-api-contract.test.sh
 
       - name: Test the release credential check
-        if: inputs.changes-result != 'success' || inputs.check_release_credentials_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_release_credentials_test == 'true')
         run: .github/scripts/check-release-credentials.test.sh
 
       - name: Test the repository path derivation
-        if: inputs.changes-result != 'success' || inputs.repo_paths_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.repo_paths_test == 'true')
         run: .github/scripts/repo-paths.test.sh
 
       # The proof selector e2e.yaml's select job runs, over fixture trees and over this
       # repository's own .github/e2e-scripts.json and scripts/e2e/.
       - name: Test the e2e proof selector
-        if: inputs.changes-result != 'success' || inputs.select_e2e_proofs_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.select_e2e_proofs_test == 'true')
         run: .github/scripts/select-e2e-proofs.test.sh
 
       # The lister the build-tag steps take their `-run` from, over fixture packages and over
       # this repository's own tagged test files.
       - name: Test the build-tag test lister
-        if: inputs.changes-result != 'success' || inputs.go_tagged_tests_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.go_tagged_tests_test == 'true')
         run: .github/scripts/go-tagged-tests.test.sh
 
       # The label terms of ci.yaml's changes outputs, evaluated from ci.yaml itself: full-ci, the
       # lane labels and a label that names nothing.
       - name: Test the router outputs' label terms
-        if: inputs.changes-result != 'success' || inputs.ci_router_outputs_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.ci_router_outputs_test == 'true')
         run: .github/scripts/ci-router-outputs.test.sh
 
       - name: Test ci-ok's verdict
-        if: inputs.changes-result != 'success' || inputs.ci_ok_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.ci_ok_test == 'true')
         run: .github/scripts/ci-ok.test.sh
 
       - name: Test ci-ok's report and the check-run post (a stand-in gh)
-        if: inputs.changes-result != 'success' || inputs.ci_ok_report_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.ci_ok_report_test == 'true')
         run: .github/scripts/ci-ok-report.test.sh
 
       - name: Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)
-        if: inputs.changes-result != 'success' || inputs.ci_ok_reconcile_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.ci_ok_reconcile_test == 'true')
         run: .github/scripts/ci-ok-reconcile.test.sh
 
       - name: Test the pull request payload both pr-title checks read (a stand-in gh)
-        if: inputs.changes-result != 'success' || inputs.find_pr_payload_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.find_pr_payload_test == 'true')
         run: .github/scripts/find-pr-payload.test.sh
 
       - name: Test the merge-group cancel decision
-        if: inputs.changes-result != 'success' || inputs.merge_group_cancels_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.merge_group_cancels_test == 'true')
         run: .github/scripts/merge-group-cancels.test.sh
 
       - name: Test the main bypass check's decision
-        if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true')
         run: .github/scripts/main-bypass-check.test.sh
 
-      # The base envoy-go-checks' edited-migrations check compares a run's tree with, per event,
+      # The base envoy-go-build's edited-migrations check compares a run's tree with, per event,
       # over fixture remotes cloned one commit deep as actions/checkout leaves a run's tree.
       - name: Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)
-        if: inputs.changes-result != 'success' || inputs.edited_migrations_base_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.edited_migrations_base_test == 'true')
         run: .github/scripts/edited-migrations-base.test.sh
 
       # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
@@ -519,7 +534,7 @@ jobs:
       # chosen or a re-run is judged on the attempt it replaced; these are the assertions that
       # hold that, and they belong here beside ci-ok's, which choose an attempt the same way.
       - name: Test the browser lane's blob attempt selection
-        if: inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true')
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
 
       # Reading one of dispatch-browser.yaml's merge job, run through that job's own call over
@@ -527,7 +542,7 @@ jobs:
       # each way its download and selection steps can end, a download that never ran among them,
       # which it once reported as legs that sent no blob (run 44754426131, attempt 1).
       - name: Test the browser lane's reading of its rows
-        if: inputs.changes-result != 'success' || inputs.dispatch_browser_reading_rows_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.dispatch_browser_reading_rows_test == 'true')
         run: .github/scripts/dispatch-browser-reading-rows.test.sh
 
       # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
@@ -536,24 +551,24 @@ jobs:
       # control traces the drive with strace, which this job's ubuntu-24.04-arm image carries; the
       # harness refuses by name on an image without it.
       - name: Test the browser lane's run reads
-        if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true')
         run: .github/scripts/dispatch-browser-run-reads.test.sh
 
       # gh-read.sh's wait for a spent API budget, with the real gh against a local stand-in
       # GitHub; its last case reads this job's own Runner.Worker, which only a runner has.
       - name: Test the wait for a spent API budget and the retry ladder (a stand-in GitHub)
-        if: inputs.changes-result != 'success' || inputs.gh_read_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.gh_read_test == 'true')
         run: .github/scripts/gh-read.test.sh
 
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the
       # notice titles are held here, where no browser and no runner are needed.
       - name: Test the browser lane's memory and CPU sampler
-        if: inputs.changes-result != 'success' || inputs.dispatch_browser_samples_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.dispatch_browser_samples_test == 'true')
         run: .github/scripts/dispatch-browser-samples.test.sh
 
       - name: Test the race memory sampler
-        if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.race_memory_test == 'true')
         run: .github/scripts/race_memory.test.sh
 
       # The machine watch's test runs as the first process of its own unprivileged user, mount and
@@ -564,17 +579,17 @@ jobs:
       # as daemon-go does (`|| true`: a runner image without the key restricts nothing), and the
       # unshare after it is the verdict that the restriction is gone.
       - name: Allow unprivileged user namespaces (the machine watch's test)
-        if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.disk_watch_test == 'true')
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user --mount --pid --fork --mount-proc true
 
       - name: Test the machine watch
-        if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.disk_watch_test == 'true')
         run: .github/scripts/disk_watch.test.sh
 
       - name: Test the priorities seed check (a stand-in Dispatch)
-        if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true')
         run: bash scripts/priorities-seed-check.test.sh
 
       - name: Test the architecture-check action's go-path mode
@@ -589,6 +604,7 @@ jobs:
         run: bunx tsc --noEmit -p scripts/dispatch
 
       - name: Test the Dispatch census script
+        if: inputs.lane == 'full'
         run: bun test scripts/dispatch
 
       - name: Lint the GitHub App registration script
@@ -618,12 +634,14 @@ jobs:
         run: bunx tsc --noEmit -p scripts/approval-eval
 
       - name: Test the approval-eval statistics
+        if: inputs.lane == 'full'
         run: bun test scripts/approval-eval
 
       # scripts/search-measure's psql helper: the password a DSN carries reaches psql in PGPASSWORD
       # alone, in no argument. A stand-in psql answers, so it needs no Postgres; the runner's own
       # python3 runs it.
       - name: Test the search-measure psql helper
+        if: inputs.lane == 'full'
         run: python3 -m unittest -v pg_test
         working-directory: scripts/search-measure
 
@@ -649,17 +667,18 @@ jobs:
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
+        if: inputs.lane == 'full'
         run: bun test scripts/e2e/lib
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
-        if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true')
         run: .github/scripts/check-ci-filters.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
-        if: inputs.changes-result != 'success' || inputs.check_ts_filters_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.check_ts_filters_test == 'true')
         run: .github/scripts/check-ts-filters.test.sh
 
       # Beside the two checks above, and needing no Go either: every case is text, read by the
@@ -668,7 +687,7 @@ jobs:
       # fails here), or the hash of a script that file's AUDITED_SCRIPTS pins. The script's own
       # run compiles the three Go modules it covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
-        if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
+        if: inputs.lane == 'full' && (inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true')
         run: .github/scripts/go-test-step-expansion.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run

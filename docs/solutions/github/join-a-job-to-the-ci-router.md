@@ -40,8 +40,9 @@ its own workflows; this page covers this repository only.
 2. **An output of `changes`** for that filter.
    Every output carries the dispatched term, since a dispatched run skips the filter step and selects every job:
    `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.<filter> }}`.
-   A slow suite carries the `full-ci` term too (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
-   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.<filter> || 'false' }}`.
+   A slow suite carries the `full-ci` term too, with its own `lane:<filter>` label beside it (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
+   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
+   Which jobs are slow suites is `.github/ci-notes/ci.md`'s rule ("Which lane a job runs in: the pull request or the merge queue"): a job above 10 minutes at the 90th percentile of its pull-request runs.
 3. **`needs: changes`** on the job, and
    `if: needs.changes.outputs.<filter> == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')`.
    The second term holds the job back on a re-run attempt of a merge-group run, where the group is tested already.
@@ -85,10 +86,12 @@ its own workflows; this page covers this repository only.
 
    A job an event must hold back gets its `changes` output
    set false on that event instead of an `if:` that skips it, so `ci-ok` reads the skip as
-   unselected: that is how the nine slow suites are held back on a pull request that does not
+   unselected: that is how the slow suites are held back on a pull request that does not
    carry the label `full-ci` (`(github.event_name != 'pull_request' ||
    contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.<filter>
-   || 'false'`). `ci-ok` fails a job in none of the three classes, naming all three remedies, and
+   || 'false'`). A job that keeps its build and check steps on a pull request and holds back
+   only its tests reads a `lane` input instead and goes in the ci-ok job's `PARTIAL`
+   (`.github/ci-notes/ci.md`, "What the lane input reads"). `ci-ok` fails a job in none of the three classes, naming all three remedies, and
    `check-ci-filters.sh` fails when the map or a list is not exactly what the `if:`s test, when a
    job is in none of the classes or in two, when a job `CI_OK_ALWAYS_RUN` names is gated by a
    `changes` output after all, or when a
@@ -453,7 +456,7 @@ and ci.yaml's "Runners" paragraph lists each one: a tool with no arm64 row in
 for linux/amd64, or a build that must match a release built on `ubuntu-24.04`. A Go build that
 sets no `CGO_ENABLED` is that last kind: Go turns cgo on for a native build where gcc is present
 and off for a cross build, so the same command links a different pair of binaries on each runner.
-That is why envoy-go-checks, which packs the release's listener archives that way, stays on
+That is why envoy-go-build, which packs the release's listener archives that way, stays on
 `ubuntu-24.04`. A job that installs a tool on arm64 needs that tool's `<tool>-aarch64` row, which
 `check-ci-tools.sh` holds to the version of the `<tool>` row, an install action that picks the
 row from `uname -m`, and a case of that row in the tool-fallback-arm job; a Go cache family it
@@ -472,7 +475,7 @@ group does so on purpose, and worker-image is the one job that does (pull reques
 in `CI_OK_PULL_REQUEST_ONLY`; main's image builds are release.yaml's). The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
 find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
-carries. The nine slow suites go the
+carries. The slow suites go the
 other way: the queue is where their result normally comes from, and a pull request runs them only
 when it carries the label `full-ci`. The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's

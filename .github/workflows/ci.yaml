@@ -52,6 +52,7 @@ env:
       "dispatch-browser": "dispatch_browser",
       "claude-envoy": "claude_envoy",
       "envoy-go": "envoy_go",
+      "envoy-go-build": "envoy_go_build",
       "envoy-go-checks": "envoy_go_checks",
       "envoy-infra-go": "envoy_infra_go",
       "text-checks": "text_checks",
@@ -105,7 +106,9 @@ jobs:
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
       # why: .github/ci-notes/ci.md#why-the-daemons-go-suite-has-an-output-of-its-own
-      daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_go_tests }}
+      # A slow suite, held back as .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request says.
+      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
+      daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:daemon_go_tests')) && steps.filter.outputs.daemon_go_tests || 'false' }}
       # why: .github/ci-notes/ci.md#why-the-plugin-pack-has-an-output-of-its-own
       plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
       # why: .github/ci-notes/ci.md#why-the-private-name-port-harness-has-an-output-of-its-own
@@ -184,16 +187,19 @@ jobs:
       # why: .github/ci-notes/ci.md#why-the-browser-suite-is-ungated-and-what-the-label-decides
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
       claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # why: .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
+      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
       # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go')) && steps.filter.outputs.envoy_go || 'false' }}
-      # why: .github/ci-notes/ci.md#why-envoy-gos-fast-half-comes-back-on-every-push
-      envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
+      # why: .github/ci-notes/ci.md#why-envoy-gos-build-and-checks-come-back-on-every-push
+      envoy_go_build: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_build }}
+      # A slow suite, held back as .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request says.
+      # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
+      envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_checks')) && steps.filter.outputs.envoy_go_checks || 'false' }}
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_infra_go }}
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # Eight slow suites, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
+      # Eight slow suites, held back as .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request says.
       # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
@@ -211,7 +217,7 @@ jobs:
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.airlock_lean }}
-      # A slow suite, gated as .github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the says.
+      # A slow suite, held back as .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request says.
       # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_smoke')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
@@ -332,6 +338,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-test.yaml
     with:
+      # why: .github/ci-notes/ci.md#what-the-lane-input-reads
+      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
       guide_layout: ${{ needs.changes.outputs.guide_layout }}
@@ -537,6 +545,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-pi-legion.yaml
     with:
+      # why: .github/ci-notes/ci.md#what-the-lane-input-reads
+      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
@@ -579,7 +589,20 @@ jobs:
     secrets:
       PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
 
-  # why: .github/ci-notes/ci.md#envoy-gos-fast-half-the-go-format-check-the-two-generated-code-checks-the
+  # why: .github/ci-notes/ci.md#envoy-go-build-envoys-go-build-vet-format-generated-code-and-migration-checks
+  envoy-go-build:
+    needs: changes
+    if: needs.changes.outputs.envoy_go_build == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-go-build.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+      migration-base: ${{ inputs.migration-base }}
+
+  # why: .github/ci-notes/ci.md#envoy-go-checks-envoys-script-tests-in-the-merge-queue-only
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -590,7 +613,6 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-go-checks.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
-      migration-base: ${{ inputs.migration-base }}
 
   # why: .github/ci-notes/ci.md#what-the-envoy-go-job-runs
   envoy-go:
@@ -614,6 +636,8 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-envoy-infra-go.yaml
     with:
+      # why: .github/ci-notes/ci.md#what-the-lane-input-reads
+      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#the-checks-whose-subject-is-text-each-modules-internaltextcheck-package-the-dispatch
@@ -947,6 +971,7 @@ jobs:
       - dispatch-ui
       - dispatch-browser
       - claude-envoy
+      - envoy-go-build
       - envoy-go-checks
       - envoy-go
       - envoy-infra-go
@@ -1016,9 +1041,10 @@ jobs:
           ALWAYS_RUN: ${{ env.CI_OK_ALWAYS_RUN }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          # The jobs that run only part of themselves without the label: dispatch-browser, whose
-          # `lane:` input above reads this same term. ci-ok.sh names it as run in part.
-          PARTIAL: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[]' || '["dispatch-browser"]' }}
+          # The jobs that run only part of themselves without the label: dispatch-browser, test,
+          # pi-legion and envoy-infra-go, whose `lane:` inputs above read this same term. ci-ok.sh
+          # names each as run in part.
+          PARTIAL: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[]' || '["dispatch-browser", "test", "pi-legion", "envoy-infra-go"]' }}
         run: .github/scripts/ci-ok.sh
 
       # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front

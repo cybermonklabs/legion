@@ -1794,11 +1794,11 @@ envoy_go:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/infra/**/*_test.go'
   # END generated
-# why: .github/ci-notes/ci.md#envoy_go_checks-envoy-gos-fast-half-envoy-go-checks-the-format-generated-contract-and-pmdoc
-envoy_go_checks:
+# why: .github/ci-notes/ci.md#envoy_go_build-envoys-go-build-vet-format-generated-code-and-migration-checks-envoy-go-build
+envoy_go_build:
   - *ci_router
   - *ci_filters_data
-  - '.github/workflows/ci-job-envoy-go-checks.yaml'
+  - '.github/workflows/ci-job-envoy-go-build.yaml'
   - *bun_install
   - *go_workspace
   - 'packages/envoy/**'
@@ -1819,7 +1819,7 @@ envoy_go_checks:
   - '.github/actions/spec-check/action.yml'
   - '.github/actions/spec-check/check.sh'
   - '.github/scripts/build-envoy-command.sh'
-  # why: .github/ci-notes/ci.md#envoy_go_checks-those-two-steps-judge-the-files-at-the-actions-default-paths
+  # why: .github/ci-notes/ci.md#envoy_go_build-those-two-steps-judge-the-files-at-the-actions-default-paths
   - '.dispatch/**'
   - '.github/workflows/**'
   - '.github/actions/**'
@@ -1829,6 +1829,14 @@ envoy_go_checks:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/daemon/**/*_test.go'
   # END generated
+# why: .github/ci-notes/ci.md#envoy_go_checks-envoys-script-tests-envoy-go-checks-and-the-scripts-they-drive
+envoy_go_checks:
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-envoy-go-checks.yaml'
+  - '.github/actions/install-helm/**'
+  - *bun_install
+  - 'packages/envoy/**'
 # why: .github/ci-notes/ci.md#text_checks-the-text-checks-of-the-three-go-modules-the-dispatch
 text_checks:
   - *ci_router

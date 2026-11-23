@@ -13,6 +13,12 @@ name: CI job pi-legion
 on:
   workflow_call:
     inputs:
+      lane:
+        description: >-
+          `full` runs the test step; `pull-request` leaves it to the merge queue and runs the
+          build, typecheck and pack alone (.github/ci-notes/ci.md#what-the-lane-input-reads).
+        type: string
+        required: true
       ci-ok-changes:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
@@ -101,7 +107,11 @@ jobs:
       - name: Typecheck pi-legion
         run: bun run typecheck
         working-directory: packages/pi-legion
+      # The suite's 13 minutes are a slow suite's, so it runs in the merge queue and on a pull
+      # request labelled full-ci
+      # (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
       - name: Test pi-legion
+        if: inputs.lane == 'full'
         run: bun run test
         working-directory: packages/pi-legion
         env:
