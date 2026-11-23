@@ -827,6 +827,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: model.SearchResponse{}, Params: searchResultsRouteQuery{},
 	},
 	"GET /api/v1/search/coverage": {Status: http.StatusOK, Response: model.SearchCoverage{}},
+	"GET /api/v1/request-keys/{key}/received": {Status: http.StatusOK, Response: requestKeyReceived{}},
 	"GET /api/v1/related-checks": {
 		Status: http.StatusOK, Response: model.RelatedChecksReport{}, Params: relatedChecksQuery{},
 	},
