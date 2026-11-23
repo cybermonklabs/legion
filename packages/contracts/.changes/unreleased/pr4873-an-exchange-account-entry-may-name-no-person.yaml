@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  `WhoamiAgent` carries `sign_in_required`, which `GET /api/v1/whoami` answers: true only for a
+  broker token of a machine nobody has signed in on, whose every write Dispatch refuses with
+  `SIGN_IN_REQUIRED`, and false for every other credential, an exchange entry's token that names its
+  Kubernetes account and no person among them. A Dispatch of an older build omits it.
+  `dispatch_whoami`'s description says that `service` may be the Kubernetes account an exchange
+  entry lists, for a broker token that names no person, and that such a token writes, recorded under
+  that account; a machine's broker token that names a service is still refused every write with
+  `SIGN_IN_REQUIRED`. `DISPATCH_SIGN_IN_REQUIRED`'s doc names the project scope `person` it is
+  answered for.
+time: 2026-11-21T17:54:41.000000000Z
+custom:
+  Issue: pr4873

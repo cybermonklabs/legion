@@ -159,6 +159,10 @@ func TestNewSetRefusesAnEntryItCannotServe(t *testing.T) {
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "example-worker" })}, names: "example-worker"},
 		{name: "an account with no namespace",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "system:serviceaccount:example-worker" })}, names: "system:serviceaccount:example-worker"},
+		{name: "an account with text after it",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "system:serviceaccount:example-ns:example-public===x" })}, names: "example-public===x"},
+		{name: "an account with text before it",
+			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "xsystem:serviceaccount:example-ns:example-public" })}, names: "xsystem:serviceaccount:example-ns:example-public"},
 		{name: "an empty account",
 			accounts: []exchange.AccountEntry{with(func(e *exchange.AccountEntry) { e.Account = "" })}, names: "account entry 1"},
 		{name: "an account with no project",
@@ -304,6 +308,85 @@ func TestAnAccountEntryWithNoProjectNamesNone(t *testing.T) {
 	}
 	if _, err := exchange.NewSet([]exchange.AccountEntry{{Account: workerAccount, Project: "  ", Person: person}}, nil, nil, nil, signInDomain); err == nil {
 		t.Fatal("NewSet with an account entry whose project is blank but not empty = nil error, want a refusal")
+	}
+}
+
+// TestAnAccountEntryMayNameNoPerson: an account entry may name neither a person nor a project,
+// which is a job's own entry (<service account>==): its tokens act as the account itself. The set
+// boots with it, and its pods' tokens are named, name no person and no project, and carry the
+// account as their service, which is what Dispatch records their writes under, beside the account
+// as the principal their session names belong to. An entry that fixes a session answers that
+// session and no pod uid, and its session is reserved for the account as any fixed one is. A
+// request naming a project is refused as under any entry naming none, and MappedProjects and
+// ProjectsForAccount answer neither a person nor a project.
+func TestAnAccountEntryMayNameNoPerson(t *testing.T) {
+	set, err := exchange.NewSet([]exchange.AccountEntry{
+		{Account: workerAccount},
+		{Account: daemonAccount, Session: fixedSession},
+	}, nil, nil, nil, signInDomain)
+	if err != nil {
+		t.Fatalf("NewSet with account entries naming no person and no project = %v, want them taken", err)
+	}
+	claims, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", nil)
+	want := exchange.Claims{Session: "public-session-1", Service: workerAccount, Scope: exchange.ProjectScopeNamed, Principal: workerPrincipal, Instance: podUID}
+	if err != nil || !reflect.DeepEqual(claims, want) {
+		t.Fatalf("Pod under an entry naming no person = %+v, %v; want %+v: named, no person, no project, the account as its service", claims, err, want)
+	}
+	fixed, err := set.Pod(podToken(daemonAccount, podUID), "", nil)
+	wantFixed := exchange.Claims{Session: fixedSession, Service: daemonAccount, Scope: exchange.ProjectScopeNamed, Principal: daemonPrincipal}
+	if err != nil || !reflect.DeepEqual(fixed, wantFixed) {
+		t.Fatalf("Pod under an entry naming no person that fixes its session = %+v, %v; want %+v", fixed, err, wantFixed)
+	}
+	if got := set.Reservations(); !reflect.DeepEqual(got, []exchange.Reservation{{Session: fixedSession, Principal: daemonPrincipal}}) {
+		t.Fatalf("Reservations = %v, want the fixed session held for %s", got, daemonPrincipal)
+	}
+	if _, err := set.Pod(podToken(workerAccount, podUID), "public-session-1", []string{project}); !errors.Is(err, exchange.ErrProjectsFixed) {
+		t.Fatalf("a request naming %s under an entry naming no person = %v, want ErrProjectsFixed", project, err)
+	}
+	if gotPerson, projects, ok := set.MappedProjects(workerPrincipal); gotPerson != "" || projects != nil || !ok {
+		t.Fatalf("MappedProjects = %q, %v, %v; want no person, no project, true", gotPerson, projects, ok)
+	}
+	if projects, ok := set.ProjectsForAccount(workerAccount); projects != nil || !ok {
+		t.Fatalf("ProjectsForAccount = %v, %v; want no project, true", projects, ok)
+	}
+}
+
+// TestAPersonlessEntryNamesNoProject: only an account entry that names no project may name no
+// person: an entry that names a project names its person, so no token held to a project is
+// personless. An account entry naming a project and no person is refused, naming the entry and
+// that rule; a person that is blank without being empty is refused whatever the project; and a
+// workflow entry still needs a person, whether or not it names a project.
+func TestAPersonlessEntryNamesNoProject(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		accounts  []exchange.AccountEntry
+		workflows []exchange.WorkflowEntry
+		names     []string
+	}{
+		{name: "an account entry naming a project and no person",
+			accounts: []exchange.AccountEntry{{Account: workerAccount, Project: project}},
+			names:    []string{workerAccount, "names no person only when it names no project"}},
+		{name: "an account entry naming no project and a blank person",
+			accounts: []exchange.AccountEntry{{Account: workerAccount, Person: " "}},
+			names:    []string{workerAccount, "the person is required"}},
+		{name: "a workflow entry naming a project and no person",
+			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref, Project: project}},
+			names:     []string{workflow, "the person is required"}},
+		{name: "a workflow entry naming neither",
+			workflows: []exchange.WorkflowEntry{{Repository: repository, Workflow: workflow, Ref: ref}},
+			names:     []string{workflow}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			set, err := exchange.NewSet(c.accounts, nil, c.workflows, nil, signInDomain)
+			if err == nil {
+				t.Fatalf("NewSet(%s) = %v, want a refusal", c.name, set)
+			}
+			for _, name := range c.names {
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("NewSet(%s) refused with %q, which does not name %q", c.name, err, name)
+				}
+			}
+		})
 	}
 }
 
