@@ -591,13 +591,22 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 // pass, as every other GitHub step's does: each row it did not try keeps its place, so the next
 // pass takes those first, and the stopped pass counts toward no bound; any other per-row failure
 // is logged and leaves the row due, behind the rows not tried since.
+//
+// A row's try is stamped on a context the batch's stop does not cancel (stampTry), and a row whose
+// turn comes after the stop is not stamped. A stamp the stop cancelled in flight could otherwise
+// commit at the server after the pass returned, with the client told it failed, so a row the pass
+// counted untried would go behind the rows it did not try. So when the pass returns, the rows it
+// stamped are exactly the rows it tried, and the next pass reads that record whole.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time) error {
 	stale, err := ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
 	if err != nil {
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		err := markHeadTried(ctx, r.pool, head.Repo, head.Number, now)
+		if ctx.Err() != nil {
+			return nil
+		}
+		err := stampTry(ctx, r.pool, head, now)
 		if err == nil {
 			err = RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
 		}
@@ -619,6 +628,15 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return fmt.Errorf("rate-limited re-reading pull request heads: %w", err)
 	}
 	return nil
+}
+
+// stampTry stamps head's try (markHeadTried) on a context the batch's stop does not cancel, bounded
+// by headWriteRollback, so the stamp either commits or fails before the pass returns
+// (reconcilePullRequestHeads).
+func stampTry(ctx context.Context, pool *store.Pool, head PullRequestHead, now time.Time) error {
+	stamp, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
+	defer cancel()
+	return markHeadTried(stamp, pool, head.Repo, head.Number, now)
 }
 
 // attributionBackfillCalls bounds the GitHub calls reconcileAttributionInputs makes in one pass. A
