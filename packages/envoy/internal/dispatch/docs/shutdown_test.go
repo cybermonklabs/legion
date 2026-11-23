@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -220,7 +222,10 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	first := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	second := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: []*burstGate{first, second}}
-	service := newShutdownTestService(t, database, appends)
+	// Shutdown's drain budget runs on fake, which moves only when this test moves it.
+	start := time.Now()
+	fake := clocktest.New(start)
+	service := newShutdownTestServiceOn(t, database, appends, fake)
 	// Registered after the service, so a run that fails before it lets the appends go lets them go
 	// before the service's own Shutdown cleanup, which would otherwise wait on them until go test's
 	// alarm.
@@ -258,8 +263,12 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
 	// Both appends stay queued past the pre-fix 5 s drain budget, and land with time to spare
-	// inside the 9 s per-room budget this round widened it to.
-	time.Sleep(7 * time.Second)
+	// inside the 9 s per-room budget this round widened it to. The budget runs on the service's
+	// clock, which the test moves 7 s once Shutdown has armed the budget: a budget of 5 s would end
+	// at that move and fail the drain, and the 9 s one cannot end before the appends land, however
+	// long the machine takes over the steps that follow.
+	awaitDrainBudgetArmed(t, fake, start.Add(ShutdownDrainBudget))
+	fake.Set(start.Add(7 * time.Second))
 	first.let()
 	testwait.Receive(t, "the second append to reach the store once the first let go", second.entered)
 	second.let()
@@ -286,7 +295,11 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	service := newShutdownTestService(t, database, nil)
+	// Shutdown's drain budget and its caller's deadline run on fake, which moves only when the
+	// render below moves it.
+	start := time.Now()
+	fake := clocktest.New(start)
+	service := newShutdownTestServiceOn(t, database, nil, fake)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -297,25 +310,38 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 
 	entered := make(chan struct{})
 	var once sync.Once
+	// armed is what the service's clock held pending as the render began.
+	var armed []time.Time
 	service.afterSettleReconcile = func(room string) {
 		if room != artifactID {
 			return
 		}
-		once.Do(func() { close(entered) })
+		once.Do(func() {
+			armed = fake.Armed()
+			close(entered)
+		})
 		// Finish 3.4 s past the per-room drain budget - the measured overrun - with 1.6 s of the
-		// reserve still to spare. A plain sleep, not a context wait: a render or commit already
-		// running does not stop the instant drainCtx's deadline passes either.
-		time.Sleep(ShutdownDrainBudget + 3400*time.Millisecond)
+		// reserve still to spare, on the service's clock: the move ends the drain budget and stops
+		// short of the caller's deadline, however long the machine takes over the steps around it.
+		// A plain move, not a context wait: a render or commit already running does not stop the
+		// instant drainCtx's deadline passes either.
+		fake.Set(start.Add(ShutdownDrainBudget + 3400*time.Millisecond))
 	}
 
 	// The document service's own production deadline: ShutdownDrainBudget plus the 5 s reserve
-	// cmd/dispatch/shutdown.go's documentShutdownTimeout now adds past it.
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second)
+	// cmd/dispatch/shutdown.go's documentShutdownTimeout now adds past it, on the service's clock
+	// too, so the render's move reaches the one and not the other.
+	shutdownCtx, cancelShutdown := fake.WithTimeout(context.Background(), ShutdownDrainBudget+5*time.Second)
 	defer cancelShutdown()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
 	testwait.Receive(t, "the settlement to reach its reconcile hook", entered)
 	shutdownErr := testwait.Receive(t, "Shutdown to return once the render finished", shutdown)
+	budget, deadline := start.Add(ShutdownDrainBudget), start.Add(ShutdownDrainBudget+5*time.Second)
+	if !slices.ContainsFunc(armed, budget.Equal) || !slices.ContainsFunc(armed, deadline.Equal) {
+		t.Errorf("the render began with %v pending on the service's clock, want its drain budget (%s) and its caller's deadline (%s) among them",
+			armed, budget.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
+	}
 	if shutdownErr != nil {
 		t.Errorf("Shutdown returned %v, want nil: a render already running when the budget ends should still let its worker return in time", shutdownErr)
 	}
@@ -371,16 +397,51 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 // appends, when set, stands in for the store's own document persistence.
 func newShutdownTestService(t *testing.T, database *store.Store, appends VersionedStore) *Service {
 	t.Helper()
-	service := New(Deps{
+	return newShutdownTestServiceOn(t, database, appends, nil)
+}
+
+// newShutdownTestServiceOn is newShutdownTestService on fake as the service's clock (Deps.Clock)
+// when fake is set, so Shutdown's drain budget ends only once the test moves fake past it, and on
+// the real clock otherwise.
+func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends VersionedStore, fake *clocktest.Fake) *Service {
+	t.Helper()
+	deps := Deps{
 		Store: database, Persistence: appends, Events: events.NewBroker(),
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   time.Hour,
-	})
+	}
+	if fake != nil {
+		// Set only for a fake: a nil *clocktest.Fake in the field would be a clock that is not nil.
+		deps.Clock = fake
+	}
+	service := New(deps)
 	// A test that already called Shutdown runs this one a second time; it logs its own
 	// "left to resume" line but does no second settlement attempt (settleRoomWithin's
 	// s.stopping guard returns it almost instantly), so it is a harmless no-op, not a race.
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	// On a fake the drain budget never ends by itself, so the machine's clock bounds this
+	// Shutdown by the same span instead: a run that failed with a room's append still held ends
+	// its cleanup as it would on the real clock, not at go test's alarm. Its result is no verdict.
+	t.Cleanup(func() {
+		ctx := context.Background()
+		if fake != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, ShutdownDrainBudget)
+			defer cancel()
+		}
+		_ = service.Shutdown(ctx)
+	})
 	return service
+}
+
+// awaitDrainBudgetArmed waits until Shutdown has armed its drain budget on fake for at, so the
+// test moves fake only once the budget it means to stay short of is pending. Other timers of the
+// service's may be pending on fake beside it.
+func awaitDrainBudgetArmed(t *testing.T, fake *clocktest.Fake, at time.Time) {
+	t.Helper()
+	testwait.Until(t, "Shutdown's drain budget armed on the service's clock for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, at.Equal)
+	})
 }
 
 // peerMarkdown renders the peer's copy of the document, read under its lock while the room's
