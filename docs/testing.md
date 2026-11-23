@@ -493,12 +493,13 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
-## A test in `internal/dispatch/api` runs beside the others
+## A test in `internal/dispatch/api` or `internal/dispatch/docs` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api` calls `t.Parallel()` as its first
-statement, and the package's `TestMain` runs 8 of them at once. Each test already has a database
-and a server of its own (`storetest.Open`), so run alone it spends most of its time waiting on
-Postgres while the machine's other cores sit idle.
+Every top-level test of `packages/envoy/internal/dispatch/api` and
+`packages/envoy/internal/dispatch/docs` calls `t.Parallel()` as its first statement, and each
+package's `TestMain` sets how many run at once: 8 in api, 6 in docs. Each test already has a
+database and a server or document service of its own (`storetest.Open`), so run alone it spends
+most of its time waiting on Postgres while the machine's other cores sit idle.
 
 A test stays serial when it, or a helper it calls, changes or measures something the whole test
 process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
@@ -515,6 +516,19 @@ A test that reads `pg_locks` or `pg_stat_activity` names its own database in the
 `datname = current_database()`). The tests beside it hold the same tables, OIDs and lock keys in
 databases cloned from the same template, so a predicate on a relation or a lock key alone counts
 their waiters as its own.
+
+A test in `internal/dispatch/docs`, and a helper it calls (`storetest`, `lockstep`, `docstest`),
+registers its cleanups with `testcleanup.Add(t, f)`, not `t.Cleanup(f)`. testing keeps a finished
+parallel test, and every closure its cleanups captured, until the package's last parallel test
+ends, so a document service, a room of a 400 KB document or a peer that a cleanup shuts down stays
+live for the rest of the run; `testcleanup.Add` lets go of it once the cleanup has run. Under the
+race detector every live byte costs about three (the heap and the detector's shadow of it), and
+envoy-go-race-docs fails its step when the binary passes 8 GB
+(`.github/workflows/ci-job-envoy-go-race-docs.yaml`).
+
+A docs test that builds a document far larger than the others (an update past ygo's item cap,
+150,000 blocks, a 1,242-case sweep of ask bodies) stays serial and says so on its first line:
+beside the package's other tests it is what sets the binary's peak.
 
 ## Go's package deadline
 
