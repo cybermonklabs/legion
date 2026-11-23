@@ -165,15 +165,15 @@ func TestGrantLogLineAndTheRoutesEventSayTheSameThing(t *testing.T) {
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-drift")
 	nameSession(t, m, pod, "sess-pod")
 
-	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "", nil)
+	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "")
 	if err != nil || automatic.State != "granted" {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want granted", automatic, err)
 	}
-	service, err := m.Create(ctx, pod, signRequest(t, m, podKey, "run the job", "SERVICE_KEY"), "", nil)
+	service, err := m.Create(ctx, pod, signRequest(t, m, podKey, "run the job", "SERVICE_KEY"), "")
 	if err != nil || service.State != "granted" {
 		t.Fatalf("Create(SERVICE_KEY) = %+v, %v; want granted", service, err)
 	}
-	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "ship the release", "DEEL_API_KEY"), "", nil)
+	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "ship the release", "DEEL_API_KEY"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want pending", pending, err)
 	}
@@ -298,23 +298,23 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-volume")
 	ctx := context.Background()
 
-	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "", nil)
+	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "")
 	if err != nil || automatic.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", automatic, err)
 	}
 	for range 3 {
-		if _, err := m.Values(ctx, *automatic.GrantID, enr, nil, ReleaseCall{}); err != nil {
+		if _, err := m.Values(ctx, *automatic.GrantID, enr, ReleaseCall{}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 	}
-	cancelled, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "", nil)
+	cancelled, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "")
 	if err != nil || cancelled.RecordID == nil {
 		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want pending", cancelled, err)
 	}
 	if err := m.Cancel(ctx, cancelled.ID, enr); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	approved, err := m.Create(ctx, enr, signRequest(t, m, key, "share it", "SHARED_KEY"), "", nil)
+	approved, err := m.Create(ctx, enr, signRequest(t, m, key, "share it", "SHARED_KEY"), "")
 	if err != nil || approved.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want pending", approved, err)
 	}
@@ -322,7 +322,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	if err != nil || decision.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", decision, err)
 	}
-	expired, err := m.Create(ctx, enr, signRequest(t, m, key, "ask alice", "ALICE_KEY"), "", nil)
+	expired, err := m.Create(ctx, enr, signRequest(t, m, key, "ask alice", "ALICE_KEY"), "")
 	if err != nil || expired.RecordID == nil {
 		t.Fatalf("Create(ALICE_KEY) = %+v, %v; want pending", expired, err)
 	}
@@ -340,7 +340,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 	capped := policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1")
 	capped.Tags[policy.TagMaxGrant] = "1m"
 	retag(t, m, capped)
-	if _, err := m.Values(ctx, decision.GrantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(ctx, decision.GrantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values under a max-grant below the grant's own lifetime = %v, want ErrGrantNotLive", err)
 	}
 
@@ -385,11 +385,11 @@ func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-withhold")
 	ctx := context.Background()
 
-	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "", nil)
+	automatic, err := m.Create(ctx, enr, signRequest(t, m, key, "read the ledger", "AUTO_TOKEN"), "")
 	if err != nil || automatic.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want a grant", automatic, err)
 	}
-	both, err := m.Create(ctx, enr, signRequest(t, m, key, "both of them", "AUTO_TOKEN", "SHARED_KEY"), "", nil)
+	both, err := m.Create(ctx, enr, signRequest(t, m, key, "both of them", "AUTO_TOKEN", "SHARED_KEY"), "")
 	if err != nil || both.RecordID == nil {
 		t.Fatalf("Create(AUTO_TOKEN, SHARED_KEY) = %+v, %v; want pending", both, err)
 	}
@@ -441,7 +441,7 @@ func TestACancelByAnotherEnrollmentOfTheOwnerNamesTheRequestsEnrollment(t *testi
 	}
 	cancelled := func(t *testing.T, caller, wantDetail string) {
 		t.Helper()
-		req, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "", nil)
+		req, err := m.Create(ctx, enr, signRequest(t, m, key, "never mind", "DEEL_API_KEY"), "")
 		if err != nil || req.RecordID == nil {
 			t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want pending", req, err)
 		}

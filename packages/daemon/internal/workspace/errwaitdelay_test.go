@@ -262,7 +262,7 @@ func TestAReadItsBudgetEndedIsRefusedNotReadAsAnAnswer(t *testing.T) {
 		held := &fetchCredential{remote: credential, env: credential.env, read: staticToken(testInstallationToken), held: []string{testInstallationToken}}
 		run := timesOut{argv: []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet"}}
 		err = followHead(context.Background(), run, fetchRequest(t), gitDir, map[string]string{"refs/heads/main": strings.Repeat("a", 40)}, held, time.Now().Add(time.Minute))
-		if err == nil || !strings.HasPrefix(err.Error(), "command timed out: git --git-dir="+gitDir+" symbolic-ref --quiet HEAD") {
+		if err == nil || !strings.HasPrefix(err.Error(), "command timed out: "+strings.Join(feedGit, " ")+" --git-dir="+gitDir+" symbolic-ref --quiet HEAD") {
 			t.Errorf("followHead with its symbolic-ref timed out = %v, want the timeout refused", err)
 		}
 	})
@@ -320,7 +320,7 @@ func TestAReadASignalEndedNamesItsCommandAndWhatItPrinted(t *testing.T) {
 		held := &fetchCredential{remote: credential, env: credential.env, read: staticToken(testInstallationToken), held: []string{testInstallationToken}}
 		run := killsOne{argv: []string{"git", "--git-dir=" + gitDir, "symbolic-ref"}, said: said, end: killed}
 		err = followHead(context.Background(), run, fetchRequest(t), gitDir, map[string]string{"refs/heads/main": strings.Repeat("a", 40)}, held, time.Now().Add(time.Minute))
-		if want := "run git --git-dir=" + gitDir + " symbolic-ref --quiet HEAD: signal: killed\n" + said; err == nil || err.Error() != want {
+		if want := "run " + strings.Join(feedGit, " ") + " --git-dir=" + gitDir + " symbolic-ref --quiet HEAD: signal: killed\n" + said; err == nil || err.Error() != want {
 			t.Errorf("followHead = %v, want %q", err, want)
 		}
 	})

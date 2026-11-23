@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/infra/gcp"
 	"github.com/sjawhar/envoy/infra/routes"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestRouteCheckRefusesARouteThatIsNotTheHubs runs `envoy-infra routes record` and `routes check`'s
@@ -117,6 +118,30 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 			require.True(t, strings.HasSuffix(strings.SplitN(out, "\n", 2)[0], "[INF] Starting nats-server"),
 				"%s's log begins with the start line", s.name)
 		}
+		// A client another test left dialing 127.0.0.1 does not reach a server's client port,
+		// which listens at an address of the test's own (requireNoStrayReaches).
+		for _, s := range h.servers {
+			requireNoStrayReaches(t, s.name, s.host, s.client)
+		}
+		// A stray client can dial a route port, which listens on 127.0.0.1, the pods' IP here:
+		// reservePorts stops a second bind, not a dial. The check reads nothing of it, since it
+		// skips a route connection from a pod IP and counts a pod IP's refused route login only
+		// when the mesh is split (routes/log.go, routeConnections). Each server logs the stray's
+		// refused login, so the stray reached it, and the check stays clean. The wait ends on that
+		// line, and fails only at the row's deadline, less 30 s to report: a loaded runner logs
+		// late, and nothing else bounds when the line comes.
+		for _, s := range h.servers {
+			before := strings.Count(s.proc.Output.String(), `authentication error - User "route"`)
+			strayRouteLogin(t, s)
+			within(t, testwait.Bounded(t, 24*time.Hour, 30*time.Second), s.name+" logging the stray's refused route login", func() error {
+				if strings.Count(s.proc.Output.String(), `authentication error - User "route"`) == before {
+					return fmt.Errorf("%s has logged no refused route login since a stray dialed its route port at 127.0.0.1:%d", s.name, s.route)
+				}
+				return nil
+			})
+		}
+		report = routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Clean, report.Verdict(), "a stray's refused login at each server's route port on 127.0.0.1 changed the check; findings: %v", report.Findings)
 
 		report = routes.Check(ctx, refusedVarz{h, h.release + "-1"}, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "control: a /varz refused; findings: %v", report.Findings)
@@ -141,7 +166,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		_, monitor := startPeer(t, natsServer, h.release+"-1", "127.0.0.2", h.routePorts[:1])
-		impostor := peerID(t, "127.0.0.2", monitor)
+		impostor := peerID(t, monitor)
 		within(t, 30*time.Second, "the impostor in the hub's routes", func() error {
 			if ok, err := routedBy(h.servers[2], "127.0.0.2", ""); err != nil || !ok {
 				return fmt.Errorf("%s has not dialed the impostor yet (%v)", h.servers[2].name, err)
@@ -159,7 +184,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 			names[s.name] = true
 		}
 		for _, s := range h.servers {
-			routez, err := routezOf("127.0.0.1", s.monitor)
+			routez, err := routezOf(s.host, s.monitor)
 			require.NoError(t, err)
 			for _, route := range routez.Routes {
 				require.True(t, names[route.RemoteName], "control: %s's route to %s (%s) bears a name that is no hub server's, so a check by name would catch it",
@@ -176,7 +201,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		peer, monitor := startPeer(t, natsServer, h.release+"-2", "127.0.0.3", h.routePorts[:1])
-		id := peerID(t, "127.0.0.3", monitor)
+		id := peerID(t, monitor)
 		within(t, 30*time.Second, "the peer in the hub's routes", func() error {
 			if ok, err := routedBy(h.servers[1], "127.0.0.3", ""); err != nil || !ok {
 				return fmt.Errorf("%s has not dialed the peer yet (%v)", h.servers[1].name, err)
@@ -209,7 +234,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		peer, monitor := startPeer(t, natsServer, h.release+"-2", "127.0.0.3", h.routePorts[:1])
-		id := peerID(t, "127.0.0.3", monitor)
+		id := peerID(t, monitor)
 		within(t, 30*time.Second, "the peer in the hub's routes", func() error {
 			if ok, err := routedBy(h.servers[1], "127.0.0.3", ""); err != nil || !ok {
 				return fmt.Errorf("%s has not dialed the peer yet (%v)", h.servers[1].name, err)
@@ -280,7 +305,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		h := newStagedHub(t, renders, natsServer, password)
 		rec := record(t, h)
 		_, monitor := startPeer(t, natsServer, h.release+"-1", "127.0.0.1", h.routePorts[:1])
-		impostor := peerID(t, "127.0.0.1", monitor)
+		impostor := peerID(t, monitor)
 		within(t, 30*time.Second, "the impostor in the hub's routes", func() error {
 			if ok, err := routedBy(h.servers[2], "", impostor); err != nil || !ok {
 				return fmt.Errorf("%s has not dialed the impostor yet (%v)", h.servers[2].name, err)
@@ -298,7 +323,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 			names[s.name] = true
 		}
 		for _, s := range h.servers {
-			routez, err := routezOf("127.0.0.1", s.monitor)
+			routez, err := routezOf(s.host, s.monitor)
 			require.NoError(t, err)
 			for _, route := range routez.Routes {
 				require.True(t, route.IP == "127.0.0.1" && names[route.RemoteName],
@@ -368,7 +393,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		texts := []string{"[INF] 10.66.6.6:6222 - rid:1 - Route connection created", "Failed to reload server configuration: x",
 			"nats://route:x@10.9.9.9:6222", forged, "an ordinary line", forged}
 		for _, text := range texts {
-			require.Equal(t, "PONG", clientLine(t, s.client, text), "a client with no credential is the hub's session user")
+			require.Equal(t, "PONG", clientLine(t, s, text), "a client with no credential is the hub's session user")
 		}
 		within(t, 10*time.Second, "the client's lines in the log", func() error {
 			for _, text := range texts {
@@ -610,7 +635,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 			return fmt.Errorf("%s has not logged the fake route's connection yet", s.name)
 		})
 		forged := "127.0.0.5:" + f.localPort() + " - rid:" + rid + " - authentication error"
-		require.Equal(t, "PONG", clientLine(t, s.client, forged), "a client with no credential is the hub's session user")
+		require.Equal(t, "PONG", clientLine(t, s, forged), "a client with no credential is the hub's session user")
 		within(t, 10*time.Second, "the client's line in the log", func() error {
 			if !strings.Contains(s.proc.Output.String(), " - Client Error "+forged+"\n") {
 				return fmt.Errorf("%s has not logged the client's line yet", s.name)

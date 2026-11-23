@@ -175,7 +175,7 @@ func refusedSecret(name string) secrets.LocalSecret {
 // enrollment the broker does not hold, each its own one answer. Before, the reread answered every
 // caller whether the broker served the name, why not and as which type.
 func TestARereadAnswersACallerWithNoSessionTheSameForEveryName(t *testing.T) {
-	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
+	ts := newProfiledTestServer(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")), func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	ts.Secrets.Put(refusedSecret("UNOWNED_KEY"))
 	names := map[string]string{
@@ -214,7 +214,7 @@ func TestARereadAnswersACallerWithNoSessionTheSameForEveryName(t *testing.T) {
 // once the reread is done, as every caller was before: whether the broker serves the name, as
 // which type, and why not, for each of the four names the row above asks about.
 func TestASessionsRereadStillGetsTheAnswerItGotBefore(t *testing.T) {
-	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
+	ts := newProfiledTestServer(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")), func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	ts.Secrets.Put(refusedSecret("UNOWNED_KEY"))
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
@@ -262,7 +262,7 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 	mux := http.NewServeMux()
 	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		RereadOverallLimit: &rereadsFreely,
-		NotifyReread:       func(_ context.Context, name string) { notified <- name }})
+		NotifyReread:       func(_ context.Context, name string, _ []string) { notified <- name }})
 	// NEW_KEY is in the store only from now on, so only a reread can make the broker serve it.
 	local.Put(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
 
@@ -402,7 +402,7 @@ func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
 		SecretsStore:  secrets.StoreAWS,
 		SecretsPrefix: policytest.Prefix,
 		SecretsKMSKey: policytest.KeyARN,
-		NotifyReread:  func(context.Context, string) { panic("a peer-notice defect") },
+		NotifyReread:  func(context.Context, string, []string) { panic("a peer-notice defect") },
 	})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()

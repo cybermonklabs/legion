@@ -269,8 +269,8 @@ func TestAStaleRefusalLeavesARunningTurnsRun(t *testing.T) {
 
 	// The re-send is then refused: the turn was not its, and the refusal takes the confirmation
 	// back. Nothing read the task, since the given-up prompt's mark went with that prompt's refusal,
-	// so no run is attributed to it. A memory cleared at confirm would have dropped that refusal and
-	// left the mark standing.
+	// so no run is attributed to it. A memory cleared at confirmCarrying would have dropped that
+	// refusal and left the mark standing.
 	gated.RefusePrompt("Agent is already processing")
 	gated.release <- struct{}{}
 	h.m.Wait()

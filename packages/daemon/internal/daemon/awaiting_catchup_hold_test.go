@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // openTreeIssue is one issue of project CAPTURE: key in tree at phase, carrying the repository
@@ -42,6 +43,7 @@ func openSpecGate(root string, version int) record.DesignGate {
 // never ran such a root is still left alone: its gate stands at no open step, and replaying the
 // event log below its own admission handout is history this release must not replay.
 func TestTheBootsCatchUpHoldsEveryRootItsOwnStepListOpens(t *testing.T) {
+	t.Parallel()
 	pool, w := catchUpRig(t, &awaitingDispatch{}, 2)
 	seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 		for _, issue := range []record.Issue{
@@ -64,7 +66,7 @@ func TestTheBootsCatchUpHoldsEveryRootItsOwnStepListOpens(t *testing.T) {
 		return records.PutSlot(ctx, tx, record.Slot{Issue: "CAPTURE-200", Index: 0, AdmittedAt: catchUpClock()})
 	})
 
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return w.holdForCatchUp(context.Background(), tx)
 	}); err != nil {
 		t.Fatalf("hold the roots to catch up: %v", err)

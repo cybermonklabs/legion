@@ -6,9 +6,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/roles"
 )
 
@@ -146,7 +150,10 @@ func (f *roleForwarder) publish(sessionID string) {
 			f.finish(forward, err)
 			continue
 		}
-		go func() { f.finish(forward, wait()) }()
+		go func() {
+			_, err := wait()
+			f.finish(forward, err)
+		}()
 	}
 }
 
@@ -201,32 +208,91 @@ func (f *roleForwarder) wait(ctx context.Context) bool {
 // consumer, with acknowledgement and redelivery (roleForwardCopyDelivery). msgID is the forward's
 // Nats-Msg-Id when it is not empty, which is what keeps the stream to one copy per message and
 // holder however many attempts a send makes (roleForward.msgID).
-func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
-	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+//
+// The wait answers a clustered stream's refusal of the forward as still in process under an
+// earlier forward under msgID through publishPastInProcess, inside the forward's own timeout: it
+// sends the forward again until the stream acknowledges it as that earlier forward's duplicate,
+// so every caller - a role send, a role-lane delivery and a kept-lane walk - takes that refusal
+// one way, as one forward, and none counts it a forward that failed.
+func startRoleForward(client *bus.Client) func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	return func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+		deadline := time.Now().Add(timeout)
 		forward, err := client.StartRequestStoredTo(subject, item, msgID, timeout)
 		if err != nil {
 			return nil, err
 		}
-		return forward.Wait, nil
+		return func() (bus.StoredAck, error) {
+			ctx, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			return publishPastInProcess(ctx, func() (bus.StoredAck, error) {
+				if forward == nil {
+					var err error
+					if forward, err = client.StartRequestStoredTo(subject, item, msgID, time.Until(deadline)); err != nil {
+						return bus.StoredAck{}, err
+					}
+				}
+				// Every forward StartRequestStoredTo returned is waited for, which releases its
+				// reply subscription, and the next send is a forward of its own.
+				ack, err := forward.Wait()
+				forward = nil
+				return ack, err
+			})
+		}, nil
 	}
 }
 
 // roleLane is the listener's role lane at shutdown: its own client (bus.ConnectRoleLane), the
-// forwards its handler hands over, and stopWatch, which ends watchRoleLaneSlowConsumers.
+// forwards its handler hands over, and stopWatch, which ends watchRoleLaneSlowConsumers. An edge
+// listener subscribes no role lane, so its roleLane holds the forwards alone.
 type roleLane struct {
 	client    *bus.Client
 	forwards  *roleForwarder
 	stopWatch func()
 }
 
+// startRoleLane opens the listener's role lane: a core-NATS queue subscription on a connection of
+// its own with finite pending limits (bus.RoleLanePendingMsgs, bus.RoleLanePendingBytes;
+// bus.ConnectRoleLane), in the queue group every listener shares, or this machine's group on a hub
+// whose grant predates it, whose messages handler takes. During a rolling deploy the task being
+// replaced is a member too, and NATS hands each role message to one member of a group, so opening
+// the lane before the durable binds forwards no message twice. It counts the lane's slow-consumer
+// errors on met and watches them (watchRoleLaneSlowConsumers) until the lane's drain.
+//
+// An edge listener (edge) opens none: its grant subscribes no role lane (natsgrant.Edge), so it
+// takes no share of any project's role messages. A shared listener resolves a role's holder, an
+// edge session's among them, and forwards the message to the holder's agent subject, which the
+// holder's session consumer delivers. Its lane holds the forwards alone.
+func startRoleLane(cfg config.Service, edge *edgeGrant, handler nats.MsgHandler, forwards *roleForwarder, met *metrics.Registry, logger *logging.Logger) (roleLane, error) {
+	if edge != nil {
+		logger.Info("role lane not subscribed: an edge listener takes no role message; a shared listener forwards each to its holder's agent subject")
+		return roleLane{forwards: forwards}, nil
+	}
+	client, queue, err := bus.ConnectRoleLane(cfg.NATSURLs, cfg.MachineID, handler)
+	if err != nil {
+		return roleLane{}, err
+	}
+	logger.Info("role lane subscribed", slog.String("subject", contracts.RoleTopicPrefix+">"), slog.String("queue", queue))
+	met.NewGaugeFunc("envoy_role_lane_slow_consumers", "Slow-consumer errors the role lane's connection has reported", func() int64 {
+		return int64(client.SlowConsumers())
+	})
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	go watchRoleLaneSlowConsumers(watchCtx, client, logger, roleLaneSlowConsumerInterval)
+	return roleLane{client: client, forwards: forwards, stopWatch: stopWatch}, nil
+}
+
 // drain ends the role lane at shutdown: it drains the lane's client within timeout, so the handler
 // takes every role message the server already delivered and no more, then waits for the forwards it
 // handed over, the forward window after that at most, since a forward published by then has its
-// outcome within it. A forward still waiting then is logged and left to the main client's drain.
+// outcome within it. A forward still waiting then is logged and left to the main client's drain. A
+// lane with no client, an edge listener's, waits for the forwards alone.
 func (l roleLane) drain(logger *logging.Logger, timeout time.Duration) {
-	l.stopWatch()
-	if err := l.client.Drain(timeout); err != nil {
-		logger.Warn("role lane drain error", slog.String("error", err.Error()))
+	if l.stopWatch != nil {
+		l.stopWatch()
+	}
+	if l.client != nil {
+		if err := l.client.Drain(timeout); err != nil {
+			logger.Warn("role lane drain error", slog.String("error", err.Error()))
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), roleForwardTimeout)
 	defer cancel()

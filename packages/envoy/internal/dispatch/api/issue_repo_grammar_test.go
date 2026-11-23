@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// An issue's own repository is any `owner/name` GitHub could hold, and nothing else. Since no
-// mapping row stands behind an issue's repository (migration 20261112004945), the shape check in
+// An issue's own repository is any `owner/name` GitHub could hold, and nothing else. Since
+// migration 20261112004945 no rule of the schema holds it to its project, so the shape check in
 // parseIssueRepo is the whole gate on the value, and the value goes on to the CI repair
 // (cireconcile's covered), which asks GitHub about every distinct repository an issue names, and
 // to the Legion daemon's preparation. A name GitHub's own grammar refuses — an owner that starts
@@ -21,6 +21,7 @@ import (
 // The negative control for the trim is a route that reads the value untrimmed, which refuses
 // ` Acme/Widgets.git\n`.
 func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"x/..",
 		"x/.",
@@ -32,7 +33,7 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 		"acme/...git.git",
 	} {
 		raw, _ := json.Marshal(value)
-		if repo, _, err := parseIssueRepo(raw); err == nil {
+		if repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE"); err == nil {
 			t.Errorf("parseIssueRepo(%q) = %q, want it refused: GitHub holds no repository of that name", value, *repo)
 		}
 	}
@@ -45,7 +46,7 @@ func TestAnIssuesRepositoryIsRefusedUnlessGitHubCouldHoldIt(t *testing.T) {
 		"o/" + strings.Repeat("a", 100): "o/" + strings.Repeat("a", 100),
 	} {
 		raw, _ := json.Marshal(value)
-		repo, _, err := parseIssueRepo(raw)
+		repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE")
 		if err != nil || repo == nil || *repo != want {
 			t.Errorf("parseIssueRepo(%q) = %v, %v, want %q", value, repo, err, want)
 		}

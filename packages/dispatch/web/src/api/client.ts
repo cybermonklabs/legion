@@ -44,6 +44,7 @@ import type {
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
+  IssueReferencesAnswer,
   NewIssueSettings,
   TargetCandidate,
   UserIssueState,
@@ -397,9 +398,10 @@ export function isDocumentUnloadable(error: unknown): boolean {
   return error instanceof ApiError && error.status === 409 && error.code === "DOCUMENT_UNLOADABLE";
 }
 
-// An issue's reference closure walk cut at the server's bound (`503 REFERENCES_TIMEOUT`): the walk
-// costs the database the whole bound each time, so an automatic retry only multiplies that cost
-// and shows nothing more. The page offers its own Retry instead.
+// An issue's references read, one hop each way, cut at the server's 2 s bound (`503
+// REFERENCES_TIMEOUT`): a read that reaches the bound costs the database the whole of it, so an
+// automatic retry only multiplies that cost and shows nothing more. The page offers its own Retry
+// instead.
 export function isReferencesTimeout(error: unknown): boolean {
   return error instanceof ApiError && error.status === 503 && error.code === "REFERENCES_TIMEOUT";
 }
@@ -975,9 +977,9 @@ export class DispatchApiClient {
    *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
    *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
    *  shaped read, so the trees are part of the body the document holds. A read states a response
-   *  shape of its own only where the document cannot hold it - `getIssueEvents` and
-   *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
-   *  with `routeUrl`. */
+   *  shape of its own only where the document cannot hold it, each saying beside it what that
+   *  is: `getIssueEvents` and `listIssueAskThreads`, which go through `json` with `routeUrl`, and
+   *  `getIssueReferences`, which a build older than the document answers with less. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1034,30 +1036,6 @@ export class DispatchApiClient {
     return this.post("/api/v1/projects", {}, input, bounds);
   }
 
-  listRepoProjects() {
-    return this.read("/api/v1/settings/repo-projects", {});
-  }
-
-  async putRepoProject(
-    repo: string,
-    input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
-    bounds: WriteBounds
-  ) {
-    return this.put(
-      "/api/v1/settings/repo-projects/{owner}/{repo}",
-      repoParams(repo),
-      input,
-      bounds
-    );
-  }
-
-  /** `DELETE /api/v1/settings/repo-projects/{owner}/{repo}`: remove the repository's mapping. A
-   *  repository with no mapping answers the same 204, so a removal made again after one that
-   *  landed needs no `removedEvenIfGone`. */
-  async deleteRepoProject(repo: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
-  }
-
   /** Every project with the person it defaults to: each one names somebody, so none is left out.
    *  Needs the `person` scope. */
   listProjectDefaultAssignees() {
@@ -1074,6 +1052,19 @@ export class DispatchApiClient {
     bounds: WriteBounds
   ) {
     return this.put("/api/v1/projects/{key}/default-assignee", { key: project }, input, bounds);
+  }
+
+  /** Sets the repository an issue of the project resolves to when neither the issue nor an issue
+   *  above it names one, `owner/name`. `{ repo: null }` clears it. The server stores the name in
+   *  lower case with no `.git`, and its answer holds the stored value. A name GitHub could hold no
+   *  repository at is refused `400 INVALID_PROJECT`. The write belongs to the deployment: it needs
+   *  no `person` scope, and a credential of one project is refused. */
+  putProjectDefaultRepository(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/default-repository", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/projects/{key}/default-repository", { key: project }, input, bounds);
   }
 
   /** Every project's architecture sources, by project and then in the order each was added. */
@@ -1359,6 +1350,12 @@ export class DispatchApiClient {
    *  one page at a time. Needs the `person` scope. */
   listMyAnswers(page: Query<"/api/v1/me/answers", "get">) {
     return this.read("/api/v1/me/answers", {}, page);
+  }
+
+  /** `GET /api/v1/people/{login}/nodes`: one person's page — what they wrote and what reached
+   *  them, newest first, one page at a time. Needs the `person` scope. */
+  listPersonNodes(login: string, page: Query<"/api/v1/people/{login}/nodes", "get">) {
+    return this.read("/api/v1/people/{login}/nodes", { login }, page);
   }
 
   /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
@@ -1709,8 +1706,13 @@ export class DispatchApiClient {
     );
   }
 
-  getIssueReferences(key: string) {
-    return this.read("/api/v1/issues/{key}/references", { key });
+  /** The issue's references read, each member carrying its latest version alone
+   *  (`versions=latest`): the Artifacts tab, its one reader, draws no member's older versions.
+   *  The document's body holds `links` and `linked_from`, which a Dispatch from before the
+   *  one-hop read does not send, so this read answers `IssueReferencesAnswer`, where both may be
+   *  absent. */
+  getIssueReferences(key: string): Promise<IssueReferencesAnswer> {
+    return this.read("/api/v1/issues/{key}/references", { key }, { versions: "latest" });
   }
 
   /** Everyone who worked the issue, running or not: people, and agent sessions merged with the

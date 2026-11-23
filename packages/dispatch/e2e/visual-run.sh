@@ -106,7 +106,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-mkfifo "$exports_fifo"
+# The fifo carries the stack's variables, DATABASE_URL among them with any password it holds, so it
+# is made for this user alone: under a umask of 022 a plain mkfifo would make it prw-r--r--, and any
+# user of the machine could open it and read those lines.
+mkfifo -m 600 "$exports_fifo"
 bun e2e/harness-up.ts > "$exports_fifo" &
 harness=$!
 # Opened for the rest of the script, not for the loop alone: the harness writes nothing on

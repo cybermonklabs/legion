@@ -23,10 +23,19 @@ import (
 // Store is the shared Dispatch database handle.
 type Store struct {
 	Pool *Pool
+	// afterNonTransactionalStatement runs on the connection a marked migration was applied on,
+	// once its statement has returned and before its version is recorded, and its error fails
+	// that migration. Only a test sets it: the runner closes that connection before Migrate
+	// returns, so this is the one place the session that applied the statement can be asked
+	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
+	// runs nothing.
+	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
 }
 
-// Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
-// states why the pattern is all:migrations and holds the tree to it.
+// Every file in migrations, so the store's tests judge each one with pgmigrate.Load
+// (TestTheEmbeddedMigrationsPassEveryCheckLoadMakes) and a start reads each one with
+// pgmigrate.LoadBuilt; pgmigratetest.CheckEmbedsEveryFile states why the pattern is all:migrations
+// and holds the tree to it.
 //
 //go:embed all:migrations
 var migrationFiles embed.FS
@@ -125,29 +134,50 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 // Migrate applies embedded migrations in version order. Unmarked files commit with their
 // version record in one transaction; marked concurrent indexes run outside a transaction under
 // the same advisory key until their version is recorded. Every wait for that key polls, for the
-// reason lockMigrations gives. It refuses a set pgmigrate.Load refuses before touching the
+// reason lockMigrations gives. It refuses a set pgmigrate.LoadBuilt refuses before touching the
 // database, refuses a database whose schema_migrations records a version under another file's
 // identity before applying anything (prepareVersionTable), and bounds every migration's lock
-// waits by LockTimeout.
+// waits by LockTimeout. A marked migration whose statement is not one idempotent concurrent index
+// build is refused at its turn, after the pending migrations before it have been applied
+// (pgmigrate.LoadBuilt says why the start reads the set that way).
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
+}
+
+// MigrateThrough is Migrate for the embedded migrations numbered version or below alone: it leaves
+// the schema a release whose newest migration is version leaves, and a later Migrate applies the
+// rest, as the next release's boot does over that deployment. It refuses a version no embedded
+// migration carries, which names no release. Tests read a store as an earlier release left it
+// through it (cmd/dispatch's supertag node tests).
+func (s *Store) MigrateThrough(ctx context.Context, version int) error {
+	return s.migrateThrough(ctx, migrationFiles, version)
 }
 
 // versionTable is the table this runner records each applied migration in.
 const versionTable = "schema_migrations"
 
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
+	return s.migrateThrough(ctx, fsys, math.MaxInt)
+}
+
+func (s *Store) migrateThrough(ctx context.Context, fsys fs.FS, version int) error {
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("migrate: store pool required")
 	}
-	migrations, err := pgmigrate.Load(fsys, "migrations")
+	migrations, err := pgmigrate.LoadBuilt(fsys, "migrations")
 	if err != nil {
 		return fmt.Errorf("migrations refused, none applied: %w", err)
+	}
+	if version != math.MaxInt && !slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version == version }) {
+		return fmt.Errorf("migrate through %d: no embedded migration carries that version, none applied", version)
 	}
 	if err := s.prepareVersionTable(ctx, migrations); err != nil {
 		return err
 	}
 	for _, migration := range migrations {
+		if migration.Version > version {
+			break
+		}
 		if err := s.applyMigration(ctx, migrations, migration); err != nil {
 			return fmt.Errorf("apply migration %d: %w", migration.Version, err)
 		}
@@ -483,6 +513,11 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations [
 	}
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
+	}
+	if s.afterNonTransactionalStatement != nil {
+		if err := s.afterNonTransactionalStatement(ctx, conn); err != nil {
+			return err
+		}
 	}
 	return pgmigrate.Record(ctx, conn, versionTable, migration)
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -25,6 +26,7 @@ import (
 // it. The read takes no supervisor lock: with a fact's transaction holding the fact lock and a
 // Create waiting for it inside the supervisor's lock, the read answers at once.
 func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")
@@ -44,7 +46,7 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 	w.attach(&supervision{supervisor: sup, log: quietLogger()})
 	planner := mustClaimToken(t, "LEGION-208", claim.RolePlanner)
 
-	fact, err := pool.Begin(ctx)
+	fact, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +100,7 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 	if _, err := st.HoldSessions(ctx, "legion", planner, supervise.RecordedHolds("ses-planner", "")); err != nil {
 		t.Fatalf("hold ses-planner for %s: %v", planner, err)
 	}
-	next, err := pool.Begin(ctx)
+	next, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +155,7 @@ func (s *countingHolds) HoldSessions(ctx context.Context, project string, token 
 //
 // The control (the pull request records the run): stepAgent with no hold check names ses_taken.
 func TestAStepsAgentNamesNoSessionItsClaimDoesNotHold(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, st, sup, w, _ := stepAgentRig(t)
 	holder := mustClaimToken(t, "LEGION-943", claim.RoleImplementer)
@@ -174,7 +177,7 @@ func TestAStepsAgentNamesNoSessionItsClaimDoesNotHold(t *testing.T) {
 			t.Fatalf("create %s recording %s: %v", c.token, c.session, err)
 		}
 	}
-	fact, err := pool.Begin(ctx)
+	fact, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +201,7 @@ func TestAStepsAgentNamesNoSessionItsClaimDoesNotHold(t *testing.T) {
 // The control (the pull request records the run): stepAgent asking Machine.HoldsItsSession, as
 // 5da94fd7fc did: "HoldSessions was called 1 times while the fact lock was held, want none".
 func TestTheReadOfAStepsAgentWritesNoHoldUnderTheFactLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, st, sup, w, counted := stepAgentRig(t)
 	planner := mustClaimToken(t, "LEGION-208", claim.RolePlanner)
@@ -209,7 +213,7 @@ func TestTheReadOfAStepsAgentWritesNoHoldUnderTheFactLock(t *testing.T) {
 		SuspendedBy: supervise.SuspendedByOperator, Session: "ses-planner"}, ""); err != nil {
 		t.Fatalf("create the planner: %v", err)
 	}
-	fact, err := pool.Begin(ctx)
+	fact, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

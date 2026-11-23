@@ -24,6 +24,7 @@ import (
 // what the edit holds, and the least of three runs this test used to hold to the bound is no
 // longer needed.
 func TestAColdEditOfTheHeaviestDocumentsStaysWithinTheMemoryBound(t *testing.T) {
+	t.Parallel()
 	memory := newMemoryHarness(t)
 	writer := memory.start(t)
 	type stored struct{ name, artifactID string }

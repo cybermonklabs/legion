@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -36,6 +37,7 @@ import (
 // Each case runs the row through the outbox's start and the claim's send, as the daemon does, and
 // reads the prompt the reviewer's agent is sent.
 func TestTheLastTwoSentencesOfEachTaskTheReviewerIsSentAreTheDaemons(t *testing.T) {
+	t.Parallel()
 	const (
 		unreviewed = "5ab0c1d2e3f405162738495a6b7c8d9e0f1a2b3c"
 		reviewed   = "16973163c4b8a90d2e5f1736a8b0c4d9e2f51637"
@@ -100,7 +102,7 @@ func sentToTheReviewer(t *testing.T, payload string) (string, supervise.Delivery
 		Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"}
 	putOutboxIssue(t, pool, records, issue)
 	holdSlot(t, pool, issue.Key)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.Enqueue(ctx, tx, record.OutboxRow{Kind: record.OutboxKindSupervise, Issue: issue.Key, Payload: []byte(payload), NextAt: time.Now()})
 	}); err != nil {
 		t.Fatalf("queue the reviewer's start: %v", err)

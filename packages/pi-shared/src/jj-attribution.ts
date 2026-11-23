@@ -78,10 +78,10 @@ const DEL_CODE = 0x7f;
 /** `LEGION_ROLE` in the controller's process (`legion controller start`): it is no `LegionRole`,
  * and a commit the controller makes names it all the same. */
 const CONTROLLER_ROLE = "controller";
-/** jj 0.45's default `templates.revert_description` (`jj config list --include-defaults
- * templates`), one argument of its `concat` per entry, copied as jj writes them. jj writes a
- * revert's description from this template alone and adds no `commit_trailers` to it, so the
- * overlay's revert template is these parts, then a blank line and the pair. */
+/** jj's default `templates.revert_description` (`jj config list --include-defaults templates`,
+ * verified against jj 0.46.0-sami), one argument of its `concat` per entry, copied as jj writes
+ * them. jj writes a revert's description from this template alone and adds no `commit_trailers`
+ * to it, so the overlay's revert template is these parts, then a blank line and the pair. */
 const JJ_REVERT_PARTS = [
   `'Revert "' ++ description.first_line() ++ '"' ++ "\\n"`,
   `"\\n"`,

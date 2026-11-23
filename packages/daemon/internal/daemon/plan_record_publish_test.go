@@ -9,7 +9,6 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // planRecordID is the id of the plan every plan record here writes, and retroRecordID the id of
@@ -34,7 +33,7 @@ type planPut struct {
 // planRecordOf is the default plan of the run 2 of the issue.
 func planRecordOf() record.PlanRecord {
 	return record.PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: workflow.DefaultSteps()}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: ownerStepsDefault}}}
 }
 
 // ratingRecordOf is the write that rates the plan on the record of the issue's retro.
@@ -52,13 +51,14 @@ func ratingRecordOf() record.StepRecord {
 // no owner's plan yet (the workflow's defaultPlan is its one plan): that case holds the copy to
 // Dispatch of each field such a plan carries, which the record's type already has.
 func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		plan record.PlanRecord
 		want dispatch.PlanWrite
 	}{
 		{name: "the default plan", plan: planRecordOf(), want: dispatch.PlanWrite{Generation: 2, Source: "default",
-			Tasks: []dispatch.PlanTask{{ID: "default", Steps: workflow.DefaultSteps()}}}},
+			Tasks: []dispatch.PlanTask{{ID: "default", Steps: ownerStepsDefault}}}},
 		{
 			name: "an owner's plan of two tasks",
 			plan: record.PlanRecord{ID: planRecordID, Generation: 3, Source: "owner", PlanDocument: &record.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
@@ -86,6 +86,7 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 // record's rating route (dispatch.Client.PutStepRating), carrying the run's identity, the rating
 // and its reason.
 func TestTheRetrosRatingReachesDispatch(t *testing.T) {
+	t.Parallel()
 	rig := newStepRecordRigOf(t, ratingRecordOf(), nil)
 	rig.run()
 	if left := rig.left(); left != 0 {
@@ -110,6 +111,7 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 // TestAStepRecordThatDispatchRefusesEndsWithAWarning for the step record a rating is), and so does
 // a 400 STEP_INPUT naming the rating (TestARatingOnARecordOfAnotherKindEndsWithAWarning).
 func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
+	t.Parallel()
 	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/LEGION-1/…"}
 	for _, route := range []struct {
 		name    string
@@ -148,6 +150,7 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 // record lane behind it (record.LaneRecord). The one Warn line names the issue, the record's id and
 // Dispatch's code, and the row's failure is not logged as a failed attempt besides.
 func TestARatingOnARecordOfAnotherKindEndsWithAWarning(t *testing.T) {
+	t.Parallel()
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: steprecord.CodeInput,
 		Message: "rating is the rating a retro gives its plan, and step " + retroRecordID + " is a run of kind step"}
 	rig := newStepRecordRigOf(t, ratingRecordOf(), answersInTurn(refusal))
@@ -166,6 +169,7 @@ func TestARatingOnARecordOfAnotherKindEndsWithAWarning(t *testing.T) {
 // issue Dispatch does not have, a plan Dispatch will never take, a writer the route refuses, and an
 // id of another issue's plan. The row's failure is not logged as a failed attempt besides.
 func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  *dispatch.Error

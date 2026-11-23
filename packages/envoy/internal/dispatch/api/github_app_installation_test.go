@@ -35,6 +35,7 @@ func appInstallationServer(t *testing.T, github http.HandlerFunc) http.Handler {
 // An agent asks whether Dispatch's App is installed on a repository: GitHub's installation is
 // true, whatever permissions it grants, and GitHub's 404 is false.
 func TestAgentReadsWhetherTheAppInstallationExists(t *testing.T) {
+	t.Parallel()
 	handler := appInstallationServer(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/installation":
@@ -60,6 +61,7 @@ func TestAgentReadsWhetherTheAppInstallationExists(t *testing.T) {
 
 // Dispatch with no App key cannot ask GitHub, which is no answer about the repository.
 func TestAppInstallationWithoutAnAppKeyAnswers503(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	response := agentRequest(t, handler, http.MethodGet, "/api/v1/github/app-installation/acme/widgets", nil, "agent-token")
 	body := decodeBody[map[string]string](t, response)
@@ -70,6 +72,7 @@ func TestAppInstallationWithoutAnAppKeyAnswers503(t *testing.T) {
 
 // GitHub failing the lookup is no answer either: 502 naming the repository and GitHub's error.
 func TestAppInstallationGitHubFailureAnswers502(t *testing.T) {
+	t.Parallel()
 	handler := appInstallationServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprint(w, `{"message":"Server Error"}`)
@@ -89,6 +92,7 @@ func TestAppInstallationGitHubFailureAnswers502(t *testing.T) {
 // rest of the sentence: ShownBody's bound is the one that acts, and gitHubReason's cut, which
 // bounds the whole reason, finds nothing to cut.
 func TestAppInstallationGitHubFailureWithAPageIsCutToTheBound(t *testing.T) {
+	t.Parallel()
 	page := "<html>" + strings.Repeat("x", 4*gitHubReasonBytes) + "</html>"
 	handler := appInstallationServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
@@ -117,6 +121,7 @@ func TestAppInstallationGitHubFailureWithAPageIsCutToTheBound(t *testing.T) {
 // lookup, StatusText), which ShownBody bounds, so a rate limit is the refusal whose message
 // reaches the cut.
 func TestAppInstallationGitHubFailureWithALongMessageIsCutToTheBound(t *testing.T) {
+	t.Parallel()
 	message := "API rate limit exceeded for installation ID 77. " + strings.Repeat("y", 4*gitHubReasonBytes)
 	handler := appInstallationServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -141,13 +146,14 @@ func TestAppInstallationGitHubFailureWithALongMessageIsCutToTheBound(t *testing.
 	}
 }
 
-// The installation read's path is held to the names GitHub allows, as a mapping's is
-// (repoProjectPath): its halves go into the lookup's own path as they are, and `...git` and
+// The installation read's path is held to the names GitHub allows, as a source's is
+// (githubRepoPath): its halves go into the lookup's own path as they are, and `...git` and
 // `.git` are no dot segments, so the mux does not clean them, while the trailing `.git` trimmed
 // leaves `..` or an empty name, which would ask GitHub about `/repos/acme/../installation`.
 // `.git.git` and `...git.git` are the same names once canonicalising has trimmed one `.git`. Each
-// is refused 400 INVALID_REPO_PROJECT, and GitHub is asked nothing.
+// is refused 400 INVALID_REPOSITORY, and GitHub is asked nothing.
 func TestAppInstallationPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
+	t.Parallel()
 	var asked atomic.Int32
 	handler := appInstallationServer(t, func(w http.ResponseWriter, r *http.Request) {
 		asked.Add(1)
@@ -157,8 +163,8 @@ func TestAppInstallationPathIsHeldToTheNamesGitHubAllows(t *testing.T) {
 	})
 	for _, path := range []string{"acme/...git", "acme/.git", "acme/.git.git", "acme/...git.git"} {
 		response := agentRequest(t, handler, http.MethodGet, "/api/v1/github/app-installation/"+path, nil, "agent-token")
-		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPO_PROJECT" {
-			t.Errorf("GET app-installation %s: status=%d body=%s, want 400 INVALID_REPO_PROJECT", path, response.Code, response.Body.String())
+		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPOSITORY" {
+			t.Errorf("GET app-installation %s: status=%d body=%s, want 400 INVALID_REPOSITORY", path, response.Code, response.Body.String())
 		}
 	}
 	if requests := asked.Load(); requests != 0 {

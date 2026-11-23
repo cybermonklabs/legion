@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +18,68 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
+
+// A client that half-closes its connection ends its own request's context, and can still read the
+// answer. A token signed by a key the issuer has withdrawn, sent that way to a listener whose key set
+// is past Lifetime + MinRefresh, is refused 401 as on an open connection: the cached set answers no
+// caller that has gone. The route behind apiAuth reads no context, as /v1/sessions does, so only
+// apiAuth stands between the token and the data.
+func TestAHalfClosedRequestGetsNoAnswerFromAnOldKeySet(t *testing.T) {
+	issuer := oidctest.New(t)
+	signing := issuer.PublishKey(t, "key-a")
+	keys, err := oidc.NewKeys(context.Background(), issuer.URL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys.Lifetime, keys.MinRefresh = 100*time.Millisecond, 200*time.Millisecond
+	verifier := oidc.DiscoveredVerifier(oidc.NewWithKeys(issuer.URL(), listenerTestAudience, keys))
+	token := issuer.Mint(t, signing, issuer.Claims(listenerTestSubject, listenerTestAudience))
+	sessions := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "the session list") })
+	server := httptest.NewServer(apiAuth(listenerAPIAuth{verifier: verifier, logger: logging.NewWithWriter("half-close", &bytes.Buffer{})}, sessions))
+	t.Cleanup(server.Close)
+	addr := server.Listener.Addr().String()
+	if status := rawSessionsStatus(t, addr, token, false); status != http.StatusOK {
+		t.Fatalf("a token signed by the published key-a: status %d, want 200", status)
+	}
+	issuer.Withdraw("key-a")
+	issuer.PublishKey(t, "key-b")
+	issuer.DelayKeys(200 * time.Millisecond)
+	time.Sleep(time.Second)
+	if status := rawSessionsStatus(t, addr, token, true); status != http.StatusUnauthorized {
+		t.Fatalf("a half-closed request with a token signed by the withdrawn key-a, the key set past Lifetime + MinRefresh: status %d, want 401", status)
+	}
+}
+
+// rawSessionsStatus sends GET /v1/sessions with bearer over a raw connection to addr, half-closing
+// it after the request when halfClose is set, and answers the status of the answer it reads.
+func rawSessionsStatus(t *testing.T, addr, bearer string, halfClose bool) int {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "GET /v1/sessions HTTP/1.1\r\nHost: %s\r\nAuthorization: Bearer %s\r\nConnection: close\r\n\r\n", addr, bearer); err != nil {
+		t.Fatal(err)
+	}
+	if halfClose {
+		if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(8 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("reading the answer: %v", err)
+	}
+	var status int
+	if _, err := fmt.Sscanf(strings.SplitN(string(raw), "\r\n", 2)[0], "HTTP/1.1 %d", &status); err != nil {
+		t.Fatalf("the answer's status line %q: %v", strings.SplitN(string(raw), "\r\n", 2)[0], err)
+	}
+	return status
+}
 
 // An issuer that accepts the connection and never answers holds a discovery attempt for its own
 // 10 s bound, as long as the 10 s the listener's server gives a route to write its answer. A token

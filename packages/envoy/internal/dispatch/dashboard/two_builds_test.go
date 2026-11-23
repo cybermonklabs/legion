@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -30,18 +32,31 @@ var twoBuildsSigningKey = auth.SingleSigningKey("two-builds-asset-test-key")
 func newAssetRouter(t *testing.T, pool *store.Pool, distDir string, assets routes.AssetStore) http.Handler {
 	t.Helper()
 	people := store.NewPgPeopleStore(pool, twoBuildsSigningKey, nil)
+	caller := identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
+	broker := events.NewBroker()
+	// BuildAppContext requires a document service, which the test shuts down once the router's
+	// background work has ended; nothing here reads a document.
+	documents := docs.New(docs.Deps{Events: broker, Identity: caller})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
 	ctx, err := routes.BuildAppContext(routes.AppContextOptions{
 		SigningKey: twoBuildsSigningKey,
 		WebDistDir: distDir,
 		AssetStore: assets,
 		People:     people,
-		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:   caller,
+		Docs:       documents,
+		Events:     broker,
 		Lifetime:   t.Context(),
 	})
 	if err != nil {
 		t.Fatalf("build app context for %s: %v", distDir, err)
 	}
-	handler, _ := routes.New(ctx)
+	handler, background := routes.New(ctx)
+	t.Cleanup(background.Wait)
 	return handler
 }
 

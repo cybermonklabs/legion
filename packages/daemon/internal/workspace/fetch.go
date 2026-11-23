@@ -28,10 +28,28 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
-// isolatedGitConfig is the configuration Fetch's git reads besides its own: none. Not the system's,
-// not the image user's; and git's `-c`, GIT_CONFIG_PARAMETERS, no process provisioning starts
-// inherits (config.go).
+// isolatedGitConfig is the configuration Fetch's git reads besides its own and its command line's
+// (feedGit): none. Not the system's, not the image user's; and git's `-c`, GIT_CONFIG_PARAMETERS,
+// no process provisioning starts inherits (config.go).
 var isolatedGitConfig = []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1"}
+
+// feedGit is how every git command of Fetch's, FeedGit's and FeedGitWithin's begins: git, then
+// packWindowConfig as `-c` pairs. That git reads no system file (isolatedGitConfig), so the worker
+// image's /etc/gitconfig does not reach it, its runner removes the role environment's pairs
+// (execRunner.Run), and the feed's own configuration may hold none of the four (feedConfigKeys).
+// The runner's own pins (pinnedGitConfig) reach it too, but they reach every command any NewRunner
+// starts, the daemon's host runners among them, so the four go on this command line instead. git
+// exports the pairs to every git it starts in turn, the index-pack of a clone or a fetch among
+// them. They come before everything a caller adds, and git takes the last value of a key, so a
+// caller's own `-c` of one of them wins: the repository cache's repack keeps repackMemory's. Its
+// capacity is its length, so an append to it copies rather than writing past the shared prefix.
+var feedGit = func() []string {
+	argv := []string{"git"}
+	for _, pair := range packWindowConfig {
+		argv = append(argv, "-c", pair[0]+"="+pair[1])
+	}
+	return slices.Clip(argv)
+}()
 
 // FetchRequest is a pod's first init container's: the repository, how to read the provisioning
 // token (Token), the directory its one-shot credential goes under, the feed directory, the log each
@@ -250,7 +268,7 @@ func Fetch(ctx context.Context, run Runner, request FetchRequest) (FetchReport, 
 		_ = rolefile.RemoveTree(staging)
 	}()
 	if request.CacheURL == "" {
-		clone := feedTransfer{verb: "clone", argv: []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", GitHubURL(request.Repo), staging}, destination: staging, dir: filepath.Dir(staging)}
+		clone := feedTransfer{verb: "clone", argv: slices.Concat(feedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "clone", "--bare", "--quiet", GitHubURL(request.Repo), staging}), destination: staging, dir: filepath.Dir(staging)}
 		report.Cloned = true
 		deadline := request.Clock.Now().Add(request.bound())
 		if err := report.fromGitHub(ctx, run, request, clone, staging, held, deadline); err != nil {
@@ -438,7 +456,7 @@ func remoteHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 // fetch's credential, retries and deadline; "" when GitHub names no HEAD. A HEAD that names
 // anything but a branch is the fetch's failure.
 func remoteRefs(ctx context.Context, run Runner, request FetchRequest, gitDir string, held *fetchCredential, deadline time.Time, patterns ...string) (string, map[string]string, error) {
-	argv := append([]string{"git", "--git-dir=" + gitDir, "ls-remote", "--symref", GitHubURL(request.Repo), "HEAD"}, patterns...)
+	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir, "ls-remote", "--symref", GitHubURL(request.Repo), "HEAD"}, patterns)
 	result, err := transferWithRetries(ctx, run, request, feedTransfer{verb: "ls-remote", argv: argv, dir: gitDir}, held, deadline)
 	if err != nil {
 		return "", nil, fmt.Errorf("read GitHub's default branch of %s: %w", request.Repo, err)
@@ -479,7 +497,7 @@ func followHead(ctx context.Context, run Runner, request FetchRequest, gitDir st
 	if target == "" {
 		return nil
 	}
-	symbolicRef := []string{"git", "--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"}
+	symbolicRef := slices.Concat(feedGit, []string{"--git-dir=" + gitDir, "symbolic-ref", "--quiet", "HEAD"})
 	current, err := runCommandTimeout(ctx, run, symbolicRef, isolatedGitConfig, gitDir, run.Timeout())
 	if err := answered(symbolicRef, current, err); err != nil {
 		return err
@@ -689,7 +707,7 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging string) (int64, error) {
 	// The init runs beside the repository it makes rather than in it: staging is the repository,
 	// and what a command creates is no working directory of its own.
-	if _, err := RunChecked(ctx, run, []string{"git", "init", "--bare", "--quiet", staging}, isolatedGitConfig, filepath.Dir(staging)); err != nil {
+	if _, err := RunChecked(ctx, run, slices.Concat(feedGit, []string{"init", "--bare", "--quiet", staging}), isolatedGitConfig, filepath.Dir(staging)); err != nil {
 		return 0, err
 	}
 	bounded, cancel := context.WithCancel(ctx)
@@ -762,12 +780,6 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	verify := func(argv []string, left time.Duration) error {
-		// Every check runs in staging, which the stream filled before verifyCache was called.
-		result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, staging, left)
-		_, err = checkedResult(argv, result, err)
-		return err
-	}
 	hash, err := objectHash(ctx, run, staging)
 	if err != nil {
 		return err
@@ -788,7 +800,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 		if err != nil {
 			return err
 		}
-		if err := verify([]string{"git", "--git-dir=" + staging, "index-pack", pack}, left); err != nil {
+		if _, err := FeedGitWithin(ctx, run, staging, left, "index-pack", pack); err != nil {
 			return fmt.Errorf("the repository cache's pack %s, which does not verify: %w", filepath.Base(pack), err)
 		}
 	}
@@ -796,7 +808,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	if err := verify([]string{"git", "--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"}, left); err != nil {
+	if _, err := FeedGitWithin(ctx, run, staging, left, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
 		return fmt.Errorf("the repository cache's history is not whole: %w", err)
 	}
 	return nil
@@ -1042,7 +1054,7 @@ type feedTransfer struct {
 // The repository cache's own process (exact empty) takes every branch instead, pruned of those
 // GitHub deleted: what it holds is what every issue pod of its repository starts from.
 func fetchInto(feed string, repo ghrepo.Repository, exact []string) feedTransfer {
-	argv := []string{"git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir=" + feed, "fetch", "--prune", "--quiet", GitHubURL(repo)}
+	argv := slices.Concat(feedGit, []string{"-c", "gc.auto=0", "-c", "maintenance.auto=false", "--git-dir=" + feed, "fetch", "--prune", "--quiet", GitHubURL(repo)})
 	if len(exact) == 0 {
 		return feedTransfer{verb: "fetch", argv: append(argv, "+refs/heads/*:refs/heads/*"), dir: feed}
 	}
@@ -1097,18 +1109,19 @@ func feedConfiguration(ctx context.Context, run Runner, gitDir string) error {
 
 // FeedGit runs git on the bare repository gitDir — a feed's, or the repository cache's — under
 // the runner's slow-command budget, holding no credential and reading no configuration but that
-// repository's own: what reads or tends such a repository outside Fetch's transfer. It runs in
-// gitDir itself, which is there whenever something reads or tends it, so no caller has to name a
-// directory and no child of this package's takes the one the process happens to run in.
+// repository's own and the pack settings feedGit names: what reads or tends such a repository
+// outside Fetch's transfer. It runs in gitDir itself, which is there whenever something reads or
+// tends it, so no caller has to name a directory and no child of this package's takes the one the
+// process happens to run in.
 func FeedGit(ctx context.Context, run Runner, gitDir string, args ...string) (Result, error) {
-	return RunChecked(ctx, run, append([]string{"git", "--git-dir=" + gitDir}, args...), isolatedGitConfig, gitDir)
+	return RunChecked(ctx, run, slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args), isolatedGitConfig, gitDir)
 }
 
 // FeedGitWithin is FeedGit bounded by timeout instead of the runner's slow-command budget: for a
 // command on such a repository whose duration follows the repository's size, as the cache's repack
-// does.
+// does. A `-c` among args comes after feedGit's, so it wins over them for its key.
 func FeedGitWithin(ctx context.Context, run Runner, gitDir string, timeout time.Duration, args ...string) (Result, error) {
-	argv := append([]string{"git", "--git-dir=" + gitDir}, args...)
+	argv := slices.Concat(feedGit, []string{"--git-dir=" + gitDir}, args)
 	result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, gitDir, timeout)
 	return checkedResult(argv, result, err)
 }

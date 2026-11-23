@@ -67,6 +67,7 @@ const parkLockSite = "park"
 // lock in a range over a function; a deferred lock; one in a generic function; and a lock on a
 // value whose type rests on an import - and the guard must name each.
 func TestTheLockSiteListNamesTheSendersLocks(t *testing.T) {
+	t.Parallel()
 	sources := map[string][]byte{}
 	for _, name := range goFilesOfThisPackage(t) {
 		source, err := os.ReadFile(name)

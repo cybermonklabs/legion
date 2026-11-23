@@ -130,14 +130,16 @@ type Actor struct {
 // Recorded is the actor as a write records it: the request's credential dropped. A stored actor
 // is decoded from JSON, which carries no credential, so the credential never reaches a row.
 // Dispatch decides "the same writer" by kind and id (SameAs) and "the same credential" by those
-// and the names a credential carries (SameCredential); the one == left is the document
-// rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document service must
-// carry none. actorFrom drops it here, bearerSessionActor builds a session actor without it, and
-// actingPerson answers the person with its Act alone. The handlers that record optionalActor's
-// own actor for a browser caller (messages.go, message_delivery.go, comment_delivery.go,
-// issue_claim.go) keep the cookie's credential in memory and hand that actor to no document
-// write. A layer that needs the request's own credential reads it from optionalActor
-// (callerHoldsScope). Proven is a fact of the record and stays.
+// and the names a credential carries (SameCredential); the one == left that decides anything is
+// the document rooms' lost-write notice (docs/lostedit.go), so an actor handed to the document
+// service must carry none. The store's writer compares recorded actors with == only to reuse one
+// encoding of a writer across the rows a write binds (graphstore.writerEncoder), and two equal
+// recorded actors encode alike. actorFrom drops it here, bearerSessionActor builds a session
+// actor without it, and actingPerson answers the person with its Act alone. The handlers that
+// record optionalActor's own actor for a browser caller (messages.go, message_delivery.go,
+// comment_delivery.go, issue_claim.go) keep the cookie's credential in memory and hand that actor
+// to no document write. A layer that needs the request's own credential reads it from
+// optionalActor (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
 	return a
@@ -148,8 +150,19 @@ func (a Actor) Recorded() Actor {
 // claim's holder against a caller, and an event's actor against the claimant it names. Where
 // the credential itself must be told apart rather than the writer, SameCredential compares the
 // names too.
+//
+// A person's id is compared in its canonical form (sameLogin), on both sides: a stored login may
+// keep the case an earlier build wrote it in, and no backfill rewrites it, so a comment stored
+// under "Alice" is alice's still. Every other kind's id - a session's, a system writer's - is no
+// login, and is compared byte for byte.
 func (a Actor) SameAs(other Actor) bool {
-	return a.Kind == other.Kind && a.ID == other.ID
+	if a.Kind != other.Kind {
+		return false
+	}
+	if a.Kind == "user" {
+		return sameLogin(a.ID, other.ID)
+	}
+	return a.ID == other.ID
 }
 
 // SameCredential reports whether two actors are the one credential: the kind and the id SameAs
@@ -160,26 +173,45 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
+// Owner is a person's login, and is compared in its canonical form (sameLogin) on both sides,
+// as SameAs compares a person's id: a stored owner may keep the case an earlier build wrote it
+// in, so a going run asked under "Dana@Example.COM" is the run of the token whose owner now reads
+// dana@example.com. Service is a workload's subject, no login, and is compared byte for byte.
+//
 // Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
 // for and whether its credential proved its id, which two requests of one credential differ in,
 // so comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
-	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
+	return a.SameAs(other) && sameActorName(a.Owner, other.Owner, sameLogin) && sameActorName(a.Service, other.Service, sameName)
 }
 
-// sameActorName compares one optional name of two actors: both unset, or both the same name.
-func sameActorName(left, right *string) bool {
+// sameActorName compares one optional name of two actors: both unset, or both set and the same
+// name as same compares them.
+func sameActorName(left, right *string, same func(left, right string) bool) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	return *left == *right
+	return same(*left, *right)
+}
+
+// sameLogin reports whether two logins name one person: each is read in its canonical form
+// (CanonicalLogin), so two spellings that differ only in the case of their ASCII letters or in
+// the white space around them are one login.
+func sameLogin(left, right string) bool {
+	return CanonicalLogin(left) == CanonicalLogin(right)
+}
+
+// sameName reports whether two names are the one name, byte for byte.
+func sameName(left, right string) bool {
+	return left == right
 }
 
 // CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
-// (fold.ASCII) and nothing else folded, the form the identity implementations name a person by and
+// and nothing else folded (fold.Login, the one spelling of that rule, which the broker's
+// record.CanonicalLogin reads too), the form the identity implementations name a person by and
 // the people table holds.
 func CanonicalLogin(login string) string {
-	return fold.ASCII(strings.TrimSpace(login))
+	return fold.Login(login)
 }
 
 // ActorOrigin describes the client environment of a session actor.
@@ -278,8 +310,13 @@ type Project struct {
 	// person must approve before the tree's work runs. The empty list is a deployment that
 	// gates nothing and a deployment that has not published yet alike: neither holds a step
 	// waiting for a person, so a reader need not tell them apart.
-	GatedSteps []string  `json:"gated_steps"`
-	CreatedAt  time.Time `json:"created_at"`
+	GatedSteps []string `json:"gated_steps"`
+	// DefaultRepo is the repository, owner/name, an issue of this project resolves to when
+	// neither the issue nor an issue above it names one (refs.IssueRepoResolved). It is set
+	// and cleared by PUT /api/v1/projects/{key}/default-repository. A project with none
+	// carries no member, so a client that does not know the member reads the same project.
+	DefaultRepo *string   `json:"default_repo,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
@@ -436,12 +473,11 @@ type PriorityIssue struct {
 	MovedBy   *Actor         `json:"moved_by"`
 }
 
-// RepoProject assigns an external repository to a native Dispatch project. Default marks the one
-// mapping of the project an issue with no repository of its own, and none on its parent chain,
-// resolves to; at most one mapping of a project is its default. RenamedTo is the full
-// `owner/name` this repository is called today, null for one that was never renamed: Dispatch
-// holds both names of one repository, and the canonical name is what this field reads, else the
-// repository's own (refs.CanonicalRepo).
+// RepoProject is one row of repo_projects. GET /api/v1/settings/repo-projects answers the rows
+// as the last release left them, and nothing writes them now. Default marks the row that was its
+// project's default repository. This release's migration copied it to the project's
+// default_repo. RenamedTo is the full `owner/name` this repository is called today, null for one
+// that was never renamed: the boot reads these pairs once (store.ReadRepoRenames).
 type RepoProject struct {
 	Repo      string    `json:"repo"`
 	Project   string    `json:"project"`
@@ -581,10 +617,10 @@ type Issue struct {
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
 	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
-	// or not a project maps it; nil when it inherits.
+	// or not it is any project's default; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
-	// nearest ancestor's, else its project's default mapping, else nil.
+	// nearest ancestor's, else its project's default repository (Project.DefaultRepo), else nil.
 	ResolvedRepo      *string    `json:"resolved_repo"`
 	CreatedBy         *Actor     `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
@@ -835,7 +871,7 @@ type SearchResponse struct {
 	Degraded string `json:"degraded,omitempty"`
 	// Query is how the words were read and Filters what the search narrowed every leg by: the
 	// route answers both on every path, so a caller never has to guess which of its chips the
-	// search applied (api.searchQueryReading, api.searchAppliedFilters).
+	// search applied (api's searchReading, api.searchAppliedFilters).
 	Query   SearchQueryReading `json:"query"`
 	Filters SearchFilters      `json:"filters"`
 }
@@ -3190,10 +3226,13 @@ type MessageDelivery struct {
 	Delivery   string  `json:"delivery"`
 	SessionID  string  `json:"session_id"`
 	EnvelopeID *string `json:"envelope_id"`
-	// Duplicate reports that the stream already held this message when the attempt was sent: an
-	// earlier attempt landed, so this one is a repeat the recipient is not handed again
-	// (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts). EnvelopeID is then nil: the envelope
-	// this send minted is the one JetStream discarded.
+	// Duplicate reports that the stream already held a message under this attempt's key when the
+	// attempt was sent: an earlier attempt landed, or another sender's message holds the key, so
+	// the stream stored nothing new for this one (DELIVERY_DUPLICATE_WINDOW_MS in
+	// packages/contracts). EnvelopeID is then nil: the copy the stream holds may be an earlier
+	// attempt's or another sender's under the same key, and an older listener answers the envelope
+	// this send minted, which JetStream discarded, so a duplicate's answer is no envelope id to
+	// record.
 	Duplicate bool `json:"duplicate"`
 	// State is "pending" before the send, then "sent" for a message the listener handed to a
 	// running session, "queued" for one it stored for a session it knows that is not running
@@ -3420,9 +3459,10 @@ type PlanTask struct {
 }
 
 // PlanRecord is the plan one run of an issue ran from, as the Legion daemon wrote it when that
-// run's work started (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the
-// owner's document and the version of it the plan was read from (both null for the source
-// default, the default steps of an issue whose owner gave none), and its tasks.
+// run's work started and replaced it at each later version of the owner's plan that Legion took
+// (PUT /api/v1/issues/{key}/plans/{id}): its run (Generation), its source, the owner's document
+// and the version of it the plan was read from (both null for the source default, the default
+// steps of an issue whose owner gave none), and its tasks.
 type PlanRecord struct {
 	ID         string     `json:"id"`
 	Issue      string     `json:"issue"`
@@ -3484,17 +3524,37 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one artifact in an issue's reference closure.
+// ReferenceMember is one document of an issue's references read: a document its own content
+// links to, always at depth 1. It stays for the clients that read members, beside Links.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
 	Depth    int          `json:"depth"`
 	Via      ReferenceVia `json:"via"`
 }
 
-// IssueReferences is an issue's artifact reference closure.
+// IssueReferences is an issue's references read, one hop in each direction: Links and LinkedFrom,
+// with Members, the documents of Links, and Truncated, always false, kept for the clients that
+// read them.
 type IssueReferences struct {
 	Members   []ReferenceMember `json:"members"`
 	Truncated bool              `json:"truncated"`
+	// Links is every node the issue's own content links to, one hop out. This build writes []
+	// when there is none, never null.
+	Links []ReferenceLink `json:"links"`
+	// LinkedFrom is every node that links to the issue or to its own content, one hop in. This
+	// build writes [] when there is none, never null.
+	LinkedFrom []ReferenceLink `json:"linked_from"`
+}
+
+// ReferenceLink is one node at the other end of a link of an issue's references read: the node as
+// the graph read names it; its name, the words the graph read shows for it (a document's name, an
+// issue's title, the head of an item's text); the distinct kinds of its links, in order; and its
+// via, the lowest of the issue's nodes at the near end of those links.
+type ReferenceLink struct {
+	Node  GraphNode    `json:"node"`
+	Name  string       `json:"name"`
+	Kinds []string     `json:"kinds"`
+	Via   ReferenceVia `json:"via"`
 }
 
 // OutgoingReference is a target edge from an artifact.
@@ -3513,8 +3573,9 @@ type ArtifactReferences struct {
 // GraphNode is one end of a reference-graph edge. IssueKey and Project locate it; an artifact an
 // agent's conversation owns has neither and is located by Ref alone
 // (`dispatch://agent/<session id>/artifact/<slug>`). Ref is its dispatch:// address and is empty
-// for session nodes, which have none. The edges into and out of a node are the reads `?to=` and
-// `?from=` of its Ref.
+// for a person, a role, a session and a page, none of which has one (graphstore.KindPerson and
+// the kinds beside it, which that doc names the id of). The edges into and out of a node are the
+// reads `?to=` and `?from=` of its Ref.
 //
 // Every node carries six facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while

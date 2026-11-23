@@ -412,6 +412,14 @@ const clearSettlementPendingStatement = `
 	)
 	delete from doc_closed_edit_sources where artifact_id = $1::uuid and $2::jsonb is null`
 
+// clearSettlementPendingRow is clearSettlementPending for a closed issue's settlement that saved
+// nothing (settlement.savedNothing): it deletes the document's pending row alone and leaves the
+// closed edit source the settlement before it kept, in the settlement's write phase as
+// clearSettlementPending does.
+func clearSettlementPendingRow(ctx context.Context, tx pgx.Tx, room string) error {
+	return writeExec(ctx, tx, "clear the document's pending settlement", `delete from doc_settlements_pending where artifact_id = $1::uuid`, room)
+}
+
 // settlementPending reports whether room owes a settlement. Shutdown's drain uses this to skip
 // settling a document that already has none owed, rather than spending its budget repeating work
 // a settlement already finished.

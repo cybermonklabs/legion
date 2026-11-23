@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -84,12 +85,14 @@ type Deps struct {
 	// which is a single-pod broker and every test that wires none. POST
 	// /v1/secrets/{name}/reread is its one route (notifyPeers, from rereadSecret and from the
 	// reread it runs after answering, rereadAfterAnswer), which explains both when it is called
-	// and why it is called from the route rather than from RefreshOne.
+	// and why it is called from the route rather than from RefreshOne. moved is the names whose
+	// value this pod's own reread of name may have moved (policy.Lookup.Moved, RefreshOne's), whose
+	// held values cmd/cipherd drops from its airlock proxy.
 	//
 	// It reports nothing, because the handler has nothing to do with a failure: the local reread
 	// has already succeeded and its answer stands, so whether a failed fan-out is logged, and at
 	// what level, belongs to the function cmd/cipherd supplies.
-	NotifyReread func(ctx context.Context, name string)
+	NotifyReread func(ctx context.Context, name string, moved []string)
 	// Detached counts the work a route starts that outlives its answer, the reread run after a
 	// 202, for the stop sequence to wait on (Detached.Wait); nil counts nothing, for a mux nothing
 	// stops.
@@ -231,6 +234,9 @@ type server struct {
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
+	// ownOnlyLogged lets MachineLoginsOwnOnlyMessage be written once per person per
+	// ownOnlyLogEvery (machineLoginsOwnOnly).
+	ownOnlyLogged *ratelimit.Keyed
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -281,6 +287,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		accountLimiter:  ratelimit.NewKeyed(account),
 		address:         address,
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
+		ownOnlyLogged:   ratelimit.NewKeyed(ratelimit.Limit{Every: ownOnlyLogEvery, Burst: 1}),
 	}
 	if deps.OAuth != nil {
 		s.verificationURI = deps.OAuth.VerificationURL()
@@ -823,6 +830,32 @@ func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
 }
 
+// writeMemberKindUncheckable answers a refusal the broker made because it could not learn whether
+// Dispatch calls a person a restricted member (*projectaccess.MemberKindUncheckable), and reports
+// whether err was one: 503 MEMBER_KIND_UNCHECKABLE naming the person and why in fixed words, with
+// the failure itself, which can name Dispatch's address, in the log alone. what is the thing
+// refused, as the log line names it. The line is ERROR when Dispatch could not be asked. A read
+// that failed because its caller gave up (MemberKindUncheckable.CallerEnded), which says nothing
+// of Dispatch, writes no line and is counted as an answer the caller cancelled
+// (answer.Recorder.NoteCallerEnded), as every route counts a caller that hung up. The code is
+// projectaccess.UncheckableCode, spelled out here because the broker's generated HTTP reference
+// (cmd/cipher-refgen) reads each refusal's code from a literal;
+// TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode holds the two to one spelling.
+func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) bool {
+	var uncheckable *projectaccess.MemberKindUncheckable
+	if !errors.As(err, &uncheckable) {
+		return false
+	}
+	if uncheckable.CallerEnded() {
+		answer.FromWriter(w).NoteCallerEnded()
+	} else {
+		slog.Error("broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused",
+			"person", uncheckable.Person, "error", uncheckable.Err)
+	}
+	writeError(w, http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE", uncheckable.Error())
+	return true
+}
+
 // writeJSON answers status with v, which is one of this package's named response types: the
 // broker's generated HTTP reference (cmd/cipher-refgen) documents each route's answer
 // from that type's fields and refuses a value it cannot name.
@@ -962,7 +995,8 @@ func (c *cachedPing) run(ctx context.Context, done chan struct{}) error {
 type signInStatusResponse struct {
 	// What the last check of the broker's client at its sign-in provider found: "ready" (the
 	// provider accepted the client), "client_rejected" (it refused it, so nobody can sign in)
-	// or "issuer_unreachable" (it could not be asked, which says nothing about the client).
+	// or "issuer_unreachable" (it could not be asked or gave no verdict, which says nothing about
+	// the client).
 	ClientCheck *string `json:"client_check"`
 	// When that check was taken (RFC 3339).
 	ClientCheckedAt *time.Time `json:"client_checked_at"`

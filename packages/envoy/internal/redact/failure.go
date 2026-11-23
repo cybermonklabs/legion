@@ -85,7 +85,7 @@ func BrokerAnswer(err error) (*oauth2.RetrieveError, bool) {
 // prints: a server writes what it likes in a description, a message and a code of its own, an
 // echo of the request that carried a credential among them, and a Google error body has carried
 // a token before. The sign-in client prints an issuer's refusal of its discovery document this
-// way, from the status its transport recorded (cipherclient's statusOf), since go-oidc's own error
+// way, from the status its transport recorded (oauthrefusal.Recorder), since go-oidc's own error
 // quotes the issuer and the body.
 func Answered(status int, body []byte) string {
 	text := fmt.Sprintf("the server answered HTTP %d", status)

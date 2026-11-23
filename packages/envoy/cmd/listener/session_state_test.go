@@ -46,7 +46,14 @@ func (c *stateClock) advance(d time.Duration) {
 // where a stalled session's record still stands to be read as unresponsive.
 func stalledSessionsRig(t *testing.T) (*listenerDeps, *stateClock) {
 	t.Helper()
-	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)}, bus.WithReplicas(1))
+	return stalledSessionsRigOn(t, testnats.URL(t))
+}
+
+// stalledSessionsRigOn is stalledSessionsRig on the server uri names, one the test can stop
+// answering under live connections (testnats.Server.Freeze).
+func stalledSessionsRigOn(t *testing.T, uri string) (*listenerDeps, *stateClock) {
+	t.Helper()
+	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect the bus: %v", err)
 	}
@@ -99,7 +106,7 @@ func TestAStalledSessionIsListedOnlyWhenTheCallerAsksForTheUnresponsiveOnes(t *t
 	listed := func(query string) []listenerwire.SessionInfo {
 		t.Helper()
 		recorder := httptest.NewRecorder()
-		sessionsHandler(d.registry, d.sessions).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions"+query, nil))
+		sessionsHandler(d.registry, d.sessions, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions"+query, nil))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET /v1/sessions%s: status %d, body %s", query, recorder.Code, recorder.Body.String())
 		}
@@ -192,7 +199,7 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 
 	for attempt := range 5 {
 		recorder := httptest.NewRecorder()
-		roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+		roleGetHandler(d, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 		if recorder.Code != http.StatusNotFound {
 			t.Fatalf("lookup %d: status %d, body %s; want 404", attempt, recorder.Code, recorder.Body.String())
 		}

@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `dispatch doc-edit --help` says that work still to do is a task in the issue's plan, an issue
+  or an ask, never a separate document that lists it, where it said that a record of open items
+  or progress is a document of its own.
+time: 2026-11-23T03:13:45Z
+custom:
+    Issue: pr5172

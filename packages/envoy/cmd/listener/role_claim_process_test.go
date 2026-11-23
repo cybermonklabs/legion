@@ -79,7 +79,7 @@ func (r *roleClaimProcessRig) seed(t *testing.T, sessionID, role, instance strin
 // lookup is GET /v1/roles/<role>, the answer a refused claimant reads.
 func (r *roleClaimProcessRig) lookup(role string) *httptest.ResponseRecorder {
 	recorder := httptest.NewRecorder()
-	roleGetHandler(r.deps).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+	roleGetHandler(r.deps, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 	return recorder
 }
 
@@ -438,7 +438,7 @@ func TestTheRoleLookupOfALapsedClaimThatNamesNoProcessLeavesTheFieldOut(t *testi
 			}
 
 			recorder := httptest.NewRecorder()
-			roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+			roleGetHandler(d, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
 			if recorder.Code != http.StatusNotFound {
 				t.Fatalf("GET /v1/roles/%s: status %d %s, want 404", role, recorder.Code, recorder.Body.String())
 			}

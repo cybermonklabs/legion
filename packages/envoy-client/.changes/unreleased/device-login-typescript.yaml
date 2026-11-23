@@ -1,0 +1,26 @@
+kind: Added
+body: |-
+  A machine with no identity of its own, such as a laptop, can now hold a broker credential with
+  no Go binary. `dispatch login --device [--person <address>]` logs the machine in at the secrets
+  broker's device grant once: it prints the page and the code, waits while that person approves
+  it in Dispatch, and keeps the login in the file `AGENT_SECRETS_DEVICE_LOGIN_FILE` names (default
+  `~/.config/legion/device-login.json`, mode 0600). Every session that sets
+  `AGENT_SECRETS_MACHINE_IDENTITY=device-login` then trades the login's access token for its broker
+  token, with no actor, every proof signed with the login's key, naming the projects
+  `AGENT_SECRETS_PROJECTS` lists. Each trade runs under the login's lock, so two sessions of one
+  machine never spend one refresh token, and none refreshes while another presents the access
+  token that refresh would end.
+  A stale lock is taken by one caller alone, a holder that lost its lock while it was stopped
+  refreshes and keeps nothing, and a holder that lets go of its lock never removes a lock another
+  caller took from it. A kept access token the broker refuses as one it no longer honours is
+  refreshed at once, so a revoked login names `dispatch login --device` at its next trade. A
+  second `dispatch login --device` names the earlier login's credential, which stays live until it
+  lapses or is revoked, and says where to revoke it; of two run at once, the one kept second names
+  the other's. The broker must be https, or http on this machine's loopback, the login's directory
+  must be this user's own, one this user can enter and write and others cannot write, and the
+  file's setting must name a regular file or nothing yet (not a directory or a named pipe), which
+  the command checks before it asks for a code. A login approved and then not kept names its
+  credential and where to revoke it, and keeps a copy of the login it wrote whole beside the file,
+  which used needs no revoke; one kept whose lock is then not let go is reported as kept, with no
+  revoke. A process with `PERSON_SIGNIN_TRADE=off` is refused a device login, since the broker
+  trades it as the person who approved it.

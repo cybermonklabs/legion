@@ -125,6 +125,22 @@ describe("formatZodIssues", () => {
     ]);
   });
 
+  // An empty with is how a caller deletes a replace's match on purpose; only a replace that names
+  // no with at all is refused.
+  test("passes a replace whose with is empty", () => {
+    const schema = dispatchToolSchema(specFor("dispatch_doc_edit"), zodSchemaApi(z), {
+      strict: true,
+    });
+
+    expect(
+      schema.safeParse({
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "old", with: "" }],
+      }).success
+    ).toBe(true);
+  });
+
   test("carries the number to trim for an over-limit string and the item count for an array", () => {
     expect(
       problemsFor("dispatch_issue", { project: "DSP", title: "x".repeat(ISSUE_TITLE_MAX + 50) })

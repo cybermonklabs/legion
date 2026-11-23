@@ -1930,7 +1930,8 @@ func TestWriterFloorTakesTheNewestMarkOlderThanEveryEventInsert(t *testing.T) {
 }
 
 // Only a transaction in Dispatch's own database can write its event log, so one holding a
-// transaction id in another database on the instance, which holds H back, leaves every mark good.
+// transaction id in another database on the instance holds no event id: it holds back neither H
+// (TestHorizonIsNotHeldByATransactionThatWritesNoEvent) nor any mark, and leaves every mark good.
 func TestWriterFloorIgnoresATransactionInAnotherDatabase(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

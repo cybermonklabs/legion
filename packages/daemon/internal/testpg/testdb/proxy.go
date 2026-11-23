@@ -29,15 +29,28 @@ import (
 // password.
 func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 	t.Helper()
+	listener, upstream, through := listenProxy(t, dsn, "the delayed Postgres proxy")
+	proxy := &delayedProxy{listener: listener, upstream: upstream, delay: delay, conns: map[net.Conn]struct{}{}}
+	proxy.wg.Add(1)
+	go proxy.serve()
+	t.Cleanup(proxy.close)
+	return through
+}
+
+// listenProxy is a listener on 127.0.0.1 for a proxy to the server pgconn.ParseConfig reads from
+// dsn, that server's address, which the proxy dials, and dsn rewritten by rewriteDSN to reach the
+// listener. proxy names the proxy in the refusal of a listen that fails. Delayed and CommitFaults
+// take their URLs from it.
+func listenProxy(t testing.TB, dsn, proxy string) (net.Listener, string, string) {
+	t.Helper()
 	const named = "the database URL to proxy"
 	target, err := pgconn.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("pgx refuses %s", named)
 	}
-	upstream := net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port)))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen for the delayed Postgres proxy: %v", err)
+		t.Fatalf("listen for %s: %v", proxy, err)
 	}
 	address := listener.Addr().(*net.TCPAddr)
 	through, err := rewriteDSN(named, dsn, rewrite{host: address.IP.String(), port: uint16(address.Port)})
@@ -45,11 +58,7 @@ func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
-	proxy := &delayedProxy{listener: listener, upstream: upstream, delay: delay, conns: map[net.Conn]struct{}{}}
-	proxy.wg.Add(1)
-	go proxy.serve()
-	t.Cleanup(proxy.close)
-	return through
+	return listener, net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port))), through
 }
 
 // delayedProxy is Delayed's proxy: conns are the client and server connections open through it,

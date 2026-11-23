@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -355,7 +356,7 @@ func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.
 		line  []record.LineEntry
 		facts record.LineFacts
 	)
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		issues, err := records.Issues(h.ctx, tx)
 		if err != nil {
 			return err
@@ -539,7 +540,7 @@ func TestAFreshSessionStartsTheClaimWhenThePhaseRestartIsRefused(t *testing.T) {
 }
 
 // ruleResumingRestart is the phase's restart with the outbox lane behind it: the fact's own
-// commit hook posts the rule's resume that lane posts once the fact commits (intake.OnCommit,
+// commit hook posts the rule's resume that lane posts once the fact commits (store.OnCommit,
 // which is how the lane is woken), and that resume is what relaunches a claim no operator
 // suspended. The hook runs after the commit, as the lane does, because a machine event posted
 // inside the fact's transaction would wait on the fact lock that transaction holds.
@@ -551,7 +552,7 @@ type ruleResumingRestart struct {
 }
 
 func (r *ruleResumingRestart) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	intake.OnCommit(ctx, func() {
+	store.OnCommit(ctx, func() {
 		r.posted = true
 		r.failed = r.resume()
 	})
@@ -645,6 +646,50 @@ func TestAFreshSessionOfAWorkerHoldingOnlyARelaunchDeliveryRestartsItsPhase(t *t
 			}
 			if after := h.stored(token); after.Session != "" || after.State != supervise.StateLaunching {
 				t.Errorf("the claim is %s recording session %q, want it launching in a new session", after.State, after.Session)
+			}
+		})
+	}
+}
+
+// A phase worker that holds only a task of news of the approved design alone owes no task of its
+// phase either: such a task asks the worker to read what changed, and holds no work of the claim's
+// (supervise.HoldsWork). So its fresh session restarts its issue's phase as for a worker holding
+// nothing, and the restart's task, which carries the entry its row names, then takes the untaken
+// news task's place and carries that news itself (supervise's Machine.supersedes;
+// dispatch://INFRA-175's census, item 10). Both doors are held to it, since the effect behind them
+// is one.
+func TestAFreshSessionOfAWorkerHoldingOnlyANewsTaskRestartsItsPhase(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			facts := &phaseRestarter{}
+			h := freshSessionHarness(t, facts)
+			token := readyImplementer(t, h)
+			m, _ := h.supervisor.Machine(token)
+			// A news-only start reached the worker between turns. No shim is connected, so the
+			// task waits unsent.
+			news := []byte(`{"items":[{"issue":"LEGION-209","audience":"holder","step":"spec","artifact":"artifact-spec","from":3,"to":5}]}`)
+			if err := m.Handle(h.ctx, supervise.RequestDeliver{Claim: token, ID: "outbox:91", Task: "The approved design changed.",
+				Phase: phase.Implementing, Generation: h.stored(token).Generation, News: news, NewsOnly: true}); err != nil {
+				t.Fatalf("queue the news task: %v", err)
+			}
+			if held := h.stored(token).Pending; held == nil || !held.NewsOnly {
+				t.Fatalf("the worker holds %+v, want the task of news alone", held)
+			}
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer, nil)
+
+			if recorder.Code != http.StatusOK && recorder.Code != http.StatusAccepted {
+				t.Fatalf("the fresh session = %d, want 200 or 202; body %s", recorder.Code, recorder.Body)
+			}
+			if note := freshSessionNote(t, recorder); note != "" {
+				t.Errorf("the answer says %q, want nothing: the phase was restarted", note)
+			}
+			applied := facts.recorded()
+			if len(applied) != 1 {
+				t.Fatalf("the fresh session applied %#v, want the phase's restart alone: a task of news alone is no task of the phase", applied)
+			}
+			if fact, ok := applied[0].(intake.RestartPhase); !ok || fact.Issue != "LEGION-209" || fact.Role != claim.RoleImplementer {
+				t.Errorf("the fresh session applied %#v, want RestartPhase{LEGION-209, implementer}", applied[0])
 			}
 		})
 	}

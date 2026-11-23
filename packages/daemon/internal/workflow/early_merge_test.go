@@ -206,6 +206,56 @@ func TestAnApprovalStandingOnAMergedPullRequestsHeadEndsTheReviewRound(t *testin
 	}
 }
 
+// The two rules a merged pull request meets agree: an approval of its head ends the review round
+// and moves the issue to accepting, and the reviewer's move back before that approval, and the
+// architect's move back after it, are each refused BACKWARD_REFUSED, since a merged change never
+// moves back. Nothing a refusal leaves is counted or started: the issue stands where the approval
+// put it, the implementer has no pass, and the outbox holds the approval's notice alone.
+func TestAMergedPullRequestsApprovalAndItsRefusedMovesBackAgree(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+		Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", Base: "main",
+		HeadSHA: headOne, MergeSHA: "merge", Failing: []string{}, Cancelled: []string{}, CheckRuns: []record.AttemptRun{},
+		Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	const reason = "its pull request has merged; a merged change never moves back"
+	back := func(id string, requester claim.Role, from phase.Phase) {
+		t.Helper()
+		move := intake.BackwardMove{Issue: "LEGION-208", Requester: requester, To: phase.Implementing, Reason: "the spec changed"}
+		if requester == claim.RoleArchitect {
+			// An architect's request names the claim, the generation and the run of accepting its
+			// route read, which the workflow judges again (rootsMoveBack).
+			move = rootsMoveBack(t, pool, engine, "LEGION-208", phase.Implementing, "the spec changed")
+		}
+		result := apply(id, move)
+		if refusalCode(result) != "BACKWARD_REFUSED" || !strings.Contains(result.Refusal.Message, reason) {
+			t.Fatalf("the %s's move back = %+v; want BACKWARD_REFUSED saying %q", requester, result.Refusal, reason)
+		}
+		if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != from || pass != 0 {
+			t.Fatalf("after the %s's move back the issue is in %s with %d passes; want %s and none", requester, got, pass, from)
+		}
+	}
+
+	back("reviewer-back", claim.RoleReviewer, phase.Reviewing)
+	approval := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
+		HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)}
+	if result := apply("approval", approval); result.Refusal != nil {
+		t.Fatalf("the approval was refused: %+v", result.Refusal)
+	}
+	if got := issuePhase(t, pool); got != phase.Accepting {
+		t.Fatalf("after the approval the issue is in %s, want accepting", got)
+	}
+	back("architect-back", claim.RoleArchitect, phase.Accepting)
+	if got := noticeKinds(t, pool, "LEGION-208"); !slices.Equal(got, []record.NoticeKind{"phase-finished"}) {
+		t.Fatalf("notices %v, want the approval's phase-finished alone", got)
+	}
+}
+
 // A close older than the pull request's newest lifecycle event is a late redelivery
 // (classify.LateLifecycle): it neither closes the pull request nor tells the architect. The newer
 // close closes it at the head it carries and tells the architect once, and that close redelivered at

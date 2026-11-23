@@ -718,12 +718,16 @@ export default defineConfig({
   // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
   // which is why a run given one keeps its logs whatever it did, and why
   // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
-  // this file in theirs. With E2E_MEASURE_FILE set, the timing fixture's reporter writes one
-  // row per test beside the list reporter's own output (e2e/measure-reporter.ts); without it
-  // the run is untouched.
+  // this file in theirs. `shard-reporter.ts` does nothing in a run without `--shard`, and in one
+  // with it places the files on the legs by measured row time in place of Playwright's split by
+  // count (e2e/shard-split.ts says why), so a local `--shard` run holds the rows the CI leg of
+  // that number holds; the shard job names it in its own list for the same reason as above. With
+  // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list
+  // reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
   reporter: [
     ["list"],
     [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],
+    [fileURLToPath(new URL("./shard-reporter.ts", import.meta.url))],
     ...(measuring
       ? [[fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))] as const]
       : []),

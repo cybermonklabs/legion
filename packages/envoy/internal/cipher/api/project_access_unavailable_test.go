@@ -26,10 +26,23 @@ func downDispatch(t *testing.T) *projectaccesstest.Server {
 	return down
 }
 
-// TestAnUnansweredProjectNamesNoProjectToTheSession: while Dispatch is down, a request for
-// PRIV_KEY, tagged with the private project PRIV, and a release of a grant of PUB_KEY, tagged with
-// the public project PUB, each answer 503 PROJECT_ACCESS_UNAVAILABLE with the same fixed sentence,
-// which names neither project; what Dispatch answered goes to the broker's log.
+// projectsDownDispatch is a Dispatch stand-in that fails every question about a project while its
+// person route answers, every person a full member's "none": the outage of a project read for a
+// session whose person's member kind is known. While the person route fails too, every request
+// and release of a person's session is refused 503 MEMBER_KIND_UNCHECKABLE before any project is
+// read (requests.Machine.restrictedOperator).
+func projectsDownDispatch(t *testing.T) *projectaccesstest.Server {
+	t.Helper()
+	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	down.SetProjectsDown(true)
+	return down
+}
+
+// TestAnUnansweredProjectNamesNoProjectToTheSession: while Dispatch cannot answer for a project,
+// a request for PRIV_KEY, tagged with the private project PRIV, and a release of a grant of
+// PUB_KEY, tagged with the public project PUB, each answer 503 PROJECT_ACCESS_UNAVAILABLE with the
+// same fixed sentence, which names neither project; what Dispatch answered goes to the broker's
+// log.
 func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
 	tagged := func(name, project string) secrets.LocalSecret {
 		s := policytest.Secret(name, policy.OwnerShared, policy.TierAgent, strings.ToLower(name)+"-v1")
@@ -59,7 +72,7 @@ func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
 		t.Fatalf("POST /v1/requests for PUB_KEY while Dispatch answers = %d %s; want a grant at once", status, body)
 	}
 
-	down := downDispatch(t)
+	down := projectsDownDispatch(t)
 	access.Serve(down)
 	logged := policytest.CaptureLog(t)
 	var sentences []string
@@ -92,11 +105,11 @@ func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
 }
 
 // TestThePendingListLeavesOutOnlyTheRequestDispatchCannotAnswerFor: nothing is tagged and
-// Dispatch is down. GET /v1/pending answers 200 and lists the shared secret's request whose reason
-// names no issue; the one whose reason names INFRA-12, whose project Dispatch could not be asked
-// about, is left out of that list alone rather than failing it.
+// Dispatch cannot answer for a project. GET /v1/pending answers 200 and lists the shared secret's
+// request whose reason names no issue; the one whose reason names INFRA-12, whose project Dispatch
+// could not be asked about, is left out of that list alone rather than failing it.
 func TestThePendingListLeavesOutOnlyTheRequestDispatchCannotAnswerFor(t *testing.T) {
-	down := downDispatch(t)
+	down := projectsDownDispatch(t)
 	access := &projectaccesstest.Swappable{}
 	access.Serve(down)
 	ts := newTestServerWith(t, func(d *api.Deps) { d.Machine.Projects = access })

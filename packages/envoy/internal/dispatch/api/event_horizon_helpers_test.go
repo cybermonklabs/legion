@@ -83,7 +83,7 @@ func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func())
 	tx, err := conn.Begin(t.Context())
 	if err != nil {
 		_ = conn.Close(context.Background())
-		t.Fatalf("begin the transaction that holds the horizon: %v", err)
+		t.Fatalf("begin the transaction in the cluster's postgres database: %v", err)
 	}
 	var xid string
 	if err := tx.QueryRow(t.Context(), `select pg_current_xact_id()::text`).Scan(&xid); err != nil {

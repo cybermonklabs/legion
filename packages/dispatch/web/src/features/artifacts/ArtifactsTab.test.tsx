@@ -5,9 +5,10 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, IssueReferences } from "../../api/types";
+import type { Artifact, IssueReferences, IssueReferencesAnswer } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
@@ -49,7 +50,12 @@ const artifact = {
   // table's `Version[] | null` would not let them.
 } satisfies Artifact;
 
-const noReferences: IssueReferences = { members: [], truncated: false };
+const noReferences: IssueReferences = {
+  linked_from: [],
+  links: [],
+  members: [],
+  truncated: false,
+};
 
 function Location() {
   return <output data-testid="location">{useLocation().pathname}</output>;
@@ -57,7 +63,7 @@ function Location() {
 
 function renderTab(
   artifacts: Artifact[],
-  references: IssueReferences | Error = noReferences,
+  references: IssueReferencesAnswer | Error = noReferences,
   isClosed = false
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
@@ -384,7 +390,9 @@ test("the filter input narrows rows by name and kind", async () => {
   }
 });
 
-test("References lists closure members with chip, via, and depth, names truncation, and renders an artifact source without an issue key, collapsed by default", async () => {
+// An answer without `links` and `linked_from`, as a Dispatch from before INFRA-4704 gives: the tab
+// draws its members as it always did, with their depth and the line for a walk cut at 8 hops.
+test("From an answer without links, References lists closure members with chip, via, and depth, names truncation, and renders an artifact source without an issue key, collapsed by default", async () => {
   const referencedDocument: Artifact = {
     ...artifact,
     id: "artifact-notes",
@@ -427,6 +435,234 @@ test("References lists closure members with chip, via, and depth, names truncati
   }
 });
 
+// dispatch://INFRA-4704: from an answer with `links`, References lists each node the issue's own
+// content links to, one hop out, and Referenced by under it each node that links to the issue or
+// to its own content, one hop in. A node of both is drawn once, in References, marked as linking
+// back. A one-hop read reaches no 8th hop, so no row draws a depth and no line says the read was
+// cut, though the answer says `truncated`. Each row's node and name come in the answer, so the tab
+// reads nothing to draw them: its two reads, which the test answers above the network, are the
+// only requests it makes, and no request reaches `fetch`.
+test("References lists the issue's links and Referenced by the nodes that link to it, each node once, with no depth and no read beyond the references route", async () => {
+  const comment = "cccccccc-0000-4000-8000-000000000009";
+  const message = "eeeeeeee-0000-4000-8000-000000000007";
+  const viaComment = { id: "comment-1", kind: "comment" };
+  const projectDocument = graphNode({
+    id: "artifact-a",
+    kind: "artifact",
+    project: "CORE",
+    ref: "dispatch://CORE/artifact/a-md",
+  });
+  const issueDocument = graphNode({
+    id: "artifact-c",
+    issue_key: "CORE-7",
+    kind: "artifact",
+    project: "CORE",
+    ref: "dispatch://CORE-7/artifact/c-md",
+  });
+  const answer: IssueReferences = {
+    members: [
+      {
+        artifact: {
+          ...artifact,
+          id: "artifact-a",
+          issue_key: null,
+          kind: "doc",
+          name: "a.md",
+          ref_key: "CORE/a-md",
+          slug: "a-md",
+        },
+        depth: 1,
+        via: viaComment,
+      },
+      {
+        artifact: {
+          ...artifact,
+          id: "artifact-c",
+          issue_key: "CORE-7",
+          kind: "doc",
+          name: "c.md",
+          ref_key: "CORE-7/c-md",
+          slug: "c-md",
+        },
+        depth: 1,
+        via: viaComment,
+      },
+    ],
+    truncated: true,
+    links: [
+      { kinds: ["mentions"], name: "a.md", node: projectDocument, via: viaComment },
+      { kinds: ["mentions"], name: "c.md", node: issueDocument, via: viaComment },
+      {
+        kinds: ["mentions"],
+        name: "Ship the parser",
+        node: graphNode({
+          id: "CORE-9",
+          issue_key: "CORE-9",
+          kind: "issue",
+          project: "CORE",
+          ref: "dispatch://CORE-9",
+        }),
+        via: { id: "artifact-1", kind: "artifact" },
+      },
+      {
+        kinds: ["mentions"],
+        name: "The parser lands on Friday.",
+        node: graphNode({
+          id: comment,
+          issue_key: "CORE-9",
+          kind: "comment",
+          project: "CORE",
+          ref: `dispatch://CORE-9/comment/${comment}`,
+        }),
+        via: viaComment,
+      },
+    ],
+    linked_from: [
+      {
+        kinds: ["mentions"],
+        name: "c.md",
+        node: issueDocument,
+        via: { id: "CORE-1", kind: "issue" },
+      },
+      {
+        kinds: ["mentions"],
+        name: "e.md",
+        node: graphNode({
+          id: "artifact-e",
+          kind: "artifact",
+          project: "OPS",
+          ref: "dispatch://OPS/artifact/e-md",
+        }),
+        via: { id: "CORE-1/diagram-png", kind: "artifact" },
+      },
+      {
+        kinds: ["mentions"],
+        name: "See the diagram",
+        node: graphNode({
+          id: message,
+          issue_key: "CORE-7",
+          kind: "message",
+          project: "CORE",
+          ref: `dispatch://CORE-7/message/${message}`,
+        }),
+        via: { id: "CORE-1", kind: "issue" },
+      },
+    ],
+  };
+  const fetches = spyOn(globalThis, "fetch");
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], answer);
+
+  try {
+    await screen.findByText("References (4)");
+    expect(screen.getByText("Referenced by (2)")).toBeInTheDocument();
+    const references = within(view.container).getByRole("region", {
+      hidden: true,
+      name: "References",
+    });
+    const referencedBy = within(view.container).getByRole("region", {
+      hidden: true,
+      name: "Referenced by",
+    });
+    // Each list's rows, Referenced by's left out of References' should it be drawn inside it.
+    const referencedByRows = within(referencedBy).getAllByRole("listitem", { hidden: true });
+    const referenceRows = within(references)
+      .getAllByRole("listitem", { hidden: true })
+      .filter((row) => !referencedBy.contains(row));
+    // The name and the address of the link a row opens.
+    const linkOf = (row: HTMLElement) => {
+      const link = within(row).getAllByRole("link", { hidden: true })[0];
+      return [link?.textContent, link?.getAttribute("href")];
+    };
+
+    expect(referenceRows.map(linkOf)).toEqual([
+      ["a.md", "/projects/CORE/documents/a-md"],
+      ["c.md", "/issues/CORE-7/artifacts/c-md"],
+      ["Ship the parser", "/issues/CORE-9"],
+      ["The parser lands on Friday.", `/issues/CORE-9/comments/${comment}`],
+    ]);
+    const [projectRow, bothRow, issueRow, commentRow] = referenceRows;
+    // A document's row names its owner, as a member's does.
+    expect(projectRow).toHaveTextContent("CORE");
+    expect(projectRow).toHaveTextContent("artifact · via comment");
+    expect(bothRow).toHaveTextContent("CORE-7");
+    expect(bothRow).toHaveTextContent("artifact · via comment");
+    expect(bothRow).toHaveTextContent("also references this issue");
+    expect(issueRow).toHaveTextContent("issue · via artifact");
+    expect(commentRow).toHaveTextContent("comment · via comment");
+    for (const row of [projectRow, issueRow, commentRow]) {
+      expect(row).not.toHaveTextContent("also references this issue");
+    }
+
+    // c.md links to the issue too, and is drawn once, in References.
+    expect(referencedByRows.map(linkOf)).toEqual([
+      ["e.md", "/projects/OPS/documents/e-md"],
+      ["See the diagram", `/issues/CORE-7/messages/${message}`],
+    ]);
+    const [documentRow, messageRow] = referencedByRows;
+    expect(documentRow).toHaveTextContent("OPS");
+    expect(documentRow).toHaveTextContent("artifact · to artifact");
+    expect(messageRow).toHaveTextContent("message · to issue");
+    expect(screen.getAllByRole("link", { hidden: true, name: "c.md" })).toHaveLength(1);
+
+    expect(references).not.toHaveTextContent("depth");
+    expect(referencedBy).not.toHaveTextContent("depth");
+    expect(view.container).not.toHaveTextContent("more references beyond 8 hops");
+
+    expect(getIssueReferences).toHaveBeenCalledTimes(1);
+    expect(getIssueReferences).toHaveBeenCalledWith("CORE-1");
+    expect(
+      fetches.mock.calls.map(([input]) => (input instanceof Request ? input.url : String(input)))
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    fetches.mockRestore();
+  }
+});
+
+// An issue that links to nothing and that other nodes link to: `links` is empty and `linked_from`
+// holds a row. The section is collapsed by default, so what it shows before anyone opens it is all
+// a reader learns from a glance. A closed disclosure that reads "References (0)" over the only rows
+// the read gave hides them: nothing on the closed section says that a node links to the issue.
+test("an issue only other nodes link to shows Referenced by (1) before the section is opened", async () => {
+  const comment = "dddddddd-0000-4000-8000-000000000003";
+  const answer: IssueReferences = {
+    links: [],
+    linked_from: [
+      {
+        kinds: ["mentions"],
+        name: "This links to CORE-1.",
+        node: graphNode({
+          id: comment,
+          issue_key: "OPS-1",
+          kind: "comment",
+          project: "OPS",
+          ref: `dispatch://OPS-1/comment/${comment}`,
+        }),
+        via: { id: "CORE-1", kind: "issue" },
+      },
+    ],
+    members: [],
+    truncated: false,
+  };
+  const { getIssueReferences, listArtifacts, view } = renderTab([artifact], answer);
+
+  try {
+    // Every element that names the count, kept where a reader sees it with the section closed:
+    // outside a closed <details>, or in that <details>' own <summary>.
+    const shown = (await screen.findAllByText(/Referenced by \(1\)/)).filter((element) => {
+      const closed = element.closest("details:not([open])");
+      return closed === null || (closed.querySelector("summary")?.contains(element) ?? false);
+    });
+    expect(shown).not.toHaveLength(0);
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
 test("a references read cut at its bound says References unavailable with a Retry that reads again", async () => {
   const user = userEvent.setup();
   const refusal =
@@ -452,8 +688,9 @@ test("a references read cut at its bound says References unavailable with a Retr
 });
 
 // A conversation's picture is owned by the agent whose conversation holds it: the References row
-// names that agent through `AgentName`, a link to its live conversation.
-test("References names the agent that owns a conversation's artifact", async () => {
+// names that agent through `AgentName`, a link to its live conversation. The answer has no
+// `links`, as a Dispatch from before INFRA-4704 gives, so the row is a member's, with its depth.
+test("From an answer without links, References names the agent that owns a conversation's artifact", async () => {
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([
     {
       capabilities: [],

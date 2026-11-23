@@ -73,7 +73,9 @@ const failAlways = 1 << 30
 // POST /v1/oauth/token requires a DPoP proof of that key on every call and answers the device code
 // grant with loginOutcome ("issued" by default, or "denied"/"expired" when a test sets it before
 // Login, or "pending" to hold the login undecided until the test sets "issued"), minting a fresh
-// credential id on "issued", and the refresh grant with refreshOutcome ("" rotates the refresh
+// credential id on "issued". It answers each code at the status the real broker's OAuth library,
+// authelia.com/provider/oauth2, gives it: access_denied 403, the others 400. It answers the
+// refresh grant with refreshOutcome ("" rotates the refresh
 // token and moves the expiry, "invalid_grant" refuses it, "unavailable" answers 503,
 // "rate_limited" answers the broker's 429 invalid_request with Retry-After 1).
 type fakeBroker struct {
@@ -103,6 +105,14 @@ type fakeBroker struct {
 	lastProofURL           string // the exact URL that Proof header was signed for
 
 	enrollHeldFor string
+	// enrollRestricted answers every enroll 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, as the broker
+	// answers an enrollment under a machine login whose person Dispatch calls a restricted member
+	// (enroll.ErrRestrictedMember).
+	enrollRestricted bool
+	// enrollUncheckable answers every enroll 503 MEMBER_KIND_UNCHECKABLE, as the broker answers an
+	// enrollment while it cannot learn whether Dispatch calls the login's person a restricted
+	// member (projectaccess.MemberKindUncheckable), having written nothing.
+	enrollUncheckable bool
 
 	lastLoginRequest   string // the compact request object the most recent device authorization carried
 	pendingThumbprint  string // the embedded key's thumbprint from that request object
@@ -174,6 +184,12 @@ type fakeBroker struct {
 	// authorization, answering 200 with no device_code or user_code.
 	enrollEmpty2xx     bool
 	deviceAuthEmpty2xx bool
+	// oauthErrorStatus, when set, is the status of every OAuth error the token endpoint answers, in
+	// place of its own: a broker, or a proxy before it, answering 5xx, 408 or 429 with a body that
+	// still names access_denied, expired_token or invalid_grant, or another refusal status.
+	// devicePolls counts every device code grant the token endpoint receives, whatever it answers.
+	oauthErrorStatus int
+	devicePolls      int
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -205,6 +221,16 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		if f.enrollHeldFor != "" {
 			writeJSON(w, 403, map[string]string{"code": "MEMBERSHIP_HELD",
 				"error": f.enrollHeldFor + "'s credentials are held by Dispatch; they work again when " + f.enrollHeldFor + " signs in to Dispatch, or when Dispatch can confirm " + f.enrollHeldFor + " with Google again"})
+			return
+		}
+		if f.enrollRestricted {
+			writeJSON(w, 403, map[string]string{"code": "RESTRICTED_MEMBER_ENROLLS_NOTHING",
+				"error": "a restricted member's machine login enrolls no session, and the broker releases no secret to that person's agents: ada@example.com is a restricted member"})
+			return
+		}
+		if f.enrollUncheckable {
+			writeJSON(w, 503, map[string]string{"code": "MEMBER_KIND_UNCHECKABLE",
+				"error": "whether Dispatch calls ada@example.com a restricted member cannot be read: the broker could not ask Dispatch"})
 			return
 		}
 		if f.failFirst > 0 {
@@ -426,13 +452,19 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		oauthError := func(status int, code string) { writeJSON(w, status, map[string]string{"error": code}) }
+		oauthError := func(status int, code string) {
+			if f.oauthErrorStatus != 0 {
+				status = f.oauthErrorStatus
+			}
+			writeJSON(w, status, map[string]string{"error": code})
+		}
 		if r.PostForm.Get("client_id") != oauthwire.ClientID {
 			oauthError(401, "invalid_client")
 			return
 		}
 		switch r.PostForm.Get("grant_type") {
 		case "urn:ietf:params:oauth:grant-type:device_code":
+			f.devicePolls++
 			if r.PostForm.Get("device_code") != f.deviceCode {
 				oauthError(400, "invalid_grant")
 				return
@@ -446,7 +478,7 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 				oauthError(400, "authorization_pending")
 				return
 			case "denied":
-				oauthError(400, "access_denied")
+				oauthError(http.StatusForbidden, "access_denied")
 				return
 			case "expired":
 				oauthError(400, "expired_token")

@@ -122,16 +122,17 @@ env -u AWS_REGION -u AWS_DEFAULT_REGION -u AWS_CONFIG_FILE -u AWS_PROFILE \
   "$TMPDIR/envoy-dispatch"
 ```
 
-Build the cases once against the corpus, then run them:
+Build the cases once against the corpus, then run them. `run_search.py` reads the fixture's database URL from `FIXTURE_DATABASE_URL`, never from its command line, which every process on the machine can read:
 
 ```bash
 python3 scripts/search-measure/build_cases.py --corpus "$TMPDIR/corpus" \
   --cases "$TMPDIR/cases_all.json" --out scripts/search-measure/cases.json
+export FIXTURE_DATABASE_URL="postgres://…/searchfix"
 python3 scripts/search-measure/run_search.py --cases scripts/search-measure/cases.json \
-  --fixture-dsn "postgres://…/searchfix" --url http://127.0.0.1:8799 --token fixture-token \
+  --url http://127.0.0.1:8799 --token fixture-token \
   --workers 8 --out "$TMPDIR/out-all.jsonl"
 python3 scripts/search-measure/run_search.py --cases scripts/search-measure/cases.json \
-  --fixture-dsn "postgres://…/searchfix" --url http://127.0.0.1:8799 --token fixture-token \
+  --url http://127.0.0.1:8799 --token fixture-token \
   --only scripts/search-measure/serial120.json \
   --workers 1 --out "$TMPDIR/out-serial.jsonl"
 python3 scripts/search-measure/analyze.py "$TMPDIR/out-all.jsonl" --serial "$TMPDIR/out-serial.jsonl"

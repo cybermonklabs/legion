@@ -40,6 +40,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is one bridge's resolved inputs. Run spawns Argv once and bridges until it exits.
@@ -65,6 +66,31 @@ type Config struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Log    io.Writer
+	// Clock is what every timer of the bridge runs on: its stop's Grace, drainTimeout,
+	// inboxFlushTimeout and flushTimeout, and a turn report's reportTimeout. Nil is the wall
+	// clock, which is what a pane's bridge runs on; a test gives a clock of its own, so a row reads
+	// the stop against those bounds by moving the clock, not by how long a loaded machine took.
+	// No other wall-clock wait is in the bridge (TestTheBridgeWaitsOnlyOnItsClock).
+	Clock Clock
+}
+
+// Clock hands out the bridge's stop timers: After answers a channel that receives once d has
+// passed on the clock.
+type Clock interface {
+	After(d time.Duration) <-chan time.Time
+}
+
+// wallClock is the Clock of a bridge whose Config names none.
+type wallClock struct{}
+
+func (wallClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
+
+// clock is cfg's Clock, the wall clock where it names none.
+func (cfg Config) clock() Clock {
+	if cfg.Clock == nil {
+		return wallClock{}
+	}
+	return cfg.Clock
 }
 
 // Configure reads a bridge's configuration from the claude argv and the environment the runtime

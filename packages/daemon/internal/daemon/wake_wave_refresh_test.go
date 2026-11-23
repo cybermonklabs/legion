@@ -444,6 +444,7 @@ func baselineRootLaunches(t *testing.T) []time.Duration {
 // roots' launches are due behind all of it — and a gate that admits one claim a sweep instead of
 // the rate, which fails assertion 4, since 118 claims then need 118 rounds.
 func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *testing.T) {
+	t.Parallel()
 	baseline := baselineRootLaunches(t)
 
 	cfg := refreshWaveConfig(t)
@@ -604,9 +605,8 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		// back inside that same decision, which ends with no refresh wake of this machine's own
 		// waiting (supervise's endRefreshLane, Machine.unlock), and the next sweep's pass is
 		// what spends it, posting another stale claim on it. The correction stays the backstop
-		// for the losses no decision of a machine reaches (the correction refreshStalePlugins
-		// makes, supervise.RefreshGate.Correct; decision P2 of
-		// dispatch://INFRA-2712/artifact/plan-md).
+		// for a credit lost to a path that gives none back: it takes back a credit whose
+		// machine no longer holds it for a refresh wake (supervise.RefreshGate.Correct).
 		//
 		// It reads a full gate too, and waits for one in the same way, for the same reason: a
 		// lane that never fills one has the drain below to answer for, and the end of this case
@@ -854,6 +854,7 @@ func assertMinutesHoldTheRate(t *testing.T, what string, moments []time.Time) {
 // reserveWake): the refreshes then all run in the instant the pass posts them and the first
 // window holds the whole wave.
 func TestNoMinuteOfAFleetsRefreshWaveHoldsMoreThanTheRateAndTheBurst(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	paceStale := 3 * testWakeRate
 	const paceRoots = 4

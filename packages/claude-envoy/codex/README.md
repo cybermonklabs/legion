@@ -20,5 +20,14 @@ codex plugin marketplace add cybermonklabs/legion
 codex plugin add codex-envoy@legion-plugins
 ```
 
+The package's `bin/dispatch` is the `dispatch` command for a terminal, and its npm `bin`. The
+plugin's `dispatch` tool ends a command after 120 s, so a command that waits for a person runs
+there, such as the device login of a machine with no identity of its own:
+
+```bash
+"${CODEX_HOME:-$HOME/.codex}"/plugins/cache/legion-plugins/codex-envoy/<version>/bin/dispatch login --device --person <address>
+npx --package @sjawhar/codex-envoy dispatch login --device --person <address>
+```
+
 It is built from the same source as the Claude Code plugin, `@sjawhar/claude-envoy`, whose README
 describes both hosts: https://github.com/cybermonklabs/legion/tree/main/packages/claude-envoy

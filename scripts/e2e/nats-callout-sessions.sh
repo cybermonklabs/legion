@@ -444,8 +444,10 @@ echo "nats-callout-sessions: starting dev-stack.sh --callout (log $stack_log)"
 # The stack's TMPDIR is short and of its own: dev-stack.sh binds unix sockets in its work directory
 # (its port keepers'), and a socket path past 107 bytes is refused, which a caller's deep TMPDIR
 # with this run's scratch directory inside it can pass.
+# The server reaches it as LEGION_TEST_PG_DSN for that one command, never in its arguments, where
+# a password the DSN holds would be in the process list.
 stack_tmp=$(mktemp -d /tmp/ncs-stack.XXXXXX)
-TMPDIR=$stack_tmp bash "$root/packages/envoy/scripts/dev-stack.sh" --callout --database-url "$pg_dsn" "${stack_args[@]}" \
+LEGION_TEST_PG_DSN=$pg_dsn TMPDIR=$stack_tmp bash "$root/packages/envoy/scripts/dev-stack.sh" --callout "${stack_args[@]}" \
   >"$stack_log" 2>&1 &
 stack_pid=$!
 stack_ready() {

@@ -13,10 +13,10 @@ import {
   agentViewRefusal,
   awaitPostgres,
   databaseUrlRefusal,
+  handOverMessage,
   Interrupted,
   type PostgresProbe,
   Supervisor,
-  shellQuote,
 } from "./local-instance-support";
 import { sqlAt } from "./psql";
 import { sessionIds } from "./session-ids";
@@ -70,20 +70,6 @@ async function ensureLocalPostgres(boundMs: number): Promise<string> {
     await adminSql(`create database ${localDatabase}`);
   }
   return adminUrl.replace("/postgres?", `/${localDatabase}?`);
-}
-
-/** The harness inputs a command needs to reach this instance, as a shell prefix: the database,
- *  each port the harness reported, and the broker switch (e2e/harness-broker.ts) this shell set. */
-function harnessEnvironment(databaseUrl: string, ports: Readonly<Record<string, string>>): string {
-  const switches = [
-    "DISPATCH_E2E_AGENT_SECRETS_URL",
-    "DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE",
-  ].filter((variable) => process.env[variable] !== undefined);
-  return [
-    `DATABASE_URL=${shellQuote(databaseUrl)}`,
-    ...Object.entries(ports).map(([variable, port]) => `${variable}=${port}`),
-    ...switches.map((variable) => `${variable}=${shellQuote(process.env[variable] ?? "")}`),
-  ].join(" ");
 }
 
 let harness: Harness | undefined;
@@ -160,25 +146,19 @@ async function main(): Promise<void> {
   );
   check(liveView === undefined, `the Planner's live view: ${liveView}`);
 
-  // 6. Hand over, and run until Ctrl-C or until one of the processes stops by itself.
-  const fakeEnvoy = `http://127.0.0.1:${harness.env[harnessVariables.fakeEnvoy]}`;
+  // 6. Hand over, and run until Ctrl-C or until one of the processes stops by itself. A password
+  // the person gave in DATABASE_URL is printed nowhere (`handOverMessage`).
   console.log(
-    "\nDispatch local instance is up.\n" +
-      `  Open (signed in as alice): ${baseUrl}/auth/_dev/signin?login=alice&next=/\n` +
-      `  Sign in as bob:            ${baseUrl}/auth/_dev/signin?login=bob&next=/\n` +
-      `  Seeded broadcast:          ${baseUrl}/agents/broadcasts/${seeded.broadcast.id}\n` +
-      `  Planner's live view:       ${baseUrl}/agents/${sessionIds.planner}/live\n` +
-      `  Agent bearer:              e2e-token (for a local Oh My Pi session: DISPATCH_URL=${baseUrl} ` +
-      "DISPATCH_TOKEN=e2e-token, with DISPATCH_TOKEN_FILE unset since it wins)\n" +
-      `  Database (truncated and reseeded on every start): ${databaseUrl}\n` +
-      `  Fake Envoy: live sessions GET ${fakeEnvoy}/v1/sessions; ` +
-      `reseed them with PUT ${fakeEnvoy}/__fixture/sessions\n` +
-      "  Run a spec against it from packages/dispatch (this empties the instance; restart it to " +
-      "reseed):\n" +
-      `    DISPATCH_E2E_REUSE_SERVERS=1 ${harnessEnvironment(databaseUrl, harness.env)} bunx ` +
-      "playwright test --config e2e/playwright.config.ts --project=chromium e2e/broadcast.e2e.ts\n" +
-      "Open exactly that origin: 'localhost' is another Host and the server refuses it (421).\n" +
-      "Press Ctrl-C to stop."
+    handOverMessage({
+      baseUrl,
+      broadcastId: seeded.broadcast.id,
+      plannerSessionId: sessionIds.planner,
+      fakeEnvoy: `http://127.0.0.1:${harness.env[harnessVariables.fakeEnvoy]}`,
+      databaseUrl,
+      supplied: Boolean(given),
+      ports: harness.env,
+      env: process.env,
+    })
   );
   try {
     await untilInterrupted(harness.firstExit());
