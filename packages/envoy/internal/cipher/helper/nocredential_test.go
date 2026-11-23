@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const noCredentialMsg = "no machine credential; run: agent-secrets machine login, and have a human approve it"
@@ -49,20 +50,16 @@ func TestNoCredentialReasonNamesWhyTheHelperHoldsNone(t *testing.T) {
 	}
 }
 
-// waitForRecord waits up to 5 s for a JSON log record in out whose msg is msg, and returns it.
+// waitForRecord waits for a JSON log record in out whose msg is msg, and returns it.
 func waitForRecord(t *testing.T, out *syncBuffer, msg string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	return testwait.Until(t, "the log line "+msg, func() (map[string]any, bool) {
 		records := logRecords(t, out)
 		if i := slices.IndexFunc(records, func(rec map[string]any) bool { return rec["msg"] == msg }); i >= 0 {
-			return records[i]
+			return records[i], true
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no line %q within 5 s; log:\n%s", msg, out.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return nil, false
+	})
 }
 
 // TestARestartWithNoLoginSaysWhyTheSessionCannotEnroll: a restarted helper with no machine login
@@ -217,26 +214,20 @@ func TestALoginBetweenARefusalAndItsLineIsAnOrdinaryRetry(t *testing.T) {
 // minute. The login that installs a credential must wake that retry, so the session can sign
 // within about a second of the login instead of whenever its backoff comes round.
 func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testing.T) {
-	r := newRig(t, "")
+	r := newRigOn(t, "")
 	if reg := r.call(t, Request{Op: "register"}); !reg.OK || reg.Code != CodeNoCredential {
 		t.Fatalf("register with no credential: %+v", reg)
 	}
-	// Without a credential each attempt fails at once: at 0 s, 1 s and 3 s. The next is due at 7 s,
-	// well over the bound below, so only a wake can enroll the session in time.
-	time.Sleep(3500 * time.Millisecond)
+	// Without a credential each attempt fails at once, and the retry's ladder is armed on
+	// the server's own clock. The row moves that clock nowhere from here on, so the next
+	// attempt is due at a moment that never comes and only the login's wake can enroll the
+	// session: a helper that waited for the backoff instead would never sign.
+	r.clock.AwaitArmed(t, "the enroll retry's wait", 1)
 	r.login(t)
-	loggedIn := time.Now()
-	for {
-		signed := r.call(t, Request{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"})
-		if signed.OK {
-			t.Logf("the session signed %s after the login", time.Since(loggedIn))
-			return
-		}
-		if time.Since(loggedIn) > time.Second {
-			t.Fatalf("sign %s after the login: %+v; the login must wake the session's enrollment", time.Since(loggedIn), signed)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// The session signs once the login woke its enrollment.
+	waitFor(t, func() bool {
+		return r.call(t, Request{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"}).OK
+	})
 }
 
 // TestSignAnswersNoCredentialWhileTheHelperHoldsNone: sign and sign-request for a registered
@@ -321,13 +312,9 @@ func TestARegisterWaitWaitsForAConfirmationThatNeedsNoCredential(t *testing.T) {
 	// credential is held would answer at once here.
 	replies := registerWaitBlocked(t, r, &id)
 	release()
-	select {
-	case got := <-replies:
-		if got.err != nil || !got.resp.OK || got.resp.Code != "" || got.resp.State != "enrolled" || got.resp.EnrollmentID != "enr-before" {
-			t.Fatalf("register --wait after the confirmation: %+v (%v); want OK, enrolled, enr-before and no code", got.resp, got.err)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("register --wait never answered after the confirming renew was released")
+	got := testwait.Receive(t, "register --wait to answer once the confirming renew was released", replies)
+	if got.err != nil || !got.resp.OK || got.resp.Code != "" || got.resp.State != "enrolled" || got.resp.EnrollmentID != "enr-before" {
+		t.Fatalf("register --wait after the confirmation: %+v (%v); want OK, enrolled, enr-before and no code", got.resp, got.err)
 	}
 }
 
@@ -354,12 +341,11 @@ func TestARegisterWaitAnswersAtOnceOnceTheBrokerRefusesTheInheritedEnrollment(t 
 		return sess != nil && sess.confirmationInFlight() == nil
 	})
 
-	// The same session again, this time asking to wait. Nothing can confirm the refused id, so the
-	// answer is the one the helper already has and the caller must not pay the wait for it.
-	started := time.Now()
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 5, SessionID: &id})
-	if elapsed := time.Since(started); elapsed > time.Second || resp.Code != CodeNoCredential {
-		t.Fatalf("register --wait 5 answered %+v after %s; want NO_CREDENTIAL well inside the wait, since the broker has refused the inherited enrollment and no confirmation can come", resp, elapsed)
+	// The same session again, this time asking to wait. Nothing can confirm the refused id, so
+	// the answer is the one the helper already has and the caller must not pay the wait for it:
+	// this rig's clock stands still, so a register that took the wait would never be answered.
+	if resp := r.call(t, Request{Op: "register", WaitSeconds: 5, SessionID: &id}); resp.Code != CodeNoCredential {
+		t.Fatalf("register --wait 5 answered %+v; want NO_CREDENTIAL without taking the wait, since the broker has refused the inherited enrollment and no confirmation can come", resp)
 	}
 }
 
@@ -387,7 +373,9 @@ func TestARegisterWaitAnswersAtOnceWhenNoConfirmationIsInFlight(t *testing.T) {
 		// Reading it there rather than from the session leaves the register below the only
 		// thing the settle this row pins can change, and it puts a retry of the enroll loop's
 		// own in flight while that register runs — the very attempt a register that did not
-		// see it start must not wait on.
+		// see it start must not wait on. The retry's backoff runs on the rig's clock, which only
+		// the test moves, so the row moves it to the retry once the 503 has armed it.
+		fireArmedAt(t, r.clock, r.clock.Now().Add(time.Second), "the confirming renew's retry, a second after its 503")
 		waitFor(t, func() bool {
 			r.fake.mu.Lock()
 			defer r.fake.mu.Unlock()
@@ -396,24 +384,21 @@ func TestARegisterWaitAnswersAtOnceWhenNoConfirmationIsInFlight(t *testing.T) {
 
 		// The same session again, asking to wait. The attempt this register could have waited
 		// on has been answered; the next one is the enroll loop's own, and nothing waits on a
-		// retry it did not see start.
-		started := time.Now()
-		resp := r.call(t, Request{Op: "register", WaitSeconds: 2, SessionID: &id})
-		if elapsed := time.Since(started); elapsed > time.Second || resp.Code != CodeNoCredential {
-			t.Fatalf("register --wait 2 answered %+v after %s; want NO_CREDENTIAL well inside the wait, since the confirmation attempt in flight when it arrived has been answered and the enroll loop's retries are not waited on", resp, elapsed)
+		// retry it did not see start. The rig's clock stands still, so a register that took
+		// the wait would never be answered.
+		if resp := r.call(t, Request{Op: "register", WaitSeconds: 2, SessionID: &id}); resp.Code != CodeNoCredential {
+			t.Fatalf("register --wait 2 answered %+v; want NO_CREDENTIAL without taking the wait, since the confirmation attempt in flight when it arrived has been answered and the enroll loop's retries are not waited on", resp)
 		}
 	})
 
 	// A session with no parked record at all, the headline promise: it has no enrollment to
 	// confirm, so there is nothing a wait can shorten and every launch gets its answer at once.
 	t.Run("a session with no parked record at all", func(t *testing.T) {
-		r := newRig(t, "")
+		r := newRigOn(t, "")
 		r.callerPID.Store(int64(os.Getpid()))
 
-		started := time.Now()
-		resp := r.call(t, Request{Op: "register", WaitSeconds: 2})
-		if elapsed := time.Since(started); elapsed > time.Second || resp.Code != CodeNoCredential {
-			t.Fatalf("register --wait 2 answered %+v after %s; want NO_CREDENTIAL at once, since the helper holds no launcher credential and this session inherited no enrollment anything could confirm", resp, elapsed)
+		if resp := r.call(t, Request{Op: "register", WaitSeconds: 2}); resp.Code != CodeNoCredential {
+			t.Fatalf("register --wait 2 answered %+v; want NO_CREDENTIAL without taking the wait, since the helper holds no launcher credential and this session inherited no enrollment anything could confirm", resp)
 		}
 	})
 }
@@ -440,11 +425,10 @@ func TestARegisterWaitAnswersAtOnceWhenALapsedIDBlocksTheConfirmation(t *testing
 	}
 
 	// The same session again, this time asking to wait. The confirmation it would wait for is
-	// behind a revoke nobody can make, so the answer is the one the helper already has.
-	started := time.Now()
-	resp := r.call(t, Request{Op: "register", WaitSeconds: 3, SessionID: &id})
-	if elapsed := time.Since(started); elapsed > time.Second || resp.Code != CodeNoCredential {
-		t.Fatalf("register --wait 3 answered %+v after %s; want NO_CREDENTIAL well inside the wait, since the lapsed id is revoked before the confirmation is ever sent and the revoke goes through on a sign-in or a machine credential, neither of which this rig holds, so no renew can be sent", resp, elapsed)
+	// behind a revoke nobody can make, so the answer is the one the helper already has, and
+	// this rig's clock stands still: a register that took the wait would never be answered.
+	if resp := r.call(t, Request{Op: "register", WaitSeconds: 3, SessionID: &id}); resp.Code != CodeNoCredential {
+		t.Fatalf("register --wait 3 answered %+v; want NO_CREDENTIAL without taking the wait, since the lapsed id is revoked before the confirmation is ever sent and the revoke goes through on a sign-in or a machine credential, neither of which this rig holds, so no renew can be sent", resp)
 	}
 }
 
@@ -458,12 +442,10 @@ func TestARegisterWaitAnswersAtOnceWhenALapsedIDBlocksTheConfirmation(t *testing
 // expires that attempt has answered as one that did not reach the broker, the wait ends, and
 // the enroll loop retries on its own schedule, exactly as it does for a 503.
 func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.T) {
-	// The production bound is DefaultFirstConfirmBound, 3 s; this row sets a short one of its
-	// own so it is quick and deterministic. What it pins is the mechanism — a first renew
-	// nothing answers ends the wait at the bound rather than at the client timeout — and not
-	// that number.
-	const bound = 500 * time.Millisecond
-	r := reclaimedIdentityRigNeverAnswering(t, bound)
+	// The bound is the production DefaultFirstConfirmBound, since this row no longer waits it
+	// out: it fires it on the rig's own clock. What it pins is the mechanism — a first renew
+	// nothing answers ends the wait at the bound rather than at the client timeout.
+	r := reclaimedIdentityRigNeverAnswering(t)
 
 	// The register that admits the session and starts its enroll loop, whose confirming renew
 	// the gate then swallows. With no wait asked for it answers at once.
@@ -481,19 +463,17 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.
 
 	// The same session again, asking for the launcher gate's own wait, through the helper that
 	// returns once the call is blocked in registerReply: the register has taken the wait, so
-	// what ends it below is the bound and not a wait never taken. Its client deadline is 20 s,
-	// past the 10 s asked for, so an unbounded first renew is read here as this row's own
-	// failure and not as a client that gave up.
-	started := time.Now()
+	// what ends it below is the bound and not a wait never taken.
 	replies := registerWaitBlocked(t, r, &id)
-	got := <-replies
-	elapsed := time.Since(started)
-	// The floor is half the bound, not the whole of it: the bound runs from the renew leaving
-	// the helper, which is a poll of the loop above before this call starts, so a reply at
-	// exactly the bound can be measured a little short here. Half of it still parts a reply
-	// that waited for the bound from one that waited for nothing (those answer in ~0 s).
-	if got.err != nil || got.resp.Code != CodeNoCredential || elapsed > 5*time.Second || elapsed < bound/2 {
-		t.Fatalf("register --wait 10 answered %+v (%v) after %s; want NO_CREDENTIAL at the bound (%s): well inside the 10 s wait, since a broker that never answers must not hold a launcher's gate for the helper's whole client timeout, and no sooner than the bound, since this register waits for the confirmation in flight", got.resp, got.err, elapsed, bound)
+	// The bound is armed on the renew in flight, and the register's own wait of ten seconds
+	// beside it. Moving the clock to the bound alone ends the first renew; the ten seconds
+	// are left unspent, which is what parts a reply at the bound from one that paid the wait.
+	awaitArmedAt(t, r.clock, r.clock.Now().Add(10*time.Second), "the register's own wait of ten seconds")
+	awaitArmedAt(t, r.clock, r.clock.Now().Add(DefaultFirstConfirmBound), "the first confirming renew's bound, DefaultFirstConfirmBound")
+	r.clock.Advance(DefaultFirstConfirmBound)
+	got := testwait.Receive(t, "register --wait to answer once the first confirming renew hit its bound", replies)
+	if got.err != nil || got.resp.Code != CodeNoCredential {
+		t.Fatalf("register --wait 10 answered %+v (%v); want NO_CREDENTIAL at the bound, since a broker that never answers must not hold a launcher's gate for the helper's whole client timeout", got.resp, got.err)
 	}
 }
 
@@ -508,12 +488,10 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.
 // whole `--wait 10` (scripts/agent-secrets-session) on every launch for as long as the outage
 // lasts, which is what the bound exists to prevent.
 func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRenew(t *testing.T) {
-	// Short, for the same reason as the row above: what this pins is the mechanism, not the
-	// number. The bound may well expire before the register below arrives — the credential
-	// drop takes a round trip of its own — and that is the same answer by the same means: the
-	// first attempt ended at the bound instead of running to the client timeout.
-	const bound = 300 * time.Millisecond
-	r := reclaimedIdentityRigLoggedInNeverAnswering(t, bound)
+	// The bound is the production DefaultFirstConfirmBound, fired on the rig's own clock: what
+	// this pins is the mechanism, not a number. The first attempt ends at the bound instead of
+	// running to the client timeout.
+	r := reclaimedIdentityRigLoggedInNeverAnswering(t)
 
 	// The register that admits the session and starts its enroll loop, whose confirming renew
 	// the gate then swallows. The helper is logged in, so this answers OK with no code.
@@ -544,14 +522,15 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRene
 	}
 
 	// The same session again, asking for the launcher gate's own wait. It reads no credential,
-	// so it waits for the confirmation in flight — the one started under a credential. The call
-	// is made with a 20 s deadline, past the 10 s asked for, so a wait that runs its whole
-	// course is read here as this row's own failure and not as a client that gave up.
-	started := time.Now()
-	resp, err := Call(r.sock, Request{Op: "register", WaitSeconds: 10, SessionID: &id}, 20*time.Second)
-	elapsed := time.Since(started)
-	if err != nil || resp.Code != CodeNoCredential || elapsed > 5*time.Second {
-		t.Fatalf("register --wait 10 answered %+v (%v) after %s; want NO_CREDENTIAL at the bound (%s), well inside the 10 s wait: the renew it waits on began while the helper held a credential, and a bound that is skipped for that renew leaves this register waiting the whole of a launcher gate's wait", resp, err, elapsed, bound)
+	// so it waits for the confirmation in flight — the one started under a credential — and
+	// what ends that is the bound this row fires, never the ten seconds asked for.
+	replies := registerWaitBlocked(t, r, &id)
+	awaitArmedAt(t, r.clock, r.clock.Now().Add(10*time.Second), "the register's own wait of ten seconds")
+	awaitArmedAt(t, r.clock, r.clock.Now().Add(DefaultFirstConfirmBound), "the first confirming renew's bound, DefaultFirstConfirmBound")
+	r.clock.Advance(DefaultFirstConfirmBound)
+	got := testwait.Receive(t, "register --wait to answer once the first confirming renew hit its bound", replies)
+	if got.err != nil || got.resp.Code != CodeNoCredential {
+		t.Fatalf("register --wait 10 answered %+v (%v); want NO_CREDENTIAL at the bound: the renew it waits on began while the helper held a credential, and a bound skipped for that renew leaves this register waiting the whole of a launcher gate's wait", got.resp, got.err)
 	}
 }
 
@@ -574,24 +553,22 @@ func TestANameTakenDuringAnEnrollRetryConfirmsItsInheritedEnrollmentAtOnce(t *te
 		t.Fatalf("register with no name: %+v; want NO_CREDENTIAL", first)
 	}
 
-	// Far enough into that backoff that nothing but the rename's own wake can answer the
-	// register below inside a second. The attempts fall at 0 s, 1 s, 3 s and 7 s — one second
-	// doubling after each failure — so four seconds in sits inside the 4 s between the third
-	// and the fourth with about three of them left to run, past the second this row allows and
-	// a second clear of each end of that window on a loaded host. The delay is the whole of
-	// what the row costs, so it is as short as proving the point leaves it. A mistimed delay
-	// could only weaken the negative control, never make this row flaky: with the rename's
-	// wake in place the answer is immediate wherever in the ladder the register lands.
-	time.Sleep(4 * time.Second)
+	// Into that backoff: the ladder's first two waits (1 s, then 2 s) are each fired at the
+	// moment it is armed for, on the rig's own clock, so the loop is parked on a third (4 s) the
+	// row never fires. Nothing but the rename's own wake can answer the register below, and a
+	// retry woken by a login alone would leave it unanswered rather than merely late. Each wait
+	// is named by its deadline, never by being armed first.
+	fireArmedAt(t, r.clock, r.clock.Now().Add(time.Second), "the enroll retry's first wait")
+	fireArmedAt(t, r.clock, r.clock.Now().Add(2*time.Second), "the enroll retry's second wait")
+	awaitArmedAt(t, r.clock, r.clock.Now().Add(4*time.Second), "the enroll retry's third wait, which the rename's wake cuts short")
 
 	// The name, with the wait the dotfiles launcher gate asks for
 	// (scripts/agent-secrets-session). The rename installs the record's enrollment and wakes
 	// the enroll retry; the woken attempt reads the new generation, ends that retry
 	// (errRenamed), and the pass that follows renews the inherited enrollment straight away.
 	id := testSessionID
-	started := time.Now()
 	resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id})
-	if elapsed := time.Since(started); elapsed > time.Second || !resp.OK || resp.State != "enrolled" || resp.EnrollmentID != "enr-before" {
-		t.Fatalf("register --session-id --wait 10 answered %+v after %s; want OK, enrolled and enr-before within a second: the renew that confirms an inherited enrollment needs no launcher credential, so the rename must start it rather than leave it to the enroll retry's backoff", resp, elapsed)
+	if !resp.OK || resp.State != "enrolled" || resp.EnrollmentID != "enr-before" {
+		t.Fatalf("register --session-id --wait 10 answered %+v; want OK, enrolled and enr-before with the clock standing still: the renew that confirms an inherited enrollment needs no launcher credential, so the rename must start it rather than leave it to the enroll retry's backoff", resp)
 	}
 }

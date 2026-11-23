@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -30,6 +31,9 @@ type rig struct {
 	srv    *Server
 	sock   string
 	cancel context.CancelFunc
+	// clock is the fake the server's own timers run on, for a rig built by newRigOn, and nil
+	// for one whose server keeps the wall clock.
+	clock *clocktest.Fake
 	// served is closed once Serve has returned, so a test that stops the helper (cancel) can
 	// order what Serve does before it returns against what the test reads.
 	served <-chan struct{}
@@ -59,18 +63,35 @@ func newRig(t *testing.T, statePath string) *rig {
 	return newLoggedRig(t, statePath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
 }
 
+// newRigOn is newRig with the server's own timers — a register's wait, the enroll retry's
+// ladder, the first confirming renew's bound, the renew cadence — on a fake of the row's own,
+// so a row fires them rather than waiting them out, and a wait the helper takes that the row
+// never fires is a wait that never ends. The Broker keeps the wall clock: its login and
+// refresh are the fake broker's real HTTP, and the records it signs are verified against it.
+func newRigOn(t *testing.T, statePath string) *rig {
+	t.Helper()
+	fake := clocktest.New(time.Now())
+	r := newLoggedRig(t, statePath, slog.New(slog.NewTextHandler(os.Stderr, nil)), func(s *Server) { s.Clock = fake })
+	r.clock = fake
+	return r
+}
+
 // newLoggedRig is newRig with log as both the Server's and the Broker's logger, as
-// cmd/cipher-helper wires them, so a test can read every line the helper writes.
-func newLoggedRig(t *testing.T, statePath string, log *slog.Logger) *rig {
+// cmd/cipher-helper wires them, so a test can read every line the helper writes. Each tune runs
+// on the Server before it recovers or serves (serveBroker).
+func newLoggedRig(t *testing.T, statePath string, log *slog.Logger, tune ...func(*Server)) *rig {
 	t.Helper()
 	f := newFakeBroker(t)
 	of := operatorFile(t, "ada@example.com")
-	r := serveBroker(t, &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}, statePath, log)
+	r := serveBroker(t, &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: of, MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}, statePath, log, tune...)
 	r.fake = f
 	return r
 }
 
-func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logger) *rig {
+// serveBroker serves broker on a helper Server of its own, with each tune run on the Server
+// before it recovers or serves, so a field a tune sets is set before any goroutine of the server
+// reads it.
+func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logger, tune ...func(*Server)) *rig {
 	t.Helper()
 	r := &rig{}
 	if statePath == "" {
@@ -94,6 +115,9 @@ func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logge
 			return PinPID(int(pid))
 		}
 		return PeerOf(conn)
+	}
+	for _, apply := range tune {
+		apply(r.srv)
 	}
 	r.sock = filepath.Join(shortTempDir(t), "helper.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: r.sock, Net: "unix"})
@@ -159,9 +183,16 @@ func (r *rig) login(t *testing.T) {
 	waitFor(t, func() bool { return r.srv.Broker.LoginStatus().State == "issued" })
 }
 
+// callMargin is how long before the test binary's deadline a call gives up: the 30 s the shared
+// waits leave (testwait), for the failure and the test's cleanups.
+const callMargin = 30 * time.Second
+
+// call sends one request to the helper and answers its reply. The client's deadline is the test
+// binary's less callMargin, as every shared wait's is, so a helper that never answers fails the
+// row where every other wait of it does, and no number here bounds a register that asked to wait.
 func (r *rig) call(t *testing.T, req Request) Response {
 	t.Helper()
-	resp, err := Call(r.sock, req, 10*time.Second)
+	resp, err := Call(r.sock, req, testwait.Remaining(t, callMargin))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,44 +489,64 @@ func TestEnrollRetriesUntilTheBrokerAnswers(t *testing.T) {
 	}
 }
 
+// TestRenewRunsAndARefusedRenewReenrolls: the helper renews a session's enrollment at a third
+// of the lease the broker gave it, and a renew the broker refuses as not live has the helper
+// enroll again, under a new enrollment for the same runtime id. The server's timers and the
+// fake's leases run on the rig's one clock, which only the row moves: each renew comes when the
+// row fires it, and no lease can end under the row, however slow the host is. The only refusal
+// is the one the row makes, by having the fake forget the enrollment.
 func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
-	r := startRig(t, "")
-	// A 150 ms lease: the helper renews at a third of it (floored by MinRenew = 50 ms). Poll
-	// for the first renew instead of guessing how long that takes under load — enrollment
-	// alone has been observed to take longer than a fixed 300 ms wait under a starved
-	// scheduler. Production leases are 900 s → one renew per 300 s.
+	r := newRigOn(t, "")
 	r.fake.mu.Lock()
-	r.fake.lease = 150 * time.Millisecond
+	r.fake.clock = r.clock.Now
+	r.fake.lease = 900 * time.Second // the production lease: one renew per 300 s
 	r.fake.mu.Unlock()
-	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
-	renewDeadline := time.Now().Add(5 * time.Second)
-	var renews int
-	for time.Now().Before(renewDeadline) {
+	r.login(t)
+	if reg := r.call(t, Request{Op: "register"}); !reg.OK {
+		t.Fatalf("register: %+v", reg)
+	}
+	sess := r.srv.Registry.Get(os.Getpid())
+	id := testwait.Until(t, "the session to enroll", func() (string, bool) {
+		id := sess.identity().EnrollmentID
+		return id, id != ""
+	})
+	runtimeID := sess.RuntimeID()
+
+	// fireRenew waits for the one timer on the rig's clock, the renew renewLoop arms for the
+	// lease the fake last gave, which ends 900 s on. It requires that timer at a third of it,
+	// 300 s on, and fires it.
+	fireRenew := func(what string) {
+		t.Helper()
+		want := r.clock.Now().Add(300 * time.Second)
+		if armed := r.clock.AwaitArmed(t, what, 1); len(armed) != 1 || !armed[0].Equal(want) {
+			t.Fatalf("%s: armed %v; want one timer, the renew at %s, a third of the 900 s lease", what, armed, want)
+		}
+		r.clock.Set(want)
+	}
+	renews := func() int {
 		r.fake.mu.Lock()
-		renews = r.fake.renews
-		r.fake.mu.Unlock()
-		if renews > 0 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+		defer r.fake.mu.Unlock()
+		return r.fake.renews
 	}
-	if renews == 0 {
-		t.Fatal("the helper renews the lease")
-	}
-	// The broker forgets the enrollment (lease lapsed during an outage): renew is 401, the
-	// helper enrolls again and gets a new enrollment for the same runtime_id.
+
+	fireRenew("the session's first renew")
+	waitFor(t, func() bool { return renews() == 1 })
+
+	// The broker forgets the enrollment (its lease lapsed during an outage): the next renew is
+	// refused 401 ENROLLMENT_NOT_LIVE, and the helper enrolls again.
 	r.fake.mu.Lock()
-	delete(r.fake.enrolled, reg.EnrollmentID)
-	delete(r.fake.byTP, r.srv.Registry.Get(os.Getpid()).identity().Thumbprint)
+	delete(r.fake.enrolled, id)
+	delete(r.fake.byTP, sess.identity().Thumbprint)
 	r.fake.mu.Unlock()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID; id != "" && id != reg.EnrollmentID {
-			return
-		}
-		time.Sleep(50 * time.Millisecond)
+	fireRenew("the renew after the fake forgot the enrollment")
+	next := testwait.Until(t, "the session to enroll again after its renew was refused", func() (string, bool) {
+		next := sess.identity().EnrollmentID
+		return next, next != "" && next != id
+	})
+	if renews() != 1 || sess.RuntimeID() != runtimeID {
+		t.Fatalf("after the refused renew: %d renews, runtime id %q, enrollment %q; want the one renew, runtime id %q kept, an enrollment other than %q",
+			renews(), sess.RuntimeID(), next, runtimeID, id)
 	}
-	t.Fatal("a refused renew must re-enroll")
 }
 
 func TestRecoverRepinsLiveSessionsWithFreshKeys(t *testing.T) {

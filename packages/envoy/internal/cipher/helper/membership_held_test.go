@@ -153,6 +153,10 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		}
 		t.Cleanup(b.Close)
 		expiries := installExpiryTimers(b)
+		// The trades mint each credential's expiry on the same clock, so the credential the
+		// release brings back expires an hour past the moment the row moved the clock to, not
+		// in the same whole second as the one that lapsed there.
+		f.clock = expiries.fake.Now
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		if err := b.Start(ctx); err != nil {
@@ -188,7 +192,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		if !b.HasCredential() {
 			t.Fatal("the helper dropped its credential at a membership_held trade, before the credential's own expiry")
 		}
-		expiries.fire(t, first, 0)
+		fireArmedAt(t, expiries.fake, first.expiresAt, "the credential's expiry")
 		waitFor(t, func() bool { return !b.HasCredential() })
 		if status := b.LoginStatus(); status.Dropped != dropExpired {
 			t.Fatalf("login-status once the credential lapsed: %+v; want it dropped at its expiry (%q)", status, dropExpired)

@@ -249,6 +249,7 @@ on:
       - 'packages/envoy/internal/cipher/exchange/*'
       - 'packages/envoy/internal/cipher/groups/*'
       - 'packages/envoy/internal/cipher/helper/*'
+      - 'packages/envoy/internal/clock/*'
       - 'packages/envoy/internal/cipher/judge/*'
       - 'packages/envoy/internal/cipher/leasetime/*'
       - 'packages/envoy/internal/cipher/machine/*'

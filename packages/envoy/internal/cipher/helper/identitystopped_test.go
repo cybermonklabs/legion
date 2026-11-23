@@ -12,10 +12,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
 // stoppedLoopRig is a helper in identity mode over a broker whose trade answers what the test
@@ -26,7 +28,9 @@ type stoppedLoopRig struct {
 	helper *Broker
 	served *rig
 	out    *syncBuffer
-	expiry *expiryTimers
+	// clock is the fake the helper's own timers run on (Broker.Clock): the expiry watch's warning
+	// and drop fire when the test moves it, never on the machine's clock.
+	clock  *clocktest.Fake
 	waits  *tradeWaits
 	trades func() int
 	// requests counts every request to the token endpoint, whatever it is answered: a trade the
@@ -96,7 +100,8 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 		Log:          slog.New(slog.NewJSONHandler(r.out, nil)),
 	}
 	t.Cleanup(r.helper.Close)
-	r.expiry = installExpiryTimers(r.helper)
+	r.clock = clocktest.New(time.Now())
+	r.helper.Clock = r.clock
 	ctx, cancel := context.WithCancel(context.Background())
 	r.cancel = cancel
 	t.Cleanup(cancel)
@@ -197,7 +202,7 @@ func TestAStoppedTradeLoopHoldingACredentialPromisesNoRenewal(t *testing.T) {
 		t.Fatalf("login-status's line while the stopped loop holds a credential reads %q; want it to promise no renewal", lapse)
 	}
 
-	r.expiry.fire(t, first, 0)
+	fireArmedAt(t, r.clock, first.expiresAt, "the stopped loop's credential's expiry")
 	waitFor(t, func() bool { return !r.helper.HasCredential() })
 	waitForRecord(t, r.out, dropExpired+"; cleared: no session can enroll under this machine's credential; "+cipherclient.Hint(cipherclient.FailureIdentityStopped))
 	stopped := "no machine credential; " + cipherclient.Hint(cipherclient.FailureIdentityStopped)

@@ -55,6 +55,18 @@ type enrolBroker struct {
 	enrolStatus, revokeStatus     int
 	enrolCode, revokeCode         string
 	next                          int
+	// clock, when set, is the time the credentials a trade mints are named to expire from
+	// (serveTokenExchange), so a row whose helper runs on a fake clock gets expiries on that
+	// clock; unset, the wall clock. It is set before any request reaches the fake.
+	clock func() time.Time
+}
+
+// now is the time the fake's minted credentials expire from: clock's, or the wall clock's.
+func (b *enrolBroker) now() time.Time {
+	if b.clock != nil {
+		return b.clock()
+	}
+	return time.Now()
 }
 
 func newEnrolBroker(t *testing.T) *enrolBroker {

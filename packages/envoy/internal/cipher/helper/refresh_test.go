@@ -284,14 +284,14 @@ func TestARefreshMovesTheExpiryAndSilencesTheOldWatch(t *testing.T) {
 	if err := b.refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	timers.fire(t, old, 0)
+	timers.fire(t, old.expiresAt.Add(-time.Hour), "the warning of the expiry the refresh moved")
 	for ended := range watchEnded {
 		if ended == old {
 			break
 		}
 	}
 	now := b.cred.Load()
-	if now == nil || now.id != old.id || time.Until(now.expiresAt) < 6*24*time.Hour {
+	if now == nil || now.id != old.id || now.expiresAt.Sub(timers.fake.Now()) < 6*24*time.Hour {
 		t.Fatalf("the credential after its first expiry's timer: %+v; want %s held a week out", now, old.id)
 	}
 	for _, rec := range logRecords(t, &out) {

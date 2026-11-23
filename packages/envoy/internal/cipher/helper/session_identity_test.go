@@ -20,6 +20,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
 const testSessionID = "11111111-2222-4333-8444-555555555555"
@@ -414,6 +416,69 @@ func TestANamedSessionThatEndsIsKeptForTheGraceThenRevoked(t *testing.T) {
 	if got := r.revokes(t); !slices.Contains(got, resp.EnrollmentID) {
 		t.Fatalf("the sweep revoked %v, want %s among them", got, resp.EnrollmentID)
 	}
+}
+
+// TestADormantSessionsGraceIsMeasuredOnTheServersClock: a parked session's GoneAt and the
+// sweep's cutoff are read from one clock, the Server's. The row's fake clock stands ten days
+// behind the wall clock, so a GoneAt stamped on the wall clock is ten days later than any cutoff
+// the grace reaches, and a cutoff read on the wall clock is ten days past a GoneAt stamped on the
+// fake: either way the record is swept before its grace ends or kept after it, and the row fails
+// by name. It covers both ways a session is parked: Recover finding its process gone, and retire
+// watching it exit.
+func TestADormantSessionsGraceIsMeasuredOnTheServersClock(t *testing.T) {
+	behind := func() *clocktest.Fake { return clocktest.New(time.Now().Add(-10 * 24 * time.Hour)) }
+	onFake := func(t *testing.T, state string, fake *clocktest.Fake) *rig {
+		t.Helper()
+		r := newLoggedRig(t, state, slog.New(slog.NewTextHandler(os.Stderr, nil)), func(s *Server) { s.Clock = fake })
+		r.clock = fake
+		r.login(t)
+		return r
+	}
+	// sweepAcrossTheGrace moves the fake to a second short of the grace and sweeps, requiring
+	// the record kept, then two seconds on and sweeps, requiring it forgotten and its enrollment
+	// revoked.
+	sweepAcrossTheGrace := func(t *testing.T, r *rig, enrollment string) {
+		t.Helper()
+		r.clock.Advance(r.srv.dormantGrace() - time.Second)
+		r.srv.SweepDormant(context.Background())
+		if _, ok := r.srv.Registry.Dormant(testSessionID); !ok {
+			t.Fatal("the record was swept a second before its grace ends on the server's clock: its GoneAt or the sweep's cutoff read another clock")
+		}
+		r.clock.Advance(2 * time.Second)
+		r.srv.SweepDormant(context.Background())
+		if _, ok := r.srv.Registry.Dormant(testSessionID); ok {
+			t.Fatal("the record was kept a second past its grace on the server's clock: its GoneAt or the sweep's cutoff read another clock")
+		}
+		waitFor(t, func() bool { return slices.Contains(r.revokes(t), enrollment) })
+	}
+	t.Run("recovered", func(t *testing.T) {
+		state := filepath.Join(t.TempDir(), "sessions.json")
+		gone := sleeper(t)
+		gonePID := gone.Process.Pid
+		_ = gone.Process.Kill()
+		_, _ = gone.Process.Wait()
+		recordNamed(t, state, gonePID, 1, testSessionID, "enr-before")
+		r := onFake(t, state, behind())
+		if _, ok := r.srv.Registry.Dormant(testSessionID); !ok {
+			t.Fatal("Recover did not park the record of a process that is gone")
+		}
+		sweepAcrossTheGrace(t, r, "enr-before")
+	})
+	t.Run("retired", func(t *testing.T) {
+		r := onFake(t, "", behind())
+		child := sleeper(t)
+		r.callerPID.Store(int64(child.Process.Pid))
+		id := testSessionID
+		resp := r.call(t, Request{Op: "register", WaitSeconds: 10, SessionID: &id})
+		r.callerPID.Store(0)
+		if !resp.OK || resp.EnrollmentID == "" {
+			t.Fatalf("register: %+v", resp)
+		}
+		_ = child.Process.Kill()
+		_, _ = child.Process.Wait()
+		waitFor(t, func() bool { _, ok := r.srv.Registry.Dormant(testSessionID); return ok })
+		sweepAcrossTheGrace(t, r, resp.EnrollmentID)
+	})
 }
 
 // TestTheRecordsFileIsOwnerOnlyUnderAnOwnerOnlyDirectory: it holds a named session's signing

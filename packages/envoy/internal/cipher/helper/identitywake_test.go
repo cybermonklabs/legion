@@ -47,7 +47,7 @@ func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbp
 		f.mu.Unlock()
 		writeJSON(w, 200, map[string]any{
 			"acc" + "ess_token": "access-token", "token_type": "DPoP", "expires_in": 3600,
-			"credential_id": id, "credential_expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			"credential_id": id, "credential_expires_at": f.now().Add(time.Hour).UTC().Format(time.RFC3339),
 		})
 	})
 	return func() int {
