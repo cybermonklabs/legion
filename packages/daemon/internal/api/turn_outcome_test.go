@@ -22,9 +22,10 @@ func (h *harness) turnOutcome(req claim.TurnOutcomeRequest) (*httptest.ResponseR
 
 // A session that holds its registration's secret reports each turn it ends on the claim's own
 // route, and the answer says what the daemon derived: the run of refused turns the reports now
-// end with, and whether this one failed the claim. Three refusals in a row fail it, with the
-// cause naming the provider and its last message.
-func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsTheClaim(t *testing.T) {
+// end with, counted up to the launch failure limit. A run of refusals fails no claim, however long
+// it is (dispatch://INFRA-4508), so the answer's `failed` is false at the limit and past it, and
+// the claim keeps the provider's words for the newest refusal.
+func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsNoClaim(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
 	registered := h.registered(boot, "ses_architect")
@@ -45,14 +46,18 @@ func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsTheClaim(t *testin
 		t.Fatalf("the second refusal answered %+v, want a run of 2", answer)
 	}
 
-	recorder, answer := report(4, claim.TurnRefused, "the provider refused the request")
-	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true}) {
-		t.Fatalf("the third refusal = %d %+v, want 200 with a run of 3 that failed the claim", recorder.Code, answer)
+	for sequence := uint64(4); sequence <= 6; sequence++ {
+		recorder, answer := report(sequence, claim.TurnRefused, "the provider refused the request")
+		if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 3}) {
+			t.Fatalf("refusal %d = %d %+v, want 200 with the run at the limit of 3 and no failure", sequence-1, recorder.Code, answer)
+		}
 	}
 	stored := h.stored(token)
-	want := "the provider refused 3 turns in a row: the provider refused the request"
-	if stored.State != supervise.StateFailed || stored.Failure != want {
-		t.Fatalf("the claim is %s with failure %q, want failed with %q", stored.State, stored.Failure, want)
+	if stored.State == supervise.StateFailed || stored.Failure != "" {
+		t.Fatalf("the claim is %s with failure %q, want it live: a run of refused turns fails no claim", stored.State, stored.Failure)
+	}
+	if got := stored.LastRefusal(); got != "the provider refused the request" {
+		t.Fatalf("the claim keeps %q as the newest refusal, want the provider's words", got)
 	}
 }
 

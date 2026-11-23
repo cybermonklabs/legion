@@ -484,10 +484,10 @@ test("a failed delivery arms nothing once a turn has started meanwhile", async (
 
 // The whole of dispatch://INFRA-264: every turn of that implementer was refused by the provider,
 // and every reminder it was given at once bought another refused turn. So a refused turn earns no
-// continuation; but the daemon's task for the phase ended with that turn, and below
-// `launch_failure_limit` nothing fails the claim and nothing hands the task out again, so one
-// delayed reminder follows it rather than silence (the architect's decision, review round 2).
-test("a refused turn below the limit reminds once, after the delay and not before", async () => {
+// continuation; but the daemon's task for the phase ended with that turn, and a refused turn fails
+// no claim (dispatch://INFRA-4508), so one delayed reminder follows it rather than silence (the
+// architect's decision, review round 2).
+test("a refused turn reminds once, after the delay and not before", async () => {
   const { reminder, timers, sent, entries } = rig({});
   const recorded = entries.length;
 
@@ -513,11 +513,10 @@ test("a refused turn below the limit reminds once, after the delay and not befor
   expect(timers).toHaveLength(2);
 });
 
-// At `launch_failure_limit` the daemon fails the claim, which is its own word that this session
-// is finished: the retry runs in a session of its own, in which the phase's task is given again.
-// The timer the last refused turn armed still fires, and its record check drops the reminder, so
-// nothing is written into a session nobody can act on.
-test("a refused turn at the limit, whose claim the daemon failed, reminds nothing", async () => {
+// A provider error that cannot clear fails the claim, which is the daemon's own word that this
+// session's work is the architect's to decide. The timer the refused turn armed still fires, and
+// its record check drops the reminder, so nothing is written into a session nobody can act on.
+test("a refused turn whose claim the daemon failed reminds nothing", async () => {
   const { reminder, timers, sent } = rig({ record: claimFailed });
 
   expect(

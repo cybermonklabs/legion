@@ -155,6 +155,8 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	case response.StatusCode/100 != 2:
 		r.log.Printf("the daemon refused the outcome of turn %d (%s): %s", request.Sequence, request.Outcome, answer)
 	case decoded.Failed:
+		// Only a daemon from before dispatch://INFRA-4508 answers this: a run of refused turns
+		// fails no claim now (claim.TurnOutcomeResponse).
 		r.log.Printf("the daemon failed this claim: its provider refused %d turns in a row", decoded.RefusedRun)
 	case decoded.RefusedRun > 0:
 		r.log.Printf("reported turn %d as %s; the daemon counts %d refused turns in a row", request.Sequence, request.Outcome, decoded.RefusedRun)

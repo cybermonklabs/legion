@@ -354,8 +354,9 @@ test("a settle that says what it waits on buys the quiet wait, and is reminded o
 // provider would refuse that one the same way, as it did for dispatch://INFRA-264's implementer.
 // One timer is armed all the same, because the task that refused turn carried ended with it and
 // nothing else would wake this worker: a single transient refusal would otherwise leave the issue
-// idle. What stops the reminding of a session the provider refuses for ever is the daemon failing
-// the claim at `launch_failure_limit`, which the test below this one holds.
+// idle. A run of refused turns fails no claim (dispatch://INFRA-4508); the daemon fails one for a
+// provider error that cannot clear, and the test below this one holds that a failed claim's
+// session is reminded of nothing.
 test("a turn that ended on an API error carries no continuation, and is woken once by its timer", async () => {
   const { endpoint, record, inbox, close } = await harness({
     record: recorded("open", 0, { lastMessage: "I pushed the branch." }),

@@ -1806,9 +1806,10 @@ func TestEnumeratedFieldsGolden(t *testing.T) {
 }
 
 // The turn outcome's answer is what a producer's report of one turn comes back as: the run of
-// refused turns the claim's reports now end with, and whether this report took that run to the
-// launch failure limit and failed the claim. It is a golden because `@legion/contracts` reads it
-// (LegionTurnOutcomeResponse), and every answer schema that module exports is held to one.
+// refused turns the claim's reports now end with, and `failed`, which is always false since a run
+// of refused turns fails no claim (claim.TurnOutcomeResponse). It is a golden because
+// `@legion/contracts` reads it (LegionTurnOutcomeResponse), and every answer schema that module
+// exports is held to one.
 func TestTurnOutcomeResponseGolden(t *testing.T) {
-	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true})
+	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3})
 }

@@ -177,10 +177,15 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 }
 
 // TurnOutcomeResponse is what the daemon made of the report: the run of refused turns the claim's
-// reports now end with (RefusedRun), and whether this report took that run to the launch failure
-// limit and failed the claim. A producer acts on neither — its turn is over — but a pane's log
-// saying the daemon has counted three refusals in a row is the one place an operator sees the
-// count that failed the claim being made.
+// reports now end with (RefusedRun), counted up to the launch failure limit, at which a retry of
+// the claim starts a new session. A producer acts on neither field — its turn is over — but a
+// pane's log saying the daemon has counted three refusals in a row is the one place an operator
+// sees the count being made.
+//
+// Failed is always false. A daemon from before dispatch://INFRA-4508 set it when the report took
+// the run to the launch failure limit and failed the claim; a run of refused turns fails no claim
+// now, and the result of the prompt the turn ran decides what its provider error does. The field
+// stays so that a plugin already deployed, whose reader requires it, still reads the answer.
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`

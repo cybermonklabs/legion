@@ -1463,9 +1463,11 @@ export const LegionTurnOutcomeRequest = z.union([
 export type LegionTurnOutcomeRequestBody = z.output<typeof LegionTurnOutcomeRequest>;
 
 /** `claim.TurnOutcomeResponse`, the answer to a reported turn: `refusedRun` is the run of refused
- * turns the claim's reports now end with, and `failed` whether this report took that run to
- * `launch_failure_limit` and failed the claim. The producer acts on neither — its turn is over —
- * and logs them, which is where an operator sees the count that failed a claim being made. */
+ * turns the claim's reports now end with, counted up to `launch_failure_limit`, at which a retry of
+ * the claim starts a new session. `failed` is always false: a run of refused turns fails no claim
+ * (dispatch://INFRA-4508), and only a daemon from before that change sets it. The field stays so
+ * that a plugin already deployed still reads the answer. The producer acts on neither — its turn
+ * is over — and logs the run, which is where an operator sees the count being made. */
 export const LegionTurnOutcomeResponse = z.object({
   refusedRun: z.number().int().nonnegative(),
   failed: z.boolean(),

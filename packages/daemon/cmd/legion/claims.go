@@ -451,9 +451,10 @@ func printCompaction(w io.Writer, answer []byte) error {
 //
 // --fresh-session starts the claim in a new session rather than resuming the recorded one, which
 // is what a claim whose provider refused its session needs: resuming it would be refused again.
-// The daemon starts one of its own accord for a claim the provider refused out of its budget,
-// whoever retried it, so the flag is for every other reason an operator has to leave a session
-// behind — an agent wedged in a way no budget counts among them.
+// The daemon starts one of its own accord for a claim whose provider refused the recorded
+// session's last launch_failure_limit turns in a row, whoever retried it, so the flag is for every
+// other reason an operator has to leave a session behind — an agent wedged in a way no budget
+// counts among them.
 func claimsRetry(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
 	failed := c.flags.Bool("failed", false, "retry every claim the daemon holds failed")

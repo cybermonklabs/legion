@@ -495,13 +495,12 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // stands, and this settle returns no continuation, because the host would turn it into
         // one more turn at once and the provider would refuse that one too. One timer is armed
         // all the same: the task the refused turn carried ended with it, the daemon counts the
-        // turn rather than failing the claim while the run is short of `launch_failure_limit`,
-        // and nothing else would wake this worker, so a single transient refusal would leave its
-        // issue idle. By the time the timer fires the daemon has had every refusal of the run
-        // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
-        // and the record check the timer runs drops the reminder, which is what stops the
-        // reminding of a session the provider refuses for ever — the whole of
-        // dispatch://INFRA-264.
+        // turn and fails no claim for it (dispatch://INFRA-4508), and nothing else would wake
+        // this worker, so a single transient refusal would leave its issue idle. The record check
+        // the timer runs drops the reminder once the daemon has failed the claim, as it does for
+        // a provider error that cannot clear. A session the provider refuses for ever, the whole
+        // of dispatch://INFRA-264, is the project controller's to act on: the daemon tells it at
+        // six turns in a row that ended in a provider error.
         advance(turn);
         continued = false;
         armReminder(reminderText(""), deps.limits.reminderMs);

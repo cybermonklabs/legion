@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A refused turn end the host goes on from itself, with a retry or the next model of its fallback
+  chain (`willContinue` without `awaitingAsyncWork`), is no longer reported to the daemon as a
+  refused turn, and it takes no number of the turn-outcome sequence. Each step of a fallback chain
+  counted as one refused turn of the claim's run. The end of the attempt that settles the turn is
+  reported, as before, and so is an answered end the host goes on from and an end that waits only
+  on a background job's result.
+time: 2026-11-23T20:03:51.993913529Z
+custom:
+  Issue: INFRA-4508

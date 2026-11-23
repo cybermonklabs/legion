@@ -144,7 +144,7 @@ test("a session holding no claim reports nothing and spends no sequence", async 
 });
 
 // A refusal the daemon itself gives will not pass on a retry, so the turn goes uncounted and the
-// pane says so once: a report dropped in silence is a claim that never fails.
+// pane says so once: a report dropped in silence is a run of refusals that comes up short.
 test("a report the daemon refuses is warned about, and the next turn still reports", async () => {
   const { report, posted, warned } = rig({
     answer: (attempt) =>
@@ -158,4 +158,44 @@ test("a report the daemon refuses is warned about, and the next turn still repor
 
   expect(warned).toEqual(["legion: a turn's outcome did not reach the daemon"]);
   expect(posted.map((body) => body.sequence)).toEqual([1, 2]);
+});
+
+/** One step of Oh My Pi's own retry or model fallback: a refusal it goes on from. */
+const step: AgentEndEvent = {
+  willContinue: true,
+  messages: [{ role: "assistant", stopReason: "error", errorMessage: "429 rate limit" }],
+};
+
+// What INFRA-764's workers did on 2026-11-23
+// (dispatch://INFRA-4508/comment/fd89b8eb-d326-46d6-82b6-6ae84fe76f67): at each step of its
+// fallback chain Oh My Pi ends the run with `willContinue`, the refused attempt's message last, and
+// goes on to the next model. The steps and the end that settles them are one turn.
+test("a refusal Oh My Pi goes on from reports nothing and spends no sequence", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, step);
+  await report(SESSION, step);
+  await report(SESSION, { messages: [{ role: "assistant", stopReason: "error" }] });
+
+  expect(posted.map((body) => [body.sequence, body.outcome])).toEqual([[1, "refused"]]);
+});
+
+// The host also goes on from an answered turn, as when the phase reminder continues it: that turn
+// ended clean, and it ends the run of refusals before it.
+test("an answered turn the host goes on from is reported clean", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, { ...clean, willContinue: true });
+
+  expect(posted.map((body) => [body.sequence, body.outcome])).toEqual([[1, "clean"]]);
+});
+
+// A turn that ends waiting only on a background job's result has settled: the pane is idle until
+// the result starts the next run.
+test("a refusal that waits only on a background job's result is reported", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, { ...step, awaitingAsyncWork: true });
+
+  expect(posted.map((body) => [body.sequence, body.outcome])).toEqual([[1, "refused"]]);
 });

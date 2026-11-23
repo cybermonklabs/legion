@@ -3580,10 +3580,10 @@ func deathCause(observation runtime.Observation) string {
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded
 // for it, why it was left behind, and when. Why is the sentence whoever abandoned it wrote — the
-// failure of a claim the provider refused out of its budget, the reason an operator's retry gave,
-// the runtime's account of a session no store holds — and it is what the agent that replaces the
-// session is told, so it reads the provider's own words for the refusal, the context size in them
-// included, rather than a sentence the daemon invented.
+// failure of a retried claim whose provider refused the session's last turns, the reason an
+// operator's retry gave, the runtime's account of a session no store holds — and it is what the
+// agent that replaces the session is told, so it reads the daemon's own record of what happened
+// rather than a sentence invented for the prompt.
 type AbandonedSession struct {
 	Session     string    `json:"session"`
 	SessionFile string    `json:"sessionFile,omitempty"`

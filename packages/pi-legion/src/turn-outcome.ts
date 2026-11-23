@@ -7,8 +7,10 @@ import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
 /**
  * The Oh My Pi half of the turn-outcome report (INFRA-714). Every turn this pane ends — one the
  * model answered, and one the provider refused — is reported to the daemon over HTTP, under a
- * sequence this plugin counts itself, so the daemon can fail a claim whose provider refuses turn
- * after turn instead of leaving it to be reminded for ever (dispatch://INFRA-264).
+ * sequence this plugin counts itself. The daemon derives the claim's run of refused turns from
+ * the reports, and the run fails no claim (dispatch://INFRA-4508): it decides only whether a retry
+ * of the claim starts a new session rather than resuming the one every recent turn of which was
+ * refused (`freshSession`, `packages/daemon/internal/supervise/turnoutcome.go`).
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
@@ -56,6 +58,22 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
     report: async (sessionID, event) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return;
+      const refusal = assistantRefusal(
+        event.messages?.findLast((message) => message.role === "assistant")
+      );
+      // A refusal Oh My Pi goes on from ends no turn: the host has already scheduled a retry or the
+      // next model of its fallback chain (`willContinue`), and the end of that attempt is the
+      // turn's end, reported in its turn. Counted, each fallback step was one more refused turn of
+      // the run (dispatch://INFRA-4508). An end that waits only on a background job's result
+      // (`awaitingAsyncWork`) has settled, as src/model-fallback.ts reads it, so it is reported; so
+      // is an answered end the host goes on from, which ends the run of refusals before it.
+      if (
+        refusal !== undefined &&
+        event.willContinue === true &&
+        event.awaitingAsyncWork !== true
+      ) {
+        return;
+      }
       // Taken before the first await, so two turns can never take the same number nor take them
       // out of the order they ended in. A generation this producer has not counted within starts
       // the count again, as a fresh launch's does.
@@ -67,9 +85,6 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       // The number this report owns: `sequence` moves on as the next turn ends, and the lines
       // below are written after an await.
       const mine = sequence;
-      const refusal = assistantRefusal(
-        event.messages?.findLast((message) => message.role === "assistant")
-      );
       const request = {
         claimToken: claim.claimToken,
         sessionId: claim.sessionID,
@@ -83,9 +98,9 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         // A send that fails on nothing but a restarting daemon is retried until it lands: the
         // daemon stores one outcome per `(generation, sequence)`, so a repeat of this report
         // writes the same cell and changes no count, and a turn that goes unreported is a turn
-        // the daemon counts neither way — a refusal silently dropped is a claim that never
-        // fails. A refusal the daemon itself gives (a 4xx) will not pass on retry: it is warned
-        // about once and the turn goes uncounted, since nothing this pane can do fixes it.
+        // the daemon counts neither way — a refusal silently dropped is a run of refusals that
+        // comes up short. A refusal the daemon itself gives (a 4xx) will not pass on retry: it is
+        // warned about once and the turn goes uncounted, since nothing this pane can do fixes it.
         const outcome = await retryWhileDaemonRestarts("claims/turn-outcome", () =>
           deps.daemon().turnOutcome(request)
         );
