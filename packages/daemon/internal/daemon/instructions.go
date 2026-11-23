@@ -82,8 +82,7 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 			contents: reads.instructions,
 			read:     func() ([]byte, error) { return config.ReadDeploymentInstructions(source) },
 			write: func(contents []byte) error {
-				_, err := config.WriteDeploymentInstructions(contents, cfg.StateDir, cfg.Project)
-				return err
+				return config.WriteDeploymentInstructions(contents, cfg.StateDir, cfg.Project)
 			},
 		}); err != nil {
 			return nil, "", err

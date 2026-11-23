@@ -216,13 +216,17 @@ prompt it launched with until then.
 - **The daemon logs `legion daemon launches with the instructions it last read: its copy could not
   be replaced` at ERROR.** The daemon read the edit but could not write its own copy under the state
   directory, which the prompt is composed from (`error` names the path and the cause). Launches go
-  on carrying the old text. Give the daemon's user write access to the state directory, or remove
-  what stands at the copy's path; the next launch writes the copy and logs the edit.
-- **The daemon logs neither line, and the edit is still not in a new launch's prompt.** Under
-  Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap mounted as
-  a directory, but never a file mounted by `subPath`, so the daemon goes on reading the text of its
-  pod's start. The kubelet also takes up to its sync period, about a minute, to update a mounted
-  ConfigMap.
+  on carrying the old text. Never delete the copy itself: while the write still fails, every launch
+  that reads it, the controller's included, then fails to compose its prompt. Fix what `error`
+  names: `permission denied`, give the daemon's user write access to the copy's directory; `is a
+  directory` or `file exists`, remove the directory that stands at the copy's path; `no space left
+  on device` or `read-only file system`, free space on, or remount, the state directory's volume.
+  The next launch writes the copy and logs the edit.
+- **The daemon logs none of these lines, and the edit is still not in a new launch's prompt.**
+  Under Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap
+  mounted as a directory, but never a file mounted by `subPath`, so the daemon goes on reading the
+  text of its pod's start. The kubelet also takes up to its sync period, about a minute, to update
+  a mounted ConfigMap.
 
 The daemon logs each refusal once, so a launch with no new line carries the same text as the last.
 

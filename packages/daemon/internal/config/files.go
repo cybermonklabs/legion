@@ -163,24 +163,28 @@ func MaterializeDeploymentInstructions(instructionsPath, stateDir, legionID stri
 	if err != nil {
 		return "", err
 	}
-	return WriteDeploymentInstructions(contents, stateDir, legionID)
+	if err := WriteDeploymentInstructions(contents, stateDir, legionID); err != nil {
+		return "", err
+	}
+	return DeploymentInstructionsCopy(stateDir), nil
 }
 
 // WriteDeploymentInstructions is MaterializeDeploymentInstructions' write, of contents
-// ReadDeploymentInstructions answered: boot reads the file with every other refusal before it
-// writes anything, and writes this copy before the first pane opens; the daemon writes it again
-// whenever a launch reads an edited file. The copy is replaced whole, so a launch composing its
-// prompt while it is written reads the old copy or the new one, never half of one.
-func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) (string, error) {
+// ReadDeploymentInstructions answered, to DeploymentInstructionsCopy: boot reads the file with
+// every other refusal before it writes anything, and writes this copy before the first pane
+// opens; the daemon writes it again whenever a launch reads an edited file. The copy is replaced
+// whole, so a launch composing its prompt while it is written reads the old copy or the new one,
+// never half of one.
+func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)
+		return fmt.Errorf("create state directory %s: %w", stateDir, err)
 	}
 	target := DeploymentInstructionsCopy(stateDir)
 	body := fmt.Sprintf("# Deployment instructions (%s)\n\n%s", legionID, contents)
 	if err := writeAtomically(target, body); err != nil {
-		return "", fmt.Errorf("write %s: %w", target, err)
+		return fmt.Errorf("write %s: %w", target, err)
 	}
-	return target, nil
+	return nil
 }
 
 // ReadMemoryInstructions is the project's memory instructions file

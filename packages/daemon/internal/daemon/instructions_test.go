@@ -285,12 +285,13 @@ func TestAnInstructionsFileThatNoLongerReadsLaunchesWithTheTextLastRead(t *testi
 	}
 	warned := func(want int, refusal string) {
 		t.Helper()
-		lines := warnLinesNaming(logs.String(), instructionsKeptLine)
+		lines := loggedLines(t, logs.String(), instructionsKeptLine)
 		if len(lines) != want {
-			t.Fatalf("WARN lines saying %q = %d, want %d:\n%s", instructionsKeptLine, len(lines), want, strings.Join(lines, "\n"))
+			t.Fatalf("lines saying %q = %d, want %d: %v", instructionsKeptLine, len(lines), want, lines)
 		}
-		if last := lines[len(lines)-1]; !strings.Contains(last, `"file":"`+cfg.InstructionsPath+`"`) || !strings.Contains(last, refusal) {
-			t.Errorf("the last WARN line %s names no file %s and no refusal %q", last, cfg.InstructionsPath, refusal)
+		last := lines[len(lines)-1]
+		if cause, _ := last["error"].(string); last["level"] != "WARN" || last["file"] != cfg.InstructionsPath || !strings.Contains(cause, refusal) {
+			t.Errorf("the last line saying %q is %v, want one at WARN naming %s and the refusal %q", instructionsKeptLine, last, cfg.InstructionsPath, refusal)
 		}
 	}
 
