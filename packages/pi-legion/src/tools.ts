@@ -273,7 +273,7 @@ function stateSummary(state: LegionState): string {
     if (issue.holdReason !== undefined) lines.push(`  hold ${issue.holdReason}`);
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
-      // A gate a version that proposes nothing opened names that version too (contract 227).
+      // A gate a version that proposes nothing opened names that version too (contract 232).
       const exempt = typeof gate.exemptVersion === "number" ? ` exempt ${gate.exemptVersion}` : "";
       lines.push(
         `  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}${exempt}`

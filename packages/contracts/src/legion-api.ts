@@ -469,7 +469,7 @@ const legionMergeWaitView = z.object({
 
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * `exemptVersion` until a version of a spec-source root's change request that proposes nothing
- * opens it with no person (contract 227). `rule` is the rule the gate started under, `approval`
+ * opens it with no person (contract 232). `rule` is the rule the gate started under, `approval`
  * or `change_request`. The gate is open exactly when either version equals `currentVersion`. */
 const legionGateView = z.object({
   artifactId: nonEmptyString.optional(),
@@ -488,11 +488,11 @@ const legionDesignStep = z.enum(DESIGN_GATE_STEPS);
  * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for
  * the step and that document's current version, absent until one is registered; `approvedVersion`
  * is the version a person approved, null until one does, and `exemptVersion` the version that
- * opened it with no person, null for none (contract 227). `status` is where the step stands:
+ * opened it with no person, null for none (contract 232). `status` is where the step stands:
  * `unregistered` (the deployment gates it and the issue holds no record of it, so it holds the
  * tree's work), `waiting` (registered, and no person has reviewed its current version),
  * `approved` (a person approved its current version), `exempt` (its current version proposes
- * nothing, so it opened with no person; contract 227) or `changes_requested` (its reviewer asked
+ * nothing, so it opened with no person; contract 232) or `changes_requested` (its reviewer asked
  * for changes at its current version, with `changesReason` the reason they gave; absent under
  * every other status). `approved` and `exempt` let the work past the step. `step` reads
  * GATED_STEPS, the gone `decisions` included: the daemon sends one of DESIGN_GATE_STEPS, and its

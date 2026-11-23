@@ -659,10 +659,10 @@ const (
 )
 
 // specGateContract is the daemon contract that added the gate's exemption and rule to the state
-// (version.go's 227): `designGate.exemptVersion` and `designGate.rule`, each gated step's
+// (version.go's 232): `designGate.exemptVersion` and `designGate.rule`, each gated step's
 // `exemptVersion`, and the gated step status `exempt`. A plugin before it reads the gated step's
 // `status` with an enumeration that does not name `exempt`, and one before 49 refuses the keys.
-const specGateContract = 227
+const specGateContract = 232
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
 // (version.go's 49): a plugin before it reads the state with a strict schema that knows none of

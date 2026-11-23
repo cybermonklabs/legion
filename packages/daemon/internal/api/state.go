@@ -1324,7 +1324,7 @@ func (p PullRequestView) MarshalJSON() ([]byte, error) {
 
 // GateView is the design gate: the spec document, the version Dispatch currently holds, the
 // version a human approved, the version that opened the gate with no person, and the rule the
-// gate started under (`approval` or `change_request`, record.GateRule.Word; contract 227).
+// gate started under (`approval` or `change_request`, record.GateRule.Word; contract 232).
 // ApprovedVersion is nil until someone approves one, and ExemptVersion until a version Dispatch
 // read as proposing nothing opens the gate under the rule of a change request; the gate is open
 // exactly when either equals CurrentVersion, the second only under that rule.
@@ -1379,7 +1379,7 @@ const (
 	// the tree's work past the step (classify.DesignGateOpen).
 	GatedStepApproved GatedStepStatus = "approved"
 	// GatedStepExempt is a step open by exemption: under the rule of a change request, its current
-	// version proposes nothing, so it opened with no person (record.GateExempt, R23; contract 227).
+	// version proposes nothing, so it opened with no person (record.GateExempt, R23; contract 232).
 	// It lets the tree's work past the step too, and its tree lands nothing until the ending
 	// condition of its change request holds (D10).
 	GatedStepExempt GatedStepStatus = "exempt"
