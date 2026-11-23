@@ -128,7 +128,10 @@ func (o sessionDeliveryOutcome) relayed() bool {
 
 // sessionRelay is what the relay of session consumers hears from registrations.
 type sessionRelay interface {
-	// registered reports a registration of sessionID that recorded consumer delivery on its entry.
+	// registered reports a registration of sessionID that recorded consumer delivery on its entry,
+	// or a role claim refresh through this listener that recorded the session's admission. Either
+	// resumes a relay run that paused and starts one that ended for want of an admission; a claim
+	// passes epochChanged false and heard 0.
 	// epochChanged is set when the entry it replaced did not hold consumer delivery with the same
 	// epoch: the plugin connected anew, so the relay restarts the session's consumer at its ack
 	// floor before it relays again, unless the relay's run restarted the consumer after heard,

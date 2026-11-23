@@ -27,7 +27,7 @@ import (
 func TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission(t *testing.T) {
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const sessionID, role = "ses_claim_resume", "legion-priv-priv-31-tester"
-	const held = "edge relay holds the session's messages in its consumer until the session registers through this listener"
+	const held = "edge relay holds the session's messages in its consumer until the session registers or claims a role through this listener"
 	const stopped = "session relay stopped"
 	token := rig.personToken(sessionID, "PRIV")
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
@@ -57,11 +57,19 @@ func TestAnEdgeRoleClaimResumesARelayRunThatEndedForWantOfAnAdmission(t *testing
 		t.Fatalf("UNKNOWN: the claim recorded no admission, so the test does not reach the ended run")
 	}
 	second, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
-	select {
-	case frame := <-standIn.frames:
-		t.Logf("after the claim: frame %s reached the session (want %s)", frame.item.EventID, second.EventID)
-		return
-	case <-time.After(30 * time.Second):
+	deadline := time.After(30 * time.Second)
+wait:
+	for {
+		select {
+		case frame := <-standIn.frames:
+			if frame.item.EventID == second.EventID {
+				t.Logf("after the claim: the session's message %s reached it", second.EventID)
+				return
+			}
+			t.Logf("after the claim: an earlier frame %s reached the session (want %s); still waiting", frame.item.EventID, second.EventID)
+		case <-deadline:
+			break wait
+		}
 	}
 	t.Errorf("after a role claim through the replica, the session's message %s reached it in no 30 s: the ended run was not resumed", second.EventID)
 	requireStatus(t, rig.subscribe(t, token, sessionID), http.StatusOK, "the control registration")

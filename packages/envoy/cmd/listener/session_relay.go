@@ -154,7 +154,8 @@ type relayEvent uint8
 const (
 	// relayCheck: the session's entry changed; start or stop its relay to match it.
 	relayCheck relayEvent = 0
-	// relayResume: the session registered; a relay that paused starts again.
+	// relayResume: the session registered or claimed a role through this listener; a relay that
+	// paused or ended starts again.
 	relayResume relayEvent = 1 << iota
 	// relayRestart: the session registered with a new epoch; its relay restarts at the ack floor.
 	relayRestart
@@ -744,10 +745,10 @@ func (m *sessionRelays) loop() {
 }
 
 // apply makes sessionID's relay match its entry and notice: started when the session is this
-// listener's to relay, stopped when it is not, started again when it registered and the run
-// ended or is returning on its own (relayRun.wake), restarted at the ack floor on a new epoch
-// registered after the run's last restart (relayRun.restartedBefore), and, for a run waiting out a
-// pause or a retry, woken by the registration so it restarts at once.
+// listener's to relay, stopped when it is not, started again when it registered or claimed a role
+// here and the run ended or is returning on its own (relayRun.wake), restarted at the ack floor on
+// a new epoch registered after the run's last restart (relayRun.restartedBefore), and, for a run
+// waiting out a pause or a retry, woken by that resume so it restarts at once.
 func (m *sessionRelays) apply(sessionID string, notice relayNotice) {
 	event := notice.event
 	run := m.relays[sessionID]
@@ -871,7 +872,8 @@ func (m *sessionRelays) start(sessionID string, previous <-chan struct{}) {
 // relay runs one session's relay until it is stopped, restarting at the ack floor after a failed
 // call or pull, with a wait that doubles from relayRetryFirst to relayRetryMax, and after a pause
 // (relayPaused), with a wait that doubles from pauseFirst to pauseMax, both cut short by the
-// session's next registration. Both only while the session is still this listener's.
+// session's next registration, or a role claim it makes through this listener. Both only while
+// the session is still this listener's.
 //
 // The pause is logged once an episode: the line is written for the first pause since the session
 // last answered a frame, not for each probe that found it silent again.
@@ -1086,10 +1088,11 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 	// listener since it started - one this replica's restart forgot, one whose record names this
 	// machine and was written by neither here, or one whose admission was forgotten after its entry
 	// left the cache (pruneAdmissions) - is relayed nothing, and its messages wait in its consumer
-	// until it registers through this listener, which starts the relay again (apply).
+	// until it registers or claims a role through this listener, which records the admission and
+	// starts the relay again (apply).
 	if m.repositories != nil {
 		if _, admitted := m.delivery.admissions.of(sessionID); !admitted {
-			m.logger.Info("edge relay holds the session's messages in its consumer until the session registers through this listener",
+			m.logger.Info("edge relay holds the session's messages in its consumer until the session registers or claims a role through this listener",
 				slog.String("session_id", sessionID))
 			return relayEnded
 		}
