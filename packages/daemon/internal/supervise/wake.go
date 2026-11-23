@@ -170,15 +170,15 @@ type wake struct {
 	// stop for the pause (pauseStopDue) or by its let-out into the pacing once that pause has
 	// ended (letOutHeldLaunch), which gives it at and reserved.
 	pause int64
-	// park is the start this launch waits for at its issue pod's gate (askPod), nil for a wake the
-	// pacing or the pause's gate holds. Such a launch has let its process go, stopped it and
-	// written its claim launching already (launchNow, launchTries, askPod), took no token and has
-	// no moment to run: it waits on the machine with no timer of the clock's, is published as no
-	// waiting wake (publish), is no wake of the pacing's for a request that does not wait to drop
-	// (dropWakeFor), and leaves by its grant (TimerPodStart, podStartDue) or by whatever drops the
-	// wake, which takes its start out of the gate for what dropped it (dropPodPark: suspended,
-	// retire, letGo, waitOnMachine).
-	park *podPark
+	// park is the hold of the start this launch waits for at its issue pod's gate (askPod), nil for
+	// a wake the pacing or the pause's gate holds. Such a launch has let its process go, stopped it
+	// and written its claim launching already (launchNow, launchTries, askPod), took no token and
+	// has no moment to run: it waits on the machine with no timer of the clock's, is published as
+	// no waiting wake (publish), is no wake of the pacing's for a request that does not wait to
+	// drop (dropWakeFor), and leaves by its grant (TimerPodStart, podStartDue) or by whatever drops
+	// the wake, which takes its start out of the gate for what dropped it (dropPodPark, cutPark:
+	// suspended, retire, letGo, waitOnMachine).
+	park *podHold
 }
 
 // reserveWake is the wake gate: it asks the pacing when this wake may run and, when that moment

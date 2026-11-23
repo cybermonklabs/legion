@@ -1851,11 +1851,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // may be the very launch the resume let out.
 //
 // No decision waits for another role's session load in the claim's issue pod: a launch the pod's
-// start gate cannot grant at once parks on the machine as a wake that carries a podPark and its
+// start gate cannot grant at once parks on the machine as a wake that carries its podHold and its
 // decision ends (askPod, wake.park), so a suspension, a retirement and every read of the claim
 // find the lock free, and the row each of them runs drops that wake, whose cut takes the start
 // out of the gate and names that row's end: a suspension's or a retirement's (dropPodPark,
-// podPark.cut, dispatch://INFRA-5297).
+// cutPark, dispatch://INFRA-5297).
 //
 // Handle gives ev through the store's rule first; the comment that opens its body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {

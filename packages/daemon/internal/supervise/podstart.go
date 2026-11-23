@@ -35,9 +35,9 @@ package supervise
 // start no longer: the next role starts all the same. A registration before that stops the bound
 // (settle), and the load then ends at its settle, however long after its process's start.
 //
-// A parked start is a wake that carries a podPark (askPod, wake.park). It leaves the gate at once
+// A parked start is a wake that carries its podHold (askPod, wake.park). It leaves the gate at once
 // when anything ends the launch it belongs to, wherever that wake is dropped (dropPodPark), and
-// its cut names its end in the line of a launch cut short (podPark.cut): a suspension of any
+// its cut names its end in the line of a launch cut short (cutPark): a suspension of any
 // source, the pause's and the idle release's among them, as a suspension; a retirement — a close
 // of the issue or of the tree, an operator's close — as a retirement; a relaunch that replaces
 // the launch, or a failure of its claim, as an end of its process, at the let-go of the claim's
@@ -120,7 +120,7 @@ const (
 )
 
 // podLaunchCutShortLine is the line of a parked start that something took out of the gate before
-// it ran, naming what did by the end its cut passes (podPark.cut): a suspension, a retirement, a
+// it ran, naming what did by the end its cut passes (cutPark): a suspension, a retirement, a
 // let-go of its claim's process, a park that replaced it, or a grant that reached a machine whose
 // context the daemon's stop had ended.
 const podLaunchCutShortLine = "supervise: launch cut short while it waited for its issue pod's start; its start left the gate"
@@ -135,7 +135,7 @@ const (
 	podLoadEnded podHoldEnd = "load end"
 	// podFailedLaunch is the holder's start failing before its process started (podStartFailed),
 	// or a start granted and taken out of the gate before its machine ran it by a park that
-	// replaced it or by the daemon's stop (podPark.cut).
+	// replaced it or by the daemon's stop (cutPark).
 	podFailedLaunch podHoldEnd = "failed launch"
 	// podProcessEnded is the holder's process ending before its load did: it died, it was
 	// relaunched at a new generation, or its claim failed; and a start granted that a relaunch or
@@ -630,7 +630,7 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 	}
 	stopped := m.stopPrevious(ctx)
 	m.timers[TimerPodStart] = armed{seq: granted.Seq}
-	m.wake = &wake{kind: WakeLaunch, park: &podPark{gate: m.deps.PodStarts, hold: hold, log: m.log, generation: m.claim.Generation},
+	m.wake = &wake{kind: WakeLaunch, park: hold,
 		run: func(ctx context.Context) error { return m.launchTries(ctx, l, &podGrant{token: token, hold: hold}) }}
 	m.log.Info("supervise: the launch waits for its issue pod's start while another role of the pod starts or loads its session",
 		"generation", m.claim.Generation, "pod", m.claim.Issue)
@@ -641,30 +641,26 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 	return hold, true
 }
 
-// podPark is a launch parked at its issue pod's gate (askPod, wake.park): the start it asked of
-// the gate, and what the line of a launch cut short names. It leaves the gate by its grant
-// (podStartDue) or by its cut, for what ended the launch, wherever its wake is dropped
-// (dropPodPark).
-type podPark struct {
-	gate       *PodStarts
-	hold       *podHold
-	log        *slog.Logger
-	generation uint64
-}
-
-// cut takes the parked start out of the gate for why (PodStarts.cancel) — one still waiting leaves
-// the queue, and one granted that its machine has not run yet gives the pod to the next start,
-// whose start line names why as what ended its wait — and writes the line of a launch cut short
-// while it waited, naming why, once: a start already taken out, or one its machine ran, is left as
-// it is and writes nothing.
-func (p *podPark) cut(why podHoldEnd) {
-	if p.gate.cancel(p.hold, why) {
-		p.log.Info(podLaunchCutShortLine, "generation", p.generation, "by", string(why))
+// cutPark takes the start of the launch parked at its issue pod's gate (askPod, wake.park) out of
+// the gate for why (PodStarts.cancel) — one still waiting leaves the queue, and one granted that
+// its machine has not run yet gives the pod to the next start, whose start line names why as what
+// ended its wait — and writes the line of a launch cut short while it waited, naming why, once: a
+// start already taken out, or one its machine ran, is left as it is and writes nothing. A parked
+// launch leaves the gate by its grant (podStartDue) or by this cut, for what ended the launch,
+// wherever its wake is dropped (dropPodPark).
+//
+// The line names the claim's generation, which is the parked launch's: the launch parked at the
+// generation its try wrote (writeTry, askPod), and no other try writes one while it stays parked,
+// since a launch lets the parked one go before its first try (launchNow, letGo, dropPodPark) and
+// the grant takes the wake off the machine before it runs the launch on (podStartDue).
+func (m *Machine) cutPark(hold *podHold, why podHoldEnd) {
+	if m.deps.PodStarts.cancel(hold, why) {
+		m.log.Info(podLaunchCutShortLine, "generation", m.claim.Generation, "by", string(why))
 	}
 }
 
 // dropPodPark takes the launch parked at its issue pod's gate off the machine, where one is, and
-// its start out of the gate for why (podPark.cut): a suspension's own (suspended), a retirement's
+// its start out of the gate for why (cutPark): a suspension's own (suspended), a retirement's
 // own, a close's among them (retire), an end of the process the launch was to start at every other
 // let-go of the claim's process — a relaunch that replaces the launch, a failure of its claim
 // (letGo) — and a failed launch where another park replaces it (waitOnMachine). The grant's arming
@@ -673,7 +669,7 @@ func (m *Machine) dropPodPark(why podHoldEnd) {
 	if m.wake == nil || m.wake.park == nil {
 		return
 	}
-	m.wake.park.cut(why)
+	m.cutPark(m.wake.park, why)
 	m.disarm(TimerPodStart)
 	m.wake = nil
 }
@@ -696,7 +692,7 @@ func podStartDue(m *Machine, ctx context.Context, _ Event) error {
 	}
 	m.wake = nil
 	if err := ctx.Err(); err != nil {
-		waiting.park.cut(podFailedLaunch)
+		m.cutPark(waiting.park, podFailedLaunch)
 		return err
 	}
 	return waiting.run(ctx)
