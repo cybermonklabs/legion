@@ -25,13 +25,34 @@ var ErrPublishDenied = errors.New("NATS denied the publish")
 // did not acknowledge, from one that is not known to have reached the server at all.
 var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted")
 
+// ErrNotSent is wrapped by a publish error that left nothing on the wire: the window was spent
+// before the publish was made, nats.go refused the publish before it wrote it, or, for a forward
+// (StartRequestStoredTo), the connection did not come back or the reply inbox could not be
+// subscribed before the publish. A caller that sends a message again until it is stored reads it
+// to tell a publish that cannot have reached the server, which no later attempt need repeat to the
+// same recipient, from one that may have (cmd/listener's forwardMayBeStored). The error's text is
+// the error it wraps, unchanged (notSent).
+var ErrNotSent = errors.New("bus: the publish was not sent")
+
+// notSent marks err as one that left nothing on the wire (ErrNotSent), keeping its text and every
+// error it wraps.
+func notSent(err error) error {
+	return notSentError{err: err}
+}
+
+type notSentError struct{ err error }
+
+func (e notSentError) Error() string { return e.err.Error() }
+
+func (e notSentError) Unwrap() []error { return []error{e.err, ErrNotSent} }
+
 // ErrWindowEndedBeforePublish is also the error of a publish whose window had already ended when
 // publishConfirmed came to make it, its deadline spent or its context cancelled, so that nothing
 // was sent. Its text is no part of that error's, which stays the spent window's (errWindowElapsed)
 // for whatever matches it. A caller reads it with errors.Is to tell a publish that never left this
 // process from one whose window ended after it was made (a flush or an acknowledgement that did not
-// come in time), which may have reached its subscribers; the listener marks a role forward that
-// failed so (finishRoleForward).
+// come in time), which may have reached its subscribers; the listener marks the line of a role
+// message it holds for that error so (roleForwarder.hold).
 var ErrWindowEndedBeforePublish = errors.New("the window ended before the publish was made")
 
 // windowEndedBeforePublish is publishConfirmed's error for a window that ended before the publish:
@@ -46,13 +67,14 @@ func (e windowEndedBeforePublish) Unwrap() []error {
 
 // publishConfirmed publishes msg on conn with publish, flushes within ctx's deadline, and confirms
 // the server accepted it (confirmPublished). A nil error means the server accepted the publish;
-// otherwise the error is a window already spent (errWindowElapsed, and before the publish
+// otherwise the error is a window already spent or a ctx already cancelled (errWindowElapsed, and
 // ErrWindowEndedBeforePublish as well), nats.go's refusal before sending (refused), a flush that
-// failed or ran out of the window, ErrPublishDenied, or one wrapping ErrPublishUnconfirmed. publish
-// is conn.PublishMsg, bound to the same conn: every caller reads its connection once and passes it
-// and its PublishMsg, so publish publishes on the connection observe and confirmPublished judge. It
-// is a parameter so a test can make the server's answer arrive before publish returns, which is the
-// case the state read before it exists for.
+// failed, ran out of the window or, where cut says so, was cut by ctx's cancel, ErrPublishDenied,
+// or one wrapping ErrPublishUnconfirmed. The first two left nothing on the wire and are marked
+// ErrNotSent. publish is conn.PublishMsg, bound to the same conn: every caller reads its connection
+// once and passes it and its PublishMsg, so publish publishes on the connection observe and
+// confirmPublished judge. It is a parameter so a test can make the server's answer arrive before
+// publish returns, which is the case the state read before it exists for.
 //
 // A ctx that has ended - cancelled, or its deadline spent - is refused before publish is called,
 // never after: a core publish is on its way to the subject the moment publish returns, so
@@ -62,31 +84,47 @@ func (e windowEndedBeforePublish) Unwrap() []error {
 // deadline has the zero one, already spent, though every caller bounds its own. The check after
 // publish stays for a window that runs out during publish itself; that publish is not known to
 // have left this process, the same ambiguity a flush that runs out of the window has, and is
-// answered the same way. A cancel that lands after the check goes unseen: the publish is made.
-func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nats.Msg, publish func(*nats.Msg) error) error {
+// answered the same way. A cancel that lands after the check goes unseen unless cut is true: the
+// publish is made, and its flush runs to the window's deadline. cut is true for a forward alone
+// (StartRequestStoredTo), whose caller sends it again under the same Nats-Msg-Id until the stream
+// stores it, so the stream's duplicate window keeps it to one copy: there a cancel ends the flush
+// at once, with the cancel's error, and the role lane's stop is not held for the window's rest.
+func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nats.Msg, publish func(*nats.Msg) error, cut bool) error {
 	deadline, _ := ctx.Deadline()
 	err := ctx.Err()
 	if err == nil && !time.Now().Before(deadline) {
 		err = context.DeadlineExceeded
 	}
 	if err != nil {
-		return windowEndedBeforePublish{fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)}
+		return notSent(windowEndedBeforePublish{fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)})
 	}
 	before := observe(conn)
 	if err := publish(msg); err != nil {
-		return c.refused(err, len(msg.Data))
+		return notSent(c.refused(err, len(msg.Data)))
 	}
-	return confirmFlushed(conn, msg.Subject, before, deadline)
+	if !cut {
+		window, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+		defer cancel()
+		ctx = window
+	}
+	return confirmFlushed(ctx, conn, msg.Subject, before)
 }
 
-// confirmFlushed flushes conn within deadline and confirms that the server accepted the core
-// publish to subject made on it after before was observed (confirmPublished).
-func confirmFlushed(conn *nats.Conn, subject string, before connState, deadline time.Time) error {
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
+// confirmFlushed flushes conn within ctx and confirms that the server accepted the core publish to
+// subject made on it after before was observed (confirmPublished). ctx's deadline is the window: a
+// flush it runs out answers nats.ErrTimeout, as a flush given the time left does. A cancel of ctx
+// ends the flush at once with ctx's error: the publish was made, so whether the server took it is
+// not known, which a caller that stops (cmd/listener's role lane) holds the message for. Only a
+// forward's flush takes a ctx its caller cancels (publishConfirmed's cut).
+func confirmFlushed(ctx context.Context, conn *nats.Conn, subject string, before connState) error {
+	deadline, _ := ctx.Deadline()
+	if time.Until(deadline) <= 0 {
 		return errWindowElapsed(subject)
 	}
-	if err := conn.FlushTimeout(remaining); err != nil {
+	if err := conn.FlushWithContext(ctx); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = nats.ErrTimeout
+		}
 		return fmt.Errorf("bus: flush publish to %q: %w", subject, err)
 	}
 	return confirmPublished(conn, subject, before)

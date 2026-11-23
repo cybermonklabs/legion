@@ -58,9 +58,10 @@ type TmuxPlace struct {
 }
 
 // APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
-// status (the list routes' refilling 503, code refilling, and a send's or publish's 503 that may
-// have stored the message, CodeMaybeStored); every other answer leaves it out. Expected names the
-// request fields the refusal is about.
+// status (the list routes' refilling 503, code refilling; a send's or publish's 503 that may have
+// stored the message, CodeMaybeStored; and the 409 of a message the stream refuses for the message
+// itself, CodeStreamRefused); every other answer leaves it out. Expected names the request fields
+// the refusal is about.
 type APIError struct {
 	Code     string   `json:"code,omitempty"`
 	Error    string   `json:"error"`
@@ -74,6 +75,16 @@ type APIError struct {
 // same idempotency key is recognised - and not as a send that stored nothing. Every other 503 of
 // those routes leaves the code out.
 const CodeMaybeStored = "maybe_stored"
+
+// CodeStreamRefused is the code of the 409 a send, a publish or a store write gets when the message
+// bus stream refuses the message itself, however often it is sent: a message or headers past the
+// stream's maxima, a message too large for the store, a sealed stream (bus.StreamRefusesMessage),
+// with no send of it that may have stored it. A caller reads the refusal by this code, never by the
+// error's words: the Legion daemon ends the outbox row it published (notify.ErrStreamRefused), and
+// a Legion session's role claim is made again on the wait it gives a 503
+// (claimRoleAgainOnBusy, packages/pi-shared/src/legion-claim-core.ts, whose STREAM_REFUSED_CODE a
+// row of its tests reads from this line).
+const CodeStreamRefused = "stream_refused"
 
 // ReadsHeader is the request header in which a client of the send and the publish routes names
 // the answers it reads beyond the whole envelope every client release reads, as a comma-separated

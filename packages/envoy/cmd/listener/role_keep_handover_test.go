@@ -104,8 +104,8 @@ func (l *keptLaneUnderClaim) keep(t *testing.T, role, prefix string, count int) 
 	keys := make([]string, 0, count)
 	for index := range count {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("%s-%02d", prefix, index))
-		if _, err := keepRoleMessage(l.harness.config, role, item); err != nil {
-			t.Fatalf("keep copy %d; the listener log says why:\n%s", index, l.harness.logs.String())
+		if _, err := keepRoleMessage(context.Background(), l.harness.config, role, item); err != nil {
+			t.Fatalf("keep copy %d: %v; the listener log says why:\n%s", index, err, l.harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
 	}
@@ -297,8 +297,8 @@ func TestAHandoverWalksPastMoreExpiredCopiesThanItsIdleWalksAllow(t *testing.T) 
 	var want []string
 	for i := range expired + fresh {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-handover-expired-%04d", i))
-		if _, err := keepRoleMessage(cfg, role, item); err != nil {
-			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
+		if _, err := keepRoleMessage(context.Background(), cfg, role, item); err != nil {
+			t.Fatalf("keep copy %d: %v; the listener log says why:\n%s", i, err, harness.logs.String())
 		}
 		if i >= expired {
 			want = append(want, roleForwardDedupePrefix+item.DedupeKey)
@@ -377,8 +377,8 @@ func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 	defer cancel()
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-handover-released-%02d", i))
-		if _, err := keepRoleMessage(harness.config, role, item); err != nil {
-			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
+		if _, err := keepRoleMessage(context.Background(), harness.config, role, item); err != nil {
+			t.Fatalf("keep copy %d: %v; the listener log says why:\n%s", i, err, harness.logs.String())
 		}
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -500,14 +500,14 @@ func TestTheSweepHandsOverALaneNoHandoverIsDraining(t *testing.T) {
 	var keys []string
 	for i := range copies {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, fmt.Sprintf("kept-sweep-%02d", i))
-		if _, err := keepRoleMessage(cfg, role, item); err != nil {
-			t.Fatalf("keep copy %d; the listener log says why:\n%s", i, harness.logs.String())
+		if _, err := keepRoleMessage(context.Background(), cfg, role, item); err != nil {
+			t.Fatalf("keep copy %d: %v; the listener log says why:\n%s", i, err, harness.logs.String())
 		}
 		keys = append(keys, roleForwardDedupePrefix+item.DedupeKey)
 	}
 	unheldItem := listenerTestEnvelope(contracts.RoleTopicPrefix+unheld, "kept-sweep-unheld-00")
-	if _, err := keepRoleMessage(cfg, unheld, unheldItem); err != nil {
-		t.Fatalf("keep the copy of the role no session claims; the listener log says why:\n%s", harness.logs.String())
+	if _, err := keepRoleMessage(context.Background(), cfg, unheld, unheldItem); err != nil {
+		t.Fatalf("keep the copy of the role no session claims: %v; the listener log says why:\n%s", err, harness.logs.String())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -684,8 +684,8 @@ func TestAHandoverRetriesALaneHeadReadThatFailedOnlyForAClaimedRole(t *testing.T
 			role := "kept-head-read-" + test.name
 			holder := "ses_kept_head_read_" + test.name
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
-			if _, err := keepRoleMessage(harness.config, role, item); err != nil {
-				t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
+			if _, err := keepRoleMessage(context.Background(), harness.config, role, item); err != nil {
+				t.Fatalf("keep the copy: %v; the listener log says why:\n%s", err, harness.logs.String())
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
@@ -900,8 +900,8 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 			role := "kept-shutdown-" + test.name
 			holder := "ses_kept_shutdown_" + test.name
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-00")
-			if _, err := keepRoleMessage(harness.config, role, item); err != nil {
-				t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
+			if _, err := keepRoleMessage(context.Background(), harness.config, role, item); err != nil {
+				t.Fatalf("keep the copy: %v; the listener log says why:\n%s", err, harness.logs.String())
 			}
 			claimRoleBeyondTheSessionCache(t, harness, holder, role)
 

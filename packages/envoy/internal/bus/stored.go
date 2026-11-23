@@ -293,7 +293,7 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 		return nil, err
 	}
 	defer replies.Unsubscribe()
-	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg, false)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}
@@ -355,7 +355,7 @@ func (c *Client) RequestCore(ctx context.Context, subject, reply string, header 
 		return nil, err
 	}
 	defer subscription.Unsubscribe()
-	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: reply, Header: header}, conn.PublishMsg)
+	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: reply, Header: header}, conn.PublishMsg, false)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}

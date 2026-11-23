@@ -389,11 +389,11 @@ test("a notice whose key another sender's message holds is sent again under a ne
   expect(published[1]?.idempotencyKey).not.toBe(published[0]?.idempotencyKey);
 });
 
-// A listener answers 404 with nothing kept when its keep failed, and a listener of an earlier
-// release answers it for an architect role whose holder is not live. That is the answer this
-// sender's retry exists for. Nobody was told, so the next delivered reminder publishes again
-// under the same key, and the worker's transcript gets no warning for something that is not its
-// doing.
+// A listener answers 404 with nothing kept when the bus refuses its keep however often it is
+// sent, and a listener of an earlier release answers it for an architect role whose holder is not
+// live, and for a keep that failed. That is the answer this sender's retry exists for. Nobody was
+// told, so the next delivered reminder publishes again under the same key, and the worker's
+// transcript gets no warning for something that is not its doing.
 test("a notice no session held the architect role for is published again by the run's next reminder, under the same key", async () => {
   let attempt = 0;
   const { reminder, timers, entries, published, warned } = rig({

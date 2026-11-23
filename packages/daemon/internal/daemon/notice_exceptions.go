@@ -172,12 +172,15 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 // A publish the listener took writes one line naming the architect it reached (noticePublished).
 //
 // A delivery its architect's session did not confirm (504 `receipt_timeout`) is queued again as a
-// copy of its own (reholdNotice). A holder that does not advertise the notice's delivery mode, and
-// a forward the listener's own NATS grant denies, refuse every attempt until something outside
-// this daemon changes, so each finishes undelivered with one log line rather than holding every
-// later notice to that architect behind the fence. A holder only unresponsive — its session past
-// the listener's live window and still inside its gone horizon — holds the role yet, so its notice
-// is kept whole: no copy is spent and no slot of the re-hold schedule with it, and the row waits
+// copy of its own (reholdNotice). A holder that does not advertise the notice's delivery mode, a
+// forward the listener's own NATS grant denies, and a notice the message bus stream refuses
+// (notify.ErrStreamRefused: a notice past the stream's maxima, or a sealed stream) refuse every
+// attempt until something outside this daemon changes, so each finishes undelivered with one log
+// line rather than holding every later notice to that architect behind the fence: WARN for the
+// first two, ERROR for the stream's refusal, which only an operator's change to the stream
+// clears. A holder only unresponsive — its session past the listener's live window and still
+// inside its gone horizon — holds the role yet, so its notice is kept whole: no copy is spent and
+// no slot of the re-hold schedule with it, and the row waits
 // (wait.ErrWaiting), tried again on the outbox's backoff until the session's heartbeats land,
 // which is what reaches a session stalled under box load once it answers again
 // (dispatch://INFRA-392). That answer is logged as the wait it is, naming the holder and the
@@ -196,6 +199,7 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 	var notDelivered notify.ErrNotDelivered
 	var refused notify.ErrRefusedByHolder
 	var denied notify.ErrPublishDenied
+	var streamRefused notify.ErrStreamRefused
 	switch {
 	case published == nil:
 		r.noticePublished(row, payload, architect)
@@ -236,6 +240,10 @@ func (r *outbox) noticeAnswered(ctx context.Context, row record.OutboxRow, paylo
 	case errors.As(published, &denied):
 		r.log.Warn("outbox notice finished undelivered: the listener's NATS grant denied the forward to its architect",
 			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "reason", denied.Message)
+		return nil
+	case errors.As(published, &streamRefused):
+		r.log.Error("outbox notice finished undelivered: the message bus stream refused the notice to its architect",
+			"row", row.ID, "kind", payload.Kind, "issue", row.Issue, "architect", architect, "refusal", streamRefused.Message)
 		return nil
 	case errors.Is(published, notify.ErrHolderUnresponsive):
 		return wait.Errorf("the notice for %s waits for its architect %s, whose session the listener reports %s: %w",

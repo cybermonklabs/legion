@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -27,7 +28,9 @@ func TestASpentFlushWindowKeepsItsText(t *testing.T) {
 		if err := w.conn.Publish(subject, []byte("{}")); err != nil {
 			t.Fatalf("publish: %v", err)
 		}
-		return confirmFlushed(w.conn, subject, before, deadline)
+		window, cancel := context.WithDeadline(context.Background(), deadline)
+		defer cancel()
+		return confirmFlushed(window, w.conn, subject, before)
 	}
 	if err := flushWithin(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("control: a flush with its window to spend answered %v", err)

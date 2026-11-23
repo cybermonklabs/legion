@@ -160,7 +160,7 @@ func TestARoleLaneOfAnotherProjectReachesNoHolderOfItsLegionRole(t *testing.T) {
 // watching notifications.envoy.exceptions.notifications.role.> reads. The probe reads the
 // exceptions in the order the listener's one connection published them, so a sentinel published
 // after the drop on that connection comes second. Control: with the drop logged and no exception
-// published (roleLaneProjectError's branch of resolveRoleForward before this row), the sentinel is
+// published (roleLaneProjectError's branch of deliverRoleMessage before this row), the sentinel is
 // the first exception, and the row fails.
 func TestARoleLaneDropOfALegionRoleOfAnotherProjectReportsNoHolder(t *testing.T) {
 	rig := newEdgeRigServing(t, nil)

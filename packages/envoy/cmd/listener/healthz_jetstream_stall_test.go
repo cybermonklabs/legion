@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -85,28 +84,18 @@ func (r *subjectStallRelay) relay(client net.Conn) {
 		_, _ = io.Copy(client, server)
 		_ = client.Close()
 	}()
+	// Each client operation is read whole (readNATSClientOp), and this relay's fault is to swallow
+	// a publish whose subject it stalls, so the request it carries is never answered.
 	lines := bufio.NewReader(client)
 	for {
-		line, err := lines.ReadBytes('\n')
+		op, err := readNATSClientOp(lines)
 		if err != nil {
 			return
 		}
-		fields := strings.Fields(string(line))
-		var payload []byte
-		if len(fields) >= 3 && (strings.EqualFold(fields[0], "PUB") || strings.EqualFold(fields[0], "HPUB")) {
-			size, err := strconv.Atoi(fields[len(fields)-1])
-			if err != nil {
-				return
-			}
-			payload = make([]byte, size+len("\r\n"))
-			if _, err := io.ReadFull(lines, payload); err != nil {
-				return
-			}
-			if r.stalls(fields[1]) {
-				continue
-			}
+		if op.publishes() && r.stalls(op.subject()) {
+			continue
 		}
-		if _, err := server.Write(append(line, payload...)); err != nil {
+		if _, err := server.Write(op.bytes()); err != nil {
 			return
 		}
 	}
