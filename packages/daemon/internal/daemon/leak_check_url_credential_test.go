@@ -54,7 +54,7 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 	if readErr == nil {
 		t.Fatalf("the read redirected to %s was served, want it refused", dead)
 	}
-	cause := leakguard.RefusalPrefix + "the daemon could not read " + leakCheckSetting.Repository.String() + " at " + leakCheckTag + `: Get "` + download + `?token=": `
+	cause := leakguard.RefusalPrefix + "the daemon could not read " + leakCheckSetting.Repository.String() + " at " + leakCheckTag + `: Get "` + download + `": `
 	if !strings.HasPrefix(readErr.Error(), cause) {
 		t.Fatalf("the read is refused with %q, want a cause beginning %q", readErr, cause)
 	}

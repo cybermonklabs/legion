@@ -41,7 +41,7 @@ var urlCredentialsCases = []struct {
 	{
 		name: "a redirect's url.Error",
 		text: redirectError().Error(),
-		want: `Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1?token=": dial tcp 127.0.0.1:9: connect: connection refused`,
+		want: `Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1": dial tcp 127.0.0.1:9: connect: connection refused`,
 	},
 	{
 		name: "a userinfo with a password",
@@ -61,97 +61,57 @@ var urlCredentialsCases = []struct {
 	{
 		name: "a URL inside %q quotes",
 		text: fmt.Sprintf("parse %q: invalid port", "postgres://"+plantedUserinfo+"@db.example:5432/legion?sslmode=disable&password="+planted),
-		want: `parse "postgres://db.example:5432/legion?sslmode=disable&password=": invalid port`,
+		want: `parse "postgres://db.example:5432/legion": invalid port`,
 	},
 	{
 		name: "a URL inside <…>",
 		text: "see <https://u:" + planted + "@host.example/x?sig=" + planted + "> now",
-		want: "see <https://host.example/x?sig=> now",
+		want: "see <https://host.example/x> now",
 	},
 	{
 		name: "a URL inside single quotes and one inside backticks",
-		text: "'https://host.example/?token=" + planted + "' and `https://host.example/?token=" + planted + "`",
-		want: "'https://host.example/?token=' and `https://host.example/?token=`",
+		text: "'https://host.example/?t=" + planted + "' and `https://host.example/?t=" + planted + "`",
+		want: "'https://host.example/' and `https://host.example/`",
 	},
 	{
 		name: "two URLs in one text",
-		text: "a https://h.example/?token=" + planted + " then HTTP://" + planted + "@g.example:8080/p?auth=" + planted + "#f",
-		want: "a https://h.example/?token= then HTTP://g.example:8080/p?auth=#f",
+		text: "a https://h.example/?t=" + planted + " then HTTP://" + planted + "@g.example:8080/p?q=" + planted + "#f",
+		want: "a https://h.example/ then HTTP://g.example:8080/p#f",
 	},
 	{
 		name: "a query after a port with no path",
 		text: "dial http://h.example:8080?key=" + planted,
-		want: "dial http://h.example:8080?key=",
+		want: "dial http://h.example:8080",
 	},
 	{
 		name: "a query before a fragment",
 		text: "https://github.com/o/r/blob/main/f.go?token=" + planted + "#L10",
-		want: "https://github.com/o/r/blob/main/f.go?token=#L10",
+		want: "https://github.com/o/r/blob/main/f.go#L10",
 	},
 	{
-		name: "a credential's value alone among other parameters",
-		text: "https://h.example/p?a=1&token=" + planted + "&b=2 ok",
-		want: "https://h.example/p?a=1&token=&b=2 ok",
-	},
-	{
-		name: "a credential's name in another case and escaped",
-		text: "https://h.example/p?Access_Token=" + planted + "&X-Amz-Signature=" + planted + "&acc%65ss_token=" + planted,
-		want: "https://h.example/p?Access_Token=&X-Amz-Signature=&acc%65ss_token=",
-	},
-	{
-		name: "a name whose last word is a credential's",
-		text: "https://h.example/p?github_token=" + planted + "&db-password=" + planted + "&private_key=" + planted + "&mtime=1",
-		want: "https://h.example/p?github_token=&db-password=&private_key=&mtime=1",
-	},
-	{
-		name: "names that end in a credential's word but not as a word of their own",
-		text: "https://h.example/p?monkey=1&turkey=2&pkey=3&githubtoken=4&keyword=5",
-		want: "https://h.example/p?monkey=1&turkey=2&pkey=3&githubtoken=4&keyword=5",
-	},
-	{
-		name: "a value holding an =",
-		text: "https://h.example/p?token=" + planted + "=x",
-		want: "https://h.example/p?token=",
-	},
-	{
-		name: "the punctuation of the prose after a credential's value",
-		text: "(see https://h.example/p?token=" + planted + "), then.",
-		want: "(see https://h.example/p?token=), then.",
-	},
-	{
-		name: "a query with no credential's name",
-		text: "https://github.com/o/r/blob/main/f.go?plain=1&pr=M#L10, and https://h.example/p?abc.",
-		want: "https://github.com/o/r/blob/main/f.go?plain=1&pr=M#L10, and https://h.example/p?abc.",
-	},
-	{
-		name: "a file: URL left whole",
-		text: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1, which publishes plugin interface 2",
-		want: "loaded pi-envoy from file:///home/u/.omp/plugins/node_modules/@sjawhar/pi-envoy/dist/envoy.js?mtime=1, which publishes plugin interface 2",
-	},
-	{
-		name: "two file: URLs as legion probe-image prints them",
-		text: "pi-envoy loaded 2 times (file:///e/dist/envoy.js?mtime=1, file:///e/dist/envoy.js?mtime=2): the worker image's profile links it beside the explicit root",
-		want: "pi-envoy loaded 2 times (file:///e/dist/envoy.js?mtime=1, file:///e/dist/envoy.js?mtime=2): the worker image's profile links it beside the explicit root",
+		name: "a query that ends the text",
+		text: "go to https://h.example/p?" + planted,
+		want: "go to https://h.example/p",
 	},
 	{
 		name: "a URL that ends at a Unicode white space",
-		text: "https://h.example/?token=" + planted + "\u00a0more",
-		want: "https://h.example/?token=\u00a0more",
+		text: "https://h.example/?t=" + planted + "\u00a0more",
+		want: "https://h.example/\u00a0more",
 	},
 	{
 		name: "a URL in the path of another",
-		text: "https://archive.example/web/https://u:" + planted + "@h.example/x?token=" + planted,
-		want: "https://archive.example/web/https://h.example/x?token=",
+		text: "https://archive.example/web/https://u:" + planted + "@h.example/x?t=" + planted,
+		want: "https://archive.example/web/https://h.example/x",
 	},
 	{
 		name: "a URL in the fragment of another",
-		text: "https://h.example/#next=https://" + planted + "@g.example/?token=" + planted + "#top",
-		want: "https://h.example/#next=https://g.example/?token=#top",
+		text: "https://h.example/#next=https://" + planted + "@g.example/?t=" + planted + "#top",
+		want: "https://h.example/#next=https://g.example/#top",
 	},
 	{
 		name: "a URL in the query of another",
-		text: "https://h.example/login?next=https://" + planted + "@g.example/?token=" + planted + " done",
-		want: "https://h.example/login?next=https://g.example/?token= done",
+		text: "https://h.example/login?next=https://" + planted + "@g.example/ done",
+		want: "https://h.example/login done",
 	},
 	{
 		name: "a fragment kept",
@@ -160,8 +120,8 @@ var urlCredentialsCases = []struct {
 	},
 	{
 		name: "a ? in the fragment kept",
-		text: "https://h.example/p#which?token=that",
-		want: "https://h.example/p#which?token=that",
+		text: "https://h.example/p#which?that",
+		want: "https://h.example/p#which?that",
 	},
 	{
 		name: "an @ in the path kept",
@@ -178,9 +138,49 @@ var urlCredentialsCases = []struct {
 		text: "9://u@h.example/?q and ://u@h.example/?q",
 		want: "9://u@h.example/?q and ://u@h.example/?q",
 	},
+	{
+		name: "a file: URL's query kept",
+		text: "loaded file:///a.js?mtime=1, then",
+		want: "loaded file:///a.js?mtime=1, then",
+	},
+	{
+		name: "a FILE: URL's query kept",
+		text: "loaded FILE:///a.js?mtime=1, then",
+		want: "loaded FILE:///a.js?mtime=1, then",
+	},
+	{
+		name: "a file: URL's userinfo removed",
+		text: "file://" + planted + "@host.example/a.js?mtime=1",
+		want: "file://host.example/a.js?mtime=1",
+	},
+	{
+		name: "two file: URLs as legion probe-image prints them",
+		text: "pi-envoy loaded 2 times (file:///e/dist/envoy.js?mtime=1, file:///e/dist/envoy.js?mtime=2): the worker image's profile links it beside the explicit root",
+		want: "pi-envoy loaded 2 times (file:///e/dist/envoy.js?mtime=1, file:///e/dist/envoy.js?mtime=2): the worker image's profile links it beside the explicit root",
+	},
+	{
+		name: "a query whose names are harmless and a credential's removed whole",
+		text: "get https://h/p?mtime=1&X-Amz-Signature=" + planted + " done",
+		want: "get https://h/p done",
+	},
+	{
+		name: "a scheme that ends in file is no file: URL",
+		text: "xfile://h.example/p?token=" + planted + " and profile://h.example/q?" + planted,
+		want: "xfile://h.example/p and profile://h.example/q",
+	},
+	{
+		name: "a URL in a file: URL's query is a URL of its own",
+		text: "file:///a.js?next=https://" + planted + "@h.example/?token=" + planted + "#f",
+		want: "file:///a.js?next=https://h.example/#f",
+	},
+	{
+		name: "a file: URL in another's query goes with that query",
+		text: "https://h.example/p?a=file:///a.js?mtime=1&token=" + planted + " done",
+		want: "https://h.example/p done",
+	},
 }
 
-func TestURLCredentialsRemovesTheUserinfoAndEachCredentialsValueOfEveryURL(t *testing.T) {
+func TestURLCredentialsRemovesTheQueryAndTheUserinfoOfEveryURL(t *testing.T) {
 	for _, tc := range urlCredentialsCases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := URLCredentials(tc.text)
@@ -197,53 +197,77 @@ func TestURLCredentialsRemovesTheUserinfoAndEachCredentialsValueOfEveryURL(t *te
 	}
 }
 
-// urlCredentialsPlain is the rule with no kept search: for each "://" it searches again to the
-// URL's end and reads the URL's whole query, so a run of "://" that nothing ends (`a://a://…`)
-// takes it time quadratic in the run's length. It is the reference URLCredentials's output is held
-// to (TestURLCredentialsGivesWhatThePlainRuleGives): URLCredentials's kept searches are right only
-// under an order of the positions it asks from, and it reads a query that overlaps an earlier one
-// only past it, while this one asks every search afresh and reads every query whole.
-func urlCredentialsPlain(text string) string {
+// urlCredentialsQuadratic is URLCredentials as it was before it kept its searches: the same rule,
+// which for each "://" searches again to the URL's end, three times, so a run of "://" that
+// nothing ends (`a://a://…`) takes it time quadratic in the run's length. It is kept as the
+// reference URLCredentials's output is held to
+// (TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives): URLCredentials's kept searches are
+// right only under an order of the positions it asks from, and this one asks every search afresh.
+func urlCredentialsQuadratic(text string) string {
 	if !strings.Contains(text, "://") {
 		return text
 	}
-	var cuts []span
+	var out strings.Builder
+	// text[:kept] is written to out or removed. Every removal starts after a "://", so kept is 0
+	// until the first one.
+	kept := 0
+	remove := func(from, to int) {
+		if kept == 0 {
+			out.Grow(len(text))
+		}
+		out.WriteString(text[kept:from])
+		kept = to
+	}
+	// A URL's query is removed once the search for the next "://" passes its start: a URL in the
+	// path before it has the same query, and a userinfo of that URL comes first in the text.
+	query, fragment := -1, -1
 	for at := 0; ; {
 		i := strings.Index(text[at:], "://")
+		if query >= 0 && (i < 0 || at+i >= query) {
+			remove(query, fragment)
+			at, query = fragment, -1
+			continue
+		}
 		if i < 0 {
 			break
 		}
 		sep := at + i
 		at = sep + len("://")
-		if !schemeEndsAt(text, sep) || fileSchemeEndsAt(text, sep) {
+		if !schemeEndsAt(text, sep) {
 			continue
 		}
 		end := at + orLen(strings.IndexFunc(text[at:], endsURL), len(text)-at)
 		host := at + orLen(strings.IndexAny(text[at:end], "/?#"), end-at)
 		if u := strings.LastIndexByte(text[at:host], '@'); u >= 0 {
-			cuts = append(cuts, span{at, at + u + 1})
+			remove(at, at+u+1)
+		}
+		if fileSchemeEndsAt(text, sep) {
+			continue
 		}
 		frag := host + orLen(strings.IndexByte(text[host:end], '#'), end-host)
 		if q := strings.IndexByte(text[host:frag], '?'); q >= 0 {
-			cuts = credentialValues(text, host+q+1, frag, end, cuts)
+			query, fragment = host+q, frag
 		}
 	}
-	return removed(text, cuts)
+	if kept == 0 {
+		return text
+	}
+	out.WriteString(text[kept:])
+	return out.String()
 }
 
-// URLCredentials leaves of every text what the plain rule leaves of it (urlCredentialsPlain): of
-// each text of the cases, and of 5000 texts of up to 300 pieces built under a fixed seed, each from
-// "a", "://" and about half of the other pieces the rule reads, so that URLs in the paths, the
-// queries and the fragments of others, `file:` URLs, userinfos, credentials' names and values,
-// prose punctuation, invalid UTF-8 and every character that ends a URL meet in many orders. What
-// it leaves, it leaves as it is.
-func TestURLCredentialsGivesWhatThePlainRuleGives(t *testing.T) {
+// URLCredentials leaves of every text what the rule as first written leaves of it
+// (urlCredentialsQuadratic): of each text of the cases, and of 5000 texts of up to 300 pieces
+// built under a fixed seed, each from "a", "://" and about half of the other pieces the rule
+// reads, so that URLs in the paths, the queries and the fragments of others, userinfos, invalid
+// UTF-8 and every character that ends a URL meet in many orders. What it leaves, it leaves as it
+// is.
+func TestURLCredentialsGivesWhatTheRuleAsFirstWrittenGives(t *testing.T) {
 	var texts []string
 	for _, tc := range urlCredentialsCases {
 		texts = append(texts, tc.text)
 	}
-	pieces := []string{"https", "file", "9", "@", ":", "/", "?", "#", "=", "&", "token", "x_key", ")", ",", ".",
-		" ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
+	pieces := []string{"https", "file", "FILE", "9", "@", ":", "/", "?", "#", "=", " ", "\u00a0", `"`, "'", "`", "<", ">", "é", "\xff"}
 	random := rand.New(rand.NewPCG(4193, 4463))
 	for range 5000 {
 		some := []string{"a", "://"}
@@ -259,9 +283,9 @@ func TestURLCredentialsGivesWhatThePlainRuleGives(t *testing.T) {
 		texts = append(texts, text.String())
 	}
 	for _, text := range texts {
-		got, want := URLCredentials(text), urlCredentialsPlain(text)
+		got, want := URLCredentials(text), urlCredentialsQuadratic(text)
 		if got != want {
-			t.Fatalf("URLCredentials(%q) = %q, want %q, what the plain rule gives", text, got, want)
+			t.Fatalf("URLCredentials(%q) = %q, want %q, what the rule as first written gives", text, got, want)
 		}
 		if again := URLCredentials(got); again != got {
 			t.Fatalf("URLCredentials(%q) = %q, want it kept as the rule left it", got, again)
@@ -270,7 +294,7 @@ func TestURLCredentialsGivesWhatThePlainRuleGives(t *testing.T) {
 }
 
 // The rule's time grows as its text's length does, not as its square. A line of "a://" repeated
-// is the rule with no kept search at its worst (urlCredentialsPlain searches to the line's end
+// is the rule as first written at its worst (urlCredentialsQuadratic searched to the line's end
 // again for each "://"): on 1 MiB of it, a rule linear in the length returns in tens of
 // milliseconds, and that one took about 15 minutes. The run is held to a deadline of 30 s, far
 // from both, rather than to a ratio of the times of two lengths: a machine under load moves such
@@ -319,13 +343,13 @@ func TestHandlerOptionsGiveEveryTextOfALineThroughTheURLRule(t *testing.T) {
 	}
 	log := slog.New(slog.NewJSONHandler(&logged, HandlerOptions(opts))).With("remote", "https://"+planted+"@g.example/o/r.git")
 	log.Info("fetch https://h.example/a?token="+planted+" failed",
-		"url", "https://"+plantedUserinfo+"@h.example/p?q=1&password="+planted,
+		"url", "https://"+plantedUserinfo+"@h.example/p?q="+planted,
 		"error", redirectError(),
 		"target", target,
 		"named", stringer{"see https://h.example/?sig=" + planted},
 		"count", 3,
 		"replaced", "as it was",
-		slog.Group("g", "inner", "https://h.example/?token="+planted),
+		slog.Group("g", "inner", "https://h.example/?t="+planted),
 	)
 	if strings.Contains(logged.String(), planted) {
 		t.Fatalf("the line holds the planted credential: %s", logged.String())
@@ -336,15 +360,15 @@ func TestHandlerOptionsGiveEveryTextOfALineThroughTheURLRule(t *testing.T) {
 	}
 	want := map[string]any{
 		"level":    "INFO",
-		"msg":      "fetch https://h.example/a?token= failed",
+		"msg":      "fetch https://h.example/a failed",
 		"remote":   "https://g.example/o/r.git",
-		"url":      "https://h.example/p?q=1&password=",
-		"error":    `Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1?token=": dial tcp 127.0.0.1:9: connect: connection refused`,
-		"target":   "https://h.example/p?token=",
-		"named":    "see https://h.example/?sig=",
+		"url":      "https://h.example/p",
+		"error":    `Get "https://codeload.github.com/o/r/legacy.tar.gz/refs/tags/v1": dial tcp 127.0.0.1:9: connect: connection refused`,
+		"target":   "https://h.example/p",
+		"named":    "see https://h.example/",
 		"count":    3.0,
 		"replaced": "by the caller's own https://h.example/",
-		"g":        map[string]any{"inner": "https://h.example/?token="},
+		"g":        map[string]any{"inner": "https://h.example/"},
 	}
 	if !reflect.DeepEqual(line, want) {
 		t.Fatalf("the line is %v, want %v", line, want)

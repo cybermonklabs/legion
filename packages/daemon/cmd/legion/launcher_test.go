@@ -367,7 +367,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			name:    "the controller pod's container",
 			args:    []string{"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()},
 			until:   "launcher: daemon connection:",
-			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch?token="`},
+			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`},
 			planted: []string{"planted-query-token-4"},
 		},
 		{
@@ -375,8 +375,8 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			args:  []string{"--connect", connect, "--roles-dir", rolesDir, "--role", "tester", "--test-postgres"},
 			until: "tester: launcher: daemon connection:",
 			shown: []string{
-				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch?token="`,
-				"legion-testpg: the test database at postgresql://127.0.0.1:5433/legion_test?token= does not answer",
+				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`,
+				"legion-testpg: the test database at postgresql://127.0.0.1:5433/legion_test does not answer",
 			},
 			planted: []string{"planted-query-token-4", "planted-query-token-5"},
 		},
@@ -384,9 +384,9 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			name: "a token file it cannot read",
 			args: []string{"--connect", connect, "--token-file", "https://legion-reader@d.example/token?token=planted-query-token-6", "--role", "controller", "--private-dir", t.TempDir()},
 			code: 1,
-			// The token's value runs to the white space after it, and leaves the ":" the line
-			// writes there.
-			shown:   []string{"launcher: token file https://d.example/token?token=: open https://d.example/token?token=: no such file"},
+			// The query runs to the white space after it, so the ":" the line writes there goes
+			// with it.
+			shown:   []string{"launcher: token file https://d.example/token open https://d.example/token no such file"},
 			planted: []string{"planted-query-token-6"},
 		},
 	} {

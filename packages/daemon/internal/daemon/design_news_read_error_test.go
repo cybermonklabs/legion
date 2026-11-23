@@ -28,7 +28,7 @@ func TestAReadGivenUpOnRecordsDispatchsErrorWithItsNULAsAFarSidesErrorAndLogsItW
 	const planted = "planted-reconcile-token"
 	failure := errors.New("dispatch: 502 BAD_GATEWAY from https://dispatch.example/api/v1/artifacts/" + reconcileDoc + "?token=" + planted +
 		" after \x00 a reset \xff, " + strings.Repeat("the upstream answer goes on. ", 100) + "these are the last words")
-	const cleaned = "dispatch: 502 BAD_GATEWAY from https://dispatch.example/api/v1/artifacts/" + reconcileDoc + "?token= after \uFFFD a reset \uFFFD, "
+	const cleaned = "dispatch: 502 BAD_GATEWAY from https://dispatch.example/api/v1/artifacts/" + reconcileDoc + " after \uFFFD a reset \uFFFD, "
 	question := record.DesignHistoryQuestion{ArtifactID: reconcileDoc, To: 5}
 	for _, tc := range []struct {
 		name   string

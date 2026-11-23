@@ -102,10 +102,10 @@ func TestThePodEndIsBoundedAndEmptyWithoutAReason(t *testing.T) {
 }
 
 // The URL rule reads the reason and message whole, before the cut at the bound: a URL with a user
-// name and a planted token in its query, placed across the cut, leaves neither on the field
-// wherever in the URL the cut falls, and its host is there. A cut made before the rule ended inside
-// the user name, whose start the rule the claim keeps the field under (storetext.FarSideText) then
-// reads as the URL's host, or inside the token's value, which the field then carried as it was.
+// name and a planted query, placed across the cut, leaves neither on the field wherever in the URL
+// the cut falls, and its host is there. A cut made before the rule ended inside the user name,
+// whose start the rule the claim keeps the field under (storetext.FarSideText) then reads as the
+// URL's host, or inside the query, which the field then carried as it was.
 func TestAURLAcrossThePodEndsBoundLeavesNoUserNameOrQuery(t *testing.T) {
 	for n, tc := range []struct {
 		name string
@@ -129,8 +129,8 @@ func TestAURLAcrossThePodEndsBoundLeavesNoUserNameOrQuery(t *testing.T) {
 			if strings.Contains(got, "planted-user") {
 				t.Fatalf("the pod end ends %q, which holds the URL's user name", got[strings.Index(got, "https://"):])
 			}
-			if strings.Contains(got, "planted-query") {
-				t.Fatalf("the pod end ends %q, which holds the token in the URL's query", got[strings.Index(got, "https://"):])
+			if strings.Contains(got, "token=") {
+				t.Fatalf("the pod end ends %q, which holds the URL's query", got[strings.Index(got, "https://"):])
 			}
 			if !strings.Contains(got, "https://example.com/") {
 				t.Fatalf("the pod end ends %q, want the URL's host", got[max(0, len(got)-40):])

@@ -21,7 +21,7 @@ func TestNoAnswerPrintsACredentialThePushsNameCarries(t *testing.T) {
 	}{
 		{name: "in the userinfo", remote: "https://x-access-token:" + token + "@github.com/acme/widgets.git", shown: "the push to https://github.com/acme/widgets.git"},
 		{name: "as the userinfo, with no password", remote: "https://" + token + "@github.com/acme/widgets.git", shown: "the push to https://github.com/acme/widgets.git"},
-		{name: "in the query", remote: "https://github.com/acme/widgets.git?access_token=" + token, shown: "the push to https://github.com/acme/widgets.git?access_token="},
+		{name: "in the query", remote: "https://github.com/acme/widgets.git?access_token=" + token, shown: "the push to https://github.com/acme/widgets.git"},
 		{name: "a remote's name", remote: "origin", shown: "the push to origin"},
 	} {
 		what := PushName(tc.remote)
