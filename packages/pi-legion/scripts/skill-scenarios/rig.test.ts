@@ -228,6 +228,37 @@ describe("install_model_route", () => {
     );
   });
 
+  // An Oh My Pi config that disables a provider by name disables a models.yml block of that name
+  // too, so a box whose gateway block is named `anthropic` would leave the agents no model.
+  test("provider whose block is named after a built-in provider leaves that provider enabled", () => {
+    const dir = profileDir();
+    const file = path.join(work, `models-${profiles}-anthropic.yml`);
+    writeFileSync(
+      file,
+      [
+        "providers:",
+        "  anthropic:",
+        "    baseUrl: http://gateway.internal.example:4000",
+        '    apiKey: "!cat /run/user/1000/box/gateway-key"',
+        "    api: anthropic-messages",
+        "",
+      ].join("\n")
+    );
+    const { code, stderr } = route(dir, {
+      LEGION_E2E_MODEL_ROUTE: "provider",
+      LEGION_E2E_MODEL_PROVIDER_FILE: file,
+      LEGION_E2E_MODEL_PROVIDER: "anthropic",
+    });
+    expect({ code, stderr: code === 0 ? "" : stderr }).toEqual({ code: 0, stderr: "" });
+    const config = readFileSync(
+      path.join(dir, "home/.omp/profiles/skills-test/agent/config.yml"),
+      "utf8"
+    );
+    expect(config).toContain("enabledModels:\n  - anthropic/claude-opus-4-8\n");
+    expect(config).toContain("disabledProviders:\n  - amazon-bedrock\n");
+    expect(config).not.toContain("  - anthropic\n");
+  });
+
   test("provider without LEGION_E2E_MODEL_PROVIDER_FILE fails, naming the variable", () => {
     const dir = profileDir();
     const { code, stderr } = route(dir, {

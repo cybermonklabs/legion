@@ -418,7 +418,7 @@ install_provider_route() {
     const models = { providers: { [name]: { ...connection, models: [entry] } } };
     await Bun.write(out, `${JSON.stringify(models, null, 2)}\n`);
   ' "$LEGION_E2E_MODEL_PROVIDER_FILE" "$LEGION_E2E_MODEL_PROVIDER" "$model_id" "$agent/models.yml" || return 1
-  local model=$LEGION_E2E_MODEL_PROVIDER/$model_id role
+  local model=$LEGION_E2E_MODEL_PROVIDER/$model_id role builtin
   {
     echo "# Written by rig.sh install_provider_route: $model is the one model, and no other provider"
     echo "# a session or a subagent could fall back to without a word is enabled."
@@ -426,8 +426,13 @@ install_provider_route() {
     # of every profile: AskGate's review is one tool call, and the default limit cuts it short.
     printf 'extensionHandlers:\n  toolCallTimeoutMs: 120000\n'
     printf 'enabledModels:\n  - %s\n' "$model"
+    # Every built-in provider but the block's own name: a block named after one (a box's
+    # `anthropic` block that points at its gateway) replaces that provider, and disabling the name
+    # would disable the block too, leaving the agents no model.
     printf 'disabledProviders:\n'
-    printf '  - %s\n' anthropic amazon-bedrock bedrock-mantle google ollama llama.cpp lm-studio
+    for builtin in anthropic amazon-bedrock bedrock-mantle google ollama llama.cpp lm-studio; do
+      [ "$builtin" = "$LEGION_E2E_MODEL_PROVIDER" ] || printf '  - %s\n' "$builtin"
+    done
     printf 'modelRoles:\n'
     for role in default smol slow vision plan commit tiny task advisor review oracle deep; do
       printf '  %s: %s\n' "$role" "$model"
