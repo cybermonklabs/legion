@@ -587,8 +587,8 @@ func countSpeedStatement(t *testing.T, connection *pgx.Conn, name, query string,
 	for range speedSettleReads {
 		read := explain()
 		if read.rows != settled.rows || read.answered != settled.answered || read.nodes != settled.nodes || read.walks != settled.walks {
-			t.Fatalf("two counts of %s answer different work, %.0f rows over %d nodes and then %.0f rows over %d nodes: one is a count of a different plan",
-				name, settled.rows, settled.nodes, read.rows, read.nodes)
+			t.Fatalf("two counts of %s answer different work, %.0f rows answering %.0f over %d nodes and %d walks and then %.0f rows answering %.0f over %d nodes and %d walks: one is a count of a different plan",
+				name, settled.rows, settled.answered, settled.nodes, settled.walks, read.rows, read.answered, read.nodes, read.walks)
 		}
 		if read.buffers < settled.buffers {
 			settled.buffers = read.buffers
