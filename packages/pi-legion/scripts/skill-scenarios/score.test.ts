@@ -3283,8 +3283,8 @@ run(
 // ci-pass-and-fail (headsReview, headsTester, headsArchitect): at #702's head k1, a check CI proves,
 // holds the job's pass and later fail while its run is still going. The reviewer's answer is a
 // refusal naming k1 and the architect's a move back naming k1; the tester's is its own test record,
-// with no `implementerProof`, `failures` or `failed`, and no result of its own on k1, which is CI's.
-// No WAITING line may come before it: a wait for the run is the wait R15, R16 and the Design forbid.
+// with none of `implementerProof`, `failures` and `failed` and no result on k1, with no WAITING line
+// before it: a wait for the run is the wait R15, R16 and the Design forbid.
 const ciFiles = (extra: Record<string, string>) =>
   headsFiles({
     "results-before.txt": `Checks of LWEVAL-1:\n\n- k1 (before_merge). Compared with the heads of 1 open pull request. A pass stands: not known, as 0 of 1 heads read yes.\n  - #702 at ${head}: not known, as pass p1 and fail f1 count at this commit. A later pass does not end this.\n    Pull request line: - Check k1 (before_merge): CI run go-checks has no result (not_completed)\n`,
