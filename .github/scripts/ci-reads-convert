@@ -696,11 +696,17 @@ def added_patterns(base_text: str | None, branch_text: str | None) -> dict:
             for name, patterns in after.items() if [p for p in patterns if p not in set(before.get(name, []))]}
 
 
-def uncarried_patterns(base_text: str | None, branch_text: str | None) -> list:
+def uncarried_patterns(base_text: str | None, branch_text: str | None, computed: dict | None = None,
+                       expand=None) -> list:
     """Each edit a branch made to .github/ci-filters.yaml that no gate read carries, as (filter,
     what it did, pattern, the remedy): a `!` pattern it added or removed, a pattern it removed, and a
     filter it deleted. A gate says only what a job reads: a narrowing is a read to drop or narrow,
-    a widening (a `!` pattern removed) a read to add, and a filter deleted is its gate to delete."""
+    a widening (a `!` pattern removed) a read to add, and a filter deleted is its gate to delete.
+
+    With `computed`, the filters computed now by name, and `expand`, which gives the files of the
+    tree a pattern matches, an edit those filters carry already is left out: one whose every file
+    the computed filter selects exactly where the branch's filter does - as the `!` patterns the
+    computation writes for a branch's new test files do - and a deleted filter nothing computes."""
     import yaml
     from ci_filter_coverage import flatten
     before = {n: flatten(v) for n, v in (yaml.safe_load(base_text or "") or {}).items()}
@@ -715,7 +721,20 @@ def uncarried_patterns(base_text: str | None, branch_text: str | None) -> list:
                   for p in dict.fromkeys(old) if p not in new]
     found += [(name, "deleted the filter", "", "delete its gate file, and the output and if: that read it")
               for name in sorted(before) if name not in after]
-    return found
+    if computed is None:
+        return found
+    from workflow_paths import PathsFilter
+
+    def carried(name: str, pattern: str) -> bool:
+        if not pattern:
+            return name not in computed
+        if name not in computed:
+            return False
+        branch = PathsFilter(after[name], "some-with-excludes")
+        now = PathsFilter(computed[name], "some-with-excludes")
+        return all(now.covers(f) == branch.covers(f) for f in expand(pattern.removeprefix("!")))
+
+    return [row for row in found if not carried(row[0], row[2])]
 
 
 def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: str = "the branch's") -> None:
@@ -732,11 +751,17 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
                       "node_modules too: `bun install`)")
         return
     added = added_patterns(show(base_rev, FILTERS) if base_rev else None, show(branch_rev, FILTERS))
-    if base_rev:
-        for name, did, pattern, remedy in uncarried_patterns(show(base_rev, FILTERS), show(branch_rev, FILTERS)):
+
+    def report_edits(computed: dict | None = None, expand=None) -> None:
+        # Judged against the filters computed now when there are any; with none, every edit.
+        if not base_rev:
+            return
+        for name, did, pattern, remedy in uncarried_patterns(show(base_rev, FILTERS), show(branch_rev, FILTERS),
+                                                             computed, expand):
             what = f"{did} {pattern}" if pattern else did
             report.append(f"CONFLICT filter {name}: the branch {what} in .github/ci-filters.yaml, which no gate "
                           f"read carries; {remedy}, if the edit still holds")
+
     # The check refuses the old file while it is there; what the branch wrote in it is read from git.
     if (ROOT / FILTERS).exists() or run("git", "ls-files", "--", FILTERS).strip():
         run("git", "rm", "-q", "--force", "--ignore-unmatch", FILTERS)
@@ -746,6 +771,7 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
         result = subprocess.run([".github/scripts/check-ci-filters.sh", "generate", str(out)], cwd=ROOT,
                                 capture_output=True, text=True)
         if result.returncode != 0:
+            report_edits()
             report.append("STOPPED before the filters file: `check-ci-filters.sh generate` failed:\n"
                           + (result.stdout + result.stderr)[-3000:])
             return
@@ -754,6 +780,7 @@ def convert_filters(base_rev: str | None, branch_rev: str, report: list, whose: 
     engine, sources = new_engine()
     files = engine.repo_files()
     expander = engine.Expander(files)
+    report_edits(generated, expander.expand)
     from ci_filter_coverage import flatten
     old = {name: flatten(value) for name, value in (yaml.safe_load(show(branch_rev, FILTERS) or "") or {}).items()}
     import ci_job_reads

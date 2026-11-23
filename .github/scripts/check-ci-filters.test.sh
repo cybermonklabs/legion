@@ -837,6 +837,29 @@ for row in cv.uncarried_patterns('a:\n  - x/**\n  - \"!x/y/**\"\nb:\n  - z/**\n'
 check "a removed ! pattern is a read to add" "$(contains "$out" "^('a', 'removed', '!x/y/\*\*', .add a read of the files it kept out")"
 check "a deleted filter is named" "$(contains "$out" "^('b', 'deleted the filter', '', .delete its gate file")"
 
+# Most `!` patterns a branch adds to the old filters file are the generated excludes of its new test
+# files, which the computation makes as well: judged against the filters computed now, such an edit
+# is carried already, and naming it would be a conflict with nothing to do.
+echo "case: the converter leaves out a filter edit the computed filters already carry"
+root=$(fixture convert-carried)
+out=$(convert "$root" "
+import fnmatch
+files = ['x/a.go', 'x/a_test.go', 'x/y/b.go', 'z/c.go']
+expand = lambda p: {f for f in files if fnmatch.fnmatch(f, p.replace('**', '*'))}
+base = 'a:\n  - x/**\nb:\n  - z/**\nc:\n  - z/**\n'
+branch = 'a:\n  - x/**\n  - \"!x/a_test.go\"\n  - \"!x/y/**\"\n  - \"!x/gone_test.go\"\n'
+computed = {'a': ['x/**', '!x/a_test.go'], 'c': ['z/**']}
+for row in cv.uncarried_patterns(base, branch, computed, expand):
+    print(row)
+print('rows', len(cv.uncarried_patterns(base, branch, computed, expand)))
+")
+check "an added ! pattern the computed filter applies too is left out" "$(is "$(contains "$out" "x/a_test.go")" false)"
+check "and one that matches no file" "$(is "$(contains "$out" "x/gone_test.go")" false)"
+check "one the computed filter does not apply is still named" "$(contains "$out" "^('a', 'added', '!x/y/\*\*', .drop or narrow")"
+check "a deleted filter nothing computes now is left out" "$(is "$(contains "$out" "^('b', ")" false)"
+check "and one the computed filters still hold is named" "$(contains "$out" "^('c', 'deleted the filter', '', .delete its gate file")"
+check "two rows in all" "$(contains "$out" '^rows 2$')"
+
 echo "case: a gate file that cannot be read is named, and the generation falls open"
 root=$(fixture gate-file-broken)
 printf 'GATE = gate("app",\n' > "$root/.github/ci-gates/app.py"
