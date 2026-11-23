@@ -32,11 +32,18 @@ describe("the layout layer's route list", () => {
   // reading can match it, and the stale check in e2e/layout.e2e.ts judges only the routes a worker
   // measured, so nothing reports it either. A typo or a renamed route would accept a breach for
   // ever, in silence.
-  test("names a read route in every breach list entry, once", () => {
-    const read = new Set(layoutRoutes.map((route) => route.name));
-    expect(layoutBreaches.filter((entry) => !read.has(entry.route))).toEqual([]);
+  test("names a read route, and one of its states, in every breach list entry, once", () => {
+    const read = new Map(layoutRoutes.map((route) => [route.name, route]));
+    const orphans = layoutBreaches.filter((entry) => {
+      const route = read.get(entry.route);
+      if (route === undefined) return true;
+      return (
+        entry.state !== undefined && !route.states?.some((state) => state.name === entry.state)
+      );
+    });
+    expect(orphans).toEqual([]);
     const keys = layoutBreaches.map(
-      (entry) => `${entry.route} ${entry.width} ${entry.kind} ${entry.element}`
+      (entry) => `${entry.route}#${entry.state ?? ""} ${entry.width} ${entry.kind} ${entry.element}`
     );
     expect(keys.filter((key, index) => keys.indexOf(key) !== index)).toEqual([]);
   });

@@ -19,8 +19,9 @@
  *  - `clipped`: something is cut off at a side with no sign of it, in either of two ways. An
  *    element runs past the left or right edge of the ancestor that clips it (`overflow-x`
  *    `hidden` or `clip`): only the outermost such element is reported, since its children are cut
- *    because it is, and a cut an ellipsis or a line clamp of that ancestor shows is none - unless
- *    the element is a block, which an ellipsis never marks. Or a box that clips holds more than
+ *    because it is, and a cut an ellipsis or a line clamp of that ancestor shows is none - but an
+ *    ellipsis is drawn for inline text alone, so a cut atomic box (`inline-flex`, `inline-block`,
+ *    `inline-grid`) or block is a breach under it. Or a box that clips holds more than
  *    its width of its own content (`scrollWidth` past `clientWidth`), which is how a line of text
  *    is cut, with no `text-overflow: ellipsis` and no line clamp. A screen-reader-only element,
  *    clipped to a pixel on purpose, is skipped, and so is an element whose containing block is
@@ -137,7 +138,13 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   /** A screen-reader-only element is clipped to a pixel on purpose. */
   const visuallyHidden = (el: Element): boolean => {
     const box = el.getBoundingClientRect();
-    return box.width <= SLACK && box.height <= SLACK;
+    return (
+      (box.width <= SLACK && box.height <= SLACK) ||
+      // Cut to an empty `clip`: Tailwind's `sr-only` on a link that also takes a touch target's
+      // size, such as the shell's "Skip to content" until it is focused.
+      styleOf(el).clip === "rect(0px, 0px, 0px, 0px)" ||
+      styleOf(el).clipPath === "inset(50%)"
+    );
   };
   /** Whether a cut of `el`'s own content shows: an ellipsis or a line clamp. */
   const marksItsCut = (style: CSSStyleDeclaration): boolean =>
@@ -297,7 +304,9 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     if (parent !== null && parent !== clipper && cut.has(parent)) continue;
     cutInside.add(clipper);
     const style = styleOf(el);
-    const inline = style.display.startsWith("inline");
+    // An ellipsis stands in for inline text it cuts: a chip (`inline-flex`), an `inline-block` or
+    // a block it cuts shows no ellipsis, so only a plain `inline` element is excused by one.
+    const inline = style.display === "inline";
     if (style.textOverflow === "ellipsis" || (inline && marksItsCut(styleOf(clipper)))) continue;
     breaches.push({
       detail: `spans ${Math.round(box.left)}-${Math.round(box.right)}px inside ${path(clipper)} at ${Math.round(edge.left)}-${Math.round(edge.right)}px`,

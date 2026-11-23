@@ -159,7 +159,12 @@ function withoutFields<T extends Record<string, unknown>>(
  *  The sort is stable within one `(method, url)` group, so a row that asks for one URL twice and
  *  is answered twice keeps the two answers in the order it was given them: `routeFromHAR` serves
  *  the first matching entry, and reversing them would answer the first read with the second
- *  answer. */
+ *  answer.
+ *
+ *  And an entry that repeats an earlier one's method, URL, body and headers is dropped: Playwright
+ *  picks among a URL's entries the one whose request headers match the most, the first of equals
+ *  (`_harFindResponse`, playwright-core 1.64.1 coreBundle.js), so such an entry can never be
+ *  served. A row that loads one page at five widths would otherwise keep every read five times. */
 export function normalise(har: Har, from: string): Har {
   const entries = har.log.entries.map((entry, index) => ({ entry, index }));
   entries.sort((a, b) => {
@@ -169,6 +174,7 @@ export function normalise(har: Har, from: string): Har {
     if (url !== 0) return url;
     return a.index - b.index;
   });
+  const served = new Set<string>();
   const normalised: Har = {
     log: {
       ...withoutFields(har.log, ["browser", "creator", "pages"]),
@@ -199,6 +205,17 @@ export function normalise(har: Har, from: string): Har {
       }),
     },
   };
+  normalised.log.entries = normalised.log.entries.filter(({ request }) => {
+    const key = JSON.stringify([
+      request.method,
+      request.url,
+      request.postData?.text ?? "",
+      request.headers.map(({ name, value }) => `${name.toLowerCase()}: ${value}`).sort(),
+    ]);
+    if (served.has(key)) return false;
+    served.add(key);
+    return true;
+  });
   refuseACredential(normalised);
   return normalised;
 }

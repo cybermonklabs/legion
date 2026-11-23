@@ -53,13 +53,20 @@ function entriesAt(
 const measuredHere = new Set<string>();
 const matchedHere = new Set<string>();
 
+/** What a reading must hold beyond its breaches: the groups the page must mark, and the fewest
+ *  elements a drawn page of it holds (`MIN_ELEMENTS` unless the route says why it draws fewer). */
+export interface ReadingNeeds {
+  readonly groups?: readonly string[];
+  readonly minElements?: number;
+}
+
 /** Judges one reading of `place`: a page that drew too little, a required group the page does not
  *  mark, and each breach no entry of `entries` covers are failures, written as the entry that
  *  would list the breach. Records the place as measured and the entries it matched. */
 export function judgeReading(
   place: ReadingPlace,
   reading: LayoutReading,
-  requiredGroups: readonly string[] = [],
+  { groups = [], minElements = MIN_ELEMENTS }: ReadingNeeds = {},
   entries: readonly KnownLayoutBreach[] = layoutBreaches
 ): string[] {
   const where = `${place.route}${place.state === undefined ? "" : ` in ${place.state}`} at ${place.width}`;
@@ -68,13 +75,13 @@ export function judgeReading(
   if (reading.viewport !== place.width) {
     failures.push(`${where}: the page read a ${reading.viewport}px viewport`);
   }
-  if (reading.elements < MIN_ELEMENTS) {
+  if (reading.elements < minElements) {
     failures.push(
-      `${where}: the page drew ${reading.elements} elements, fewer than ${MIN_ELEMENTS}, so it ` +
+      `${where}: the page drew ${reading.elements} elements, fewer than ${minElements}, so it ` +
         "is blank, a sign-in page or a skeleton, and reads as no pass"
     );
   }
-  for (const group of requiredGroups) {
+  for (const group of groups) {
     if (!reading.groups.includes(group)) {
       failures.push(`${where}: no element carries data-layout-group="${group}"`);
     }
@@ -148,12 +155,18 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
     await page.setViewportSize({ height: HEIGHT, width });
     await loadSettled(page, route, address);
     const plain = { route: route.name, width };
-    failures.push(...judgeReading(plain, await read(page, plain), route.requiredGroups));
+    const needs = { groups: route.requiredGroups, minElements: route.minElements?.count };
+    failures.push(...judgeReading(plain, await read(page, plain), needs));
     for (const state of route.states ?? []) {
       await loadSettled(page, route, address);
       await state.act(page);
       const acted = { route: route.name, state: state.name, width };
-      failures.push(...judgeReading(acted, await read(page, acted), state.requiredGroups));
+      failures.push(
+        ...judgeReading(acted, await read(page, acted), {
+          groups: state.requiredGroups,
+          minElements: route.minElements?.count,
+        })
+      );
     }
   }
   expect(

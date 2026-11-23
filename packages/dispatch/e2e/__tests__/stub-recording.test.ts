@@ -105,6 +105,21 @@ describe("a committed recording", () => {
     expect(normalise(recorded({ body }), from).log.entries[0].response.content.text).toBe(body);
   });
 
+  test("keeps one entry per request routeFromHAR can serve, the first", () => {
+    // Playwright serves a URL's first entry among those whose headers match equally, so a second
+    // read of the same request is dead weight; a read of another URL is kept.
+    const first = recorded({ body: '{"rows":[1]}' }).log.entries;
+    const again = recorded({ at: "2026-11-09T00:00:05Z", body: '{"rows":[2]}' }).log.entries;
+    const other = recorded({ url: "/api/v1/inbox/threads" }).log.entries;
+    const har = recorded({});
+    har.log.entries = [...first, ...again, ...other];
+    const written = normalise(har, from).log.entries;
+    expect(written.map((entry) => [entry.request.url, entry.response.content.text])).toEqual([
+      [`${recordedOrigin}/api/v1/inbox`, '{"rows":[1]}'],
+      [`${recordedOrigin}/api/v1/inbox/threads`, expect.any(String)],
+    ]);
+  });
+
   test("names no encoding of a body it holds decoded", () => {
     // A reader who trusted the recorded `Content-Encoding` would look for gzip in a body stored
     // as text, and the `Content-Length` beside it counts the compressed form the file replaced.

@@ -86,6 +86,17 @@ const defects: readonly {
     name: "a line of text its own box cuts with no ellipsis",
   },
   {
+    // The Inbox card row's reply chip on production at 400 px: a pill inside a truncating span,
+    // cut at the span's edge with no ellipsis, since an ellipsis stands in for text alone.
+    body:
+      '<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 150px">' +
+      'Reply <span data-testid="chip" style="border-radius: 9999px; display: inline-flex">' +
+      "Legion architect · INFRA-2969 replied</span></span>",
+    kind: "clipped",
+    locator: '[data-testid="chip"]',
+    name: "a chip a truncating box cuts, which shows no ellipsis",
+  },
+  {
     body: `<div data-layout-group="labels">${entries(11)}<button data-layout-more type="button">+1</button></div>`,
     kind: "group-over-cap",
     locator: '[data-layout-group="labels"]',
@@ -102,6 +113,7 @@ const defects: readonly {
 /** Every case the rule allows, on one page: none of them may be reported. */
 const allowed = [
   `<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px">${LONG}</span>`,
+  `<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 100px">Opened by <a href="#x">${LONG}</a></span>`,
   `<pre style="overflow-x: auto; width: 200px">${LONG}</pre>`,
   `<div style="overflow-x: auto; width: 200px"><pre>${LONG}</pre></div>`,
   `<div style="overflow-x: auto; width: 200px"><table><tr><td style="white-space: nowrap">${LONG}</td></tr></table></div>`,
@@ -142,9 +154,11 @@ test("a layout reading fails on a blank page, on a required group no element mar
   const place = { route: "control", width: 360 } as const;
   const blank = await measure(page, "<p>Loading…</p>");
   expect(judgeReading(place, blank).join("\n")).toContain("fewer than 100");
+  // A route that names a lower floor for itself is still refused below it.
+  expect(judgeReading(place, blank, { minElements: 40 }).join("\n")).toContain("fewer than 40");
 
   const drawn = await measure(page, entries(120));
-  expect(judgeReading(place, drawn, ["labels"]).join("\n")).toContain(
+  expect(judgeReading(place, drawn, { groups: ["labels"] }).join("\n")).toContain(
     'no element carries data-layout-group="labels"'
   );
   expect(judgeReading(place, drawn)).toEqual([]);
@@ -160,6 +174,6 @@ test("a layout reading fails on a blank page, on a required group no element mar
     width: 360,
   };
   const elsewhere: KnownLayoutBreach = { ...entry, element: '[data-testid="gone"]' };
-  expect(judgeReading(place, scrolled, [], [entry, elsewhere])).toEqual([]);
+  expect(judgeReading(place, scrolled, {}, [entry, elsewhere])).toEqual([]);
   expect(staleEntries([entry, elsewhere])).toEqual(['control 360 box-scroll [data-testid="gone"]']);
 });

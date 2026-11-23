@@ -1151,19 +1151,26 @@ claims. A baseline comes only from the pinned container, through
 `e2e/visual-run.sh --update-snapshots`; the script's header says how to take one from CI on a
 machine with no container.
 
-A third layer, `e2e/layout.e2e.ts`, holds every page to the layout rule of `AGENTS.md`
-("Layout"). It reads the routes of `e2e/layout-routes.ts` - every reviewed route, the excluded
-ones whose reason argues only against a shot or a scan, and three states a reader chooses in this
-browser (the new issue page, the project's board, a project with an architecture source) - over
-the review corpus and a stress layer that writes production's lengths (`e2e/layout-seed.ts`), at
-360, 900, 1280, 1440 and 1920 px. At each width it loads the page fresh, waits for
-`waitForRouteSettled`, and runs `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that
-scrolls sideways, a box that does (bar a code block, a picture, a data table and a board's lanes),
-an element cut off with no ellipsis, and a `data-layout-group` showing more entries than its cap.
-A row fails on each breach `e2e/layout-breaches.ts` does not list, on a page that drew fewer than
-100 elements, and, after its worker's rows, on an entry whose route and width it measured and
-which matched nothing. That list holds the breaches main still has, each naming the INFRA-5200
-slice that removes it; a slice deletes its entries, and the list and its use go once it is empty.
+A third layer holds every page to the layout rule of `AGENTS.md` ("Layout"). It reads the routes
+of `e2e/layout-routes.ts` - every reviewed route, the excluded ones whose reason argues only
+against a shot or a scan, and pages a reader's choice in this browser draws another way (the new
+issue page, the project's board, a project with an architecture source) - over the review corpus
+and a stress layer that writes production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280,
+1440 and 1920 px, and again in each state a route names (the Peek drawer open, rows selected).
+At each width `e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and
+runs `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box
+that does for anything but a code block, a picture, a data table or a board's lanes, something cut
+off at a side with no ellipsis, and a closed `data-layout-group` showing more entries than its
+cap. `e2e/layout-rule.stub.e2e.ts` reads every route a recording can draw, in the stubbed layer on
+every pull request (`bun run e2e:stub:record -- layout-rule.stub` after a change to the stress
+layer); `e2e/layout.e2e.ts` reads, on the real stack and on the full lane, the routes whose
+`needsStack` says why a recording cannot draw them; `e2e/layout-measure.stub.e2e.ts` draws each
+defect and each allowed case and holds the instrument to reporting the one and not the other. A
+row fails on each breach `e2e/layout-breaches.ts` does not list, on a required group the page
+does not mark, on a page that drew fewer than 100 elements (or the route's own `minElements`),
+and, after its worker's rows, on an entry whose route, state and width it measured and which
+matched nothing. That list holds the breaches main still has, each naming the INFRA-5200 slice
+that removes it; a slice deletes its entries, and the list and its use go once it is empty.
 
 ## Phone check
 

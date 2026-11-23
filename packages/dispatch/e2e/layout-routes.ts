@@ -61,6 +61,10 @@ export interface LayoutRoute {
   readonly requiredGroups?: readonly string[];
   /** Why a recording cannot draw this route, when it cannot: then the real-stack row reads it. */
   readonly needsStack?: string;
+  /** The fewest elements the drawn page holds, where it is fewer than `MIN_ELEMENTS`
+   *  (`e2e/layout-check.ts`), with why. The route's ready locators still have to be on the screen
+   *  first, so a sign-in page or a skeleton still fails. */
+  readonly minElements?: { readonly count: number; readonly reason: string };
 }
 
 /** The Peek drawer, the Inbox over the page it is opened from: the compact header's Peek below
@@ -90,12 +94,30 @@ const twoRowsSelected: LayoutState = {
   name: "two-rows-selected",
 };
 
+/** Why a short page draws fewer than `MIN_ELEMENTS`: below the wide layout the shell draws no
+ *  sidebar, so the page is its own few elements and the compact header. */
+function narrowShell(measured: number): string {
+  return `a short page below 1280 px, where the shell draws no sidebar: ${measured} elements at 360 px on the stress seed`;
+}
+
 /** What a reviewed route adds here: its states, the groups it must mark, and why the stack draws
  *  it alone. */
 const additions: Readonly<
-  Record<string, Pick<LayoutRoute, "needsStack" | "requiredGroups" | "states">>
+  Record<string, Pick<LayoutRoute, "minElements" | "needsStack" | "requiredGroups" | "states">>
 > = {
   agents: { states: [peekDrawer] },
+  answers: { minElements: { count: 40, reason: narrowShell(54) } },
+  broadcast: { minElements: { count: 50, reason: narrowShell(70) } },
+  broadcasts: { minElements: { count: 25, reason: narrowShell(36) } },
+  "credentials-machine": {
+    // Measured: 97 elements from 1280 px up on the stack.
+    minElements: { count: 40, reason: "a one-field page: the code a machine shows, in the shell" },
+  },
+  machine: { minElements: { count: 50, reason: narrowShell(68) } },
+  machines: { minElements: { count: 25, reason: narrowShell(37) } },
+  "not-found": { minElements: { count: 20, reason: narrowShell(26) } },
+  pipeline: { minElements: { count: 20, reason: narrowShell(26) } },
+  "project-documents": { minElements: { count: 45, reason: narrowShell(62) } },
   "issue-artifact": {
     needsStack:
       "It settles on its document's connected status, which only the `/ws/doc` socket gives, and the stubbed layer answers no `/ws/doc`.",
@@ -123,6 +145,18 @@ const reviewed: readonly LayoutRoute[] = reviewRoutes
   .filter((route): route is ReviewedRoute => route.kind === "reviewed")
   .map(({ name, path, pattern, ready }) => ({ name, path, pattern, ready, ...additions[name] }));
 
+/** The Inbox, read again on the real stack: from the wide layout up its reading pane draws the
+ *  selected row's document, which a recording does not draw (replayed, 341 elements against 416
+ *  at 1280 px), so the stubbed `inbox` row reads the list and this one reads the pane too. */
+const inboxOnStack: readonly LayoutRoute[] = reviewed
+  .filter((route) => route.name === "inbox")
+  .map((route) => ({
+    ...route,
+    name: "inbox-on-stack",
+    needsStack:
+      "From 1280 px up its reading pane draws the selected row's document, which a replay does not: 341 elements against 416 on the stack.",
+  }));
+
 /** The routes the review table excludes that this layer does not read either, each with why.
  *  Every other excluded route is read below; `e2e/__tests__/layout-routes.test.ts` holds the two
  *  lists to the table. */
@@ -133,6 +167,7 @@ export const layoutUnread: Readonly<Record<string, string>> = {
 
 export const layoutRoutes: readonly LayoutRoute[] = [
   ...reviewed,
+  ...inboxOnStack,
   {
     name: "issue-spec-outline",
     // The new issue page: today's page unless the reader chose it, in this browser.
@@ -184,6 +219,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ],
   },
   {
+    minElements: { count: 50, reason: narrowShell(68) },
     name: "agent-live",
     // Excluded from the review table because its frames land over a live socket and the view
     // scrolls as they do, so no two shots match; a layout reading taken once the replayed turns
@@ -197,6 +233,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ],
   },
   {
+    minElements: { count: 45, reason: narrowShell(63) },
     name: "agent-artifact",
     // Excluded from the review table because its chrome is the issue-artifact page's; the
     // layout rule reads that chrome around a picture, which no other route draws.
