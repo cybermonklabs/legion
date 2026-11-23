@@ -21,7 +21,8 @@
 // and the daemon writes no in_progress status to Dispatch. Last, the merger's own
 // prompt, as its launch carries it, is printed beside what the daemon sent it, for a reader to
 // hold the one against the other. scripts/e2e/conflict-merger.sh builds this driver with
-// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
+// `-tags e2e`, owns the nats-server it runs against, and takes the PostgreSQL from
+// LEGION_TEST_PG_DSN, which it starts none of.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, booted as this package's
 // other whole-daemon proofs boot it (startDaemonWithin, through conflictLive's bootLogged), so the
@@ -448,10 +449,9 @@ func (r *conflictMergerLive) redCheckReachesTheMerger() {
 // merger or the reviewer, none to the implementer.
 //
 // The order of the phases is read from the daemon's log, not from the watch. The daemon logs each
-// move once it commits (phaseChangedLine), so the log holds every move it made. The watch reads the
-// state ten times a second, and a phase that lasts less than a tenth of a second can fall between
-// two of its reads: retro does here, since the driver completes it at once, and the watch then read
-// [accepting merging done] in about one run in four. The watch still holds what the route showed.
+// move its transition table makes once the move commits (phaseChangedLine). The watch reads the
+// state ten times a second, and the driver completes retro at once, so retro can fall between two
+// of its reads (phaseWatch). The watch still holds what the route showed.
 func (r *conflictMergerLive) mergeClosesTheIssue() {
 	t := r.t
 	r.waitProcessed(r.publishMergeOf(r.number, r.key, mergerMergeHead, conflictBase))
@@ -569,8 +569,10 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 	return *pr
 }
 
-// phaseChangedLine is the line the daemon logs for each move of an issue once the move commits
-// (workflow's arrive), naming the phase it left (`from`) and the phase it entered (`to`).
+// phaseChangedLine is the line the daemon logs for each move of an issue its transition table
+// makes, once the move commits (workflow's transition), naming the phase it left (`from`) and the
+// phase it entered (`to`). A hold, its release and a lingering tree's close write the phase
+// without it.
 const phaseChangedLine = "workflow: phase changed"
 
 // phaseMoves is each move of the issue the daemon logged (phaseChangedLine), oldest first, as
@@ -600,10 +602,10 @@ func inOrder(seen, order []phase.Phase) bool {
 // boot until stop, and once more after stop, so the phase the caller saw before it stopped the
 // watch is the last one kept. It keeps each phase the issue showed, in the order it showed them, a
 // phase shown again in a row kept once. Its reads are samples: a phase shorter than a tenth of a
-// second can fall between two of them, so it says what the route showed, never every phase the
-// issue entered, which the daemon's log says (phaseMoves). It reads through a client of its own and
-// fails no test itself: a read that fails is counted, and stop answers how many reads were made
-// and failed, so a watch that read nothing says so rather than passing.
+// second can fall between two of them, so it says what the route showed, not every phase the
+// issue entered; the order of the moves comes from the daemon's log (phaseMoves). It reads through
+// a client of its own and fails no test itself: a read that fails is counted, and stop answers how
+// many reads were made and failed, so a watch that read nothing says so rather than passing.
 type phaseWatch struct {
 	stopping chan struct{}
 	stopped  chan struct{}

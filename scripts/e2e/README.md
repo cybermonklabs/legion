@@ -4542,7 +4542,8 @@ the push onto the base that asks the daemon to read every open pull request on i
 the daemon's own HTTP routes for each role's registration, readiness and grants, the architect's sign-off and the implementer's completion of `retro`, which rates the plan;
 and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames).
 A goroutine reads `GET /legion/v1/state` ten times a second over the whole run and keeps each phase the issue shows.
-Those reads are samples, and a phase shorter than a tenth of a second can fall between two of them, as `retro` does here in about one run in four, so the order of the phases is read from the daemon's own `workflow: phase changed` lines, which it logs for every move once the move commits.
+Those reads are samples: a phase shorter than a tenth of a second can fall between two of them, as `retro` can here, since the driver completes it at once.
+So the order of the moves is read from the daemon's own `workflow: phase changed` lines, which it logs for each move of its transition table once the move commits.
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
