@@ -498,11 +498,15 @@ through redact.Error and redact.Cause; a call into one of those libraries made t
 reflection (reflect.Value.MethodByName(...).Call), which no census lists and review sees; the
 ways an answer's words leave it that no census reads from the types alone - the bytes StreamTo
 or StreamAnswer hands out, printed; a test given to Holds that keeps the bytes; a member decoded
-into a plain string, printed; and a response's header, trailer or Location, printed - which
-review sees; and that the list of remote fields, which the spec's census and review settle, is
-complete. The two forms the fixture's known-residual rows pin print by design: a bare
-"label: secret@host", with no scheme and no key before it (split-user-info-bare), and the same
-form as a JSON key's value (split-user-info-json-key).
+into a plain string, printed; a response's header, trailer or Location, printed; a response held
+only behind an unexported pointer field, which fmt prints as an address and encoding/json leaves
+out, printed by a printer that follows it (go-spew does; a census that walked every such pointer
+would refuse each *net/http.Transport handed out as a RoundTripper); and a response handed to a
+library function that takes it by its own type and prints it - which review sees; and that the list of
+remote fields, which the spec's census and review settle, is complete. The two forms the
+fixture's known-residual rows pin print by design: a bare "label: secret@host", with no scheme
+and no key before it (split-user-info-bare), and the same form as a JSON key's value
+(split-user-info-json-key).
 EOF
 echo "check c-redact-remote-text: passed ($rows rows, and the gate)"
 exit 0

@@ -44,12 +44,15 @@ type answerExempt struct {
 // redact.Answer decodes them into typed values holding the request's record, prints them only as
 // the rule reads them with that record, or streams them to a writer. Outside the box's package:
 //
-//   - every use of the Body field of a net/http.Response fails, but its Close called (body.Close())
-//     and an assignment to it: a read of the bytes, wherever they go next - a decoder, a string, a
-//     helper, a value of any type - is a read outside the reader, and the census does not follow it;
-//   - every use of the Status field of a net/http.Response fails, but an assignment to it: it is
-//     the status line as the answering party wrote it, whose phrase is that party's own words, so a
-//     message names an answer's status through redact.StatusLine, its code and the standard phrase;
+//   - every use of the Body field of a response fails, but its Close called (body.Close()) and an
+//     assignment to it: a read of the bytes, wherever they go next - a decoder, a string, a helper,
+//     a value of any type - is a read outside the reader, and the census does not follow it. A
+//     response here is a net/http.Response or a value of a type whose underlying type is its struct:
+//     an alias, a type defined over it (type raw http.Response) in any package, a defined pointer
+//     type to one, or a struct declared with its fields, which converts to it (responseType);
+//   - every use of the Status field of a response fails, but an assignment to it: it is the status
+//     line as the answering party wrote it, whose phrase is that party's own words, so a message
+//     names an answer's status through redact.StatusLine, its code and the standard phrase;
 //   - every call of the standard library's own readers of a response's body (gate.answers.readers:
 //     (*net/http.Response).Write, net/http/httputil.DumpResponse) fails, for the same reason;
 //   - each call of the reader is listed, and a census that lists none is UNKNOWN, since it cannot
@@ -61,7 +64,10 @@ type answerExempt struct {
 //     gate.answers.exempt names its function with why;
 //   - the rules of answers_reach.go: a reader or a maker referred to other than by its call, a
 //     decode into a value that holds the box outside Answer.Decode, net/http.ReadResponse given no
-//     request, and a response handed whole to a parameter of interface type.
+//     request, and a value a printer reaches a response in made an interface value or a type
+//     parameter's value, where a printer can print it whole. Two such values are listed and pass:
+//     errors.As's target, which it only writes an error of err's tree through, and a value whose
+//     type is one of gate.external_errors, every use of which the whole-value census judges.
 //
 // In the box's own package the census checks the reader's type: its exported methods are exactly
 // gate.answers.methods, and the package's exported functions that take it exactly
@@ -74,7 +80,15 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 		g.answerFunctions(c, dir, fset, pkg, cfg)
 		return
 	}
-	a := &answerReader{info: info, cfg: cfg, readers: set(cfg.Readers), makers: set(cfg.Makers), decoders: set(cfg.Decoders), boxPkg: boxPkg, boxName: boxName}
+	a := &answerReader{info: info, cfg: cfg, readers: set(cfg.Readers), makers: set(cfg.Makers), decoders: set(cfg.Decoders), boxPkg: boxPkg, boxName: boxName, external: set(g.inv.Gate.External)}
+	if http := importedPackage(pkg, "net/http"); http != nil {
+		response, ok := http.Scope().Lookup("Response").(*types.TypeName)
+		if !ok {
+			c.Unknown = append(c.Unknown, fmt.Sprintf("%s: net/http is in its imports without its Response, which the answer census compares a type's struct with", path))
+			return
+		}
+		a.httpResponse = response.Type()
+	}
 	for _, f := range files {
 		rel, _ := filepath.Rel(dir, fset.Position(f.Pos()).Filename)
 		rel = filepath.ToSlash(rel)
@@ -113,6 +127,19 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 				p := fset.Position(n.Pos())
 				c.Answers = append(c.Answers, finding{File: rel, Line: p.Line, Function: function(), What: what, Kind: kind, OK: ok, Why: why})
 			}
+			for _, cv := range a.conversions(n, parents) {
+				if !a.holdsResponse(cv.from) {
+					continue
+				}
+				switch held := types.TypeString(cv.from, nil); {
+				case cv.pass != "":
+					add("whole-response", true, exprString(cv.expr), cv.pass)
+				case a.externalError(cv.from):
+					add("whole-response", true, exprString(cv.expr), "a "+held+", an external error type's value, every use of which the whole-value census judges")
+				default:
+					add("whole-response", false, exprString(cv.expr), "a response handed whole to "+cv.to+", as a "+held+", where fmt, log, slog and encoding/json print the status line the answering party wrote and every header it sent, as they came: name its status through redact.StatusLine and a header through redact.Header")
+				}
+			}
 			switch n := n.(type) {
 			case *ast.SelectorExpr:
 				if name, ok := a.reference(n, parents); ok {
@@ -145,9 +172,6 @@ func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, fi
 				}
 				if a.readsNoRequest(n) {
 					add("no-request", false, exprString(n), "net/http.ReadResponse given no request: the answer it reads holds no record of what the request carried, so none of its credentials is redacted from the answer's words; hand it the request the answer answers")
-				}
-				if arg := a.wholeResponse(n); arg != nil {
-					add("whole-response", false, exprString(arg), "a response handed whole to a parameter of interface type, where fmt, log, slog and encoding/json print the status line the answering party wrote and every header it sent, as they came: name its status through redact.StatusLine and a header through redact.Header")
 				}
 				name := a.calleeName(n)
 				switch {
@@ -202,17 +226,31 @@ type answerReader struct {
 	cfg                       answersConfig
 	readers, makers, decoders map[string]bool
 	boxPkg, boxName           string
+	httpResponse              types.Type      // net/http.Response as the package's imports hold it, or nil where they hold no net/http
+	external                  map[string]bool // gate.external_errors, the types the whole-value census judges every use of
 }
 
-// responseField reports whether sel selects the field name of a net/http.Response, directly or
-// through an embedded one.
+// externalError reports whether t, through any number of pointers, is one of gate.external_errors.
+func (a *answerReader) externalError(t types.Type) bool {
+	for {
+		p, ok := types.Unalias(t).(*types.Pointer)
+		if !ok {
+			break
+		}
+		t = p.Elem()
+	}
+	n, ok := types.Unalias(t).(*types.Named)
+	return ok && n.Obj().Pkg() != nil && a.external[n.Obj().Pkg().Path()+"."+n.Obj().Name()]
+}
+
+// responseField reports whether sel selects the field name of a response (responseType),
+// directly, through a pointer or through an embedded one.
 func (a *answerReader) responseField(sel *ast.SelectorExpr, name string) bool {
 	s := a.info.Selections[sel]
 	if s == nil || s.Kind() != types.FieldVal {
 		return false
 	}
-	v, ok := s.Obj().(*types.Var)
-	if !ok || v.Name() != name || v.Pkg() == nil || v.Pkg().Path() != "net/http" {
+	if v, ok := s.Obj().(*types.Var); !ok || v.Name() != name {
 		return false
 	}
 	t := s.Recv()
@@ -224,7 +262,7 @@ func (a *answerReader) responseField(sel *ast.SelectorExpr, name string) bool {
 			return false
 		}
 		if i == len(index)-1 {
-			return isResponse(t)
+			return a.responseType(t)
 		}
 		t = st.Field(k).Type()
 	}
@@ -312,8 +350,8 @@ func (a *answerReader) recorded(call *ast.CallExpr, parents []ast.Node) (bool, s
 	return true, "held with the record of " + from.Name() + ", the answer it came from"
 }
 
-// response is the response expr names: the first variable of type *net/http.Response or
-// net/http.Response it holds, or nil.
+// response is the response expr names: the first variable it holds whose type is a response or a
+// pointer to one (isResponse), or nil.
 func (a *answerReader) response(expr ast.Expr) types.Object {
 	var found types.Object
 	ast.Inspect(expr, func(n ast.Node) bool {
@@ -321,7 +359,7 @@ func (a *answerReader) response(expr ast.Expr) types.Object {
 		if !ok || found != nil {
 			return found == nil
 		}
-		if obj := a.info.Uses[id]; obj != nil && isResponse(obj.Type()) {
+		if obj := a.info.Uses[id]; obj != nil && a.isResponse(obj.Type()) {
 			found = obj
 		}
 		return true
@@ -329,9 +367,40 @@ func (a *answerReader) response(expr ast.Expr) types.Object {
 	return found
 }
 
-func isResponse(t types.Type) bool {
-	n, ok := types.Unalias(derefType(t)).(*types.Named)
-	return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "net/http" && n.Obj().Name() == "Response"
+// isResponse reports whether t, or what it points to, is a response (responseType).
+func (a *answerReader) isResponse(t types.Type) bool {
+	return a.responseType(derefType(t))
+}
+
+// responseType reports whether t is a response: net/http.Response or an alias of it, or a type
+// whose underlying type is the response's struct - one defined over it (type raw http.Response),
+// in this package or another, or a struct declared with its fields, which converts to it - so its
+// Body and Status are the answer's, whatever the type is named.
+func (a *answerReader) responseType(t types.Type) bool {
+	if n, ok := types.Unalias(t).(*types.Named); ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "net/http" && n.Obj().Name() == "Response" {
+		return true
+	}
+	st, ok := t.Underlying().(*types.Struct)
+	return ok && a.httpResponse != nil && types.Identical(st, a.httpResponse.Underlying())
+}
+
+// importedPackage is the package of path among pkg's imports, direct or not, or nil. A package
+// loaded from export data lists every package that data loaded as its imports.
+func importedPackage(pkg *types.Package, path string) *types.Package {
+	if pkg == nil {
+		return nil
+	}
+	for _, direct := range pkg.Imports() {
+		if direct.Path() == path {
+			return direct
+		}
+		for _, p := range direct.Imports() {
+			if p.Path() == path {
+				return p
+			}
+		}
+	}
+	return nil
 }
 
 // recordOf is the response whose record recorder is given: record(x)... directly, or a local that
@@ -397,9 +466,10 @@ func (a *answerReader) recordOf(recorder *ast.CallExpr, parents []ast.Node) type
 	return from
 }
 
-// derefType is t, or what it points to.
+// derefType is t, or what it points to: through a pointer type, an alias of one, or a type
+// defined over one (type p *T), whose field a selector reads as a pointer's.
 func derefType(t types.Type) types.Type {
-	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+	if p, ok := t.Underlying().(*types.Pointer); ok {
 		return p.Elem()
 	}
 	return t

@@ -22,11 +22,13 @@
 //     value or the rule's reading (fields.go). The answer census fails on any read of an HTTP
 //     answer's body outside internal/redact but through redact.ReadAnswer or redact.StreamAnswer,
 //     on any read of an answer's status line (net/http's Response.Status, the answering party's
-//     own phrase) outside internal/redact, on another party's text held as the box with no record
-//     of the answer it came from, on a reader or maker used as a value, a decode into a value that
-//     holds the box outside Answer.Decode, a response read with no request and a response printed
-//     whole, and on a function of the box's package that takes an answer and is not listed
-//     (answers.go, answers_reach.go);
+//     own phrase) outside internal/redact, each through net/http.Response or any type whose
+//     underlying type is its struct, on another party's text held as the box with no record of
+//     the answer it came from, on a reader or maker used as a value, a decode into a value that
+//     holds the box outside Answer.Decode, a response read with no request, a value that holds a
+//     response made an interface value or a type parameter's value (printed whole), and on a
+//     function of the box's package that takes an answer and is not listed (answers.go,
+//     answers_reach.go);
 //  3. binding: each mutation's function is in its file and its preimage occurs there once;
 //  4. baseline: each row's test passes unmutated in its scratch copy (the check script runs the
 //     normal verification between stage 3 and this one);
