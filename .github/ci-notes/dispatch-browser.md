@@ -1104,8 +1104,8 @@ The step "Pull the stack's Postgres image" was added later, for the reason
 .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason gives,
 and its pull is counted at the 120 s the browser step spent before the stack's first output
 on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
-it had. The reverse-order browser step runs the same rows on a new stack of the same size, with
-a new seed, and has the first step's 4-minute budget, so the job budget is 12 + 4 = 16 minutes.
+it had. The reverse-order browser step this job ran after it, with its own 4 minutes, is gone:
+the section on the guard that took its place says why.
 
 #4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
 was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
@@ -1153,28 +1153,28 @@ digest is written three times, here and in the two browser steps (the normal ord
 the reverse), and the three must stay the same: a pull of another digest here leaves the
 browser steps to pull their own inside their budgets again.
 
-## Why the visual job runs its rows again in reverse order
+## Why each visual row stops its page's writes, and runs once
 
-The same rows again in reverse order, on a new stack and a new seed: the phone rows before
-the desktop rows, and each project's rows last first (packages/dispatch/e2e/visual-order.ts).
-One seed serves a whole run, so a row whose page reads a write another row made fails one
-of the two runs by its own name, and a baseline that holds another row's write is found
-here rather than as a flake. It runs when the normal run failed too, since that is when its
-answer says most, and not when the normal run never started: a setup step that failed
-leaves nothing for either run to compare. Its budget is the first step's, for the same
-rows on a new stack of the same size.
+One seed serves the whole visual run, so a page that wrote to the corpus as it drew would change
+what every row after it compares, and a baseline would hold another row's write. So no row's page
+may write: e2e/visual-guard.ts, installed on each row's page before it navigates, stops every
+request to `/api/` with a write method and every document-socket frame that would change a
+document (a Yjs update, or a sync reply carrying structs of the page's own), and the row then
+fails with the list of what it stopped, by its own name. The two read marks a page of the shot set
+writes as it draws pass, because the seed writes them first (`markWhatTheShotPagesRead`,
+e2e/review-seed.ts) and the page's request is a repeat that moves nothing.
 
-Its results go to `test-results-reverse` (Playwright's `--output`, which e2e/visual-run.sh
-passes on), so the normal run's stay in `test-results`, where a reader of a failed run
-looks for the shots, however this run ends.
+This replaces a second run of every row in reverse order, on a new stack and a new seed, about 67
+s a job (p50 of 2026-11-22's full-lane runs). That run caught a write only when some later row's
+shot happened to draw it, and could not say a row passes alone; the guard names the row that
+wrote, whatever any other row draws, and stops the write before any other row can see it.
 
 ## Why the visual job's upload is always
 
 Always, not on failure alone: a reader of a green run wants the report too, and a run
 that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
 which is how that file reaches the pull request from a machine with no container. It
-holds both runs: the normal run's results under test-results, the reverse run's under
-test-results-reverse.
+holds the run's results under test-results.
 
 ## Why the visual upload keeps a pattern that matches no file
 

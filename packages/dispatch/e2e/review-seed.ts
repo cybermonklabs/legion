@@ -101,9 +101,9 @@ function createReviewPriority() {
  *  `useMarkShownRepliesRead`), and the Spec tab's read of the issue's spec at its newest version,
  *  in the desktop row and again in the phone row (`useSpecMarks`). These are those writes, the same
  *  requests the pages send; after them each page's own write changes nothing. A page of the shot
- *  set that comes to write a mark as it draws needs that mark written here too: until it is, the
- *  visual job's reverse-order run (`DISPATCH_E2E_VISUAL_ORDER=reverse`, e2e/visual-order.ts) fails
- *  by the name of a row that read it. */
+ *  set that comes to write a mark as it draws needs that mark written here, and its route and
+ *  field in `SEEDED_READ_MARKS` (e2e/visual-guard.ts): until they are, the guard stops the write
+ *  and fails the row that made it, by name. */
 async function markWhatTheShotPagesRead(
   broadcastId: string,
   issue: string,
