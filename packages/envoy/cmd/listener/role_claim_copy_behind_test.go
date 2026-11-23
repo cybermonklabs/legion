@@ -12,20 +12,24 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// staleClaimKV is the role bucket as a direct get of a replicated bucket can answer it: while
-// behind is set, a Get of role answers stale, the claim as it stood before a takeover, as a copy of
-// the bucket that has not applied the takeover answers. Every other call is the bucket's own, and
-// a read from the stream's leader does not go through this handle.
+// staleClaimKV is the role bucket as a direct get of a replicated bucket can answer it: once
+// fallBehind has given it a claim, a Get of role answers that claim, as a copy of the bucket that
+// has not applied a later takeover answers, until catchUp. Every other call is the bucket's own,
+// and a read from the stream's leader does not go through this handle. The registry reads through
+// it from before the rig's first claim, so its installation races no read of the bucket.
 type staleClaimKV struct {
 	natsgo.KeyValue
-	role   string
-	stale  natsgo.KeyValueEntry
-	behind atomic.Bool
+	role  string
+	stale atomic.Pointer[natsgo.KeyValueEntry]
 }
 
+func (kv *staleClaimKV) fallBehind(stale natsgo.KeyValueEntry) { kv.stale.Store(&stale) }
+
+func (kv *staleClaimKV) catchUp() { kv.stale.Store(nil) }
+
 func (kv *staleClaimKV) Get(key string) (natsgo.KeyValueEntry, error) {
-	if key == kv.role && kv.behind.Load() {
-		return kv.stale, nil
+	if stale := kv.stale.Load(); key == kv.role && stale != nil {
+		return *stale, nil
 	}
 	return kv.KeyValue.Get(key)
 }
@@ -56,6 +60,8 @@ func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIs
 				next     = "ses_copy_behind_next"
 				role     = "copy-behind"
 			)
+			copyBehind := &staleClaimKV{KeyValue: registryRoleKV(t, rig.harness.registry), role: role}
+			setRegistryRoleKV(t, rig.harness.registry, copyBehind)
 			previousStandIn := startSessionStandIn(t, rig.url, previous, answerDone)
 			heardPrevious := hear(t, previousStandIn)
 			rig.subscribe(t, consumerRegistration(previous, "epoch-1"))
@@ -74,9 +80,9 @@ func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIs
 			rig.subscribe(t, consumerRegistration(next, "epoch-1"))
 			rig.claim(t, next, role, "")
 
-			copyBehind := &staleClaimKV{KeyValue: registryRoleKV(t, rig.harness.registry), role: role, stale: stale}
-			setRegistryRoleKV(t, rig.harness.registry, copyBehind)
-			copyBehind.behind.Store(tc.behind)
+			if tc.behind {
+				copyBehind.fallBehind(stale)
+			}
 			want := map[bool]string{true: previous, false: next}[tc.behind]
 			if claim, err := rig.harness.registry.RoleClaim(context.Background(), role); err != nil || claim.HolderSessionID != want {
 				t.Fatalf("the registry's direct read of %s's claim names %q (%v), want %q: the copy is not as the row needs it", role, claim.HolderSessionID, err, want)
@@ -87,7 +93,7 @@ func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIs
 				testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
 					return rig.copies.Load() > 0 || heardPrevious.count(event) > 0
 				})
-				copyBehind.behind.Store(false)
+				copyBehind.catchUp()
 			}
 			if !heardNext.await(30*time.Second, event) {
 				t.Errorf("the new holder %s received %v within 30s, want the role message %s", next, heardNext.all(), event)
