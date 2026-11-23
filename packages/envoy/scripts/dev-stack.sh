@@ -30,7 +30,9 @@
 # and dev-airlock-stands as well under --project-access, each an executable file, and refuses
 # before it creates or starts anything -- no database, no port, no process -- when one is missing
 # or is not, naming each such file. It copies them into this run's own bin directory, where a
-# build would have put them, so everything after that step is the same either way.
+# build would have put them, so everything after that step is the same either way. They must be
+# built from this revision: natsd above all, which this script starts with -claim-for (below), a
+# flag a natsd built before it existed refuses at its start ("flag provided but not defined").
 #
 # With --project-access the broker asks this run's Dispatch whether a project is private and who
 # may see it, and the stack runs the airlock beside it: the broker's own proxy, and
@@ -45,16 +47,19 @@
 # "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
 # client connections on", the listener's JSON "envoy-listener listening" addr, and Dispatch's
 # "dispatch: listening" addr. So a URL this script prints can only ever name this run's own
-# process, never one left over from another. Two of the five are the exceptions to "bind, then
-# report", and both serve on a socket a keeper (scripts/e2e/lib/held-port.py keep) opened on a
-# port the kernel chose and holds for the whole run (as docs/site/media/broker/rig.sh does):
-# Dispatch, because the broker must name its machine-login page before it starts while Dispatch
-# must name the broker's URL before it starts, so Dispatch serves on a copy of its keeper's socket
-# (DISPATCH_LISTEN_FD); and the listener, because it must be told its own public origin before it
-# starts, the origin a DPoP proof's target URI is checked against (ENVOY_PUBLIC_URL), so it serves
-# on a copy of its keeper's socket (ENVOY_LISTEN_FD) and that port goes in that one variable,
-# which a restart (below) serves again. Each still reports its port in its own listening line, and
-# those lines are what this script reads.
+# process, never one left over from another. natsd's line also names the address it listens on: a
+# loopback address of its own, claimed for this script, on Linux, and 127.0.0.1 elsewhere ("The
+# bus", below), so no client of another stack on this machine reaches it. Two of the five are the
+# exceptions to "bind, then report", and both serve on a socket a keeper
+# (scripts/e2e/lib/held-port.py keep) opened on a port the kernel chose and holds for the whole run
+# (as docs/site/media/broker/rig.sh does): Dispatch, because the broker must name its
+# machine-login page before it starts while Dispatch must name the broker's URL before it starts,
+# so Dispatch serves on a copy of its keeper's socket (DISPATCH_LISTEN_FD); and the listener,
+# because it must be told its own public origin before it starts, the origin a DPoP proof's target
+# URI is checked against (ENVOY_PUBLIC_URL), so it serves on a copy of its keeper's socket
+# (ENVOY_LISTEN_FD) and that port goes in that one variable, which a restart (below) serves again.
+# Each still reports its port in its own listening line, and those lines are what this script
+# reads.
 #
 # Dispatch runs on its dev sign-in route (DISPATCH_DEV_SIGNIN=1), so a browser on this machine is
 # signed in as any person it names with no sign-in pool, and the broker's approval page signs a
@@ -110,14 +115,14 @@
 #
 # It then stays in the foreground until it is interrupted or any process it started stops, and
 # restarts two of them in place when it is asked, for a proof that a client keeps receiving across
-# a restart (scripts/e2e/nats-callout-sessions.sh): SIGUSR1 restarts natsd on the client port it
-# served, its monitor port with --callout, the same JetStream store and the same callout keys;
-# SIGUSR2 restarts the listener on its keeper's socket, so on the same port. Each stops the old
-# process by its pid, keeps its log as <name>.log.<n>, and prints "dev-stack: natsd restarted (pid
-# <old> -> <new>) <url>" or "dev-stack: listener restarted (pid <old> -> <new>) <url>" once the new
-# one serves; a process that comes back on another port stops the whole stack, naming both ports,
-# since every client of the stack was told the old one. The banner exports DEV_STACK_PID, this
-# script's pid, which those signals go to.
+# a restart (scripts/e2e/nats-callout-sessions.sh): SIGUSR1 restarts natsd on the address and
+# client port it served, its monitor port with --callout, the same JetStream store and the same
+# callout keys; SIGUSR2 restarts the listener on its keeper's socket, so on the same port. Each
+# stops the old process by its pid, keeps its log as <name>.log.<n>, and prints "dev-stack: natsd
+# restarted (pid <old> -> <new>) <url>" or "dev-stack: listener restarted (pid <old> -> <new>)
+# <url>" once the new one serves; a process that comes back on another address or port stops the
+# whole stack, naming both, since every client of the stack was told the old one. The banner
+# exports DEV_STACK_PID, this script's pid, which those signals go to.
 #
 # One trap stops every process by the pid this script started it as, drops the two databases it
 # created and nothing else, and leaves the logs; it runs on a normal exit, on Ctrl-C, on SIGTERM
@@ -191,6 +196,7 @@ With --binaries, run the prebuilt broker, dev-oidc-issuer, dispatch, listener, a
 agent-secrets-helper, natsd and natsprobe in <dir> in place of building them, and
 dev-airlock-stands too under --project-access; a directory short of any of them, or holding one
 that is not an executable file, is refused, naming each, before anything is created or started.
+Build them from this revision: an older natsd refuses -claim-for, which this run passes it.
 
 With --callout, run the hub behind the NATS auth service in two brokers, and the listener and
 Dispatch with NATS service tokens rather than no credential.
@@ -690,9 +696,9 @@ answered_at() { curl -sf --max-time 5 "$1" >/dev/null && echo answered; }
 
 issuer_url_in() { grep -o 'issuer listening url=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
 broker_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$1"; }
-nats_port_in() {
+nats_address_in() {
   grep -q 'Server is ready' "$1" || return 1
-  sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$1" | head -n1
+  sed -n 's/.*Listening for client connections on \([^ ]*:[0-9][0-9]*\)$/\1/p' "$1" | head -n1
 }
 listener_addr_in() { jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$1"; }
 dispatch_addr_in() { sed -n 's/.*msg="dispatch: listening" addr=\([^ ]*\).*/\1/p' "$1" | head -n1; }
@@ -749,28 +755,38 @@ echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 # nats-server's own "choose a port". With --callout it runs behind the auth callout, whose seeds
 # it makes before it serves, so it starts before the brokers that read them.
 #
+# natsd listens on a loopback address of its own (127.0.0.1 off Linux), so no client of another
+# stack on this machine reaches it, and every URL here is built from the address it reports. The
+# first start claims that address for this script (-claim-for $$), so the claim outlasts a restart
+# and no other stack's natsd takes the address while this one is down. Nothing removes the claim's
+# file: it names this script's process, so once this script has exited the address is free, and
+# the next claim on this machine sweeps the file (internal/testport's Claim).
+#
 # start_natsd PORT MONITOR starts it on the client port PORT and, with --callout, the monitor port
 # MONITOR in place of callout_natsd_args's -1: -1 both at the start, and at a restart the ports it
-# reported then, since every client of the stack was told them. The store and the callout seeds
-# are the same at every start, and natsd keeps the seeds it finds (internal/testnats/cmd/natsd), so
-# the brokers' auth service still answers a restarted server. It sets NATS_PID, and NATS_PORT to
-# the client port the server itself reported; callout_after_natsd, after it, waits for the monitor
-# port. ---
+# reported then, on the address it reported then (NATS_HOST, -a), since every client of the stack
+# was told them. The store and the callout seeds are the same at every start, and natsd keeps the
+# seeds it finds (internal/testnats/cmd/natsd), so the brokers' auth service still answers a
+# restarted server. It sets NATS_PID, and NATS_HOST and NATS_PORT to the client address the server
+# itself reported; callout_after_natsd, after it, waits for the monitor port. ---
+NATS_HOST=""
 start_natsd() {
-  local natsd_args=("${callout_natsd_args[@]}") at
+  local natsd_args=("${callout_natsd_args[@]}") at address_args=(-claim-for "$$")
   for at in "${!natsd_args[@]}"; do
     [ "${natsd_args[$at]}" != -m ] || natsd_args[at + 1]=$2
   done
+  [ -z "$NATS_HOST" ] || address_args=(-a "$NATS_HOST")
   : >"$NATS_LOG"
-  env -i PATH="$PATH" "$BIN_DIR/natsd" -p "$1" -store_dir "$WORK_DIR/nats-store" "${natsd_args[@]}" \
-    >"$NATS_LOG" 2>&1 &
+  env -i PATH="$PATH" "$BIN_DIR/natsd" "${address_args[@]}" -p "$1" -store_dir "$WORK_DIR/nats-store" \
+    "${natsd_args[@]}" >"$NATS_LOG" 2>&1 &
   NATS_PID=$!
-  await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client port' nats_port_in
-  NATS_PORT="$awaited"
+  await natsd "$NATS_PID" "$NATS_LOG" "$NATS_LOG" 'its client address' nats_address_in
+  NATS_HOST="${awaited%:*}"
+  NATS_PORT="${awaited##*:}"
 }
 echo "dev-stack: starting natsd..." >&2
 start_natsd -1 -1
-NATS_URL="nats://127.0.0.1:$NATS_PORT"
+NATS_URL="nats://$NATS_HOST:$NATS_PORT"
 echo "dev-stack: natsd $NATS_URL" >&2
 callout_after_natsd
 
@@ -1279,18 +1295,18 @@ stop_process() {
 natsd_restarts=0
 restart_natsd() {
   # The monitor port is callout_monitor_url's (callout_after_natsd), and none without --callout.
-  local old="$NATS_PID" port="$NATS_PORT" monitor="${callout_monitor_url:-}" came_back
+  local old="$NATS_PID" host="$NATS_HOST" port="$NATS_PORT" monitor="${callout_monitor_url:-}" came_back
   monitor="${monitor##*:}"
   natsd_restarts=$((natsd_restarts + 1))
-  echo "dev-stack: restarting natsd (pid $old) on port $port..." >&2
+  echo "dev-stack: restarting natsd (pid $old) on $host:$port..." >&2
   stop_process "$old"
   mv "$NATS_LOG" "$NATS_LOG.$natsd_restarts"
   start_natsd "$port" "$monitor"
   callout_after_natsd
   came_back="${callout_monitor_url:-}"
   came_back="${came_back##*:}"
-  if [ "$NATS_PORT" != "$port" ] || [ "$came_back" != "$monitor" ]; then
-    echo "dev-stack: natsd came back on port $NATS_PORT (monitor ${came_back:-none}), not port $port (monitor ${monitor:-none}) it served before the restart; stopping" >&2
+  if [ "$NATS_HOST" != "$host" ] || [ "$NATS_PORT" != "$port" ] || [ "$came_back" != "$monitor" ]; then
+    echo "dev-stack: natsd came back on $NATS_HOST:$NATS_PORT (monitor ${came_back:-none}), not $host:$port (monitor ${monitor:-none}) it served before the restart; stopping" >&2
     return 1
   fi
   echo "dev-stack: natsd restarted (pid $old -> $NATS_PID) $NATS_URL" >&2

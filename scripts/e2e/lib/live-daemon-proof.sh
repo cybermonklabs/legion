@@ -29,7 +29,8 @@
 # line tells that case apart, and names libpq and the package to install. The status does not:
 # the helper answers every refusal with one status, so a status of its own here would need this
 # file to read the helper's wording, or to ask for libpq a second time. broker starts that
-# nats-server with JetStream on a port the kernel picks. driver builds the daemon package's
+# nats-server with JetStream on a port the kernel picks, on a loopback address the run claims
+# (packages/envoy/scripts/lib/nats-host.sh; 127.0.0.1 off Linux). driver builds the daemon package's
 # `-tags e2e` test binary (build_daemon_driver), unless the caller hands it DRIVER, a binary it
 # built that way before the run: the check then notes DRIVER and builds nothing. proof runs the
 # one test TEST against them and holds that it passed, under the test binary's own deadline
@@ -42,7 +43,7 @@
 # legion-e2e-SLUG-evidence.* beside it when EVIDENCE, the directory the caller named, is empty.
 # The evidence directory is kept and printed; it holds the transcript (lib/transcript.sh), the
 # nats-server's log, the daemon's own, which the driver writes through LEGION_E2E_DAEMON_LOG, and
-# the driver's output. On any exit the nats-server is stopped.
+# the driver's output. On any exit the nats-server is stopped and its address is released.
 # The run prints `LABEL e2e: PASS in <n>s (evidence: <dir>)` only when live_daemon_proof reached
 # its own last statement and the shell exits 0. Every other exit prints `LABEL e2e: FAIL at <check>
 # after <n>s (evidence: <dir>)` on stderr. lib/run-verdict.sh holds that rule and its reason: bash
@@ -61,6 +62,12 @@
 # with. It needs nothing of this file's.
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
+# packages/envoy/scripts/lib/nats-host.sh claims the loopback address the broker listens on. It is
+# sourced here, while root is this checkout: busy-relaunch-delivery.sh's negative control calls
+# live_daemon_proof with root at a base tree that may have no such file, and claim_nats_host builds
+# from the checkout the file is in.
+# shellcheck source-path=SCRIPTDIR source=../../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 
 # require_dispatch_cli refuses a host where the proof's driver could not run the `dispatch` CLI,
 # with exit 1 and a FAIL line of its own, before the run builds or starts anything: that CLI is
@@ -120,6 +127,7 @@ cleanup() {
     kill -TERM "$nats_pid" 2>/dev/null || true
     wait "$nats_pid" 2>/dev/null || true
   fi
+  release_nats_host
   rm -rf "$work"
   run_verdict "$status" \
     "$proof_label e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
@@ -176,8 +184,10 @@ live_daemon_proof() {
   : >"$evidence/daemon.log"
   # The port is the kernel's own pick (`-p -1`), read back from the line the server logs once it is
   # listening: the server binds it before anything else can take it, which no free-port pick can
-  # promise, and a pod with no `ss` runs the proof all the same.
-  "$nats_bin" -js -a 127.0.0.1 -p -1 -sd "$work/nats-store" >>"$evidence/nats.log" 2>&1 &
+  # promise, and a pod with no `ss` runs the proof all the same. The address is the run's own
+  # (claim_nats_host), so no client of another stack on this machine reaches the server.
+  claim_nats_host "$work/bin" || fail "no loopback address could be claimed for the nats-server (above)"
+  "$nats_bin" -js -a "$nats_host" -p -1 -sd "$work/nats-store" >>"$evidence/nats.log" 2>&1 &
   nats_pid=$!
   for _ in $(seq 1 120); do
     grep -q 'Server is ready' "$evidence/nats.log" && break
@@ -187,7 +197,7 @@ live_daemon_proof() {
   grep -q 'Server is ready' "$evidence/nats.log" || fail "the nats-server was not ready within 60s; see $evidence/nats.log"
   port_nats=$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/nats.log")
   [ -n "$port_nats" ] || fail "the nats-server logged no client port; see $evidence/nats.log"
-  note "JetStream on nats://127.0.0.1:$port_nats, store $work/nats-store, log $evidence/nats.log"
+  note "JetStream on nats://$nats_host:$port_nats, store $work/nats-store, log $evidence/nats.log"
   pass
 
   begin driver
@@ -206,7 +216,7 @@ live_daemon_proof() {
   # The driver's steps print their own `== <name>` / `ok <name>` pair between this check's, so the
   # run's checks and the proof's read alike. The daemon's own log goes to the evidence directory
   # rather than into them.
-  LEGION_E2E_NATS_URL="nats://127.0.0.1:$port_nats" \
+  LEGION_E2E_NATS_URL="nats://$nats_host:$port_nats" \
     LEGION_E2E_DAEMON_LOG="$evidence/daemon.log" \
     TMPDIR="$work" \
     "$driver" -test.count=1 -test.timeout="$timeout" -test.v \

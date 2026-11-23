@@ -86,6 +86,21 @@ describe("nameMissingHelpers", () => {
     expect(result.stderr.toString()).toBe("harness: no definition for until_true\n");
   });
 
+  test("names a helper a package's own scripts library defines", () => {
+    const sourcing = join(dir, "sourcing-package.sh");
+    writeFileSync(
+      sourcing,
+      '#!/usr/bin/env bash\n. "$root/packages/envoy/scripts/lib/nats-host.sh"\n'
+    );
+    const result = Bun.spawnSync([
+      "bash",
+      "-c",
+      `${nameMissingHelpers(sourcing)}\nrelease_nats_host 2>/dev/null; echo "code $?"`,
+    ]);
+    expect(result.stdout.toString()).toBe("code 127\n");
+    expect(result.stderr.toString()).toBe("harness: no definition for release_nats_host\n");
+  });
+
   test("leaves a missing command the script does not define as it was: exit 127, unnamed", () => {
     const result = Bun.spawnSync([
       "bash",

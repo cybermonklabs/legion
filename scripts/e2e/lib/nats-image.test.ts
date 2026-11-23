@@ -255,9 +255,9 @@ describe("lib/nats-image.sh", () => {
 describe("every live proof starts the NATS server the floor takes", () => {
   // The control the check below leans on: the line every driver had before the floor is found.
   test("a driver starting nats:2.10 is named", () => {
-    const old = `. "$root/scripts/e2e/lib/nats-image.sh"\ndocker run -d --name "$nats_container" -p 127.0.0.1::4222 nats:2.10 -js >/dev/null\n`;
+    const old = `. "$root/scripts/e2e/lib/nats-image.sh"\ndocker run -d --name "$nats_container" -p "$nats_host::4222" nats:2.10 -js >/dev/null\n`;
     expect(natsProblems("fixture.sh", old)).toEqual([
-      'fixture.sh:2 starts NATS on an image other than "$nats_image": docker run -d --name "$nats_container" -p 127.0.0.1::4222 nats:2.10 -js >/dev/null',
+      'fixture.sh:2 starts NATS on an image other than "$nats_image": docker run -d --name "$nats_container" -p "$nats_host::4222" nats:2.10 -js >/dev/null',
     ]);
   });
 

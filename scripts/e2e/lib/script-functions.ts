@@ -39,13 +39,18 @@ export function scriptAssignments(path: string): (name: string) => string {
 
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
-// A library of scripts/e2e/lib a script sources, as every stage script and library writes it.
-const sourced = /^\s*\. ".*\/lib\/([A-Za-z0-9_.-]+\.sh)"\s*$/gm;
+// A library a script sources, as every stage script and library writes it: one of scripts/e2e/lib
+// (`. "…/lib/<name>"`), or a package's own scripts library
+// (`. "…/packages/<package>/scripts/lib/<name>"`, as packages/envoy/scripts/lib/nats-host.sh is).
+const sourced =
+  /^\s*\. ".*?\/(packages\/[A-Za-z0-9_.-]+\/scripts\/lib\/[A-Za-z0-9_.-]+\.sh|lib\/[A-Za-z0-9_.-]+\.sh)"\s*$/gm;
+const repositoryRoot = join(import.meta.dir, "..", "..", "..");
 
 /**
- * Every script among `paths`, and every library under scripts/e2e/lib one of them sources
- * (`. "…/lib/<name>"`), and the libraries those source in turn, each path once. A harness reads
- * the functions a script reaches through it, and a test the libraries a script runs with.
+ * Every script among `paths`, and every library one of them sources, under scripts/e2e/lib
+ * (`. "…/lib/<name>"`) or a package's scripts/lib (`. "…/packages/<package>/scripts/lib/<name>"`),
+ * and the libraries those source in turn, each path once. A harness reads the functions a script
+ * reaches through it, and a test the libraries a script runs with.
  */
 export function sourcedLibraries(...paths: string[]): string[] {
   const read = new Set<string>();
@@ -54,7 +59,12 @@ export function sourcedLibraries(...paths: string[]): string[] {
     if (read.has(path)) continue;
     read.add(path);
     for (const found of readFileSync(path, "utf8").matchAll(sourced)) {
-      pending.push(join(import.meta.dir, found[1]));
+      const library = found[1];
+      pending.push(
+        library.startsWith("packages/")
+          ? join(repositoryRoot, library)
+          : join(import.meta.dir, library.slice("lib/".length))
+      );
     }
   }
   return [...read];
@@ -67,9 +77,9 @@ export function sourcedLibraries(...paths: string[]): string[] {
  * `harness: no definition for <name>` for a name one of those scripts defines, and leaves every
  * other missing command (a binary the machine lacks) as it was, still exit 127. The line goes to
  * the harness's own stderr, saved in a file descriptor when the guard is set up, so a call the
- * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library under
- * scripts/e2e/lib a script among `paths` sources (`. "…/lib/<name>"`) counts as one of them, and
- * the libraries it sources in turn (sourcedLibraries), so a harness passes only the scripts it
+ * extracted function silences (`helper >/dev/null 2>&1`) is named too. Every library a script
+ * among `paths` sources, under scripts/e2e/lib or a package's scripts/lib, counts as one of them,
+ * and the libraries it sources in turn (sourcedLibraries), so a harness passes only the scripts it
  * extracts from. `expectNoMissingHelpers` reads those lines out of a run's output for the
  * harness to fail on.
  */

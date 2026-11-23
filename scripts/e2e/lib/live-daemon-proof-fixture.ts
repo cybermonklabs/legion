@@ -43,8 +43,10 @@ const stopHere = `stop_here() {
  * a fixture proof runs the real lib in, so a test drives the real run, its end mark and its last
  * line on a host with no nats-server, no libpq and no time for a Go build:
  *
- *   - `go` answers `go version`, and for `go … test -c … -o FILE` writes the stand-in driver to
- *     FILE;
+ *   - `go` answers `go version`; for the build of internal/testnats/cmd/loopbackhost, which
+ *     packages/envoy/scripts/lib/nats-host.sh's claim_nats_host makes, writes to its -o FILE a
+ *     loopbackhost that claims 127.0.0.1, the address the stand-in nats-server names, and releases
+ *     nothing; and for `go … test -c … -o FILE` writes the stand-in driver to FILE;
  *   - `python3` answers lib/loopback-dsn.py with 127.0.0.1, the host a loopback DSN names;
  *   - `jj` answers `jj --version` with the oldest release the daemon's boot starts with, which
  *     approved-version-news.sh's check_jj reads, on a host that has no jj;
@@ -67,11 +69,18 @@ export function liveDaemonStandIns(dir: string, run: StandInRun): Record<string,
   script(
     join(bin, "go"),
     `if [ "$1" = version ]; then echo "go version go1.25.0 linux/amd64"; exit 0; fi
+loopbackhost=''
+case " $* " in *" ./internal/testnats/cmd/loopbackhost "*) loopbackhost=1 ;; esac
 out=''
 while [ $# -gt 0 ]; do
   [ "$1" != -o ] || out=$2
   shift
 done
+if [ -n "$loopbackhost" ]; then
+  printf '%s\\n' '#!/usr/bin/env bash' 'case "$*" in *-release*) ;; *) echo 127.0.0.1 ;; esac' >"$out"
+  chmod +x "$out"
+  exit 0
+fi
 stop_here build
 cp "$LIVE_DAEMON_STAND_IN_DIR/driver" "$out"`
   );

@@ -48,14 +48,19 @@ The run writes its reusable evidence to `packages/envoy/out/e2e/`:
   status and `time_total`
 - `bus-down-client-error.json` — the `EnvoySendUnconfirmedError` the real client raised for it
 
-The OS chooses the NATS and listener ports, and each URL is built from the port
-its own process reports. `E2E_NATS_PORT` or `E2E_PORT` sets a port explicitly:
-it is used as given, and one already in use fails the run with `address already
-in use`. The session opens no port: it registers with none, which a listener
-now refuses above 0, and takes its messages from its own NATS consumer. The
-NATS server is a process of this checkout's own build, stopped on exit with the
-listener and the two fake clients. CI runs it as the `envoy-e2e-local` job of
-`.github/workflows/ci.yaml` on every change its `envoy_e2e_local` filter matches.
+The OS chooses the NATS and listener ports, and each URL is built from the address
+its own process reports. natsd listens on a loopback address it claims for itself
+(a `127.a.b.c` other than 127.0.0.1 on Linux, 127.0.0.1 elsewhere), so no client of
+another stack on the machine reaches it. `E2E_NATS_PORT` or `E2E_PORT` sets a port
+explicitly: it is used as given. An `E2E_PORT` already in use fails the run with
+`address already in use`. An `E2E_NATS_PORT` another program holds on 127.0.0.1
+does not stop the run on Linux, where natsd serves that port on its own address;
+off Linux it fails the same way. The session opens no port: it registers with
+none, which a listener now refuses above 0, and takes its messages from its own
+NATS consumer. The NATS server is a process of this checkout's own build,
+stopped on exit with the listener and the two fake clients. CI runs it as the
+`envoy-e2e-local` job of `.github/workflows/ci.yaml` on every change its
+`envoy_e2e_local` filter matches.
 
 ## e2e-refill.sh
 
@@ -129,7 +134,9 @@ verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener
 `--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
 scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
 `$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports. A full run takes about ten minutes, so it is a manual proof, not a CI job.
+ports. NATS listens on a loopback address the run claims for itself (`lib/nats-host.sh`: a
+`127.a.b.c` on Linux, 127.0.0.1 elsewhere) and is restarted on that address, so its URLs in the
+output name that address. A full run takes about ten minutes, so it is a manual proof, not a CI job.
 
 ## dev-airlock.sh
 

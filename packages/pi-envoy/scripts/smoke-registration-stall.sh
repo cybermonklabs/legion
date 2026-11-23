@@ -18,9 +18,10 @@
 #
 # The listener is the operator's (ENVOY_URL and ENVOY_TOKEN_FILE), or `--local-stack` builds
 # natsd and the listener from this checkout with `go build` and runs both on loopback ports of
-# its own, as scripts/smoke-role-takeover.sh does, so the run needs no deployment and no bearer.
-# Its one remaining live dependency is then the model provider the real `omp` pane turns on,
-# which the pane inherits from the caller's environment.
+# its own, as scripts/smoke-role-takeover.sh does, so the run needs no deployment and no bearer;
+# natsd then listens on a loopback address it claims for itself (127.0.0.1 off Linux), which the
+# smoke reads from its log. Its one remaining live dependency is then the model provider the real
+# `omp` pane turns on, which the pane inherits from the caller's environment.
 #
 # Manual only, like scripts/smoke-delivery.sh and scripts/smoke-btw.sh: it needs a model provider
 # and is never wired into CI. See scripts/README.md.
@@ -242,7 +243,8 @@ fi
 # exactly as scripts/smoke-role-takeover.sh and packages/envoy-client/test/envoy-stack.ts start
 # them (scripts/local-stack.sh, which this script and the takeover smoke share). The trap above
 # stops both.
-nats_port=""
+nats_address=""
+nats_url=""
 if ((local_stack == 1)); then
   port_range
   mkdir -p "${scratch}/bin"
@@ -250,24 +252,26 @@ if ((local_stack == 1)); then
   build_natsd "${repo_root}/packages/envoy" "${scratch}/bin/natsd" &&
     build_listener "${repo_root}/packages/envoy" "${scratch}/bin/listener" ||
     refuse "go build of natsd or the listener failed (the reason is above)"
-  pick_port nats_port
   pick_port listener_port
-  set_natsd_argv "${scratch}/bin/natsd" "$nats_port" "" "${scratch}/nats-store"
+  set_natsd_argv "${scratch}/bin/natsd" "${scratch}/nats-store"
   env -i PATH="$PATH" HOME="${scratch}/nats-home" "${natsd_argv[@]}" \
     >"${scratch}/natsd.log" 2>&1 &
   nats_pid=$!
   poll_until 30 0.2 natsd_serving "${scratch}/natsd.log" ||
     refuse "natsd did not start: $(tail -n 5 "${scratch}/natsd.log")"
+  natsd_address "${scratch}/natsd.log" client nats_address ||
+    refuse "natsd named no client address: $(tail -n 5 "${scratch}/natsd.log")"
+  nats_url="nats://${nats_address}"
   envoy_url="http://127.0.0.1:${listener_port}"
-  set_listener_env "$listener_port" "nats://127.0.0.1:${nats_port}" "smoke-registration-stall-$$"
+  set_listener_env "$listener_port" "$nats_url" "smoke-registration-stall-$$"
   env -i PATH="$PATH" HOME="${scratch}/listener-home" "${listener_env[@]}" \
     "${scratch}/bin/listener" >"${scratch}/listener.log" 2>&1 &
   listener_pid=$!
   poll_until 60 0.2 listener_healthy "$envoy_url" ||
     refuse "the listener did not become healthy at ${envoy_url}: $(tail -n 5 "${scratch}/listener.log")"
-  note "local stack: natsd (pid ${nats_pid}) on nats://127.0.0.1:${nats_port}, listener (pid ${listener_pid}) at ${envoy_url}"
+  note "local stack: natsd (pid ${nats_pid}) on ${nats_url}, listener (pid ${listener_pid}) at ${envoy_url}"
 fi
-readonly envoy_url nats_port
+readonly envoy_url nats_url
 
 if [[ "$arm" == "stall" && "$control" == 1 ]]; then
   # The base plugin only resolves from the directory it shipped in: it imports `../src/...` and
@@ -374,7 +378,7 @@ start_pane() {
   if ((local_stack == 1)); then
     # The listener this run started takes no bearer, and its NATS is the one it started too: a
     # bearer or a broker the caller's environment names must not reach the pane.
-    pane_env+=("ENVOY_NATS_URL=nats://127.0.0.1:${nats_port}")
+    pane_env+=("ENVOY_NATS_URL=${nats_url}")
     pane_unset=(-u ENVOY_TOKEN -u ENVOY_TOKEN_FILE)
   else
     pane_env+=("ENVOY_TOKEN_FILE=${token_file}")

@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -30,6 +31,11 @@ import { scriptAssignments, sourcedLibraries } from "./script-functions";
 // test: its run_end, its finish and the real lib/run-verdict.sh print the last line.
 // approved-version-news-verdicts.test.ts runs the script's controls, its plan check and its last
 // line by name.
+
+// Each row runs the script whole over the stand-ins and waits for it to end, and each scratch
+// directory's removal waits on the disk: a loaded machine slows both past Bun's 5 s default. The
+// bound is a hang guard, not a verdict, for every row and hook of this file that states none.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const assignment = scriptAssignments(script);
 const scratch = temporaryDirectories("approved-version-news-run-test");

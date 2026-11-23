@@ -305,11 +305,14 @@ that failed, and 2 is a refusal.
 ## local-stack.sh
 
 The loopback Envoy stack the two smokes above bring up, in one sourced file: a free loopback
-port below the kernel's ephemeral range (`port_range`, `port_open`, `pick_port`), the natsd and
-listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy` directory to
-build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from another
-revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`)
-and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced,
+port below the kernel's ephemeral range for the listener (`port_range`, `port_open`, `pick_port`),
+the natsd and listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy`
+directory to build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from
+another revision), the argv and assignments each service is run with (`set_natsd_argv`,
+`set_listener_env`), when it is up (`natsd_serving`, `listener_healthy`, polled with
+`poll_until`), and the address natsd reports (`natsd_address`). natsd listens on a loopback address
+it claims for itself (127.0.0.1 off Linux), on client and monitor ports the kernel chooses, and
+the smokes dial what its log names, so no client of another stack on the machine reaches it.
 never run: it starts no process, so every script keeps its own isolation, logs, traps, timeouts,
 messages and exit codes. A caller defines `refuse` and sets `local_stack_fail` to the function an
 exhausted port range is reported through, `refuse` in both smokes here.

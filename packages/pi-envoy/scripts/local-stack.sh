@@ -1,7 +1,9 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # the variables named below are the caller's to set or read
-# local-stack.sh — the loopback Envoy stack the smokes beside it each bring up: free ports below
-# the kernel's ephemeral range, and natsd (packages/envoy/internal/testnats/cmd/natsd) and the
-# listener (packages/envoy/cmd/listener) built from a checkout with `go build`.
+# local-stack.sh — the loopback Envoy stack the smokes beside it each bring up: natsd
+# (packages/envoy/internal/testnats/cmd/natsd) and the listener (packages/envoy/cmd/listener)
+# built from a checkout with `go build`, the listener on a free port below the kernel's ephemeral
+# range. natsd listens on a loopback address it claims for itself (127.0.0.1 off Linux), on ports
+# the kernel chooses, and names both in its log, which the caller reads (natsd_address).
 # smoke-role-takeover.sh and smoke-registration-stall.sh (--local-stack) source it, so what those
 # two know about the stack is written once; packages/envoy-client/test/envoy-stack.ts is the same
 # stack for the TypeScript suite.
@@ -75,13 +77,32 @@ build_listener() {
   (cd -- "$1" && go build -o "$2" ./cmd/listener)
 }
 
-# set_natsd_argv BIN PORT MONITOR_PORT STORE_DIR: sets the array `natsd_argv` to natsd serving
-# 127.0.0.1:PORT with JetStream stored under STORE_DIR, monitoring on MONITOR_PORT unless it is
-# empty. The caller runs it under its own environment isolation and redirection.
+# set_natsd_argv BIN STORE_DIR [-m]: sets the array `natsd_argv` to natsd with JetStream stored
+# under STORE_DIR, serving clients on a port the kernel chooses (-p -1, nats-server's RANDOM_PORT)
+# and, with -m, monitoring on another (-m -1). Given no -a, natsd listens on a loopback address it
+# claims for itself, so no client of another stack on the machine reaches it. The caller runs it
+# under its own environment isolation and redirection.
 set_natsd_argv() {
-  natsd_argv=("$1" -p "$2")
-  [[ -z "$3" ]] || natsd_argv+=(-m "$3")
-  natsd_argv+=(-js -store_dir "$4")
+  natsd_argv=("$1" -p -1)
+  [[ "${3:-}" != -m ]] || natsd_argv+=(-m -1)
+  natsd_argv+=(-js -store_dir "$2")
+}
+
+# natsd_address LOG client|monitor VAR: sets VAR to the `<address>:<port>` natsd's log LOG names for
+# its client listener (`Listening for client connections on ...`) or its monitor (`Starting http
+# monitor on ...`), and is non-zero when LOG names none. natsd logs both before `Server is ready`,
+# so it is read once natsd_serving holds.
+natsd_address() {
+  local line found
+  case "$2" in
+    client) line='Listening for client connections on' ;;
+    monitor) line='Starting http monitor on' ;;
+    *) return 2 ;;
+  esac
+  found=$(sed -n "s/.*${line} \([^ ]*:[0-9][0-9]*\).*/\1/p" "$1")
+  found=${found%%$'\n'*}
+  [[ -n "$found" ]] || return 1
+  printf -v "$3" '%s' "$found"
 }
 
 # set_listener_env PORT NATS_URL MACHINE_ID: sets the array `listener_env` to the assignments the

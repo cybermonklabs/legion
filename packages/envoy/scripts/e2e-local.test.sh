@@ -19,7 +19,7 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
-  rm -f "$output_file" "$first_output_file" "${temporary_dir}/greeter.port"
+  rm -f "$output_file" "$first_output_file" "${temporary_dir}/greeter.port" "${temporary_dir}/greeter.connections"
   rmdir "$temporary_dir"
 }
 trap cleanup EXIT
@@ -65,19 +65,25 @@ for delay in 1 5000 02000 18446744073709552616 abc; do
 done
 printf 'PASS: refuses an ack delay outside its range, a leading-zero and an over-long one included, and starts no server\n'
 
-# An explicit port is used as given, so one already in use fails the run with "address already in
-# use"; the driver never moves to another port. The port here is held by this test's own greeter
-# for the whole test, so it is in use for every run below. For E2E_NATS_PORT the greeter answers
-# NATS's greeting, as a server left by an earlier run would: the driver's own server cannot bind
-# that port and exits at once, and the driver must stop there and say why, rather than run the
-# whole acceptance against a server it did not start and report PASS for it.
+# An explicit port is used as given; the driver never moves to another port. The port here is held
+# by this test's own greeter on 127.0.0.1 for the whole test, so it is in use for every run below,
+# and the greeter answers NATS's greeting, as a server left by an earlier run would, and counts
+# every connection it takes.
 readonly greeter_port_file="${temporary_dir}/greeter.port"
-GREETER_PORT_FILE="$greeter_port_file" bun -e '
-  import { writeFileSync } from "node:fs";
+readonly greeter_connections_file="${temporary_dir}/greeter.connections"
+: >"$greeter_connections_file"
+GREETER_PORT_FILE="$greeter_port_file" GREETER_CONNECTIONS_FILE="$greeter_connections_file" bun -e '
+  import { appendFileSync, writeFileSync } from "node:fs";
   const server = Bun.listen({
     hostname: "127.0.0.1",
     port: 0,
-    socket: { open(socket) { socket.write("INFO {\"server_id\":\"not-the-drivers\"}\r\n"); }, data() {} },
+    socket: {
+      open(socket) {
+        appendFileSync(process.env.GREETER_CONNECTIONS_FILE, "connection\n");
+        socket.write("INFO {\"server_id\":\"not-the-drivers\"}\r\n");
+      },
+      data() {},
+    },
   });
   writeFileSync(process.env.GREETER_PORT_FILE, String(server.port));
   setInterval(() => {}, 1 << 30);
@@ -111,8 +117,45 @@ expect_occupied_refusal() {
   }
 }
 
-expect_occupied_refusal E2E_NATS_PORT 'the NATS server this script started ended before it was ready.'
-printf 'PASS: refuses to run against a NATS server it did not start (E2E_NATS_PORT in use)\n'
+# On Linux natsd listens on a loopback address of its own, so the greeter's 127.0.0.1 port is no
+# port of the driver's server: the driver's natsd takes E2E_NATS_PORT on its own address, the
+# driver names that address, and nothing of the run dials the greeter. The run is stopped once it
+# has named its NATS. Elsewhere natsd listens on 127.0.0.1, so it cannot bind the greeter's port,
+# and the driver must stop there and say why, rather than run the whole acceptance against a server
+# it did not start and report PASS for it.
+if [[ "$(uname -s)" == Linux ]]; then
+  : >"$first_output_file"
+  E2E_NATS_PORT="$greeter_port" bash "$driver" >"$first_output_file" 2>&1 &
+  first_pid=$!
+  deadline=$((SECONDS + 120))
+  until grep -q '^NATS: ' "$first_output_file"; do
+    if ! kill -0 "$first_pid" 2>/dev/null || ((SECONDS >= deadline)); then
+      cat "$first_output_file" >&2
+      printf 'FAIL: with E2E_NATS_PORT=%s held on 127.0.0.1, the driver never named its NATS\n' "$greeter_port" >&2
+      exit 1
+    fi
+    sleep 0.1
+  done
+  kill -TERM "$first_pid"
+  wait "$first_pid" || true
+  first_pid=""
+  named="$(sed -n 's/^NATS: //p' "$first_output_file")"
+  [[ "$named" =~ ^nats://127\.[0-9]+\.[0-9]+\.[0-9]+:${greeter_port}$ && "$named" != "nats://127.0.0.1:${greeter_port}" ]] || {
+    cat "$first_output_file" >&2
+    printf 'FAIL: with E2E_NATS_PORT=%s held on 127.0.0.1, the driver named %s, not its own address on that port\n' \
+      "$greeter_port" "$named" >&2
+    exit 1
+  }
+  [[ ! -s "$greeter_connections_file" ]] || {
+    printf 'FAIL: the driver dialed the greeter on 127.0.0.1:%s %s time(s)\n' "$greeter_port" \
+      "$(wc -l <"$greeter_connections_file")" >&2
+    exit 1
+  }
+  printf 'PASS: with E2E_NATS_PORT held on 127.0.0.1, the driver ran its NATS on its own address (%s) and never dialed the holder\n' "$named"
+else
+  expect_occupied_refusal E2E_NATS_PORT 'the NATS server this script started ended before it was ready.'
+  printf 'PASS: refuses to run against a NATS server it did not start (E2E_NATS_PORT in use)\n'
+fi
 expect_occupied_refusal E2E_PORT 'the listener this script started ended before it was listening.'
 printf 'PASS: an E2E_PORT already in use fails with address already in use\n'
 

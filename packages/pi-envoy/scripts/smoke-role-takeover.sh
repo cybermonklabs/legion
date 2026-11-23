@@ -8,8 +8,9 @@
 #
 # It builds natsd (packages/envoy/internal/testnats/cmd/natsd) and the listener
 # (packages/envoy/cmd/listener) from this checkout with `go build` and runs both on loopback ports
-# of its own, exactly as packages/envoy-client/test/envoy-stack.ts does, and then drives each row
-# with real client processes:
+# of its own, exactly as packages/envoy-client/test/envoy-stack.ts does; natsd listens on a
+# loopback address it claims for itself (127.0.0.1 off Linux), which the smoke reads from its log.
+# It then drives each row with real client processes:
 #
 #   - one Bun process per Oh My Pi Envoy extension instance (scripts/role-takeover/omp-client.ts),
 #     each loading this checkout's extensions/envoy.ts against the stand-in host the package's own
@@ -407,20 +408,23 @@ readonly listener_exe listener_under_test
 ((drop_role_from_copy == 0)) ||
   note "SMOKE_DROP_ROLE_FROM_COPY=1: the live restart row drops its role from the listener's copy of the role claims"
 
-pick_port nats_port
-pick_port monitor_port
 pick_port listener_port
-readonly nats_port monitor_port listener_port
+readonly listener_port
 readonly envoy_url="http://127.0.0.1:${listener_port}"
-readonly nats_url="nats://127.0.0.1:${nats_port}"
 
-set_natsd_argv "${work}/bin/natsd" "$nats_port" "$monitor_port" "${work}/nats-store"
+set_natsd_argv "${work}/bin/natsd" "${work}/nats-store" -m
 (exec env -i PATH="$PATH" HOME="${work}/nats-home" "${natsd_argv[@]}") \
   >"${work}/logs/natsd.log" 2>&1 &
 service_pids+=($!)
 wait_for 60 natsd_serving "${work}/logs/natsd.log" ||
   refuse "natsd did not start: $(tail -n 5 "${work}/logs/natsd.log")"
-note "natsd serves ${nats_url} (monitoring 127.0.0.1:${monitor_port})"
+natsd_address "${work}/logs/natsd.log" client nats_address ||
+  refuse "natsd named no client address: $(tail -n 5 "${work}/logs/natsd.log")"
+natsd_address "${work}/logs/natsd.log" monitor monitor_address ||
+  refuse "natsd named no monitor address: $(tail -n 5 "${work}/logs/natsd.log")"
+readonly nats_address monitor_address
+readonly nats_url="nats://${nats_address}"
+note "natsd serves ${nats_url} (monitoring ${monitor_address})"
 
 # The two windows this run's listener carries are appended to the assignments local-stack.sh
 # hands out, so the two smokes that share that file are run exactly as they were.

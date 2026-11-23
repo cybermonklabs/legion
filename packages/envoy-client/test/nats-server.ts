@@ -31,11 +31,22 @@ export interface NatsServer {
    */
   start(deadline: number): Promise<void>;
   /**
-   * Removes the container with its volume and the configuration file, whatever `start` got to.
-   * The removal is killed at `deadline`; one that exits non-zero, with what docker printed, or is
-   * killed throws naming the container.
+   * Reads the server's own clients (its monitor's /connz) until none is left, then removes the
+   * container with its volume and the configuration file, whatever `start` got to. The read ends
+   * {@link NATS_REMOVAL_MS} before `deadline`, so the removal keeps its own bound, and the removal
+   * is killed at `deadline`. A removal that exits non-zero, with what docker printed, or is killed
+   * throws naming the container. After the removal, a stop whose server still had a client when
+   * the read ended throws naming each one: the server listens on 127.0.0.1, on a port Docker takes
+   * from the kernel's ephemeral range, so a client a test left open would keep reconnecting to that
+   * address after the container is gone, and Docker can publish another test's server on the same
+   * port, which the stray client then reaches. Every client a test opens is closed before its
+   * server stops.
+   *
+   * `leftOpen` names clients the caller left open on purpose, as the leak check's control does: the
+   * read then ends the moment the server's clients are exactly those, since a client left open never
+   * leaves, and the stop still throws naming them. With none named, the read ends when none is left.
    */
-  stop(deadline: number): Promise<void>;
+  stop(deadline: number, leftOpen?: readonly string[]): Promise<void>;
   /**
    * The server's own log so far (nats-server writes it to stderr), where it names every publish
    * it refused: `Publish Violation`, then the subject. The `docker logs` call is killed at
@@ -191,11 +202,63 @@ export function natsHookDeadline(hookMs: number): number {
 export const NATS_START_HOOK_MS = 510_000;
 
 /**
- * The bound of a hook that stops a file's servers, side by side, and the removals' only bound: a
- * hang guard too. `docker rm -f -v` took 133.1 s, 26.1 s and 8.9 s after those same three starts,
- * and a removal has 270 s of it, twice the slowest.
+ * The bound of a removal: a hang guard. `docker rm -f -v` took 133.1 s, 26.1 s and 8.9 s after
+ * those same three starts, and a removal has 270 s, twice the slowest.
  */
-export const NATS_STOP_HOOK_MS = 280_000;
+const NATS_REMOVAL_MS = 270_000;
+
+/**
+ * The bound of a stop's read of the server's clients, a hang guard that no correct close comes
+ * near. A client a test closed leaves the server's /connz as soon as the server reads its close;
+ * one left open never does, so the read runs to this bound and the stop fails naming it. On the
+ * shared development machine on 2026-11-22, at a one-minute load of 1,091 to 1,114, 600 clients
+ * of this image's server, each closed as a test closes it, left its /connz 0.3 ms after the close
+ * returned at the median and 10.8 ms at the slowest; the read has 30 s, over 2,700 times that.
+ */
+const NATS_CLIENTS_READ_MS = 30_000;
+
+/**
+ * The bound of a hook that stops a file's servers, side by side, and the stops' only bound: the
+ * read of each server's clients, then its removal, then the hook's room.
+ */
+export const NATS_STOP_HOOK_MS = NATS_CLIENTS_READ_MS + NATS_REMOVAL_MS + HOOK_ROOM_MS;
+
+/**
+ * The names of the clients still connected to the server whose monitor is at `monitor`
+ * (`host:port`), read from its /connz once they are exactly `leftOpen` (none, unless a caller left
+ * clients open on purpose) or once `window` aborts. A client's close is asynchronous, so one closed
+ * a moment ago can still be counted: the read polls the server's own count, which no fake clock
+ * advances, until it is what the caller left or the window ends. A client with no name is named by
+ * its connection id. `stop` passes a window that ends {@link NATS_REMOVAL_MS} before its deadline.
+ *
+ * Each poll's request is cut when `window` aborts. A poll the window cuts after an earlier poll
+ * answered gives that earlier answer, so a client left open is named rather than lost to "could not
+ * be read"; a first poll that fails throws. It is exported for the row that cuts a poll on purpose
+ * (nats-server.test.ts).
+ */
+export async function connectedClients(
+  monitor: string,
+  window: AbortSignal,
+  leftOpen: readonly string[]
+): Promise<string[]> {
+  const expected = [...leftOpen].sort().join("\n");
+  let last: string[] | undefined;
+  for (;;) {
+    let open: string[];
+    try {
+      const response = await fetch(`http://${monitor}/connz`, { signal: window });
+      if (!response.ok) throw new Error(`http://${monitor}/connz answered ${response.status}`);
+      const connz = (await response.json()) as { connections?: { cid: number; name?: string }[] };
+      open = (connz.connections ?? []).map((c) => c.name || `connection ${c.cid}`);
+    } catch (error) {
+      if (last !== undefined && window.aborted) return last;
+      throw error;
+    }
+    if ([...open].sort().join("\n") === expected || window.aborted) return open;
+    last = open;
+    await Bun.sleep(100);
+  }
+}
 
 /**
  * A NATS server container, not started, whose only user is the nkey user `nkeyUser` when given;
@@ -222,6 +285,8 @@ export function natsServerWithConfig(directory: string, configuration: string): 
   const name = `legion-nats-test-${crypto.randomUUID()}`;
   const config = path.join(directory, `${name}.conf`);
   let url: string | undefined;
+  // The server's monitor, `host:port`, which `stop` reads its clients from; set once `start` read it.
+  let monitor: string | undefined;
   return {
     name,
     get url() {
@@ -250,11 +315,16 @@ export function natsServerWithConfig(directory: string, configuration: string): 
         "512m",
         "-p",
         "127.0.0.1::4222",
+        "-p",
+        "127.0.0.1::8222",
         "-v",
         `${config}:/etc/nats/test.conf:ro`,
         NATS_IMAGE,
         "-c",
-        "/etc/nats/test.conf"
+        "/etc/nats/test.conf",
+        // The monitoring endpoint on 8222, whatever the configuration says, for `stop`'s read.
+        "-m",
+        "8222"
       ).catch((error: unknown) => {
         throw new Error(`NATS container ${name}: its docker run failed: ${reason(error)}`);
       });
@@ -274,8 +344,28 @@ export function natsServerWithConfig(directory: string, configuration: string): 
         })
       ).stdout.split("\n")[0];
       url = `nats://${port}`;
+      monitor = (
+        await docker(deadline, "the start's", "port", name, "8222/tcp").catch((error: unknown) => {
+          throw new Error(
+            `NATS container ${name}: its docker port of the monitor failed: ${reason(error)}`
+          );
+        })
+      ).stdout.split("\n")[0];
     },
-    async stop(deadline) {
+    async stop(deadline, leftOpen = []) {
+      // The read ends before the removal's own bound, and the removal runs whatever the read gave.
+      const clients =
+        monitor === undefined
+          ? []
+          : await connectedClients(
+              monitor,
+              AbortSignal.timeout(
+                Math.max(1, Math.ceil(deadline - NATS_REMOVAL_MS - performance.now()))
+              ),
+              leftOpen
+            ).catch(
+              (error: unknown) => new Error(`its clients could not be read: ${reason(error)}`)
+            );
       try {
         // With -v, since the image declares a VOLUME a plain `docker rm -f` leaves on the host
         // (docs/testing.md). With -f, a container that is not there, one a start never made or
@@ -285,6 +375,14 @@ export function natsServerWithConfig(directory: string, configuration: string): 
         throw new Error(`NATS container ${name}: its docker rm failed: ${reason(error)}`);
       } finally {
         rmSync(config, { force: true });
+      }
+      if (clients instanceof Error) throw new Error(`NATS container ${name}: ${clients.message}`);
+      if (clients.length > 0) {
+        throw new Error(
+          `the NATS server at ${url} still had ${clients.length} client(s) connected when its test stopped it (${clients.join(", ")}): ` +
+            "a client left open keeps reconnecting to that address after the container is gone, and Docker can publish " +
+            "another test's server on the same port; close every client before stopping its server"
+        );
       }
     },
     async log(deadline) {

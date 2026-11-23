@@ -100,6 +100,37 @@ describe.skipIf(process.env.LEGION_E2E !== "1")("natsAuthOptions against a real 
   test("with no seed, is refused by a server that requires one", async () => {
     await expect(connectWith(authorized.url, {})).rejects.toThrow(/authorization violation/i);
   });
+
+  // The leak check's control: a client left connected, as a test that forgets to close one leaves
+  // it, reconnecting forever, fails its server's stop, which names it. The stop is told the client
+  // was left open on purpose, so its read ends the moment the server's clients are that one, not
+  // at the read's 30 s bound. A row that fails before the stop removes the container all the same.
+  test(
+    "stopping a server a client is still connected to fails, naming the client",
+    async () => {
+      const server = natsServer(serverDirectory);
+      try {
+        await server.start(natsHookDeadline(NATS_START_HOOK_MS));
+        const leftover = await connect({
+          servers: [server.url],
+          name: "leftover-client",
+          maxReconnectAttempts: -1,
+          reconnectTimeWait: 50,
+        });
+        try {
+          await expect(
+            server.stop(natsHookDeadline(NATS_STOP_HOOK_MS), ["leftover-client"])
+          ).rejects.toThrow(/still had 1 client\(s\) connected .*leftover-client/);
+        } finally {
+          await leftover.close();
+        }
+      } catch (error) {
+        await server.stop(natsHookDeadline(NATS_STOP_HOOK_MS)).catch(() => {});
+        throw error;
+      }
+    },
+    NATS_START_HOOK_MS + 2 * NATS_STOP_HOOK_MS
+  );
 });
 
 describe("natsAuthOptions", () => {

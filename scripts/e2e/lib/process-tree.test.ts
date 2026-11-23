@@ -658,7 +658,9 @@ done
 // stage3-4b13b-acceptance.sh's and stage3-devbox-workflow.sh's endpoint_mismatch read an Oh My Pi's
 // environment for the rig's endpoints (env_of) and then for the ANTHROPIC_API_KEY it must not carry
 // (env_has): the key's absence holds only on env_has's status 1, and an environment either read
-// could not read is a mismatch, never a clean one.
+// could not read is a mismatch, never a clean one. The rig's NATS URL is on the address the run
+// claimed (nats_host, packages/envoy/scripts/lib/nats-host.sh), here one that is not 127.0.0.1, so
+// a row passes only where the function reads it.
 describe.skipIf(skip)("endpoint_mismatch", () => {
   test.each(["stage3-4b13b-acceptance.sh", "stage3-devbox-workflow.sh"])(
     "%s's holds only for the rig's endpoints and no key, and fails closed on an environment either read could not read",
@@ -671,8 +673,8 @@ describe.skipIf(skip)("endpoint_mismatch", () => {
       // runs endpoint_mismatch in this shell, not a substitution, so the wait reaps the harness's
       // own child and the pid is gone, not a zombie, when env_has reads it.
       const r = run(`${endpointMismatch}
-port_dispatch=1 port_listener=2 port_nats=3 state=/rig
-rig=(DISPATCH_URL=http://127.0.0.1:1 DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token ENVOY_URL=http://127.0.0.1:2 ENVOY_NATS_URL=nats://127.0.0.1:3)
+port_dispatch=1 port_listener=2 port_nats=3 state=/rig nats_host=127.9.9.9
+rig=(DISPATCH_URL=http://127.0.0.1:1 DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token ENVOY_URL=http://127.0.0.1:2 ENVOY_NATS_URL=nats://127.9.9.9:3)
 env -i "\${rig[@]}" "$program" 600 </dev/null >/dev/null 2>&1 &
 clean=$!
 env -i "\${rig[@]}" ANTHROPIC_API_KEY=k "$program" 600 </dev/null >/dev/null 2>&1 &
@@ -714,7 +716,8 @@ check "ended between the reads" "$ending"
 // so a watcher that skipped it, or read it once and never again, does not pass. A pane is a bash
 // whose child runs the Oh My Pi, a copy of sleep; `legion claims list` is a stub that prints the
 // claims a row writes. The first watcher's evidence is the harness's own, so a violation it records
-// aborts the row's next wait (until_true), as it aborts the stage scripts' waits.
+// aborts the row's next wait (until_true), as it aborts the stage scripts' waits. The rig's NATS URL
+// is on the address the run claimed (nats_host), as in endpoint_mismatch's rows above.
 const noJq = hostTool("jq") === null;
 describe.skipIf(skip || noJq)("pane_watcher", () => {
   test.each(["stage3-4b13b-acceptance.sh", "stage3-devbox-workflow.sh"])(
@@ -724,8 +727,8 @@ describe.skipIf(skip || noJq)("pane_watcher", () => {
         .map(scriptFunctions(join(import.meta.dir, "..", script)))
         .join("\n");
       const r = run(`${watcher}
-port_dispatch=1 port_listener=2 port_nats=3 state=/rig ptoken=row omp_exe=$program
-rig=(DISPATCH_URL=http://127.0.0.1:1 DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token ENVOY_URL=http://127.0.0.1:2 ENVOY_NATS_URL=nats://127.0.0.1:3)
+port_dispatch=1 port_listener=2 port_nats=3 state=/rig ptoken=row omp_exe=$program nats_host=127.9.9.9
+rig=(DISPATCH_URL=http://127.0.0.1:1 DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token ENVOY_URL=http://127.0.0.1:2 ENVOY_NATS_URL=nats://127.9.9.9:3)
 # pane VAR=VALUE… starts a pane whose Oh My Pi runs with exactly those variables, and sets pane_pid
 # to the pane's pid and inc to its incarnation.
 pane() {

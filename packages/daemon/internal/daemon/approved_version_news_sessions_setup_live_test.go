@@ -83,7 +83,11 @@ func newSessionsModelProxy(t *testing.T, gateway string) *sessionsModelProxy {
 func (p *sessionsModelProxy) count() int64 { return p.calls.Load() }
 
 // startSessionsNATS starts natsd from the checkout, with JetStream on a store of its own, on a port
-// the kernel picks, which its log names; it is stopped when the test ends.
+// the kernel picks, and returns the URL of the address its log names. With no -a, natsd claims a
+// loopback address of its own (a 127.a.b.c on Linux, 127.0.0.1 elsewhere), so the URL is built from
+// the `<address>:<port>` of its `Listening for client connections on` line, never from 127.0.0.1:
+// a server another stack holds on 127.0.0.1 at that port would be reached instead. It is stopped
+// when the test ends.
 func startSessionsNATS(t *testing.T, logs string) string {
 	t.Helper()
 	binary := testbuild.EnvoyBinary(t, "./internal/testnats/cmd/natsd")
@@ -92,16 +96,16 @@ func startSessionsNATS(t *testing.T, logs string) string {
 	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir()}
 	command.Stdout, command.Stderr = sessionsLog(t, logs, "natsd.log", output), sessionsLog(t, logs, "natsd.log", output)
 	startSessionsProcess(t, "natsd", command)
-	listening := regexp.MustCompile(`Listening for client connections on [^ ]*:(\d+)`)
-	var port string
+	listening := regexp.MustCompile(`Listening for client connections on (\S+:\d+)`)
+	var address string
 	sessionsAwait(t, "natsd to listen", 30*time.Second, func() bool {
 		if match := listening.FindStringSubmatch(output.String()); match != nil {
-			port = match[1]
+			address = match[1]
 			return true
 		}
 		return false
 	})
-	return "nats://127.0.0.1:" + port
+	return "nats://" + address
 }
 
 // startSessionsListener starts the Envoy listener from the checkout on natsURL, serving on a

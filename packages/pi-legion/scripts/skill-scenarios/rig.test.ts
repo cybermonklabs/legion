@@ -1365,7 +1365,11 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         path.join(scripts, "rig.sh"),
         readFileSync(path.join(import.meta.dir, "rig.sh"))
       );
-      for (const file of [".omp-pin", "skills/asd-ste100/SKILL.md"]) {
+      for (const file of [
+        ".omp-pin",
+        "skills/asd-ste100/SKILL.md",
+        "packages/envoy/scripts/lib/nats-host.sh",
+      ]) {
         mkdirSync(path.dirname(path.join(top, file)), { recursive: true });
         writeFileSync(path.join(top, file), readFileSync(path.join(root, file)));
       }

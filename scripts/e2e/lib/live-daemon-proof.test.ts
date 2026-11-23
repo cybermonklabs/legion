@@ -1,5 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { join } from "node:path";
+import { HANG_GUARD_MS } from "@legion/test-fixtures/hang-guard";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -18,6 +19,11 @@ import {
 // lib, over stand-ins of go, the nats-server, python3 and the driver
 // (lib/live-daemon-proof-fixture.ts): moving run_end above the proof check, or the lib's mark
 // itself, makes a killed row print PASS.
+
+// Each row runs live_daemon_proof whole over the stand-ins and waits for it to end, and each
+// scratch directory's removal waits on the disk: a loaded machine slows both past Bun's 5 s
+// default. The bound is a hang guard, not a verdict, for every row and hook of this file.
+setDefaultTimeout(HANG_GUARD_MS);
 
 const root = join(import.meta.dir, "..", "..", "..");
 const scratch = temporaryDirectories("live-daemon-proof-test");

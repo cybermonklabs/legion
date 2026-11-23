@@ -15,6 +15,8 @@
 # names, and recorded with asciinema. Everything the run starts is its own and goes on any exit:
 # its scratch directory, its tmux servers and both containers. The daemon, listener and model logs
 # go to an evidence directory outside it, a fresh /tmp directory the run keeps and names on exit.
+# The NATS container publishes its port on a loopback address of this run's own, which
+# packages/envoy/scripts/lib/nats-host.sh claims (127.0.0.1 off Linux).
 set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
 
@@ -82,6 +84,8 @@ model_port=
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=../../../../../scripts/e2e/lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# shellcheck source-path=SCRIPTDIR source=../../../../../packages/envoy/scripts/lib/nats-host.sh
+. "$root/packages/envoy/scripts/lib/nats-host.sh"
 
 # Unconditional: every run removes what it made, whatever it ended on, and keeps its evidence.
 cleanup() {
@@ -94,6 +98,7 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_marked_processes "$work"
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1
+  release_nats_host
   rm -rf "$work"
   echo "evidence: $evidence (logs/daemon.log, logs/listener.log, logs/model.log)"
   return 0
@@ -131,9 +136,10 @@ pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres" docker exec "$pg_container" pg_isready -h 127.0.0.1 -U legion -d legion
 # shellcheck source-path=SCRIPTDIR source=../../../../../scripts/e2e/lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 0.5 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
+claim_nats_host "$work" || fail "no loopback address could be claimed for NATS (above)"
+docker run -d --name "$nats_container" --cpus 0.5 --memory 512m -p "$nats_host::4222" "$nats_image" -js >/dev/null
 until_true 90 "NATS" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
-nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
+nats_url="nats://$nats_host:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/envoy-token")
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$operator/operator-token")
 ENVOY_API_TOKEN="$(cat "$operator/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=example-host-legion NATS_URLS=$nats_url \

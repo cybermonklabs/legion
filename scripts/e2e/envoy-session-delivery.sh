@@ -20,7 +20,9 @@
 #        packages/daemon/internal/runtime/tmux/claude.go configures it (an MCP config naming
 #        dist/envoy-channel.js, both plugin directories, LEGION_CLAUDE_INBOX).
 #
-# Each session reaches NATS only through a socat proxy of its own, which the script can cut. Every
+# Each session reaches NATS only through a socat proxy of its own, which the script can cut. natsd
+# listens on a loopback address of its own (127.0.0.1 off Linux), named in its log, and the
+# proxies and the script's own clients dial it there. Every
 # server takes its port as lib/held-port.py gives it, never a port picked free a moment earlier:
 # natsd binds ports the kernel chooses and reports them (-p -1 -m -1); each listener, Dispatch and
 # each proxy (socat's ACCEPT-FD) serves on a copy of a socket a keeper holds for the whole run, so a
@@ -495,6 +497,16 @@ reported_port() {
   match=$(grep -m1 -oE -- "$2[0-9]+" "$1" 2>/dev/null) || return 1
   printf -v "$3" '%s' "${match##*[!0-9]}"
 }
+# reported_address LOG PATTERN VAR: assigns VAR the HOST:PORT a process that bound port 0 itself
+# reported, the word right after the first match of the extended regular expression PATTERN in
+# LOG, which ends at the space before it. It fails while LOG holds no such line, so it is also the
+# poll that waits for one.
+reported_address() {
+  local match
+  match=$(grep -m1 -oE -- "$2[^ ]+:[0-9]+" "$1" 2>/dev/null) || return 1
+  match=${match%%$'\n'*}
+  printf -v "$3" '%s' "${match##* }"
+}
 # pick_port VAR: a loopback port nothing answers on, below the kernel's ephemeral range (which
 # every connection's own local port comes from) and new to this run. Only for a server that can
 # only bind a number it is given: a --build-from listener that takes no ENVOY_LISTEN_FD.
@@ -650,15 +662,16 @@ note "pi-envoy $(jq -r .version "$work/pi-envoy/package.json"); claude-envoy $(j
 
 # ---- services ---------------------------------------------------------------------------------
 begin services
-# natsd binds the ports the kernel chooses (-p -1, -m -1) and reports both in its log.
+# natsd binds the ports the kernel chooses (-p -1, -m -1), on a loopback address of its own, and
+# reports both addresses in its log.
 (isolated_exec "" HOME="$work/nats-home" -- "$work/bin/natsd" -p -1 -m -1 -js -store_dir "$work/nats-store") \
   >"$work/logs/natsd.log" 2>&1 &
 pid[natsd]=$!
-nats_port="" monitor_port=""
-await natsd "$work/logs/natsd.log" 30 reported_port "$work/logs/natsd.log" 'Listening for client connections on [^ ]*:' nats_port
-await natsd "$work/logs/natsd.log" 30 reported_port "$work/logs/natsd.log" 'Starting http monitor on [^ ]*:' monitor_port
-nats_url="nats://127.0.0.1:${nats_port}"
-nats_monitor="http://127.0.0.1:${monitor_port}"
+nats_address="" monitor_address=""
+await natsd "$work/logs/natsd.log" 30 reported_address "$work/logs/natsd.log" 'Listening for client connections on ' nats_address
+await natsd "$work/logs/natsd.log" 30 reported_address "$work/logs/natsd.log" 'Starting http monitor on ' monitor_address
+nats_url="nats://${nats_address}"
+nats_monitor="http://${monitor_address}"
 nats_ready() { curl -fsS --max-time 2 "${nats_monitor}/healthz" | jq -e '.status == "ok"'; }
 await natsd "$work/logs/natsd.log" 30 nats_ready
 
@@ -701,14 +714,15 @@ proxy_ready() {
   local word=""
   (exec 3<>"/dev/tcp/127.0.0.1/$1" && read -r -t 2 -N 4 word <&3 && [[ "$word" == INFO ]]) 2>/dev/null
 }
-# start_proxy LABEL: socat forwarding to natsd from the socket the keeper keep-LABEL holds
-# (ACCEPT-FD; held-port.py names the descriptor PROXY_LISTEN_FD, which socat does not read), one
-# fork per connection, in a process group of its own (setsid and held-port.py exec in place), so
-# one SIGKILL to the group cuts every connection through it and the keeper keeps the port.
+# start_proxy LABEL: socat forwarding to natsd, at the address its log named, from the socket the
+# keeper keep-LABEL holds (ACCEPT-FD; held-port.py names the descriptor PROXY_LISTEN_FD, which
+# socat does not read), one fork per connection, in a process group of its own (setsid and
+# held-port.py exec in place), so one SIGKILL to the group cuts every connection through it and
+# the keeper keeps the port.
 start_proxy() {
   local label=$1 group
   (isolated_exec "" -- setsid python3 "$held_port" exec --from "$work/ports/keep-$label.sock" --fd-env PROXY_LISTEN_FD -- \
-    socat "ACCEPT-FD:3,fork" "TCP:127.0.0.1:${nats_port}") >>"$work/logs/$label.log" 2>&1 &
+    socat "ACCEPT-FD:3,fork" "TCP:${nats_address}") >>"$work/logs/$label.log" 2>&1 &
   pid[$label]=$!
   await "$label" "$work/logs/$label.log" 10 proxy_ready "${proxy_port[$label]}"
   read -r _ _ _ _ group _ <"/proc/${pid[$label]}/stat"
