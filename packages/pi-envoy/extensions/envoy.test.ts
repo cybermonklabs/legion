@@ -24363,7 +24363,10 @@ describe("consumer delivery", () => {
       expect(warnings.filter(({ message }) => message.includes("shown as its text"))).toEqual([
         {
           message: "envoy: a message's payload is shown as its text; the card could not lay it out",
-          context: { event_id: "evt-deep", error: "Maximum call stack size exceeded." },
+          context: {
+            event_id: "evt-deep",
+            error: "its layout is larger than the 1048576 bytes a card holds",
+          },
         },
       ]);
     } finally {

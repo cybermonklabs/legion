@@ -573,6 +573,13 @@ export function createChannelDelivery(input: {
     if (envelope === undefined) return
     const eventId = envelope.event_id
     if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
+    // A payload the card could not lay out is shown as the text its sender sent: said here, for
+    // the message the inbox lists the first time, so a copy Envoy sends again says nothing new.
+    if (rendered.payloadShownAsText !== undefined) {
+      process.stderr.write(
+        `envoy-channel: message ${eventId ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+      )
+    }
     inbox.unshift({
       event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
@@ -631,12 +638,6 @@ export function createChannelDelivery(input: {
         return tail.then(() => false)
       }
       if (late === true && passOverLateBtw(rendered)) return tail.then(() => false)
-      // A payload the card could not lay out is shown as the text its sender sent, said once here.
-      if (rendered.payloadShownAsText !== undefined) {
-        process.stderr.write(
-          `envoy-channel: message ${rendered.envelope?.event_id ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
-        )
-      }
       return queued(async () => {
         // A message Dispatch accepted as this session's own turn is never also a card. A failure
         // after that acceptance throws, so the frame is not answered and the listener sends it

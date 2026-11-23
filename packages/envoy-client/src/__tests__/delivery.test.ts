@@ -6,6 +6,7 @@ import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
 import {
   type DispatchDelivery,
+  INBOUND_CARD_MAX_BYTES,
   postDeliveryReply,
   renderInbound,
   replyWith,
@@ -1870,9 +1871,13 @@ describe("renderInbound non-dispatch envelopes", () => {
 
   // The card's TOON encoder recurses once per level of a value, so a payload nested some
   // thousands of levels deep overflowed the stack and threw out of `renderInbound`, in every host
-  // and on every delivery. Such a payload is the text its sender sent, and the card shows it so.
+  // and on every delivery, or laid out in a card far larger than the payload. Such a payload is
+  // the text its sender sent, and the card shows it so.
   describe("a payload the card cannot lay out", () => {
     const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+    // The card stops laying a value out once its lines pass the bound, so an object chain 9,999
+    // deep is refused by the bound before the encoder's recursion reaches its bottom.
+    const BOUND = "its layout is larger than the 1048576 bytes a card holds";
 
     test("a message whose JSON payload is nested 9,999 deep is shown as the text its sender sent", () => {
       const rendered = renderInbound(
@@ -1884,7 +1889,7 @@ describe("renderInbound non-dispatch envelopes", () => {
 
       // The card is TOON this renderer wrote, read back as the other rows read theirs.
       const card = decode(rendered.content) as { envoy: Record<string, unknown> };
-      expect(rendered.payloadShownAsText).toContain("Maximum call stack size exceeded");
+      expect(rendered.payloadShownAsText).toBe(BOUND);
       expect(card.envoy).toMatchObject({ id: "evt-deep", summary: "deep", message: nested });
     });
 
@@ -1897,19 +1902,69 @@ describe("renderInbound non-dispatch envelopes", () => {
       );
 
       const card = decode(rendered.content) as { envoy: Record<string, unknown> };
-      expect(rendered.payloadShownAsText).toContain("Maximum call stack size exceeded");
+      expect(rendered.payloadShownAsText).toBe(BOUND);
       expect(card.envoy).toMatchObject({ id: "dispatch-deep", dispatch: nested });
     });
 
-    // The control: the encoder lays out a value it can reach the bottom of as before. An array
-    // chain 7,000 deep is one; an object chain 7,000 deep is not (Bun 1.4.4).
-    test("a message whose JSON payload is an array chain 7,000 deep is laid out as before", () => {
-      const arrays = `${"[".repeat(7_000)}${"]".repeat(7_000)}`;
+    // The encoder reads the whole value before it lays out a line, with a recursion of its own:
+    // an object chain 20,000 deep overflows the stack there, and the card shows it as its text.
+    test("a message whose JSON payload is an object chain 20,000 deep, past the encoder's recursion, is shown as its text", () => {
+      const deeper = `${'{"a":'.repeat(20_000)}1${"}".repeat(20_000)}`;
+      const rendered = renderInbound(
+        JSON.stringify(envelope({ event_id: "evt-deeper", payload: deeper })),
+        reader
+      );
+
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(rendered.payloadShownAsText).toBe("Maximum call stack size exceeded.");
+      expect(card.envoy).toMatchObject({ id: "evt-deeper", message: deeper });
+    });
+
+    // Each level indents every line below it, so an array chain the encoder reaches the bottom
+    // of lays out in bytes that grow with the square of its depth: 9,999 levels, a 20 KB frame,
+    // made a card of 100,060,107 bytes.
+    test("a message whose JSON payload is an array chain 9,999 deep is shown as its text, in a card under the bound", () => {
+      const arrays = `${"[".repeat(9_999)}${"]".repeat(9_999)}`;
+      const rendered = renderInbound(
+        JSON.stringify(envelope({ event_id: "evt-wide", payload: arrays })),
+        reader
+      );
+
+      expect(Buffer.byteLength(rendered.content)).toBeLessThanOrEqual(INBOUND_CARD_MAX_BYTES);
+      expect(rendered.payloadShownAsText).toBe(
+        "its layout is larger than the 1048576 bytes a card holds"
+      );
+      const card = decode(rendered.content) as { envoy: Record<string, unknown> };
+      expect(card.envoy).toMatchObject({ id: "evt-wide", message: arrays });
+    });
+
+    // The control: a layout under the bound is the card as before, an array chain 1,000 deep
+    // (1,008,114 bytes) as much as any.
+    test("a message whose JSON payload is an array chain 1,000 deep lays out under the bound as before", () => {
+      const arrays = `${"[".repeat(1_000)}${"]".repeat(1_000)}`;
       const rendered = renderInbound(JSON.stringify(envelope({ payload: arrays })), reader);
 
       expect(rendered.payloadShownAsText).toBeUndefined();
       expect(rendered.content).toContain("\n  message[1]:\n    - [1]:\n      - [1]:\n");
       expect(rendered.content).not.toContain('message: "[');
+    });
+
+    // A payload that is text already is bounded by its frame, and the bound never touches it: a
+    // card over it from a long summary beside a long text says nothing of a layout.
+    test("a text payload is shown as text however large its card", () => {
+      const words = "A line of a long review, with words and a full stop.\n";
+      const rendered = renderInbound(
+        JSON.stringify(
+          envelope({
+            payload_summary: words.repeat(11_000),
+            payload: `Body.\n${words.repeat(11_000)}`,
+          })
+        ),
+        reader
+      );
+
+      expect(Buffer.byteLength(rendered.content)).toBeGreaterThan(INBOUND_CARD_MAX_BYTES);
+      expect(rendered.payloadShownAsText).toBeUndefined();
     });
   });
 
