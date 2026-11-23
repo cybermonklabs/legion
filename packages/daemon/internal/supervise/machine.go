@@ -973,10 +973,10 @@ type Deps struct {
 	// is the workflow's own reading of the issue record (internal/workflow's OpenPhaseRole), "" for
 	// an issue it does not record, for a phase no role works, and for a phase the architect works
 	// (admitted, accepting), which has no phase worker, so the order falls back to claim.Roles
-	// there. It is asked at each start the gate holds that no request raised, since the order
-	// reads it of no other, bounded by Timeouts.RPC; an error is logged and read as no phase
-	// worker, so the start waits in the order of claim.Roles. nil is a daemon with no workflow,
-	// where no role is the phase worker.
+	// there. It is read at each start into a gated pod that no request raised, before the gate
+	// answers, since the order reads it of no other, bounded by Timeouts.RPC; an error is logged
+	// and read as no phase worker, so the start waits in the order of claim.Roles. nil is a daemon
+	// with no workflow, where no role is the phase worker.
 	PhaseRole func(ctx context.Context, issue string) (claim.Role, error)
 	// Secrets is the secrets broker's enrollment routes for the runtime's pods. nil
 	// deploys with no broker: no identity is kept, and nothing is enrolled or revoked.
@@ -2977,32 +2977,10 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 		if granted != nil {
 			token, hold, granted = granted.token, granted.hold, nil
 		} else {
-			m.claim.Generation++
-			token = rand.Text()
-			m.claim.BootTokenHash = HashBootToken(token)
-
-			m.claim.State = StateLaunching
-			// The pod end goes with the failure: a claim being launched again carries nothing of
-			// the end that stopped the process before it (Claim.PodEnd).
-			m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt, m.claim.PodEnd = "", "", time.Time{}, ""
-			if err := m.persist(starting); err != nil {
-				err = errors.Join(err, m.stopPrevious(starting))
-				if starting.Err() != nil {
-					return err
-				}
-				m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
-					"generation", m.claim.Generation, "error", err)
-				m.relaunchAtProbe(l.intent, l.charged, l.exempt)
+			var done bool
+			var err error
+			if token, hold, done, err = m.writeTry(starting, l); done {
 				return err
-			}
-			if l.charged {
-				if err := m.backOff(starting); err != nil {
-					return err
-				}
-			}
-			var parked bool
-			if hold, parked = m.askPod(starting, l, token); parked {
-				return nil
 			}
 		}
 		loc, way, err := m.start(starting, token)
@@ -3051,7 +3029,7 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 			err = errors.Join(err, m.stopPrevious(starting))
 			m.log.Warn("supervise: the store did not answer the session's hold; trying the launch again at the probe interval, charging nothing",
 				"generation", m.claim.Generation, "error", err)
-			m.relaunchAtProbe(l.intent, l.charged, l.exempt)
+			m.relaunchAtProbe(l)
 			return errors.Join(err, m.persist(starting))
 		}
 		m.claim.LastStartFailure = storetext.FarSideError(err.Error())
@@ -3073,14 +3051,47 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 	}
 }
 
+// writeTry is a fresh try of the launch (launchTries): the claim at the next generation with a
+// new boot token, written launching with no failure, then the backoff of a charged try and the
+// ask of its issue pod's gate (askPod). It answers the boot token and the hold the gate granted,
+// or done where the launch ends at this try, with what launchTries returns: a write the store did
+// not take, which is tried again at the probe interval unless the try's own context ended
+// (relaunchAtProbe), a backoff cut short, or a try parked at the gate, which returns nil.
+func (m *Machine) writeTry(starting context.Context, l launchTry) (token string, hold *podHold, done bool, err error) {
+	m.claim.Generation++
+	token = rand.Text()
+	m.claim.BootTokenHash = HashBootToken(token)
+
+	m.claim.State = StateLaunching
+	// The pod end goes with the failure: a claim being launched again carries nothing of the end
+	// that stopped the process before it (Claim.PodEnd).
+	m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt, m.claim.PodEnd = "", "", time.Time{}, ""
+	if err = m.persist(starting); err != nil {
+		err = errors.Join(err, m.stopPrevious(starting))
+		if starting.Err() == nil {
+			m.log.Warn("supervise: the launch could not be written; trying it again at the probe interval",
+				"generation", m.claim.Generation, "error", err)
+			m.relaunchAtProbe(l)
+		}
+		return "", nil, true, err
+	}
+	if l.charged {
+		if err = m.backOff(starting); err != nil {
+			return "", nil, true, err
+		}
+	}
+	hold, done = m.askPod(starting, l, token)
+	return token, hold, done, nil
+}
+
 // relaunchAtProbe leaves the launch launchTries was making to be tried again at the probe
 // interval (relaunchLater): raised anew from the top, as no request's, letting no process go
 // (noEnd), and as the lane whose intent it carried (retryHolding). It is the retry of the two
 // tries that started nothing and were refused by nothing about the claim: a write the store did
 // not take, and a hold of the session the store did not answer (launchTries).
-func (m *Machine) relaunchAtProbe(intent *pluginIntent, charged, exempt bool) {
-	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
-		return m.launchAfter(ctx, charged, exempt, false, noEnd)
+func (m *Machine) relaunchAtProbe(l launchTry) {
+	m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(l.intent, func(ctx context.Context) error {
+		return m.launchAfter(ctx, l.charged, l.exempt, false, noEnd)
 	}))
 }
 

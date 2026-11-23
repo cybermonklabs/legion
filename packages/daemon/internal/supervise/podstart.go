@@ -80,14 +80,15 @@ import (
 // podLoadBound is how long a role's session load holds its pod's start while its agent has not
 // registered, counted from the moment its process started: past it the next start goes all the
 // same. A registration inside it stops it (settle), and the load holds the pod until its settle
-// ends (podLoadSettle): a load that registers late is the one whose peak is late, and in the
-// measured resume of #5153 the agent registered at +90.7 s and the pod's memory peaked at
-// +119.9 s, so a bound that ran on past the registration would have started the next role 0.8 s
-// after the peak. It is the spec's decision, from the measured peak of a long resume, which lasts
-// some tens of seconds, so a hung load holds the roles behind it a short time only. It is well
-// below the 600 s boot timeout every deployment configures (worker_boot_timeout_seconds), so the
-// bound releases a start long before that timeout probes the hung process. It is a constant: no
-// setting names it.
+// ends (podLoadSettle): a load that registers late is the one whose peak is late. In the
+// measured resume of #5153 the process started at 00:21:34.85Z, its agent registered at +90.7 s
+// and the pod's memory peaked at +119.9 s: a bound that ran on past the registration, counted
+// from the process's start, would have released the next role at +120.0 s, 0.1 s after the peak,
+// where the settle ends that load at +120.7 s. It is the spec's decision, from the measured peak
+// of a long resume, which lasts some tens of seconds, so a hung load holds the roles behind it a
+// short time only. It is well below the 600 s boot timeout every deployment configures
+// (worker_boot_timeout_seconds), so the bound releases a start long before that timeout probes
+// the hung process. It is a constant: no setting names it.
 const podLoadBound = 2 * time.Minute
 
 // podLoadSettle is how long after its agent's registration a role's session load ends: the end
@@ -108,6 +109,10 @@ const (
 	podStartedLine   = "supervise: started a role's process in its issue pod"
 	podLoadEndedLine = "supervise: a role's session load in its issue pod ended"
 )
+
+// podLaunchCutShortLine is the line of a parked start that a let-go of its claim's process, a
+// park that replaced it or the daemon's stop took out of the gate before it ran (podPark.cut).
+const podLaunchCutShortLine = "supervise: launch cut short while it waited for its issue pod's start; its start left the gate"
 
 // podHoldEnd is why a hold of a pod's start ended, which is what ended the wait of the start
 // granted next: the start line of that start names it (waitEndedBy).
@@ -598,7 +603,7 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 	park := &podPark{gate: m.deps.PodStarts, hold: hold, log: m.log, generation: m.claim.Generation}
 	park.unwatch = context.AfterFunc(m.ctx, func() { park.cut() })
 	m.timers[TimerPodStart] = armed{seq: granted.Seq, cancel: park}
-	m.wake = &wake{kind: WakeLaunch, state: m.claim.State, park: park, run: func(ctx context.Context) error {
+	m.wake = &wake{kind: WakeLaunch, park: park, run: func(ctx context.Context) error {
 		return m.launchTries(ctx, l, &podGrant{token: token, hold: hold})
 	}}
 	m.log.Info("supervise: the launch waits for its issue pod's start while another role of the pod starts or loads its session",
@@ -637,8 +642,7 @@ func (p *podPark) cut() bool {
 	if !p.gate.cancel(p.hold) {
 		return false
 	}
-	p.log.Info("supervise: launch cut short while it waited for its issue pod's start; its start left the gate",
-		"generation", p.generation)
+	p.log.Info(podLaunchCutShortLine, "generation", p.generation)
 	return true
 }
 

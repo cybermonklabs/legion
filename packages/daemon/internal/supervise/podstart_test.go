@@ -83,14 +83,7 @@ func (h *harness) podRoleUnder(ctx context.Context, role claim.Role, state Claim
 		c.Generation, c.SuspendedBy = 1, SuspendedByDaemon
 		c.Session, c.SessionFile = r.session, r.sessionFile
 	}
-	if err := h.store.PutClaim(h.ctx, c); err != nil {
-		h.t.Fatal(err)
-	}
-	m, err := NewMachine(ctx, h.deps, c)
-	if err != nil {
-		h.t.Fatalf("new machine for %s: %v", c.Token, err)
-	}
-	r.m = m
+	r.m = h.machineUnder(ctx, c)
 	return r
 }
 
@@ -105,16 +98,7 @@ func (h *harness) postAsync(m *Machine, ev Event) <-chan error {
 // promptly is the one receive from ch, which must come within promptBound of real time.
 func promptly[T any](t *testing.T, what string, ch <-chan T) T {
 	t.Helper()
-	timer := time.NewTimer(promptBound)
-	defer timer.Stop()
-	select {
-	case v := <-ch:
-		return v
-	case <-timer.C:
-		t.Fatalf("%s did not come within %s: it waits on another role's session load", what, promptBound)
-	}
-	var zero T
-	return zero
+	return testwait.ReceiveWithin(t, promptBound, what, "it waits on another role's session load", ch)
 }
 
 // claimPromptly is r's claim as Machine.Claim reads it, through r's machine's lock, within
@@ -473,7 +457,7 @@ func (h *harness) stopsWithoutWaiting(second *podRole, ev Event, state ClaimStat
 	if waiting := h.podWaiting(); slices.Contains(waiting, second.token) {
 		h.t.Fatalf("starts waiting for the pod = %v after %T of %s, want its start out of the queue", waiting, ev, second.token)
 	}
-	if lines := h.logs.lines("launch cut short while it waited for its issue pod's start", "claim="+string(second.token)); len(lines) != 1 {
+	if lines := h.podRecords(podLaunchCutShortLine, second.token); len(lines) != 1 {
 		h.t.Fatalf("cut-short lines of %s = %d, want 1", second.token, len(lines))
 	}
 }
@@ -945,13 +929,10 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		// The grant's own decision, once it has the lock, starts nothing.
 		second.m.mu.Unlock()
 		testwait.Eventually(t, "the second's grant to reach its machine", func() bool {
-			second.m.mu.Lock()
-			defer second.m.mu.Unlock()
-			_, armed := second.m.timers[TimerPodStart]
-			return !armed
+			return !armedOn(second.m, TimerPodStart)
 		})
 		h.wantStarts(second.token, 0)
-		if lines := h.logs.lines("launch cut short while it waited for its issue pod's start", "claim="+string(second.token)); len(lines) != 1 {
+		if lines := h.podRecords(podLaunchCutShortLine, second.token); len(lines) != 1 {
 			t.Fatalf("cut-short lines of the stopped role = %d, want 1", len(lines))
 		}
 		h.wantClaimState(second, StateLaunching)

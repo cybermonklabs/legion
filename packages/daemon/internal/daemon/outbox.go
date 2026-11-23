@@ -2798,19 +2798,26 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		// Every read of the claim a stop row makes before it stops the claim — here, and in the
-		// release, issue_close and tree_close rows below, and a pause's stop (pauseStop) — is the
-		// machine's published view (supervise.Machine.View), never Machine.Claim, as the operator's
-		// routes read it (api's claimRequest): a stop never waits for the decision in flight, and
-		// the view is what the claim's latest decision left (dispatch://INFRA-5297, a suspension,
-		// a release or a deletion of the pod never waits).
-		switch machine.View().Claim.State {
+		// The reads of the claim this row makes before it stops it, and those the release,
+		// issue_close and tree_close rows below and a pause's stop (pauseStop) make before they stop
+		// it, with the pause stop's read after, are the machine's published view
+		// (supervise.Machine.View), never Machine.Claim, as the operator's routes read it (api's
+		// claimRequest): none of those reads waits for a decision in flight, and the view is what
+		// the claim's latest decision left. The stop itself can wait: an issue_close or a tree_close
+		// takes the machine's lock behind a decision in flight, and only a suspension acts before
+		// that lock (supervise's stopStart). A suspend or tree_close row whose tree the issue has
+		// left goes through stopInLeftTree and stopCarried instead, which reads Machine.Claim,
+		// because its read decides whether to stop at all and must see a decision in flight. A
+		// launch that waits at its issue pod's gate parks on its claim (supervise's askPod), so no
+		// decision holds the machine through that wait (dispatch://INFRA-5297).
+		view := machine.View().Claim
+		switch view.State {
 		case supervise.StateFailed, supervise.StateRetired:
 			// The claim runs nothing, so there is nothing to suspend.
 			return nil
 		}
 		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too.
-		if last := machine.View().Claim.LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
+		if last := view.LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
 			r.log.Info("outbox suspend superseded by a newer start; finished without acting",
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
 			return nil

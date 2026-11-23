@@ -621,7 +621,7 @@ func WakeRanFields(kind WakeKind, paced bool, waitedFor time.Duration, rate, bur
 // turn of the pacing's: the launch has started, letting its process go and writing its claim
 // launching, and waits only for another role's session load, which an operator's start waits for
 // too (dispatch://INFRA-5297). So every request decides that claim as the launch under way it is,
-// as it did while that wait held the decision, and the launch keeps its place in the pod's order.
+// and the launch keeps its place in the pod's order.
 func (m *Machine) dropWakeFor(ev Event) *wake {
 	if m.wake == nil || m.wake.park != nil || m.claim.Locator != nil || !dropsWaitingWake(ev) {
 		return nil

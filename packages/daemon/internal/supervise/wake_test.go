@@ -90,10 +90,18 @@ func wakeClaim(token claim.Token, state ClaimState) Claim {
 // wake limiter, over the claim given.
 func (h *harness) machineFor(c Claim) *Machine {
 	h.t.Helper()
+	return h.machineUnder(h.ctx, c)
+}
+
+// machineUnder is machineFor with the machine built on ctx, which a test ends for that machine
+// alone as a stopping daemon ends every machine's (shutdown); the claim is stored on the
+// harness's own.
+func (h *harness) machineUnder(ctx context.Context, c Claim) *Machine {
+	h.t.Helper()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
 		h.t.Fatal(err)
 	}
-	m, err := NewMachine(h.ctx, h.deps, c)
+	m, err := NewMachine(ctx, h.deps, c)
 	if err != nil {
 		h.t.Fatalf("new machine for %s: %v", c.Token, err)
 	}

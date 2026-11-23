@@ -7203,7 +7203,7 @@ a role's process starts only when no other role of that pod is loading its sessi
 
 - **Waiting** runs from the moment the daemon asks for a role's start into the pod until its process starts, its launch fails, or its claim is suspended or retired.
   The wait sits in the daemon's own start path, before the runtime is called, and not in the pod's launch turn, which a suspension and a release take too and which never waits for a load.
-  A waiting launch is parked on its claim, written as launching with no process, as a launch the wake pacing holds is, so nothing that reads or stops the claim waits for it, and the outbox row that asked for the start is done.
+  A waiting launch is parked on its claim, written as launching with no process, as a launch the wake pacing holds over no process is, so nothing that reads or stops the claim waits for it, and the outbox row that asked for the start is done.
   A suspension, a release, a close or a retirement of a waiting role, or a pause's stop of it, ends its wait at once, and its process is never started.
 
 - **Loading** runs from the role's process start until 30 seconds after the agent registers, or until its launch fails, its process ends, or its claim is suspended or retired.
@@ -7214,9 +7214,10 @@ a role's process starts only when no other role of that pod is loading its sessi
   a load whose agent has not registered by then lets the next role start all the same, and that start's line says so;
   a load whose agent has registered ends 30 seconds after the registration, however late it came, since a load that registers late is the one whose peak is late.
 
-- **The order** of the roles that wait together:
-  the earliest whose start a request raised (a task, a message, an operator's start) goes first, then the others in the order their starts were asked for;
-  where no request raised any of them, as after a roles container restart or a pod an update round replaced, the first start to reach the idle pod starts at once, whatever its role, and the others go with the role working the issue's current phase first (none does in the architect's own phases, admitted and accepting), then in the order architect, planner, implementer, tester, reviewer, merger.
+- **The order:**
+  the first start to reach a pod that holds nothing starts at once, whatever its role and whatever raised it;
+  the starts that wait behind a load go with the earliest whose start a request raised (a task, a message, an operator's start) first, then the others in the order their starts were asked for;
+  where no request raised any of them, as after a roles container restart or a pod an update round replaced, the role working the issue's current phase goes first (none does in the architect's own phases, admitted and accepting), then the others in the order architect, planner, implementer, tester, reviewer, merger.
 
 The rule holds under `runtime: kubernetes` for every role of an issue pod, whatever starts it: a fresh session, a resume, an operator's start, a start the wake pacing exempts, and with or without a wake pace.
 The controller's own pod is not an issue pod and never waits.

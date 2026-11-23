@@ -36,6 +36,10 @@ const podStopBound = time.Second
 // before it ran (supervise's podPark).
 const cutShortLine = "supervise: launch cut short while it waited for its issue pod's start"
 
+// waitsAtGateLine is the line a launch writes when its start parks at the pod's gate behind
+// another role's start or load (supervise's askPod).
+const waitsAtGateLine = "supervise: the launch waits for its issue pod's start"
+
 // podGated has sup's machines start their processes through one pod start gate, as a Kubernetes
 // daemon's do (supervise.Deps.PodStarts, podStarts), on sup's clock, whose timers never fire
 // (stillClock): a load the gate holds ends neither at its settle nor at its bound while the test
@@ -82,23 +86,40 @@ func loadingPair(t *testing.T, sup *supervisor) podPair {
 	return p
 }
 
-// parkedBehindALoad is loadingPair with the tester's resume by rule asked of its machine on a
-// goroutine of its own, as the outbox's start asks it: the tester's launch then waits at the
-// gate behind the implementer's load, its claim written launching and its process asked of no
-// runtime.
-func parkedBehindALoad(t *testing.T, sup *supervisor, rt *fake.Runtime) podPair {
+// parkedBehindALoad is loadingPair with the tester's resume by rule asked of its machine, as the
+// outbox's start asks it: the tester's launch waits at the gate behind the implementer's load and
+// parks on its claim (supervise's askPod), so the resume returns with the claim written launching
+// with no process, the line that the launch waits for its pod's start written once, and its
+// process asked of no runtime.
+func parkedBehindALoad(t *testing.T, sup *supervisor, rt *fake.Runtime, logs *testlog.Buffer) podPair {
 	t.Helper()
 	p := loadingPair(t, sup)
-	go func() {
-		_ = p.waiting.Handle(context.Background(), supervise.RequestRuleResume{Claim: p.waitingToken, Reason: "its issue's phase starts"})
-	}()
-	testwait.Eventually(t, "the tester's launch to wait at its pod's gate", func() bool {
-		return p.waiting.View().Claim.State == supervise.StateLaunching
-	})
+	if err := p.waiting.Handle(context.Background(), supervise.RequestRuleResume{Claim: p.waitingToken, Reason: "its issue's phase starts"}); err != nil {
+		t.Fatalf("resume the tester by rule: %v", err)
+	}
+	if c := p.waiting.View().Claim; c.State != supervise.StateLaunching || c.Locator != nil {
+		t.Fatalf("the tester is %s recording %+v after its resume, want it launching with no process while its launch waits at the gate", c.State, c.Locator)
+	}
+	if waits := p.testerLines(t, logs, waitsAtGateLine); waits != 1 {
+		t.Fatalf("the tester's lines that its launch waits at the gate = %d, want 1; log:\n%s", waits, logs.String())
+	}
 	if launched := launchesOf(rt, p.waitingToken); len(launched) != 0 {
 		t.Fatalf("the tester was launched %d times, want its launch waiting behind the implementer's load", len(launched))
 	}
 	return p
+}
+
+// testerLines is how many lines of the machines' log whose message starts with msg name the
+// tester's claim.
+func (p podPair) testerLines(t *testing.T, logs *testlog.Buffer, msg string) int {
+	t.Helper()
+	n := 0
+	for _, line := range loggedMessages(t, logs.String(), msg) {
+		if line["claim"] == string(p.waitingToken) {
+			n++
+		}
+	}
+	return n
 }
 
 // wantStopped is the tester after its stop: in state, suspended by by where state is suspended,
@@ -112,13 +133,7 @@ func (p podPair) wantStopped(t *testing.T, rt *fake.Runtime, logs *testlog.Buffe
 	if launched := launchesOf(rt, p.waitingToken); len(launched) != 0 {
 		t.Fatalf("the tester was launched %d times, want none: its process is never asked of the runtime", len(launched))
 	}
-	cut := 0
-	for _, line := range loggedMessages(t, logs.String(), cutShortLine) {
-		if line["claim"] == string(p.waitingToken) {
-			cut++
-		}
-	}
-	if cut != 1 {
+	if cut := p.testerLines(t, logs, cutShortLine); cut != 1 {
 		t.Fatalf("the tester's lines that its launch was cut short at the gate = %d, want 1; log:\n%s", cut, logs.String())
 	}
 	if c := p.loading.View().Claim; c.State != supervise.StateLaunching || c.Locator == nil {
@@ -132,15 +147,7 @@ func (p podPair) wantStopped(t *testing.T, rt *fake.Runtime, logs *testlog.Buffe
 // actsPromptly is the answer on done, which must come within podStopBound of real time.
 func actsPromptly(t *testing.T, what string, done <-chan error) error {
 	t.Helper()
-	timer := time.NewTimer(podStopBound)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		t.Fatalf("%s did not act within %s while another role of its pod loads: it waits on that load", what, podStopBound)
-	}
-	return nil
+	return testwait.ReceiveWithin(t, podStopBound, what, "it waits on the load of another role of its pod", done)
 }
 
 // runsPromptly is row run through runner's executor (outbox.execute) on a goroutine of its own,
@@ -184,9 +191,9 @@ func newPodStopRig(t *testing.T, issue record.Issue, tree bool) *podStopRig {
 	return &podStopRig{pool: pool, st: st, sup: sup, runner: runner, rt: rt, logs: logs}
 }
 
-// podIssueAt is LEGION-208 in implementing at generation 1, the implementer the open phase's
-// worker.
-func podIssueAt() record.Issue {
+// podIssueRecord is LEGION-208 in implementing at generation 1, the implementer the open phase's
+// worker: the issue the pod stop rigs record, and the pause rigs (newPauseRig).
+func podIssueRecord() record.Issue {
 	return record.Issue{Key: pauseIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
 		Tree: pauseIssue, Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 }
@@ -239,13 +246,13 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			issue := podIssueAt()
+			issue := podIssueRecord()
 			if tc.lingers {
 				until := time.Now().Add(24 * time.Hour)
 				issue.Phase, issue.Status, issue.LingerUntil = phase.Done, "done", &until
 			}
 			r := newPodStopRig(t, issue, !tc.lingers)
-			pair := parkedBehindALoad(t, r.sup, r.rt)
+			pair := parkedBehindALoad(t, r.sup, r.rt, r.logs)
 
 			if err := runsPromptly(t, r.runner, tc.name, tc.row(t, r)); err != nil {
 				t.Fatalf("%s: %v", tc.name, err)
@@ -262,7 +269,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		logs := podGated(sup)
 		// The tester's launch waits at the gate before the pause: a launch asked while the project
 		// is paused is held by the pause's own gate instead (supervise's pauseGate).
-		pair := parkedBehindALoad(t, sup, rt)
+		pair := parkedBehindALoad(t, sup, rt, logs)
 		held := p.pauseLegion()
 		runner := &outbox{pool: p.pool, records: record.NewStore(), supervisor: sup, trees: p.st, project: "legion",
 			dispatchProject: "LEGION", log: quietLogger(), now: time.Now}
@@ -278,7 +285,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	})
 
 	t.Run("a stop row behind a start row whose launch waits, on the issue's lifecycle lane", func(t *testing.T) {
-		r := newPodStopRig(t, podIssueAt(), true)
+		r := newPodStopRig(t, podIssueRecord(), true)
 		pair := loadingPair(t, r.sup)
 		// The tester's start, then its stop: two rows of the issue's lifecycle lane, which runs them
 		// one at a time in the order they were queued.
