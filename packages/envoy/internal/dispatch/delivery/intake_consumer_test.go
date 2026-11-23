@@ -555,16 +555,19 @@ func TestIntakeDrainsABacklogPublishedBeforeItBinds(t *testing.T) {
 // the first holds it, and takes it over once the first stops -- which is how a stopped or dead
 // process's delivery work is picked up.
 func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
-	// The default logger, and serial: no component may log at ERROR, and duty takes no logger.
-	logs := captureLogs(t)
+	t.Parallel()
+	// No component may log at ERROR: both intakes, the duty leases and holds they take, and every
+	// NATS client write to the test's logger, and nothing else on the path (the store, GitHub's
+	// client) writes one.
+	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
-	publisher := intakeTestClient(t)
+	publisher := intakeTestClient(t, bus.WithLogger(logger))
 
-	holder := startIntakeProcess(t, pool, natsURL, nil)
+	holder := startIntakeProcess(t, pool, natsURL, nil, bus.WithLogger(logger))
 	held := awaitPushBound(t, publisher, "the first process did not bind the durable")
-	startIntakeProcess(t, pool, natsURL, nil)
+	startIntakeProcess(t, pool, natsURL, nil, bus.WithLogger(logger))
 	standingBy := "dispatch delivery: NATS consumer held by another process; standing by"
 	waitFor(t, 20*time.Second, func() bool {
 		for _, record := range logs() {
@@ -602,12 +605,14 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 // process of the build before holds, which binds without one -- is therefore left exactly as it
 // is, filter set and all, however much this release would otherwise replace it.
 func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
-	// The default logger, and serial: no component may log at ERROR, and duty takes no logger.
-	logs := captureLogs(t)
+	// No component may log at ERROR: the intake, the duty lease and hold it takes, and both NATS
+	// clients write to the test's logger, and nothing else on the path (the store, GitHub's client)
+	// writes one. Serial: the two bind intervals after the standby line are a quiet window.
+	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
-	holder := intakeTestClient(t)
+	holder := intakeTestClient(t, bus.WithLogger(logger))
 
 	// The durable an earlier release left: a filter-subject set, which this release replaces
 	// (TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor), as a push consumer so a process can
@@ -635,7 +640,7 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	// is the one a bound durable takes.
 	awaitPushBound(t, holder, "the durable is not bound to the other process")
 
-	startIntakeProcess(t, pool, natsURL, nil)
+	startIntakeProcess(t, pool, natsURL, nil, bus.WithLogger(logger))
 	standingBy := "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go"
 	waitFor(t, 20*time.Second, func() bool {
 		for _, record := range logs() {
@@ -675,12 +680,13 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 // takes, bus.DispatchDeliveryDurable's: a test holding any other durable's lease would leave the
 // take-over free and prove nothing.
 func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
-	// The default logger, and serial: the line the row waits for is duty's, and duty takes no logger.
-	logs := captureLogs(t)
+	// The row waits for duty's skip line, which the intake's take-over writes to the intake's
+	// logger, the test's. Serial: the two bind intervals after that line are a quiet window.
+	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	leases := deliveryTestLeases(t, pool)
-	natsClient := intakeTestClient(t)
+	natsClient := intakeTestClient(t, bus.WithLogger(logger))
 
 	// A durable this release would recreate: the right filter subject, the server's own flow
 	// control rather than this package's, and no subscriber.
@@ -699,7 +705,7 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	taken, release := make(chan struct{}), make(chan struct{})
 	ran := make(chan bool, 1)
 	go func() {
-		ran <- duty.Exclusive(ctx, nil, leases, consumerLease(bus.DispatchDeliveryDurable), time.Time{}, 0, func(context.Context) {
+		ran <- duty.Exclusive(ctx, logger, leases, consumerLease(bus.DispatchDeliveryDurable), time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})

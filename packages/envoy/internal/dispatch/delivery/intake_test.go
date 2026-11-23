@@ -32,14 +32,12 @@ import (
 // deliveryTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel except those that change or read back something
 // the whole process shares, which stay serial and run before the rest: a package variable a test
-// shortens (githubPageRetryWait, decodeEnvelope), the default logger (captureLogs), which a test
-// reads when it needs a line of something that takes no logger of the test's -- duty -- or
-// requires that no component wrote some line such a component could write, t.Setenv, the
-// process's goroutines, a select on a short time.After or a quiet window close to what it waits
-// for, a measurement of the machine's speed, or a read of Postgres's whole-server views. An
+// shortens (githubPageRetryWait, decodeEnvelope), t.Setenv, the process's goroutines, a select on
+// a short time.After or a quiet window close to what it waits for, a measurement of the machine's
+// speed, or a read of Postgres's whole-server views. No test reads the default logger: an
 // intake's own timers, hooks and logger are its tuning (tuningFor, captureIntakeLogs), which no
-// other test's intake reads, and a NATS client's logger is the one the test gives it
-// (bus.WithLogger, captureTestLogs).
+// other test's intake reads, the duty leases and holds an intake takes write to that logger too,
+// and a NATS client's logger is the one the test gives it (bus.WithLogger, captureTestLogs).
 // Each parallel test has a database of its own (storetest.Open's clone) and a JetStream account of
 // its own (testnats.URL), and waits on NATS and Postgres far more than on a core. go test's default
 // of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box, where every test's database
@@ -276,30 +274,14 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	})
 }
 
-// captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
-// answers the records written so far: the default logger's, which every NATS client built without
-// bus.WithLogger writes to, and the logger of every intake the test builds (tuningFor) and every
-// intake StartIntakes builds, which log to the default. Intake logs from NATS's delivery
-// goroutine, so the buffer is locked. Call it before startIntake, so the default logger is
-// restored only once intake stops. It is for a test that reads a line of something that takes no
-// logger of the test's -- duty -- or that requires no component at all to have written some line
-// such a component could write; such a test is serial. A test that reads its intakes' lines alone
-// calls captureIntakeLogs, and one that reads its NATS clients' too calls captureTestLogs.
-func captureLogs(t *testing.T) func() []map[string]any {
-	t.Helper()
-	var buffer lockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
-	tuningFor(t).log = slog.Default()
-	return func() []map[string]any { return loggedRecords(&buffer) }
-}
-
 // captureIntakeLogs points the logger of every intake the test builds after it (tuningFor), and
 // of the settings caches it builds for them (loadedSettingsCache), at a buffer of the test's own,
-// as JSON, and answers the records written so far. The default logger is left alone, so the test
-// reads its own intakes' lines, none of another test's, and may run beside other tests; what does
-// not take the intake's logger -- a NATS client the test does not give it (captureTestLogs), the
-// store, duty -- still writes to the default. Call it before the test builds its intakes, which
-// read their logger once they run.
+// as JSON, and answers the records written so far. The duty leases and holds those intakes take
+// write there too. The default logger is left alone, so the test reads its own intakes' lines,
+// none of another test's, and may run beside other tests; what does not take the intake's logger
+// -- a NATS client the test does not give it (captureTestLogs), the store, a duty.Exclusive the
+// test calls itself with a nil logger -- still writes to the default. Call it before the test
+// builds its intakes, which read their logger once they run.
 func captureIntakeLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
 	var buffer lockedBuffer
@@ -310,8 +292,9 @@ func captureIntakeLogs(t *testing.T) func() []map[string]any {
 // captureTestLogs is captureIntakeLogs for a test that reads the lines of its NATS clients as well
 // as its intakes', or requires that none of them wrote some line: it answers the intakes' logger
 // beside their records, for the test to give every NATS client it and its helpers build
-// (bus.WithLogger: intakeTestClient, startIntakeProcess, startIntakes' connect). The default
-// logger is left alone, so such a test may run beside other tests.
+// (bus.WithLogger: intakeTestClient, startIntakeProcess, startIntakes' connect) and every lease it
+// takes itself (duty.Exclusive). The default logger is left alone, so such a test may run beside
+// other tests.
 func captureTestLogs(t *testing.T) (logs func() []map[string]any, logger *slog.Logger) {
 	t.Helper()
 	logs = captureIntakeLogs(t)

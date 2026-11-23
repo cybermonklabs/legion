@@ -145,9 +145,9 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 // process.
 func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	t.Parallel()
-	// The row requires that no component logged a line about an acknowledgement: both intakes and
-	// every NATS client take the test's logger, and nothing else on the path (duty, the store,
-	// GitHub's client) writes one.
+	// The row requires that no component logged a line about an acknowledgement: both intakes, the
+	// duty leases and holds they take, and every NATS client take the test's logger, and nothing
+	// else on the path (the store, GitHub's client) writes one.
 	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)

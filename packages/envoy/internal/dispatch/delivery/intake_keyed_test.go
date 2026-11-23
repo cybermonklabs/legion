@@ -777,10 +777,10 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 // hand it back and be handed it again; the stop logs no failed drain, and the next process to bind
 // the durable handles the message.
 func TestAStopAfterTheConnectionWasReplacedDrainsTheRestoredSubscription(t *testing.T) {
-	// The row requires that no component logged a line about a drain: the intakes and their NATS
-	// clients take the test's logger, and nothing else on the path (duty, the store, GitHub's
-	// client) writes one. Serial: the second's quiet window after the publish, and the 5 s bound
-	// on the subscription's drop.
+	// The row requires that no component logged a line about a drain: the intakes, the duty leases
+	// and holds they take, and their NATS clients take the test's logger, and nothing else on the
+	// path (the store, GitHub's client) writes one. Serial: the second's quiet window after the
+	// publish, and the 5 s bound on the subscription's drop.
 	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
