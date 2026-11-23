@@ -14,8 +14,9 @@
 # __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
 #
 # --out FILE writes FILE instead of manifests/nats.yaml. --pin-from FILE takes each image's digest
-# from FILE (an earlier render) instead of the registry: cluster.test.sh re-renders that way and
-# compares, so a tag that moved since the committed render does not fail the comparison.
+# from FILE (an earlier render) instead of the registry, and then needs no curl and no jq.
+# cluster.test.sh re-renders that way and compares, so a tag that moved since the committed render
+# does not fail the comparison.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -62,7 +63,10 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 [ -z "$pin_from" ] || [ -f "$pin_from" ] || die "--pin-from $pin_from is not a file"
-for tool in curl go sha256sum jq; do
+# curl and jq read each image's digest from its registry, which a --pin-from render does not read.
+tools=(go sha256sum)
+[ -n "$pin_from" ] || tools+=(curl jq)
+for tool in "${tools[@]}"; do
   command -v "$tool" >/dev/null || die "render-nats.sh needs $tool on PATH"
 done
 

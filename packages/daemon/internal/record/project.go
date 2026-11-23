@@ -51,6 +51,57 @@ func OutOfWorkflow(status string) bool {
 	return slices.Contains(OutOfWorkflowStatuses, status)
 }
 
+// EndChildRule is how an architect ends a child, in the short form that the daemon's refusals
+// and notices carry (dispatch://INFRA-3178 R6). The daemon takes the owning architect's done,
+// backlog, icebox or triage on a child as it takes a person's move (workflow's
+// sessionStatusWrite). So the move is the architect's own status write in Dispatch, and no
+// operation of the legion tool makes it. Each thing the rule says stops a loss
+// that the move alone does not stop. A fold names its carrier, and the issues that wait on the
+// folded child wait on the carrier first, because done starts them. A running child's worker
+// pushes first, because done ends its turn and its pod at once. An open pull request leaves the
+// merge queue and closes unless its work should land, because the daemon changes no pull request.
+// Backlog and icebox are for a person's request or a restart, and finished work is done. A child
+// already done takes no status, because a move out of done ends its production check. And a read
+// back after each move finds a move that the daemon set back.
+//
+// It lives here because two packages send it, and api does not import workflow: workflow's
+// refusals and notices over children still in the workflow, and api's refusals of close_root on a
+// child and of the removed child route. The architect prompts carry the same rules whole
+// (prompts/go/architect-common.md). The legion tool's description carries these words
+// (packages/pi-legion/src/tools.ts), and these tests hold the copies together:
+// TestTheEndChildRuleGolden in internal/api writes this constant and StatusNotTakenYet to
+// packages/contracts/fixtures/daemon-api/end-child-rule.json, and
+// packages/pi-legion/src/tools.test.ts holds the description to that file.
+const EndChildRule = "End a child with your own status write in Dispatch. " +
+	"Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
+	"dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
+	"For a fold, name the carrier in the reason: the issue that carries the work. " +
+	"Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
+	"Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+	"Before done on a running child, have its worker push the work that the carrier needs. " +
+	"Done ends the worker's turn and the pod at once. " +
+	"Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
+	"When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
+	"Do this before done, or at once after a done that you wrote first. " +
+	"Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+	"A restart is backlog, then rerun_child. " +
+	"Say why in a dispatch comment. " +
+	"Write no status on a child that is already done, because a move out of done ends an open production check. " +
+	"After each move, read the child back (dispatch read --issue <KEY>). " +
+	"When the daemon set the move back, write it again."
+
+// StatusNotTakenYet is the sentence that each refusal and notice over children still in the
+// workflow adds: sign_off's and close_root's (workflow's endChildrenFirst) and the pr-merged
+// notice (workflow's waitingForTree). The daemon reads the architect's status write on a child
+// from that write's Dispatch event, and the event consumer can deliver the event after the
+// architect calls again. Until then the record holds the child in the workflow and the refusal
+// names it, so the architect waits for read_record to show its move (dispatch://INFRA-3178 R1).
+//
+// It lives here, beside EndChildRule, because the legion tool's description carries both texts
+// (packages/pi-legion/src/tools.ts). The tests that hold EndChildRule to that description
+// hold this sentence to it too: TestTheEndChildRuleGolden writes both to end-child-rule.json.
+const StatusNotTakenYet = "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it."
+
 // InWorkflow says whether an issue is in the workflow: its Dispatch status is one the workflow
 // runs in (OutOfWorkflow) and its phase is short of done. One still admitted counts, since it
 // will run — a root reopened inside its linger (admit's readmit) stands in admitted with no
@@ -173,6 +224,25 @@ func Ancestors(issue Issue, byKey map[string]Issue) []Issue {
 	return above
 }
 
+// OwnsUnder says whether the architect of architectIssue, an issue of tree, owns target, an issue
+// of the same tree, for a move of target into or out of the workflow. members is the tree's
+// records (Store.TreeIssues). The tree root's architect owns every issue of its tree. A
+// sub-architect owns only the issues under its own issue through their recorded parents
+// (Ancestors), and not its own issue: an architect above it moves that issue, as one released it.
+// A chain that leaves the tree, or loops back on itself, ends at the root, so only the root's
+// architect owns an issue on such a chain.
+//
+// It is the one statement of that rule, and two readers ask it: the API's operations on a child
+// (api's childOfTree) and the engine's exception for the owning architect's status on a
+// child (workflow's sessionStatusWrite). Written twice, the API could refuse an architect a child
+// whose status the engine takes from that architect, or the other way round.
+func OwnsUnder(members []Issue, tree, architectIssue string, target Issue) bool {
+	if claim.IsTreeRoot(architectIssue, tree) {
+		return true
+	}
+	return target.Key != architectIssue && descends(target, architectIssue, byKey(members))
+}
+
 // chainOf is the records one admission pass walks its parent chains over (Ancestors): the pass's
 // own records, by key, and the records above them that its read leaves out (LineFacts.Parents),
 // which is how a walk crosses an ancestor already done rather than stopping at it. It is one
@@ -210,8 +280,8 @@ func AcceptedAncestor(issue Issue, byKey map[string]Issue) string {
 
 // HeldUnderAccepted says whether the daemon is itself holding issue where it stands because an
 // ancestor of it has already been accepted (AcceptedAncestor): it stands at phase.Admitted, so
-// nothing of it has started, and the line will offer it no slot until that ancestor closes
-// (Waiting). It is one rule with two readers that must agree exactly: OpenBeneath leaves such an
+// nothing of it has started, and the line will offer it no slot while that ancestor stands in
+// retro or merging (Waiting). It is one rule with two readers that must agree exactly: OpenBeneath leaves such an
 // issue out too, so the ancestor's own acceptance and close are not deadlocked by the issue its
 // hold stopped. The hold never outlives the ancestor that caused it: once that ancestor closes,
 // the line reads this rule again and finds no hold, so the issue starts in its running tree; and
@@ -655,9 +725,11 @@ func GateOpen(gate DesignGate) bool {
 }
 
 // RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
-// the deployment gates, in the order it names them, or the single step spec when it gates none.
-// It is the one statement of the rule, which classify.RequiredSteps calls; internal/classify
-// reads this package, so the rule lives here, where every reader can reach it.
+// it is given, in their order, or the single step spec when it is given none. It is the one
+// statement of the rule, which classify.RequiredSteps calls; internal/classify reads this
+// package, so the rule lives here, where every reader can reach it. It takes no rows, so a
+// caller that holds a root's rows gives it the steps that tree is gated on (TreeSteps) rather
+// than the deployment's list.
 //
 // The empty list keeps its own hold. A deployment that gates no step asks no person to approve
 // anything, and its registration opens the gate at once; but the registration itself is still
@@ -671,12 +743,58 @@ func RequiredSteps(configured []DesignStep) []DesignStep {
 	return configured
 }
 
+// TreeSteps is the steps one tree is gated on: the steps the deployment gates, in the order it
+// names them, and criteria after them when the tree's root holds a criteria row and the
+// deployment gates spec but not criteria (JoinsByRegistration). gates are the root's rows by
+// step.
+//
+// `gates.design` names the steps every root must register before its tree works, and any step a
+// root registers holds its tree too: under a deployment that gates spec alone of the two, an
+// architect may register its root's Verification document as criteria (api's registeredStep),
+// and from then on a person's approval of that document holds the tree as the spec's does, and a
+// new version of it closes the gate. A criteria row exists only by the architect's registration:
+// nothing else writes one, so a tree whose architect registered none — every gate registered
+// before register_gate took the step — stays gated on the deployment's steps alone. A row kept
+// after a switch to `gates.design: off` gates nothing: that deployment gates no step, so no step
+// joins its list.
+//
+// Every rule that asks whether a tree is gated reads this list. TreeGate and classify's
+// StandingGate, DesignGatesOpen and FirstClosedStep apply it themselves, so a caller passes them
+// the deployment's list; a caller that walks the steps itself walks this answer. The answer is
+// the deployment's own slice when nothing joins it, and a fresh one otherwise, so no caller
+// writes into the configured list.
+func TreeSteps(deployment []DesignStep, gates map[DesignStep]DesignGate) []DesignStep {
+	if _, registered := gates[DesignStepCriteria]; !registered || !JoinsByRegistration(deployment, DesignStepCriteria) {
+		return deployment
+	}
+	return append(slices.Clip(deployment), DesignStepCriteria)
+}
+
+// JoinsByRegistration says whether step is one the deployment does not gate that still gates a
+// tree whose root registers it (TreeSteps): criteria, under a deployment that gates spec and not
+// criteria. It is the one statement of which step that is (TakesStep reads it), so the
+// registration and every reader of the rows agree on it.
+func JoinsByRegistration(deployment []DesignStep, step DesignStep) bool {
+	return step == DesignStepCriteria && slices.Contains(deployment, DesignStepSpec) && !slices.Contains(deployment, DesignStepCriteria)
+}
+
+// TakesStep says whether a root's registration of step holds its tree: a step the deployment
+// gates, or the one that joins the tree by its registration (JoinsByRegistration). It reads no
+// rows, so the step being registered counts in its own registration. Both sides read it:
+// register_gate takes such a step and refuses every other (api's registeredStep), and the workflow
+// gates its row from the first write (Engine.gatesStep).
+func TakesStep(deployment []DesignStep, step DesignStep) bool {
+	return slices.Contains(deployment, step) || JoinsByRegistration(deployment, step)
+}
+
 // TreeGate is one tree's design gate as every rule over it reads it: the steps the deployment
 // gates (Steps, the empty list standing for the single step spec, RequiredSteps) and the row the
 // tree's root holds for each step its architect has registered (Rows, nil for a root that has
 // registered none). The gate is a list of steps and the work waits on all of them, so a rule
 // that used to read one row reads this instead and no reader can answer from one step where the
-// deployment gates three.
+// deployment gates three. The steps the work waits on are the ones the tree is gated on
+// (TreeSteps over Steps and Rows), which Open, EverOpened and OpenedAt all read in the one form
+// (required).
 //
 // The zero value is the gate of a root with nothing registered, which is the answer a reader
 // wants for a tree the pass holds no gate row for: it is open at no step and has opened at none.
@@ -685,12 +803,19 @@ type TreeGate struct {
 	Rows  map[DesignStep]DesignGate
 }
 
+// required is the steps the tree's work waits on: RequiredSteps over the steps the tree is gated
+// on (TreeSteps), so a criteria row its architect registered beside a deployment's spec holds the
+// tree in every rule of the gate alike.
+func (g TreeGate) required() []DesignStep {
+	return RequiredSteps(TreeSteps(g.Steps, g.Rows))
+}
+
 // Open is whether the gate lets the tree's work run: a person's approval stands on the current
 // document version of every required step (GateOpen). A required step with no row holds the
 // work, as an unregistered gate always has, so a root with no row at all is held too. It is the
 // one rule for the question, which classify.DesignGatesOpen reads it through.
 func (g TreeGate) Open() bool {
-	for _, step := range RequiredSteps(g.Steps) {
+	for _, step := range g.required() {
 		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {
 			return false
 		}
@@ -702,9 +827,12 @@ func (g TreeGate) Open() bool {
 // (DesignGate.EverOpened), which is what says the root's architect has had its whole design
 // approved once: after that the root stands at admitted with its own first phase waiting in the
 // line, and its children do the work. A step with no row has never opened, so a gate the
-// architect has still to finish registering has not either.
+// architect has still to finish registering has not either. A criteria row registered after
+// that release is written as opened (workflow's gateRegistered), so a tree whose gate opened
+// before its architect registered its Verification document still reads as released; one
+// registered before the first opening holds this answer until a person approves it.
 func (g TreeGate) EverOpened() bool {
-	for _, step := range RequiredSteps(g.Steps) {
+	for _, step := range g.required() {
 		if row, registered := g.Rows[step]; !registered || !row.EverOpened {
 			return false
 		}
@@ -725,7 +853,7 @@ func (g TreeGate) OpenedAt() time.Time {
 		return time.Time{}
 	}
 	var at time.Time
-	for _, step := range RequiredSteps(g.Steps) {
+	for _, step := range g.required() {
 		at = later(at, g.Rows[step].ApprovedMark.At)
 	}
 	return at
@@ -1222,8 +1350,8 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		// An issue beneath an ancestor the daemon has already accepted waits for that ancestor
-		// to close (HeldUnderAccepted): starting it would let the ancestor merge work its own
+		// An issue beneath an ancestor the daemon has already accepted waits while that ancestor
+		// stands in retro or merging (HeldUnderAccepted): starting it would let the ancestor merge work its own
 		// head does not carry. A person's move of such an issue to todo records it here at
 		// admitted and leaves it here; the architect is told why when it enters. The chain is
 		// walked over the records above this pass's own as well, so that a parent already done

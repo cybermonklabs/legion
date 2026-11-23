@@ -62,7 +62,7 @@ func deviceLogin(t *testing.T, svc *Service) string {
 	r := httptest.NewRequest(http.MethodPost, "/device_authorization", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	w := httptest.NewRecorder()
-	svc.OAuth.DeviceAuthorize(w, r, svc.LoginDevice)
+	svc.OAuth.DeviceAuthorize(w, r, svc.OAuth.VerificationURL(), svc.LoginDevice)
 	var body struct {
 		UserCode string `json:"user_code"`
 	}

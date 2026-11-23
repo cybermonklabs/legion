@@ -136,7 +136,10 @@ Two things still run outside that job. The `ci-ok-report` step every other job e
 the failing `ci-ok` of a merge-group run that job's own result decides — its failure or its
 cancellation, or a `changes` that failed or was cancelled — the moment that job ends
 (`.github/scripts/ci-ok-report.sh`), because the `ci-ok` job waits for every job of the run and a
-group that can no longer merge should leave the queue at the first failure. Every check run it
+group that can no longer merge should leave the queue at the first failure. It posts only for the
+queue's front group, whose base is the tip of main: the queue takes a group behind the front out
+only once the groups in front of it end, and an early failing `ci-ok` there makes the queue build
+another group on it, so that group's verdict waits for the `ci-ok` job. Every check run it
 posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the `ci-ok` job's
 last step (`.github/scripts/ci-ok-reconcile.sh`) sets to what the job concluded each `ci-ok`
 check run on the head that is a post: one carrying that marker, or one with an empty

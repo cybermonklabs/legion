@@ -92,6 +92,40 @@ type Config struct {
 	// — is served either way. Unset is the deployment where machines hold a cloud identity and
 	// no person ever types a code.
 	MachineLoginURL string
+	// BROKER_EDGE_LISTEN_ADDR: the host:port the broker's edge binds, a fourth port of the same
+	// process, bound and drained with the API's. Its port is a decimal number, and it is refused
+	// when that number is the port of BROKER_LISTEN_ADDR, BROKER_METRICS_LISTEN_ADDR or
+	// BROKER_AIRLOCK_LISTEN_ADDR, each read as the bind reads it, so 013382 is 13382. The edge is
+	// what a caller outside the deployment's private network reaches through a public load
+	// balancer, and it serves three routes and no other: POST /v1/oauth/device_authorization,
+	// POST /v1/oauth/token and GET /healthz; any other method on the two login paths is 405. On
+	// the two login routes a caller's address is the second-to-last X-Forwarded-For entry, the
+	// one the load balancer appends for the client it accepted (a login request with fewer than
+	// two is 400 REQUEST_INVALID); the edge's buckets are its own, so a flood there spends
+	// nothing a caller of BROKER_LISTEN_ADDR is held to; a machine login naming an address on
+	// BROKER_SIGNIN_DOMAIN or a BROKER_SIGNIN_WORKSPACE_DOMAINS domain is 400
+	// EDGE_WORKSPACE_LOGIN before any of them is spent; and the token route takes the device
+	// code, the refresh token and the trade of the broker's own access token, and answers every
+	// other grant 400 unsupported_grant_type. Set together with BROKER_EDGE_URL and
+	// BROKER_EDGE_MACHINE_LOGIN_URL, or none of the three: unset, the broker has no edge and binds
+	// nothing for one. Needs BROKER_MACHINE_LOGIN_URL, since the device grant is what the edge
+	// serves, and BROKER_SIGNIN_DOMAIN, the Workspace it refuses.
+	EdgeListenAddr string
+	// BROKER_EDGE_URL: the broker's own address as a caller of its edge reaches it, an absolute
+	// http or https URL with no path, whose origin is not BROKER_PUBLIC_URL's: the two are
+	// compared as a DPoP proof's htu is, the scheme and the host without regard to case and the
+	// scheme's default port the same as none, so https://secrets.example:443 is refused beside
+	// https://secrets.example. A machine login's request object made at the edge names it as its
+	// audience and every DPoP proof sent there names it and the route's path, as one made on
+	// BROKER_PUBLIC_URL names that, so neither is spendable at the other. Set with
+	// BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one unless BROKER_FAKE_SECRETS_FILE is
+	// set.
+	EdgeURL string
+	// BROKER_EDGE_MACHINE_LOGIN_URL: the absolute http(s) URL of the page a person decides a
+	// machine login made at the edge on, which that login's verification_uri names in place of
+	// BROKER_MACHINE_LOGIN_URL. Set with BROKER_EDGE_LISTEN_ADDR. cmd/cipherd refuses an http one
+	// unless BROKER_FAKE_SECRETS_FILE is set, as it does BROKER_EDGE_URL.
+	EdgeMachineLoginURL string
 	// BROKER_API_ACCOUNTS: the accounts that call the broker's named-caller routes — the
 	// approval routes Dispatch's server calls on a person's behalf, the introspection route
 	// a resource server reads one of the broker's access tokens back through, and the grant-log
@@ -165,6 +199,17 @@ type Config struct {
 	// BROKER_SIGNIN_* setting, naming the ones set, and beside the model judge, which decides
 	// only a request that waits for a person; any other value refuses naming it.
 	SignInOff bool
+	// BROKER_SIGNIN_WORKSPACE_DOMAINS: the other domains the Google Workspace owns beside
+	// BROKER_SIGNIN_DOMAIN, separated by commas, each a lowercase domain name; an
+	// internationalized one is written in Unicode or as its A-labels, and is held as its A-labels.
+	// The broker's edge (BROKER_EDGE_LISTEN_ADDR) refuses a machine login naming an address on any
+	// of them or on a subdomain of one, as it refuses one on BROKER_SIGNIN_DOMAIN, and serves no
+	// token of a machine login whose person is on one, so nobody on the internet can name or use a
+	// person of the Workspace there; nothing else reads it. Unset, the Workspace is
+	// BROKER_SIGNIN_DOMAIN alone. An empty entry, or one that is no lowercase domain name, refuses
+	// the start naming its position, and BROKER_SIGNIN=off refuses it, since that broker names no
+	// Workspace.
+	SignInWorkspaceDomains []string
 	// BROKER_SIGNIN_DEVICE_AUDIENCE: the audience a person's own Google identity token must
 	// carry to be traded at the RFC 8693 token exchange, where such a token is a subject token
 	// (urn:envoy:params:oauth:token-type:person-google-identity) and the machine the person
@@ -207,41 +252,43 @@ type Config struct {
 	// with automatic replication takes a global key). A secret under the prefix encrypted with any
 	// other key, the provider's default one included, is refused.
 	SecretsKMSKey string
-	// BROKER_AIRLOCK_RULES_FILE: the path of the airlock's rules file, airlock.json, which says
-	// for each secret which hosts its value may reach and in which headers. The broker reads it
-	// once at start, so a change to it rolls the pods; it refuses to start on a file it cannot
-	// read, cannot parse, or whose entries it refuses, naming the file and the entry. A secret
-	// the file names is never released as a value: a session is given a placeholder, and the
-	// broker swaps the real value into the headers the entry allows. Empty (the default) is a
-	// deployment with no airlock, where every granted secret is released as its value.
-	AirlockRulesFile string
+	// BROKER_PROFILES_FILE: the path of the profiles file, profiles.json, which names each
+	// profile a caller asks for: its source secret, its scope and, in its proxy block, which hosts
+	// its credential may reach and in which headers. The broker reads it once at start, so a
+	// change to it rolls the pods; it refuses to start on a file it cannot read, cannot parse, or
+	// whose profiles it refuses, naming the file, the profile and the field. A profile with a
+	// proxy block is never released as a value: a session is given a placeholder, and the broker
+	// swaps the real value into the headers the block allows. Empty (the default) is a deployment
+	// with no profiles and no proxy, where every granted secret is released as its value.
+	ProfilesFile string
 	// BROKER_AIRLOCK_LISTEN_ADDR: the address the airlock's proxy port binds, default
 	// 127.0.0.1:13381. It is a second port of the same process, so it is bound and drained with
-	// the API's. Read only when BROKER_AIRLOCK_RULES_FILE names a file; a deployment with no
-	// airlock binds no proxy port.
+	// the API's. Bound only when a profile of BROKER_PROFILES_FILE has a proxy block; a deployment
+	// with none, or with no profiles file, binds no proxy port.
 	AirlockListenAddr string
 	// BROKER_AIRLOCK_PROXY_URL: the URL a command reaches the airlock's proxy port at, which
 	// every release of a name behind the airlock carries, so the command points its HTTPS_PROXY
-	// at it. Required with BROKER_AIRLOCK_RULES_FILE, and refused at start unless it is an
-	// absolute http or https URL with a host: a value with no scheme or no host would boot and
-	// then fail every airlock run one command at a time. It is a setting of its own rather than
-	// BROKER_PUBLIC_URL with another port, because the Service port a pod dials need not be the
-	// container port the broker binds.
+	// at it. Required when a profile of BROKER_PROFILES_FILE has a proxy block. With
+	// BROKER_PROFILES_FILE set, a value given is refused at start unless it is an absolute http or
+	// https URL with a host: a value with no scheme or no host would boot and then fail every
+	// airlock run one command at a time. It is a setting of its own rather than BROKER_PUBLIC_URL
+	// with another port, because the Service port a pod dials need not be the container port the
+	// broker binds.
 	AirlockProxyURL string
 	// BROKER_AIRLOCK_CA_CERT_FILE: the PEM certificate of the airlock proxy's certificate
-	// authority, the one every release hands the command to trust. Required with
-	// BROKER_AIRLOCK_RULES_FILE, and read once at start as half of that authority, with
-	// BROKER_AIRLOCK_CA_KEY_FILE; a pair the authority refuses refuses the start. What a release
-	// carries is the authority's own certificate rather than this file's bytes, so a file that
-	// holds more than the certificate hands a command nothing more. Both broker pods mount the
-	// same file from one Kubernetes Secret, so a command's trust does not depend on which pod
-	// released its values.
+	// authority, the one every release hands the command to trust. Required when a profile of
+	// BROKER_PROFILES_FILE has a proxy block, and then read once at start as half of that
+	// authority, with BROKER_AIRLOCK_CA_KEY_FILE; a pair the authority refuses refuses the start.
+	// A deployment with no proxy block reads neither file. What a release carries is the
+	// authority's own certificate rather than this file's bytes, so a file that holds more than
+	// the certificate hands a command nothing more. Both broker pods mount the same file from one
+	// Kubernetes Secret, so a command's trust does not depend on which pod released its values.
 	AirlockCACertFile string
 	// BROKER_AIRLOCK_CA_KEY_FILE: the PEM private key of BROKER_AIRLOCK_CA_CERT_FILE's
 	// certificate authority, which the proxy port signs each host's certificate with. Required
-	// with BROKER_AIRLOCK_RULES_FILE, and mounted from the same Kubernetes Secret, which no
-	// container but the broker's mounts: it is the key that lets its holder be any host a
-	// command trusts.
+	// when a profile of BROKER_PROFILES_FILE has a proxy block, and mounted from the same
+	// Kubernetes Secret, which no container but the broker's mounts: it is the key that lets its
+	// holder be any host a command trusts.
 	AirlockCAKeyFile string
 	// BROKER_AIRLOCK_IDLE_SECONDS: how long one proxy connection may go with no byte in either
 	// direction before the proxy closes it, default 300, between 10 and 3600. A connection
@@ -256,13 +303,19 @@ type Config struct {
 	// unicast, so without this a command under an airlock grant could tunnel to a ClusterIP of the
 	// cluster the broker runs in. Each prefix is read as its network (34.118.230.7/20 is
 	// 34.118.224.0/20); an empty element, a prefix that does not parse and an IPv4-mapped IPv6
-	// prefix refuse the start, naming the element's position. With BROKER_AIRLOCK_RULES_FILE set
-	// and KUBERNETES_SERVICE_HOST set to a non-empty value, which Kubernetes sets in every
-	// container to the address of the cluster's kubernetes Service, it is required, and the start
-	// is refused unless KUBERNETES_SERVICE_HOST is an IP address inside one of the ranges, so a
-	// list that misses the cluster's Service range cannot pass silently. Outside a cluster
-	// (KUBERNETES_SERVICE_HOST empty or unset) it is optional.
+	// prefix refuse the start, naming the element's position. With a profile of
+	// BROKER_PROFILES_FILE that has a proxy block and KUBERNETES_SERVICE_HOST set to a non-empty
+	// value, which Kubernetes sets in every container to the address of the cluster's kubernetes
+	// Service, it is required, and the start is refused unless KUBERNETES_SERVICE_HOST is an IP
+	// address inside one of the ranges, so a list that misses the cluster's Service range cannot
+	// pass silently. Outside a cluster (KUBERNETES_SERVICE_HOST empty or unset), and with no proxy
+	// block, it is optional.
 	AirlockClusterRanges []netip.Prefix
+	// kubernetesServiceHost is KUBERNETES_SERVICE_HOST as Load read it, which Kubernetes sets in
+	// every container to the address of the cluster's kubernetes Service. It is no setting of the
+	// broker's, so the configuration reference leaves it out. RequireAirlock reads it once the boot
+	// knows whether any profile has a proxy block (requireClusterRanges).
+	kubernetesServiceHost string
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
 	// (internal/cipher/proxyrules/proxyrulestest, cmd/dev-proxy-stands). For the broker's local
@@ -387,14 +440,22 @@ type Config struct {
 	// credential's person; a project-channels secret asked for by a credential naming a private
 	// project, about that project's channels; the approval page, the pending lists and each
 	// decision, about the projects a request touches; the model judge, about whether a request is
-	// a private project's; and an edge listener, about its project's repositories. Set with
+	// a private project's; and an edge listener, about its project's repositories. Set, it also
+	// holds a restricted member's agents to no secret: an enrollment under a machine login or a
+	// pod login whose person Dispatch calls a restricted member is refused
+	// (enroll.Service.Projects), a session such a person already had is denied every secret
+	// (requests.Machine.Projects), and while Dispatch cannot say what kind of member a person is,
+	// every enrollment under that person's login and every secret request and release of their
+	// sessions is refused 503 MEMBER_KIND_UNCHECKABLE, and an approval of one decides nothing
+	// (the approval page says it could not decide the request). Set with
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks Dispatch
 	// nothing. It then refuses every secret carrying a dispatch-project tag (project-unchecked)
 	// and serves every other secret as before; a token that names no project, and an operator
 	// entry's token, whose project that operator's own setting chose, are minted as before; a
 	// person's trade that names a project, and a session enrollment that names projects, are
-	// refused, since nothing could say that person may see them; and every edge listener's read
-	// of a project's repositories is 503 REPOSITORIES_UNKNOWN.
+	// refused, since nothing could say that person may see them; every edge listener's read of a
+	// project's repositories is 503 REPOSITORIES_UNKNOWN; and every other enrollment and secret
+	// request is decided as before.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience, which both of the
@@ -412,18 +473,21 @@ type Config struct {
 	AzureTokenFile string
 	// BROKER_AZURE_LOGIN_SECRET: the one agent-secret name allowed to release the broker's Azure
 	// projected token, for example AZURE_LOGIN. Empty (the default) disables azure-login
-	// releases. Must be an uppercase agent-secret name, not its store id or slug. That secret
-	// must be human tier in the policy snapshot checked for each release, with a person's
-	// approval recorded for that name in its grant. Another secret with type=azure-login,
-	// the named secret retagged to agent tier, or an automatic grant releases no token.
+	// releases. Must be an uppercase agent-secret name, not its store id or slug. It names the
+	// stored secret, never a profile: a profile of that secret releases the token under its own
+	// name too. That secret or profile must be human tier in the policy snapshot checked for each
+	// release, with a person's approval recorded for that name in its grant. Another secret with
+	// type=azure-login, a profile of one, the named secret retagged to agent tier, or an automatic
+	// grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
 	// agent secret mints an access token for, and each anthropic-federation agent secret mints
 	// the identity token of for Anthropic's token exchange, whitespace-separated
 	// <SECRET NAME>=<account email> entries, such as
-	// GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
-	// the uppercase agent-secret name a session asks for (DEV_PERSON, GCP_ADMIN), not that
-	// secret's store id or its slug, and each secret is named at most once; the account is a
+	// GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is the stored secret's
+	// uppercase agent-secret name (DEV_PERSON, GCP_ADMIN), never a profile's: a profile of a bound
+	// secret mints under its source's binding, whatever its own name. It is not that secret's store
+	// id or its slug, and each secret is named at most once; the account is a
 	// user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in
 	// lowercase, held to secrets.ValidServiceAccountEmail, the minter's own rule, so no binding
 	// can ever name an address the minter would refuse. A Google-managed service agent is
@@ -776,7 +840,7 @@ type Config struct {
 	EnvoyAccountTokenFile string
 	// BROKER_NATS_URLS, BROKER_NATS_SEED_FILE, BROKER_NATS_ISSUER_SEED_FILE,
 	// BROKER_NATS_XKEY_SEED_FILE, BROKER_NATS_SERVICES, BROKER_NATS_K8S_AUDIENCE,
-	// BROKER_NATS_GOOGLE_AUDIENCE: the NATS auth service the broker runs
+	// BROKER_NATS_GOOGLE_AUDIENCE, BROKER_NATS_ACCOUNT: the NATS auth service the broker runs
 	// (internal/cipher/natscallout), which the Envoy hub sends the authorization of every
 	// connection its configuration lists no static user for, and which answers each with a NATS
 	// user of that connection's own. BROKER_NATS_URLS is the hub's servers, comma separated, each
@@ -789,28 +853,34 @@ type Config struct {
 	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
-	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
-	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one, every entry
-	// read once at load (ParseNATSServices). An edge listener's entry,
+	// listener, edge-listener, daemon or measure; * for the kind's whole grant, - for the projects
+	// the account's exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one,
+	// every entry read once at load (ParseNATSServices). An edge listener's entry,
 	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or - the projects
-	// GET /v1/project-repositories answers that account about, whether or not the broker runs the
-	// auth service: BROKER_NATS_SERVICES set alone, every entry an edge listener's, starts no auth
-	// service and needs no NATS audience, and any other kind of entry needs the URLs and seeds. An
-	// edge listener's account needs the issuer its identity token comes from, as a
-	// BROKER_API_ACCOUNTS entry of its kind does: BROKER_K8S_OIDC_ISSUER for a Kubernetes account,
-	// BROKER_GOOGLE_OIDC_AUDIENCE for a google: one, which counts as that audience's Google
-	// caller; an entry without its issuer refuses the start, naming the entry. The auth service
-	// refuses an edge listener's connection, since this build holds no edge listener's grant.
-	// BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes token must
-	// carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE
-	// the audience a service's Google identity token must carry, verified against
-	// BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry whose kind of token
-	// has no audience is refused at start naming it. An edge listener's entry needs neither: no
-	// edge listener's connection is admitted whatever its token, so an audience would admit
-	// nothing, and without one its connection is refused at the token check. A session presents
-	// its broker access token and needs neither. All unset, or BROKER_NATS_SERVICES alone holding
-	// only edge listeners' entries, the broker runs no auth service; any other set needs the URLs
-	// and the three seed files.
+	// its grant is built for and GET /v1/project-repositories answers that account about, whether
+	// or not the broker runs the auth service: BROKER_NATS_SERVICES set alone, every entry an edge
+	// listener's, starts no auth service and needs no NATS audience, and any other kind of entry
+	// needs the URLs and seeds. An edge listener's account needs the issuer its identity token
+	// comes from, as a BROKER_API_ACCOUNTS entry of its kind does: BROKER_K8S_OIDC_ISSUER for a
+	// Kubernetes account, BROKER_GOOGLE_OIDC_AUDIENCE for a google: one, which counts as that
+	// audience's Google caller; an entry without its issuer refuses the start, naming the entry.
+	// The auth service answers an edge listener's connection with natsgrant.Edge for the projects
+	// its entry lists. BROKER_NATS_K8S_AUDIENCE is the audience a service's projected Kubernetes
+	// token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it needs;
+	// BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must carry,
+	// verified against BROKER_GOOGLE_OIDC_ISSUER; while the auth service runs, a service entry,
+	// an edge listener's included, whose kind of token has no audience is refused at start naming
+	// it. A session presents its broker access token and needs neither. BROKER_NATS_ACCOUNT is
+	// the hub account every client the service admits is placed in, the audience of each user it
+	// answers: $G, the global account, when unset, where a hub whose configuration names no
+	// account keeps every user; a hub that keeps JetStream in an account of its own names the
+	// account its clients sit in, never the account JetStream sits in (JETSTREAM, which is
+	// refused), and must declare it before the broker names it, since a hub refuses every client
+	// placed in an account it does not have. Any value but $G or one subject token of at most 64
+	// letters, digits, '_' and '-' that holds no nkey seed in any spelling refuses the start,
+	// naming the setting and never the value (ParseNATSAccount). All unset, or
+	// BROKER_NATS_SERVICES alone holding only edge listeners' entries, the broker runs no auth
+	// service; any other set needs the URLs and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
@@ -871,11 +941,19 @@ type Config struct {
 	// Dispatch deployment sizes its preStop wait at, for the same reason. 0 is for a local run or
 	// a dev stack, where nothing propagates and the wait is pure delay.
 	DrainSeconds int
-	// BROKER_TRUSTED_PROXY_HEADER: the request header (e.g. X-Forwarded-For) whose last entry the
-	// machine-login and secret-reread rate limiters take as the caller's address. Unset, they use
-	// the connection's own address, which is right only when nothing proxies the broker. Set it
-	// only when every request passes through your own reverse proxy, which appends that entry;
-	// otherwise a caller can forge the header and pick its own rate-limit bucket.
+	// BROKER_TRUSTED_PROXY_HEADER: the request header (e.g. X-Forwarded-For) whose last entry, on
+	// its last line, the machine-login and secret-reread rate limiters take as the caller's
+	// address. Unset, they use the connection's own address, which is right only when nothing
+	// proxies the broker. Set it only when every request passes through your own reverse proxy,
+	// which appends that entry; otherwise a caller can forge the header and pick its own rate-limit
+	// bucket. The last line is read because a proxy that folds the lines into one, appends to the
+	// last line, or adds a line of its own leaves its entry at the end of the last line, after any
+	// line the client sent. A proxy that appends to the first line and passes a later line the
+	// client sent would leave the client's text last, so the setting assumes the proxy is not of
+	// that kind; one that sends a single line never is. The broker's edge (BROKER_EDGE_LISTEN_ADDR)
+	// does not read it: its
+	// buckets key on the second-to-last entry of its one X-Forwarded-For line, the one its load
+	// balancer appends for the client.
 	TrustedProxyHeader string
 }
 
@@ -900,14 +978,14 @@ const (
 )
 
 // signInOffRefuses are the settings BROKER_SIGNIN=off refuses beside it, in the order every
-// message naming them uses: the four of the sign-in client, how long a sign-in lasts, and the
+// message naming them uses: the four of the sign-in client, how long a sign-in lasts, the
 // audience a person's own device sign-in is traded at, which holds the person to the sign-in's
-// domain.
-var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE")
+// domain, and the Workspace's other domains, which are listed beside that domain.
+var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE", workspaceDomainsSetting)
 
 // airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
-// them required with BROKER_AIRLOCK_RULES_FILE. Every message that names them names them in this
-// order.
+// them required when a profile has a proxy block (Config.RequireAirlock). Every message that names
+// them names them in this order.
 var airlockProxySettings = []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"}
 
 // The five settings the broker's model judge needs, each read by its own name: the endpoint it
@@ -956,11 +1034,11 @@ const noDispatchCredential = "the broker opens no Dispatch ask and issues nothin
 const noDatabasePassword = "the broker substitutes no password into BROKER_DATABASE_URL: on Amazon RDS it signs in by IAM token (https://cybermonklabs.github.io/legion/broker/operate/#signing-in-to-rds-by-iam-token), and any other database's password goes in the URL itself"
 
 // noRulesFile is why these three variables are gone. They named a file that said who owned each
-// secret and at what tier, which the secret's own tags say now. The broker does read a rules
-// file again, BROKER_AIRLOCK_RULES_FILE, but it answers another question — where a secret's
-// value may go — so the reason names it rather than letting a deployment point the old variables
-// at it.
-const noRulesFile = "the broker reads each secret's owner and tier from the secret's own tags under BROKER_SECRETS_PREFIX; where a secret's value may go is BROKER_AIRLOCK_RULES_FILE, the airlock's rules file, and no variable names any other rules file"
+// secret and at what tier, which the secret's own tags say now. The broker does read a file of
+// its own again, BROKER_PROFILES_FILE, but it answers other questions — which profiles a caller
+// may ask for and where each one's value may go — so the reason names it rather than letting a
+// deployment point the old variables at it.
+const noRulesFile = "the broker reads each secret's owner and tier from the secret's own tags under BROKER_SECRETS_PREFIX; the profiles a caller asks for, and where each one's value may go, are BROKER_PROFILES_FILE, and no variable names any other rules file"
 
 // noGrantCap is why BROKER_MAX_GRANT_SECONDS is gone: a request chooses its lifetime with --ttl;
 // with none its grant lasts 12 hours, or until the requesting session ends when every requested
@@ -991,6 +1069,7 @@ var removedVars = []struct{ name, reason string }{
 	{"BROKER_SIGNIN_CLIENT_SECRET", "the broker reads its sign-in client's secret only from the file BROKER_SIGNIN_CLIENT_SECRET_FILE names, so the secret is never in its environment"},
 	{"BROKER_ENVOY_TOKEN", noSharedEnvoyBearer},
 	{"BROKER_ENVOY_TOKEN_FILE", noSharedEnvoyBearer},
+	{"BROKER_AIRLOCK_RULES_FILE", "replaced by BROKER_PROFILES_FILE"},
 }
 
 // NATSCallout is the NATS auth service's settings: Config.NATS documents each.
@@ -1001,6 +1080,8 @@ type NATSCallout struct {
 	// one reading the auth service, the API's edge listeners and every check of Load take.
 	Services                    []NATSService
 	K8sAudience, GoogleAudience string
+	// Account is BROKER_NATS_ACCOUNT as ParseNATSAccount reads it, GlobalNATSAccount when unset.
+	Account string
 }
 
 // Enabled reports whether the broker runs the auth service.
@@ -1539,7 +1620,7 @@ func parsePodOperators(setting, value string) (map[string]string, error) {
 // deciding person's name from the caller, so the person's pod could decide any request in any
 // person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
 // person's pod would then be answered as that entry's service: by the NATS auth service
-// (internal/cipher/natscallout) with that entry's service grant or, for an edge-listener entry, by
+// (internal/cipher/natscallout) with that entry's service grant and, for an edge-listener entry, also by
 // GET /v1/project-repositories with the repositories of the projects the entry lists. It reads
 // each entry's account from cfg.NATS.Services, the one parse of that setting (ParseNATSServices),
 // which holds the account to ParseAccount's form. It refuses a mapped account that either side of
@@ -1620,7 +1701,7 @@ func mappedAccountRefusal(cfg *Config) error {
 			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
 		}
 		if entry, names := natsEntries[account]; names {
-			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant or, for an edge-listener entry, by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the person's pod would be answered as that service, by the NATS auth service with its NATS grant and, for an edge-listener entry, also by GET /v1/project-repositories, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
 		}
 		if pair, paired := pairs[account]; paired {
 			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, so the session names the token exchange binds for the person's account and for the other account would cross, and a person's account shares no session name with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)
@@ -1808,6 +1889,35 @@ func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
 	return ranges, nil
 }
 
+// RequireAirlock is the check of the airlock's settings against the profiles the boot read, proxied
+// naming each profile that has a proxy block, in the file's order. A broker whose profiles hold a
+// proxy block but that cannot proxy would hold back the value of every name such a block names and
+// release nothing in its place, so with any such profile the three settings the proxy cannot run
+// without are required, the refusal naming the ones missing and the profiles that need them, and,
+// in a cluster, so are the cluster's own ranges, which no fixed rule of the proxy covers
+// (requireClusterRanges). With none, there is no proxy and nothing is required: a deployment that
+// serves GitHub Apps through profiles with no proxy block runs no airlock.
+func (c Config) RequireAirlock(proxied []string) error {
+	if len(proxied) == 0 {
+		return nil
+	}
+	// One value per airlockProxySettings entry, read in that order, so the missing ones are named
+	// in the order the message naming them uses and one list is walked rather than two that could
+	// part.
+	values := []string{c.AirlockProxyURL, c.AirlockCACertFile, c.AirlockCAKeyFile}
+	var missing []string
+	for i, setting := range airlockProxySettings {
+		if values[i] == "" {
+			missing = append(missing, setting)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("BROKER_PROFILES_FILE gives %s a proxy block, so the broker runs the airlock's proxy for them and needs %s; missing %s",
+			strings.Join(proxied, ", "), strings.Join(airlockProxySettings, ", "), strings.Join(missing, ", "))
+	}
+	return requireClusterRanges(c.AirlockClusterRanges, c.kubernetesServiceHost)
+}
+
 // requireClusterRanges is the check of BROKER_AIRLOCK_CLUSTER_RANGES against the cluster a broker
 // with the airlock on runs in. KUBERNETES_SERVICE_HOST, which Kubernetes sets in every container
 // to the ClusterIP of the cluster's kubernetes Service, says the broker runs in a cluster; empty
@@ -1824,7 +1934,7 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 	}
 	serviceHost = strings.TrimSpace(serviceHost)
 	if len(ranges) == 0 {
-		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: BROKER_AIRLOCK_RULES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
+		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: a proxy block of BROKER_PROFILES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
 	}
 	host, err := netip.ParseAddr(serviceHost)
 	if err != nil {
@@ -2035,9 +2145,12 @@ func Load(getenv func(string) string) (Config, error) {
 		DatabaseURL:               getenv("BROKER_DATABASE_URL"),
 		PublicURL:                 getenv("BROKER_PUBLIC_URL"),
 		MachineLoginURL:           strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),
+		EdgeListenAddr:            strings.TrimSpace(getenv("BROKER_EDGE_LISTEN_ADDR")),
+		EdgeURL:                   strings.TrimSpace(getenv("BROKER_EDGE_URL")),
+		EdgeMachineLoginURL:       strings.TrimSpace(getenv("BROKER_EDGE_MACHINE_LOGIN_URL")),
 		SecretsStore:              orDefault(getenv("BROKER_SECRETS_STORE"), secrets.StoreAWS),
 		SecretsPrefix:             getenv("BROKER_SECRETS_PREFIX"),
-		AirlockRulesFile:          getenv("BROKER_AIRLOCK_RULES_FILE"),
+		ProfilesFile:              getenv("BROKER_PROFILES_FILE"),
 		AirlockListenAddr:         orDefault(getenv("BROKER_AIRLOCK_LISTEN_ADDR"), "127.0.0.1:13381"),
 		AirlockProxyURL:           strings.TrimSpace(getenv("BROKER_AIRLOCK_PROXY_URL")),
 		AirlockCACertFile:         strings.TrimSpace(getenv("BROKER_AIRLOCK_CA_CERT_FILE")),
@@ -2130,41 +2243,31 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, err
 		}
 	}
-	// The broker cluster's own ranges, read whatever the rules file says: a list the broker could
-	// not act on is a mistake in the deployment whether or not its airlock is on today.
+	// The edge's settings, held here beside BROKER_MACHINE_LOGIN_URL, whose device grant the edge
+	// serves (loadEdge), and the Workspace's other domains, which only the edge reads.
+	if err := loadEdge(&cfg); err != nil {
+		return Config{}, err
+	}
+	if cfg.SignInWorkspaceDomains, err = parseWorkspaceDomains(getenv(workspaceDomainsSetting)); err != nil {
+		return Config{}, err
+	}
+	// The broker cluster's own ranges, read whatever the profiles file says: a list the broker
+	// could not act on is a mistake in the deployment whether or not its airlock is on today.
 	if cfg.AirlockClusterRanges, err = parseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
 		return Config{}, err
 	}
-	// A broker that reads the airlock's rules but cannot proxy would hold back the value of
-	// every name the file names and release nothing in its place, so the three settings the
-	// proxy cannot run without are required with the rules file, and the refusal names the ones
-	// missing. With no rules file there is no proxy and all four are ignored.
-	if cfg.AirlockRulesFile != "" {
-		// One value per airlockProxySettings entry, read in that order, so the missing ones
-		// are named in the order the message naming them uses and one list is walked rather
-		// than two that could part.
-		values := []string{cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile}
-		var missing []string
-		for i, setting := range airlockProxySettings {
-			if values[i] == "" {
-				missing = append(missing, setting)
-			}
-		}
-		if len(missing) > 0 {
-			return Config{}, fmt.Errorf("BROKER_AIRLOCK_RULES_FILE names a rules file, so the broker proxies every secret the file names and needs %s; missing %s",
-				strings.Join(airlockProxySettings, ", "), strings.Join(missing, ", "))
-		}
-		// And the proxy's URL held to its form, as BROKER_MACHINE_LOGIN_URL above is: every
-		// release of a name the rules hold back carries this string, and a command's own
-		// client reads it as the proxy to dial. A value with no scheme or no host
-		// ("proxy:13381") boots and then fails every airlock run one command at a time, with
-		// a refusal in the CLI rather than in the pod that was configured wrong.
+	// Whether the proxy's settings are required is up to the profiles file's contents, which Load
+	// does not read: RequireAirlock is that check, which the boot makes once it has read the file.
+	// The address that says whether the broker runs in a cluster is read here with the rest.
+	cfg.kubernetesServiceHost = getenv("KUBERNETES_SERVICE_HOST")
+	// The proxy's URL, when a deployment with a profiles file gives one, held to its form, as
+	// BROKER_MACHINE_LOGIN_URL above is: every release of a name a proxy block holds back carries
+	// this string, and a command's own client reads it as the proxy to dial. A value with no
+	// scheme or no host ("proxy:13381") boots and then fails every airlock run one command at a
+	// time, with a refusal in the CLI rather than in the pod that was configured wrong. With no
+	// profiles file there is no proxy and the value is ignored.
+	if cfg.ProfilesFile != "" && cfg.AirlockProxyURL != "" {
 		if err := httpURLSetting("BROKER_AIRLOCK_PROXY_URL", cfg.AirlockProxyURL); err != nil {
-			return Config{}, err
-		}
-		// And, in a cluster, the cluster's own ranges, which no fixed rule of the proxy covers
-		// (requireClusterRanges).
-		if err := requireClusterRanges(cfg.AirlockClusterRanges, getenv("KUBERNETES_SERVICE_HOST")); err != nil {
 			return Config{}, err
 		}
 	}

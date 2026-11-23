@@ -283,14 +283,22 @@ func (t Timer) ObserveDuration(h *Histogram, labels ...[2]string) {
 func (r *Registry) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		_, _ = w.Write(r.render())
+		_, _ = w.Write(r.render(func(string) bool { return true }))
 	})
 }
 
-// render is the registry's exposition text. It holds the registry's lock only to copy the list of
-// metrics, and each metric's only while it reads that metric's series into the text, and writes
-// to no client.
-func (r *Registry) render() []byte {
+// Text is the exposition text of the metrics named, alone, exactly as /metrics serves them: what a
+// reader that cannot reach /metrics is handed of it instead. The listener logs its old-form
+// counter and start-time gauge this way for packages/envoy/scripts/legacy-subjects-gate.sh, whose
+// operator may read the listener's log and not its pod. A name no metric has adds nothing.
+func (r *Registry) Text(names ...string) []byte {
+	return r.render(func(name string) bool { return slices.Contains(names, name) })
+}
+
+// render is the exposition text of the registry's metrics whose name keep takes. It holds the
+// registry's lock only to copy the list of metrics, and each metric's only while it reads that
+// metric's series into the text, and writes to no client.
+func (r *Registry) render(keep func(name string) bool) []byte {
 	r.mu.RLock()
 	counters, histograms, gauges := slices.Clone(r.counters), slices.Clone(r.histograms), slices.Clone(r.gauges)
 	gaugeFuncs, gaugeSets := slices.Clone(r.gaugeFuncs), slices.Clone(r.gaugeSets)
@@ -298,6 +306,9 @@ func (r *Registry) render() []byte {
 
 	var w bytes.Buffer
 	for _, c := range counters {
+		if !keep(c.name) {
+			continue
+		}
 		writeType(&w, c.name, c.help, "counter")
 		c.mu.Lock()
 		for _, key := range sortedKeys(c.series) {
@@ -308,6 +319,9 @@ func (r *Registry) render() []byte {
 	}
 
 	for _, h := range histograms {
+		if !keep(h.name) {
+			continue
+		}
 		writeType(&w, h.name, h.help, "histogram")
 		h.mu.Lock()
 		for _, key := range sortedKeys(h.series) {
@@ -327,11 +341,17 @@ func (r *Registry) render() []byte {
 	}
 
 	for _, g := range gauges {
+		if !keep(g.name) {
+			continue
+		}
 		writeType(&w, g.name, g.help, "gauge")
 		fmt.Fprintf(&w, "%s %d\n", g.name, g.value.Load())
 	}
 
 	for _, gf := range gaugeFuncs {
+		if !keep(gf.name) {
+			continue
+		}
 		writeType(&w, gf.name, gf.help, "gauge")
 		if value, ok := gf.fn(); ok {
 			fmt.Fprintf(&w, "%s %d\n", gf.name, value)
@@ -339,6 +359,9 @@ func (r *Registry) render() []byte {
 	}
 
 	for _, gs := range gaugeSets {
+		if !keep(gs.name) {
+			continue
+		}
 		writeType(&w, gs.name, gs.help, "gauge")
 		samples := gs.fn()
 		lines := make([]string, len(samples))

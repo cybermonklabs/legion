@@ -23,6 +23,8 @@ on:
 jobs:
   conflicts-script:
     runs-on: ubuntu-24.04-arm
+    env:
+      JOB_TIMEOUT_MINUTES: 360 # GitHub's default timeout-minutes, which this job keeps, for gh-read.sh's wait
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

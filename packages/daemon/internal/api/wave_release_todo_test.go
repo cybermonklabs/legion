@@ -31,8 +31,8 @@ import (
 // — is recorded under the tree and started by the release, as a child the release moves into todo
 // is by that move's event. Dispatch makes no event for a status an issue already has, so before,
 // the release answered the child released and nothing recorded or started it: read_record found
-// no record, and park_child and rerun_child answered ISSUE_NOT_FOUND (LEGION-627). The architect's
-// retry of the same wave changes nothing more.
+// no record, and rerun_child answered ISSUE_NOT_FOUND (LEGION-627). The architect's retry of the
+// same wave changes nothing more, and rerun_child finds the child running in the tree.
 func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T) {
 	h := newHarness(t)
 	records := record.NewStore()
@@ -82,9 +82,8 @@ func TestWaveReleaseRecordsAndStartsAChildDispatchAlreadyShowsTodo(t *testing.T)
 	if again := recordedChild(t, h, child); again == nil || again.Generation != 1 || again.Phase != phase.Planning {
 		t.Fatalf("the child after the architect's retry = %#v, want its one run unchanged", again)
 	}
-	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": child}, nil); recorder.Code != http.StatusOK {
-		t.Fatalf("park_child of the released child = %d: %s", recorder.Code, recorder.Body)
-	}
+	refused(t, h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": child}, nil),
+		http.StatusConflict, "CHILD_RUNNING")
 }
 
 // A todo child whose repository cannot be read before it is recorded (the daemon's preparation

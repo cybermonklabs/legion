@@ -33,6 +33,7 @@ type Request struct {
 	Secrets         []string `json:"secrets,omitempty"`          // sign-request: the requested agent_secret names
 	Reason          string   `json:"reason,omitempty"`           // sign-request: why they're needed
 	LifetimeSeconds *int     `json:"lifetime_seconds,omitempty"` // sign-request: how many seconds the grant lasts; nil for until the session ends
+	Locations       []string `json:"locations,omitempty"`        // sign-request: the target that narrows its one secret, as the one detail's locations; nil for none
 	WaitSeconds     int      `json:"wait_seconds,omitempty"`     // register: wait up to this long for the enrollment, unless the helper holds no launcher credential
 	RuntimeID       string   `json:"runtime_id,omitempty"`       // enroll-session-key: the session's runtime id on this machine
 	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
@@ -67,7 +68,7 @@ type Response struct {
 	// before this field sends none, and such a client refuses that answer.
 	RootPID             int           `json:"root_pid,omitempty"`
 	Operator            string        `json:"operator,omitempty"`
-	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled
+	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled | refused (the broker refused the session for good, 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, named in Error; the helper asks no more)
 	VerificationURI     string        `json:"verification_uri,omitempty"`      // login: where a person types the code, the broker's device authorization verification_uri; empty from a helper before this field
 	LoginState          string        `json:"login_state,omitempty"`           // login/login-status: the most recent login's pending|issued|denied|expired; expired whenever LoginRefused and that login is not pending
 	CredentialHeld      bool          `json:"credential_held,omitempty"`       // login-status: the helper holds a launcher credential, whatever the most recent login's state

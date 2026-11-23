@@ -86,7 +86,8 @@ export interface EnvoyStackOptions {
 export const ENVOY_MODULE = path.resolve(import.meta.dir, "../../envoy");
 const READY_TIMEOUT_MS = 60_000;
 const TAIL_LINES = 10;
-const STOP_GRACE_MS = 10_000;
+/** How long `stopProcess` gives a process to stop on its signal before it kills it. */
+export const STOP_GRACE_MS = 10_000;
 
 /** What a rig builds, and how it names itself when the build cannot run. */
 export interface GoBuild {
@@ -207,26 +208,38 @@ export interface ReadyBudget {
 
 const ENVOY_READY: ReadyBudget = { timeoutMs: READY_TIMEOUT_MS, tailLines: TAIL_LINES };
 
-/** Polls `ready` until it holds, throwing when `child` exits first or the budget passes. */
+/**
+ * Polls `ready` until it holds, throwing when `child` exits first or the budget passes. The budget
+ * bounds each check too: `ready` is handed a signal that aborts when the budget passes, for a
+ * check that waits on a server's answer, and a check still pending then counts as not ready, so a
+ * server that takes a check and never answers it fails the wait by name rather than holding it.
+ * A budget of 0 or less, a caller's deadline spent before the wait began, ends the wait at once:
+ * one check, or two about 100 ms apart when the first answers false before the spent signal fires.
+ */
 export async function awaitReady(
   what: string,
   child: Subprocess,
   log: string,
   budget: ReadyBudget,
-  ready: () => Promise<boolean>
+  ready: (signal: AbortSignal) => Promise<boolean>
 ): Promise<void> {
-  const deadline = Date.now() + budget.timeoutMs;
+  const timeoutMs = Math.max(0, budget.timeoutMs);
+  const spent = AbortSignal.timeout(timeoutMs);
+  const passed = Promise.withResolvers<false>();
+  spent.addEventListener("abort", () => passed.resolve(false), { once: true });
   for (;;) {
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
         `${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log, budget.tailLines)}`
       );
     }
-    if (await ready().catch(() => false)) return;
-    if (Date.now() > deadline) {
-      throw new Error(
-        `${what} was not ready within ${budget.timeoutMs} ms: ${tail(log, budget.tailLines)}`
-      );
+    if (await Promise.race([ready(spent).catch(() => false), passed.promise])) return;
+    if (spent.aborted) {
+      const why =
+        timeoutMs > 0
+          ? `within ${timeoutMs} ms`
+          : `by its deadline, which had passed ${-budget.timeoutMs} ms before its wait began`;
+      throw new Error(`${what} was not ready ${why}: ${tail(log, budget.tailLines)}`);
     }
     await Bun.sleep(100);
   }
@@ -239,9 +252,16 @@ const JszSchema = z.object({
     .optional(),
 });
 
-/** `url`'s JSON answer read with `schema`; undefined when it answers no 2xx or another shape. */
-async function getJson<T>(url: string, schema: z.ZodType<T>): Promise<T | undefined> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+/** `url`'s JSON answer read with `schema`; undefined when it answers no 2xx or another shape. The
+ *  read ends at 2 s, or when `signal` aborts. */
+async function getJson<T>(
+  url: string,
+  schema: z.ZodType<T>,
+  signal: AbortSignal
+): Promise<T | undefined> {
+  const response = await fetch(url, {
+    signal: AbortSignal.any([signal, AbortSignal.timeout(2_000)]),
+  });
   if (!response.ok) return undefined;
   const parsed = schema.safeParse(await response.json());
   return parsed.success ? parsed.data : undefined;
@@ -307,10 +327,12 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       log: natsLog,
     });
     processes.push(natsd);
-    await awaitReady("natsd", natsd, natsLog, ENVOY_READY, async () => {
+    await awaitReady("natsd", natsd, natsLog, ENVOY_READY, async (signal) => {
       const reported = natsdAddresses(natsLog);
       if (reported === undefined) return false;
-      return (await getJson(`http://${reported.monitor}/healthz`, StatusSchema))?.status === "ok";
+      return (
+        (await getJson(`http://${reported.monitor}/healthz`, StatusSchema, signal))?.status === "ok"
+      );
     });
     // Ready means natsd reported both addresses, and its log only grows.
     const addresses = natsdAddresses(natsLog);
@@ -347,15 +369,16 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       listener,
       listenerLog,
       ENVOY_READY,
-      async () => (await getJson(`${envoyUrl}/healthz`, StatusSchema))?.status === "healthy"
+      async (signal) =>
+        (await getJson(`${envoyUrl}/healthz`, StatusSchema, signal))?.status === "healthy"
     );
     await awaitReady(
       "natsd's ENVOY_NOTIFICATIONS stream",
       natsd,
       natsLog,
       ENVOY_READY,
-      async () => {
-        const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema);
+      async (signal) => {
+        const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema, signal);
         return (jsz?.account_details ?? []).some((account) =>
           (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
         );

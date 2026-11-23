@@ -219,4 +219,13 @@ describe("the key-file model route installer", () => {
     ) as { extensionHandlers?: { toolCallTimeoutMs?: unknown } };
     expect(config.extensionHandlers?.toolCallTimeoutMs).toBe(120_000);
   });
+
+  test("config.yml shuts Oh My Pi's first-run setup wizard, which would hold an interactive session", () => {
+    const { home, result } = install();
+    expect(result.exitCode).toBe(0);
+    const config = Bun.YAML.parse(
+      readFileSync(join(home, ".omp/profiles/legion-e2e-test/agent/config.yml"), "utf8")
+    ) as { startup?: unknown };
+    expect(config.startup).toEqual({ setupWizard: false });
+  });
 });

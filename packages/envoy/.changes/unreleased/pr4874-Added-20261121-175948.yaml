@@ -1,0 +1,5 @@
+kind: Added
+body: 'Dispatch reads `DISPATCH_SEARCH_FILL` once at boot. `off` defers the keyword fill: the server starts no fill, takes no hold, writes no row of `search_text_versions` or its cursor, and logs `dispatch: the keyword fill is deferred` once. `on`, or unset, starts the fill as before; any other value refuses the boot. No route reads the table yet, so search answers alike either way.'
+time: 2026-11-21T17:59:48.826108808Z
+custom:
+    Issue: pr4874

@@ -67,8 +67,8 @@ func (c refusalRow) absents() []string {
 
 // refusalRows is every host spelling outside the one grammar a rules host is written in, one row
 // per way out of it. A row names the form to write where the host has one, and no form otherwise.
-// cmd/cipherd drives a few of these spellings through airlock-check and the boot, the ones a reader
-// of the rules file could change before Refusal reads them.
+// cmd/cipherd drives a few of these spellings through `profiles check` and the boot, the ones a
+// reader of the profiles file could change before Refusal reads them.
 var refusalRows = func() []refusalRow {
 	// An IP address is refused in every spelling, each with what it would do served: the
 	// canonical spelling and upper-case IPv6 bind and are decrypted, a trailing dot makes a name
@@ -265,13 +265,13 @@ func TestRefusalRefusesEveryHostTheProxyNeverCompares(t *testing.T) {
 
 // FuzzRefusalIsNoLooserThanHostShapeOK holds the grammar to proxyrules.HostShapeOK, the Lean-proved
 // shape proxyrules.Validate holds every host to: a host Refusal serves (an empty reason) is one
-// HostShapeOK accepts, so cmd/cipherd's validateRulesFile, which reads every host here first, never
-// passes a host for Validate to refuse in words that quote it. It holds by construction: Refusal
-// serves a host only where why does, and why serves one only on its branch for a host HostShapeOK
-// accepts; without that branch's test the grammar's own refusals past it read no character and no
-// empty label, and the seeds below fail. The seeds are the proxyrules package's own hosts and the
-// shapes of this program's host rows; go test runs each seed, and go test -fuzz searches beyond
-// them.
+// HostShapeOK accepts, so policy.ParseProfiles, which reads every host of a proxy block here
+// first, never passes a host for Validate to refuse in words that quote it. It holds by
+// construction: Refusal serves a host only where why does, and why serves one only on its branch
+// for a host HostShapeOK accepts; without that branch's test the grammar's own refusals past it
+// read no character and no empty label, and the seeds below fail. The seeds are the proxyrules
+// package's own hosts and the shapes of this program's host rows; go test runs each seed, and go
+// test -fuzz searches beyond them.
 func FuzzRefusalIsNoLooserThanHostShapeOK(f *testing.F) {
 	for _, host := range hostShapeRows {
 		f.Add(host)

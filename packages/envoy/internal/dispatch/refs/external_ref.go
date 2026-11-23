@@ -25,10 +25,8 @@ var (
 // `<value>#1`. ExternalRepo then trims each half of every other space strings.TrimSpace removes,
 // which the pattern takes: the ASCII vertical tab, and Unicode's spaces such as U+00A0, so
 // `acme/x\u00a0` reads as `acme/x`. It is the one reading of a repository a person writes: the
-// API reads an issue's repository, a source's, a mapping's path and the boot seed's mappings
-// through it (ParseGitHubRepo), and the repairs the CI reconcile's warning names (api's
-// MappingRepairs) read a stored mapping's name back through it, so the request the warning names
-// reaches the row the route will read.
+// API reads an issue's repository, a project's default repository, a source's and the App
+// installation read's path through it (ParseGitHubRepo).
 func ParseExternalRepo(raw string) (repo string, ok bool) {
 	match := externalRepoPattern.FindStringSubmatch(raw)
 	if match == nil {
@@ -43,9 +41,9 @@ func ParseExternalRepo(raw string) (repo string, ok bool) {
 // more: `acme/.git.git` reads as `acme/.git`, which the rule refuses, and
 // `acme/<100 characters>.git` as the 100 characters, which it takes. It is the rule of a
 // repository a person writes for Dispatch to store and ask GitHub about: the API reads an issue's
-// own repository (api's parseIssueRepo), a source's, a mapping's path, its renamed_to and the
-// delivery settings' deploy repository (api's parseSourceRepo), and the boot seed's mappings
-// (api's ParseRepoProjects) through it, so a change to the rule is made here alone. It trims what
+// own repository and a project's default repository (api's parseIssueRepo), and a source's, the
+// App installation read's path and the delivery settings' deploy repository (api's
+// parseSourceRepo) through it, so a change to the rule is made here alone. It trims what
 // ParseExternalRepo trims and nothing more, so each caller keeps its own trim, and each words its
 // own refusal. A name the rule refuses is SplitGitHubRepo's ErrNotGitHubRepo; a raw
 // ParseExternalRepo cannot read is an error that is not ErrNotGitHubRepo, so a caller can tell the

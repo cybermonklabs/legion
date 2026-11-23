@@ -41,14 +41,15 @@ func getDashboardBuildsAs(t *testing.T, handler http.Handler, credential string)
 }
 
 // registerProcess writes a registry row for a process serving build whose last heartbeat was
-// ageSeconds ago by the database's clock.
+// ageSeconds ago by the database's clock. The process is of this build's binary, so the row names
+// its owner lock protocol, as processes.Register writes it.
 func registerProcess(t *testing.T, database *store.Store, build string, ageSeconds float64) string {
 	t.Helper()
 	var instance string
 	if err := database.Pool.QueryRow(context.Background(), `
-		insert into server_processes (instance, dashboard_build, signing_keys, heartbeat_at)
-		values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2))
-		returning instance::text`, build, ageSeconds).Scan(&instance); err != nil {
+		insert into server_processes (instance, dashboard_build, signing_keys, heartbeat_at, owner_lock_protocol)
+		values (gen_random_uuid(), $1, '{fingerprint}', now() - make_interval(secs => $2), $3)
+		returning instance::text`, build, ageSeconds, store.OwnerLockProtocol).Scan(&instance); err != nil {
 		t.Fatalf("register a process on build %q: %v", build, err)
 	}
 	return instance

@@ -18,7 +18,7 @@ import (
 const (
 	// pullsPerQuery is the open pull requests one query reads. Twenty heads, each with up to
 	// thirty check suites and sixty check runs in each of them, is the page size that keeps one
-	// answer inside githubapp's 1 MiB response limit for the repositories Dispatch maps: the
+	// answer inside githubapp's 1 MiB response limit for the repositories Dispatch reads: the
 	// largest head Legion has run carries 32 runs over 7 suites, and twenty of those is about
 	// 200 KiB of JSON. A page that does come back past the limit is read over REST instead
 	// (walk.restPage), so the size is a budget rather than a promise.

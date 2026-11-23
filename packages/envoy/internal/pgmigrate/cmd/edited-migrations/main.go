@@ -1,10 +1,11 @@
 // Command edited-migrations is the check before merge that a change edits no migration a database
 // may already have run in a way such a database refuses: for each store, Dispatch's and the
 // broker's, it compares every forward migration file the base commit holds with this tree's file
-// of the same version (pgmigrate.CheckEdits). A head file that differs from the base's must keep
-// the base's first identity as its first replaces line (the base file itself, where the base
-// declares none) and must accept the base's text, its own or one a replaces line names; a base
-// file whose version the head has no file for is refused.
+// of the same version (pgmigrate.CheckEdits). A head file that differs from the base's must begin
+// its replaces lines with the base's, in the base's order, then one naming the base file itself,
+// each line the same file name and checksum: its first line is then the base's first identity
+// (the base file itself, where the base declares none), and it accepts every identity and text
+// the base's file is or names. A base file whose version the head has no file for is refused.
 //
 //	go build -o edited-migrations ./internal/pgmigrate/cmd/edited-migrations && ./edited-migrations --base <commit>
 //

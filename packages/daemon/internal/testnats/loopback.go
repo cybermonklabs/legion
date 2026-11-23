@@ -8,8 +8,9 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/go-connections/nat"
-	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
+	"github.com/testcontainers/testcontainers-go"
 )
 
 // LoopbackIP is an address for one test listener a client dials: on Linux, where every address of
@@ -46,8 +47,10 @@ func ListenLoopback() (net.Listener, error) {
 // loopbackPorts returns, so another program can take one of the ports before Docker binds it:
 // start retries a publish refused for that (addressInUse) on a fresh address and fresh ports. That
 // freed-port race is a class of its own; a port another process must bind cannot be held here. It
-// is a copy of packages/envoy/internal/testport's LoopbackPorts, as LoopbackIP is.
-func loopbackPorts(n int) (string, []int, error) {
+// is a copy of packages/envoy/internal/testport's LoopbackPorts, as LoopbackIP is. It is a variable
+// so a test can take a probed port before Docker binds it, as another program can, and so check
+// start's retry (TestAStartRetriedAfterARefusedPublishEnforcesItsUsers).
+var loopbackPorts = func(n int) (string, []int, error) {
 	host := LoopbackIP().String()
 	listeners := make([]net.Listener, 0, n)
 	defer func() {
@@ -80,11 +83,21 @@ const (
 	monitorPort nat.Port = "8222/tcp"
 )
 
-// endpoint is the host:port Docker published container's port on, the loopback address and port
-// start chose (loopbackPorts). Docker publishes a port again at each start of a container, so a
-// caller reads it once the container runs.
-func endpoint(container *tcnats.NATSContainer, port nat.Port) (string, error) {
-	info, err := container.Inspect(context.Background())
+// published is the part of a container endpoint reads: its published ports, and the host of the
+// Docker daemon that runs it.
+type published interface {
+	Inspect(context.Context) (*container.InspectResponse, error)
+	Host(context.Context) (string, error)
+}
+
+// endpoint is the host:port Docker published container's port on: the loopback address and port
+// start chose (loopbackPorts), or, where the port took Docker's default binding of every address
+// (a daemon on another machine, localDaemon), the daemon's host at the port Docker chose. Docker
+// publishes a port again at each start of a container, so a caller reads it once the container
+// runs.
+func endpoint(container published, port nat.Port) (string, error) {
+	ctx := context.Background()
+	info, err := container.Inspect(ctx)
 	if err != nil {
 		return "", fmt.Errorf("inspect the NATS container: %w", err)
 	}
@@ -92,5 +105,37 @@ func endpoint(container *tcnats.NATSContainer, port nat.Port) (string, error) {
 		return "", fmt.Errorf("the NATS container publishes no %s", port)
 	}
 	binding := info.NetworkSettings.Ports[port][0]
-	return net.JoinHostPort(binding.HostIP, binding.HostPort), nil
+	host := binding.HostIP
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		if host, err = container.Host(ctx); err != nil {
+			return "", fmt.Errorf("read the Docker daemon's host: %w", err)
+		}
+	}
+	return net.JoinHostPort(host, binding.HostPort), nil
+}
+
+// localDaemon reports whether the Docker daemon testcontainers reaches runs on this machine
+// (localDaemonHost of the host testcontainers places it at). It is a copy of
+// packages/envoy/internal/testnats's, for the reason LoopbackIP gives.
+func localDaemon(ctx context.Context) (bool, error) {
+	provider, err := testcontainers.NewDockerProvider()
+	if err != nil {
+		return false, err
+	}
+	defer provider.Close()
+	host, err := provider.DaemonHost(ctx)
+	if err != nil {
+		return false, err
+	}
+	return localDaemonHost(host), nil
+}
+
+// localDaemonHost reports whether a Docker daemon testcontainers places at host is this machine,
+// so a port it publishes on a loopback address is one this process can dial: testcontainers names
+// such a daemon "localhost" (a unix socket, outside a container) or a loopback address. A daemon
+// that DOCKER_HOST names on another machine, or the host's daemon as a container reaches it through
+// its gateway, publishes on a machine whose loopback this one does not reach.
+func localDaemonHost(host string) bool {
+	ip := net.ParseIP(host)
+	return host == "localhost" || (ip != nil && ip.IsLoopback())
 }

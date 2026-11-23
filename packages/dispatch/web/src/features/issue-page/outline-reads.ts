@@ -1,17 +1,17 @@
 import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { api } from "../../api/client";
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
-  EVENT_FRESH,
   issueAsksQuery,
-  standsFailed,
+  issueCommentsQuery,
+  issueMessagesQuery,
   treeDocumentIds,
   useIssueTree,
 } from "./useIssueTree";
@@ -91,6 +91,12 @@ export interface OutlineReads {
  *  opening, which read it, see one value; the tree's own where the page gives it none. */
 export const NO_FAILED_READS: readonly FailedRead[] = [];
 
+/** The key the line of a read rows come from is drawn under (`FailedRead.key`). */
+export type ReadKey = ReturnType<typeof sixReads>[number]["line"] | `blocks:${string}`;
+
+/** The key the line of the blocks read of the document `id` is drawn under. */
+export const blocksKey = (id: string): ReadKey => `blocks:${id}`;
+
 /** The six reads the tree's nodes other than the issue's children and the documents' blocks come
  *  from, in the order they are given, each under the key and with the freshness `useIssueTree`
  *  reads it by, so they cost no request of their own; and the key each one's line is drawn under,
@@ -125,15 +131,14 @@ function sixReads(key: string) {
       bringsQuestions: false,
       line: "comments",
       message: STATE_LINES.comments_unreadable,
-      query: { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
+      query: { ...issueCommentsQuery(key), ...EVENT_FRESH },
     },
     {
       bringsQuestions: false,
       line: "messages",
       message: STATE_LINES.messages_unreadable,
       query: {
-        queryFn: () => api.listIssueMessages(key),
-        queryKey: ["issue-messages", key],
+        ...issueMessagesQuery(key),
         ...EVENT_FRESH,
       },
     },
@@ -221,7 +226,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
         const id = documentIds[index] ?? "";
         return {
           bringsQuestions: false,
-          key: `blocks:${id}`,
+          key: blocksKey(id),
           message: blocksUnreadable(issue, id),
         };
       }),

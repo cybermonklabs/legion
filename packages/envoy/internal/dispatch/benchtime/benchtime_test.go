@@ -24,6 +24,43 @@ func TestPlanTimeIsPlanningPlusExecution(t *testing.T) {
 	}
 }
 
+// A series run's time is the sum of its statements' planning and execution, and its plan text
+// is each statement's plan in the order the run sent them, each under a line naming its place
+// and its own time; a run of one statement is that statement's plan alone, as Pair has always
+// logged it.
+func TestASeriesRunIsTheSumOfItsStatements(t *testing.T) {
+	second := "Result  (cost=0.00..0.01 rows=1 width=4) (actual time=0.001..0.001 rows=1 loops=1)\nPlanning Time: 0.016 ms\nExecution Time: 0.050 ms"
+	taken, err := runReading([]string{samplePlan, second})
+	if err != nil {
+		t.Fatalf("read a run of two statements: %v", err)
+	}
+	if want := 1500 * time.Microsecond; taken.took != want {
+		t.Errorf("the run took %v, want the sum of its statements' times, %v", taken.took, want)
+	}
+	if want := "statement 1 of 2, planning plus execution 1.434ms:\n" + samplePlan + "\nstatement 2 of 2, planning plus execution 66µs:\n" + second; taken.plan != want {
+		t.Errorf("the run's plan text is\n%s\nwant\n%s", taken.plan, want)
+	}
+	one, err := runReading([]string{samplePlan})
+	if err != nil {
+		t.Fatalf("read a run of one statement: %v", err)
+	}
+	if one.took != 1434*time.Microsecond || one.plan != samplePlan {
+		t.Errorf("a run of one statement read %v/%q, want 1.434ms and its plan alone", one.took, one.plan)
+	}
+	if _, err := runReading([]string{samplePlan, "Result\nPlanning Time: 0.016 ms"}); err == nil || !strings.Contains(err.Error(), "statement 2 of 2") {
+		t.Errorf("a run whose second plan carries no execution time read %v, want a failure naming statement 2 of 2", err)
+	}
+}
+
+// PairWithin's bound is the before median times 1.10 plus 0.505 ms. Its absolute term is the
+// spread of the block loader at 256 ids against itself, 3.871 ms against 3.366 ms, so a before
+// median of 3.366 ms bounds the after median at 4.2076 ms.
+func TestPairWithinBoundsTheAfterMedianByATenthAndTheSpread(t *testing.T) {
+	if got, want := withinBound(3366*time.Microsecond), 4207600*time.Nanosecond; got != want {
+		t.Fatalf("withinBound(3.366ms) = %v, want %v", got, want)
+	}
+}
+
 // A plan with no time at all is what EXPLAIN without ANALYZE answers, and one with only a
 // planning time is what a cancelled run leaves. Either must fail the measurement: a missing time
 // read as zero would be the fastest run of the eleven and would decide the median.

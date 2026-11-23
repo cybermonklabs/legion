@@ -60,6 +60,12 @@ const (
 	IdentityKubernetes = "kubernetes"
 	IdentityMetadata   = "metadata"
 	IdentityPool       = "pool"
+
+	// identityDeviceLogin is a value IdentityVar takes that this client refuses by name: a
+	// machine's device login (`dispatch login --device`), which only the TypeScript client
+	// (packages/cipher-client/src/device-login.ts) trades. A laptop sets it for its sessions, so a
+	// Go tool started there is told why it will not trade it.
+	identityDeviceLogin = "device-login"
 )
 
 // callTimeout bounds one call a client of this package makes to the broker, including the dial.
@@ -131,7 +137,8 @@ func ProjectsRefusal(setting, held string) error {
 // machine that trades nothing and is no error. A named identity whose own variables are missing
 // is an error naming each of them, since a deployment that asked for one and gave it nothing has
 // a mistake in it. A kind it does not know is an error naming the variable and the kinds it
-// takes, and not the value, which is where a credential pasted into the wrong variable shows up.
+// takes, and not the value, which is where a credential pasted into the wrong variable shows up;
+// device-login, which only the TypeScript client trades, is refused by name.
 func MachineIdentity(getenv func(string) string) (Source, error) {
 	kind := strings.TrimSpace(getenv(IdentityVar))
 	switch kind {
@@ -170,6 +177,9 @@ func MachineIdentity(getenv func(string) string) (Source, error) {
 			Subject: NewProjectedToken(path), Audience: pool, ServiceAccount: account,
 			TokenAudience: audience, HTTP: HTTPClient(),
 		}, nil
+	case identityDeviceLogin:
+		return nil, fmt.Errorf("%s=%s is a device login, which only the TypeScript client of the Dispatch and Envoy plugins trades and no Go tool does; unset it for this command, or name %s, %s or %s",
+			IdentityVar, identityDeviceLogin, IdentityKubernetes, IdentityMetadata, IdentityPool)
 	default:
 		return nil, fmt.Errorf("%s names no identity this machine can prove; it takes %s, %s or %s",
 			IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool)

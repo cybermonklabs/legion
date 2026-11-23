@@ -7,15 +7,15 @@
 # refuses half its options. It does not prove the broker's rule; the driver does that on a real
 # stack.
 #
-# It copies the real driver into a directory of its own beside a fake dev-stack.sh, which prints
-# the banner the real one prints (one export per line, "dev-stack: ready.", the databases line)
-# and puts a fake agent-secrets and agent-secrets-helper in the stack's bin directory, as the real
-# one puts the built binaries there. Fakes of bun (print-trade.ts), psql, curl, python3 (the
-# metadata stand-in) and sleep go first on PATH. The driver starts every caller with env -i, so
-# the fakes find this run's state through a path written into each of them, never through the
-# environment. Each fake answers as the real program answers on the right stack, and one word in
-# the state directory (the scenario) turns one answer wrong, as a broker or Dispatch with a bug
-# would.
+# It copies the real driver, and the lib/pg-url.sh it sources, into a directory of its own beside
+# a fake dev-stack.sh, which prints the banner the real one prints (one export per line,
+# "dev-stack: ready.", the databases line) and puts a fake agent-secrets and agent-secrets-helper
+# in the stack's bin directory, as the real one puts the built binaries there. Fakes of bun
+# (print-trade.ts), psql, curl, python3 (the metadata stand-in) and sleep go first on PATH. The
+# driver starts every caller with env -i, so the fakes find this run's state through a path
+# written into each of them, never through the environment. Each fake answers as the real program
+# answers on the right stack, and one word in the state directory (the scenario) turns one answer
+# wrong, as a broker or Dispatch with a bug would.
 #
 # The fakes hold what the real programs hold to the driver: the trade's answer depends on the
 # sign-in the driver's login wrote and on AGENT_SECRETS_PROJECTS; a session's projects come from
@@ -44,8 +44,9 @@ readonly driver="$repo/packages/envoy/scripts/project-secrets-check.sh"
 real_sleep="$(command -v sleep)"
 readonly real_sleep
 readonly admin_url='postgres://tester:not-a-secret@127.0.0.1:5999/postgres?sslmode=disable'
-mkdir -p "$state" "$fakes" "$stackbin" "$repo/packages/envoy/scripts" "$repo/packages/cipher-client/scripts"
+mkdir -p "$state" "$fakes" "$stackbin" "$repo/packages/envoy/scripts/lib" "$repo/packages/cipher-client/scripts"
 cp "$real_driver" "$driver"
+cp "$script_dir/lib/pg-url.sh" "$repo/packages/envoy/scripts/lib/pg-url.sh"
 : >"$repo/packages/cipher-client/scripts/print-trade.ts"
 
 # fake writes an executable whose first lines name this run's state, the real sleep and the
@@ -65,7 +66,7 @@ fake() { # <path>
 fake "$repo/packages/envoy/scripts/dev-stack.sh" <<'EOF'
 set -euo pipefail
 scenario="$(cat "$state/scenario")"
-access=false database=""
+access=false database="" all_args="$*"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --project-access) access=true; shift ;;
@@ -74,6 +75,10 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 printf 'dev-stack access=%s database=%s\n' "$access" "$database" >>"$state/dev-stack.log"
+# Its arguments and the LEGION_TEST_PG_DSN it was given, for the check that the Postgres URL
+# reaches it in its environment and in none of its arguments.
+printf '%s\n' "$all_args" >"$state/dev-stack.args"
+printf '%s\n' "${LEGION_TEST_PG_DSN-unset}" >"$state/dev-stack.dsn"
 [ "$access" = true ] || { echo "fake dev-stack: started without --project-access" >&2; exit 2; }
 work="$(mktemp -d "$state/dev-stack.XXXXXX")"
 printf '%s\n' "$work" >"$state/current-stack"
@@ -564,6 +569,11 @@ says_not() { ! grep -qF -- "$1" "$RUN_OUT"; }
 fails() { [ "$(grep -c '^FAIL: ' "$RUN_OUT")" = "$1" ]; }
 # not_in_curl_args: no curl command line of the run (the fake's log of its arguments) holds text.
 not_in_curl_args() { ! grep -qF -- "$1" "$state/curl.log"; }
+# stack_url_in_env: the run's dev-stack.sh got the --database-url as LEGION_TEST_PG_DSN, and no
+# argument of it holds the URL's password.
+stack_url_in_env() {
+  [ "$(cat "$state/dev-stack.dsn")" = "$admin_url" ] && ! grep -qF -- not-a-secret "$state/dev-stack.args"
+}
 # no_process_left: every process the run started was gone once the driver returned, its own
 # cleanup's doing; what outlived it the test has already reaped (outlived).
 no_process_left() { [ "$RUN_LEFT" = 0 ]; }
@@ -616,6 +626,7 @@ check "before F: carol's session naming nothing named no project" grep -qx 'regi
 check "before F: the airlock calls reached curl (its log names the bound host)" grep -qF 'https://priv.airlock.test/ok' "$state/curl.log"
 check "before F: no curl command line carried the grant's proxy password" not_in_curl_args pw-not-a-secret
 check "before F: no curl command line carried the grant's placeholder" not_in_curl_args agent-secrets-placeholder-not-a-secret
+check "before F: dev-stack.sh is given the --database-url in LEGION_TEST_PG_DSN and in none of its arguments" stack_url_in_env
 
 # F's machine check present: the dev-box row passes on F's refusal alone, and says so.
 run_driver f f --database-url "$admin_url"

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -32,10 +31,12 @@ func (r *Registry) unindexInterestLocked(sessionID string, _ Interest) {
 }
 
 // decodeInterest is the interest a put record of the bucket, delivered or read, leaves in the
-// cache.
+// cache. A record naming another session than its key is an error wrapping ErrInterestUnbound
+// (boundInterest), as one that does not decode is: the copy keeps no row for it and evicts the row
+// it held, so neither the subject index nor any read of the cache takes its topics.
 func decodeInterest(entry kvwatch.Entry) (Interest, bool, error) {
-	var item Interest
-	if err := json.Unmarshal(entry.Value, &item); err != nil {
+	item, err := boundInterest(entry.Key, entry.Value)
+	if err != nil {
 		return Interest{}, false, err
 	}
 	return item, true, nil

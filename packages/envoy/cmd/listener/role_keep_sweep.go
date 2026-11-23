@@ -49,7 +49,16 @@ const roleKeepWakeAge = roleKeepWindow - 20*time.Minute
 // still end at the end of their hour, with a dead letter to their senders. Every interval, and
 // once as the listener starts, this hands over every lane with copies left (sweepKeptRoleLanes,
 // startSweep), at most roleKeepSweepHandovers at a time across the passes of this one loop.
+//
+// An edge listener runs none (cfg.edge) and returns a channel closed already: it hands no lane
+// over (drainKeptRole). The shared listeners' sweeps hand over every lane, the lane of a role held
+// at the edge among them, whose holder's session consumer at the edge delivers the forward.
 func startKeptRoleSweep(ctx context.Context, cfg listenerDeliveryHandlerConfig, interval time.Duration) <-chan struct{} {
+	if cfg.edge != nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
 	slots := make(chan struct{}, roleKeepSweepHandovers)
 	return startSweep(ctx, interval, func(ctx context.Context) { sweepKeptRoleLanes(ctx, cfg, slots) })
 }

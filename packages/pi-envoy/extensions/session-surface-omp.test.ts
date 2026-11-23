@@ -21,15 +21,16 @@ import { z } from "zod";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 import { NO_WINDOW_MODEL } from "../test/no-window-provider";
 
-// What the live view's two session-side surfaces do on the real Oh My Pi (dispatch://INFRA-812,
-// R3 and R4): the `context` frame the session publishes about how full its context window is
-// (extensions/envoy.ts's `refreshAgentStreamContext` over `@legion/pi-shared/agent-stream`'s
-// `setContext`), with the `context-cleared` frame that takes it away once the session reports no
-// window (dispatch://INFRA-4325), and a person's `!command`, which the session runs itself before
-// the host is handed the line (src/typed-shell.ts, read in `runTypedInput`). Both are read off the
-// wire: the frames over a real NATS server, as the Dispatch relay reads them, and the reply over
-// the stand-in Dispatch. What reached the model is read off the requests the binary sends the
-// stand-in gateway, each held until the test answers it.
+// What the live view's three session-side surfaces do on the real Oh My Pi (dispatch://INFRA-812,
+// R3 and R4, and dispatch://INFRA-5271, R1): the `context` frame the session publishes about how
+// full its context window is (extensions/envoy.ts's `refreshAgentStreamContext` over
+// `@legion/pi-shared/agent-stream`'s `setContext`), with the `context-cleared` frame that takes it
+// away once the session reports no window (dispatch://INFRA-4325); a person's `!command`, which
+// the session runs itself before the host is handed the line (src/typed-shell.ts, read in
+// `runTypedInput`); and the Envoy card the session displays, which the stream carries as the
+// terminal shows it. All are read off the wire: the frames over a real NATS server, as the
+// Dispatch relay reads them, and the reply over the stand-in Dispatch. What reached the model is
+// read off the requests the binary sends the stand-in gateway, each held until the test answers it.
 // LEGION_TEST_OMP names the binary, as in card-delivery-omp.test.ts, and LEGION_TEST_NATS_URL the
 // NATS server. A run without both skips, except on GitHub Actions, where the pi-envoy job
 // supplies both.
@@ -151,6 +152,10 @@ interface SurfaceSession {
   arrivedAt(prefix: string): number | undefined;
   /** The next Messages request after the ones already taken, once it arrives. */
   nextTurn(what: string): Promise<Turn>;
+  /** Relays `envelope` to the session as the listener relays its consumer, the frame naming the
+   *  session's own inbox as the subject the stream stored it on, and resolves once the session
+   *  has taken the frame. */
+  relay(envelope: string, what: string): Promise<void>;
   /** Sends a person's direct message and resolves once the session has taken the frame: a Send or
    *  an Aside once Dispatch was asked to accept it, any other mode once the session answered or
    *  acted on it. */
@@ -391,6 +396,27 @@ async function startSession(
       taken += 1;
       return turn;
     },
+    async relay(envelope, what) {
+      // The one path a session receives on: a frame of its own consumer's relay, carrying the
+      // subject the stream stored the message on (INFRA-771). The session subscribes that
+      // subject after it registers, so until it does the server reports no responder and the
+      // frame goes again, as the one frame it is; the word it answers is what says it took it.
+      streamSeq += 1;
+      try {
+        await sendRelayFrame({
+          connection,
+          newHeaders: headers,
+          sessionID: sid,
+          subject,
+          payload: codec.encode(envelope),
+          seq: streamSeq,
+          withinMs: DEADLINE_MS,
+          stopped: closed,
+        });
+      } catch (error) {
+        throw new Error(`${what} was taken by no session: ${String(error)}`);
+      }
+    },
     async send(body, sendOptions = {}) {
       const { mode = "steer", broadcastID, accepted = mode !== "btw" } = sendOptions;
       const messageID = randomUUID();
@@ -427,25 +453,7 @@ async function startSession(
         topic: subject,
         trace_id: label,
       });
-      // The one path a session receives on: a frame of its own consumer's relay, carrying the
-      // subject the stream stored the message on (INFRA-771). The session subscribes that
-      // subject after it registers, so until it does the server reports no responder and the
-      // frame goes again, as the one frame it is; the word it answers is what says it took it.
-      streamSeq += 1;
-      try {
-        await sendRelayFrame({
-          connection,
-          newHeaders: headers,
-          sessionID: sid,
-          subject,
-          payload: codec.encode(envelope),
-          seq: streamSeq,
-          withinMs: DEADLINE_MS,
-          stopped: closed,
-        });
-      } catch (error) {
-        throw new Error(`${label} was taken by no session: ${String(error)}`);
-      }
+      await session.relay(envelope, label);
       const sent = { eventID, messageID };
       if (accepted) {
         await until(
@@ -1375,6 +1383,65 @@ test.skipIf(skip)(
     expect(await session.reply(waiting, "the reply once the command ended")).toEndWith(
       "```\nreleased\n```"
     );
+  },
+  120_000
+);
+
+// dispatch://INFRA-5271's red check (`accept-5195-liveview-brief-red.sh`) on the real Oh My Pi:
+// an agent a session launcher made gets its brief as a message its claimer publishes to the
+// agent's role, which the listener stores and the session's consumer relays, and the session
+// shows it as an Envoy card. The check greps the live view's replay for the brief's opening, up to
+// its `;`, and before this the stream carried no card, so the brief was on the terminal and not on
+// the page.
+// The envelope is the listener's role forward of that publish (card-delivery-omp.test.ts's
+// `forwardedRoleEnvelope`): source `envoy`, no sending session, no reply wanted.
+test.skipIf(skip)(
+  "the brief a role message brings is in the live view's replay, saying who sent it, before the reply it started",
+  async () => {
+    const session = await startSession();
+    await session.arm();
+    const brief = [
+      "alice started you with the session launcher; this is their request:",
+      "",
+      "Work on the Dispatch issue ACME-1: https://dispatch.example/issues/ACME-1.",
+    ].join("\n");
+    const label = `brief-${randomUUID()}`;
+    await session.relay(
+      JSON.stringify({
+        event_id: `evt-${label}`,
+        source: "envoy",
+        source_event_id: `source-${label}`,
+        topic: "notifications.role.alice-acme-1",
+        dedupe_key: `envoy.role.forward.publish.${randomUUID().replaceAll("-", "")}`,
+        issued_at: Date.now(),
+        payload: brief,
+        payload_summary: `${brief.slice(0, 60)}…`,
+        expects_reply: false,
+        trace_id: `trace-${label}`,
+      }),
+      "the brief"
+    );
+    const opening = brief.split(";")[0] ?? brief;
+    // The card starts a turn, which the stand-in holds until it is answered.
+    const turn = await session.nextTurn("the turn the brief started");
+    expect(conversation(turn.request)).toContain(opening);
+    turn.reply([text("ready")]);
+    await session.settled();
+
+    const replayed = await session.replay();
+    // What the red check greps the live view's stream for.
+    expect(JSON.stringify(replayed)).toContain(opening);
+    const messages = replayed.frames
+      .filter((frame) => frame.kind === "message")
+      .map((frame) => frame.message as Record<string, unknown>);
+    // The session may have shown a card of its own while it started, so the brief's is found by
+    // what it says, and then held to all of it.
+    const card = messages.findIndex((message) => frameText(message).includes(brief));
+    expect(String(messages[card]?.id)).toStartWith("c");
+    expect(messages[card]).toMatchObject({ role: "user", streaming: false });
+    expect(frameText(messages[card] ?? {})).toBe(`Envoy message from envoy:\n\n${brief}`);
+    const reply = messages.findIndex((message) => frameText(message) === "ready");
+    expect(reply).toBeGreaterThan(card);
   },
   120_000
 );

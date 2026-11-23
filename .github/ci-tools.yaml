@@ -102,14 +102,17 @@
 # read by the gate alone.
 # The gate holds an entry to rules of its own: its `url` is written by some file under .github/,
 # its `digest` occurs in the file its `pinned_in` names, that file is neither this manifest nor a
-# test's fixture, no row already covers its repository, and its `why` is a sentence.
+# test's fixture, an entry a Dockerfile pins names the ARG that holds its digest in `pinned_as`
+# and that ARG's value is its digest, no row already covers its repository, and its `why` is a
+# sentence.
 # WHETHER THAT REASON IS TRUE IS THE REVIEWER'S JUDGEMENT, not the gate's; the rules before it
 # are the whole of what a program can check.
-# THE LIST HOLDS ONE ENTRY TODAY, the release lane's gitleaks. It held elan, uv and the docker
-# provider plugin as well, and dispatch://INFRA-1986 gave each of those three a row with a second
-# source, which is what made each of those entries false and deleted it. The one that is left
-# waits on something else: not a copy of those bytes, but a way for a job holding the release
-# credentials to read one, which its own `why` sets out. The next entry is for the next install
+# THE LIST HOLDS TWO ENTRIES TODAY, the release lane's gitleaks and the Oh My Pi archive
+# .github/actions/install-omp fetches. It held elan, uv and the docker provider plugin as well,
+# and dispatch://INFRA-1986 gave each of those three a row with a second source, which is what
+# made each of those entries false and deleted it. gitleaks waits on something else: not a copy
+# of those bytes, but a way for a job holding the release credentials to read one, which its own
+# `why` sets out; Oh My Pi's `why` says why it has no copy. The next entry is for the next install
 # whose bytes one publisher serves and no other: it is written when that install lands, and it is
 # deleted the day a second address for those bytes is found and can be reached, as the three were.
 
@@ -248,14 +251,16 @@ tools:
   # packages/daemon/docker/worker.Dockerfile after the `@`, and the release tag carries a leading
   # `v` that tool spec does not.
   # `primary` is empty because mise fetches the primary bytes: .github/actions/install-jj runs
-  # `mise x github:sjawhar/jj@<version>`, and nothing of this repository reaches that asset.
+  # `mise x github:sjawhar/jj@<version>`, and no CI job of this repository reaches that asset
+  # itself. (The worker image's tools stage fetches the same archive and holds it to its own
+  # `ARG JJ_SHA256`, a digest of the archive and not of the binary this row pins.)
   # The digest is of the binary mise installs, so the second source and the primary path are held
   # to one literal; `mirror_from` is the asset mise reads, and `mirror_member` is the binary inside
   # it, which is what the copy holds.
   - name: jj
-    version: 0.45.1-sami.20260910-043938
-    digest: fe32ffcd64432000027c87030af074eb48e55181ca389e09d3ab4b44200aba7a
-    digest_of: the jj binary itself, the 24424232-byte `./jj` member of the release tarball
+    version: 0.46.0-sami.20261120-120102
+    digest: cb07d4a4c9f5c0d1b6cf8e58e0547d05c5c062f06b222cf47ce6696831c970f9
+    digest_of: the jj binary itself, the 24839104-byte `./jj` member of the release tarball
     primary_source: github-release
     primary: ""
     primary_digest: ""
@@ -263,7 +268,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
-    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # jj for an arm64 runner: the same fork release, the aarch64 musl build mise installs there. As
@@ -271,9 +276,9 @@ tools:
   # of the binary mise installs; the release's own asset digest answers for the tarball
   # `mirror_from` names, and this one was read out of it.
   - name: jj-aarch64
-    version: 0.45.1-sami.20260910-043938
-    digest: 0bbd6fd2a342def6b376afcb07594e41451f8b19178a15779f08a454690da339
-    digest_of: the jj binary itself, the 20982448-byte `./jj` member of the release tarball
+    version: 0.46.0-sami.20261120-120102
+    digest: 03f182b4d287a43f7bbabc4c88c9fc8a32b485a212287950d327fe377ad881d5
+    digest_of: the jj binary itself, the 21257568-byte `./jj` member of the release tarball
     primary_source: github-release
     primary: ""
     primary_digest: ""
@@ -281,7 +286,7 @@ tools:
     primary_member: ""
     second_source: ghcr-mirror
     max_time: 60
-    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-aarch64-unknown-linux-musl.tar.gz
+    mirror_from: https://github.com/sjawhar/jj/releases/download/v0.46.0-sami.20261120-120102/jj-v0.46.0-sami.20261120-120102-aarch64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 
   # Bun for an x64 runner, the version .bun-version pins. `primary` is empty on every bun row:
@@ -459,3 +464,22 @@ no_second_source:
       source in this manifest is read. release-push.sh fetches and checks these bytes itself,
       with curl, sha256sum and tar, which are not dependency commands. A second source here is
       therefore a ghcr copy and a way for a credentialed job to read it without the helper.
+
+  # Oh My Pi, the build .omp-pin names, which .github/actions/install-omp installs for the jobs
+  # whose tests run it. The URL is built from the pin (`github:<owner>/<repo>@<version>`, the tag
+  # being `v` and the version), and the digest is `ARG OMP_SHA256` of the worker image's
+  # Dockerfile, which its tools stage checks the same archive against. `pinned_as` names that ARG,
+  # so the gate holds this digest to its value exactly, and a bump of .omp-pin moves the ARG and
+  # this digest in one commit.
+  - url: https://github.com/${owner}/${repo}/releases/download/${tag}/omp-${tag}-linux-x64.tar.gz
+    digest: aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
+    pinned_in: packages/daemon/docker/worker.Dockerfile
+    pinned_as: ARG OMP_SHA256
+    why: >-
+      The fork publishes this archive as a release asset of its own repository and nowhere else,
+      and no copy is kept on purpose: a ghcr copy, as jj has, is one more set of bytes to fill and
+      hold in step with every bump of .omp-pin, and the failure it would have answered on
+      2026-11-21 was not this address at all but the GitHub API budget mise spent resolving the
+      pin, which this fetch, from the release's download address with no token, does not spend.
+      An outage of release assets fails this install by name; the job is then re-run, as any job
+      a GitHub outage failed is.

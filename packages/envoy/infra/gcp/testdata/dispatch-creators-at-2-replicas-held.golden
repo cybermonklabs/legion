@@ -1,0 +1,46 @@
+{
+  "example-dispatch": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "annotations": {
+        "pulumi.com/skipAwait": "true"
+      },
+      "name": "example-dispatch",
+      "namespace": "dispatch"
+    },
+    "spec": {
+      "replicas": 2,
+      "selector": {
+        "matchLabels": {
+          "app": "example-dispatch"
+        }
+      },
+      "strategy": {
+        "type": "Recreate"
+      }
+    }
+  },
+  "example-dispatch-listener": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "annotations": {
+        "pulumi.com/skipAwait": "true"
+      },
+      "name": "example-dispatch-listener",
+      "namespace": "dispatch"
+    },
+    "spec": {
+      "replicas": 2,
+      "selector": {
+        "matchLabels": {
+          "app": "example-dispatch-listener"
+        }
+      },
+      "strategy": {
+        "type": "Recreate"
+      }
+    }
+  }
+}

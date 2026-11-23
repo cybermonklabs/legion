@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  The worker image pins the shared public leak check at `leak-check-v31` (`ARG LEAK_CHECK_TAG`),
+  in place of `leak-check-v21`. Each push from a pod runs this check before it writes. On
+  `leak-check-v31` its pre-push mode excludes a match whose text is already public at that path,
+  so a push that edits a generated file of one line is not refused for a match the destination
+  already holds. From `leak-check-v22`, a gh call that writes reads the visibility of each
+  repository it names, for every owner. So a write to a private or internal repository of any
+  owner can hold text that the check passes only to such a repository.
+
+  Each gh call in a pod now also runs `gh alias list` once for each different `config.yml` of the
+  pod's gh directories, within 20 seconds, and twice for a call that sends its standard input. The
+  check refuses a call that is a gh alias (exit 3) and a call whose aliases it cannot read (exit 2),
+  and `legion gh` exits 2 for both. One `gh pr view` through `legion gh` took a median of 1.22 s
+  on `leak-check-v31` and 1.02 s on `leak-check-v21`, in ten runs of each in one gVisor pod.
+  `legion gh`'s list of reads is proven against `leak-check-v31` (`ghReadsProvenCheck`), so a call
+  that writes nothing still skips the visibility read in a pod on the new pin.
+
+  A deployment that names the check's manifest digest (`leak_check.manifest_sha256` in
+  `legion.yaml`, or `LEGION_LEAK_CHECK_MANIFEST_SHA256`) sets it to `leak-check-v31`'s digest,
+  `29c5757a698643a9b1911789a438133e7c42b174d8a4125d6218c3313e145217`, in the same change as the
+  image. Under the old digest, a pod on this image starts no role agent. The release restarts every
+  pod that moves to it.

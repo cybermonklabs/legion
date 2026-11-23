@@ -981,7 +981,7 @@ func TestHorizonCallersOfAnAbandonedObservationShareTheNext(t *testing.T) {
 	horizon := NewHorizon(db)
 	runner := make(chan error, 1)
 	go func() {
-		_, err := horizon.observe(runnerCtx, 0)
+		_, _, err := horizon.observe(runnerCtx, 0)
 		runner <- err
 	}()
 	receiveBeforeTheDeadline(t, "the runner's observation to reach the database", entered)
@@ -999,7 +999,7 @@ func TestHorizonCallersOfAnAbandonedObservationShareTheNext(t *testing.T) {
 	errs := make(chan error, 2)
 	for range 2 {
 		go func() {
-			_, err := horizon.observe(ctx, 0)
+			_, _, err := horizon.observe(ctx, 0)
 			errs <- err
 		}()
 	}
@@ -1076,6 +1076,181 @@ func TestHorizonACallerThatLooksLateAfterItsBoundaryTakesTheObservationThatEnded
 	}
 	if got := observations.Load(); got != 2 {
 		t.Fatalf("ran %d observations, want 2: the one in flight at both later calls, and the next, which the call held after its boundary takes", got)
+	}
+}
+
+// A Safe call answers from an observation recorded in the generation it returns H of, never from
+// one a Reset discarded: that one's record is gone, so its answer is the H of 0 that the Reset
+// left, with no gap open, and an event of the new log committed before the call is neither at or
+// below H nor kept above it by a gap, so its reader would arm no re-read for it. The old log was
+// observed through event 8, then the log was reset and its new event 1 committed before the calls.
+// The test holds one call after its boundary while another runs the next observation, which sees
+// the new event 1, and runs the Reset once that call has its answer, or while its observation is
+// in flight. The run with no Reset is the control: the held call takes the observation that ended
+// meanwhile and runs none of its own.
+func TestHorizonACallerAcrossAResetAnswersFromAnObservationOfTheNewGeneration(t *testing.T) {
+	const newEvent = 1
+	for _, c := range []struct {
+		name string
+		// reset is whether the Reset runs, and inFlight whether it runs while the other call's
+		// observation is in flight rather than once that call has its answer.
+		reset, inFlight bool
+		// other and held are the H the other call and the held call answer. observations is how
+		// many observations run in all, and the number of the newest the current generation
+		// recorded: the old log's, the other call's and, after a Reset, one of the new generation.
+		other, held  int64
+		observations int32
+	}{
+		{name: "no Reset", other: 8, held: 8, observations: 2},
+		{name: "Reset after the other call has its answer", reset: true, other: 8, held: newEvent, observations: 3},
+		{name: "Reset while the other call's observation is in flight", reset: true, inFlight: true, other: newEvent, held: newEvent, observations: 3},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			var observations atomic.Int32
+			entered, release := make(chan struct{}), make(chan struct{})
+			db := &scriptedHorizonDB{
+				script: []scriptedObservation{
+					{newest: 8, xmin: 101, xid: 101, selfProves: true}, // the old log
+					{newest: newEvent, xmin: 102, xid: 102, selfProves: true},
+					{newest: newEvent, xmin: 103, xid: 103, selfProves: true},
+				},
+				observed: func() {
+					if observations.Add(1) == 2 && c.inFlight {
+						close(entered)
+						<-release
+					}
+				},
+			}
+			horizon := NewHorizon(db)
+			if safe, err := horizon.Safe(ctx); err != nil || safe != 8 {
+				t.Fatalf("Safe on the old log = %d, %v; want 8", safe, err)
+			}
+			counted, late := make(chan struct{}), make(chan struct{})
+			var boundaries atomic.Int32
+			horizon.afterObservationBoundary = func() {
+				if boundaries.Add(1) == 1 {
+					close(counted)
+					<-late
+				}
+			}
+			type answer struct {
+				safe int64
+				gap  Gap
+				err  error
+			}
+			call := func(answers chan<- answer) {
+				safe, err := horizon.Safe(ctx)
+				answers <- answer{safe, horizon.Gap(), err}
+			}
+			// check reports a call's answer and goes on, so a run shows each call's.
+			check := func(who string, got answer, want int64) {
+				t.Helper()
+				switch {
+				case got.err != nil:
+					t.Errorf("Safe of %s: %v", who, got.err)
+				case got.safe < newEvent && got.gap == GapNone:
+					t.Errorf("Safe of %s = %d with no gap open, though event %d committed before the call: a reader would never re-read for it", who, got.safe, newEvent)
+				case got.safe != want:
+					t.Errorf("Safe of %s = %d, want %d", who, got.safe, want)
+				}
+			}
+			held, other := make(chan answer, 1), make(chan answer, 1)
+			go call(held)
+			receiveBeforeTheDeadline(t, "the held call to read the count at its boundary", counted)
+			go call(other)
+			if c.inFlight {
+				receiveBeforeTheDeadline(t, "the other call's observation to reach the database", entered)
+				horizon.Reset()
+				close(release)
+			}
+			check("the other call", receiveBeforeTheDeadline(t, "the other call to return", other), c.other)
+			if c.reset && !c.inFlight {
+				horizon.Reset()
+			}
+			close(late)
+			check("the call held after its boundary", receiveBeforeTheDeadline(t, "the call held after its boundary to return", held), c.held)
+			if got := observations.Load(); got != c.observations {
+				t.Errorf("ran %d observations, want %d", got, c.observations)
+			}
+			horizon.mu.Lock()
+			recorded := horizon.recorded
+			horizon.mu.Unlock()
+			if recorded != uint64(c.observations) {
+				t.Errorf("the newest observation this generation recorded is %d, want %d", recorded, c.observations)
+			}
+		})
+	}
+}
+
+// A caller after a Reset takes no ended observation whose record the Reset discarded: Reset
+// forgets the one that ended before it, and one in flight across it does not stand as the newest
+// ended observation once it ends, so the caller runs one of the new generation instead. Were
+// either kept, a caller would be handed an observation whose record is gone, which Safe would
+// discard before it looked again. The run with no Reset is the control: the caller takes the
+// observation that ended and runs none of its own.
+func TestHorizonACallerAfterAResetTakesNoObservationTheResetDiscarded(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		// reset is whether the Reset runs, and inFlight whether it runs while the first
+		// observation is in flight rather than once it has ended.
+		reset, inFlight bool
+		// number and generation are the observation the later caller answers, and observations
+		// how many ran in all.
+		number, generation uint64
+		observations       int32
+	}{
+		{name: "no Reset", number: 1, generation: 0, observations: 1},
+		{name: "Reset after the first observation ended", reset: true, number: 2, generation: 1, observations: 2},
+		{name: "Reset while the first observation is in flight", reset: true, inFlight: true, number: 2, generation: 1, observations: 2},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			ctx := t.Context()
+			var observations atomic.Int32
+			entered, release := make(chan struct{}), make(chan struct{})
+			db := &scriptedHorizonDB{
+				script: []scriptedObservation{
+					{newest: 8, xmin: 101, xid: 101, selfProves: true},
+					{newest: 1, xmin: 102, xid: 102, selfProves: true},
+				},
+				observed: func() {
+					if observations.Add(1) == 1 && c.inFlight {
+						close(entered)
+						<-release
+					}
+				},
+			}
+			horizon := NewHorizon(db)
+			type answer struct {
+				number, generation uint64
+				err                error
+			}
+			first := make(chan answer, 1)
+			go func() {
+				number, generation, err := horizon.observe(ctx, 0)
+				first <- answer{number, generation, err}
+			}()
+			if c.inFlight {
+				receiveBeforeTheDeadline(t, "the first observation to reach the database", entered)
+				horizon.Reset()
+				close(release)
+			}
+			// The first observation answers the generation it started in, which a Reset while it
+			// was in flight has since left: that is what tells Safe to discard it.
+			if got := receiveBeforeTheDeadline(t, "the first observation to end", first); got.err != nil || got.number != 1 || got.generation != 0 {
+				t.Fatalf("observe of the first observation = observation %d of generation %d, %v; want observation 1 of generation 0", got.number, got.generation, got.err)
+			}
+			if c.reset && !c.inFlight {
+				horizon.Reset()
+			}
+			number, generation, err := horizon.observe(ctx, 0)
+			if err != nil || number != c.number || generation != c.generation {
+				t.Errorf("observe after the first observation ended = observation %d of generation %d, %v; want observation %d of generation %d", number, generation, err, c.number, c.generation)
+			}
+			if got := observations.Load(); got != c.observations {
+				t.Errorf("ran %d observations, want %d", got, c.observations)
+			}
+		})
 	}
 }
 

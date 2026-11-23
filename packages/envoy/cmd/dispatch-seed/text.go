@@ -142,8 +142,8 @@ func (p *seedPlan) documentMarkdown(index, version int, random *rand.Rand, bytes
 
 // documentMentions is the references the latest version of document index writes, one per
 // paragraph. A document of a chain names the next document of its chain and a block of it, which
-// is the artifact-to-artifact and artifact-to-block chain refs.Closure walks; every other
-// document that carries a mention names one node of one kind.
+// is the artifact-to-artifact and artifact-to-block chain main's closure statement walked
+// (chainLength); every other document that carries a mention names one node of one kind.
 func (p *seedPlan) documentMentions(index int) []string {
 	document := p.documents[index]
 	if document.Chain >= 0 {

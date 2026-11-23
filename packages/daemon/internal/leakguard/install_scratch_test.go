@@ -7,14 +7,14 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The install's parent is under the scratch every role writes, so a role can swap it for a fifo
 // while the install runs. The install removes its staging directory, and the old install it moved
-// aside, without a plain open of that parent (rolefile.RemoveTree), so it returns at once and
+// aside, without a plain open of that parent (rolefile.RemoveTree), so it returns without waiting and
 // leaves the fifo as it was. os.RemoveAll opens the parent plainly when it cannot unlink the path
 // outright, and that open waits for a writer for as long as none comes. Each case
 // makes the swap from inside the install, which is only how the test times it: a role makes it
@@ -125,34 +125,15 @@ func TestInstallServedRemovesNothingALinkInTheOldInstallNames(t *testing.T) {
 	}
 }
 
-// returnsWithoutAWriter runs run, what it is, and fails t unless it returns within 10 s of the
-// moment path became a fifo, the moment the bound guards: before it an install unpacks and runs the
-// check, which a loaded host makes slow without anything blocking. A run that opened the fifo
-// plainly would wait there for a writer, so when the bound passes it opens the fifo for writing,
-// and the blocked open and the test's goroutine end.
+// returnsWithoutAWriter runs run, what it is, and answers what it returned, waited for with no
+// span of its own (testwait.Receive): a run that opened the fifo at path plainly would wait there
+// for a writer, and fails the test by name before the test binary's deadline, while a run that a
+// loaded host makes slow, unpacking and running the check, passes.
 func returnsWithoutAWriter(t *testing.T, path, what string, run func() error) error {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() { done <- run() }()
-	poll := time.NewTicker(10 * time.Millisecond)
-	defer poll.Stop()
-	var bound <-chan time.Time
-	for {
-		select {
-		case err := <-done:
-			return err
-		case <-poll.C:
-			if info, err := os.Lstat(path); bound == nil && err == nil && info.Mode()&os.ModeNamedPipe != 0 {
-				bound = time.After(10 * time.Second)
-			}
-		case <-bound:
-			if writer, err := os.OpenFile(path, os.O_WRONLY, 0); err == nil {
-				_ = writer.Close()
-			}
-			<-done
-			t.Fatalf("%s was still running 10s after %s became a fifo", what, path)
-		}
-	}
+	return testwait.Receive(t, what+" with "+path+" swapped for a fifo", done)
 }
 
 // stillFifo fails t unless path is the fifo it was made.

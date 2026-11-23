@@ -53,7 +53,7 @@ func TestAPlainGrantRacingATypeRetagNeverReleasesWhatTheTypeStores(t *testing.T)
 					return secrets.Minted{Value: "access-token"}, nil
 				},
 			}
-			request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "RACED_LOGIN"), "", nil)
+			request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "RACED_LOGIN"), "")
 			if err != nil {
 				t.Fatalf("Create = %v", err)
 			}
@@ -65,7 +65,7 @@ func TestAPlainGrantRacingATypeRetagNeverReleasesWhatTheTypeStores(t *testing.T)
 				}
 				grantID = *request.GrantID
 			case "reused":
-				reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RACED_LOGIN"), "", nil)
+				reused, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read again", "RACED_LOGIN"), "")
 				if err != nil || reused.GrantID == nil || request.GrantID == nil || *reused.GrantID != *request.GrantID {
 					t.Fatalf("second Create = %+v, %v; want the first request's grant reused", reused, err)
 				}
@@ -90,7 +90,7 @@ func TestAPlainGrantRacingATypeRetagNeverReleasesWhatTheTypeStores(t *testing.T)
 				store.Put(policytest.TypeSecret("RACED_LOGIN", fixtureOperator, tier, policy.TypeGoogleLogin, canary))
 				return nil
 			}}
-			release, err := machine.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{})
+			release, err := machine.Values(t.Context(), grantID, enrollmentID, ReleaseCall{})
 			if duringErr != nil {
 				t.Fatalf("the retag during the read: %v", duringErr)
 			}

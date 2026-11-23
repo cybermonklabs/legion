@@ -1,25 +1,42 @@
 // Every psql the e2e harness runs goes through here. Of e2e/ it imports only
-// e2e/harness-ports.ts, which reads the environment and opens nothing, so a module can import it
-// statically without evaluating e2e/api.ts, whose module scope reads PLAYWRIGHT_BASE_URL.
+// e2e/harness-ports.ts, which reads the environment and opens nothing, and e2e/pg-url.ts, which
+// imports nothing, so a module can import it statically without evaluating e2e/api.ts, whose
+// module scope reads PLAYWRIGHT_BASE_URL.
 import { type ChildProcessWithoutNullStreams, execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Readable } from "node:stream";
 import { promisify } from "node:util";
 
 import { stackValue } from "./harness-ports";
+import { splitDatabaseUrl } from "./pg-url";
 
 const execFileAsync = promisify(execFile);
 
-/** psql's environment. psql is libpq, which also reads PGHOSTADDR — an address that replaces the
- *  URL's host for the connection and that pgx does not read (it is not in pgconn's environment
- *  list). With it set in a shell, every psql here would empty a server the Dispatch server's
- *  own loopback check never saw, so it is dropped before psql runs. PGHOST and PGSERVICE stay,
- *  since pgx and libpq read both; a service entry's `hostaddr` is the one key they part on, and
- *  pgx sends it to Postgres as a setting, which refuses the connection, so the harness server
- *  never boots on such an entry. */
-const psqlEnvironment: NodeJS.ProcessEnv = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => name !== "PGHOSTADDR")
-);
+/** The arguments and environment of a psql against `url`: the URL without its password first,
+ *  then `rest`, and the password, when the URL holds one, in `PGPASSWORD` of that psql's
+ *  environment alone. A process's arguments are in the process list for any user of the machine
+ *  to read, and its environment is not. A URL with no password is passed whole, and psql keeps
+ *  the caller's own `PGPASSWORD`. A URL `splitDatabaseUrl` refuses throws, starting nothing.
+ *
+ *  The environment is the caller's, read at each start as `databaseUrl` is, less PGHOSTADDR.
+ *  psql is libpq, which also reads PGHOSTADDR — an address that replaces the URL's host for the
+ *  connection and that pgx does not read (it is not in pgconn's environment list). With it set in
+ *  a shell, every psql here would empty a server the Dispatch server's own loopback check never
+ *  saw, so it is dropped before psql runs. PGHOST and PGSERVICE stay, since pgx and libpq read
+ *  both; a service entry's `hostaddr` is the one key they part on, and pgx sends it to Postgres
+ *  as a setting, which refuses the connection, so the harness server never boots on such an
+ *  entry. */
+function psqlCommand(
+  url: string,
+  rest: readonly string[]
+): { args: string[]; env: NodeJS.ProcessEnv } {
+  const split = splitDatabaseUrl(url);
+  const env: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => name !== "PGHOSTADDR")
+  );
+  if (split.password !== undefined) env.PGPASSWORD = split.password;
+  return { args: [split.url, ...rest], env };
+}
 
 /** The database this run's SQL writes to: a deployed server's own `PLAYWRIGHT_DATABASE_URL`, else
  *  the `DATABASE_URL` of this process's stack, which is the one the caller supplied for a run of
@@ -129,9 +146,8 @@ function startSession(): Session {
   // No ON_ERROR_STOP: it makes psql exit on the first error, which would take the connection with
   // it. A failing statement is recognised by psql's own verdict on it (`send`) instead, and the
   // session stays open for the next caller.
-  const child = spawn("psql", [databaseUrl(), "-X", "-v", "VERBOSITY=verbose", "-tA"], {
-    env: psqlEnvironment,
-  });
+  const command = psqlCommand(databaseUrl(), ["-X", "-v", "VERBOSITY=verbose", "-tA"]);
+  const child = spawn("psql", command.args, { env: command.env });
   const started: Session = {
     child,
     out: markedStream(child.stdout),
@@ -252,20 +268,16 @@ export async function sqlAt(
   statements: readonly string[],
   signal?: AbortSignal
 ): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "psql",
-    [
-      url,
-      "-X",
-      "-v",
-      "ON_ERROR_STOP=1",
-      "-v",
-      "VERBOSITY=verbose",
-      "-tA",
-      ...statements.flatMap((statement) => ["-c", statement]),
-    ],
-    { env: psqlEnvironment, signal }
-  );
+  const command = psqlCommand(url, [
+    "-X",
+    "-v",
+    "ON_ERROR_STOP=1",
+    "-v",
+    "VERBOSITY=verbose",
+    "-tA",
+    ...statements.flatMap((statement) => ["-c", statement]),
+  ]);
+  const { stdout } = await execFileAsync("psql", command.args, { env: command.env, signal });
   return stdout.trim();
 }
 
