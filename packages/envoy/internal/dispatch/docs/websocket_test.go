@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectPeer connects login's browser to artifactID's room through the document server at
@@ -40,7 +42,7 @@ func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -51,9 +53,14 @@ func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	}
 	service.issueOpenChanged(context.Background(), "DOC-1")
 	waitForNoLiveDocument(t, service, artifactID)
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	// The close ends the connection: the read's one bound is the test binary's deadline less
+	// testwait's margin, so a connection the close left open fails by name.
+	connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatal("the document connection outlived the close of its issue")
+			}
 			break
 		}
 	}
@@ -93,7 +100,8 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			}
 			setIssueClosed(true)
 			reader := connectPeer(t, httpServer.URL, artifactID, "alice")
-			if err := reader.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+			// Each wait below has one bound, the test binary's deadline less testwait's margin.
+			if err := reader.WaitForText(peerMarkdown, "before\n", testwait.Remaining(t, roomWaitMargin)); err != nil {
 				t.Fatal(err)
 			}
 
@@ -112,7 +120,7 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			case <-reader.Answers:
 			case <-reader.Ended:
 				t.Fatal("the room closed the read-only reader's connection over its keystroke")
-			case <-time.After(10 * time.Second):
+			case <-time.After(testwait.Remaining(t, roomWaitMargin)):
 				t.Fatal("the room did not answer the reader after its keystroke")
 			}
 			if text := documentText(t, service, artifactID); text != "before\n" {
@@ -128,15 +136,11 @@ func TestIssueReopenClosesADocumentConnectionAdmittedWhileClosed(t *testing.T) {
 			setIssueClosed(false)
 			// The regression check: the reopen ends the connection admitted read-only, which the
 			// browser's provider answers by reconnecting.
-			select {
-			case <-reader.Ended:
-			case <-time.After(5 * time.Second):
-				t.Fatal("the connection admitted while the issue was closed was still open 5s after the reopen")
-			}
+			testwait.Receive(t, "the connection admitted while the issue was closed to end with the reopen", reader.Ended)
 			// The room a connection now loads takes edits. It loads from the store, so its copy
 			// also shows the read-only reader's keystroke never reached the store.
 			editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-			if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+			if err := editor.WaitForText(peerMarkdown, "before\n", testwait.Remaining(t, roomWaitMargin)); err != nil {
 				t.Fatal(err)
 			}
 			typeOver(t, editor, "before", "after")
@@ -237,7 +241,7 @@ func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -253,7 +257,8 @@ func TestHocuspocusAuthenticationCommunicatesSchemaReadOnly(t *testing.T) {
 		t.Fatalf("send schema authentication: %v", err)
 	}
 
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	// The read's one bound is the test binary's deadline less testwait's margin.
+	connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	for {
 		_, message, err := connection.ReadMessage()
 		if err != nil {
@@ -300,7 +305,7 @@ func TestLoadFailureMakesDocumentServiceUnavailable(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -329,7 +334,7 @@ func TestCorruptLoadRefusesTheSocketAndReadsAsUnloadable(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -644,12 +649,13 @@ func TestDocumentSocketRefusesARoomOutsideTheSchema(t *testing.T) {
 			t.Cleanup(httpServer.Close)
 			headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 			wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-			connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+			connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 			if err != nil {
 				t.Fatalf("connect outside-schema document: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
 			t.Cleanup(func() { _ = connection.Close() })
-			connection.SetReadDeadline(time.Now().Add(time.Second))
+			// The read's one bound is the test binary's deadline less testwait's margin.
+			connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentSchemaCloseCode {
@@ -675,12 +681,12 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	defer connection.Close()
-	waitFor(t, time.Second, "document peer connection", func() bool {
+	waitUntil(t, "document peer connection", func() bool {
 		state := service.room(artifactID)
 		state.mu.Lock()
 		defer state.mu.Unlock()
@@ -688,9 +694,14 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 	})
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(context.Background()) }()
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	// Shutdown ends the connection: the read's one bound is the test binary's deadline less
+	// testwait's margin, so a connection Shutdown left open fails by name.
+	connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatal("the document connection outlived the service's Shutdown")
+			}
 			break
 		}
 	}
@@ -718,7 +729,7 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	t.Cleanup(httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
@@ -747,10 +758,9 @@ func TestShutdownReturnsAtItsDeadlineWithAnEditorConnectedAndAnAppendLocked(t *t
 	// Not waitForPersistedUpdates: Shutdown's CloseRoom evicts this room once the append lands
 	// (room.connected), and the eviction compacts the rows it can (compactRoom), so a row count is
 	// not what says the append landed. The durable-append signal alone proves the locked write
-	// reached the store; the content check below proves what it reached the store as.
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Minute)
-	defer waitCancel()
-	if err := service.waitForDurableAppends(waitCtx, artifactID); err != nil {
+	// reached the store; the content check below proves what it reached the store as. The wait's
+	// one bound is the test binary's deadline less testwait's margin (testwait.Context).
+	if err := service.waitForDurableAppends(testwait.Context(t), artifactID); err != nil {
 		t.Fatalf("wait for the locked append to be stored: %v", err)
 	}
 	reloaded := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
@@ -776,16 +786,21 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if err != nil {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	t.Cleanup(func() { _ = connection.Close() })
 
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	connection.SetReadDeadline(time.Now().Add(time.Second))
+	// The failed append ends the connection: the read's one bound is the test binary's deadline
+	// less testwait's margin, so a connection the failure left open fails by name.
+	connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {
+			if errors.Is(err, os.ErrDeadlineExceeded) {
+				t.Fatal("the document connection outlived the room's failed append")
+			}
 			break
 		}
 	}
@@ -812,14 +827,14 @@ func TestFailedRoomEvictsAndReloadsOnNextAccess(t *testing.T) {
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
 
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if connection != nil {
 		_ = connection.Close()
 	}
 	if err == nil || response == nil || response.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("first failed-room access: response=%#v err=%v, want HTTP 503", response, err)
 	}
-	connection, response, err = gws.DefaultDialer.Dial(wsURL, headers)
+	connection, response, err = dialWithoutHandshakeBound(testwait.Context(t), wsURL, headers)
 	if err != nil {
 		t.Fatalf("reloaded room access: response=%#v err=%v", response, err)
 	}
@@ -831,7 +846,7 @@ func TestWebsocketRejectsUnauthenticatedConnection(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/room"
-	connection, response, err := gws.DefaultDialer.Dial(wsURL, nil)
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), wsURL, nil)
 	if connection != nil {
 		_ = connection.Close()
 	}

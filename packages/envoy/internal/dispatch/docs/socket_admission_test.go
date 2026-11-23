@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Opening a document socket is what every browser tab does on every load and every reconnect, and
@@ -38,11 +39,22 @@ func socketURL(serverURL, id string) string {
 		"?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 }
 
+// dialWithoutHandshakeBound dials url as gws.DefaultDialer does, less gorilla's own bound on the
+// handshake (DefaultDialer.HandshakeTimeout, 45 s): the dial ends on the server's answer to the
+// upgrade, an admission or a refusal, however slowly a loaded machine gives it, and its one bound
+// is ctx's deadline. The tests here pass testwait.Context, the test binary's deadline less
+// testwait's margin, so an upgrade the server never answers fails by name.
+func dialWithoutHandshakeBound(ctx context.Context, url string, header http.Header) (*gws.Conn, *http.Response, error) {
+	dialer := *gws.DefaultDialer
+	dialer.HandshakeTimeout = 0
+	return dialer.DialContext(ctx, url, header)
+}
+
 // admitSocket opens id's document socket as alice's browser does and returns it once the room has
 // sent the first frame of its sync, so the socket's admission, and a cold room's load, are done.
 func admitSocket(t *testing.T, serverURL, id, what string) *gws.Conn {
 	t.Helper()
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		status := "no response"
 		if response != nil {
@@ -51,7 +63,9 @@ func admitSocket(t *testing.T, serverURL, id, what string) *gws.Conn {
 		t.Fatalf("%s: the socket was refused (%s: %v), want it admitted", what, status, err)
 	}
 	t.Cleanup(func() { _ = connection.Close() })
-	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// The read's one bound is the test binary's deadline less testwait's margin, so a cold room
+	// whose load a loaded machine runs slowly is still admitted.
+	_ = connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	if _, message, err := connection.ReadMessage(); err != nil {
 		t.Fatalf("%s: the socket's first frame = %q (%v), want the room's sync", what, message, err)
 	}
@@ -69,11 +83,14 @@ type openedSocket struct {
 // dialSocketAsync dials id's document socket as alice's browser does, on a goroutine of its own,
 // and answers on the channel it returns. A test dials this way when the open it is about to make
 // holds inside the service - in an admission's rendering, in a room's load - where a dial on the
-// test's own goroutine would wait for the very hold that goroutine has to release.
-func dialSocketAsync(serverURL, id string) <-chan openedSocket {
+// test's own goroutine would wait for the very hold that goroutine has to release. The dial's
+// context is made here, on the test's goroutine (dialWithoutHandshakeBound).
+func dialSocketAsync(t *testing.T, serverURL, id string) <-chan openedSocket {
+	t.Helper()
+	ctx := testwait.Context(t)
 	opened := make(chan openedSocket, 1)
 	go func() {
-		connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
+		connection, response, err := dialWithoutHandshakeBound(ctx, socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 		if err != nil {
 			status := "no response"
 			if response != nil {
@@ -90,7 +107,7 @@ func dialSocketAsync(serverURL, id string) <-chan openedSocket {
 // ServiceUnavailable before any upgrade, as a cap refuses one.
 func refuseSocket(t *testing.T, serverURL, id, what string) {
 	t.Helper()
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), socketURL(serverURL, id), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if connection != nil {
 		leaveDocument(connection)
 	}
@@ -132,7 +149,7 @@ func (s *Service) addConnection(room string, id uint64, actor model.Actor) {
 // really is: its id as Dispatch writes it, canonical.
 func refuseSpelling(t *testing.T, serverURL, spelling, canonical, what string) {
 	t.Helper()
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, spelling), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), socketURL(serverURL, spelling), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if connection != nil {
 		leaveDocument(connection)
 	}
@@ -174,7 +191,8 @@ func TestASocketNamingADocumentByAnotherSpellingOfItsIdIsRefused(t *testing.T) {
 		t.Fatalf("the process holds the rooms %v, want the one room %s", rooms, artifactID)
 	}
 	typeOver(t, alice, "Shared.", "Alice typed this.")
-	if err := bob.WaitForText(peerMarkdown, "Alice typed this.\n", roomWait(t)); err != nil {
+	// The wait's one bound is the test binary's deadline less testwait's margin.
+	if err := bob.WaitForText(peerMarkdown, "Alice typed this.\n", testwait.Remaining(t, roomWaitMargin)); err != nil {
 		t.Fatalf("bob's browser, on the canonical id %s, never saw what alice typed in the same room: %v", artifactID, err)
 	}
 
@@ -222,12 +240,13 @@ func TestAWarmSocketOpenRendersNothingAndAColdOpenRendersOnce(t *testing.T) {
 	}
 
 	writeSchemaInvalidElement(t, service, artifactID)
-	connection, response, err := gws.DefaultDialer.Dial(socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := dialWithoutHandshakeBound(testwait.Context(t), socketURL(server.URL, artifactID), http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("open the room an update took outside the schema: response=%v err=%v, want an upgrade the server closes", response, err)
 	}
 	t.Cleanup(func() { _ = connection.Close() })
-	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// The read's one bound is the test binary's deadline less testwait's margin.
+	_ = connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	_, message, err := connection.ReadMessage()
 	var closed *gws.CloseError
 	if !errors.As(err, &closed) || closed.Code != documentSchemaCloseCode {
@@ -267,12 +286,9 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 		<-release
 	}
 
-	cold := dialSocketAsync(server.URL, artifactID)
-	select {
-	case <-rendered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the first cold socket never rendered the document it read, so nothing here is tested")
-	}
+	cold := dialSocketAsync(t, server.URL, artifactID)
+	// Its one bound is the test binary's deadline less testwait's margin.
+	testwait.Receive(t, "the first cold socket to render the document it read", rendered)
 
 	admitSocket(t, server.URL, artifactID, "the socket whose load makes the room resident")
 	releaseOvertaken()
@@ -281,7 +297,8 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 		t.Fatalf("the overtaken socket was refused (%v), want it admitted to the resident room", overtakenSocket.err)
 	}
 	t.Cleanup(func() { _ = overtakenSocket.connection.Close() })
-	_ = overtakenSocket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
+	// Each read's one bound is the test binary's deadline less testwait's margin.
+	_ = overtakenSocket.connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	if _, message, err := overtakenSocket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the overtaken socket's first frame = %q (%v), want the room's sync", message, err)
 	}
@@ -295,7 +312,7 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 	if _, err := joinedReplaceText(service, artifactID, "Overtaken.\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("write the document the overtaken socket joined: %v", err)
 	}
-	_ = overtakenSocket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
+	_ = overtakenSocket.connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	if _, message, err := overtakenSocket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the overtaken socket's frame after a write = %q (%v), want the write's update", message, err)
 	}
@@ -328,12 +345,9 @@ func TestAnIssueClosedWhileASocketLoadsAdmitsItReadOnly(t *testing.T) {
 	// The room's answer to the peer's sync step 1 says its load is done, as the first frame does
 	// for any socket here: the load is what reads the issue the close left (admittedIssueRead),
 	// and the scope the room grants is what it recorded (authorizeSchemaVersion).
-	select {
-	case <-peer.Answers:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the socket never received the document from the room it loaded")
-	}
-	scope, err := peer.Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), roomWait(t))
+	// Each wait's one bound is the test binary's deadline less testwait's margin.
+	testwait.Receive(t, "the socket to receive the document from the room it loaded", peer.Answers)
+	scope, err := peer.Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), testwait.Remaining(t, roomWaitMargin))
 	if err != nil || scope != "readonly" {
 		t.Fatalf("the socket whose issue closed while it loaded is authenticated %q (%v), want readonly", scope, err)
 	}
@@ -396,7 +410,7 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 	// The room cap: the 1,001st room is refused, while a live room still admits a socket.
 	refuseSocket(t, server.URL, spare[0], "the 1,001st room")
 	leaveDocument(admitSocket(t, server.URL, resident[0], "a live room while the room cap is reached"))
-	waitFor(t, roomWait(t), "the socket that left to be forgotten", func() bool {
+	waitUntil(t, "the socket that left to be forgotten", func() bool {
 		return registeredConnections(service) == 0
 	})
 
@@ -453,12 +467,14 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		refusals = map[int]int{}
 		start := make(chan struct{})
 		var dials sync.WaitGroup
+		// The dials' one context, made here on the test's goroutine (dialWithoutHandshakeBound).
+		ctx := testwait.Context(t)
 		for i := range burst {
 			dials.Add(1)
 			go func() {
 				defer dials.Done()
 				<-start
-				connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, ids[i%len(ids)]), http.Header{"X-Dispatch-User": []string{"alice"}})
+				connection, response, err := dialWithoutHandshakeBound(ctx, socketURL(serverURL, ids[i%len(ids)]), http.Header{"X-Dispatch-User": []string{"alice"}})
 				mu.Lock()
 				defer mu.Unlock()
 				if err == nil {
@@ -568,11 +584,8 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	}
 	closed := make(chan error, 1)
 	go func() { closed <- service.srv.CloseRoom(artifactID, true) }()
-	select {
-	case <-unloading:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the first room never reached its unload, so nothing here is tested")
-	}
+	// Its one bound is the test binary's deadline less testwait's margin.
+	testwait.Receive(t, "the first room to reach its unload", unloading)
 
 	// A cold socket reads and renders the document while the room is out of ygo's map, and holds
 	// there, before its offer.
@@ -589,12 +602,9 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 		close(rendered)
 		<-release
 	}
-	cold := dialSocketAsync(server.URL, artifactID)
-	select {
-	case <-rendered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the held cold socket never rendered the document, so nothing here is tested")
-	}
+	cold := dialSocketAsync(t, server.URL, artifactID)
+	// Its one bound is the test binary's deadline less testwait's margin.
+	testwait.Receive(t, "the held cold socket to render the document", rendered)
 
 	// Another socket loads the room afresh, then the first room's unload is let go.
 	admitSocket(t, server.URL, artifactID, "the socket that loads the second room")
@@ -612,7 +622,8 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 		t.Fatalf("the held cold socket was refused (%v), want it admitted to the resident room", socket.err)
 	}
 	t.Cleanup(func() { _ = socket.connection.Close() })
-	_ = socket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
+	// The read's one bound is the test binary's deadline less testwait's margin.
+	_ = socket.connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	if _, message, err := socket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the held socket's first frame = %q (%v), want the room's sync", message, err)
 	}
@@ -666,18 +677,11 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	}
 	loaded := make(chan error, 1)
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
-	select {
-	case <-reading:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's load never read the store, so nothing here is tested")
-	}
+	// Each wait's one bound is the test binary's deadline less testwait's margin.
+	testwait.Receive(t, "the room's load to read the store", reading)
 
-	cold := dialSocketAsync(server.URL, artifactID)
-	select {
-	case <-offered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the cold socket never offered its read while the room loaded, so nothing here is tested")
-	}
+	cold := dialSocketAsync(t, server.URL, artifactID)
+	testwait.Receive(t, "the cold socket to offer its read while the room loads", offered)
 	if _, stored := service.preloads.Load(artifactID); !stored {
 		t.Fatal("the cold socket's offer was not stored while the room loaded, so nothing here is tested")
 	}
@@ -691,7 +695,8 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 		t.Fatalf("the cold socket was refused (%v), want it admitted to the resident room", socket.err)
 	}
 	t.Cleanup(func() { _ = socket.connection.Close() })
-	_ = socket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
+	// The read's one bound is the test binary's deadline less testwait's margin.
+	_ = socket.connection.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin)))
 	if _, message, err := socket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the cold socket's first frame = %q (%v), want the room's sync", message, err)
 	}

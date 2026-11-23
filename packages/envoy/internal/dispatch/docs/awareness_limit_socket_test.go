@@ -14,11 +14,9 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/encoding"
-)
 
-// socketCloseWait is how long the tests here give the service to close a socket it refuses. The
-// filter decides on the frame itself, so the close follows the frame by a round trip.
-const socketCloseWait = 5 * time.Second
+	"github.com/sjawhar/envoy/internal/testwait"
+)
 
 // A document socket whose first message names neither a document nor a message type within the
 // bytes the filter reads for them (maxDocumentMessageHeader) is sending nothing this service
@@ -50,7 +48,7 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 			seedServiceText(t, service, artifactID, "First.\n")
 			server := newTestServer(t, service)
 			url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID
-			socket, response, err := gws.DefaultDialer.Dial(url, http.Header{"X-Dispatch-User": []string{"mallory"}})
+			socket, response, err := dialWithoutHandshakeBound(testwait.Context(t), url, http.Header{"X-Dispatch-User": []string{"mallory"}})
 			if err != nil {
 				t.Fatalf("connect a socket to document %s: response=%#v err=%v", artifactID, response, err)
 			}
@@ -59,7 +57,11 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 			if err := socket.WriteMessage(gws.BinaryMessage, message.first); err != nil {
 				t.Fatalf("send a first message that names no document: %v", err)
 			}
-			if err := socket.SetReadDeadline(time.Now().Add(socketCloseWait)); err != nil {
+			// The filter decides on the frame itself, so the close follows the frame by a round
+			// trip; the read's one bound is the test binary's deadline less testwait's margin, so
+			// it ends on the close however slowly a loaded machine runs, and a socket the filter
+			// left open, which nothing else here closes, fails by name.
+			if err := socket.SetReadDeadline(time.Now().Add(testwait.Remaining(t, roomWaitMargin))); err != nil {
 				t.Fatalf("set the socket's read deadline: %v", err)
 			}
 			for {
@@ -68,8 +70,8 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 					continue // the document the room sends every socket, or its awareness
 				}
 				if errors.Is(err, os.ErrDeadlineExceeded) {
-					t.Fatalf("the socket is still open %v after a %d-byte first message that names neither a document nor a type: want it closed",
-						socketCloseWait, len(message.first))
+					t.Fatalf("the socket is still open at the test binary's deadline less testwait's margin after a %d-byte first message that names neither a document nor a type: want it closed",
+						len(message.first))
 				}
 				return
 			}

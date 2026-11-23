@@ -40,7 +40,7 @@ func TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit(t *testing.
 	}
 
 	bound := 2 * maxAwarenessClientsPerRoom
-	waitFor(t, roomWait(t), "task A's relay to have sent what it relays of the frames", func() bool {
+	waitUntil(t, "task A's relay to have sent what it relays of the frames", func() bool {
 		return relayedClients(pair.taskA, pair.artifactID) == 0
 	})
 	onA, err := pair.taskA.heldAwarenessClients(pair.artifactID)
@@ -52,7 +52,10 @@ func TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit(t *testing.
 			frames, perFrame, onA, bound)
 	}
 	// What task B takes in arrives through room sync: read its room until it passes the bound or
-	// the relay has had three seconds, sixty coalescing windows, to land.
+	// the relay has had three seconds, sixty coalescing windows, to land. The span is a window in
+	// which the bound must not be passed, so a loaded machine cannot fail a correct run with it: a
+	// slow machine only lands fewer of the relayed removals inside it, which shortens what the
+	// window observes.
 	var onB int
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		onB, err = pair.taskB.heldAwarenessClients(pair.artifactID)

@@ -16,6 +16,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Awareness - readers' cursors and presence - crosses processes through the awareness relay
@@ -75,7 +76,13 @@ func holdsAwareness(client uint64, want any) func(map[uint64]json.RawMessage) bo
 	}
 }
 
-// lacksAwareness is a WaitForAwareness condition: client has no state.
+// lacksAwareness is a WaitForAwareness condition: client has no state. A reader here, a
+// docstest.Peer, keeps no expiry of its own as a browser's provider does, so it loses a cursor
+// only to a removal its room sends it - a peer's own, a peer's disconnect, or one another process
+// relays - and ygo sends a room's sockets no expiry of the room's own (sjawhar/ygo
+// provider/websocket sends awareness from peer.go and cluster.go alone): a reader on a process
+// whose relay drops a removal holds the cursor long past the room's 30 s expiry (awarenessExpiry),
+// so a wait for this condition ends on the removal and on nothing else.
 func lacksAwareness(client uint64) func(map[uint64]json.RawMessage) bool {
 	return func(states map[uint64]json.RawMessage) bool {
 		_, present := states[client]
@@ -101,14 +108,29 @@ func setAwareness(t *testing.T, reader *docstest.Peer, client uint64, state any)
 	}
 }
 
-// requireAwareness waits for reader to see states that hold, failing with what as the cause.
+// requireAwareness waits for reader to see states that hold, failing with what as the cause. The
+// wait's one bound is the test binary's deadline less testwait's margin (testwait.Remaining), so it
+// ends on the states however slowly a loaded machine relays them.
 func requireAwareness(t *testing.T, reader *docstest.Peer, holds func(map[uint64]json.RawMessage) bool, what string) {
 	t.Helper()
 	started := time.Now()
-	if err := reader.WaitForAwareness(roomWait(t), holds); err != nil {
+	if err := reader.WaitForAwareness(testwait.Remaining(t, roomWaitMargin), holds); err != nil {
 		t.Fatalf("%s: %v", what, err)
 	}
 	t.Logf("%s: %v", what, time.Since(started).Round(time.Millisecond))
+}
+
+// keepRelayedClients makes service's rooms keep an awareness client they hear nothing from until
+// past the test binary's deadline (Server.AwarenessExpiry), rather than for awarenessExpiry, so a
+// removal the relay brings late still finds the client in the room and reaches its readers. With
+// awarenessExpiry the room drops the client itself 30 s on and sends that to no socket
+// (lacksAwareness), and a removal of it the relay brings after that reaches no reader either: a
+// relay slower than the expiry, as on a loaded machine, would leave the reader holding the cursor
+// for good and fail a correct run. A test whose reader on service must lose a cursor through the
+// relay calls it before that reader's room loads, since ygo reads the expiry as it makes a room.
+func keepRelayedClients(t *testing.T, service *Service) {
+	t.Helper()
+	service.srv.AwarenessExpiry = testwait.Remaining(t, 0)
 }
 
 // A reader's cursor set on one process reaches a reader of the same document on the other, each
@@ -128,12 +150,12 @@ func TestAwarenessSetOnOneProcessReachesAReaderOnTheOther(t *testing.T) {
 	requireAwareness(t, bob, holdsAwareness(aliceClient, cursorOf("alice", 3)), "alice's cursor moving on task A reaching bob on task B")
 }
 
-// Every reader who moves at the same moment on one process reaches the readers on the other
-// within a second, not only the last of them: ygo's outbound lane keeps one awareness blob per
-// room, latest only (internal/relaylane/lane.go), and each blob holds only the clients the
-// change it came from touched, so a relay that sent what that lane handed it would drop the
-// cursors it superseded until each client's next heartbeat - 15 s in a browser, and never for
-// the readers here, which send none.
+// Every reader who moves at the same moment on one process reaches the readers on the other, not
+// only the last of them: ygo's outbound lane keeps one awareness blob per room, latest only
+// (internal/relaylane/lane.go), and each blob holds only the clients the change it came from
+// touched, so a relay that sent what that lane handed it would drop the cursors it superseded
+// until each client's next heartbeat - 15 s in a browser, and never for the readers here, which
+// send none. So the wait for them ends on their arrival alone.
 func TestEveryReaderMovingAtOnceOnOneProcessReachesAReaderOnTheOther(t *testing.T) {
 	pair := newProcessPair(t)
 	runAwareness(t, pair.taskA)
@@ -169,8 +191,9 @@ func TestEveryReaderMovingAtOnceOnOneProcessReachesAReaderOnTheOther(t *testing.
 		}
 		return true
 	}
-	if err := bob.WaitForAwareness(time.Second, held); err != nil {
-		t.Fatalf("the cursors %d readers on task A set at once did not all reach bob on task B within a second: %v", movers, err)
+	// The wait's one bound is the test binary's deadline less testwait's margin.
+	if err := bob.WaitForAwareness(testwait.Remaining(t, roomWaitMargin), held); err != nil {
+		t.Fatalf("the cursors %d readers on task A set at once did not all reach bob on task B: %v", movers, err)
 	}
 }
 
@@ -187,7 +210,7 @@ func TestAReaderOpeningSecondOnTheOtherProcessSeesTheFirstReadersAwareness(t *te
 	runAwareness(t, pair.taskB)
 	alice := pair.openReader(t, pair.serverA, "alice")
 	setAwareness(t, alice, aliceClient, cursorOf("alice", 1))
-	waitFor(t, roomWait(t), "task A's room to hold alice's cursor", func() bool {
+	waitUntil(t, "task A's room to hold alice's cursor", func() bool {
 		return roomHoldsClient(pair.taskA, pair.artifactID, aliceClient)
 	})
 
@@ -221,6 +244,7 @@ func TestAReaderJoiningAResidentRoomOnTheOtherProcessSeesTheFirstReadersAwarenes
 // states is relayed like any other change.
 func TestADisconnectOnOneProcessRemovesTheClientsAwarenessOnTheOther(t *testing.T) {
 	pair := newProcessPair(t)
+	keepRelayedClients(t, pair.taskB)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
 	alice := pair.openReader(t, pair.serverA, "alice")
@@ -237,6 +261,7 @@ func TestADisconnectOnOneProcessRemovesTheClientsAwarenessOnTheOther(t *testing.
 // though the close disconnects them and tears the room's relay down together.
 func TestARoomThisProcessClosesRemovesItsReadersAwarenessOnTheOther(t *testing.T) {
 	pair := newProcessPair(t)
+	keepRelayedClients(t, pair.taskB)
 	runAwareness(t, pair.taskA)
 	runAwareness(t, pair.taskB)
 	alice := pair.openReader(t, pair.serverA, "alice")
@@ -247,27 +272,20 @@ func TestARoomThisProcessClosesRemovesItsReadersAwarenessOnTheOther(t *testing.T
 	if err := pair.taskA.srv.CloseRoom(pair.artifactID, true); err != nil {
 		t.Fatalf("close task A's room: %v", err)
 	}
-	select {
-	case <-alice.Ended:
-	case <-time.After(roomWait(t)):
-		t.Fatal("alice's socket outlived the close of her room")
-	}
+	// Its one bound is the test binary's deadline less testwait's margin.
+	testwait.Receive(t, "alice's socket to end with the close of her room", alice.Ended)
 	requireAwareness(t, bob, lacksAwareness(aliceClient), "task A closing alice's room removing her from bob's reader on task B")
 }
 
 // waitForAwarenessState waits for handled to note an awareness state update (not a query) for
-// artifactID, which the relay has handled by then.
+// artifactID, which the relay has handled by then. Each receive's one bound is the test binary's
+// deadline less testwait's margin (testwait.Receive).
 func waitForAwarenessState(t *testing.T, handled <-chan awarenessMessage, artifactID, what string) {
 	t.Helper()
-	deadline := time.After(roomWait(t))
 	for {
-		select {
-		case message := <-handled:
-			if message.Room == artifactID && !message.Query {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("%s: no awareness state for %s handled within %v", what, artifactID, roomWait(t))
+		message := testwait.Receive(t, fmt.Sprintf("%s: an awareness state for %s handled", what, artifactID), handled)
+		if message.Room == artifactID && !message.Query {
+			return
 		}
 	}
 }
@@ -325,7 +343,7 @@ func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 
 	oversized := map[string]any{"user": map[string]any{"name": strings.Repeat("a", roomSyncPayloadLimit)}}
 	setAwareness(t, alice, aliceClient, oversized)
-	waitFor(t, roomWait(t), "task A's relay to count the oversized state", func() bool {
+	waitUntil(t, "task A's relay to count the oversized state", func() bool {
 		return pair.taskA.awarenessRelay.oversized.Load() >= 1
 	})
 	const otherClient = aliceClient + 1
@@ -340,7 +358,7 @@ func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 	// The drop is counted after this window has run, so a flush already in flight leaves the two
 	// counts apart until it reaches the size check: this waits for that flush rather than for a
 	// time, and a state sent instead of dropped never closes the gap.
-	waitFor(t, roomWait(t), "task A's relay to count a drop for every batch that carried the oversized state", func() bool {
+	waitUntil(t, "task A's relay to count a drop for every batch that carried the oversized state", func() bool {
 		return pair.taskA.awarenessRelay.oversized.Load() == offered.Load()
 	})
 }
@@ -392,7 +410,7 @@ func TestAnAwarenessFrameOverTheClientBoundRelaysNoMoreThanTheBound(t *testing.T
 	if err := aw.ApplyUpdate(awarenessStates(1, flood, 1, floodState), "a peer of task A"); err != nil {
 		t.Fatalf("apply a frame of %d awareness clients: %v", flood, err)
 	}
-	waitFor(t, roomWait(t), "task A's relay to be sending the bound's clients of the frame", func() bool {
+	waitUntil(t, "task A's relay to be sending the bound's clients of the frame", func() bool {
 		return relayedClients(pair.taskA, pair.artifactID) == maxAwarenessClientsPerRoom
 	})
 	tracked, err := pair.taskA.heldAwarenessClients(pair.artifactID)
@@ -403,28 +421,24 @@ func TestAnAwarenessFrameOverTheClientBoundRelaysNoMoreThanTheBound(t *testing.T
 		t.Fatalf("task A's room tracks %d of the frame's %d clients, want the bound's %d", tracked, flood, maxAwarenessClientsPerRoom)
 	}
 
-	deadline := time.After(roomWait(t))
+	// Each receive's one bound is the test binary's deadline less testwait's margin, so the loop
+	// ends on the bound's clients however slowly a loaded machine relays them.
 	sends, relayed := 0, 0
 	for relayed < maxAwarenessClientsPerRoom {
-		select {
-		case message := <-handledB:
-			if message.Room != pair.artifactID || message.Query {
-				continue
-			}
-			sends++
-			update, err := base64.StdEncoding.DecodeString(message.Data)
-			if err != nil {
-				t.Fatalf("decode a relayed awareness update: %v", err)
-			}
-			entries, err := decodeAwarenessEntries(update)
-			if err != nil {
-				t.Fatalf("read a relayed awareness update: %v", err)
-			}
-			relayed += len(entries)
-		case <-deadline:
-			t.Fatalf("task B heard %d awareness clients in %d notifications within %v, want the bound's %d",
-				relayed, sends, roomWait(t), maxAwarenessClientsPerRoom)
+		message := testwait.Receive(t, fmt.Sprintf("task B to hear the bound's %d awareness clients (it heard %d in %d notifications)", maxAwarenessClientsPerRoom, relayed, sends), handledB)
+		if message.Room != pair.artifactID || message.Query {
+			continue
 		}
+		sends++
+		update, err := base64.StdEncoding.DecodeString(message.Data)
+		if err != nil {
+			t.Fatalf("decode a relayed awareness update: %v", err)
+		}
+		entries, err := decodeAwarenessEntries(update)
+		if err != nil {
+			t.Fatalf("read a relayed awareness update: %v", err)
+		}
+		relayed += len(entries)
 	}
 	if relayed > maxAwarenessClientsPerRoom || sends > maxAwarenessClientsPerRoom {
 		t.Fatalf("a frame of %d clients relayed %d of them in %d notifications, past the %d-client bound",
@@ -452,13 +466,13 @@ func TestAwarenessClientsThatLeaveFreeTheRoomsBoundAtOnce(t *testing.T) {
 	if err := aw.ApplyUpdate(awarenessStates(1, flood, 1, floodState), "a peer of task A"); err != nil {
 		t.Fatalf("apply a frame of %d awareness clients: %v", flood, err)
 	}
-	waitFor(t, roomWait(t), "task A's relay to be sending the bound's clients of the frame", func() bool {
+	waitUntil(t, "task A's relay to be sending the bound's clients of the frame", func() bool {
 		return relayedClients(pair.taskA, pair.artifactID) == maxAwarenessClientsPerRoom
 	})
 	if err := aw.ApplyUpdate(awarenessStates(1, flood, 1, "null"), "a peer of task A"); err != nil {
 		t.Fatalf("take the frame's %d awareness clients away: %v", flood, err)
 	}
-	waitFor(t, roomWait(t), "task A's relay to be sending none of the frame's clients once they have left", func() bool {
+	waitUntil(t, "task A's relay to be sending none of the frame's clients once they have left", func() bool {
 		return relayedClients(pair.taskA, pair.artifactID) == 0
 	})
 
