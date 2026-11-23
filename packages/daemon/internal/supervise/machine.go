@@ -2965,10 +2965,11 @@ type podGrant struct {
 // launchTries is the tries of one launch, from its first (launchNow), or from the start in the
 // runtime of a try the pod's gate parked and then granted (granted): that try was written and
 // waited its backoff before it parked, so it goes on where it stopped, at the generation and with
-// the boot token it was written with. A try whose start fails and that is tried again asks the
-// gate again, and may park again. A try the gate parks ends the launch's decision with no error,
-// whatever the stop of the process the launch let go answered there (askPod, writeTry): the
-// launch waits for its grant, and has not failed.
+// the boot token it was written with. Every other try is written (writeTry) and then asks its
+// issue pod's gate (askPod), which lets it start or parks it. A try whose start fails and that is
+// tried again asks the gate again, and may park again. A try the gate parks ends the launch's
+// decision with no error, whatever the stop of the process the launch let go answered there
+// (askPod): the launch waits for its grant, and has not failed.
 //
 // Every try runs on a context of the machine's own (startable), which a suspension cancels; the
 // decision a grant starts makes its own, so a suspension cuts short the start a grant began as it
@@ -2982,10 +2983,13 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 		if granted != nil {
 			token, hold, granted = granted.token, granted.hold, nil
 		} else {
-			var done bool
 			var err error
-			if token, hold, done, err = m.writeTry(starting, l); done {
+			if token, err = m.writeTry(starting, l); err != nil {
 				return err
+			}
+			var parked bool
+			if hold, parked = m.askPod(starting, l, token); parked {
+				return nil
 			}
 		}
 		loc, way, err := m.start(starting, token)
@@ -3057,13 +3061,11 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 }
 
 // writeTry is a fresh try of the launch (launchTries): the claim at the next generation with a
-// new boot token, written launching with no failure, then the backoff of a charged try and the
-// ask of its issue pod's gate (askPod). It answers the boot token and the hold the gate granted,
-// or done where the launch ends at this try, with what launchTries returns: a write the store did
-// not take, which is tried again at the probe interval unless the try's own context ended
-// (relaunchAtProbe), a backoff cut short, or a try parked at the gate, which returns no error,
-// whatever the stop of the process the launch let go answered (askPod).
-func (m *Machine) writeTry(starting context.Context, l launchTry) (token string, hold *podHold, done bool, err error) {
+// new boot token, written launching with no failure, then the backoff of a charged try. It
+// answers the boot token, or the error the launch ends with at this try, which launchTries
+// returns: a write the store did not take, which is tried again at the probe interval unless the
+// try's own context ended (relaunchAtProbe), or a backoff cut short.
+func (m *Machine) writeTry(starting context.Context, l launchTry) (token string, err error) {
 	m.claim.Generation++
 	token = rand.Text()
 	m.claim.BootTokenHash = HashBootToken(token)
@@ -3079,15 +3081,14 @@ func (m *Machine) writeTry(starting context.Context, l launchTry) (token string,
 				"generation", m.claim.Generation, "error", err)
 			m.relaunchAtProbe(l)
 		}
-		return "", nil, true, err
+		return "", err
 	}
 	if l.charged {
 		if err = m.backOff(starting); err != nil {
-			return "", nil, true, err
+			return "", err
 		}
 	}
-	hold, done = m.askPod(starting, l, token)
-	return token, hold, done, nil
+	return token, nil
 }
 
 // relaunchAtProbe leaves the launch launchTries was making to be tried again at the probe

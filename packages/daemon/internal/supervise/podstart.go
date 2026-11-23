@@ -573,13 +573,14 @@ func (m *Machine) adoptPodLoad() {
 	}
 }
 
-// askPod asks the pod's gate for the start of one try of a launch, right before that try asks the
-// runtime for its process (launchTries). It answers the hold the gate granted where it asked, or
-// nil for a claim the gate does not hold, with false; or true where the try waits — another role
-// of the pod starts or loads, or one ahead of this start in the order waits — and is parked on the
-// machine until its grant. A load this machine still records is its earlier process's, which this
-// launch has let go, so it ends first, as that process's end (podProcessEnded). The phase is read
-// only for a start no request raised, since the order reads it of no other (podQueue.next).
+// askPod asks the pod's gate for the start of one try of a launch: launchTries asks it once the
+// try is written (writeTry), right before it asks the runtime for the try's process. It answers
+// the hold the gate granted where it asked, or nil for a claim the gate does not hold, with false;
+// or true where the try waits — another role of the pod starts or loads, or one ahead of this
+// start in the order waits — and is parked on the machine until its grant, and launchTries
+// returns. A load this machine still records is its earlier process's, which this launch has let
+// go, so it ends first, as that process's end (podProcessEnded). The phase is read only for a
+// start no request raised, since the order reads it of no other (podQueue.next).
 //
 // A try that waits stops the process its launch let go before it parks (stopPrevious), as a try
 // whose start failed stops it: that process is let go and still running (letGo, previous), and
@@ -588,25 +589,26 @@ func (m *Machine) adoptPodLoad() {
 // it, and while the park lasts it would hold what the other role's load needs. A stop the runtime
 // refuses, or that the try's own context cuts short, leaves the try parked all the same, as every
 // caller of stopPrevious goes on: the refusal is recorded (stopUnconfirmed) and logged at Warn,
-// and the park answers no error. The launch has not failed — it waits at the gate to start as
-// asked — and an error would fail the request that raised it: an operator's resume or spawn
-// answered as a failure (internal/api's operatorFailure), and the decision logged at Error as an
-// event that failed (internal/daemon's supervisor). stopUnconfirmed is what carries the refusal to
-// whoever must hear that the process may be running still: the owner of a stalled worker.
+// and launchTries returns no error at the park. The launch has not failed — it waits at the gate
+// to start as asked — and an error would fail the request that raised it: an operator's resume or
+// spawn answered as a failure (internal/api's operatorFailure), and the decision logged at Error
+// as an event that failed (internal/daemon's supervisor). stopUnconfirmed is what carries the
+// refusal to whoever must hear that the process may be running still: the owner of a stalled
+// worker.
 //
 // A parked try is a wake whose turn is the grant rather than a moment of the pacing's (wake.park):
 // it waits on the machine as a wake the pacing parks over no process does (parkWake), holding the
-// rest of the launch from that grant on (launchTries with the grant), and the decision ends here,
-// so nothing waits under the machine's lock. The claim is written launching at this try's
-// generation with no process already: the try wrote it before its backoff, and the launch let
-// its process go before its first try (launchNow). The grant reaches the machine as a timer's
-// firing does: the gate calls notify under its own lock, which posts the machine a Timer of
-// TimerPodStart from a goroutine of its own (fire), outside the gate's lock and holding no
-// machine's, and that event's decision runs the launch on (podStartDue). The timer's entry is
-// the arming that event is fenced by, and whatever drops the wake takes the start out of the
-// gate with it, for what dropped it (dropPodPark). The daemon's stop leaves the start where it
-// is, since the gate ends with the daemon, and a grant that reaches the machine after that stop
-// starts nothing (podStartDue).
+// rest of the launch from that grant on (launchTries with the grant), and the decision ends where
+// launchTries returns at the park, so nothing waits under the machine's lock. The claim is written
+// launching at this try's generation with no process already: the try wrote it before its backoff
+// (writeTry), and the launch let its process go before its first try (launchNow). The grant
+// reaches the machine as a timer's firing does: the gate calls notify under its own lock, which
+// posts the machine a Timer of TimerPodStart from a goroutine of its own (fire), outside the
+// gate's lock and holding no machine's, and that event's decision runs the launch on
+// (podStartDue). The timer's entry is the arming that event is fenced by, and whatever drops the
+// wake takes the start out of the gate with it, for what dropped it (dropPodPark). The daemon's
+// stop leaves the start where it is, since the gate ends with the daemon, and a grant that reaches
+// the machine after that stop starts nothing (podStartDue).
 //
 // A restart finds a claim whose launch was parked here stored launching with no process, as it
 // finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes
