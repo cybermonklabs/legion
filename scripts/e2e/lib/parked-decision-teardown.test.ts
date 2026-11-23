@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { procRootOf } from "./proc-root";
-import { scriptFunctions } from "./script-functions";
+import { scriptFunctions, shellQuote } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
 // start detached: a per-project daemon broker, a session leader of its own that writes broker.pid
@@ -165,7 +165,7 @@ wait
 `,
       { mode: 0o755 }
     );
-    const pane = `setsid -f env OMP_DAEMON_RUNTIME_DIR=${runtime} ${broker} ${runtime} ${home}; exec sleep 600`;
+    const pane = `setsid -f env OMP_DAEMON_RUNTIME_DIR=${shellQuote(runtime)} ${shellQuote(broker)} ${shellQuote(runtime)} ${shellQuote(home)}; exec sleep 600`;
 
     // A process of the run that no broker started, in a session of its own: the teardown must leave it
     // for cleanup-is-complete's wait to name.

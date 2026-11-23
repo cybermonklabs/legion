@@ -99,6 +99,8 @@ set -m
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "${project_root}/packages/envoy/scripts/lib/rig-banner.sh"
 readonly driver="${project_root}/packages/envoy/scripts/dev-stack.sh"
 temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/dev-stack-test.XXXXXX")"
 readonly temporary_dir
@@ -128,7 +130,14 @@ cleanup() {
       wait "$pid" 2>/dev/null || true
     fi
   done
-  pkill -f "${temporary_dir}/dev-stack\." 2>/dev/null || true
+  # pkill reads its pattern as an extended regex, so each regex character of the directory's own
+  # name is escaped: a '?', '[' or '.' in TMPDIR would otherwise match some other path, or none.
+  local pattern=${temporary_dir}/dev-stack. c
+  pattern=${pattern//\\/\\\\}
+  for c in . '[' ']' '*' '^' '$' '?' '+' '(' ')' '{' '}' '|'; do
+    pattern=${pattern//"$c"/\\$c}
+  done
+  pkill -f "$pattern" 2>/dev/null || true
   rm -rf "$temporary_dir"
 }
 trap cleanup EXIT
@@ -682,7 +691,7 @@ prepare_instance() {
 wait_for_ready() {
   local log_file="$1"
   for _ in $(seq 1 150); do
-    grep -q 'dev-stack: ready\.' "$log_file" 2>/dev/null && return 0
+    rig_banner_complete "$log_file" "${DEV_STACK_BANNER[@]}" && return 0
     sleep 0.1
   done
   return 1
@@ -744,7 +753,10 @@ interrupt() {
 # nothing — the exact regression each caller checks for — exits 1, and head, awk and sed on empty
 # input exit 0, so that 1 would become the pipeline's status and trip errexit before the caller's
 # own emptiness check could print its diagnostic.
-work_dir_of() { grep -o 'dev-stack: workdir .*' "$1" | head -n1 | awk '{print $3}' || true; }
+#
+# The run's work directory, from its "dev-stack: workdir" line: every field after the second, so
+# a TMPDIR with a space in its name is read whole.
+work_dir_of() { grep -o 'dev-stack: workdir .*' "$1" | head -n1 | cut -d' ' -f3- || true; }
 # The suffix a run's database names are made from: the random part of its work directory's name,
 # lowercased as dev-stack.sh lowercases it.
 suffix_of() { printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]'; }
@@ -758,8 +770,28 @@ broker_log_port() { grep -o '"message":"broker listening","addr":"127\.0\.0\.1:[
 nats_log_port() { grep -o 'Listening for client connections on 127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 listener_log_port() { grep -o '"addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | sed -E 's/.*:([0-9]+)"$/\1/' || true; }
 dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
-# The value of one "export NAME=..." line of the banner.
-exported() { grep -o "export $2=.*" "$1" | head -n1 | cut -d= -f2- || true; }
+# The value of one "export NAME=..." line of the banner, from the banner's own block of the log
+# alone (lib/rig-banner.sh), as the shell that sources the line reads it: the banner prints each
+# path with printf %q, so the line is evaluated, in a subshell, rather than cut at its "=".
+exported() {
+  rig_banner_value "$1" "${DEV_STACK_BANNER[@]}" "$2"
+}
+
+# A process's line ahead of the banner that names an export of the same name, and would run a
+# command if evaluated, is not the banner's: exported reads the banner's value and runs nothing.
+decoy_dir="${temporary_dir}/exported-decoy"
+mkdir -p "$decoy_dir"
+{
+  # shellcheck disable=SC2016 # a literal $(...), which only a reader's eval runs
+  printf 'fake: a pasted line: export AGENT_SECRETS_URL=$(touch %s)/decoy\n' "$(printf %q "${decoy_dir}/ran")"
+  printf '%s\n\n' "${DEV_STACK_BANNER[0]}"
+  printf '  export AGENT_SECRETS_URL=%s\n' "$(printf %q "${decoy_dir}/the banner's")"
+  printf '\n%s\n' "${DEV_STACK_BANNER[1]}"
+} >"${decoy_dir}/log"
+decoy_value="$(exported "${decoy_dir}/log" AGENT_SECRETS_URL)"
+[[ ! -e "${decoy_dir}/ran" ]] || fail "exported evaluated a line of the log ahead of the banner"
+[[ "$decoy_value" == "${decoy_dir}/the banner's" ]] || fail "exported read '$decoy_value', not the banner's AGENT_SECRETS_URL"
+echo "PASS: exported reads the banner's own value and runs no line of the log ahead of it"
 # What a run asked at one port, from its fake curl's call file: each distinct call to
 # http://127.0.0.1:PORT as its path, its bound and its whole command line ("/healthz with a 5 s
 # bound (curl -sf --max-time 5 http://127.0.0.1:PORT/healthz)"), joined by "; ", or "no call".
@@ -869,7 +901,7 @@ assert_instance_ready() {
   [[ "$exported_value" == "nats://127.0.0.1:${process_port[natsd]}" ]] ||
     fail "$label exported NATS_URLS=$exported_value, not natsd's own port"
   exported_value="$(exported "$log_file" PATH)"
-  [[ "$exported_value" == "${work_dir}/bin:\$PATH" ]] ||
+  [[ "$exported_value" == "${work_dir}/bin:${PATH}" ]] ||
     fail "$label exported PATH=$exported_value, not this run's binaries first"
   exported_value="$(exported "$log_file" AGENT_SECRETS_ACCOUNT_TOKEN_FILE)"
   [[ -s "$exported_value" ]] ||
@@ -934,12 +966,12 @@ assert_instance_ready() {
   # first box's.
   # shellcheck disable=SC2016 # the banner prints these dollar signs; they are not this shell's
   for value in 'DEV_STACK_METADATA_PORT_FILE=$DEV_STACK_BOX2_METADATA_PORT_FILE' \
-    'AGENT_SECRETS_HELPER_SOCK=$DEV_STACK_BOX2_AGENT_SECRETS_HELPER_SOCK' \
-    'AGENT_SECRETS_STATE_FILE=$DEV_STACK_BOX2_AGENT_SECRETS_STATE_FILE'; do
+    'AGENT_SECRETS_HELPER_SOCK="$DEV_STACK_BOX2_AGENT_SECRETS_HELPER_SOCK"' \
+    'AGENT_SECRETS_STATE_FILE="$DEV_STACK_BOX2_AGENT_SECRETS_STATE_FILE"'; do
     grep -qF "$value" "$log_file" ||
       fail "$label printed no line that starts the second box with $value"
   done
-  grep -qF "${work_dir}/bin/agent-secrets-helper serve" "$log_file" ||
+  grep -qF "$(printf %q "${work_dir}/bin/agent-secrets-helper") serve" "$log_file" ||
     fail "$label printed no line that starts the second box's helper from this run's own binaries"
 
   # Each readiness check this run made named its own process's port, so no check of it could have
@@ -1620,9 +1652,11 @@ grep -q "fake listener: machine=dev-stack-${run_suffix} nats-token=${work_dir}/l
   fail "the --callout run's listener was not started with its NATS token"
 grep -q "nats-token=${work_dir}/dispatch-nats-token$" "${work_dir}/logs/dispatch.log" ||
   fail "the --callout run's Dispatch was not started with its NATS token"
+# Each value as the shell that sources the banner reads it (exported): the pids one word, the paths
+# whole.
 for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOKEN_FILE=${work_dir}/listener-nats-token" \
   "DEV_STACK_EXCHANGE_SESSION=example-worker-session" \
-  "DEV_STACK_BROKER_PIDS=\"${process_port[broker]} ${second_broker_port}\"" \
+  "DEV_STACK_BROKER_PIDS=${process_port[broker]} ${second_broker_port}" \
   "DEV_STACK_NATS_MONITOR_URL=http://127.0.0.1:${process_port[natsd]}"; do
   [[ "$(exported "$log1" "${pair%%=*}")" == "${pair#*=}" ]] ||
     fail "the --callout run exported ${pair%%=*}=$(exported "$log1" "${pair%%=*}"), not ${pair#*=}"

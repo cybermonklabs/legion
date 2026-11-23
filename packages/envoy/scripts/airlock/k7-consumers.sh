@@ -87,6 +87,28 @@ outputs:
 EOF
 }
 
+# k7_consumer_file_url <path> prints path as a file: URL, each byte outside the unreserved set
+# percent-encoded. Pulumi reads PULUMI_BACKEND_URL as a URL and takes what follows a raw '?' for a
+# query, so a work directory whose name holds one reached it cut short ("invalid query
+# parameter"); encoded, the whole path is the path. The result holds no character a shell reads,
+# so it needs no quoting. k7_steps names the preview's state directory with it, and
+# k7_consumer_google_steps the Cloud KMS stack's.
+k7_consumer_file_url() {
+	local path=$1 out='' c i
+	local LC_ALL=C
+	for ((i = 0; i < ${#path}; i++)); do
+		c=${path:i:1}
+		case $c in
+		[A-Za-z0-9/._~-]) out+=$c ;;
+		*)
+			printf -v c '%%%02X' "'$c"
+			out+=$c
+			;;
+		esac
+	done
+	printf 'file://%s' "$out"
+}
+
 # k7_consumer_preamble <work dir> prints the generated step script's first lines: the names the
 # Google steps read each login by, mapped from the operator's inputs, the consumer checkout and
 # the boundary itself, then the setup. k7_steps writes it into steps.sh, and the test runs it.
@@ -129,8 +151,9 @@ k7_consumer_google_steps() {
 	# A gRPC client: Pulumi's gcpkms secrets manager, which calls Cloud KMS over gRPC alone and
 	# offers h2 in its TLS handshake. The airlock carries it in HTTP/2 and Cloud KMS refuses the
 	# fake value with gRPC's UNAUTHENTICATED; a proxy without HTTP/2 fails the handshake instead.
-	local result
-	result="$(cd "$d/pulumi" && export PULUMI_BACKEND_URL="file://$d/pulumi/state" GOOGLE_OAUTH_ACCESS_TOKEN="${!gcloud_secret}" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
+	local result backend
+	backend="$(k7_consumer_file_url "$d/pulumi/state")"
+	result="$(cd "$d/pulumi" && export PULUMI_BACKEND_URL="$backend" GOOGLE_OAUTH_ACCESS_TOKEN="${!gcloud_secret}" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
 	k7_consumer_say "kms=$result"
 
 	# gcloud-broker with gcloud projects list. It reads the login under the operator's name for it.

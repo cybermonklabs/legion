@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // A tmux daemon that takes over a project's store from a daemon that ran it under runtime
@@ -245,7 +246,7 @@ func TestAResumeOverAForeignIncarnationOpensThePaneOnTheCarriedSession(t *testin
 			command = argv[len(argv)-1]
 		}
 	}
-	if !strings.Contains(command, "--resume="+carried) {
+	if !strings.Contains(command, "--resume="+shellprefix.Word(carried)) {
 		t.Errorf("the pane's command = %q, want it to resume %s", command, carried)
 	}
 }

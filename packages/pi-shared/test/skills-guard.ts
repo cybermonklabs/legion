@@ -9,7 +9,8 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { linkOmpNatives } from "./omp-natives";
+import { linkOmpNatives, nativesLinkProblem, ompNativesCache } from "./omp-natives";
+import { ompScratch } from "./test-paths";
 
 export const SPILL_THRESHOLD_BYTES = 50 * 1024;
 /** The repository root, where `skills/` and the prepack script live. */
@@ -275,10 +276,15 @@ export function agentDispatches(roots: readonly string[]): AgentDispatch[] {
  * files `omp agents unpack` writes under a fresh HOME. That HOME is a temporary directory holding
  * only the binary's natives (hardlinks to the shared copy, omp-natives.ts), and the binary's
  * environment names no profile or config directory, so it writes where a person's does. The
- * directory is removed before returning.
+ * directory is removed before returning. Its path holds no '?', as ompRoot's does not
+ * (omp-harness.ts): Bun, which Oh My Pi runs on, loads no native from a path that holds one; and it
+ * shares the natives cache's filesystem, since a hardlink cannot cross one.
  */
 export async function bundledAgents(omp: string): Promise<string[]> {
-  const home = mkdtempSync(path.join(os.tmpdir(), "omp-bundled-agents-"));
+  const natives = await ompNativesCache(omp);
+  const home = ompScratch("omp-bundled-agents-", {
+    accept: (directory) => nativesLinkProblem(natives, directory),
+  });
   try {
     await linkOmpNatives(omp, home);
     const unpacked = Bun.spawnSync([omp, "agents", "unpack"], {

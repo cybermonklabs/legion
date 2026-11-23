@@ -7,15 +7,17 @@
 # refuses half its options. It does not prove the broker's rule; the driver does that on a real
 # stack.
 #
-# It copies the real driver, and the lib/pg-url.sh it sources, into a directory of its own beside
-# a fake dev-stack.sh, which prints the banner the real one prints (one export per line,
-# "dev-stack: ready.", the databases line) and puts a fake agent-secrets and agent-secrets-helper
-# in the stack's bin directory, as the real one puts the built binaries there. Fakes of bun
-# (print-trade.ts), psql, curl, python3 (the metadata stand-in) and sleep go first on PATH. The
-# driver starts every caller with env -i, so the fakes find this run's state through a path
-# written into each of them, never through the environment. Each fake answers as the real program
-# answers on the right stack, and one word in the state directory (the scenario) turns one answer
-# wrong, as a broker or Dispatch with a bug would.
+# It copies the real driver, and lib/rig-banner.sh and lib/pg-url.sh it sources, into a directory
+# of its own beside a fake dev-stack.sh, which prints the banner the real one prints (one export
+# per line, from "dev-stack: ready." to its last line, the databases line among them), with a
+# line that looks like an export and runs a command ahead of it and after it, as a process of the
+# stack's could print, and puts a fake agent-secrets and agent-secrets-helper in the stack's bin
+# directory, as the real one puts the built binaries there. Fakes of bun (print-trade.ts), psql,
+# curl, python3 (the metadata stand-in) and sleep go first on PATH. The driver starts every caller
+# with env -i, so the fakes find this run's state through a path written into each of them, never
+# through the environment. Each fake answers as the real program answers on the right stack, and
+# one word in the state directory (the scenario) turns one answer wrong, as a broker or Dispatch
+# with a bug would.
 #
 # The fakes hold what the real programs hold to the driver: the trade's answer depends on the
 # sign-in the driver's login wrote and on AGENT_SECRETS_PROJECTS; a session's projects come from
@@ -46,6 +48,7 @@ readonly real_sleep
 readonly admin_url='postgres://tester:not-a-secret@127.0.0.1:5999/postgres?sslmode=disable'
 mkdir -p "$state" "$fakes" "$stackbin" "$repo/packages/envoy/scripts/lib" "$repo/packages/cipher-client/scripts"
 cp "$real_driver" "$driver"
+cp "$script_dir/lib/rig-banner.sh" "$repo/packages/envoy/scripts/lib/rig-banner.sh"
 cp "$script_dir/lib/pg-url.sh" "$repo/packages/envoy/scripts/lib/pg-url.sh"
 : >"$repo/packages/cipher-client/scripts/print-trade.ts"
 
@@ -97,45 +100,61 @@ cat >"$work/fake-secrets.json" <<JSON
 JSON
 trap 'exit 0' TERM INT
 echo "dev-stack: broker http://127.0.0.1:5101" >&2
-cat <<BANNER
+# A line of a process's output, ahead of the banner and after it, that looks like an export of a
+# name the driver reads and runs a command when evaluated: a reader that took the first such line of
+# the whole log would evaluate the one ahead. The driver reads the banner's own block alone, so
+# neither runs.
+printf '  export DEV_STACK_DIR=$(: >%s)\n' "$(printf %q "$state/an export ahead of the banner ran")"
+# Each path goes out with printf %q, as the real banner prints it, so a run under a TMPDIR whose
+# name holds a space or a quote holds the driver to reading each line as a shell does. The banner
+# goes out from "dev-stack: ready." to its last line; printf writes it one line per write, and the
+# driver reads it only once its last line is written (lib/rig-banner.sh).
+banner="$(cat <<BANNER
 
 dev-stack: ready.
 
-  export PATH=$work/bin:\$PATH
+  export PATH=$(printf %q "$work/bin"):\$PATH
   export AGENT_SECRETS_URL=http://127.0.0.1:5101
-  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$work/account-token
+  export AGENT_SECRETS_ACCOUNT_TOKEN_FILE=$(printf %q "$work/account-token")
   export DISPATCH_URL=http://127.0.0.1:5102
-  export DEV_STACK_DIR=$work
+  export DEV_STACK_DIR=$(printf %q "$work")
   export DEV_STACK_ISSUER_URL=http://127.0.0.1:5103
-  export DEV_STACK_METADATA_SCRIPT=$work/dev-metadata.py
+  export DEV_STACK_METADATA_SCRIPT=$(printf %q "$work/dev-metadata.py")
 BANNER
+)"
 if [ "$scenario" != empty-banner ]; then
-  cat <<BANNER
+  banner+=$'\n'"$(cat <<BANNER
   export DEV_STACK_PRIV_PROJECT=PRIV
   export DEV_STACK_PRIV_OWNER=carol@example.com
   export DEV_STACK_PRIV_SERVICE=legion-priv
   export DEV_STACK_PRIV_ACCOUNT=system:serviceaccount:legion-priv:legion-priv-worker
   export DEV_STACK_PRIV_SESSION=legion-priv-worker-session
-  export DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE=$work/priv-exchange-token
-  export DEV_STACK_PRIV_POD_TOKEN_FILE=$work/priv-pod-token
+  export DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE=$(printf %q "$work/priv-exchange-token")
+  export DEV_STACK_PRIV_POD_TOKEN_FILE=$(printf %q "$work/priv-pod-token")
   export DEV_STACK_PROJECT_ACCESS=true
   export DEV_STACK_PRIV_SECRET=PRIV_KEY
   export DEV_STACK_AIRLOCK_PROXY_URL=http://127.0.0.1:5104
   export DEV_STACK_AIRLOCK_BOUND_URL=https://priv.airlock.test
-  export DEV_STACK_AIRLOCK_CA_CERT_FILE=$work/ca.crt
+  export DEV_STACK_AIRLOCK_CA_CERT_FILE=$(printf %q "$work/ca.crt")
 BANNER
+)"
 fi
-cat <<BANNER
+banner+=$'\n'"$(cat <<BANNER
 
   export AGENT_SECRETS_MACHINE_IDENTITY=metadata
   export AGENT_SECRETS_MACHINE_AUDIENCE=dev-stack-machine
   export AGENT_SECRETS_SESSION=<this process's own session name>
   export AGENT_SECRETS_SIGNIN_ISSUER=http://127.0.0.1:5103
   export AGENT_SECRETS_SIGNIN_CLIENT_ID=dev-stack-device
-  export AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE=$work/device-client-secret
+  export AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE=$(printf %q "$work/device-client-secret")
 
   databases:  dev_stack_broker_$suffix and dev_stack_dispatch_$suffix on postgres://tester@127.0.0.1:5999
+
+  Press Ctrl-C to stop every process and drop both databases.
 BANNER
+)"
+printf '%s\n' "$banner"
+printf '  export AGENT_SECRETS_URL=$(: >%s)\n' "$(printf %q "$state/an export after the banner ran")"
 while :; do
   "$real_sleep" 1 &
   wait "$!" || true
@@ -584,7 +603,7 @@ run_driver() { # <name> <scenario> [driver arguments...]
   shift 2
   rm -f "$state"/approved-* "$state/queued" "$state/carol-off" "$state/priv-private" \
     "$state/sleeps" "$state/register.log" "$state/bun.log" "$state/psql.log" "$state/curl.log" \
-    "$state/agent-secrets.log"
+    "$state/agent-secrets.log" "$state/an export ahead of the banner ran" "$state/an export after the banner ran"
   RUN_OUT="$temporary_dir/$name.out"
   RUN_RC=0
   # env -i: the variables of whoever runs this test (a real AGENT_SECRETS_HELPER_SOCK, a real
@@ -592,6 +611,8 @@ run_driver() { # <name> <scenario> [driver arguments...]
   env -i PATH="$fakes:$PATH" HOME="$temporary_dir" TMPDIR="$temporary_dir" bash "$driver" "$@" >"$RUN_OUT" 2>&1 || RUN_RC=$?
   RUN_LEFT="$(outlived)"
   check "$name: no process of the run outlived the driver ($RUN_LEFT reaped)" no_process_left
+  check "$name: no export line of the stack's output ahead of its banner was evaluated" test ! -e "$state/an export ahead of the banner ran"
+  check "$name: no export line of the stack's output after its banner was evaluated" test ! -e "$state/an export after the banner ran"
 }
 
 readonly all_rows="project-secrets-check: 16 rows ran, 16 passed"

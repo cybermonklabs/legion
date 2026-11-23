@@ -32,6 +32,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$SCRIPT_DIR/lib/rig-banner.sh"
 # The shortest lease config.Load accepts beside the default BROKER_SWEEP_SECONDS of 5
 # (leasetime.Production().Shortest, which the broker's refusal names).
 LEASE_SECONDS=91
@@ -73,7 +75,7 @@ BROKER_LEASE_SECONDS="$LEASE_SECONDS" bash "$SCRIPT_DIR/dev-airlock.sh" --one-br
 STACK_PID=$!
 ready=false
 for _ in $(seq 1 1800); do
-  if grep -q '^dev-airlock: ready\.$' "$STACK_LOG" 2>/dev/null; then
+  if rig_banner_complete "$STACK_LOG" "${DEV_AIRLOCK_BANNER[@]}"; then
     ready=true
     break
   fi
@@ -87,7 +89,11 @@ if [ "$ready" != true ]; then
   tail -n 20 "$STACK_LOG" >&2 || true
   exit 1
 fi
-eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
+# dev-broker.sh's banner and then dev-airlock.sh's, each from its own block of the log alone
+# (lib/rig-banner.sh): the log holds the stack's processes' output too, and a line there that
+# looks like an export runs nothing. Where the two name one variable the airlock's wins.
+rig_banner_export "$STACK_LOG" "${DEV_BROKER_BANNER[@]}"
+rig_banner_export "$STACK_LOG" "${DEV_AIRLOCK_BANNER[@]}"
 echo "dev-airlock-lease: the stack is up (work directory $AIRLOCK_DIR)" >&2
 
 # session_field is one field of the session's own description, which the broker answers from

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -84,7 +85,7 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 	if err := os.WriteFile(toolCall, []byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]}}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p := startClaudeBridge(t, "trap 'kill $!; cat "+toolCall+"; exit 0' TERM\n"+
+	p := startClaudeBridge(t, "trap "+shellprefix.Literal("kill $!; cat "+shellprefix.Literal(toolCall)+"; exit 0")+" TERM\n"+
 		"sleep 86400 >/dev/null &\ntouch \"$CLAUDE_STANDIN_READY\"\nwait\n", goneShim(t))
 	state, left := p.hangUp()
 	if code := state.ExitCode(); code != 0 || !strings.Contains(p.logged(), "could not write to the shim") {
@@ -111,7 +112,7 @@ func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
 	}
 	defer shim.Close()
 	// The stand-in takes the turn's prompt, answers it, and exits 0.
-	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nread -r prompt\ncat "+turn+"\n", stdout)
+	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\nread -r prompt\ncat "+shellprefix.Literal(turn)+"\n", stdout)
 	// The bridge holds its own copy: the shim's end reads to its end once the bridge exits.
 	_ = stdout.Close()
 	p.send(shimwire.Prompt{ID: "p1", DeliveryID: "d-p1", Message: "go"})

@@ -77,7 +77,8 @@ describe.concurrent("outside-path-reach.sh under an inherited TMOUT", () => {
               stdinPause: tmout ?? "0",
             }
           );
-          expect(run.stdout).toMatch(/^outside-path-reach: targets \S+ \(2\)$/m);
+          // The targets path is under the test's temporary directory, which may hold a space.
+          expect(run.stdout).toMatch(/^outside-path-reach: targets .+ \(2\)$/m);
           expect(lineFor(run, "hub")).toContain(" REACHED; ");
           expect(verdict(run)).toBe("FAIL: reached hub");
           expect(run.code).toBe(1);

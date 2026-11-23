@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/clitest"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // legionBuildDir is where legionBuild puts the binary: a directory TestMain makes and removes.
@@ -227,7 +228,7 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 		bin := trailerWrapperDir(t, legion)
 		host := t.TempDir()
 		log := filepath.Join(host, "calls")
-		writeTrailerScript(t, filepath.Join(host, "git"), trailerLogging(log)+"exec '"+git+"' \"$@\"\n")
+		writeTrailerScript(t, filepath.Join(host, "git"), trailerLogging(log)+"exec "+shellprefix.Literal(git)+" \"$@\"\n")
 		repo := trailerRepo(t, git)
 		sh, err := exec.LookPath("sh")
 		if err != nil {
@@ -254,7 +255,7 @@ func TestPassThroughCommandsParseNoFlags(t *testing.T) {
 			t.Fatal(err)
 		}
 		wrappers := t.TempDir()
-		if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec "+shellprefix.Literal(legion)+" gh \"$@\"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		args := []string{"pr", "view", "1", "--json", "state", "-R", "acme/widgets"}
@@ -298,10 +299,10 @@ func TestTheBuiltLegionTakesItsBoundsFromTheTestBinarysDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	wrappers := t.TempDir()
-	if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec '"+legion+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(wrappers, "gh"), []byte("#!/bin/sh\nexec "+shellprefix.Literal(legion)+" gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghGitReadBound/time.Second)+1) + "; break; fi; done\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
+	slowGit := "#!/bin/sh\nfor a; do if [ \"$a\" = --show-origin ]; then sleep " + strconv.Itoa(int(ghGitReadBound/time.Second)+1) + "; break; fi; done\nexec " + shellprefix.Literal(fixturegit.CompiledGit(t)) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(wrappers, "git"), []byte(slowGit), 0o700); err != nil {
 		t.Fatal(err)
 	}

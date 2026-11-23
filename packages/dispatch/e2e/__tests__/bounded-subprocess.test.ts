@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
 import {
   bounds,
+  bunLoadableDirectory,
   eventually,
   execPause,
   type Listed,
@@ -107,7 +108,7 @@ test.skipIf(commandLines() === undefined)(
       `test("waits for a bounded child that never ends by itself", async () => {\n` +
       `  await runBounded({ argv: ["bash", "-c", "sleep ${seconds} & wait"], bound: "short", from: import.meta.url });\n` +
       `}, rowLimit("short"));\n`;
-    const directory = mkdtempSync(join(tmpdir(), "bounded-subprocess-"));
+    const directory = bunLoadableDirectory("bounded-subprocess-");
     const log = join(directory, "runner.log");
     let runner: Subprocess | undefined;
     try {

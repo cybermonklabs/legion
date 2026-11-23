@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
+import { wordDirectory } from "@legion/pi-shared/test/test-paths";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
@@ -12,7 +13,10 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // then did nothing the scenario asks is a failure.
 
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-const work = temporaryDirectory("skill-scenarios-score");
+// The transcripts below record bash commands that name paths under it as an agent writes them,
+// unquoted (`cat <run>/home/skills/dispatch/SKILL.md`), and score.ts finds each skill read in that
+// text, so the directory's path holds no blank, `'` or `?` (test-paths.ts).
+const work = wordDirectory(import.meta.dir, "skill-scenarios-score-");
 const runs = path.join(work, "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,

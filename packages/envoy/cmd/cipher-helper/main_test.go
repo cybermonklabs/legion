@@ -59,14 +59,13 @@ func registerAndWait(sock string) {
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
 
 // shortTempDir is a directory of the test's own, removed when the test ends, with room under it
-// for the longest path these tests put there: the systemd unit `install` writes under the rig's
-// XDG_CONFIG_HOME, cfg/systemd/user/agent-secrets-helper.service (install_test.go), which is
-// longer than the h.sock every other caller binds. TMPDIR places it, and the helper falls back
-// to /tmp for that length alone, where t.TempDir()'s path carries the whole of the test's name
-// and passes the 107 bytes a unix socket path holds (docs/testing.md).
+// for the longest socket path these tests bind there: run/helper.sock, the AGENT_SECRETS_HELPER_SOCK
+// the serve tests hand the helper (the rest bind h.sock). TMPDIR places it, and testtmp falls back
+// to /tmp only when that path would pass the 107 bytes a unix socket path holds, which a
+// t.TempDir() path, carrying the whole of the test's name, can (docs/testing.md).
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	return testtmp.Dir(t, filepath.Join("cfg", "systemd", "user", "agent-secrets-helper.service"))
+	return testtmp.Dir(t, filepath.Join("run", "helper.sock"))
 }
 
 func TestConfigDerivesDefaultsAndServeRequiresURL(t *testing.T) {

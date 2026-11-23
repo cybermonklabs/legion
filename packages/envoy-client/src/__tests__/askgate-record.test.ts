@@ -59,11 +59,10 @@ test("processes that bind one session id at the same time each stay an owner of 
   // Each writer says it is ready, waits for the parent's line, binds the session again and again,
   // and after each write reads the record: for its own store, and, once it has read every writer's
   // store there, for a store that went. Each one stays live until its stdin closes, so no owner of
-  // a full record can legitimately go, and a store that went is one a write dropped.
-  const writer = join(root, "writer.ts");
-  writeFileSync(
-    writer,
-    `import { askgateState, openStore, selfOwner, writeAskgateRecord } from ${JSON.stringify(MARKER_MODULE)};
+  // a full record can legitimately go, and a store that went is one a write dropped. Each runs
+  // it as `bun -e` source rather than a file under the scratch root: Bun loads no module from a
+  // path that holds a '?', and the temporary directory may hold one.
+  const writer = `import { askgateState, openStore, selfOwner, writeAskgateRecord } from ${JSON.stringify(MARKER_MODULE)};
 const dir = ${JSON.stringify(dir)};
 const owner = selfOwner(${JSON.stringify(root)});
 openStore(owner.store);
@@ -83,10 +82,13 @@ for (let write = 0; write < ${WRITES}; write += 1) {
 }
 console.log(JSON.stringify({ store: owner.store, dropped, lost }));
 while (!(await stdin.read()).done);
-`
-  );
+`;
   const children = Array.from({ length: WRITERS }, () =>
-    Bun.spawn([process.execPath, writer], { stdin: "pipe", stdout: "pipe", stderr: "inherit" })
+    Bun.spawn([process.execPath, "-e", writer], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "inherit",
+    })
   );
   spawned.push(...children);
   try {

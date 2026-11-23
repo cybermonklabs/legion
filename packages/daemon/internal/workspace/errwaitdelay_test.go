@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // procgroup.Err is execRunner's one classification of a command's error: nil for an ordinary exit
@@ -24,7 +25,7 @@ func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputO
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "sleep.pid")
 	fakeGit := filepath.Join(dir, "git")
-	script := "#!/bin/sh\necho done\nsleep 3 & echo $! >" + pidFile + "\nexit 0\n"
+	script := "#!/bin/sh\necho done\nsleep 3 & echo $! >" + shellprefix.Literal(pidFile) + "\nexit 0\n"
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
@@ -52,7 +53,7 @@ func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastT
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "sleep.pid")
 	fakeGit := filepath.Join(dir, "git")
-	script := "#!/bin/sh\necho 'fatal: unable to access' >&2\nsleep 30 & echo $! >" + pidFile + "\nexit 128\n"
+	script := "#!/bin/sh\necho 'fatal: unable to access' >&2\nsleep 30 & echo $! >" + shellprefix.Literal(pidFile) + "\nexit 128\n"
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
 	fakeGit := filepath.Join(dir, "git")
-	script := "#!/bin/sh\n: >" + started + "\nexec sleep 30\n"
+	script := "#!/bin/sh\n: >" + shellprefix.Literal(started) + "\nexec sleep 30\n"
 	if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}

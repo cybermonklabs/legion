@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testfifo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -218,7 +219,8 @@ func TestClaudeLauncherLaunch(t *testing.T) {
 	if configDir != filepath.Join(host.StateDir, "claude", string(spec.Claim)) {
 		t.Errorf("ClaudeConfigDir = %s", configDir)
 	}
-	if !strings.Contains(inner, " claude-bridge -- ") || !strings.Contains(inner, "--mcp-config "+filepath.Join(configDir, "mcp.json")) ||
+	// The launch is shell text, so the path under the test's temporary directory is one shell word.
+	if !strings.Contains(inner, " claude-bridge -- ") || !strings.Contains(inner, "--mcp-config "+shellprefix.Word(filepath.Join(configDir, "mcp.json"))) ||
 		!strings.Contains(strings.Join(pairs, " "), "CLAUDE_CONFIG_DIR="+configDir) {
 		t.Errorf("Launch = %s, %q", inner, pairs)
 	}

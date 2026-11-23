@@ -17,6 +17,7 @@ import {
   appLogin,
   firstInstallationToken,
 } from "./app-logins";
+import { shellQuote } from "./script-functions";
 import {
   appPrivateKey,
   holdsNoKey,
@@ -66,12 +67,12 @@ function config(implement: string, review: string): string {
   );
   return path;
 }
-const app = (id: string, command = `cat ${join(dir, `release-${id}.json`)}`) =>
+const app = (id: string, command = `cat ${shellQuote(join(dir, `release-${id}.json`))}`) =>
   `    app_id: "${id}"\n    token_command: ${JSON.stringify(command)}`;
 /** The `github_apps` entry of an App proved from its key: its id and a private_key_command that
  * reads that App's PEM out of a file of this test's own, the `cat --` shape
  * lib/github-apps.sh writes under --token-dir. */
-const keyApp = (id: string, command = `cat -- ${join(dir, `key-${id}.pem`)}`) =>
+const keyApp = (id: string, command = `cat -- ${shellQuote(join(dir, `key-${id}.pem`))}`) =>
   `    app_id: "${id}"\n    private_key_command: ${JSON.stringify(command)}`;
 
 // The run is asynchronous: the stand-in GitHub answers from this test's own event loop. The child
@@ -235,7 +236,7 @@ describe("app-logins.ts", () => {
 
   test("an App without its role's write permission is refused, the two Apps swapped whole too", async () => {
     const { code, stdout, stderr } = await run(
-      config(app("202", `cat ${join(dir, "release-202.json")}`), app("101"))
+      config(app("202", `cat ${shellQuote(join(dir, "release-202.json"))}`), app("101"))
     );
     expect(code).toBe(1);
     expect(stdout).toBe("");
@@ -282,7 +283,7 @@ describe("app-logins.ts", () => {
   });
 
   test("a token command's stderr reaches the operator on success too", async () => {
-    const pending = `printf 'request req-42 pending\\n' >&2; cat ${join(dir, "release-101.json")}`;
+    const pending = `printf 'request req-42 pending\\n' >&2; cat ${shellQuote(join(dir, "release-101.json"))}`;
     const { code, stdout, stderr } = await run(config(app("101", pending), app("202")));
     expect(code).toBe(0);
     expect(stderr).toBe("request req-42 pending");
@@ -312,7 +313,7 @@ describe("app-logins.ts", () => {
   // promises the logins and exit 0, and lib/github-apps.sh's check_github_apps reads both. What
   // the row guards is the writer: no `EPIPE` may leave it.
   test("a caller that stopped reading stderr still gets the logins and exit 0", async () => {
-    const relayed = `printf 'relayed\\n' >&2; cat ${join(dir, "release-101.json")}`;
+    const relayed = `printf 'relayed\\n' >&2; cat ${shellQuote(join(dir, "release-101.json"))}`;
     const child = Bun.spawn(["bun", script, config(app("101", relayed), app("202")), standIn], {
       env: { PATH: process.env.PATH ?? "", HOME: home },
       stdout: "pipe",
@@ -357,7 +358,8 @@ describe("app-logins.ts", () => {
     // becomes the `sleep` through `exec`, so what the row ends is what held the output open for
     // the whole drain.
     await withEscapedDescendant("escaped.pid", async (pidFile) => {
-      const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
+      const descendant = `echo $$ >${shellQuote(pidFile)}; exec sleep 60`;
+      const escaped = `setsid sh -c ${shellQuote(descendant)} >&2 & exit 0`;
       const started = Date.now();
       const { code, stderr } = await run(config(app("101", escaped), app("202")));
       expect(code).toBe(1);
@@ -388,9 +390,10 @@ describe("app-logins.ts", () => {
     // it, as the silent row's `sleep 60` ends itself; thirty seconds is six times the bound it
     // must not push out.
     await withEscapedDescendant("escaped-writing.pid", async (pidFile) => {
-      const escaped =
-        `setsid sh -c 'trap "" PIPE; echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do` +
-        " printf x >&2; sleep 1; i=$((i + 1)); done' >&2 & exit 3";
+      const descendant =
+        `trap "" PIPE; echo $$ >${shellQuote(pidFile)}; i=0; while [ $i -lt 30 ]; do` +
+        " printf x >&2; sleep 1; i=$((i + 1)); done";
+      const escaped = `setsid sh -c ${shellQuote(descendant)} >&2 & exit 3`;
       const started = Date.now();
       const { code, stderr } = await run(config(app("101", escaped), app("202")));
       expect(code).toBe(1);
@@ -422,7 +425,7 @@ describe("app-logins.ts", () => {
     };
     const [bad, good] = await Promise.all([
       stalled(`${held} exit 3`, "/dev/null"),
-      stalled(`${held} cat ${join(dir, "release-101.json")}`, succeeding),
+      stalled(`${held} cat ${shellQuote(join(dir, "release-101.json"))}`, succeeding),
     ]);
     expect(bad).toContain("failed (exit 3): denied-");
     expect(bad).not.toContain("still held its output open");
@@ -442,8 +445,9 @@ describe("app-logins.ts", () => {
     // The pid the descendant records is the one it ends up with: `sh` prints its own, then
     // becomes the `sleep` through `exec`.
     await withEscapedDescendant("escaped-before-exit.pid", async (pidFile) => {
+      const descendant = `echo $$ >${shellQuote(pidFile)}; exec sleep 40`;
       const escaped =
-        `printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c 'echo $$ >${pidFile}; exec sleep 40'` +
+        `printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c ${shellQuote(descendant)}` +
         " >&2 & exit 3";
       const path = config(app("101", escaped), app("202"));
       const started = Date.now();
@@ -481,7 +485,9 @@ describe("app-logins.ts", () => {
   test("the first installation by login is the one read, as the daemon's AppLogin reads it", async () => {
     const two = join(dir, "release-two.json");
     writeFileSync(two, release({ zeta: "ghs_unknown_token", Alpha: tokenOf(101) }));
-    const { code, stdout, stderr } = await run(config(app("101", `cat ${two}`), app("202")));
+    const { code, stdout, stderr } = await run(
+      config(app("101", `cat ${shellQuote(two)}`), app("202"))
+    );
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(JSON.parse(stdout).implement).toBe("example-implement[bot]");
@@ -526,7 +532,9 @@ describe("app-logins.ts", () => {
   test("a token GitHub refuses is named by the App and GitHub's status, its echo of the token masked", async () => {
     const unknown = join(dir, "release-unknown.json");
     writeFileSync(unknown, release({ sjawhar: "ghs_unknown_token" }));
-    const { code, stderr } = await run(config(app("101", `cat ${unknown}`), app("202")));
+    const { code, stderr } = await run(
+      config(app("101", `cat ${shellQuote(unknown)}`), app("202"))
+    );
     expect(code).toBe(1);
     expect(stderr).toMatch(namesApp("implement", "101"));
     expect(stderr).toContain("401");
@@ -634,7 +642,7 @@ describe("app-logins.ts", () => {
 
   test("a key command that fails is named by its field, exit code and stderr, its key never quoted", async () => {
     // It prints the key on stdout before it fails, so the row says what becomes of that too.
-    const failing = `cat -- ${join(dir, "key-202.pem")}; echo 'the key command refused' >&2; exit 5`;
+    const failing = `cat -- ${shellQuote(join(dir, "key-202.pem"))}; echo 'the key command refused' >&2; exit 5`;
     const { code, stderr } = await run(config(app("101"), keyApp("202", failing)));
     expect(code).toBe(1);
     expect(stderr).toBe(
@@ -689,7 +697,7 @@ describe("app-logins.ts", () => {
     const staleBy = 20 * 60 * 1000;
     // The marker is written before the key is printed, so every reading of this clock after the
     // command returns sees it and every reading before the command runs does not.
-    const command = `touch -- ${marker}; cat -- ${join(dir, "key-202.pem")}`;
+    const command = `touch -- ${shellQuote(marker)}; cat -- ${shellQuote(join(dir, "key-202.pem"))}`;
     const source: AppCredentialSource = { appId: "202", kind: "private_key_command", command };
     const now = () => new Date(existsSync(marker) ? Date.now() : Date.now() - staleBy);
     verified.length = 0;

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -71,7 +72,7 @@ esac
 	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return fakeBroker{dir: dir, command: command, calls: calls}
+	return fakeBroker{dir: dir, command: shellprefix.Literal(command), calls: calls}
 }
 
 func (b fakeBroker) runs(t *testing.T) []string {
@@ -873,7 +874,7 @@ func TestTokenModeACommandSeesNoLegionGitHubVariableButTheTwoItIsTold(t *testing
 	// Each run writes a line that opens it and then its whole environment, and answers as the
 	// broker does.
 	const opened = "==== a run of the token command ===="
-	broker.command = fmt.Sprintf(`{ printf '%%s\n' %q; env; } >>%q; exec %q`, opened, seen, broker.command)
+	broker.command = fmt.Sprintf(`{ printf '%%s\n' %q; env; } >>%q; exec %s`, opened, seen, broker.command)
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
 	var stderr bytes.Buffer
 	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)

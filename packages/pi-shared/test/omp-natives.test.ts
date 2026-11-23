@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import * as os from "node:os";
 import * as path from "node:path";
 import { fillNativesCache, linkTree } from "./omp-natives";
+import { shellQuote } from "./test-paths";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -47,7 +48,7 @@ test("fills racing for one binary's natives cache run it once, and each HOME lin
   const binary = await standIn(
     dir,
     ['{ variant: "default", filename: "pi_natives.test.node", size: 6 },'],
-    `echo run >>${runs}\nmkdir -p "$HOME/.omp/natives/9.9.9"\nprintf native >"$HOME/.omp/natives/9.9.9/pi_natives.test.node"\n`
+    `echo run >>${shellQuote(runs)}\nmkdir -p "$HOME/.omp/natives/9.9.9"\nprintf native >"$HOME/.omp/natives/9.9.9/pi_natives.test.node"\n`
   );
   const root = path.join(dir, "cache");
   const cache = path.join(root, await cacheDigest(binary));
@@ -81,8 +82,8 @@ test("a fill holding a file short of its embedded size caches nothing, and the n
       '{ variant: "baseline", filename: "pi_natives.test-baseline.node", size: 8 },',
     ],
     `natives="$HOME/.omp/natives/9.9.9"\nmkdir -p "$natives"\n` +
-      `if [ -e ${runs} ]; then printf modern >"$natives/pi_natives.test-modern.node"; ` +
-      `else printf mod >"$natives/pi_natives.test-modern.node"; fi\necho run >>${runs}\n`
+      `if [ -e ${shellQuote(runs)} ]; then printf modern >"$natives/pi_natives.test-modern.node"; ` +
+      `else printf mod >"$natives/pi_natives.test-modern.node"; fi\necho run >>${shellQuote(runs)}\n`
   );
   const root = path.join(dir, "cache");
   const cache = path.join(root, await cacheDigest(binary));
@@ -133,7 +134,7 @@ test("a fill whose extraction writes no native caches nothing", async () => {
 test("a binary that lists no embedded natives is refused before it runs", async () => {
   const dir = await scratch();
   const runs = path.join(dir, "runs");
-  const binary = await standIn(dir, [], `echo run >>${runs}\n`);
+  const binary = await standIn(dir, [], `echo run >>${shellQuote(runs)}\n`);
 
   await expect(fillNativesCache(path.join(dir, "cache"), binary)).rejects.toThrow(
     "lists no embedded natives"

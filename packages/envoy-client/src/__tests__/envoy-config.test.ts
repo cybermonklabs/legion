@@ -78,6 +78,10 @@ const LISTENER_TOKEN = fixtureSecret("listener");
 const REPO_TOKEN = fixtureSecret("repo");
 /** The Dispatch bearer a daemon's DISPATCH_TOKEN_FILE holds. */
 const DAEMON_TOKEN = fixtureSecret("daemon");
+/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
 
 function writeFile(file: string, contents: unknown): string {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -302,7 +306,7 @@ describe("readEnvoyConfig", () => {
       dispatch: {
         enabled: true,
         serverUrl: "https://dispatch.example",
-        token: `!touch ${marker}; echo old-token`,
+        token: `!touch ${shellQuote(marker)}; echo old-token`,
       },
       natsUrls: ["nats://nats.internal.example:4222"],
     });
@@ -374,7 +378,7 @@ describe("readEnvoyConfig", () => {
       dispatch: {
         enabled: true,
         serverUrl: "https://old.dispatch.example",
-        token: `!touch ${marker}; echo old-token`,
+        token: `!touch ${shellQuote(marker)}; echo old-token`,
       },
     });
     const profiles = [
@@ -405,7 +409,7 @@ describe("readEnvoyConfig", () => {
       dispatch: {
         enabled: true,
         serverUrl: "https://old.dispatch.example",
-        token: `!touch ${marker}; echo old-token`,
+        token: `!touch ${shellQuote(marker)}; echo old-token`,
       },
     });
     const configHome = path.join(home, "relocated-config");
@@ -501,7 +505,7 @@ describe("readEnvoyConfig", () => {
       dispatch: {
         enabled: true,
         serverUrl: "https://old.dispatch.example",
-        token: `!touch ${marker}; echo old-token`,
+        token: `!touch ${shellQuote(marker)}; echo old-token`,
       },
     });
     const profiles = [
@@ -549,14 +553,14 @@ describe("readEnvoyConfig", () => {
       dispatch: {
         enabled: true,
         serverUrl: "https://dispatch.example",
-        token: `!echo dispatch >> ${runs}; echo x`,
+        token: `!echo dispatch >> ${shellQuote(runs)}; echo x`,
       },
       envoy: {
         enabled: true,
         url: "http://listener.internal.example:9020",
         natsUrls: ["nats://nats.internal.example:4222"],
-        token: `!echo envoy >> ${runs}; echo y`,
-        natsSeed: `!echo seed >> ${runs}; echo z`,
+        token: `!echo envoy >> ${shellQuote(runs)}; echo y`,
+        natsSeed: `!echo seed >> ${shellQuote(runs)}; echo z`,
       },
     };
     const file = writeFile(path.join(tempDir(), "envoy.json"), written);
@@ -952,16 +956,20 @@ describe("a ! command in envoy.json", () => {
     const session = tempDir();
     writeFile(path.join(session, "bin", "token"), `#!/bin/sh\necho ${checkoutSecret}\n`);
     chmodSync(path.join(session, "bin", "token"), 0o755);
+    // The envoy command prints its working directory as hex: a token holds no whitespace, and the
+    // test's temporary directory may hold a space.
     const file = writeFile(path.join(directory, "envoy.json"), {
       dispatch: { ...dispatchOn, token: "!./bin/token" },
-      envoy: { ...envoyOn, token: `!pwd # ${home}` },
+      envoy: { ...envoyOn, token: `!pwd | od -An -tx1 | tr -d ' \\n' # ${home}` },
     });
     const original = process.cwd();
     process.chdir(session);
     try {
       const config = readEnvoyConfig(file, env, { cwd: session });
       expect(dispatchSettings(env, config)).toMatchObject({ token: relativeSecret });
-      expect(envoySettings(env, config)).toMatchObject({ token: realpathSync(directory) });
+      expect(envoySettings(env, config)).toMatchObject({
+        token: Buffer.from(`${realpathSync(directory)}\n`).toString("hex"),
+      });
     } finally {
       process.chdir(original);
     }
@@ -976,8 +984,8 @@ describe("a ! command in envoy.json", () => {
     const cachedSecret = fixtureSecret("cached");
     const lateSecret = fixtureSecret("late");
     const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${cachedSecret}` },
-      envoy: { ...envoyOn, token: `!echo run >> ${failures}; cat ${late}` },
+      dispatch: { ...dispatchOn, token: `!echo run >> ${shellQuote(runs)}; echo ${cachedSecret}` },
+      envoy: { ...envoyOn, token: `!echo run >> ${shellQuote(failures)}; cat ${shellQuote(late)}` },
     });
     const resolve = () => {
       const config = readEnvoyConfig(file, env, { cwd: tempDir() });
@@ -1016,11 +1024,11 @@ describe("a ! command in envoy.json", () => {
     const late = path.join(home, "late-token");
     const lateSecret = fixtureSecret("late");
     const failing: [failure: string, command: string][] = [
-      ["exited with status 1", `cat ${late}`],
-      ["printed nothing", `cat ${late} 2>/dev/null; true`],
+      ["exited with status 1", `cat ${shellQuote(late)}`],
+      ["printed nothing", `cat ${shellQuote(late)} 2>/dev/null; true`],
       [
         "printed more than one line, or whitespace inside its value",
-        `cat ${late} 2>/dev/null || printf 'a\\nb\\n'`,
+        `cat ${shellQuote(late)} 2>/dev/null || printf 'a\\nb\\n'`,
       ],
     ];
     const start = Date.now();
@@ -1030,7 +1038,7 @@ describe("a ! command in envoy.json", () => {
         rmSync(late, { force: true });
         const runs = path.join(home, `runs-${index}`);
         const file = writeFile(path.join(home, `kind-${index}`, "envoy.json"), {
-          dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; ${command}` },
+          dispatch: { ...dispatchOn, token: `!echo run >> ${shellQuote(runs)}; ${command}` },
         });
         const resolve = () => dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
         expect(resolve()).toEqual({
@@ -1058,7 +1066,7 @@ describe("a ! command in envoy.json", () => {
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
     const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; sleep 30` },
+      dispatch: { ...dispatchOn, token: `!echo run >> ${shellQuote(runs)}; sleep 30` },
     });
     const resolve = () => dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }));
     const start = Date.now();
@@ -1086,7 +1094,7 @@ describe("a ! command in envoy.json", () => {
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
     const sharedToken = fixtureSecret("dsp");
-    const command = `!echo run >> ${runs}; echo ${sharedToken}`;
+    const command = `!echo run >> ${shellQuote(runs)}; echo ${sharedToken}`;
     const first = writeFile(path.join(home, "one", "envoy.json"), { dispatch: { token: command } });
     const second = writeFile(path.join(home, "two", "envoy.json"), {
       dispatch: { token: command },
@@ -1118,7 +1126,7 @@ describe("a ! command in envoy.json", () => {
     const runs = path.join(home, "runs");
     const keptSecret = fixtureSecret("kept");
     const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; echo ${keptSecret}` },
+      dispatch: { ...dispatchOn, token: `!echo run >> ${shellQuote(runs)}; echo ${keptSecret}` },
     });
     const resolve = (commands?: "kept") =>
       dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }), { commands });
@@ -1139,7 +1147,7 @@ describe("a ! command in envoy.json", () => {
     const env = commandEnvironment(home);
     const runs = path.join(home, "runs");
     const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!echo run >> ${runs}; exit 3` },
+      dispatch: { ...dispatchOn, token: `!echo run >> ${shellQuote(runs)}; exit 3` },
     });
     const resolve = (commands?: "kept") =>
       dispatchSettings(env, readEnvoyConfig(file, env, { cwd: tempDir() }), { commands });
@@ -1289,7 +1297,7 @@ describe("a ! command in envoy.json", () => {
       const file = writeFile(path.join(home, "envoy.json"), {
         dispatch: {
           ...dispatchOn,
-          token: `!sleep 30 & echo $! > ${pidFile}; echo ${lingeringSecret}`,
+          token: `!sleep 30 & echo $! > ${shellQuote(pidFile)}; echo ${lingeringSecret}`,
         },
       });
       const cwd = tempDir();
@@ -1323,7 +1331,7 @@ describe("a ! command in envoy.json", () => {
       const file = writeFile(path.join(home, "envoy.json"), {
         dispatch: {
           ...dispatchOn,
-          token: `!echo canary; sleep 40 & echo $! > ${pidFile}; sleep 30 # ${home}`,
+          token: `!echo canary; sleep 40 & echo $! > ${shellQuote(pidFile)}; sleep 30 # ${home}`,
         },
       });
       const cwd = tempDir();
@@ -1418,12 +1426,12 @@ describe("a ! command in envoy.json", () => {
     const home = tempDir();
     const runs = path.join(home, "runs");
     const file = writeFile(path.join(home, "envoy.json"), {
-      dispatch: { ...dispatchOn, token: `!echo dispatch >> ${runs}; echo x` },
+      dispatch: { ...dispatchOn, token: `!echo dispatch >> ${shellQuote(runs)}; echo x` },
       envoy: {
         ...envoyOn,
         enabled: false,
-        token: `!echo envoy >> ${runs}; echo x`,
-        natsSeed: `!echo seed >> ${runs}; echo x`,
+        token: `!echo envoy >> ${shellQuote(runs)}; echo x`,
+        natsSeed: `!echo seed >> ${shellQuote(runs)}; echo x`,
       },
     });
     const env = { ...commandEnvironment(home), DISPATCH_TOKEN: ENVIRONMENT_DISPATCH_TOKEN };
@@ -1486,7 +1494,7 @@ describe("a checkout's .envoy/envoy.json", () => {
     for (const envoy of [
       { natsUrls: ["nats://repo.internal.example:4222"] },
       { url: "http://repo.internal.example:9020", token: REPO_TOKEN },
-      { natsSeed: `!echo seed >> ${runs}; echo SUREPOSEED` },
+      { natsSeed: `!echo seed >> ${shellQuote(runs)}; echo SUREPOSEED` },
       { enabled: false },
       { enabled: true, natsUrl: "nats://repo.internal.example:4222" },
     ]) {
@@ -1648,8 +1656,12 @@ describe("a checkout's .envoy/envoy.json", () => {
     const ran = path.join(home, "ran");
     const env = commandEnvironment(home);
     for (const dispatch of [
-      { serverUrl: "https://repo.internal.example", token: `!touch ${ran}; echo x` },
-      { enabled: true, serverUrl: "https://repo.internal.example", token: `!touch ${ran}; echo x` },
+      { serverUrl: "https://repo.internal.example", token: `!touch ${shellQuote(ran)}; echo x` },
+      {
+        enabled: true,
+        serverUrl: "https://repo.internal.example",
+        token: `!touch ${shellQuote(ran)}; echo x`,
+      },
     ]) {
       const repo = withCheckout({ dispatch });
       const config = readEnvoyConfig(repo.user, env, { cwd: repo.cwd });

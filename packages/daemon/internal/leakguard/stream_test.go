@@ -104,7 +104,7 @@ func TestTheRulePassReadsTheDiffAsGitWritesIt(t *testing.T) {
 	seen := filepath.Join(t.TempDir(), "the first line was scanned")
 	guard := gitFirst(t, "printf 'diff --git a/f.md b/f.md\\n--- /dev/null\\n+++ b/f.md\\n@@ -0,0 +1,2 @@\\n"+
 		"+the runner answers at "+theHost+"\\n'\n"+
-		"i=0\nwhile [ ! -e '"+seen+"' ]; do\n  i=$((i+1))\n  [ \"$i\" -gt 100 ] && exit 7\n  sleep 0.1\ndone\n"+
+		"i=0\nwhile [ ! -e "+shQuote(seen)+" ]; do\n  i=$((i+1))\n  [ \"$i\" -gt 100 ] && exit 7\n  sleep 0.1\ndone\n"+
 		"printf '+a second line of nothing\\n'\n")
 	pass, err := guard.rulePass(bound(t), "the push")
 	if err != nil {
@@ -165,7 +165,7 @@ func holdUntilEnd(t *testing.T) string {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Remove(held) })
-	return "while [ -e '" + held + "' ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.1; done"
+	return "while [ -e " + shQuote(held) + " ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.1; done"
 }
 
 // No holder outlives its test: five loops of holdUntilEnd, each started by a subtest, have all
@@ -249,8 +249,8 @@ func TestAReadEndsAfterGitExitsThoughAProcessHoldsItsOutput(t *testing.T) {
 	want := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
 	git := fixturegit.CompiledGit(t)
 	guard := gitFirst(t, "case \" $* \" in\n"+
-		"*\" --unified=0 \"*) ("+holdUntilEnd(t)+") 2>/dev/null &\n  exec '"+git+"' \"$@\" ;;\n"+
-		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+		"*\" --unified=0 \"*) ("+holdUntilEnd(t)+") 2>/dev/null &\n  exec "+shQuote(git)+" \"$@\" ;;\n"+
+		"*) exec "+shQuote(git)+" \"$@\" ;;\nesac\n")
 	var seen waits
 	guard.onWait = seen.record
 	var err error
@@ -304,8 +304,8 @@ func TestWaitAnswersAnErrorWhereAProcessHoldsBothOfGitsOutputs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
 			guard := gitFirst(t, "case \" $* \" in\n"+
-				"*\" --unified=0 \"*) ("+holdUntilEnd(t)+") &\n  '"+git+"' \"$@\" || exit\n  "+tc.then+" ;;\n"+
-				"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+				"*\" --unified=0 \"*) ("+holdUntilEnd(t)+") &\n  "+shQuote(git)+" \"$@\" || exit\n  "+tc.then+" ;;\n"+
+				"*) exec "+shQuote(git)+" \"$@\" ;;\nesac\n")
 			var seen waits
 			guard.onWait = seen.record
 			var err error
@@ -514,8 +514,8 @@ func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.
 	git := fixturegit.CompiledGit(t)
 	hold := holdUntilEnd(t)
 	guard := gitFirst(t, "case \" $* \" in\n"+
-		"*\" --unified=0 \"*) setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  '"+git+"' \"$@\"\n  "+hold+" ;;\n"+
-		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
+		"*\" --unified=0 \"*) setsid sh -c \""+strings.ReplaceAll(hold, "\"", "\\\"")+"\" 2>/dev/null &\n  "+shQuote(git)+" \"$@\"\n  "+hold+" ;;\n"+
+		"*) exec "+shQuote(git)+" \"$@\" ;;\nesac\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	var err error

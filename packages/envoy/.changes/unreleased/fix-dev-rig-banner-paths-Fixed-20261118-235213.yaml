@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The local stacks' banners (`scripts/dev-stack.sh`, `dev-broker.sh`, `dev-airlock.sh`) and the
+  exports `scripts/airlock-clients.sh` prints now quote each path for the shell that sources them
+  (`printf %q`), so a work directory under a `TMPDIR` whose name holds a space, a quote or a glob
+  character is one word there; before, sourcing such a banner split the path. A path with none of
+  those prints as before. `scripts/airlock-check.sh` quotes the paths in the steps it writes the
+  same way, and names its Pulumi state directory as a percent-encoded `file:` URL, since Pulumi took
+  what followed a raw `?` in the path for the URL's query.
+time: 2026-11-18T23:52:13Z
+custom:
+    Issue: fix-dev-rig-banner-paths

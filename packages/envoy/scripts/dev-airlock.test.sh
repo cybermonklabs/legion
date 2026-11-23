@@ -41,6 +41,8 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "${project_root}/packages/envoy/scripts/lib/rig-banner.sh"
 readonly driver="${project_root}/packages/envoy/scripts/dev-airlock.sh"
 temporary_dir="$(mktemp -d)"
 readonly temporary_dir
@@ -310,7 +312,7 @@ run_stack() {
 
 wait_for_ready() {
   for _ in $(seq 1 300); do
-    grep -q '^dev-airlock: ready\.$' "$log" 2>/dev/null && return 0
+    rig_banner_complete "$log" "${DEV_AIRLOCK_BANNER[@]}" && return 0
     kill -0 "$driver_pid" 2>/dev/null || break
     sleep 0.1
   done
@@ -330,12 +332,32 @@ stop_stack() {
   driver_pid=""
 }
 
-# exported reads one "export NAME=value" line of dev-airlock.sh's own banner: the last such
-# line in the log, since dev-broker.sh's banner, printed first, exports some of the same names
-# for its own broker.
+# exported reads one "export NAME=value" line of dev-airlock.sh's own banner, from that banner's own
+# block of the log alone (lib/rig-banner.sh): dev-broker.sh's banner, printed first, exports some of
+# the same names for its own broker, and the stack's processes print lines of their own. It reads
+# the line as the shell that sources it does: both banners print each path with printf %q, so the
+# line is evaluated, in a subshell, rather than cut at its "=".
 exported() {
-  grep -oE "export $1=[^[:space:]]+" "$log" | tail -n1 | cut -d= -f2- || true
+  rig_banner_value "$log" "${DEV_AIRLOCK_BANNER[@]}" "$1"
 }
+
+# A process's line after the banner that names an export of the same name, and would run a command
+# if evaluated, is not the banner's: exported reads the banner's value and runs nothing. The log is
+# the run's own, which run_stack below writes anew.
+decoy_ran="${temporary_dir}/exported-decoy-ran"
+{
+  printf '%s\n\n' "${DEV_AIRLOCK_BANNER[0]}"
+  printf '  export AIRLOCK_DIR=%s\n' "$(printf %q "${temporary_dir}/the banner's")"
+  printf '%s\n' "${DEV_AIRLOCK_BANNER[1]}"
+  # shellcheck disable=SC2016 # a literal $(...), which only a reader's eval runs
+  printf 'fake: a pasted line: export AIRLOCK_DIR=$(touch %s)/decoy\n' "$(printf %q "$decoy_ran")"
+} >"$log"
+decoy_value="$(exported AIRLOCK_DIR)"
+if [[ -e "$decoy_ran" || "$decoy_value" != "${temporary_dir}/the banner's" ]]; then
+  echo "FAIL: exported read '$decoy_value' and ran a line of the log after the banner: $([[ -e "$decoy_ran" ]] && echo yes || echo no)" >&2
+  exit 1
+fi
+echo "PASS: exported reads the banner's own value and runs no line of the log after it"
 
 # --- The default run: two brokers. ---
 run_stack

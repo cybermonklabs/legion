@@ -23,8 +23,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
+// pathField is a setup marker's path field as the setup script writes it: the path's length in
+// bytes, a ':', and the path.
+func pathField(name, path string) string { return name + "=" + strconv.Itoa(len(path)) + ":" + path }
+
 func TestParseSetupMarker(t *testing.T) {
-	const head = "setup:architect:pod-1/3 cwd=/legion/workspaces/sjawhar/legion-smoke/s4a-1 uid=1000 ppid=41 git_from=/tmp helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok"
+	head := "setup:architect:pod-1/3 " + pathField("cwd", "/legion/workspaces/sjawhar/legion-smoke/s4a-1") + " uid=1000 ppid=41 " +
+		pathField("git_from", "/tmp") + " helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok"
 	want := setupMarker{
 		role: "architect", incarnation: "pod-1/3", cwd: "/legion/workspaces/sjawhar/legion-smoke/s4a-1",
 		uid: "1000", ppid: "41", gitFrom: "/tmp", helper: "expected", helperCount: "1", helperEffective: "1", helperLines: "2",
@@ -51,8 +56,39 @@ func TestParseSetupMarker(t *testing.T) {
 	}
 }
 
+// cwd and git_from are paths, which hold a space wherever the directory a unit test runs the
+// setup script in does, and may hold text that reads as a field. Each is read by its length, so it
+// stays whole, and a field after a path, whatever its name's spelling, is a field of its own: a
+// repeated or unknown one is refused, as is a path the script did not write by its length.
+func TestParseSetupMarkerKeepsAPathWithASpaceWhole(t *testing.T) {
+	const cwd, gitFrom = "/tmp with space/a b/start", "/tmp with space/tmp.x y helper=other"
+	line := "setup:architect:pod-1/3 " + pathField("cwd", cwd) + " uid=1000 ppid=41 " + pathField("git_from", gitFrom) +
+		" helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok git_without_helper=refused git_without_helper_error="
+	got, err := parseSetupMarker(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.cwd != cwd || got.gitFrom != gitFrom || got.uid != "1000" || got.helper != "expected" || got.helperLines != "2" {
+		t.Errorf("parseSetupMarker(%q) = %#v, want cwd %q and git_from %q whole", line, got, cwd, gitFrom)
+	}
+	for name, malformed := range map[string]string{
+		"a repeated uid after the cwd path":                strings.Replace(line, " uid=1000", " uid=1000 uid=1001", 1),
+		"an unknown field after the git_from path":         strings.Replace(line, " helper=expected", " extra=2 helper=expected", 1),
+		"an unknown field with a digit after the git_from": strings.Replace(line, " helper=expected", " extra2=2 helper=expected", 1),
+		"an unknown upper-case field after the git_from":   strings.Replace(line, " helper=expected", " EXTRA=2 helper=expected", 1),
+		"a cwd path written without its length":            strings.Replace(line, pathField("cwd", cwd), "cwd="+cwd, 1),
+		"a git_from path longer than its length says":      strings.Replace(line, pathField("git_from", gitFrom), "git_from=4:"+gitFrom, 1),
+		"a git_from length past the end of the record":     strings.Replace(line, pathField("git_from", gitFrom), "git_from=999:"+gitFrom, 1),
+		"a git_from length that is not a number of bytes":  strings.Replace(line, pathField("git_from", gitFrom), "git_from=+4:/tmp", 1),
+	} {
+		if _, err := parseSetupMarker(malformed); err == nil {
+			t.Errorf("a marker with %s parsed, want a refusal: %q", name, malformed)
+		}
+	}
+}
+
 func TestParseSetupMarkerRejectsMalformedRecords(t *testing.T) {
-	const fields = "cwd=/legion uid=1000 ppid=1 git_from=/tmp"
+	const fields = "cwd=7:/legion uid=1000 ppid=1 git_from=4:/tmp"
 	const control = " git_without_helper=refused git_without_helper_error="
 	for _, line := range []string{
 		"architect:pod-1/3 " + fields + " helper=expected helper_count=1 helper_effective=1 helper_lines=2 git=ok" + control,
@@ -1028,13 +1064,15 @@ func newHelperLog(t *testing.T) *helperLog {
 	return &helperLog{t: t, dir: dir, ran: filepath.Join(dir, "ran"), realGit: realGit}
 }
 
+// helper writes a fake helper that records name and returns it as a credential.helper value. git
+// hands that value to a shell, and takes a path for a command only behind `!` once it is quoted.
 func (h *helperLog) helper(name string) string {
 	h.t.Helper()
 	path := filepath.Join(h.dir, "helper-"+name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n[ \"$1\" = get ] && echo "+name+" >>"+h.ran+"\nexit 0\n"), 0o700); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n[ \"$1\" = get ] && echo "+name+" >>"+shellQuote(h.ran)+"\nexit 0\n"), 0o700); err != nil {
 		h.t.Fatal(err)
 	}
-	return path
+	return "!" + shellQuote(path)
 }
 
 func (h *helperLog) repo(name string, keys ...[2]string) string {

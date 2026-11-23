@@ -9,6 +9,7 @@ import { describe, expect } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { shellQuote } from "../local-instance-support";
 import {
   blackhole,
   curl,
@@ -85,7 +86,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           },
           {
             path: pathWithCurl(
-              `case "$*" in *telnet://${blackhole.host}:${blackhole.port}) echo " $* " >>${asked} ;; esac`
+              `case "$*" in *telnet://${blackhole.host}:${blackhole.port}) echo " $* " >>${shellQuote(asked)} ;; esac`
             ),
           }
         );

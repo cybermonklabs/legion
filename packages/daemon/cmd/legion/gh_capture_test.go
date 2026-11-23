@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -60,7 +62,7 @@ func realGHForCapture(t *testing.T) string {
 func ghWrapperFirstOnPath(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	wrapper := "#!/bin/sh\n" + testMainEnv + "=1 exec '" + os.Args[0] + "' gh \"$@\"\n"
+	wrapper := "#!/bin/sh\n" + testMainEnv + "=1 exec " + shellprefix.Literal(os.Args[0]) + " gh \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(wrapper), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -109,11 +111,11 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	}
 	home := t.TempDir()
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "legion"), []byte("#!/bin/sh\n"+testMainEnv+"=1 exec '"+os.Args[0]+"' \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "legion"), []byte("#!/bin/sh\n"+testMainEnv+"=1 exec "+shellprefix.Literal(os.Args[0])+" \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// The pane's `gh` wrapper, first on PATH, as the runtimes install it.
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexec '"+filepath.Join(bin, "legion")+"' gh \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nexec "+shellprefix.Literal(filepath.Join(bin, "legion"))+" gh \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	base := []string{
@@ -204,7 +206,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// usage with <URL> for <url>, as no gh this was read from does, stands for a later gh's help.
 	ran := filepath.Join(home, "ran")
 	config := filepath.Join(ghconfig.Dir(root, "acme"), ghconfig.ConfigFile)
-	aliases := ghconfig.Config + "aliases:\n    co: pr checkout\n    pv: pr view -R sjawhar/legion\n    pr pv2: pr view -R sjawhar/legion\n    shx: '!touch " + ran + "-shx'\n"
+	aliases := ghconfig.Config + "aliases:\n    co: pr checkout\n    pv: pr view -R sjawhar/legion\n    pr pv2: pr view -R sjawhar/legion\n    shx: " + strconv.Quote("!touch "+shellprefix.Literal(ran+"-shx")) + "\n"
 	if err := os.WriteFile(config, []byte(aliases), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -212,11 +214,11 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	if err := os.MkdirAll(extension, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(extension, "gh-hello"), []byte("#!/bin/sh\ntouch '"+ran+"-hello'\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(extension, "gh-hello"), []byte("#!/bin/sh\ntouch "+shellprefix.Literal(ran+"-hello")+"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	drift := filepath.Join(home, "gh-drift")
-	if err := os.WriteFile(drift, []byte("#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  '"+gh+"' \"$@\" | sed 's/<url>/<URL>/g'\n  exit\nfi\nexec '"+gh+"' \"$@\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(drift, []byte("#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  "+shellprefix.Literal(gh)+" \"$@\" | sed 's/<url>/<URL>/g'\n  exit\nfi\nexec "+shellprefix.Literal(gh)+" \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	// Every command of the three reviews' reproductions, and controls: each either sends GitHub
@@ -381,7 +383,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// guard never read; the Copilot API host GitHub names is handed the token by `gh agent-task`.
 	// Each is refused before gh runs, whatever names the editor, and the editor never runs.
 	editor := filepath.Join(home, "editor.sh")
-	if err := os.WriteFile(editor, []byte("#!/bin/sh\ntouch '"+ran+"-editor'\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\ntouch "+shellprefix.Literal(ran+"-editor")+"\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -406,7 +408,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// editor fails, so nothing it wrote is sent. Measured with the editor left to gh's own choice:
 	// nano ran in both, and discussion create posted what it wrote.
 	nano := t.TempDir()
-	if err := os.WriteFile(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch '"+ran+"-nano'\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(nano, "nano"), []byte("#!/bin/sh\ntouch "+shellprefix.Literal(ran+"-nano")+"\nprintf 'from nano\\n' > \"$1\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	editors := []string{"GH_EDITOR=" + editor, "EDITOR=" + editor, "VISUAL=" + editor, "PATH=" + nano + ":" + bin + ":" + filepath.Dir(git) + ":/usr/bin:/bin"}
@@ -808,7 +810,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	// it ran no push.
 	gitRecord := filepath.Join(t.TempDir(), "git-record")
 	recorder := t.TempDir()
-	recordingGit := "#!/bin/sh\n{ printf '%s\\t' \"$*\"; env | grep '^GIT_CONFIG_' | sort | tr '\\n' ' '; echo; } >>'" + gitRecord + "'\nexec '" + git + "' \"$@\"\n"
+	recordingGit := "#!/bin/sh\n{ printf '%s\\t' \"$*\"; env | grep '^GIT_CONFIG_' | sort | tr '\\n' ' '; echo; } >>" + shellprefix.Literal(gitRecord) + "\nexec " + shellprefix.Literal(git) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(recorder, "git"), []byte(recordingGit), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -961,7 +963,13 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		t.Errorf("gh auth setup-git sent %+v, want nothing", sent)
 	}
 	written, err := os.ReadFile(gitConfig)
-	if wrapperHelper := "helper = !" + filepath.Join(bin, "gh") + " auth git-credential"; err != nil || !strings.Contains(string(written), wrapperHelper) {
+	// gh quotes the path it names only when the path holds a space, `$` or `\` (cli/cli
+	// gitcredentials.shellQuote), so the line it wrote is compared in that form.
+	wrapper := filepath.Join(bin, "gh")
+	if strings.ContainsAny(wrapper, " $\\") {
+		wrapper = "'" + wrapper + "'"
+	}
+	if wrapperHelper := "helper = !" + wrapper + " auth git-credential"; err != nil || !strings.Contains(string(written), wrapperHelper) {
 		t.Fatalf("the helper gh wrote = %q, %v; want %q", written, err, wrapperHelper)
 	}
 	ghGit := []string{"GIT_CONFIG_GLOBAL=" + gitConfig, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.https://github.com.useHttpPath", "GIT_CONFIG_VALUE_0=true"}

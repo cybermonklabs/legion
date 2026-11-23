@@ -38,7 +38,7 @@ import (
 // operator's current role is resolved per launch (TestInnerCommand).
 func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home, work := filepath.Join(dir, "home"), filepath.Join(dir, "work")
 	if err := os.MkdirAll(work, 0o700); err != nil {
 		t.Fatal(err)

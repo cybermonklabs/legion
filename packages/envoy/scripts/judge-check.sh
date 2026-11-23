@@ -70,6 +70,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$SCRIPT_DIR/lib/rig-banner.sh"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # psql is given a database URL without its password, and the password in PGPASSWORD.
 # shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
@@ -267,16 +269,19 @@ await() { # <what> <seconds> <log> <pattern> <pid>
 	exit 1
 }
 
-# start_stack runs dev-airlock.sh with the options its caller names, waits for its banner, and
-# exports everything that banner names. dev-broker.sh's own export block is in the same log and
-# is read first, so where the two name one variable the airlock's wins, as the banner says.
+# start_stack runs dev-airlock.sh with the options its caller names, waits for its banner to be
+# whole, and exports everything that banner names. dev-broker.sh's own banner is in the same log and
+# is read first, so where the two name one variable the airlock's wins, as the banner says. Each is
+# read from its own block of the log alone (lib/rig-banner.sh): the log holds the stack's processes'
+# output too, and a line there that looks like an export runs nothing.
 start_stack() {
 	echo "judge-check: starting the stack (dev-airlock.sh $*)..." >&2
 	: >"$STACK_LOG"
 	bash "$SCRIPT_DIR/dev-airlock.sh" "$@" >"$STACK_LOG" 2>&1 &
 	STACK_PID=$!
-	await "the stack" 900 "$STACK_LOG" '^dev-airlock: ready\.$' "$STACK_PID"
-	eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
+	await "the stack" 900 "$STACK_LOG" "^${DEV_AIRLOCK_BANNER[1]//./\\.}\$" "$STACK_PID"
+	rig_banner_export "$STACK_LOG" "${DEV_BROKER_BANNER[@]}"
+	rig_banner_export "$STACK_LOG" "${DEV_AIRLOCK_BANNER[@]}"
 	mapfile -t BROKER_API_ADDRS < <(sed -n 's/^  broker [0-9]*: *api \([^,]*\),.*/\1/p' "$STACK_LOG")
 	mapfile -t BROKER_PROXY_ADDRS < <(sed -n 's/^  broker [0-9]*:.*proxy \([^,]*\),.*/\1/p' "$STACK_LOG")
 	mapfile -t BROKER_PIDS < <(sed -n 's/^  broker [0-9]*:.*pid \([0-9]*\),.*/\1/p' "$STACK_LOG")

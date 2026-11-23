@@ -212,6 +212,9 @@ jobs:
       - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
         run: bash scripts/callout-check.test.sh
         working-directory: packages/envoy
+      - name: Banner test for lib/rig-banner.sh, the rigs' banner readers (logs only; no stack)
+        run: bash scripts/lib/rig-banner.test.sh
+        working-directory: packages/envoy
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: bash scripts/dev-postgres.test.sh
         working-directory: packages/envoy

@@ -226,6 +226,8 @@ withholds() {
 }
 # shellcheck source=scripts/e2e/lib/codex-host.sh
 source "$root/scripts/e2e/lib/codex-host.sh"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$root/packages/envoy/scripts/lib/rig-banner.sh"
 [ -n "$pg_dsn" ] || refuse "name a Postgres server it may create databases on: LEGION_TEST_PG_DSN or DATABASE_URL"
 for tool in bun psql curl jq python3; do
   command -v "$tool" >/dev/null || refuse "$tool is not on PATH"
@@ -451,7 +453,7 @@ LEGION_TEST_PG_DSN=$pg_dsn TMPDIR=$stack_tmp bash "$root/packages/envoy/scripts/
   >"$stack_log" 2>&1 &
 stack_pid=$!
 stack_ready() {
-  grep -q '^dev-stack: ready\.' "$stack_log" 2>/dev/null && return 0
+  rig_banner_complete "$stack_log" "${DEV_STACK_BANNER[@]}" && return 0
   kill -0 "$stack_pid" 2>/dev/null || {
     tail -n 30 "$stack_log" >&2
     refuse "dev-stack.sh stopped before it was ready"
@@ -459,16 +461,11 @@ stack_ready() {
   return 1
 }
 wait_for 1200 stack_ready || refuse "dev-stack.sh was not ready within 20 minutes; see $stack_log"
-# The banner's exports, read as values: each `  export NAME=value` line, a quoted value unquoted.
-while IFS= read -r line; do
-  name=${line#  export }
-  value=${name#*=}
-  name=${name%%=*}
-  value=${value#\"}
-  value=${value%\"}
-  [ "$name" = PATH ] && value="${value%%:*}:$PATH"
-  printf -v "$name" '%s' "$value"
-done < <(sed -n 's/^\(  export [A-Z_0-9]*=.*\)$/\1/p' "$stack_log")
+# The banner's exports, from its own block of the log alone (packages/envoy/scripts/lib/rig-banner.sh):
+# the log holds the stack's processes' output too, and a line there that looks like an export runs
+# nothing. Each line is read as the shell that sources it reads it, since dev-stack.sh prints each
+# path with printf %q. packages/envoy/scripts/callout-check.sh reads the banner the same way.
+rig_banner_read "$stack_log" "${DEV_STACK_BANNER[@]}" || refuse "the banner of $stack_log was not read"
 for required in AGENT_SECRETS_URL ENVOY_URL ENVOY_TOKEN NATS_URLS DEV_STACK_DIR DEV_STACK_PID \
   DEV_STACK_EXCHANGE_TOKEN_FILE DEV_STACK_POD_TOKEN_FILE DEV_STACK_REGISTRAR_TOKEN_FILE \
   DEV_STACK_NATS_MONITOR_URL; do

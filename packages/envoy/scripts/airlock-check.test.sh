@@ -142,9 +142,11 @@ case "$*" in
 esac
 printf 200
 CURL
-# Pulumi's gcpkms provider is given the gcloud login as its access token.
+# Pulumi's gcpkms provider is given the gcloud login as its access token. The stand-in also keeps
+# the state URL the stack init was given, beside the program it ran in.
 cat >"$work/consumer-bin/pulumi" <<'PULUMI'
 #!/usr/bin/env bash
+[[ "$1 $2" == 'stack init' ]] && printf '%s' "${PULUMI_BACKEND_URL:-unset}" >backend-url
 [[ "$1 $2" == 'stack init' ]] && printf 'error: token %s\n' "${GOOGLE_OAUTH_ACCESS_TOKEN:-unset}"
 PULUMI
 chmod +x "$consumer/scripts/gcloud-broker" "$work/consumer-bin/secret-run" "$work/consumer-bin/curl" "$work/consumer-bin/pulumi"
@@ -172,6 +174,19 @@ run_consumers
 label='operator inputs build matching profiles, store names, prepare consumers and run valid commands'; check test "$status" -eq 0
 label='the gcloud login, selected tier and both Google Workspace logins reach the real consumer boundary'
 check test "$output" = $'kms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secret-run GWS_EXAMPLE_VIEW_2\ngws=200\nadmin=200'
+
+# The Cloud KMS stack's state directory reaches Pulumi as one file: URL, whatever the work
+# directory's name (TMPDIR's, here) holds: a raw '?' or '#' would start a query or a fragment, and
+# Pulumi refuses the rest of such a path ("invalid query parameter"). Decoded, the URL is the
+# directory.
+backend="$(cat "$work/k7/pulumi/backend-url")"
+printf -v decoded '%b' "$(printf '%s' "${backend#file://}" | sed 's/\\/\\\\/g; s/%/\\x/g')"
+label='the Cloud KMS stack init is given its state directory as a file: URL'; check test "${backend#file://}" != "$backend"
+label='that URL holds no raw ? or #'; check test "${backend//[?#]/}" = "$backend"
+label='that URL decodes to the state directory'; check test "$decoded" = "$work/k7/pulumi/state"
+# k7_consumer_file_url escapes each byte a URL reader or a shell would read.
+label='a path holding a space, ?, #, single quote, % and a two-byte character is one file: URL'
+check test "$(k7_consumer_file_url $'/x y/q?x/h#x/sq\'x/p%x/\xc3\xa9')" = 'file:///x%20y/q%3Fx/h%23x/sq%27x/p%25x/%C3%A9'
 
 # Control: the preamble with the read and administrator logins swapped. The read call is then sent
 # the administrator's login and the administrator call the read login, which the fake curl refuses.

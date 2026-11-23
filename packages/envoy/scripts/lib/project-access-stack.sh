@@ -135,9 +135,10 @@ project_access_dispatch_env() {
 }
 
 # project_access_exports prints the banner's lines for PRIV's pod, the option and the airlock, as
-# the banner prints every export: two spaces, then `export NAME=value`. dev-stack.sh's banner
-# prints them after DEV_STACK_METADATA_SCRIPT's, in its one write. In a run without
-# --project-access the airlock's three values are empty.
+# the banner prints every export: two spaces, then `export NAME=value`, each path with printf %q,
+# so it is one shell word for the shell that sources the line. dev-stack.sh's banner prints them
+# after DEV_STACK_METADATA_SCRIPT's. In a run without --project-access the
+# airlock's three values are empty.
 project_access_exports() {
   cat <<EOF
   export DEV_STACK_PRIV_PROJECT=$PRIV_PROJECT
@@ -145,12 +146,12 @@ project_access_exports() {
   export DEV_STACK_PRIV_SERVICE=$PRIV_SERVICE
   export DEV_STACK_PRIV_ACCOUNT=$PRIV_ACCOUNT
   export DEV_STACK_PRIV_SESSION=$PRIV_SESSION
-  export DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE=$PRIV_EXCHANGE_TOKEN_FILE
-  export DEV_STACK_PRIV_POD_TOKEN_FILE=$PRIV_POD_TOKEN_FILE
+  export DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE=$(printf %q "$PRIV_EXCHANGE_TOKEN_FILE")
+  export DEV_STACK_PRIV_POD_TOKEN_FILE=$(printf %q "$PRIV_POD_TOKEN_FILE")
   export DEV_STACK_PROJECT_ACCESS=$PROJECT_ACCESS
   export DEV_STACK_PRIV_SECRET=$PRIV_SECRET
   export DEV_STACK_AIRLOCK_PROXY_URL=$AIRLOCK_PROXY_URL
   export DEV_STACK_AIRLOCK_BOUND_URL=${AIRLOCK_S_URL:-}
-  export DEV_STACK_AIRLOCK_CA_CERT_FILE=${AIRLOCK_CA_CERT_FILE:-}
+  export DEV_STACK_AIRLOCK_CA_CERT_FILE=$([ -z "${AIRLOCK_CA_CERT_FILE:-}" ] || printf %q "$AIRLOCK_CA_CERT_FILE")
 EOF
 }

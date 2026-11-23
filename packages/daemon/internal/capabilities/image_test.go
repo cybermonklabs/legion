@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // fakeOmp answers the two Oh My Pi commands the checks run as this pod's omp answers them, by
@@ -92,7 +93,7 @@ func (s stubs) writeLock(content string) {
 // variables extra adds.
 func (s stubs) image(extra ...string) Image {
 	return Image{
-		Launch:        s.omp,
+		Launch:        shellprefix.Literal(s.omp),
 		Env:           append([]string{"PATH=" + s.bin, "HOME=" + s.home, "OMP_PROFILE=legion"}, extra...),
 		WorkDir:       s.t.TempDir(),
 		ClaudeRoot:    s.claude,
@@ -326,7 +327,7 @@ func TestCheckImageSkipBrowserLeavesTheBrowserRowUnchecked(t *testing.T) {
 	t.Run("a chromium on PATH is not run", func(t *testing.T) {
 		s := newStubs(t)
 		ran := filepath.Join(t.TempDir(), "ran")
-		s.install("chromium", "#!/bin/sh\ntouch "+ran+"\nexit 1\n")
+		s.install("chromium", "#!/bin/sh\ntouch "+shellprefix.Literal(ran)+"\nexit 1\n")
 		img := s.image()
 		img.SkipBrowser = true
 
@@ -522,12 +523,12 @@ func TestEveryImageRowHasACheck(t *testing.T) {
 func TestCheckImageMarksEveryImageRowUnansweredUnderAnEndedContext(t *testing.T) {
 	s := newStubs(t)
 	ran := filepath.Join(t.TempDir(), "ran")
-	record := "#!/bin/sh\n: >'" + ran + "'\n"
+	record := "#!/bin/sh\n: >" + shellprefix.Literal(ran) + "\n"
 	for _, name := range []string{"chromium", "go"} {
 		s.install(name, record)
 	}
 	img := s.image()
-	img.Launch = "sh -c ': >\"$0\"' " + ran
+	img.Launch = "sh -c ': >\"$0\"' " + shellprefix.Literal(ran)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -602,7 +603,7 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 	limit := commandTimeout
 	s := newStubs(t)
 	marker := filepath.Join(t.TempDir(), "started")
-	s.install("chromium", "#!/bin/sh\n: >'"+marker+"'\ntrap '/bin/sleep 0.9; exit 1' TERM\n/bin/sleep 30 & wait\n")
+	s.install("chromium", "#!/bin/sh\n: >"+shellprefix.Literal(marker)+"\ntrap '/bin/sleep 0.9; exit 1' TERM\n/bin/sleep 30 & wait\n")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// seen says whether the marker appeared; once it has, the context ends 0.4 s after the timeout
@@ -776,7 +777,7 @@ func TestReadModelFallback(t *testing.T) {
 	}{
 		"off by default":                 {s.image(), bootprobe.ModelFallbackOff},
 		"on":                             {s.image("LEGION_TEST_FALLBACK_ON=1"), bootprobe.ModelFallbackOn},
-		"the launch is a shell fragment": {Image{Launch: "/usr/bin/env LEGION_TEST_FALLBACK_ON=1 " + s.omp, Env: s.image().Env, WorkDir: t.TempDir()}, bootprobe.ModelFallbackOn},
+		"the launch is a shell fragment": {Image{Launch: "/usr/bin/env LEGION_TEST_FALLBACK_ON=1 " + shellprefix.Literal(s.omp), Env: s.image().Env, WorkDir: t.TempDir()}, bootprobe.ModelFallbackOn},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := ReadModelFallback(context.Background(), testCase.img)
@@ -787,9 +788,9 @@ func TestReadModelFallback(t *testing.T) {
 	}
 	t.Run("a failing command", func(t *testing.T) {
 		img := s.image()
-		img.Launch = s.omp + " --bogus"
+		img.Launch = shellprefix.Literal(s.omp) + " --bogus"
 		_, err := ReadModelFallback(context.Background(), img)
-		want := s.omp + " --bogus config get retry.modelFallback --json exited 64: fake omp: unexpected argv: --bogus config get retry.modelFallback --json"
+		want := shellprefix.Literal(s.omp) + " --bogus config get retry.modelFallback --json exited 64: fake omp: unexpected argv: --bogus config get retry.modelFallback --json"
 		if err == nil || err.Error() != want {
 			t.Errorf("ReadModelFallback = %v, want %q", err, want)
 		}
@@ -800,7 +801,7 @@ func TestReadModelFallback(t *testing.T) {
 			t.Fatal(err)
 		}
 		img := s.image()
-		img.Launch = omp
+		img.Launch = shellprefix.Literal(omp)
 		_, err := ReadModelFallback(context.Background(), img)
 		if err == nil || !strings.Contains(err.Error(), "printed no JSON object with a boolean value: {\"key\":\"retry.modelFallback\",\"value\":null}") {
 			t.Errorf("ReadModelFallback = %v, want an error quoting the output", err)

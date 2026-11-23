@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 const testTimeout = 30 * time.Second
@@ -159,7 +160,7 @@ func testTools(t *testing.T) map[string]string {
 			t.Fatalf("provisioning's tests drive a real %s: %v", tool, err)
 		}
 		wrapper := filepath.Join(dir, tool)
-		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec '" + path + "' \"$@\"\n"
+		script := "#!/bin/sh\n[ -z \"${GIT_ALLOW_PROTOCOL+set}\" ] || export GIT_ALLOW_PROTOCOL=\"$GIT_ALLOW_PROTOCOL:file\"\nexec " + shellprefix.Literal(path) + " \"$@\"\n"
 		if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -695,7 +696,8 @@ func TestFetchClonesBareReadingNoConfigurationButItsOwn(t *testing.T) {
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", config)
 	t.Setenv("GIT_CONFIG_SYSTEM", config)
-	t.Setenv("GIT_CONFIG_PARAMETERS", "'init.templatedir'='"+template+"'")
+	// git reads GIT_CONFIG_PARAMETERS with the shell's single-quote rules.
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'init.templatedir'="+shellprefix.Literal(template))
 	req := fetchRequest(t)
 	// The clock stands still, so the clone is given the whole bound it shares with the reads before.
 	req.Clock = newTestClock()

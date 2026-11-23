@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // agentModelPlugin lays out a pi-legion under dir whose one skill dispatches three task agents
@@ -44,9 +45,11 @@ func agentModelPlugin(t *testing.T, dir string) string {
 // leaves `deep` unset, naming deep-worker, the implementer's coding agent, and the role prompt that
 // dispatches it: the task tool would otherwise run every coding task on the implementer's own model
 // without a word. The profile's providers listen nowhere, so no model is called and no credential
-// the machine carries decides the run.
+// the machine carries decides the run. Its paths sit under testbin.OMPDir, which a '?' in TMPDIR
+// cannot reach: Bun, which Oh My Pi runs on, loads no module from a path holding one.
 func TestTheAgentModelCheckOnTheRealOhMyPi(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it sets environment variables of the whole process (testbin.OMPDir points
+	// TMPDIR at its directory).
 	omp := testbin.OMP(t)
 	const models = "providers:\n" +
 		"  fake:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n    apiKey: static-key\n" +
@@ -98,7 +101,7 @@ func TestTheAgentModelCheckOnTheRealOhMyPi(t *testing.T) {
 			want: []string{"task agent deep-worker (dispatched by ", "roles/implementer.md", "on its model @deep: role deep is not configured"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			dir := t.TempDir()
+			dir := testbin.OMPDir(t, omp)
 			home := filepath.Join(dir, "home")
 			testbin.OMPHome(t, omp, home)
 			agent := filepath.Join(home, ".omp", "profiles", "legion", "agent")
@@ -129,10 +132,10 @@ func TestTheAgentModelCheckOnTheRealOhMyPi(t *testing.T) {
 				installPlugins(t, omp, environ, envoyRoot, root)
 				// A pane loads the plugins through discovery, as the daemon's boot gate on tmux
 				// probes it.
-				err = pluginGate{env: env, workDir: dir, invocation: omp, timeout: defaultProbeTimeout, retry: bootprobe.Image,
+				err = pluginGate{env: env, workDir: dir, invocation: shellprefix.Word(omp), timeout: defaultProbeTimeout, retry: bootprobe.Image,
 					contract: 3, roleReferences: references, skipAgentModels: testCase.skip, log: log}.verify(context.Background())
 			} else {
-				err = ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
+				err = ProbeImage(context.Background(), ImageProbe{Omp: shellprefix.Word(omp), Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
 					SkipAgentModels: testCase.skip, RoleReferences: references, Log: log})
 			}
 
@@ -185,9 +188,10 @@ func stageSkills(t *testing.T, repository, pkg, dest string) {
 // prompts dispatch, which the image's plugin lacks, is refused naming the daemon's prompt file,
 // though the image's own prompts never name it.
 func TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it sets environment variables of the whole process (testbin.OMPDir points
+	// TMPDIR at its directory).
 	omp := testbin.OMP(t)
-	dir := t.TempDir()
+	dir := testbin.OMPDir(t, omp)
 	home := filepath.Join(dir, "home")
 	testbin.OMPHome(t, omp, home)
 	agent := filepath.Join(home, ".omp", "profiles", "legion", "agent")
@@ -211,7 +215,7 @@ func TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName(t *testing.T) {
 	daemonReferences := references("Consult `task(agent=\"oracle\")`, then `task(agent=\"daemon-only\")`.\n")
 	env := map[string]string{"HOME": home, "OMP_PROFILE": "legion", "PATH": "/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED": "true"}
 	probe := func(references promptrefs.Names) error {
-		return ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
+		return ProbeImage(context.Background(), ImageProbe{Omp: shellprefix.Word(omp), Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
 			RoleReferences: references, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
 	}
 	if err := probe(imageReferences); err != nil {

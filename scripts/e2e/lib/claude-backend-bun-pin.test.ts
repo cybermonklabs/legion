@@ -9,19 +9,26 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { plainPathDirectories, shellQuote } from "./script-functions";
 
 // claude-backend-tmux.sh builds claude-envoy with packages/claude-envoy/scripts/build.ts, which
 // refuses any Bun but the one the repository's .bun-version pins. A devbox whose `bun` is another
 // release must be refused in prerequisites, naming the pin, before the run builds or starts
 // anything, rather than failing later in the rig at the build line. Every tool is a stand-in, so
-// the run stops at its first step that needs a real one and touches nothing outside this directory.
+// the run stops at its first step that needs a real one and touches nothing outside this test's
+// own directories.
 const root = join(import.meta.dir, "..", "..", "..");
 const script = join(root, "scripts", "e2e", "claude-backend-tmux.sh");
 const pinned = readFileSync(join(root, ".bun-version"), "utf8").trim();
 const dir = temporaryDirectory("claude-backend-bun-pin-test");
 
 const bin = join(dir, "bin");
-const scratch = join(dir, "tmp");
+// The run's TMPDIR, made in the row: claude-backend-tmux.sh makes its work directory there, whose
+// app-key it hands write_github_apps as --key-dir before the pin check, and lib/github-apps.sh's
+// app_token_dir_ok refuses any character in that path but letters, digits and `_ . / -`, which
+// would put its refusal in the pin's place. So it comes from a base that holds no other
+// (plainPathDirectories); every other path of this file stays under `dir`.
+const scratchDirectory = plainPathDirectories("claude-backend-bun-pin-tmp");
 function stub(name: string, body: string) {
   writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`);
   chmodSync(join(bin, name), 0o755);
@@ -139,12 +146,11 @@ if (skip) {
 }
 const keyFile = join(dir, "model-key");
 
-// The run's own bin, home and scratch, built before the row runs: `dir` is reserved at module
+// The run's own bin and home, built before the row runs: `dir` is reserved at module
 // scope and made by the hook that reservation registered, and a run that selects no row of this
 // file runs neither hook and builds nothing.
 beforeAll(() => {
   mkdirSync(bin);
-  mkdirSync(scratch);
   for (const [name, body] of stubs) stub(name, body);
   for (const [name, path] of found) {
     if (path !== null) symlinkSync(path, join(bin, name));
@@ -155,6 +161,7 @@ beforeAll(() => {
 test.skipIf(skip)(
   "a bun other than the pinned release is refused in prerequisites, naming the pin",
   () => {
+    const scratch = scratchDirectory();
     const run = Bun.spawnSync(["bash", script], {
       env: {
         HOME: dir,
@@ -196,7 +203,7 @@ test("a tool that answers only for this process's own environment is passed over
   writeFileSync(
     join(shims, "probe"),
     `#!/bin/sh
-case ":$PATH:" in *:${real}:*) exec ${join(real, "probe")} "$@" ;; esac
+case ":$PATH:" in *:${shellQuote(real)}:*) exec ${shellQuote(join(real, "probe"))} "$@" ;; esac
 [ "$HOME" = ${JSON.stringify(process.env.HOME ?? "")} ] || { echo 'probe is not a valid shim' >&2; exit 1; }
 echo 'probe 1.0'
 `,

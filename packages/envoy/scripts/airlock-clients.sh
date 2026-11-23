@@ -268,14 +268,16 @@ fi
 #
 # stdout is exports and nothing else. AIRLOCK_BOTO3_PYTHON rather than anything on PATH: boto3
 # and requests are libraries, and what a check needs of them is the interpreter that imports them.
+# Each path is printed with printf %q, so it is one shell word for the eval that reads the line,
+# whatever the name of ROOT (TMPDIR's by default) holds.
 
 cat <<EOF
-export AIRLOCK_CLIENTS_DIR=$ROOT
-export PATH=$ROOT/bin:\$PATH
-export CLOUDSDK_PYTHON=$(command -v python3)
-export PULUMI_HOME=$PULUMI_HOME
-export UV_CACHE_DIR=$CACHE_DIR
-export AIRLOCK_BOTO3_PYTHON=$PYTHON_DIR/bin/python
+export AIRLOCK_CLIENTS_DIR=$(printf %q "$ROOT")
+export PATH=$(printf %q "$ROOT/bin"):\$PATH
+export CLOUDSDK_PYTHON=$(printf %q "$(command -v python3)")
+export PULUMI_HOME=$(printf %q "$PULUMI_HOME")
+export UV_CACHE_DIR=$(printf %q "$CACHE_DIR")
+export AIRLOCK_BOTO3_PYTHON=$(printf %q "$PYTHON_DIR/bin/python")
 export AIRLOCK_PULUMI_TAILSCALE_VERSION=$TAILSCALE_PLUGIN_VERSION
 EOF
 

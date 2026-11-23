@@ -13,6 +13,7 @@ import { mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
+import { shellQuote } from "../local-instance-support";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import type { Route } from "./outside-edge-refusals-edge";
 import {
@@ -421,8 +422,8 @@ describe(scriptName, () => {
     const script = [
       `#!${bash}`,
       "count=0",
-      `[ ! -r '${calls}' ] || read -r count <'${calls}'`,
-      `printf '%s\\n' "$((count + 1))" >'${calls}'`,
+      `[ ! -r ${shellQuote(calls)} ] || read -r count <${shellQuote(calls)}`,
+      `printf '%s\\n' "$((count + 1))" >${shellQuote(calls)}`,
       `if [ "$count" -lt ${working} ]; then`,
       '  [ "$1" != -a ] || shift 2',
       `  exec ${hostSha256sum} "$@"`,

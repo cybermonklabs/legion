@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // updateGolden rewrites the goldens this package pins, as the sandbox runtime's -update does.
@@ -160,7 +161,10 @@ func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
 		if !ok || word == "" {
 			t.Fatalf("the %s's pane command names no --append-system-prompt word:\n%s", role, inner)
 		}
-		baseline[string(role)] = launchBaseline{PiConfigFiles: told, AppendSystemPrompt: strings.Replace(word, stateDir, baselineStateDir, 1)}
+		// The word is the prompt file in the pane shell's quoting (shellprefix.Word); the golden
+		// holds the word written for a state directory of /state.
+		atState := shellprefix.Word(strings.Replace(promptFile, stateDir, baselineStateDir, 1))
+		baseline[string(role)] = launchBaseline{PiConfigFiles: told, AppendSystemPrompt: strings.Replace(word, shellprefix.Word(promptFile), atState, 1)}
 	}
 	if len(baseline) != len(baselineRoles()) {
 		t.Fatalf("the baseline holds %d roles, want %d", len(baseline), len(baselineRoles()))

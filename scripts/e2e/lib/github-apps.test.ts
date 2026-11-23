@@ -17,7 +17,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { appCredentialSources } from "./app-logins";
-import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
+import {
+  expectNoMissingHelpers,
+  nameMissingHelpers,
+  plainPathDirectories,
+  scriptFunctions,
+  shellQuote,
+} from "./script-functions";
 import {
   appPrivateKey,
   holdsNoKey,
@@ -30,6 +36,11 @@ import {
 const { url: standIn, seen, dir } = standInGitHub("github-apps-test");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
+// The directories lib/github-apps.sh writes into its credential commands: each row's $work, whose
+// app-key is write_github_apps' --key-dir, and each --token-dir. app_token_dir_ok refuses any
+// character there but letters, digits and `_ . / -`, so they sit under a base that holds no other
+// (plainPathDirectories); every other path of this file stays under `dir`, the system's tmpdir.
+const plainDirectory = plainPathDirectories("github-apps-test");
 
 // lib/github-apps.sh as a stage proof uses it: sourced under the stage scripts' shell options with
 // their check helpers, the inputs in the environment, and `then` run after. The seams are bun,
@@ -67,7 +78,7 @@ const reviewKeyFile = join(dir, "review-key.pem");
 // the file above, as an operator's own command is one. The lib never puts this text in a block:
 // it runs the command once, here on the driver, and the block carries a `cat` of the 0600 file it
 // wrote (write_github_apps --key-dir, or mint_app_tokens under --token-dir).
-const reviewKeyCommand = `cat -- ${reviewKeyFile}`;
+const reviewKeyCommand = `cat -- ${shellQuote(reviewKeyFile)}`;
 // Every directory and stand-in this file's children read, staged before the first row: `dir` is
 // reserved at module scope and made by the hook that reservation registered, so a run that
 // selects no row of this file stages nothing and leaves nothing behind.
@@ -140,7 +151,7 @@ const appInputs = {
 const busyboxSh = Bun.which("busybox") === null ? ["sh"] : ["busybox", "sh"];
 
 function spawnGithubApps(inputs: Record<string, string | undefined>, then: string) {
-  const work = mkdtempSync(join(dir, "apps."));
+  const work = plainDirectory("apps");
   // The child gets PATH with the stand-in first, a home of the test's own, the two seams and the
   // case's own inputs, never the caller's whole environment. A devbox shell exports this
   // deployment's own credential variables, and one of those left in would be swept up by the
@@ -498,7 +509,7 @@ echo "logins $github_app_logins"`
   // tokens come from the broker minted here, into owner-only files of a directory the caller
   // names, and the block's token commands then read those files alone.
   test("mint_app_tokens writes each release to an owner-only file atomically, one an owner and flag", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const argvLog = join(dir, "argv-mint");
     rmSync(argvLog, { force: true });
     const { code, stdout, stderr } = await githubApps(
@@ -543,7 +554,7 @@ echo minted`
   });
 
   test("mint_app_tokens writes the review App's key once to an owner-only file of its own, and asks the broker for the implement role alone", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const argvLog = join(dir, "argv-key-mint");
     rmSync(argvLog, { force: true });
     const { code, stdout, stderr } = await githubApps(
@@ -577,7 +588,7 @@ echo minted`
     // becomes of that: no file, and no byte of it in any message.
     const cases: [string, RegExp, string][] = [
       [
-        `cat -- ${reviewKeyFile}; echo 'the key command refused' >&2; exit 4`,
+        `cat -- ${shellQuote(reviewKeyFile)}; echo 'the key command refused' >&2; exit 4`,
         /^FAIL prerequisites: the review App \(App 202, LEGION_E2E_REVIEW_APP_KEY_COMMAND\) gave no private key for .*\/review\/key\.pem: the key command exited 4 \(124 is its 35-minute timeout\); no key is printed$/m,
         "the key command refused",
       ],
@@ -588,7 +599,7 @@ echo minted`
       ],
     ];
     for (const [command, named, relayed] of cases) {
-      const tokenDir = mkdtempSync(join(dir, "tokens."));
+      const tokenDir = plainDirectory("tokens");
       const { code, stdout, stderr } = await githubApps(
         { ...appInputs, TOKEN_DIR: tokenDir, LEGION_E2E_REVIEW_APP_KEY_COMMAND: command },
         `require_app_inputs implement review
@@ -607,7 +618,7 @@ echo minted`
   });
 
   test("a mint that fails fails the run naming the App, leaves no file of it and keeps the last good release", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     mkdirSync(join(tokenDir, "implement"), { mode: 0o700 });
     writeFileSync(join(tokenDir, "implement", "sjawhar.read.json"), "last good", { mode: 0o600 });
     const { code, stdout, stderr } = await githubApps(
@@ -636,7 +647,7 @@ echo minted`
   });
 
   test("a mint that prints nothing is refused, leaving no file", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const { code, stderr } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir, EMPTY_MINT: "1" },
       `require_app_inputs implement review
@@ -650,7 +661,7 @@ mint_app_tokens "$TOKEN_DIR" sjawhar`
   });
 
   test("an oversized release returns the documented overflow status and leaves no file", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir, OVERSIZED_MINT: "1" },
       `set +e
@@ -666,7 +677,7 @@ printf 'status %s\n' "$status"`
   });
 
   test("a release whose rename fails leaves no temporary file", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const failingMv = mkdtempSync(join(dir, "mv."));
     writeFileSync(join(failingMv, "mv"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     const { code, stdout, stderr } = await githubApps(
@@ -681,7 +692,7 @@ mint_app_tokens "$TOKEN_DIR" sjawhar`
   });
 
   test("the refresher mints the releases again on its period, never the key, and stops when told", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const refreshStore = mkdtempSync(join(dir, "store."));
     // The two profiles the refresher may ask for, the implement App's and its read profile: a
     // round that asked for any other would print a refresh failure on stderr, which this row
@@ -725,7 +736,7 @@ echo "key after $(stat -c '%i %s %Y' -- "$key")"`
   });
 
   test("write_github_apps --token-dir writes commands that read the file of the owner and flag asked, and the key file, in busybox sh", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     mkdirSync(join(tokenDir, "implement"));
     for (const file of ["_all", "sjawhar", "sjawhar.read"]) {
       writeFileSync(join(tokenDir, "implement", `${file}.json`), `file ${file}`);
@@ -782,7 +793,7 @@ write_github_apps --token-dir "$TOKEN_DIR" implement review`
   });
 
   test("the refresher's files and the --token-dir block are proved alone, agent-secrets broken after the mint", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const brokenBin = mkdtempSync(join(dir, "broken-bin."));
     writeFileSync(join(brokenBin, "agent-secrets"), "#!/bin/sh\nexit 7\n", { mode: 0o755 });
     const { code, stdout, stderr } = await githubApps(
@@ -807,7 +818,7 @@ echo "logins $github_app_logins"`
   // argv the broker client was given, no message — and the run's own teardown takes that file
   // with it.
   test("the key reaches its file alone, and the run's teardown leaves neither it nor its directory", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const argvLog = join(dir, "argv-key-leak");
     rmSync(argvLog, { force: true });
     const { code, stdout, stderr } = await githubApps(
@@ -859,7 +870,7 @@ remove_app_tokens && echo "the teardown returned 0" || echo "the teardown return
   // The other half of that teardown: a directory it could not empty is a key left on the devbox,
   // which the run must say out loud rather than pass over.
   test("the teardown fails, naming the directory, when the App credential files cannot be removed", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const review = join(tokenDir, "review");
     mkdirSync(review, { mode: 0o700 });
     writeFileSync(join(review, "key.pem"), reviewKey, { mode: 0o600 });
@@ -884,8 +895,7 @@ remove_app_tokens && echo "the teardown returned 0" || echo "the teardown return
       holdsNoKey(stdout, keyIDs);
       holdsNoKey(stderr, keyIDs);
     } finally {
-      // The mode given back, so the directory this file reserved can be removed when the run
-      // ends.
+      // The mode given back, so the directory can be removed when the row ends.
       chmodSync(review, 0o700);
     }
   });
@@ -922,7 +932,7 @@ app_key_left --check-line "$work/app-key" && echo "gone under --check-line: retu
 
   test("a token directory the credential commands could not carry in their shell text is refused, and nothing is written", async () => {
     for (const name of ["tokens 'x", "tokens$x", "tokens;x"]) {
-      const tokenDir = join(mkdtempSync(join(dir, "tokens.")), name);
+      const tokenDir = join(plainDirectory("tokens"), name);
       mkdirSync(tokenDir);
       for (const then of [
         `require_app_inputs implement review
@@ -956,7 +966,7 @@ echo "wrote"`,
       {
         ...appInputs,
         // The command counts its own calls, a byte a call, beside the key it prints.
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf r >>${counter}; cat -- ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf r >>${shellQuote(counter)}; cat -- ${shellQuote(reviewKeyFile)}`,
       },
       `require_app_inputs implement review
 write_github_apps --key-dir "$work/app-key" implement review
@@ -1011,7 +1021,7 @@ echo "logins $github_app_logins"`
     const { code, stdout, stderr, work } = await githubApps(
       {
         ...appInputs,
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf r >>${counter}; cat -- ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf r >>${shellQuote(counter)}; cat -- ${shellQuote(reviewKeyFile)}`,
       },
       `require_app_inputs implement review
 write_github_apps implement review
@@ -1031,7 +1041,7 @@ echo "wrote the block"`
   });
 
   test("--token-dir and --key-dir together are refused: they name one key file two ways", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const { code, stdout, stderr, work } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir },
       `require_app_inputs implement review
@@ -1049,7 +1059,7 @@ echo "wrote the block"`
   // some name is set: a devbox shell that still exports the retired review_app_secret must not
   // make the broker the review App's source again, nor put that stale value in the strip list.
   test("a stale review_app_secret in the environment asks the broker nothing and reaches no strip list", async () => {
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const argvLog = join(dir, "argv-stale-secret");
     rmSync(argvLog, { force: true });
     const { code, stdout, stderr, work } = await githubApps(
@@ -1092,7 +1102,7 @@ echo wrote`
       {
         ...appInputs,
         // The guard refuses a pasted key, never a command that names a PEM header.
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `awk '/-----BEGIN/,/-----END/' ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `awk '/-----BEGIN/,/-----END/' ${shellQuote(reviewKeyFile)}`,
       },
       proveBoth
     );
@@ -1115,7 +1125,7 @@ echo wrote`
     const { code, stdout, stderr, work } = await githubApps(
       {
         ...appInputs,
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s' ${version} >/dev/null; cat -- ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s' ${version} >/dev/null; cat -- ${shellQuote(reviewKeyFile)}`,
       },
       proveBoth
     );
@@ -1377,7 +1387,7 @@ echo done`
     const { child, work } = spawnGithubApps(
       {
         ...appInputs,
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; sleep 2; cat -- ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; sleep 2; cat -- ${shellQuote(reviewKeyFile)}`,
       },
       `require_app_inputs implement review
 write_github_apps --key-dir "$work/app-key" implement review
@@ -1424,7 +1434,7 @@ echo written`
       {
         ...appInputs,
         PATH: `${warningAwk}:${fakeBin}:${process.env.PATH}`,
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf 'reading %s\\n' '${body}' >&2; cat -- ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf 'reading %s\\n' '${body}' >&2; cat -- ${shellQuote(reviewKeyFile)}`,
       },
       `require_app_inputs implement review
 write_github_apps --key-dir "$work/app-key" implement review
@@ -1451,7 +1461,8 @@ echo written`
     const { code, stdout, stderr, work } = await githubApps(
       {
         ...appInputs,
-        NUL_STDERR: `${nulLines}; printf 'ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\\n' >&2; cat -- ${reviewKeyFile}`,
+        // The token the command writes is printed from its two halves, so no line here holds one.
+        NUL_STDERR: `${nulLines}; printf 'ghp_%s\\n' ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 >&2; cat -- ${shellQuote(reviewKeyFile)}`,
       },
       `review_app_id=202
 review_app_key_command=$NUL_STDERR
@@ -1489,7 +1500,7 @@ echo done`
     // written. Nothing of the operator's is echoed back out of that channel.
     const approval =
       "agent-secrets: waiting for approval: http://127.0.0.1:40925/approve/4a99c1e2-7b0d-4f6e-9a51-0d3c2e8fb274";
-    const tokenDir = mkdtempSync(join(dir, "tokens."));
+    const tokenDir = plainDirectory("tokens");
     const minted = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir, WAIT_NOTICE: approval },
       `require_app_inputs implement review

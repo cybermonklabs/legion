@@ -16,6 +16,7 @@ import {
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import type { Subprocess } from "bun"
 import { buildBundles } from "../scripts/build"
+import { bunModuleDirectory, shellQuote } from "./channel-session-harness"
 
 // The answers hook as Claude Code runs it: the bundle `hooks.json` names
 // (`dist/session-hook.js answers`), its whole environment given, its input on stdin. One stand-in
@@ -30,7 +31,7 @@ let bundleDirectory = ""
 let timingDirectory = ""
 
 beforeAll(async () => {
-  bundleDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-answers-bundle-"))
+  bundleDirectory = await bunModuleDirectory("claude-envoy-answers-bundle-")
   timingDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-answers-timing-"))
   await buildBundles(bundleDirectory)
   bundle = join(bundleDirectory, "session-hook.js")
@@ -424,7 +425,7 @@ async function refresherHoldsLock(state: string): Promise<void> {
  *  exits; with no such kill the subshell outlives the command, and a wait for its end
  *  (`processEnded`) holds until the row's hang guard fails the row. */
 function leftBehind(file: string, home: string): string {
-  return `(while [ -d '${home}' ]; do sleep 0.02; done) >/dev/null 2>&1 & echo $! > '${file}.part' && mv '${file}.part' '${file}'; `
+  return `(while [ -d ${shellQuote(home)} ]; do sleep 0.02; done) >/dev/null 2>&1 & echo $! > ${shellQuote(`${file}.part`)} && mv ${shellQuote(`${file}.part`)} ${shellQuote(file)}; `
 }
 
 /** Waits until a command started with `leftBehind(file, …)` has started, and gives back the
@@ -440,12 +441,15 @@ async function leftBehindStarted(file: string): Promise<StartedProcess> {
  *  hook's code until a refresher has finished after that start (its outcome written, its lock
  *  gone), with no bound of its own: when the case times out, bun ends the hook. The hook then
  *  finds that outcome at its first look, and starts a refresher of its own, so where a
- *  refresher's race with the hook's deadline would decide the case, this decides it. */
-async function preloadAfterRefresher(home: string, state: string, signal: string): Promise<string> {
+ *  refresher's race with the hook's deadline would decide the case, this decides it. Bun loads it
+ *  as a module, so it is written where Bun can load one from (`bunModuleDirectory`). */
+async function preloadAfterRefresher(state: string, signal: string): Promise<string> {
   const directory = join(state, "sessions", SESSION)
   const outcome = JSON.stringify(join(directory, "answers-refresh.json"))
   const lock = JSON.stringify(join(directory, "answers-refresh.lock"))
-  const preload = join(home, "after-refresher.ts")
+  const preloadDirectory = await bunModuleDirectory("claude-envoy-answers-preload-")
+  cleanup.push(() => rm(preloadDirectory, { recursive: true, force: true }))
+  const preload = join(preloadDirectory, "after-refresher.ts")
   await writeFile(
     preload,
     [
@@ -930,7 +934,7 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   // As in the failing-command case: the waiting hook holds its code until the refresher the
   // starting hook starts has finished, so it carries that refresher's outcome.
   const ready = join(home, "ready")
-  const preload = await preloadAfterRefresher(home, state, ready)
+  const preload = await preloadAfterRefresher(state, ready)
   const waiting = runHook(env, sessionStart("resume", home), { preload })
   await fileWritten(ready)
   const starting = await runHook(env, sessionStart("startup", home))
@@ -989,7 +993,7 @@ test("a slow `!` token command cannot hold the hook, and its refresher still rea
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!${leftBehind(left, home)}while [ ! -e '${gate}' ]; do sleep 0.02; done; printf late`,
+        token: `!${leftBehind(left, home)}while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf late`,
       },
     }),
   )
@@ -1040,7 +1044,7 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!${leftBehind(left, home)}while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
+        token: `!${leftBehind(left, home)}while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )
@@ -1107,7 +1111,7 @@ test("with a slow token command, a list read from another Dispatch than envoy.js
     JSON.stringify({
       dispatch: {
         serverUrl: now.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf now-token`,
+        token: `!while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf now-token`,
       },
     }),
   )
@@ -1148,7 +1152,7 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
     JSON.stringify({
       dispatch: {
         serverUrl: beforeUrl,
-        token: `!: > '${started}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
+        token: `!: > ${shellQuote(started)}; while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
       },
     }),
   )
@@ -1171,12 +1175,12 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
     JSON.stringify({
       dispatch: {
         serverUrl: now.base,
-        token: `!while [ ! -e '${nowGate}' ]; do sleep 0.02; done; printf now-token`,
+        token: `!while [ ! -e ${shellQuote(nowGate)} ]; do sleep 0.02; done; printf now-token`,
       },
     }),
   )
   cleanup.push(() => writeFile(nowGate, ""))
-  const preload = await preloadAfterRefresher(home, state, gate)
+  const preload = await preloadAfterRefresher(state, gate)
   const context = contextOf(
     await runHook(env, sessionStart("resume", home), { preload }),
     "SessionStart",
@@ -1222,7 +1226,7 @@ test("a refresher started after one read the Dispatch envoy.json named before re
     JSON.stringify({
       dispatch: {
         serverUrl: now.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf now-token`,
+        token: `!while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf now-token`,
       },
     }),
   )
@@ -1260,7 +1264,7 @@ test("a token command that fails gives the hook its error, not a Dispatch envoy.
   // has finished, so it finds that refresher's outcome at its first look; the starting hook,
   // started once the waiting one runs, starts that refresher.
   const ready = join(home, "ready")
-  const preload = await preloadAfterRefresher(home, state, ready)
+  const preload = await preloadAfterRefresher(state, ready)
   const waiting = runHook(env, sessionStart("resume", home), { preload })
   await fileWritten(ready)
   const starting = await runHook(env, sessionStart("startup", home))
@@ -1383,7 +1387,7 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${sameToken}`,
+        token: `!while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf ${sameToken}`,
       },
     }),
   )
@@ -1414,7 +1418,7 @@ test("hooks started together run a slow token command once", async () => {
     JSON.stringify({
       dispatch: {
         serverUrl: dispatch.base,
-        token: `!printf 'run\\n' >> '${runs}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
+        token: `!printf 'run\\n' >> ${shellQuote(runs)}; while [ ! -e ${shellQuote(gate)} ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
       },
     }),
   )
@@ -1472,7 +1476,9 @@ test("a hook whose start-up took past 800 ms still gives Dispatch its least wait
   const items = [answer("ask-slow", "SLOW-START-ANSWER: written before this resume.", 1)]
   dispatch.route = { kind: "list", items }
   const { home, state } = await scratch()
-  const preload = join(home, "slow-start.ts")
+  const preloadDirectory = await bunModuleDirectory("claude-envoy-answers-slow-start-")
+  cleanup.push(() => rm(preloadDirectory, { recursive: true, force: true }))
+  const preload = join(preloadDirectory, "slow-start.ts")
   await writeFile(preload, "while (performance.now() < 820) {}\n")
   const env = {
     HOME: home,

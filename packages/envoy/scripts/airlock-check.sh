@@ -67,6 +67,8 @@ ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LEAN_DIR="$ENVOY_DIR/internal/cipher/proxyrules/lean"
 # shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
 source "$SCRIPT_DIR/airlock/k7-consumers.sh"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$SCRIPT_DIR/lib/rig-banner.sh"
 # psql is given a database URL without its password, and the password in PGPASSWORD.
 # shellcheck source-path=SCRIPTDIR source=lib/pg-url.sh
 source "$SCRIPT_DIR/lib/pg-url.sh"
@@ -265,16 +267,19 @@ await() { # <what> <seconds> <log> <pattern> <pid>
 	exit 1
 }
 
-# start_stack runs dev-airlock.sh with the options its caller names, waits for its banner, and
-# exports everything that banner names. dev-broker.sh's own export block is in the same log and
-# is read first, so where the two name one variable the airlock's wins, as the banner says.
+# start_stack runs dev-airlock.sh with the options its caller names, waits for its banner to be
+# whole, and exports everything that banner names. dev-broker.sh's own banner is in the same log and
+# is read first, so where the two name one variable the airlock's wins, as the banner says. Each is
+# read from its own block of the log alone (lib/rig-banner.sh): the log holds the stack's processes'
+# output too, and a line there that looks like an export runs nothing.
 start_stack() {
 	echo "airlock-check: starting the stack (dev-airlock.sh $*)..." >&2
 	: >"$STACK_LOG"
 	bash "$SCRIPT_DIR/dev-airlock.sh" "$@" >"$STACK_LOG" 2>&1 &
 	STACK_PID=$!
-	await "the stack" 900 "$STACK_LOG" '^dev-airlock: ready\.$' "$STACK_PID"
-	eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
+	await "the stack" 900 "$STACK_LOG" "^${DEV_AIRLOCK_BANNER[1]//./\\.}\$" "$STACK_PID"
+	rig_banner_export "$STACK_LOG" "${DEV_BROKER_BANNER[@]}"
+	rig_banner_export "$STACK_LOG" "${DEV_AIRLOCK_BANNER[@]}"
 	mapfile -t BROKER_API_ADDRS < <(sed -n 's/^  broker [0-9]*: *api \([^,]*\),.*/\1/p' "$STACK_LOG")
 	mapfile -t BROKER_PROXY_ADDRS < <(sed -n 's/^  broker [0-9]*:.*proxy \([^,]*\),.*/\1/p' "$STACK_LOG")
 	STACK_DB_NAME="$(sed -n 's/^dev-airlock: created isolated database \([a-z0-9_]*\).*/\1/p' "$STACK_LOG" | head -n 1)"
@@ -801,10 +806,13 @@ check_k3() {
 	t_before="$(records_count t)"
 	log_before="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
 
+	# Each path this steps file names is printed with printf %q, as in every steps file and wrapper
+	# below, so it is one shell word for the shell that runs the file, whatever TMPDIR's own name
+	# holds.
 	cat >"$WORK_DIR/k3-steps.sh" <<EOF
 set -u
 P="\$AIRLOCK_SCOPED_TOKEN"
-out="$WORK_DIR/k3-out"
+out=$(printf %q "$WORK_DIR/k3-out")
 : >"\$out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
 say "authorization=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/read)"
@@ -821,7 +829,7 @@ say "other_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H @- $AI
 say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
 say "mismatch_sni=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --connect-to t.airlock.test:443:s.airlock.test:443 -H @- $AIRLOCK_T_URL/read 2>&1 | tr '\n' ' ')"
 say "mismatch_host=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H "Host: t.airlock.test" -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
-say "carries=\$(curl -sS -H "X-Key: \$(cat $WORK_DIR/k3-real)" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
+say "carries=\$(curl -sS -H "X-Key: \$(cat $(printf %q "$WORK_DIR/k3-real"))" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 EOF
 	printf '%s' "$scoped_value" >"$WORK_DIR/k3-real"
 	chmod 600 "$WORK_DIR/k3-real"
@@ -901,7 +909,7 @@ EOF
 	s_mark="$(records_count s)"
 	cat >"$WORK_DIR/k3-control.sh" <<EOF
 set -u
-out="$WORK_DIR/k3-control-out"
+out=$(printf %q "$WORK_DIR/k3-control-out")
 : >"\$out"
 printf 'post=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -X POST -H @- $AIRLOCK_S_URL/read)" >>"\$out"
 printf 'other=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)" >>"\$out"
@@ -952,13 +960,13 @@ check_k4() {
 
 	cat >"$WORK_DIR/k4-steps.sh" <<EOF
 set -u
-out="$WORK_DIR/k4-out"
+out=$(printf %q "$WORK_DIR/k4-out")
 : >"\$out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
 say "no_proxy=\$NO_PROXY"
-printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w "%{certs}" -H @- $AIRLOCK_S_URL/ok >"$WORK_DIR/s-leaf.pem"
+printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w "%{certs}" -H @- $AIRLOCK_S_URL/ok >$(printf %q "$WORK_DIR/s-leaf.pem")
 say "s_status=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/ok)"
-curl -sS -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
+curl -sS -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >$(printf %q "$WORK_DIR/t-leaf.pem")
 say "t_body=\$(curl -sS -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
 say "svc=\$(curl -sS --resolve stand.default.svc:$svc_port:127.0.0.1 --max-time 10 http://stand.default.svc:$svc_port/ 2>&1 | tr '\n' ' ')"
 say "svc_exit=\$?"
@@ -966,13 +974,13 @@ say "tsnet=\$(curl -sS --max-time 10 https://host.example-tailnet.ts.net/ 2>&1 |
 say "tsnet_exit=\$?"
 say "curl10=\$(curl -sS --max-time 10 https://10.11.12.13/ 2>&1 | tr '\n' ' ')"
 say "curl10_exit=\$?"
-say "go10=\$($STANDS_BIN probe-private 2>&1 | tr '\n' ' ')"
+say "go10=\$($(printf %q "$STANDS_BIN") probe-private 2>&1 | tr '\n' ' ')"
 node -e '
 const t = Date.now();
 fetch("https://10.11.12.13/").then(r => console.log("status", r.status, Date.now() - t))
   .catch(e => { const p = []; let c = e.cause; while (c) { p.push((c.code || "") + ":" + (c.message || "")); c = c.cause; } console.log("ms", Date.now() - t, "|", e.message, "|", p.join(" <- ")); });
-' >"$WORK_DIR/node10.txt" 2>&1
-say "node10=\$(tr '\n' ' ' <"$WORK_DIR/node10.txt")"
+' >$(printf %q "$WORK_DIR/node10.txt") 2>&1
+say "node10=\$(tr '\n' ' ' <$(printf %q "$WORK_DIR/node10.txt"))"
 say "private=\$(curl -sS --noproxy '' -K <(printf 'proxy = "%s"\n' "\$HTTPS_PROXY") http://10.11.12.13/ 2>&1 | tr '\n' ' ')"
 say "metadata=\$(curl -sS --noproxy '' -K <(printf 'proxy = "%s"\n' "\$HTTPS_PROXY") http://169.254.169.254/ 2>&1 | tr '\n' ' ')"
 say "broker_port=\$(curl -sS --noproxy '' -K <(printf 'proxy = "%s"\n' "\$HTTPS_PROXY") http://${BROKER_API_ADDRS[0]}/healthz 2>&1 | tr '\n' ' ')"
@@ -1267,7 +1275,7 @@ set -euo pipefail
 export AZURE_CORE_INSTANCE_DISCOVERY=false
 export PATH=$real_path
 if [ -n "\${AZURE_CONFIG_DIR:-}" ] && [ ! -f "\$AZURE_CONFIG_DIR/clouds.config" ]; then
-  "$REAL_AZ" cloud register -n airlock --skip-endpoint-discovery \\
+  $(printf %q "$REAL_AZ") cloud register -n airlock --skip-endpoint-discovery \\
     --endpoint-active-directory "$AIRLOCK_MICROSOFT_URL" \\
     --endpoint-active-directory-resource-id "$AIRLOCK_AZURE_RESOURCE_URL/" \\
     --endpoint-active-directory-graph-resource-id "$AIRLOCK_AZURE_RESOURCE_URL/" \\
@@ -1275,9 +1283,9 @@ if [ -n "\${AZURE_CONFIG_DIR:-}" ] && [ ! -f "\$AZURE_CONFIG_DIR/clouds.config" 
     --endpoint-management "$AIRLOCK_AZURE_RESOURCE_URL/" \\
     --endpoint-gallery "$AIRLOCK_AZURE_RESOURCE_URL/" \\
     --suffix-storage-endpoint core.windows.net >/dev/null
-  "$REAL_AZ" cloud set -n airlock >/dev/null
+  $(printf %q "$REAL_AZ") cloud set -n airlock >/dev/null
 fi
-exec "$REAL_AZ" "\$@"
+exec $(printf %q "$REAL_AZ") "\$@"
 EOF
 	chmod +x "$WORK_DIR/k6/bin/az"
 }
@@ -1313,7 +1321,7 @@ k6_azure() {
 	cat >"$d/az-steps.sh" <<EOF
 set -u
 az group list -o json
-az account get-access-token -o json >$d/access.json
+az account get-access-token -o json >$(printf %q "$d/access.json")
 EOF
 	local run
 	: >"$d/runs.log"
@@ -1322,7 +1330,7 @@ EOF
 		PATH="$d/bin:$K6_AZ_PATH" agent-secrets AIRLOCK_AZURE_LOGIN --ttl 1h --wait 5m \
 			--reason "airlock check k6 run $run: az-broker logs az in and calls the Resource Manager" -- sh -c '
 			export AZURE_ADMIN="$AIRLOCK_AZURE_LOGIN" AZ_BROKER_INNER=1
-			exec bash '"$d"'/az-broker -- bash '"$d"'/az-steps.sh' >>"$d/runs.log" 2>>"$d/cli.err"
+			exec bash '"$(printf %q "$d/az-broker")"' -- bash '"$(printf %q "$d/az-steps.sh")" >>"$d/runs.log" 2>>"$d/cli.err"
 		echo "exit $?" >>"$d/runs.log"
 	done
 	kill "$watcher" 2>/dev/null || true
@@ -1354,7 +1362,7 @@ k6_aws() {
 	aws_before="$(records_count aws)"
 	cat >"$d/aws-steps.sh" <<EOF
 set -u
-out=$d/aws-out
+out=$(printf %q "$d/aws-out")
 : >"\$out"
 export AWS_DEFAULT_REGION=us-east-1
 say() { printf '%s\n' "\$1" >>"\$out"; }
@@ -1362,9 +1370,9 @@ say "sts=\$(aws --endpoint-url $AIRLOCK_AWS_URL sts get-caller-identity 2>&1 | t
 ls_out=\$(aws --endpoint-url $AIRLOCK_AWS_URL s3 ls 2>&1); ls_exit=\$?
 say "ls=\$(printf '%s' "\$ls_out" | tail -n 1 | tr -d '\r')"
 say "ls_exit=\$ls_exit"
-say "cp=\$(aws --endpoint-url $AIRLOCK_AWS_URL s3 cp $d/100k.bin s3://airlock-bucket/k6-100k.bin 2>&1 | tail -n 1 | tr -d '\r')"
-$AIRLOCK_BOTO3_PYTHON $SCRIPT_DIR/airlock/aws-boto3.py $AIRLOCK_AWS_URL $d/boto3.json >$d/boto3.log 2>&1
-echo "boto3 exit \$?" >>$d/boto3.log
+say "cp=\$(aws --endpoint-url $AIRLOCK_AWS_URL s3 cp $(printf %q "$d/100k.bin") s3://airlock-bucket/k6-100k.bin 2>&1 | tail -n 1 | tr -d '\r')"
+$(printf %q "$AIRLOCK_BOTO3_PYTHON") $(printf %q "$SCRIPT_DIR/airlock/aws-boto3.py") $AIRLOCK_AWS_URL $(printf %q "$d/boto3.json") >$(printf %q "$d/boto3.log") 2>&1
+echo "boto3 exit \$?" >>$(printf %q "$d/boto3.log")
 EOF
 	agent-secrets AIRLOCK_AWS_KEY --ttl 30m -- bash "$d/aws-steps.sh" >>"$d/runs.log" 2>>"$d/cli.err"
 
@@ -1556,7 +1564,7 @@ say "https_proxy=\$(printf '%s' "\$HTTPS_PROXY" | sed 's/:[^:@]*@/:***@/')"
 
 # The slack_post poster (scripts/airlock/slack.ts): bun, the Bearer a Slack app's token goes in,
 # and auth.test.
-say "slack=\$(bun run $SCRIPT_DIR/airlock/slack.ts 2>&1 | tail -n 1 | tr -d '\r')"
+say "slack=\$(bun run $(printf %q "$SCRIPT_DIR/airlock/slack.ts") 2>&1 | tail -n 1 | tr -d '\r')"
 
 # gh api under secret-run for GITHUB_ADMIN_PAT: the admin line of shims/gh itself, with the
 # directory of the real GitHub CLI first on PATH for this one step. That line sets GH_TOKEN,
@@ -1567,7 +1575,7 @@ say "slack=\$(bun run $SCRIPT_DIR/airlock/slack.ts 2>&1 | tail -n 1 | tr -d '\r'
 say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GITHUB_ADMIN_PAT -- sh -c 'PATH=$K7_GH_DIR:\$PATH GH_TOKEN=\$GITHUB_ADMIN_PAT GITHUB_TOKEN=\$GITHUB_ADMIN_PAT exec gh api user' 2>&1 | tail -n 1 | tr -d '\r')"
 
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
-say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
+say "pulumi=\$(cd $(printf %q "$d/pulumi") && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=$(k7_consumer_file_url "$d/pulumi/state") TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
 
 # The callable boundary runs the gRPC, gcloud and Google Workspace consumers after the generated
 # setup above has established their work directory, dotfiles path and isolated configuration.
@@ -1579,10 +1587,12 @@ k7_consumer_google_steps
 # /proc/<pid>/cmdline. GIT_CONFIG_COUNT=1 makes git read that one pair alone, so the pod's own
 # GIT_CONFIG_* settings, which name a credential helper of the pod's that would answer in place
 # of this one, are left out for this step.
-rm -rf $d/repo
-git init -q $d/repo
-(cd $d/repo && git -c user.email=k7@airlock.test -c user.name=k7 commit -q --allow-empty -m k7)
-say "git=\$(cd $d/repo && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0="\$HTTPS_PROXY" git -c credential.helper=$SCRIPT_DIR/airlock/credential-helper -c http.sslCAInfo="\$GIT_SSL_CAINFO" push --dry-run https://github.com/cybermonklabs/legion HEAD:refs/heads/k7-airlock-never-pushed 2>&1 | tail -n 2 | tr '\n' ' ')"
+# git runs a credential.helper of "!<command>" through a shell of its own, so the helper's path is
+# quoted for that shell and the whole setting again for this one.
+rm -rf $(printf %q "$d/repo")
+git init -q $(printf %q "$d/repo")
+(cd $(printf %q "$d/repo") && git -c user.email=k7@airlock.test -c user.name=k7 commit -q --allow-empty -m k7)
+say "git=\$(cd $(printf %q "$d/repo") && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.proxy GIT_CONFIG_VALUE_0="\$HTTPS_PROXY" git -c $(printf %q "credential.helper=!$(printf %q "$SCRIPT_DIR/airlock/credential-helper")") -c http.sslCAInfo="\$GIT_SSL_CAINFO" push --dry-run https://github.com/cybermonklabs/legion HEAD:refs/heads/k7-airlock-never-pushed 2>&1 | tail -n 2 | tr '\n' ' ')"
 
 # The plain clients to S, each with the fake value in the header it uses, and none with it in its
 # command line: curl reads the header on standard input. wget reads a header from no pipe, so it
@@ -1606,7 +1616,7 @@ trap 'rm -f "\$wgetrc"' EXIT
 say "wget=\$({ WGETRC="\$wgetrc" timeout 30 wget -q -S --max-redirect=0 -O /dev/null $AIRLOCK_S_URL/wget 2>&1; echo "wget-exit=\$?"; } | awk '/^  HTTP\\//{s=\$2} /^wget-exit=/{e=substr(\$0, 11)} END{if (s ~ /^3/) s = s " refused: a redirect, which a request that carries a credential does not follow"; if (s == "") s = "failed"; if (e == 124) s = s " (wget stopped after 30 s)"; print s}')"
 say "node=\$(node -e 'fetch("$AIRLOCK_S_URL/node", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}).then(r => console.log(r.status)).catch(e => console.log("error", e.message))')"
 say "bun=\$(bun -e 'const r = await fetch("$AIRLOCK_S_URL/bun", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}); console.log(r.status)' 2>&1 | tail -n 1)"
-say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.error, urllib.request
+say "urllib=\$($(printf %q "$AIRLOCK_BOTO3_PYTHON") -c 'import os, urllib.error, urllib.request
 class Refuse(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args):
         return None
@@ -1615,9 +1625,9 @@ try:
     print(urllib.request.build_opener(Refuse).open(request).status)
 except urllib.error.HTTPError as error:
     print(f"{error.code} refused: a redirect, which a request that carries a credential does not follow" if 300 <= error.code < 400 else error.code)' 2>&1 | tail -n 1)"
-say "requests=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, requests
+say "requests=\$($(printf %q "$AIRLOCK_BOTO3_PYTHON") -c 'import os, requests
 print(requests.get("$AIRLOCK_S_URL/requests", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]}).status_code)' 2>&1 | tail -n 1)"
-say "go=\$($STANDS_BIN probe-bound)"
+say "go=\$($(printf %q "$STANDS_BIN") probe-bound)"
 EOF
 }
 

@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // probe-boot names its configuration only by --config: an argument is refused as start refuses it.
@@ -45,7 +48,7 @@ func TestProbeBootRefusesAClusterWithoutAgentSandboxAndRunsNoKeyCommand(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	body = bytes.ReplaceAll(body, []byte(`private_key_command: "exit 1"`), []byte(`private_key_command: "touch `+marker+`; exit 1"`))
+	body = bytes.ReplaceAll(body, []byte(`private_key_command: "exit 1"`), []byte("private_key_command: "+strconv.Quote("touch "+shellprefix.Literal(marker)+"; exit 1")))
 	if err := os.WriteFile(config, body, 0o600); err != nil {
 		t.Fatal(err)
 	}

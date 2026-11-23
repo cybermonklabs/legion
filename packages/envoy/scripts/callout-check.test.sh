@@ -37,10 +37,13 @@
 # service connection before the kill reads UNKNOWN on line 6 and kills nothing; (j) a hub whose
 # list is read once after the kill, still naming both connections, and then cannot be read FAILs
 # line 6 with the count it last read, at that bound; (k) a probe that says "not admitted" in words
-# that are not the server's FAILs lines 3 and 4; (l) with no stack exported, a --database-url
-# reaches the dev-stack.sh the check starts as LEGION_TEST_PG_DSN, never in its arguments; and (m)
-# brokers whose connections name their build after envoy-broker-callout pass line 6, as the bare
-# name does.
+# that are not the server's FAILs lines 3 and 4; (l) with nothing exported, the check starts a
+# stand-in dev-stack.sh --callout beside a copy of itself and reads the banner it prints, its paths
+# through printf %q under a directory holding a space and a quote, as a shell does: it passes all
+# six lines and stops the stack it started; (m) a whole fake banner block ahead of the real one is
+# refused by name, nothing of it run; (n) with no stack exported, a --database-url reaches the
+# dev-stack.sh the check starts as LEGION_TEST_PG_DSN, never in its arguments; and (o) brokers whose
+# connections name their build after envoy-broker-callout pass line 6, as the bare name does.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -209,12 +212,9 @@ fail() {
   exit 1
 }
 
-# run_check runs the check against the fakes, with the control files named and the fake clock at a
-# time of day, after a fresh second broker stand-in (the last one ended first, since a case can
-# leave it running); it sets output and status.
-output=""
-status=0
-run_check() {
+# prepare_case sets the control files named and the fake clock at a time of day, after a fresh
+# second broker stand-in (the last one ended first, since a case can leave it running).
+prepare_case() {
   local name
   for name in grant-all no-connections silent slow other-words no-drop connz-down-after-kill connz-down-late read-after-kill one-broker built-names; do
     rm -f "${control_dir}/${name}"
@@ -233,6 +233,14 @@ run_check() {
   broker_stand_in=$!
   disown "$broker_stand_in"
   printf '%s' "$broker_stand_in" >"${control_dir}/second-broker"
+}
+
+# run_check runs the check against the fakes, as prepare_case leaves them, under an exported stack;
+# it sets output and status.
+output=""
+status=0
+run_check() {
+  prepare_case "$@"
   status=0
   output="$(env PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
     CALLOUT_CHECK_POLL_SECONDS=0 \
@@ -345,14 +353,112 @@ run_check other-words
 [ "$status" -eq 1 ] || fail "a probe not admitted in other words: exit $status"
 echo "PASS: a probe not admitted in words that are not the server's FAILs lines 3 and 4"
 
-# (l) With no stack exported, a --database-url reaches the dev-stack.sh the check starts as
+# (l) With nothing exported, the check starts dev-stack.sh --callout from its own directory and
+# reads the banner the stack prints. A copy of the check, and of lib/rig-banner.sh it sources, sits
+# beside a stand-in dev-stack.sh that prints such a banner as the real one does, from its first line
+# to its last, each path through printf %q, under a directory whose name holds a space and a quote,
+# with the placeholder line no shell evaluates; then it runs until it is stopped. Ahead of the
+# banner and after it, the stand-in prints a line that looks like an export and would run a command
+# when evaluated, as a process of the stack's could print one. Read from the banner's own block,
+# each line as a shell reads it, the banner's PATH and token file are whole paths and neither other
+# line runs, so the check passes all six lines as in (a), and on exit it stops the stack it started.
+# A reader that cuts each line at its "=" reads the escaped text instead and finds no natsprobe (exit
+# 2); one that evaluates every export line of the log runs both commands.
+started="${temporary_dir}/started"
+stack_dir="${temporary_dir}/a dev-stack's dir"
+mkdir -p "$started/lib" "$stack_dir"
+cp "$check" "${started}/callout-check.sh"
+cp "${check%/*}/lib/rig-banner.sh" "${started}/lib/rig-banner.sh"
+ln -s "$fake_bin_dir" "${stack_dir}/bin"
+: >"${stack_dir}/exchange-token"
+prepare_case
+ahead="${started}/an export ahead of the banner ran"
+after="${started}/an export after the banner ran"
+# shellcheck disable=SC2016 # the decoy lines hold a literal $(...), which only a reader's eval runs
+printf '  export DECOY_AHEAD=$(: >%s)\n' "$(printf %q "$ahead")" >"${started}/ahead"
+# shellcheck disable=SC2016
+printf '  export DECOY_AFTER=$(: >%s)\n' "$(printf %q "$after")" >"${started}/after"
+cat >"${started}/banner" <<EOF
+
+dev-stack: ready.
+
+  export PATH=$(printf %q "${stack_dir}/bin"):\$PATH
+  export AGENT_SECRETS_URL=$stack_broker
+  export NATS_URLS=nats://127.0.0.1:7002
+  export DEV_STACK_DIR=$(printf %q "$stack_dir")
+  export DEV_STACK_EXCHANGE_TOKEN_FILE=$(printf %q "${stack_dir}/exchange-token")
+  export DEV_STACK_CALLOUT=1
+  export DEV_STACK_EXCHANGE_SESSION=$session
+  export DEV_STACK_BROKER_PIDS="1 $broker_stand_in"
+  export DEV_STACK_NATS_MONITOR_URL=http://127.0.0.1:7003
+
+  export AGENT_SECRETS_SESSION=<this process's own session name>
+
+  Press Ctrl-C to stop every process and drop both databases.
+EOF
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'trap %q TERM\n' ": >$(printf %q "${started}/stopped"); exit 0"
+  printf 'cat %q %q %q\n' "${started}/ahead" "${started}/banner" "${started}/after"
+  printf 'while :; do sleep 0.1; done\n'
+} >"${started}/dev-stack.sh"
+status=0
+output="$(env -u DEV_STACK_CALLOUT -u AGENT_SECRETS_URL -u NATS_URLS -u DEV_STACK_EXCHANGE_TOKEN_FILE \
+  -u DEV_STACK_EXCHANGE_SESSION -u DEV_STACK_BROKER_PIDS -u DEV_STACK_NATS_MONITOR_URL \
+  TMPDIR="$temporary_dir" bash "${started}/callout-check.sh" 2>"${started}/stderr")" || status=$?
+[ ! -e "$ahead" ] || fail "a stack the check starts: a line of the stack's output ahead of its banner was evaluated"
+[ ! -e "$after" ] || fail "a stack the check starts: a line of the stack's output after its banner was evaluated"
+for index in "${!want[@]}"; do
+  [ "$(line $((index + 1)))" = "${want[$index]}" ] ||
+    fail "a stack the check starts: line $((index + 1)) is '$(line $((index + 1)))', want '${want[$index]}'; it said: $(cat "${started}/stderr")"
+done
+[[ "$(line 6)" == "PASS one broker killed and a new session admitted within 2 s: "* ]] || fail "a stack the check starts: line 6 is '$(line 6)'"
+[ "$(line 7)" = "all 6 assertions passed" ] && [ "$status" -eq 0 ] ||
+  fail "a stack the check starts: want 'all 6 assertions passed' and exit 0, got exit $status; it said: $(cat "${started}/stderr")"
+[ -e "${started}/stopped" ] || fail "the check did not stop the stack it started"
+echo "PASS: with nothing exported the check starts the stack, reads its banner's own block, each path printed through printf %q as a shell reads it, runs no export line of the log outside it, passes all six lines and stops the stack"
+
+# (m) A whole fake banner block ahead of the real one: the stand-in prints the banner's exact first
+# line, a line that looks like an export and runs a command when evaluated, and the banner's exact
+# last line, then the real banner of (l). No rig prints its banner twice, so the check refuses the
+# log by name, reads neither block, runs nothing of the fake one, exits 2 and stops the stack. A
+# reader that takes the first whole block runs the fake export.
+faked="${started}/an export of a fake banner block ran"
+rm -f "${started}/stopped"
+{
+  printf '\n%s\n\n' "dev-stack: ready."
+  # shellcheck disable=SC2016 # a literal $(...), which only a reader's eval runs
+  printf '  export DEV_STACK_EXCHANGE_SESSION=$(: >%s)\n' "$(printf %q "$faked")"
+  printf '\n%s\n' "  Press Ctrl-C to stop every process and drop both databases."
+} >"${started}/fake-block"
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'trap %q TERM\n' ": >$(printf %q "${started}/stopped"); exit 0"
+  printf 'cat %q %q\n' "${started}/fake-block" "${started}/banner"
+  printf 'while :; do sleep 0.1; done\n'
+} >"${started}/dev-stack.sh"
+prepare_case
+status=0
+output="$(env -u DEV_STACK_CALLOUT -u AGENT_SECRETS_URL -u NATS_URLS -u DEV_STACK_EXCHANGE_TOKEN_FILE \
+  -u DEV_STACK_EXCHANGE_SESSION -u DEV_STACK_BROKER_PIDS -u DEV_STACK_NATS_MONITOR_URL \
+  TMPDIR="$temporary_dir" bash "${started}/callout-check.sh" 2>"${started}/stderr")" || status=$?
+[ ! -e "$faked" ] || fail "a stack whose log holds a fake banner block: a line of the fake block was evaluated"
+[ "$status" -eq 2 ] || fail "a stack whose log holds a fake banner block: exit $status, want 2; it said: $(cat "${started}/stderr")"
+grep -qF "holds the line 'dev-stack: ready.' more than once" "${started}/stderr" ||
+  fail "a stack whose log holds a fake banner block: the refusal does not name the twice-printed line; it said: $(cat "${started}/stderr")"
+[ -z "$output" ] || fail "a stack whose log holds a fake banner block: the check ran its assertions: $output"
+[ -e "${started}/stopped" ] || fail "a stack whose log holds a fake banner block: the check did not stop the stack it started"
+echo "PASS: a stack whose log holds a whole fake banner block ahead of the real one is refused by name, nothing of either block read or run, exit 2, the stack stopped"
+
+# (n) With no stack exported, a --database-url reaches the dev-stack.sh the check starts as
 # LEGION_TEST_PG_DSN, set for that one command, in either spelling, and no argument of that child
 # holds the URL or its password; every other argument is passed on as it was. The check runs from
-# a copy beside a dev-stack.sh stand-in that records its arguments and its LEGION_TEST_PG_DSN and
-# exits, so the stack never comes up and the check exits 2.
+# a copy, beside the lib/rig-banner.sh it sources, next to a dev-stack.sh stand-in that records its
+# arguments and its LEGION_TEST_PG_DSN and exits, so the stack never comes up and the check exits 2.
 url_copy="${temporary_dir}/url-check"
-mkdir -p "$url_copy"
+mkdir -p "$url_copy/lib"
 cp "$check" "$url_copy/callout-check.sh"
+cp "${check%/*}/lib/rig-banner.sh" "$url_copy/lib/rig-banner.sh"
 cat >"$url_copy/dev-stack.sh" <<'EOF'
 printf '%s\n' "$*" >"$(dirname "$0")/args"
 printf '%s\n' "${LEGION_TEST_PG_DSN-unset}" >"$(dirname "$0")/dsn"
@@ -376,7 +482,7 @@ url_case "--database-url <url>" --database-url "$secret_url" --binaries /nowhere
 url_case "--database-url=<url>" "--database-url=$secret_url" --binaries /nowhere
 echo "PASS: a --database-url reaches dev-stack.sh as LEGION_TEST_PG_DSN in either spelling, and no argument of dev-stack.sh holds it"
 
-# (m) Brokers whose connections name their build after envoy-broker-callout, as internal/bus names
+# (o) Brokers whose connections name their build after envoy-broker-callout, as internal/bus names
 # every connection of a binary built from a clean checkout (the stack's own go build): the check
 # counts both before the kill and sees the drop, as for the bare name.
 run_check built-names

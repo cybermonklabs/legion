@@ -5,6 +5,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
+import { shellQuote } from "./script-functions";
 
 // refuse_leftovers (lib/leftovers.sh) is a stage driver's check that no earlier run of its stage left
 // a process running whose driver is gone: a process names its run by /tmp/<PREFIX>.<driver pid>. in
@@ -117,7 +118,7 @@ test.skipIf(skip)(
     for (const tool of ["tr", "readlink", "cat"]) {
       writeFileSync(
         join(bin, tool),
-        `#!/bin/sh\nprintf '%s\\n' ${tool} >>'${calls}'\nexec /usr/bin/${tool} "$@"\n`,
+        `#!/bin/sh\nprintf '%s\\n' ${tool} >>${shellQuote(calls)}\nexec /usr/bin/${tool} "$@"\n`,
         { mode: 0o755 }
       );
     }

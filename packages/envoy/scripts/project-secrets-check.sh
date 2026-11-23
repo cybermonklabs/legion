@@ -61,6 +61,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$SCRIPT_DIR/lib/rig-banner.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PRINT_TRADE="$REPO_ROOT/packages/cipher-client/scripts/print-trade.ts"
 # psql is given a database URL without its password, and the password in PGPASSWORD.
@@ -405,7 +407,7 @@ start_stack() {
   local waited=0
   # A first run builds every binary, so the wait is long: 20 minutes.
   while [ "$waited" -lt 2400 ]; do
-    grep -q 'dev-stack: ready\.' "$STACK_LOG" 2>/dev/null && return 0
+    rig_banner_complete "$STACK_LOG" "${DEV_STACK_BANNER[@]}" && return 0
     kill -0 "${PIDS[0]}" 2>/dev/null || break
     sleep 0.5
     waited=$((waited + 1))
@@ -415,8 +417,14 @@ start_stack() {
   setup_fail "dev-stack.sh --project-access did not start"
 }
 
-# exported reads one "export NAME=..." line of the stack's banner, as a person copies it.
-exported() { sed -n "s/^ *export $1=//p" "$STACK_LOG" | head -n1; }
+# exported reads one "export NAME=..." line of the stack's banner, from the banner's own block of the
+# log alone (lib/rig-banner.sh): the log holds the stack's processes' output too, and a line there
+# that looks like an export runs nothing. The line is read as the shell a person pastes it into
+# reads it, since the banner prints each path with printf %q. A line that does not evaluate reads
+# as no value, which the caller names as unread.
+exported() {
+  rig_banner_value "$STACK_LOG" "${DEV_STACK_BANNER[@]}" "$1"
+}
 
 start_stack
 declare -A banner=()
@@ -427,7 +435,7 @@ for name in AGENT_SECRETS_URL AGENT_SECRETS_ACCOUNT_TOKEN_FILE DISPATCH_URL DEV_
   DEV_STACK_PRIV_PROJECT DEV_STACK_PRIV_OWNER DEV_STACK_PRIV_SERVICE DEV_STACK_PRIV_SESSION \
   DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE DEV_STACK_PRIV_POD_TOKEN_FILE DEV_STACK_PRIV_SECRET \
   DEV_STACK_AIRLOCK_PROXY_URL DEV_STACK_AIRLOCK_BOUND_URL DEV_STACK_AIRLOCK_CA_CERT_FILE; do
-  banner[$name]="$(exported "$name")"
+  banner[$name]="$(exported "$name")" || setup_fail "the banner of $STACK_LOG was not read"
   [ -n "${banner[$name]}" ] || unread+=("$name")
 done
 for name in "${unread[@]}"; do

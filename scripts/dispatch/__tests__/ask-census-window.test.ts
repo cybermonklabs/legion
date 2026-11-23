@@ -9,6 +9,11 @@ const script = join(import.meta.dir, "..", "ask-census.ts");
 const makeDirectory = temporaryDirectories("ask-census");
 const servers: Array<{ stop: (force?: boolean) => void }> = [];
 
+/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 afterEach(() => {
   for (const server of servers.splice(0)) server.stop(true);
 });
@@ -91,7 +96,7 @@ describe("ask census since #1671", () => {
         dispatch: {
           enabled: true,
           serverUrl: `http://127.0.0.1:${server.port}`,
-          token: `!touch ${marker}; echo token`,
+          token: `!touch ${shellQuote(marker)}; echo token`,
         },
       })
     );

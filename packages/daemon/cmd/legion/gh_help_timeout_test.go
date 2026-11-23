@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -78,7 +79,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	t.Run("a timeout that passed before gh started is said as the timeout", func(t *testing.T) {
 		dir := t.TempDir()
 		gh, ran := filepath.Join(dir, "gh"), filepath.Join(dir, "ran")
-		if err := os.WriteFile(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
+		if err := os.WriteFile(gh, []byte("#!/bin/sh\n: >"+shellprefix.Literal(ran)+"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		timeout := ghHelpTimeout
@@ -97,7 +98,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		dir := t.TempDir()
 		gh, ghPid, helperPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid"), filepath.Join(dir, "helper.pid")
 		const ghSeconds, helperSeconds = "86400", "86399"
-		script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >'" + helperPid + "'\n" + holdsStandIn(ghPid, ghSeconds)
+		script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >" + shellprefix.Literal(helperPid) + "\n" + holdsStandIn(ghPid, ghSeconds)
 		if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -202,7 +203,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 		{
 			name: "the help read", seconds: "86397", check: passes, keepsNothing: true,
 			gh: func(pidFile, seconds string) string {
-				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  cat '" + filepath.Join(help, "gh.txt") + "'\n" +
+				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  cat " + shellprefix.Literal(filepath.Join(help, "gh.txt")) + "\n" +
 					holdsStandIn(pidFile, seconds) + "fi\nexit 0\n"
 			},
 		},

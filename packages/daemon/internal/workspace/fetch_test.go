@@ -32,6 +32,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // gitFailure is a failed transfer from GitHub as git reports it, with how Fetch reads it:
@@ -1031,11 +1033,11 @@ func TestFetchLeavesHeadUntilAFetchBringsGitHubsDefaultBranch(t *testing.T) {
 func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 	for name, plant := range map[string]func(t *testing.T, feed, marker string){
 		"a hook": func(t *testing.T, feed, marker string) {
-			writeExecutable(t, filepath.Join(feed, "hooks", "reference-transaction"), "#!/bin/sh\ntouch "+marker+"\n")
+			writeExecutable(t, filepath.Join(feed, "hooks", "reference-transaction"), "#!/bin/sh\ntouch "+shellprefix.Literal(marker)+"\n")
 		},
 		"core.hooksPath": func(t *testing.T, feed, marker string) {
 			hooks := t.TempDir()
-			writeExecutable(t, filepath.Join(hooks, "reference-transaction"), "#!/bin/sh\ntouch "+marker+"\n")
+			writeExecutable(t, filepath.Join(hooks, "reference-transaction"), "#!/bin/sh\ntouch "+shellprefix.Literal(marker)+"\n")
 			runSetup(t, feed, "git", "--git-dir="+feed, "config", "core.hooksPath", hooks)
 		},
 		"an http.proxy": func(t *testing.T, feed, _ string) {
@@ -1084,7 +1086,7 @@ func TestFetchTakesNoFeedItDidNotWrite(t *testing.T) {
 		// this form; an agent writing the file by hand could.
 		"a hooks path on a section header's line": func(t *testing.T, feed, marker string) {
 			hooks := filepath.Join(filepath.Dir(feed), "h")
-			writeExecutable(t, filepath.Join(hooks, "reference-transaction"), "#!/bin/sh\ntouch "+marker+"\n")
+			writeExecutable(t, filepath.Join(hooks, "reference-transaction"), "#!/bin/sh\ntouch "+shellprefix.Literal(marker)+"\n")
 			appendConfig(t, feed, "[core]hooksPath="+hooks+";]\n")
 		},
 		"an include on a section header's line": func(t *testing.T, feed, _ string) {
@@ -2564,11 +2566,11 @@ func recordPackWindows(t *testing.T, run *recordingRunner) string {
 		"      ahead=\n" +
 		"    fi\n" +
 		"  done\n" +
-		"  '" + realGit + "' \"$@\" config --show-scope --get-regexp '^(" + strings.Join(keys, "|") + ")$'\n" +
+		"  " + shellprefix.Literal(realGit) + " \"$@\" config --show-scope --get-regexp '^(" + strings.Join(keys, "|") + ")$'\n" +
 		"}\n" +
 		"reads=$(scoped \"$@\" | tr '\\t\\n' ' ;')\n" +
-		"printf '%s\\t%s\\n' \"$*\" \"$reads\" >> '" + sink + "'\n" +
-		"exec '" + realGit + "' \"$@\"\n"
+		"printf '%s\\t%s\\n' \"$*\" \"$reads\" >> " + shellprefix.Literal(sink) + "\n" +
+		"exec " + shellprefix.Literal(realGit) + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}

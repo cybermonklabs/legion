@@ -5,12 +5,13 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
@@ -34,7 +35,17 @@ setDefaultTimeout(120_000);
 const withoutPerl = skipWithout("perl");
 
 const root = path.resolve(import.meta.dir, "../../../..");
-const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
+// The scratch directory goes in memoryRoot, so /dev/shm where the machine has a tmpfs there, unless
+// its real path holds a character other than letters, digits and `/._-`, and then /tmp, as
+// rig.test.ts's work directory does. A plain path, because the rigs run rig.sh, whose judge and
+// model route installers take only plain paths, and bun on the stand-ins below (server.ts, the
+// checkout's seed.ts), which takes none with a '?'. Not under TMPDIR's own name, which may hold
+// any character, and not this package's .cache: rig.sh refuses a work directory with a `.omp` in
+// it or above it (omp_ancestor), and a checkout in the operator's HOME has HOME's own .omp above
+// it. `need` is rig.test.ts's.
+const memory = memoryRoot({ need: 32 * 1024 * 1024 });
+const scratchRoot = /^[A-Za-z0-9/._-]+$/.test(realpathSync(memory)) ? memory : "/tmp";
+const scratch = temporaryDirectory("skill-scenarios-isolation", { root: scratchRoot, real: true });
 
 /**
  * Every write this file's body asks for, as a function the `beforeAll` at the end calls. The

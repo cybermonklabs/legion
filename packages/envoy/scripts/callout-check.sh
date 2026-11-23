@@ -50,6 +50,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$SCRIPT_DIR/lib/rig-banner.sh"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/callout-check.XXXXXX")"
 STACK_PID=""
 FOREIGN_PID=""
@@ -92,7 +94,7 @@ if [ "${DEV_STACK_CALLOUT:-}" != 1 ]; then
   STACK_PID=$!
   ready=false
   for _ in $(seq 1 600); do
-    if grep -q '^dev-stack: ready\.' "$stack_log" 2>/dev/null; then
+    if rig_banner_complete "$stack_log" "${DEV_STACK_BANNER[@]}"; then
       ready=true
       break
     fi
@@ -104,16 +106,12 @@ if [ "${DEV_STACK_CALLOUT:-}" != 1 ]; then
     echo "callout-check: the stack never came up" >&2
     exit 2
   fi
-  # The banner's exports, read as values: each `  export NAME=value` line, a quoted value unquoted.
-  while IFS= read -r line; do
-    name="${line#  export }"
-    value="${name#*=}"
-    name="${name%%=*}"
-    value="${value#\"}"
-    value="${value%\"}"
-    [ "$name" = PATH ] && value="${value%%:*}:$PATH"
-    printf -v "$name" '%s' "$value"
-  done < <(sed -n 's/^\(  export [A-Z_0-9]*=.*\)$/\1/p' "$stack_log")
+  # The banner's exports, from its own block of the log alone (lib/rig-banner.sh): the log holds the
+  # stack's processes' output too, and a line there that looks like an export runs nothing; a log
+  # that holds the banner's first line twice is refused, by name, and read not at all. Each line is
+  # read as the shell that sources it reads it, since dev-stack.sh prints each path with printf %q.
+  # scripts/e2e/nats-callout-sessions.sh reads the banner the same way.
+  rig_banner_read "$stack_log" "${DEV_STACK_BANNER[@]}" || exit 2
 fi
 for required in AGENT_SECRETS_URL NATS_URLS DEV_STACK_EXCHANGE_TOKEN_FILE DEV_STACK_EXCHANGE_SESSION \
   DEV_STACK_BROKER_PIDS DEV_STACK_NATS_MONITOR_URL; do

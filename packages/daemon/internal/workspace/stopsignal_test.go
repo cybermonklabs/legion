@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -109,7 +110,8 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
 		fakeGit := filepath.Join(dir, "git")
-		script := "#!/bin/sh\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n: >\"" + ready + "\"\n" + commandLives + "\n"
+		// The trap's action is one single-quoted word, so a `'` in the lock's path cannot end it.
+		script := "#!/bin/sh\n: >\"" + lock + "\"\ntrap " + shellprefix.Literal("rm -f \""+lock+"\"; exit 0") + " TERM\n: >\"" + ready + "\"\n" + commandLives + "\n"
 		if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}

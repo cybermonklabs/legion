@@ -88,6 +88,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=packages/envoy/scripts/lib/rig-banner.sh
+source "$SCRIPT_DIR/lib/rig-banner.sh"
 
 usage() {
 	cat <<'EOF'
@@ -269,10 +271,12 @@ STACK_STARTED=$SECONDS
 # about it rather than by this script's.
 await "the stack's build" 1800 "$STACK_LOG" '^dev-broker: built ' "$STACK_PID"
 echo "github-profile-check: the stack's binaries were built $((SECONDS - STACK_STARTED)) seconds after it was started; waiting for it to start them..." >&2
-await "the stack, once built," 150 "$STACK_LOG" '^dev-broker: ready\.$' "$STACK_PID"
+await "the stack, once built," 150 "$STACK_LOG" "^${DEV_BROKER_BANNER[1]//./\\.}\$" "$STACK_PID"
 # Everything the banner exports, which is where this check's addresses, names and the pod and
-# service it enrols come from.
-eval "$(sed -n 's/^  \(export [A-Z][A-Z_0-9]*=.*\)$/\1/p' "$STACK_LOG")"
+# service it enrols come from: from the banner's own block of the log alone (lib/rig-banner.sh),
+# since the log holds the stack's processes' output too, and a line there that looks like an
+# export runs nothing.
+rig_banner_export "$STACK_LOG" "${DEV_BROKER_BANNER[@]}"
 AGENT_SECRETS_BIN="$DEV_BROKER_DIR/bin/agent-secrets"
 STANDS_BIN="$DEV_BROKER_DIR/bin/dev-airlock-stands"
 BROKER_BIN="$DEV_BROKER_DIR/bin/broker"

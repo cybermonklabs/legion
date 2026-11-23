@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { plainPathDirectories, shellQuote } from "./script-functions";
 
 // The key command install-model-gateway.sh writes, against a fake hawk-token first on PATH. The
 // fake appends its pid to FAKE_MINT_LOG (one line per mint), sleeps FAKE_MINT_SLEEP seconds, then
@@ -50,7 +51,11 @@ interface Fake {
   role?: string;
   generation?: string;
 }
-let installs = 0;
+// Each install's run directory, whose model-gateway is its --dest: the installer refuses any
+// character in --dest but letters, digits and `_ . / -`, since the profile's `!exec` word carries
+// it, so the run comes from a base that holds no other (plainPathDirectories). The run is the
+// earlier stage proof's evidence directory in the row that reuses one, so --dest stays inside it.
+const plainDirectory = plainPathDirectories("install-model-gateway-test");
 function env(mints: string, fake: Fake = {}) {
   return {
     PATH: `${bin}:${process.env.PATH}`,
@@ -70,7 +75,7 @@ function env(mints: string, fake: Fake = {}) {
 // then removes the key that mint kept, so the next call finds the cache cold (the state the kept
 // key's expiry leaves).
 function install(fake: Fake = {}) {
-  const run = join(dir, `install-${++installs}`);
+  const run = plainDirectory();
   const home = join(run, "omp-home");
   mkdirSync(join(home, ".omp"), { recursive: true });
   const mints = join(run, "mints");
@@ -101,7 +106,7 @@ function install(fake: Fake = {}) {
 async function call(keyCommand: string, cwd: string, mints: string, fake: Fake = {}) {
   mkdirSync(cwd, { recursive: true });
   const started = performance.now();
-  const child = Bun.spawn(["/bin/sh", "-c", `exec ${keyCommand}`], {
+  const child = Bun.spawn(["/bin/sh", "-c", `exec ${shellQuote(keyCommand)}`], {
     cwd,
     env: env(mints, fake),
     stdout: "pipe",
@@ -298,7 +303,7 @@ describe("the model gateway key command", () => {
   }, 30_000);
 
   test("keeps the installer's preflight out of the record, and says why it got no key once", () => {
-    const run = join(dir, "preflight-refused");
+    const run = plainDirectory();
     mkdirSync(join(run, "omp-home", ".omp"), { recursive: true });
     const result = Bun.spawnSync(
       [
