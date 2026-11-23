@@ -36,8 +36,9 @@
 # hand the action exactly .github/ci-filters.yaml as its `filters` input, every output of the
 # changes job must name that step and a filter that file holds, that file must be there and open,
 # and a listed block's patterns are passed over by rule 9 only while its marker names a check a
-# job of CI runs. A script's go command is read under every step of each job that may run it, and
-# the header's run recipe runs the check, or says why it stops.
+# job of CI runs. A script's go command is read under every step of each job that may run it, a
+# workflow several jobs of ci.yaml call runs each job of it named for a caller under that caller
+# alone, and the header's run recipe runs the check, or says why it stops.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a .github/ci-filters.yaml holding the
@@ -1720,6 +1721,134 @@ replace "$root/.github/workflows/suite.yaml" "        run: go build ./cmd/app" \
   $'        run: |\n          # This job writes nothing to $GITHUB_ENV, for the reason its head gives.\n          go build ./cmd/app'
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
+
+# A workflow two jobs of ci.yaml call holds a job named for each (ci-job-test.yaml holds test and
+# tooling-checks), and the check reads each such job as its own caller's alone, holding its go
+# commands, its env and its gated steps to that caller's filter. That reading holds only while the
+# job runs under that caller alone: its `if:` is exactly `inputs.job == '<its id>'`, and the caller
+# passes `job: <its own id>`. check_called_jobs holds both, and each case below breaks one.
+
+# shared_file <root> <slow> <fast>: jobs <slow> and <fast> of ci.yaml both call
+# .github/workflows/shared.yaml, as test and tooling-checks call ci-job-test.yaml, each passing its
+# own id as `job`. The file holds a job of each id, whose `if:` admits that id alone and whose last
+# step reports ci-ok under it. Both callers are gated on the app filter and no step runs a go
+# command, so the split is all a case can break.
+shared_file() {
+  local root=$1 slow=$2 fast=$3 job
+  {
+    cat <<'YAML'
+name: Shared
+on:
+  workflow_call:
+    inputs:
+      job:
+        type: string
+        required: true
+      ci-ok-changes:
+        type: string
+        required: false
+        default: ""
+jobs:
+YAML
+    for job in "$slow" "$fast"; do
+      cat <<YAML
+  $job:
+    if: inputs.job == '$job'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the $job steps
+        run: echo $job
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: $job
+          changes: \${{ inputs.ci-ok-changes }}
+          job-status: \${{ job.status }}
+YAML
+    done
+  } > "$root/.github/workflows/shared.yaml"
+  for job in "$slow" "$fast"; do
+    cat >> "$root/.github/workflows/ci.yaml" <<YAML
+  $job:
+    needs: changes
+    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/shared.yaml
+    with:
+      job: $job
+      ci-ok-changes: \${{ toJSON(needs.changes) }}
+YAML
+  done
+  replace "$root/.github/workflows/ci.yaml" '{"app": "app", "image": "image"}' \
+    "{\"app\": \"app\", \"image\": \"image\", \"$slow\": \"app\", \"$fast\": \"app\"}"
+  replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
+    "    needs: [changes, app, image, lint, $slow, $fast]"
+}
+
+echo "case: a workflow two jobs call, each running the job of it named for itself"
+root=$(fixture shared-file-green)
+shared_file "$root" test tooling-checks
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job of a shared workflow whose if: admits another caller"
+root=$(fixture shared-file-other-if)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/shared.yaml" "    if: inputs.job == 'tooling-checks'" "    if: inputs.job == 'test'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the if: it carries and the one it must carry" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: inputs.job == 'test'\`: give it \`if: inputs.job == 'tooling-checks'\`")"
+
+echo "case: a caller of a shared workflow that passes another caller's id"
+root=$(fixture shared-file-other-id)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/ci.yaml" "      job: tooling-checks" "      job: test"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the caller, the id it passes and its own" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job tooling-checks calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: test\`: pass \`job: tooling-checks\`")"
+
+echo "case: a caller of a shared workflow that passes no id"
+root=$(fixture shared-file-no-id)
+shared_file "$root" pi-legion pi-legion-build
+replace "$root/.github/workflows/ci.yaml" $'      job: pi-legion-build\n' ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the caller and the id it must pass" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job pi-legion-build calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: \`: pass \`job: pi-legion-build\`")"
+
+# GitHub reads `${{ inputs.job == 'x' }}` as the bare comparison, and `&& true` adds nothing, yet
+# the check proves the one form and refuses every other rather than reasoning about it: a term
+# beside the comparison, such as an `||`, could admit another caller.
+for written in "expression:\${{ inputs.job == 'tooling-checks' }}" "conjunction:inputs.job == 'tooling-checks' && true"; do
+  echo "case: a job of a shared workflow whose if: is ${written#*:}, not the bare comparison"
+  root=$(fixture "shared-file-if-${written%%:*}")
+  shared_file "$root" test tooling-checks
+  replace "$root/.github/workflows/shared.yaml" "    if: inputs.job == 'tooling-checks'" "    if: ${written#*:}"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the job, the if: it carries and the one it must carry" \
+    "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: ${written#*:}\`: give it \`if: inputs.job == 'tooling-checks'\`")"
+done
+
+# dispatch-browser.yaml's merge job reports under whichever of its two callers ran it by reading
+# `job:` from the input, and a shared file's jobs may do the same, since each caller passes its
+# own id there.
+echo "case: a shared workflow's report steps that read the caller's id from the input"
+root=$(fixture shared-file-report-input)
+shared_file "$root" test tooling-checks
+replace "$root/.github/workflows/shared.yaml" "          job: test" "          job: \${{ inputs.job }}"
+replace "$root/.github/workflows/shared.yaml" "          job: tooling-checks" "          job: \${{ inputs.job }}"
+run_check "$root"
+check "passes while each caller passes its own id" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci.yaml" "      job: tooling-checks" "      job: test"
+run_check "$root"
+check "fails once a caller passes another's" "$(is "$status" 1)"
+check "names the caller and the id it passes" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::job tooling-checks calls .github/workflows/shared.yaml, which other jobs of this file call too, and passes \`job: test\`: pass \`job: tooling-checks\`")"
+check "and says no report goes out under the caller's own id" \
+  "$(has "$out" "::error file=.github/workflows/ci.yaml::./.github/workflows/shared.yaml, which job tooling-checks calls, has no job whose last step is")"
 
 echo "case: a package added to a go command the table claims, outside the job's filter"
 root=$(fixture appended-package)
