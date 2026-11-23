@@ -467,7 +467,8 @@ CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-en
 It is one of the ten slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
-the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
+the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and a line after it for each service still alive at the end of the run names the test that built it and whether that test shut it down.
+The report waits for each service a test shut down to be collected, with no bound but the test binary's deadline less 30 s, and not for a service no test shut down, which its own goroutines keep alive: that one is named as soon as every service a test shut down has gone.
 A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.

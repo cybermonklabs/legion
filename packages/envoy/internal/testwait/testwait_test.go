@@ -2,6 +2,8 @@ package testwait
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"slices"
@@ -81,6 +83,32 @@ func TestAWaitGivesUpTheMarginBeforeTheDeadline(t *testing.T) {
 	}
 }
 
+// Context ends where Until and Receive give up: at the test binary's deadline less the margin, and
+// at no moment under -timeout 0, which TestNoDeadlineChild checks in every run.
+func TestContextEndsTheMarginBeforeTheDeadline(t *testing.T) {
+	deadline, bounded := t.Deadline()
+	end, ok := Context(t).Deadline()
+	if ok != bounded || ok && !end.Equal(deadline.Add(-margin)) {
+		t.Fatalf("Context in a test whose deadline is %v (%t) ends at %v (%t), want %s before it", deadline, bounded, end, ok, margin)
+	}
+}
+
+// Context is not done while its test runs, and is cancelled when the test ends, before the
+// test's cleanups run: the cleanup below is registered first, so it runs after every cleanup of
+// the test, Context's own among them, and reads the context then.
+func TestContextIsCancelledWhenItsTestEnds(t *testing.T) {
+	var ctx context.Context
+	var running, atCleanup error
+	t.Run("test", func(t *testing.T) {
+		t.Cleanup(func() { atCleanup = ctx.Err() })
+		ctx = Context(t)
+		running = ctx.Err()
+	})
+	if running != nil || !errors.Is(atCleanup, context.Canceled) {
+		t.Fatalf("Context's error was %v while its test ran and %v at its cleanup, want none and %v", running, atCleanup, context.Canceled)
+	}
+}
+
 // Under a short -timeout Until and Receive give up 30 s before the deadline, before Go's alarm:
 // each writes its line to stderr and fails the test with the same text, which carries Until's last
 // reading.
@@ -113,7 +141,8 @@ func TestAWaitGivesUpWithItsLineOnStderrAndTheSameFailure(t *testing.T) {
 }
 
 // Under -timeout 0 there is no deadline: Until asks until its reading holds, however many false
-// readings come first, and Receive waits until a value comes.
+// readings come first, Receive waits until a value comes, Context has no deadline, and
+// BinaryRemaining answers false.
 func TestUnderNoTimeoutAWaitHasNoEnd(t *testing.T) {
 	child := exec.Command(os.Args[0], "-test.run=^TestNoDeadlineChild$", "-test.timeout=0", "-test.v")
 	child.Env = append(os.Environ(), childEnv+"=1")
@@ -147,10 +176,10 @@ func TestTheWaitsGiveUpChild(t *testing.T) {
 
 // TestNoDeadlineChild is the child of TestUnderNoTimeoutAWaitHasNoEnd, run under -timeout 0: Until
 // reads false twice and true the third time, and Receive's value is sent 100 ms after it begins.
-// A wait that gave up on a false reading or on an empty channel fails it. The 100 ms decides no
-// verdict here, since the wait has no end; it keeps the channel empty when the wait begins, so a
-// Receive that gave up at once would find nothing. It runs only when the parent re-executes this
-// binary.
+// A wait that gave up on a false reading or on an empty channel fails it, as do a Context with a
+// deadline and a BinaryRemaining that answers true. The 100 ms decides no verdict here, since the
+// wait has no end; it keeps the channel empty when the wait begins, so a Receive that gave up at
+// once would find nothing. It runs only when the parent re-executes this binary.
 func TestNoDeadlineChild(t *testing.T) {
 	if os.Getenv(childEnv) == "" {
 		t.Skip(childEnv + " is not set: this test is the child of TestUnderNoTimeoutAWaitHasNoEnd")
@@ -166,5 +195,11 @@ func TestNoDeadlineChild(t *testing.T) {
 	}()
 	if got := Receive(t, "a value sent 100 ms after the wait began", sent); got != "sent later" {
 		t.Errorf("under -timeout 0 Receive returned %q, want the value sent", got)
+	}
+	if end, ok := Context(t).Deadline(); ok {
+		t.Errorf("under -timeout 0 Context ends at %v, want no deadline", end)
+	}
+	if left, ok := BinaryRemaining(time.Second); ok || left != 0 {
+		t.Errorf("under -timeout 0 BinaryRemaining is %s, %t, want 0 and false", left, ok)
 	}
 }

@@ -48,15 +48,17 @@ func newProcessPair(t *testing.T) processPair {
 
 // newSeededProcessPair is the pair on a document seeded with markdown and not settled, which
 // leaves task A holding no room of its own: where the room-query tests start. Each process's
-// queries wait for the other's answers until the test binary's deadline less testwait's margin,
-// not production's roomQueryWait: what the tests over the pair check is what an answer holds and
-// what a write does with it, and on a loaded machine an answer can take longer than that latency
-// budget to cross Postgres twice, which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with
-// no answer at all (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds
-// the budget itself. Both processes keep an idle room past the run: no test over the pair tests the
-// idle sweep, and a room that a slow machine leaves idle for ygo's minute must not be closed under a
-// row that writes to it. ygo's sweep reads the timeout on every pass, so it is set before the first
-// room loads.
+// queries wait for the other's answers for what was left of the test binary's deadline less
+// roomWaitMargin when that process's wait was set (testwait.Remaining, read for each process as
+// its wait is set, since what is left is a reading of the clock), not production's
+// roomQueryWait: what the tests over the pair check is what an answer holds and what a write does
+// with it, and on a loaded machine an answer can take longer than that latency budget to cross
+// Postgres twice, which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with no answer at
+// all (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget
+// itself. Both processes keep an idle room past the run: no test over the pair tests the idle
+// sweep, and a room that a slow machine leaves idle for ygo's minute must not be closed under a
+// row that writes to it. ygo's sweep reads the timeout on every pass, so it is set before the
+// first room loads.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	t.Helper()
 	database := storetest.Open(t)
@@ -64,7 +66,7 @@ func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	taskA, serverA := newTestServiceInstance(t, database)
 	taskB, gateB := newGatedServiceInstance(t, storetest.SecondProcess(t, database))
 	taskA.roomQueries.wait = testwait.Remaining(t, roomWaitMargin)
-	taskB.roomQueries.wait = taskA.roomQueries.wait
+	taskB.roomQueries.wait = testwait.Remaining(t, roomWaitMargin)
 	taskA.srv.RoomIdleTimeout, taskB.srv.RoomIdleTimeout = time.Hour, time.Hour
 	serverB := newTestServer(t, taskB)
 	seedServiceText(t, taskA, artifactID, markdown)

@@ -35,8 +35,18 @@ func connectPeer(t *testing.T, serverURL, artifactID, login string) *docstest.Pe
 	return docstest.Dial(t, url, http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
 }
 
+// keepSilentSockets lets a socket on service send nothing for an hour once upgraded before ygo
+// closes it (Server.HandshakeTimeout, 30 s when unset: ygo's guard against a peer that holds a
+// connection and sends nothing), as the late-unload fixture does (lateUnloadSocketSilence). A row
+// that calls it dials a socket that sends nothing and reads until the behaviour under test closes
+// it; under ygo's 30 s, ygo closed a socket that behaviour left open, and the row passed without
+// it. An hour is far above any test's run, so only the behaviour under test closes the socket. It
+// is set before the service serves its first socket, which reads it.
+func keepSilentSockets(service *Service) { service.srv.HandshakeTimeout = time.Hour }
+
 func TestIssueCloseClosesOpenDocumentConnection(t *testing.T) {
 	service, artifactID := newTestService(t)
+	keepSilentSockets(service)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
@@ -675,6 +685,7 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 		Store: database, Events: events.NewBroker(),
 		Identity: headerIdentity(database),
 	})
+	keepSilentSockets(service)
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -780,6 +791,7 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 		Identity:    headerIdentity(database),
 		Settle:      time.Hour,
 	})
+	keepSilentSockets(service)
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))

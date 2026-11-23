@@ -85,6 +85,49 @@ func TestLeftReturnsTheLineAndFailsNothing(t *testing.T) {
 	}
 }
 
+// BinaryRemaining is the test binary's deadline less the spare, the deadline counted from this
+// package's start rather than read off a test. testing starts its alarm, and with it the deadline
+// t.Deadline names, the -timeout before that deadline (M.startAlarm), which is after this package
+// started: so the answer is no later than the deadline the test names less the spare, read before
+// the call, and no earlier than that deadline less the spare, read after the call, less how long
+// the binary ran from this package's start to the alarm's. Under -timeout 0 it answers false and
+// no span, which TestNoDeadlineChild checks in every run.
+func TestBinaryRemainingIsTheDeadlineLessTheSpare(t *testing.T) {
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		if left, ok := BinaryRemaining(time.Second); ok || left != 0 {
+			t.Fatalf("under -timeout 0 BinaryRemaining is %s, %t, want 0 and false", left, ok)
+		}
+		return
+	}
+	timeout, known := binaryTimeout()
+	if !known {
+		t.Fatal("the test binary's -timeout could not be read, though its tests have a deadline")
+	}
+	lead := deadline.Add(-timeout).Sub(binaryStart)
+	if lead < 0 {
+		t.Fatalf("this package started %s after testing started its alarm, want before it", -lead)
+	}
+	spare := time.Second
+	before := time.Until(deadline) - spare
+	left, ok := BinaryRemaining(spare)
+	after := time.Until(deadline) - spare - lead
+	if !ok || left > before || left < after {
+		t.Fatalf("BinaryRemaining is %s, %t, want true and between %s and %s: the deadline less %s, read after the call less the %s from this package's start to the alarm's, and read before it",
+			left, ok, after, before, spare, lead)
+	}
+}
+
+// With the spare or less of the binary's deadline left, BinaryRemaining answers 0, and true: the
+// binary has a deadline, and no span is left to wait. A spare of a day is more than any -timeout a
+// run of this package takes; under -timeout 0 the answer is 0 and false.
+func TestBinaryRemainingWithNoMoreThanTheSpareLeftIsZero(t *testing.T) {
+	_, bounded := t.Deadline()
+	if left, ok := BinaryRemaining(24 * time.Hour); left != 0 || ok != bounded {
+		t.Fatalf("BinaryRemaining with a day's spare is %s, %t, want 0 and %t", left, ok, bounded)
+	}
+}
+
 // spentChild runs TestSpentDeadlineChild under -timeout timeout and returns the one failure its
 // wait wrote to stderr, failing t unless the child failed that way, by that wait and before Go's
 // alarm.

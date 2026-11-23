@@ -279,7 +279,8 @@ func TestAShareTooLargeForOneQueryAnswersTooLarge(t *testing.T) {
 // connection's name, which is all membership reads, and listens to nothing.
 func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	pair := newQueryProcesses(t)
-	// Production's wait, which this test holds: the pair's own is roomWait (newSeededProcessPair).
+	// Production's wait, which this test holds: the pair's own is what was left of the test binary's
+	// deadline less roomWaitMargin when the pair was made (newSeededProcessPair).
 	pair.taskA.roomQueries.wait = roomQueryWait
 	silent := uuid.NewString()
 	conn, err := pair.database.Pool.Dedicated(context.Background(), ListenerApplicationPrefix+silent)
