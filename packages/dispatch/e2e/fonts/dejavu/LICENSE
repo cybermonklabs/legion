@@ -1,7 +1,8 @@
-DejaVuSans.ttf and DejaVuSans-Bold.ttf are DejaVu Sans 2.37, Book and Bold, unmodified, as
-Debian's fonts-dejavu-core ships them (https://dejavu-fonts.github.io/). The layout rows
-(packages/dispatch/e2e/layout-check.ts) draw the root's first font family in them, so a run on
-any machine measures the text CI measures. Their licence, from that package's copyright file:
+DejaVuSans.ttf, DejaVuSans-Bold.ttf, DejaVuSansMono.ttf and DejaVuSansMono-Bold.ttf are DejaVu
+Sans and DejaVu Sans Mono 2.37, Book and Bold, unmodified, as Debian's fonts-dejavu-core ships
+them (https://dejavu-fonts.github.io/). The layout rows (packages/dispatch/e2e/layout-check.ts)
+draw the root's first font family and the editor's code stack in them, so a run on any machine
+measures the text CI measures. Their licence, from that package's copyright file:
 
 Files: *
 Copyright: Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. 

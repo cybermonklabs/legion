@@ -24,37 +24,55 @@ export const MIN_ELEMENTS = 100;
  *  rows the rule governs are, at every width. */
 const HEIGHT = 900;
 
-/** The faces the rows draw the root's first family, `Inter` (`web/src/styles.css`), in: DejaVu
- *  Sans 2.37, Book and Bold, the files committed under `e2e/fonts/dejavu/` (their licence is
- *  beside them). Every page but the new issue page names `Inter` first and loads no font file of
- *  its own, so each machine draws it in what it holds: CI and this repository's Linux boxes fall
- *  back to DejaVu Sans, a Mac to its system face, a machine with Inter to Inter, and the list's
- *  exact counts follow the text's width. Declared as `Inter` here, these faces win over any
- *  installed one, so every run measures the text CI measures. A weight between is matched to
- *  these two as the browser matches it to the installed DejaVu Sans, and italic is drawn slanted
- *  from Book as it is there, since that machine holds no DejaVu Sans Oblique either. */
+/** The faces the rows draw the app's font stacks in, by the first family of each stack the page
+ *  names, from the files committed under `e2e/fonts/` (each directory holds its licence). The
+ *  pages load no font file for these stacks, so each machine draws them in what it holds, and the
+ *  list's exact counts follow the text's width. Declared under those names here, these faces win
+ *  over any installed font of the name, so every run measures the text CI measures, in the faces
+ *  CI's Chromium resolves today (read with `CSS.getPlatformFontsForNode`):
+ *  - `Inter`, the root's first family (`web/src/styles.css`; every page but the new issue page,
+ *    which ships its own): DejaVu Sans 2.37.
+ *  - `SFMono-Regular`, the first family Chromium on Linux looks up in Tailwind's `font-mono`
+ *    stack, which `code`, `kbd`, `samp` and `pre` take too: Liberation Mono 2.1.5. The stack opens
+ *    with `ui-monospace`, which Chromium on Linux skips; it is declared as well, for a browser
+ *    that looks it up by name.
+ *  - `SF Mono`, the first family of the document editor's code stack (`.milkdown code`), and
+ *    `JetBrains Mono`, the diagram's (`.mono` in a Mermaid picture): DejaVu Sans Mono 2.37.
+ *  Each is a Book and a Bold face. A weight between is matched to them as the browser matches it
+ *  to the installed fonts, and italic is drawn slanted from Book; a monospace face's advances do
+ *  not change with its slant, and that machine holds no DejaVu Sans Oblique. */
 const PINNED_FACES = [
-  { file: "DejaVuSans.ttf", weight: 400 },
-  { file: "DejaVuSans-Bold.ttf", weight: 700 },
-] as const;
+  ...["Inter"].flatMap((family) => [
+    { dir: "dejavu", family, file: "DejaVuSans.ttf", weight: 400 },
+    { dir: "dejavu", family, file: "DejaVuSans-Bold.ttf", weight: 700 },
+  ]),
+  ...["ui-monospace", "SFMono-Regular"].flatMap((family) => [
+    { dir: "liberation", family, file: "LiberationMono-Regular.ttf", weight: 400 },
+    { dir: "liberation", family, file: "LiberationMono-Bold.ttf", weight: 700 },
+  ]),
+  ...["SF Mono", "JetBrains Mono"].flatMap((family) => [
+    { dir: "dejavu", family, file: "DejaVuSansMono.ttf", weight: 400 },
+    { dir: "dejavu", family, file: "DejaVuSansMono-Bold.ttf", weight: 700 },
+  ]),
+];
 /** Where the page asks for those faces; the row answers it from the committed files. */
 const PINNED_FACE_PATH = "/__layout-fonts/";
 const PINNED_FACE_SHEET = PINNED_FACES.map(
-  ({ file, weight }) =>
-    `@font-face { font-family: "Inter"; font-style: normal; font-weight: ${weight}; src: url("${PINNED_FACE_PATH}${file}") format("truetype"); }`
+  ({ dir, family, file, weight }) =>
+    `@font-face { font-family: ${JSON.stringify(family)}; font-style: normal; font-weight: ${weight}; src: url("${PINNED_FACE_PATH}${dir}/${file}") format("truetype"); }`
 ).join("\n");
 
-/** Answers the page's requests for the pinned faces from `e2e/fonts/dejavu/`. */
+/** Answers the page's requests for the pinned faces from `e2e/fonts/`. */
 async function servePinnedFaces(page: Page): Promise<void> {
-  await page.route(`**${PINNED_FACE_PATH}*`, async (route) => {
-    const file = new URL(route.request().url()).pathname.slice(PINNED_FACE_PATH.length);
-    const face = PINNED_FACES.find((candidate) => candidate.file === file);
+  await page.route(`**${PINNED_FACE_PATH}**`, async (route) => {
+    const asked = new URL(route.request().url()).pathname.slice(PINNED_FACE_PATH.length);
+    const face = PINNED_FACES.find((candidate) => `${candidate.dir}/${candidate.file}` === asked);
     if (face === undefined) {
-      await route.fulfill({ body: `no pinned face ${file}`, status: 404 });
+      await route.fulfill({ body: `no pinned face ${asked}`, status: 404 });
       return;
     }
     await route.fulfill({
-      body: readFileSync(new URL(`./fonts/dejavu/${face.file}`, import.meta.url)),
+      body: readFileSync(new URL(`./fonts/${face.dir}/${face.file}`, import.meta.url)),
       contentType: "font/ttf",
     });
   });
