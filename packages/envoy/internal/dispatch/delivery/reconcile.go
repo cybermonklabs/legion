@@ -583,11 +583,14 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 // GitHub's own answer, which always names `head.repo`, can attribute that row, and a merged row
 // is the one row no other writer ever revisits before a result at its head stands at no basis
 // for good. Each row's try is stamped before its read (markHeadTried), so a row whose read fails
-// goes behind every due row tried less lately and the next pass reads those first: of n due rows,
-// each is tried within ceil(n/PullRequestHeadBatch) passes whatever the others' reads answer
-// (ListStalePullRequestHeads). A rate limit stops the batch and fails the pass, as every other
-// GitHub step's does, and leaves the rows it did not try where they were; any other per-row
-// failure is logged and leaves the row due, behind the rows not tried since.
+// goes behind every due row tried less lately and the next pass takes those first: of n due rows,
+// the open rows due and the merged rows no read has reached (the merged rows of an older rule take
+// only the room those leave, at most RejudgedHeadsPerPass), each is tried within
+// ceil(n/PullRequestHeadBatch) passes that try their whole batch, whatever their reads answer, a
+// row never tried first (ListStalePullRequestHeads). A rate limit stops the batch and fails the
+// pass, as every other GitHub step's does: each row it did not try keeps its place, so the next
+// pass takes those first, and the stopped pass counts toward no bound; any other per-row failure
+// is logged and leaves the row due, behind the rows not tried since.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time) error {
 	stale, err := ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
 	if err != nil {

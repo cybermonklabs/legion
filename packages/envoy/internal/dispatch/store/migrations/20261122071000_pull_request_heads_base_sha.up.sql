@@ -13,9 +13,13 @@
 -- Null where no writer stored one: every row stored before this migration, and a row a writer that
 -- read no base revision wrote, such as one the release before this one writes while the release
 -- rolls. Null is "not known": the settler compares nothing for such a row until a write stores a
--- revision, which the reconcile's read of each open pull request does, a try for each due row
--- within ceil(n / delivery.PullRequestHeadBatch) passes of n due rows, whatever the others' reads
--- answer (migration 20261123124956, delivery.ListStalePullRequestHeads).
+-- revision, which the reconcile's read of each open pull request does: of n rows due in its first
+-- selection, the open rows due and the merged rows no read has reached (the merged rows of an
+-- older attribution rule take only the room those leave, at most 50 a pass), it tries each within
+-- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, whatever their reads
+-- answer, a row never tried first, and a pass a rate limit stops leaves the rows it did not try in
+-- their places, so the next pass takes them first (migration 20261123124956,
+-- delivery.ListStalePullRequestHeads).
 --
 -- Adding a nullable column with no default is a catalog change that rewrites no row. The ALTER
 -- takes ACCESS EXCLUSIVE on pull_request_heads for the catalog write alone, after waiting for each

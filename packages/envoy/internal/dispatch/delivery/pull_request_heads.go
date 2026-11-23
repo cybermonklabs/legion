@@ -36,10 +36,13 @@ import (
 // result, and by the read of an issue's results for a `before_merge` result's commit, at most
 // once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which takes every open row read longer ago than PullRequestHeadStaleAfter (every open row at
-// every pass of one process while no more than PullRequestHeadBatch are due, each due row within
-// ceil(n/PullRequestHeadBatch) passes of n due rows whatever the others' reads answer, and as
-// PullRequestHeadStaleAfter says with several) and every merged row the rule this build judges by
-// has not judged yet — one offer per rule version (AttributionRuleVersion,
+// every pass of one process that tries its whole batch while no more than PullRequestHeadBatch
+// rows are due, and past that, or after a pass a rate limit stopped, within the bound
+// ListStalePullRequestHeads states: of n due rows, the open rows due and the merged rows no read
+// has reached, each within ceil(n/PullRequestHeadBatch) passes that try their whole batch, a row
+// never tried first, and a pass a rate limit stops leaves the rows it did not try first for the
+// next; and as PullRequestHeadStaleAfter says with several) and every merged row the rule this
+// build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
 // ListStalePullRequestHeads). Each writer that read GitHub stores, with the issue, the inputs it
 // judged the issue from (PullRequestHead.Inputs), so a change of an issue's links judges each row
 // it names again from them, in its own transaction and with no read of GitHub (LinksChanged).
@@ -798,11 +801,12 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey, repoFu
 // duty.JitteredWithin). A row a pass reads is stamped (checked_at) no later than that pass ends.
 // With one process the next pass starts more than this bound after that end, so every pass offers
 // again every open row the pass before it read, and takes them all while no more than
-// PullRequestHeadBatch rows are due; past that, each due row within the bound
-// ListStalePullRequestHeads gives. With several processes serving one database the next pass can
-// be another process's, starting less than this bound after the read, and it leaves the row as
-// fresh. The first pass that starts more than this bound after the read takes it, and the
-// deployment's passes come at most ReconcileInterval apart, so with no more than a batch due and
+// PullRequestHeadBatch rows are due (ListStalePullRequestHeads says which rows count); past that,
+// or after a pass a rate limit stopped, each due row within the bound ListStalePullRequestHeads
+// gives. With several processes serving one database the next pass can be another process's,
+// starting less than this bound after the read, and it leaves the row as fresh. The first pass
+// that starts more than this bound after the read takes it, and the deployment's passes come at
+// most ReconcileInterval apart, so with no more than a batch due, no pass a rate limit stops and
 // a read that succeeds, two reads of an open row are at most about this bound plus
 // ReconcileInterval apart, nine and a half minutes, plus the passes' own run time. A bound of the
 // whole ReconcileInterval would leave such a row not yet due at one process's next pass whenever
@@ -827,19 +831,29 @@ const PullRequestHeadBatch = 200
 // unchanged checked_at, and so their places, every pass, and a row behind them was never read. A
 // failed read stamps no checked_at and stores nothing of the pull request, so the row stays due,
 // and nothing that waits on its read (the check states settler's read of a row with no base
-// revision, api/check_states.go, verifyFormerHeads) takes the try for one. The bound: a place only
-// moves later, but for a row first written, which no read has reached, so each pass that tries
-// the rows it takes and not a given due row takes limit rows placed no later than that row and
-// puts them after it; of n rows due, each is tried within ceil(n/limit) passes, one more for each
-// limit rows first written meanwhile, whatever any read answers but a rate limit, which stops a
-// batch and leaves the rows it did not try where they were. With one process a pass starts at
-// most ReconcileInterval after the one before it ended. The rule half below is taken in the same
-// order.
+// revision, api/check_states.go, verifyFormerHeads) takes the try for one.
+//
+// The bound. Of the rows due, n are those the first select takes from: the open rows due and the
+// merged rows credited to nobody that no read has reached. The rule half takes only the room that
+// select leaves, at most RejudgedHeadsPerPass, so it delays no row of the n. A place only moves
+// later, but for a row first written, which no read and no try has reached, and which goes first.
+// So a pass that tries every row of its batch and does not take a given due row takes limit rows
+// placed no later than that row and puts each of them behind it: of n rows due, each is tried
+// within ceil(n/limit) such passes, one more for each limit rows first written meanwhile,
+// whatever their reads answer. A pass a rate limit stops tries part of its batch
+// (reconcilePullRequestHeads): each row it tried goes behind every due row tried less lately, and
+// each row of its batch it did not try keeps its place, so the next pass takes those first, after
+// the rows first written meanwhile. Such a pass counts toward no bound above, and while GitHub's
+// limit lasts the passes it stops try few rows each. With one process a pass starts at most
+// ReconcileInterval after the one before it ended. The rule half below is taken in the same
+// order: of m merged rows a rule older than this build's judged, each is tried within
+// ceil(m/RejudgedHeadsPerPass) passes that try their whole batch and leave the rule half that room.
 //
 // A merged row is revisited at all because nothing else ever revisits one. An open row comes
-// round at every pass of one process while no more than a batch is due, each starting at most
-// five minutes after the one before it ended, within the bound above past that, and as
-// PullRequestHeadStaleAfter says with several; a merged row is written once more at
+// round at every pass of one process that tries its whole batch while no more than a batch is due
+// (the n above), each starting at most five minutes after the one before it ended, within the
+// bound above past that or after a pass a rate limit stopped, and as PullRequestHeadStaleAfter
+// says with several; a merged row is written once more at
 // most, by an envelope or a read-through, and a recorded result reads through only for a commit
 // no head Dispatch knows. So a merged row left credited to nobody stays that way, and every
 // `before_merge` result at that head stands at no basis for ever: a merge delivered by a

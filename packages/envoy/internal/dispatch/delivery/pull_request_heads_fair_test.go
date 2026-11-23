@@ -3,10 +3,13 @@ package delivery
 import (
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
 // TestAHealthyRowBehindAFullBatchOfFailingRowsIsReadWithinTwoPasses: a full batch of open pull
@@ -15,10 +18,11 @@ import (
 // the release before this one: read by that release an hour ago, with no base revision stored,
 // so the check states settler compares none of its candidates until a read stores one. GitHub
 // answers #70's read. The reconcile tries each due row within ceil(n/PullRequestHeadBatch) passes
-// of n due rows, the least lately tried first, whatever earlier tries answered: so the second
-// pass reads #70 and stores its base revision, and the failed reads leave each failing row as it
-// was, unread and with no base revision, since a failed read is evidence of nothing. The third
-// pass tries the one failing row the second left, before any row the second pass tried.
+// that try their whole batch, of n due rows, the least lately tried first, whatever earlier tries'
+// reads answered: so the second pass, with no rate limit, reads #70 and stores its base revision,
+// and the failed reads leave each failing row as it was, unread and with no base revision, since
+// a failed read is evidence of nothing. The third pass tries the one failing row the second left,
+// before any row the second pass tried.
 func TestAHealthyRowBehindAFullBatchOfFailingRowsIsReadWithinTwoPasses(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -147,5 +151,124 @@ func TestAHealthyRowBehindAFullBatchOfFailingRowsIsReadWithinTwoPasses(t *testin
 	}
 	if len(stale) == 0 || stale[0].Number != left[0] {
 		t.Fatalf("the third pass's batch begins %v, want #%d, the one row the second pass left untried", stale[:min(len(stale), 3)], left[0])
+	}
+}
+
+// TestTheRowsARateLimitedPassDidNotTryAreTheFirstTheNextPassTries: PullRequestHeadBatch + 10 open
+// pull requests are due, none read yet, each tried before at a time of its own, so the reconcile
+// takes them in the order of those tries, which runs against their numbers. GitHub answers the
+// first pass's reads with a rate limit, which stops that pass's batch: the rows it tried go behind
+// every due row, and the rows of its batch it did not try keep their places, so the next pass
+// takes them first, before the ten rows the stopped pass did not take and before every row it
+// tried, and tries each of them. A try is no read: no row stores a read time or a base revision.
+func TestTheRowsARateLimitedPassDidNotTryAreTheFirstTheNextPassTries(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	const due = PullRequestHeadBatch + 10
+	var mu sync.Mutex
+	limited := true
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if limited {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("Retry-After", "60")
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+			return
+		}
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, `{"message":"Server Error"}`)
+	})
+	// Row n was tried n minutes before a day ago, so the row of the highest number goes first.
+	if _, err := pool.Exec(ctx, `
+		insert into pull_request_heads (repo, number, head_sha, state, attempted_at)
+		select 'acme/widgets', n, lpad(to_hex(n), 40, '0'), 'open', now() - interval '1 day' - make_interval(mins => n)
+		from generate_series(1, $1::integer) n`, due); err != nil {
+		t.Fatalf("store the due pull requests: %v", err)
+	}
+	numbers := func(heads []PullRequestHead) []int {
+		var got []int
+		for _, head := range heads {
+			got = append(got, head.Number)
+		}
+		return got
+	}
+	first, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	if err != nil {
+		t.Fatalf("list the stale heads before the first pass: %v", err)
+	}
+	if len(first) != PullRequestHeadBatch || first[0].Number != due || first[len(first)-1].Number != due-PullRequestHeadBatch+1 {
+		t.Fatalf("the first batch is %d rows from #%v, want %d from #%d to #%d: this test holds no order of tries", len(first), numbers(first[:min(len(first), 3)]), PullRequestHeadBatch, due, due-PullRequestHeadBatch+1)
+	}
+	triedAt := func(at time.Time) map[int]bool {
+		t.Helper()
+		rows, err := pool.Query(ctx, `select number from pull_request_heads where attempted_at = $1`, at)
+		if err != nil {
+			t.Fatalf("read the rows tried at %s: %v", at, err)
+		}
+		defer rows.Close()
+		tried := map[int]bool{}
+		for rows.Next() {
+			var number int
+			if err := rows.Scan(&number); err != nil {
+				t.Fatalf("read the rows tried at %s: %v", at, err)
+			}
+			tried[number] = true
+		}
+		return tried
+	}
+
+	reconcile := NewReconcile(pool, fake.newTestClient(), nil)
+	stopped := time.Now().Truncate(time.Microsecond)
+	err = reconcile.reconcilePullRequestHeads(ctx, stopped)
+	if _, ok := githubapp.AsRateLimit(err); !ok {
+		t.Fatalf("the first pass answers %v, want GitHub's rate limit: this test holds no stopped pass", err)
+	}
+	tried := triedAt(stopped)
+	var untried []int
+	for _, head := range first {
+		if !tried[head.Number] {
+			untried = append(untried, head.Number)
+		}
+	}
+	if len(tried) == 0 || len(untried) == 0 {
+		t.Fatalf("the stopped pass tried %d rows of its batch of %d and left %d untried, want some of each: a rate limit stops a batch part of the way", len(tried), len(first), len(untried))
+	}
+	t.Logf("the stopped pass tried %d rows of its batch of %d and left %d untried", len(tried), len(first), len(untried))
+
+	next, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
+	if err != nil {
+		t.Fatalf("list the stale heads before the second pass: %v", err)
+	}
+	if got := numbers(next); len(got) < len(untried) || !slices.Equal(got[:len(untried)], untried) {
+		t.Fatalf("the second batch begins %v, want the %d rows the stopped pass did not try, in their places, %v: a row a stopped pass did not try keeps its place", got[:min(len(got), len(untried))], len(untried), untried)
+	}
+	for index, head := range next {
+		if tried[head.Number] && index < len(untried)+due-PullRequestHeadBatch {
+			t.Fatalf("the second batch takes #%d, which the stopped pass tried, at %d, before a row that pass did not try or take: a try moves a row behind every due row tried less lately", head.Number, index)
+		}
+	}
+
+	mu.Lock()
+	limited = false
+	mu.Unlock()
+	after := stopped.Add(time.Second)
+	if err := reconcile.reconcilePullRequestHeads(ctx, after); err != nil {
+		t.Fatalf("the second pass: %v", err)
+	}
+	triedNext := triedAt(after)
+	for _, number := range untried {
+		if !triedNext[number] {
+			t.Fatalf("the second pass did not try #%d, which the stopped pass left untried", number)
+		}
+	}
+	var answered int
+	if err := pool.QueryRow(ctx, `select count(*) from pull_request_heads where checked_at is not null or base_sha is not null`).Scan(&answered); err != nil {
+		t.Fatalf("read the rows a read stamped: %v", err)
+	}
+	if answered != 0 {
+		t.Fatalf("%d rows store a read time or a base revision after reads GitHub refused, want none: a try is no read of the pull request", answered)
 	}
 }

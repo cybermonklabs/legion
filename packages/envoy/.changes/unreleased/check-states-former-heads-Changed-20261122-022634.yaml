@@ -57,11 +57,15 @@ body: |-
     from GitHub's `base.sha` in a read of the pull request and from the listener's new `base_sha`
     field of the `pull_request` envelope), since a base branch moves with no change of its name;
     a row with none, written before this release or by an envelope without the field, is not read
-    until a write stores one, which the reconcile's read of each open pull request does, a try for
-    each of n due rows within ceil(n/200) passes whatever GitHub answers for the others
-    (`pull_request_heads.attempted_at`, migration `20261123124956`, which the reconcile stamps as it
-    begins each row's read, and orders its batch by with `checked_at`, so a row whose reads fail no
-    longer holds the front of every batch); only a candidate a `before_merge` check needs is read,
+    until a write stores one, which the reconcile's read of each open pull request does: of n rows
+    due in its first selection, the open rows due and the merged rows no read has reached (the
+    merged rows of an older attribution rule take only the room those leave, at most 50 a pass),
+    it tries each within ceil(n/200) passes that try their whole batch, whatever their reads
+    answer, a row never tried first, and a pass a rate limit stops leaves the rows it did not try in
+    their places, so the next pass takes them first (`pull_request_heads.attempted_at`, migration
+    `20261123124956`, which the reconcile stamps as it begins each row's read, and orders its batch
+    by with `checked_at`, so a row whose reads fail no longer holds the front of every batch); only
+    a candidate a `before_merge` check needs is read,
     a commit a result of such a check of the issue's Verification document was recorded at, so a
     candidate whose results are
     all of a check of another `when` holds no obligation and no `test` handoff, and an issue with
