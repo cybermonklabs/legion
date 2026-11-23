@@ -4,8 +4,9 @@
 # The check that a remote's words, and a configured URL, print with no credential: the redaction
 # of remote text (packages/envoy/AGENTS.md, "redact.Error(err, base)"). Run it from anywhere in
 # the repository; it prints one line per inventory row and exits 0 only when every step and every
-# row passed, 1 when one failed, 2 when it refused to run, and 3 when nothing failed but a run
-# went past its bound (UNKNOWN: neither a pass nor a failure; run it again).
+# row passed, 1 when one failed, 2 when it refused to run or to read a judge of its rows (below),
+# and 3 when nothing failed but a run went past its bound (UNKNOWN: neither a pass nor a failure;
+# run it again).
 #
 # It reads its inventory, packages/envoy/internal/redact/testdata/redact-check.json: each row a
 # requirement, a Go package (relative to packages/envoy) or a Bun test file (relative to the
@@ -31,7 +32,12 @@
 #     testcase for. It reads the report rather than Bun's console, which prints no line for a
 #     passing test where AGENT or CLAUDECODE is set, as it is in an agent's shell;
 #   - runs `bun run typecheck` in packages/contracts, packages/cipher-client and
-#     packages/envoy-client, and fails on a non-zero status.
+#     packages/envoy-client, and fails on a non-zero status;
+#   - reads the verdicts of its three judges, each a bun script - the Go rows', the Bun rows' and
+#     the print test's - only from a judge that exited 0 and printed one verdict line for each
+#     package, row or print test it judges, and refuses (exit 2) otherwise: a judge that failed to
+#     start, or stopped at a line of go.json that a killed go command cut short, prints nothing,
+#     and a judge's empty or short output holds no FAIL line to count.
 #
 # Around those steps it runs the mutation gate, packages/envoy/cmd/redact-gate, whose stages run
 # in this order and stop at the first that fails, naming it: (1) the inventory; (2) the censuses -
@@ -233,6 +239,32 @@ for package in contracts cipher-client envoy-client; do
   step "bun run typecheck in packages/$package" $?
 done
 
+# judged <judge> <its exit status> <its output> [<owed> <what> <awk pattern>]...: prints the
+# judge's output, then refuses (exit 2), naming the judge and both counts, unless the judge exited
+# 0 and, for each triple, exactly <owed> lines of its output match the pattern. The FAIL and
+# UNKNOWN lines counted after each judge are its verdicts only when it ran to its end and printed
+# one for each package, row or print test it judges: an empty or short output counts no failure.
+judged() {
+  local judge=$1 code=$2 output=$3 owed what pattern got
+  shift 3
+  cat "$output"
+  if [ "$code" -ne 0 ]; then
+    echo "check c-redact-remote-text: refused: the $judge failed (exit $code), so the rows it judges have no verdict"
+    exit 2
+  fi
+  while [ "$#" -gt 0 ]; do
+    owed=$1 what=$2 pattern=$3
+    shift 3
+    got=$(awk "$pattern { n++ } END { print n + 0 }" "$output")
+    if [ "$got" != "$owed" ]; then
+      echo "check c-redact-remote-text: refused: the $judge printed $got $what where it owes $owed"
+      exit 2
+    fi
+  done
+}
+go_rows=$(awk -F'\t' '$1 == "go" { n++ } END { print n + 0 }' "$work/rows.tsv")
+bun_rows=$(awk -F'\t' '$1 == "bun" { n++ } END { print n + 0 }' "$work/rows.tsv")
+
 # The verdict of each package and each Go row, from go test's own events and each package's exit
 # status. A package passed when it exited 0 and ended in a pass. One that did not is UNKNOWN when it
 # ran past its bound and no test of it failed (go test -json carries the test binary's stderr, so
@@ -370,7 +402,10 @@ for (const row of fs.readFileSync(rows, "utf8").split("\n")) {
 }
 for (const line of why) console.log(line);
 ' "$work/go.json" "$work/rows.tsv" "$module" "$work/go-steps.tsv" >"$work/go-rows.txt"
-cat "$work/go-rows.txt"
+status=$?
+judged "Go-row judge" "$status" "$work/go-rows.txt" \
+  "${#packages[@]}" "package step lines (one for each package it ran)" '/^(PASS|FAIL|UNKNOWN) step go test /' \
+  "$go_rows" "Go row lines (one for each Go row of the inventory)" '/^(PASS|FAIL|UNKNOWN) / && !/^[A-Z]+ step go test /'
 failed=$((failed + $(grep -c '^FAIL' "$work/go-rows.txt")))
 unknown=$(grep -c '^UNKNOWN' "$work/go-rows.txt")
 
@@ -431,7 +466,9 @@ for (const row of fs.readFileSync(rows, "utf8").split("\n")) {
   console.log(`${state === "passed" ? "PASS" : "FAIL"} ${id} (${requirement}) ${file} ${test}${state === "passed" ? "" : `: the test ${state}`}`);
 }
 ' "$work/rows.tsv" "${bun_reports[@]}" >"$work/bun-rows.txt"
-cat "$work/bun-rows.txt"
+status=$?
+judged "Bun-row judge" "$status" "$work/bun-rows.txt" \
+  "$bun_rows" "Bun row lines (one for each Bun row of the inventory)" '/^(PASS|FAIL) /'
 failed=$((failed + $(grep -c '^FAIL' "$work/bun-rows.txt")))
 
 # The box print test's rows, from each holder's REDACT-PRINT line in both languages' output: the
@@ -465,7 +502,9 @@ if (lines.length === 0) {
   for (const line of lines) console.log(`  ${line}`);
 }
 ' "$work/go.json" "$work"/bun-*.txt >"$work/print-rows.txt"
-cat "$work/print-rows.txt"
+status=$?
+judged "print judge" "$status" "$work/print-rows.txt" \
+  1 "PRINT or FAIL print-test lines (one for the print test)" '/^(PRINT [0-9]+ holders: |FAIL print-test: )/'
 failed=$((failed + $(grep -c '^FAIL' "$work/print-rows.txt")))
 
 rows=$(wc -l <"$work/rows.tsv")
