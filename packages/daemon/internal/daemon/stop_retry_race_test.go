@@ -56,10 +56,21 @@ func (p *heldPace) reserve(now time.Time) time.Time {
 	return now
 }
 
-// waitsOnADecision is whether a goroutine running an outbox row (outbox.execute) is inside
-// supervise.Machine.Claim, which takes its machine's lock and so waits out the decision that holds
-// it. A dump of every goroutine names the frame whether or not the compiler inlined it.
-func waitsOnADecision() bool {
+// goroutineHeader is the first line of the calling goroutine's stack dump, "goroutine N [running]:"
+// cut to its "goroutine N [" prefix, which names that goroutine in a dump of every goroutine.
+func goroutineHeader() string {
+	buf := make([]byte, 64)
+	buf = buf[:goruntime.Stack(buf, false)]
+	header, _, _ := strings.Cut(string(buf), "[")
+	return header + "["
+}
+
+// waitsOnADecision is whether the goroutine whose dump starts with header, the one running the
+// stop row (outbox.execute), is inside supervise.Machine.Claim, which takes its machine's lock and
+// so waits out the decision that holds it. A dump of every goroutine names the frame whether or not
+// the compiler inlined it, and the header keeps another test's rows, which run in parallel, out of
+// it.
+func waitsOnADecision(header string) bool {
 	buf := make([]byte, 1<<20)
 	n := goruntime.Stack(buf, true)
 	for n == len(buf) {
@@ -67,8 +78,8 @@ func waitsOnADecision() bool {
 		n = goruntime.Stack(buf, true)
 	}
 	for _, g := range strings.Split(string(buf[:n]), "\n\n") {
-		if strings.Contains(g, "daemon.(*outbox).execute(") && strings.Contains(g, "supervise.(*Machine).Claim(") {
-			return true
+		if strings.HasPrefix(g, header) {
+			return strings.Contains(g, "daemon.(*outbox).execute(") && strings.Contains(g, "supervise.(*Machine).Claim(")
 		}
 	}
 	return false
@@ -94,7 +105,12 @@ func stopRacingARetry(t *testing.T, runner *outbox, pace *heldPace, pair podPair
 
 	row := stop()
 	done := make(chan error, 1)
-	go func() { done <- runner.execute(ctx, row) }()
+	running := make(chan string, 1)
+	go func() {
+		running <- goroutineHeader()
+		done <- runner.execute(ctx, row)
+	}()
+	header := testwait.Receive(t, "the stop row's goroutine to start", running)
 	var stopped error
 	returned := false
 	testwait.Eventually(t, "the stop row to return, or to wait on the retry's decision", func() bool {
@@ -103,7 +119,7 @@ func stopRacingARetry(t *testing.T, runner *outbox, pace *heldPace, pair podPair
 			returned = true
 			return true
 		default:
-			return waitsOnADecision()
+			return waitsOnADecision(header)
 		}
 	})
 	if returned {

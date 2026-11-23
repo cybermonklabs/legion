@@ -472,6 +472,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		door.at(t, first)
 		secondStarted := h.postAsync(second.m, RequestResume{Claim: second.token})
 		h.wantWaitsForPod(second, 0)
+		parkedPromptly(t, "the second role's resume, parked at the gate while the first role's pod comes up", secondStarted)
 		// The pod comes up 118 s after the second start was asked, and the first role's process
 		// starts in it.
 		h.clock.Advance(118 * time.Second)
@@ -489,7 +490,6 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h.rt.ScriptResume(inIssuePod(second.token, 2))
 		door.release <- nil
 		second.m.Wait()
-		parkedPromptly(t, "the second role's resume, parked at the gate until its grant", secondStarted)
 
 		h.wantLoadEndLine(first.token, issueSandbox, podLoadWant{loaded: 19*time.Second + podLoadSettle, endedBy: "registration",
 			registered: true, registeredAfter: 19 * time.Second})
@@ -529,6 +529,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		door.at(t, first)
 		secondStarted := h.postAsync(second.m, RequestResume{Claim: second.token})
 		h.wantWaitsForPod(second, 0)
+		parkedPromptly(t, "the second role's resume, parked at the gate while the first role's pod comes up", secondStarted)
 		h.clock.Advance(118 * time.Second)
 		door.release <- nil
 		receive(t, "the first role's start", firstStarted, false)
@@ -541,7 +542,6 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		door.at(t, second)
 		door.release <- nil
 		second.m.Wait()
-		parkedPromptly(t, "the second role's resume, parked at the gate until its grant", secondStarted)
 		h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 118*time.Second + podLoadBound, endedBy: "bound"})
 
 		// The load the bound passed over ends when its settle ends, and its line says the bound
@@ -586,12 +586,12 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			door.at(t, first)
 			secondStarted := h.postAsync(second.m, RequestResume{Claim: second.token})
 			h.wantWaitsForPod(second, 0)
+			parkedPromptly(t, "the second role's resume, parked at the gate while the first role's pod comes up", secondStarted)
 			h.clock.Advance(4 * time.Second)
 			door.release <- errBoom
 			door.at(t, second)
 			door.release <- nil
 			second.m.Wait()
-			parkedPromptly(t, "the second role's resume, parked at the gate until its grant", secondStarted)
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 4 * time.Second, endedBy: "failed launch"})
 			h.wantLoadEndLines(first.token, 0)
 
@@ -663,6 +663,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			door.at(t, first)
 			secondStarted := h.postAsync(second.m, RequestResume{Claim: second.token})
 			h.wantWaitsForPod(second, 0)
+			parkedPromptly(t, "the second role's resume, parked at the gate while the first role's pod comes up", secondStarted)
 			h.clock.Advance(6 * time.Second)
 			suspended := h.postAsync(first.m, RequestSuspend{Claim: first.token, By: SuspendedByOperator, Reason: "a person stops the role while its pod comes up"})
 			door.at(t, second)
@@ -671,7 +672,6 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.wantClaimState(first, StateSuspended)
 			door.release <- nil
 			second.m.Wait()
-			parkedPromptly(t, "the second role's resume, parked at the gate until its grant", secondStarted)
 			h.wantStarts(second.token, 1)
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 6 * time.Second, endedBy: "suspension"})
 			h.wantLoadEndLines(first.token, 0)
