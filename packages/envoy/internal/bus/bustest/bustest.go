@@ -1,9 +1,11 @@
 // Package bustest holds the deployed stream the start tests of envoy-listener and envoy-dispatch
 // both begin from, the check each makes of what a start left of it, the drift table each start
-// corrects and the fill loop the full-stream tests begin from. The bus's own tests cannot import
-// it (it imports the bus) and keep their own copies: the fixture deployedClusterStream, the drift
-// table in internal/bus/stream_replicas_test.go and the fill loops in that file and in
-// internal/bus/publish_not_stored_test.go. Every test outside package bus takes them from here.
+// corrects, the fill loop the full-stream tests begin from, and the narrowing of a hub move's
+// quiesce with its restore (narrow.go). The bus's own tests cannot import it (it imports the bus)
+// and keep their own copies: the fixture deployedClusterStream, the drift table in
+// internal/bus/stream_replicas_test.go, the fill loops in that file and in
+// internal/bus/publish_not_stored_test.go, and narrowedAsTheQuiesce in
+// internal/bus/adhoc_topic_test.go. Every test outside package bus takes them from here.
 package bustest
 
 import (

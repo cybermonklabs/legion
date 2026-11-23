@@ -12,12 +12,18 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// onClosed is wired as the ClosedCB callback. It reports the connection event (ConnectionChanged)
-// and launches recovery in a background goroutine so the NATS library callback returns
-// immediately.
-func (c *Client) onClosed() {
+// onClosed is wired as the ClosedCB callback, for nc, the connection that closed. It reports the
+// connection event (ConnectionChanged) and launches recovery in a background goroutine so the NATS
+// library callback returns immediately, one eventWork counts (runEventWork), and then records the
+// close as handled (closeHandled), so the close of a failed start waits for that recovery too
+// (closeSettled).
+func (c *Client) onClosed(nc *nats.Conn) {
+	if c.closedHook != nil {
+		c.closedHook()
+	}
 	c.connectionChanged()
-	go c.recover()
+	c.runEventWork(c.recover)
+	c.closeHandled(nc)
 }
 
 // onConnect is the ConnectedCB of a client that connects in the background
@@ -77,7 +83,7 @@ func (c *Client) onReconnect(nc *nats.Conn) {
 		c.subscriptionsMu.Unlock()
 	}
 	c.mu.Unlock()
-	go c.afterReconnect(nc)
+	c.runEventWork(func() { c.afterReconnect(nc) })
 }
 
 // afterReconnect re-subscribes what the reconnect left unbound and runs the reconnect hooks for the
