@@ -42,7 +42,9 @@
 // server that answered each statement of the body's batch 30 ms late, as a loaded one answers
 // them, put it at 8.26 times (135.9 ms against 16.5 ms, 2026-11-22), over the bound, though the
 // read did the same work in both. The Go side of the read, which was inside those times, is held
-// in the objects it allocates (speedPriorityAllocs); the encoding of its body is held by no test.
+// in what it allocates for each relation the store holds more (speedPriorityGrowth); the encoding
+// of its body, its fixed costs and any spill of a statement to temporary files are held by no
+// test.
 package api
 
 import (
@@ -151,8 +153,7 @@ type speedReadings struct {
 	pagedIssues     speedRequestWork
 	prioritiesFull  speedRequestWork
 	prioritiesLite  speedRequestWork
-	bodyAllocs      float64
-	summaryAllocs   float64
+	priorityGrowth  speedPriorityGrowth
 }
 
 // speedScanRuns is how many scans of the page testing.AllocsPerRun averages, after the one it does
@@ -175,20 +176,28 @@ const (
 )
 
 // The most objects the Go side of a priorities read may allocate for each `advances` relation the
-// store holds (speedPriorityAllocs): what readPriorities allocates to scan the priorities, the
-// relations and the batch's rows, to send the relations as the seed of every statement of the
-// batch, and to build the body from them. The relations are what the read's work grows with: it
-// scans each once and sends each with every statement of its batch, so a read that allocated
-// more for each relation, or for each relation and priority, would show here at once. Correct
-// code allocates 10,876 objects for the whole body and 4,243 for the summary over the corpus's
-// 20 priorities and 400 relations (27.19 and 10.61 a relation), and under the race detector,
-// which CI's run of this package uses and whose sync.Pool keeps fewer objects, 11,078 to 11,087
-// and 4,362 to 4,375 (two runs each, PostgreSQL 18.6, 2026-11-22). The bounds stand between the
-// race build's readings and one object more for each relation in the plain build, 400 more:
-// 11,200 for the body and 4,500 for the summary.
+// store holds more (speedPriorityGrowth): the objects one read allocates once the store holds
+// speedCorpusMoreRelations relations more, beyond the same read over the corpus's
+// speedCorpusRelations, for each relation added. It is the read's own growth, which only the
+// relations make: the read scans each relation once (readPriorityRelations) and sends the pair of
+// arrays they make with every statement of its batch, so a read that allocated for each relation
+// more than it does reads one object a relation more here. Whatever the read allocates the same
+// at both sizes (the priorities, the counts' rows, the faults' fifty rows, the batch, the trace)
+// is in neither reading's difference: a fixed cost is held by no bound here.
+//
+// The read's whole count is not held, because it is mostly such fixed costs and moves with the
+// build: correct code allocates 10,876 to 10,878 objects for the body over the corpus in the
+// plain build and 11,078 to 11,128 under the race detector, whose sync.Pool drops one Put in four
+// (62 race readings on amd64, 40 of them the reviewer's, 2026-11-22 and 23). The growth does not
+// move with it. Correct code grows by 13.04 objects a relation for the whole body and 9.02 for the
+// summary in the plain build, and by 12.96 to 13.07 and 8.96 to 9.05 in the race build; a read
+// that copies each relation's issue key once more grows by 14.04 and 10.02, and 13.99 to 14.09
+// and 9.99 to 10.04 (8 plain and 10 race readings, and 3 of each with the copy, on amd64 in the
+// build cluster, 2026-11-23). The bounds stand halfway between. CI's run of this package is the
+// race build on arm64, where no reading was taken.
 const (
-	speedBodyAllocsPerRelation    = 28.0
-	speedSummaryAllocsPerRelation = 11.25
+	speedBodyAllocsPerRelation    = 13.5
+	speedSummaryAllocsPerRelation = 9.5
 )
 
 // measuredSpeedReadings is what the first of the two tests to run left behind. It is written and
@@ -261,8 +270,8 @@ func TestAdvancesListingSpeed(t *testing.T) {
 
 // TestPrioritiesReadSpeed holds the priorities read to what the page that draws it can afford, in
 // the work it costs rather than the time it takes (speedRequestWork): the whole body in the six
-// statements and three round trips it is written as, however many priorities and relations the
-// store holds, and in no more than five times the buffer accesses of the paged listing of every
+// statements and three round trips it is written as, over a store of twenty priorities and 400
+// relations, and in no more than five times the buffer accesses of the paged listing of every
 // open issue, the read it stands beside and the one a reader already waits for; and the summary
 // the navigation rail reads on every page in its four statements and three round trips, in no
 // more than that listing's buffer accesses. Hit plus read is every page a statement asked for,
@@ -285,9 +294,15 @@ func TestAdvancesListingSpeed(t *testing.T) {
 // 40,786) where it accesses 2.20 times its buffers, and when the two were timed side by side the
 // body took 3.10 times the listing (47.4 ms against 15.3 ms, the least of 21 runs each).
 //
-// The Go side of each read, the scan of its rows and the building of the body, is held in the
-// objects it allocates, per relation the store holds (speedBodyAllocsPerRelation,
-// speedSummaryAllocsPerRelation).
+// The Go side of each read, the scan of its rows and the building of the body, is held in what
+// it allocates for each relation the store holds more (speedBodyAllocsPerRelation,
+// speedSummaryAllocsPerRelation): the objects a read allocates over the corpus's relations and
+// over speedCorpusMoreRelations more, the faults it answers the same at both. What it allocates
+// whatever the store holds is held by no bound.
+//
+// Buffer accesses are hit and read shared blocks. A statement that spills a hash or a sort to
+// temporary files reads and writes local blocks no count here reads; the timed bound took those
+// in, and no bound holds them now.
 func TestPrioritiesReadSpeed(t *testing.T) {
 	readings := speedCorpusReadings(t)
 	paged := readings.pagedIssues
@@ -321,20 +336,22 @@ func TestPrioritiesReadSpeed(t *testing.T) {
 			}
 		}
 	}
+	growth := readings.priorityGrowth
 	for _, held := range []struct {
-		name        string
-		allocs      float64
-		perRelation float64
+		name    string
+		summary bool
+		bound   float64
 	}{
-		{speedPriorityFullName, readings.bodyAllocs, speedBodyAllocsPerRelation},
-		{"the priorities summary", readings.summaryAllocs, speedSummaryAllocsPerRelation},
+		{speedPriorityFullName, false, speedBodyAllocsPerRelation},
+		{"the priorities summary", true, speedSummaryAllocsPerRelation},
 	} {
-		allowed := held.perRelation * speedCorpusRelations
-		t.Logf("%s allocates %.0f objects in Go over %d priorities and %d relations, %.2f a relation, at most %.2f (%.0f)",
-			held.name, held.allocs, speedCorpusPriorities, speedCorpusRelations, held.allocs/speedCorpusRelations, held.perRelation, allowed)
-		if held.allocs > allowed {
-			t.Errorf("%s allocates %.0f objects in Go over %d priorities and %d relations, %.2f a relation, want at most %.2f a relation (%.0f)",
-				held.name, held.allocs, speedCorpusPriorities, speedCorpusRelations, held.allocs/speedCorpusRelations, held.perRelation, allowed)
+		fewer, more := growth.allocs(held.summary)
+		perRelation := growth.perRelation(held.summary)
+		t.Logf("%s allocates %.0f objects in Go over %d relations and %.0f over %d, %.2f for each relation more, at most %.2f",
+			held.name, fewer, speedCorpusRelations, more, speedCorpusRelations+speedCorpusMoreRelations, perRelation, held.bound)
+		if perRelation > held.bound {
+			t.Errorf("%s allocates %.0f objects in Go over %d relations and %.0f over %d, %.2f for each relation more, want at most %.2f",
+				held.name, fewer, speedCorpusRelations, more, speedCorpusRelations+speedCorpusMoreRelations, perRelation, held.bound)
 		}
 	}
 }
@@ -364,8 +381,6 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 		pagedIssues:     countSpeedRequest(t, corpus, "the paged listing of every open issue", speedPagedListingTarget),
 		prioritiesFull:  countSpeedRequest(t, corpus, speedPriorityFullName, "/api/v1/priorities"),
 		prioritiesLite:  countSpeedRequest(t, corpus, "the priorities summary", "/api/v1/priorities?summary=true"),
-		bodyAllocs:      speedPriorityAllocs(t, corpus, false),
-		summaryAllocs:   speedPriorityAllocs(t, corpus, true),
 	}
 	for _, read := range []speedWork{readings.advancesCustom, readings.advancesGeneric} {
 		if read.walks != readings.advancesUnread.walks+1 {
@@ -373,6 +388,8 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 				read.name, read.walks, readings.advancesUnread.walks)
 		}
 	}
+	// Last, since it writes more relations into the corpus every reading above was taken over.
+	readings.priorityGrowth = growSpeedPriorities(t, corpus)
 	return readings
 }
 
@@ -398,6 +415,72 @@ func speedPriorityAllocs(t *testing.T, corpus speedCorpusShape, summary bool) fl
 		t.Fatalf("reading the priorities over %d relations allocated %.0f objects: fewer than one a relation, so the read was not counted", speedCorpusRelations, allocs)
 	}
 	return allocs
+}
+
+// speedPriorityGrowth is the Go side of the priorities read at the store's two sizes
+// (growSpeedPriorities): the objects one read of the whole body and one of the summary allocate
+// over the corpus's speedCorpusRelations relations, and over speedCorpusMoreRelations more.
+type speedPriorityGrowth struct {
+	body, summary [2]float64
+}
+
+// allocs answers one read's two readings, over the corpus's relations and over the more.
+func (g speedPriorityGrowth) allocs(summary bool) (float64, float64) {
+	if summary {
+		return g.summary[0], g.summary[1]
+	}
+	return g.body[0], g.body[1]
+}
+
+// perRelation is the objects one read allocates for each relation the store holds more.
+func (g speedPriorityGrowth) perRelation(summary bool) float64 {
+	fewer, more := g.allocs(summary)
+	return (more - fewer) / speedCorpusMoreRelations
+}
+
+// growSpeedPriorities reads the Go side of the priorities read at two sizes of the store
+// (speedPriorityGrowth): over the corpus as it was built, then once corpus.moreRelations are
+// written. Every added relation is on a leaf issue in `triage` (seedSpeedCorpus), so the second
+// read answers the same faults, and each priority's counts in the same rows: the test stops on
+// faults that differ, and on a relation read that does not answer every relation written, since
+// then what is between the two readings is not the relations alone.
+func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGrowth {
+	t.Helper()
+	ctx := context.Background()
+	faults := func() string {
+		body, err := corpus.server.readPriorities(ctx, []string{}, false)
+		if err != nil {
+			t.Fatalf("read the priorities: %v", err)
+		}
+		parts := []string{fmt.Sprintf("%d priorities, %d unplaced, %d parked:", len(body.Priorities),
+			body.WorkUnderNoPriority.Count, body.PriorityWorkParked.Count)}
+		for _, issue := range body.WorkUnderNoPriority.Issues {
+			parts = append(parts, issue.Key)
+		}
+		for _, issue := range body.PriorityWorkParked.Issues {
+			parts = append(parts, fmt.Sprintf("%s(%d)", issue.Key, len(issue.Advances)))
+		}
+		return strings.Join(parts, " ")
+	}
+	growth := speedPriorityGrowth{}
+	before := faults()
+	growth.body[0], growth.summary[0] = speedPriorityAllocs(t, corpus, false), speedPriorityAllocs(t, corpus, true)
+
+	copySeededRows(t, corpus.database, "priority_tuples", seededTupleColumns, corpus.moreRelations)
+	keys, _, err := corpus.server.readPriorityRelations(ctx, corpus.priorities)
+	if err != nil {
+		t.Fatalf("read the advances relations: %v", err)
+	}
+	if len(keys) != speedCorpusRelations+speedCorpusMoreRelations {
+		t.Fatalf("the store answers %d advances relations once %d more are written, want %d",
+			len(keys), speedCorpusMoreRelations, speedCorpusRelations+speedCorpusMoreRelations)
+	}
+	if after := faults(); after != before {
+		t.Fatalf("the faults differ once %d relations more are written, so the readings are not of the relations alone:\nbefore %s\nafter  %s",
+			speedCorpusMoreRelations, before, after)
+	}
+	growth.body[1], growth.summary[1] = speedPriorityAllocs(t, corpus, false), speedPriorityAllocs(t, corpus, true)
+	return growth
 }
 
 // speedPagedListingTarget is the paged read of every open issue: one page of the most issues a
