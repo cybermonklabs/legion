@@ -702,9 +702,18 @@ func (s *compactionSteps) of(room string) []compactionStepRecord {
 	return steps
 }
 
-// await waits for a step of room at or after index from that want accepts, and returns it.
+// await waits for a step of room at or after index from that want accepts, and returns it. A wait
+// that gives up logs every step the queue ran for room, so the failure says what the queue decided
+// instead of only that it decided nothing wanted.
 func (s *compactionSteps) await(t *testing.T, room string, from int, description string, want func(compactionStepRecord) bool) compactionStepRecord {
 	t.Helper()
+	defer func() {
+		if t.Failed() {
+			for index, step := range s.of(room) {
+				t.Logf("the queue's step %d of the room: retry %s, next %+v", index, step.retry, step.next)
+			}
+		}
+	}()
 	var found compactionStepRecord
 	waitFor(t, 30*time.Second, description, func() bool {
 		s.mu.Lock()
