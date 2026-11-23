@@ -100,7 +100,7 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // for, moves nothing, whatever the other checks read, since a later state of the waiting check
 // changes what the task must name. Then every check passing moves the issue on to the task's next
 // step, and the step the completion named for its task to return to (row.ReturnTo) is not used,
-// which the log says once, since a pass moves the issue out of testing. Otherwise the work goes
+// which the log says once, when the pass moves the issue out of testing. Otherwise the work goes
 // back, the task naming each check that does not pass with its state and its reason: to the step
 // the completion named (namedReturn), or, where it named none, by the walk's default, the first
 // implementation step before the tester (transition's returnOf), implementing for a run with no
@@ -139,20 +139,23 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 		move := testingMove{Head: head, Failing: judgement.Failing}
 		return e.transition(ctx, tx, issue, TriggerTesterFailed, target, row, pr, moveWhy{Testing: &move})
 	}
-	// A pass moves the issue out of testing, so the line that the step named is not used is written
-	// once. A lingering tree's move moves nothing (transition), and each later state event would
-	// decide it again, so the line waits for the move that does.
-	if row.ReturnTo > 0 {
-		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
-		if err != nil {
-			return err
-		}
-		if !lingers {
-			e.logOnCommit(ctx, "workflow: the testing step passed, so the step the tester's completion named is not used",
-				"issue", issue.Key, "head", head, "returnTo", row.ReturnTo)
-		}
+	if err := e.transition(ctx, tx, issue, TriggerTesterPassed, "", row, pr, moveWhy{}); err != nil || row.ReturnTo <= 0 {
+		return err
 	}
-	return e.transition(ctx, tx, issue, TriggerTesterPassed, "", row, pr, moveWhy{})
+	// The line that the step named is not used is the pass's move's: it is written once the issue
+	// stands out of testing in this transaction, so a pass that moves nothing (a lingering tree, or
+	// a line with no testing row) writes none, and a later state event that decides the same pass
+	// writes it only with the move it makes. No state event decides a move once the issue has left
+	// testing (checkState), so the line is written once.
+	moved, err := e.store.Issue(ctx, tx, issue.Key)
+	if err != nil {
+		return err
+	}
+	if moved != nil && moved.Phase != phase.Testing {
+		e.logOnCommit(ctx, "workflow: the testing step passed, so the step the tester's completion named is not used",
+			"issue", issue.Key, "head", head, "returnTo", row.ReturnTo)
+	}
+	return nil
 }
 
 // What a testing move that waits waits for, as the tester's notice names it (record.Notice's
