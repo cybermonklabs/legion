@@ -34,6 +34,11 @@ block with recognized routing and delivery fields. The renderer includes `to` on
 message to the reader, formats sender identity and reply metadata, renders structured payloads
 once as `message`, and marks unknown sources or fields with `unrecognised`.
 
+A payload the TOON encoder cannot lay out, such as one nested deeper than its recursion reaches,
+is shown as the text its sender sent, under `message` (or `dispatch`), and the result's
+`payloadShownAsText` holds what the encoder threw. Each host logs that once, with the message id,
+and takes the frame: a throw out of the renderer would fail every delivery of it.
+
 Malformed input is safe: a non-JSON frame becomes a TOON block naming its topic and an
 `unrecognised` parse failure. The renderer never emits raw frame bytes. Dispatch envelopes
 (`source: "dispatch"`) render through the same TOON path as every other source, nesting the

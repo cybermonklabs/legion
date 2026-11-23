@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { decode } from "@toon-format/toon";
 import {
   type ConsumerDeliveryOptions,
   type ConsumerDeliverySnapshot,
@@ -14,6 +15,7 @@ import {
   type RelayMessage,
   type RelayReply,
 } from "../consumer-delivery";
+import { renderInbound } from "../delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
 import type { DeliveryAnswer } from "../transport";
 
@@ -538,6 +540,39 @@ describe("replies", () => {
     // One notice for the episode, and not one per lap, and no line for the laps after it.
     expect(failed).toEqual([{ session: SESSION, eventID: "evt-1" }]);
     expect(logs).toHaveLength(afterTheEpisode);
+  });
+
+  // A peer's message whose JSON payload is an object chain 9,999 levels deep made the card's TOON
+  // encoder overflow the stack, in the host's render and in the give-up's alike, so the frame went
+  // back to the stream on every delivery and nobody was ever told of it. The card shows such a
+  // payload as the text its sender sent, so a host that renders the frame as every host does
+  // takes it at once.
+  test("a frame whose payload is nested 9,999 deep is shown as its text and taken, not sent again for ever", async () => {
+    const { delivery, logs, replies, state, settled } = setup();
+    const shown: string[] = [];
+    state.deliver = (frame) => {
+      shown.push(renderInbound(frame.data, SESSION, frame.subject).content);
+      frame.done();
+    };
+    const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+    const payload = JSON.stringify({ event_id: "evt-deep", source: "agent", payload: nested });
+    const answers: Array<RelayReply | undefined> = [];
+
+    for (const delivered of [1, 2, 3, 4, 5, 6]) {
+      const reply = `_INBOX.deep-${delivered}`;
+      delivery.receive(relay({ seq: 1, delivered, reply, payload }));
+      await settled();
+      answers.push(repliesTo(replies, reply).at(-1));
+      if (answers.at(-1) === "done") break;
+    }
+
+    expect({ answers, logs, shown: shown.length }).toEqual({
+      answers: ["done"],
+      logs: [],
+      shown: 1,
+    });
+    const card = decode(shown[0] ?? "") as { envoy: { id: string; message: unknown } };
+    expect(card.envoy).toMatchObject({ id: "evt-deep", message: nested });
   });
 
   test("closing the session answers nak for every unsettled frame and any later one", () => {

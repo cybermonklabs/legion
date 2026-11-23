@@ -2104,6 +2104,17 @@ export default function envoyExtension(hostApi: PiApi): void {
       claim.settle();
       return;
     }
+    // A payload the card could not lay out is shown as the text its sender sent: said once, for
+    // the frame this session is shown, and never for a repeat the checks above answered.
+    if (rendered.payloadShownAsText !== undefined) {
+      logger.warn(
+        "envoy: a message's payload is shown as its text; the card could not lay it out",
+        {
+          event_id: rendered.envelope?.event_id ?? "unknown",
+          error: rendered.payloadShownAsText,
+        }
+      );
+    }
     // A body is bounded block by block, so one event can carry its first part alone, and an
     // event the bus refused carries none of it (`cutItem`). The agent is prompted with the
     // whole body the comment or message route answers, read as the session the frame is

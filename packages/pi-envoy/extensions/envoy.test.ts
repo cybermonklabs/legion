@@ -24332,6 +24332,46 @@ describe("consumer delivery", () => {
     expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
   });
 
+  // A peer's message whose JSON payload is nested past the depth the card's TOON encoder reaches
+  // made the shared renderer throw in `deliver`, so every copy of the frame failed and went back
+  // to the stream. The card shows such a payload as the text its sender sent, the frame is taken,
+  // and the extension says so once, naming the message.
+  test("a message whose payload is nested 9,999 deep is shown as its text, taken, and logged once with its id", async () => {
+    const warnings: { readonly message: string; readonly context?: unknown }[] = [];
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
+    });
+    const session = await bootConsumer("consumer-deep-payload");
+    try {
+      const nested = `${'{"a":'.repeat(9_999)}1${"}".repeat(9_999)}`;
+      const inbox = session.relay(
+        1,
+        JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
+      );
+      // The answer that settles the frame: `done` once it is taken, `nak` once it failed.
+      await until(
+        () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
+        "the frame's settling answer",
+        30_000
+      );
+
+      expect(session.replies(inbox)).toEqual(["received", "done"]);
+      // TOON quotes the text as JSON quotes a string, so the card holds the sender's text whole.
+      expect(session.cards("evt-deep").map((card) => card.content)).toEqual([
+        expect.stringContaining(`\n  message: ${JSON.stringify(nested)}`),
+      ]);
+      expect(warnings.filter(({ message }) => message.includes("shown as its text"))).toEqual([
+        {
+          message: "envoy: a message's payload is shown as its text; the card could not lay it out",
+          context: { event_id: "evt-deep", error: "Maximum call stack size exceeded." },
+        },
+      ]);
+    } finally {
+      stopSink();
+      await session.stop();
+    }
+  });
+
   test("a NATS reconnect begins a new epoch and registers it at once", async () => {
     const session = await bootConsumer("consumer-reconnect");
     const before = session.registrations.at(-1)?.delivery?.epoch;
