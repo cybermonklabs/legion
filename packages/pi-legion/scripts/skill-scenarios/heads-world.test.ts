@@ -9,6 +9,7 @@ import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type * as headsModule from "./heads-world";
+import { TestHandoff } from "./score";
 import { fileRowLimit } from "./test-limit";
 
 // Each row runs the two modes against stubs in this process; a loaded machine stretches even that,
@@ -125,6 +126,24 @@ test("ci-pass-and-fail: k1 is go-checks' check, whose run at #702's head is in p
     tester: [`implement by ${by("rig-implementer")}`],
     architect: [`test by ${by("rig-tester")}`, `review by ${by("rig-reviewer")}`],
   });
+});
+
+// Catches: a heads world whose seeded `test` record still holds a field the tester's prompt no
+// longer asks for. The reviewer and the architect of these worlds read the record a tester writes,
+// and the scorer's TestHandoff refuses such a body by name.
+test("the test record a heads world seeds holds no implementerProof, failures or failed", async () => {
+  for (const role of ["reviewer", "architect"]) {
+    const { calls } = await world(role);
+    const bodies = calls
+      .filter((call) => call.path.endsWith("/handoffs/test"))
+      .map((call) => JSON.parse(String(call.body.body)));
+    expect(bodies).toHaveLength(1);
+    for (const body of bodies) {
+      for (const key of ["implementerProof", "failures", "failed"])
+        expect(body).not.toHaveProperty(key);
+      expect(TestHandoff.safeParse(body).success).toBe(true);
+    }
+  }
 });
 
 // Catches: a check k1 that serves no requirement or whose run proves less than R1: the first item 3
