@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -5029,9 +5028,6 @@ func setupTestNATS(t *testing.T) *bus.Client {
 	t.Cleanup(client.Close)
 	return client
 }
-
-// TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
 
 // endInterestWatcherWhileConnected ends the interest registry's KV watcher while NATS stays
 // connected: deleting the bucket's stream makes the watcher's ordered consumer fail to reset.
