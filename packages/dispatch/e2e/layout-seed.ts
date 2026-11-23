@@ -41,6 +41,7 @@ import type { Actor } from "../web/src/api/types";
 import { type FakeSession, setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
+  baseUrl,
   claimIssue,
   createAsk,
   createComment,
@@ -57,6 +58,7 @@ import {
   replyToCommentDelivery,
   syncArchitectureSource,
   uploadAgentPicture,
+  userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -170,8 +172,10 @@ const stressSessions: FakeSession[] = Array.from({ length: 12 }, (_, index) => (
 /** A session that takes only Steer, which no broadcast defaults to, so selecting every agent
  *  excludes it, and whose title is as long as a lane's gets: the composer's chip for it carries
  *  the title and the reason it is left out, which must wrap or shrink inside the composer at
- *  every width rather than scroll it sideways. It runs on a machine of its own, in no pane, so
- *  the machine pages draw what they drew. */
+ *  every width rather than scroll it sideways. It runs on a machine of its own, in no pane:
+ *  `/machines` lists that machine (`machines/MachinesPage.tsx` lists every host of the agent
+ *  list), so a re-recorded `machines` row draws one machine more, and no machine page draws it
+ *  in a pane. */
 const excludedLongSession: FakeSession = {
   capabilities: ["steer"],
   dir: "/workspaces/legion/INFRA-5200-layout-rule-excluded",
@@ -195,6 +199,26 @@ function stressSession(index: number): FakeSession {
   return session;
 }
 
+/** A Delivery session group of eleven stress sessions, created as alice, so the session-groups
+ *  editor draws a group's chips past their cap of ten. Its name is no session's title, which the
+ *  server refuses (`409`). */
+async function seedSessionGroup(): Promise<void> {
+  const response = await fetch(new URL("/api/v1/delivery/session-groups", baseUrl), {
+    body: JSON.stringify({
+      name: "Layout stress crew",
+      sessions: stressSessions.slice(0, 11).map((session) => session.session_id),
+    }),
+    headers: {
+      ...(await userHeaders("alice")),
+      "Content-Type": "application/json",
+      "Idempotency-Key": crypto.randomUUID(),
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`session group: ${response.status} ${await response.text()}`);
+  }
+}
 /** The pull requests, their checks and the architecture model, in the fake GitHub's one seed:
  *  a seed replaces every installation, so both repositories are written together. Every third
  *  pull request has a failing check, so the header draws both states. */
@@ -256,6 +280,7 @@ export async function seedLayoutStress({
   const review = await seedReviewRoutes({ boundMs });
   const issue = review.issue;
   await setLiveSessions([...workspaceSessions, ...stressSessions, excludedLongSession]);
+  await seedSessionGroup();
   await seedGithub(issue);
   await putArchitectureSource("CORE", { branch: "main", repo: ARCHITECTURE_REPO });
   const source = await syncArchitectureSource("CORE", ARCHITECTURE_REPO);
