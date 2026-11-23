@@ -2345,6 +2345,13 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     route: "issue-verification",
     width: 360,
     kind: "page-scroll",
+    element: '[data-testid="verification-check-negative-control"]',
+    reason: "B issue page",
+  },
+  {
+    route: "issue-verification",
+    width: 360,
+    kind: "page-scroll",
     element: '[data-testid="verification-check-run"]',
     reason: "B issue page",
   },
@@ -2353,7 +2360,7 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     width: 360,
     kind: "page-scroll",
     element: '[data-testid="verification-check"]',
-    count: 4,
+    count: 3,
     reason: "B issue page",
   },
   {
