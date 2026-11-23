@@ -318,7 +318,7 @@ type workflowRuntime struct {
 	// that take the same bound (recordedRepositories, recordedBranches, rereadHeldBranches).
 	appCalls *appCallBounds
 	// readBounds are the bounds of the runtime's reads for a repository and of the refresher's
-	// waits the daemon was given (overrides.reads), nil for the production ones (reads).
+	// waits, nil for the production ones (reads). Only a test sets them (withReads).
 	readBounds *repositoryReadBounds
 }
 
@@ -671,9 +671,8 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // ExperimentSource). nil is the engine's own, experiment.CryptoSource.
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
-// productionAppCalls. reads are the runtime's read bounds (overrides.reads): nil, in production, is
-// productionRepositoryReads.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds, reads *repositoryReadBounds) (opened *workflowRuntime, _ error) {
+// productionAppCalls.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -715,7 +714,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]*mergeStateRun{},
-		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, appCalls: appCalls, readBounds: reads,
+		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, appCalls: appCalls,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is

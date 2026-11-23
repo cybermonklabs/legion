@@ -543,9 +543,9 @@ func (w *workflowRuntime) checkWebhookAppOn(ctx context.Context, repo ghrepo.Rep
 }
 
 // repositoryReadBounds are the bounds of the runtime's reads of GitHub and Dispatch for a
-// repository, and of the refresher's waits (refreshRepositories). A daemon is given its bounds
-// (overrides.reads, openWorkflow's reads), the production ones (productionRepositoryReads) where it
-// is given none, so a test that shortens them shortens them for the runtime it opens alone.
+// repository, and of the refresher's waits (refreshRepositories): the runtime's readBounds, the
+// production ones (productionRepositoryReads) where it has none. A test gives the runtime it opens
+// its own (withReads), so a test that shortens them shortens them for that runtime alone.
 type repositoryReadBounds struct {
 	// attempt bounds one read of GitHub or Dispatch a preparation or the rename pass makes: as long
 	// as any one GitHub call the boot waits for (appCallBounds.attempt), so a GitHub that answers
@@ -570,12 +570,13 @@ type repositoryReadBounds struct {
 	holdBound time.Duration
 }
 
-// productionRepositoryReads are the bounds a daemon's runtime reads on: an attempt of 15 s; a retry
-// of 30 s doubling to 10 min; and a hold bound of the hold watchdog's warning interval
-// (defaultHoldWarnEvery), by which a hold that has not released is a fault worth naming.
+// productionRepositoryReads are the bounds a daemon's runtime reads on: an attempt as long as any
+// one GitHub call the boot waits for (productionAppCalls' attempt); a retry of 30 s doubling to 10
+// min; and a hold bound of the hold watchdog's warning interval (defaultHoldWarnEvery), by which a
+// hold that has not released is a fault worth naming.
 func productionRepositoryReads() repositoryReadBounds {
 	return repositoryReadBounds{
-		attempt:   15 * time.Second,
+		attempt:   productionAppCalls().attempt,
 		retry:     bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time.Minute},
 		holdBound: defaultHoldWarnEvery,
 	}
@@ -923,32 +924,31 @@ func wake(ch chan struct{}) {
 // wake at the commit of each write that can change them (projectRecords.live).
 func (w *workflowRuntime) wakeLive() { wake(w.liveWake) }
 
-// retrying is one of the refresher's jobs on reads().retry: wait is the wait it runs again
-// after, 30 s doubling to 10 min, and due when it next runs of its own, zero while its cause does
-// not stand.
+// retrying is one of the refresher's jobs on the refresher's retry (repositoryReadBounds.retry),
+// which every call is given: wait is the wait it runs again after, and due when it next runs of its
+// own, zero while its cause does not stand. A zero retrying is a job whose cause has not stood yet.
 type retrying struct {
-	retry bootprobe.Retry
-	wait  time.Duration
-	due   time.Time
+	wait time.Duration
+	due  time.Time
 }
 
-// stand arms r from now while its cause stands, once, and sets it back to the first wait once the
-// cause is gone.
-func (r *retrying) stand(standing bool, now time.Time) {
+// stand arms r from now on retry while its cause stands, once, and sets it back to the first wait
+// once the cause is gone.
+func (r *retrying) stand(standing bool, now time.Time, retry bootprobe.Retry) {
 	switch {
 	case !standing:
-		r.wait, r.due = r.retry.Initial, time.Time{}
+		r.wait, r.due = retry.Initial, time.Time{}
 	case r.due.IsZero():
 		if r.wait == 0 {
-			r.wait = r.retry.Initial
+			r.wait = retry.Initial
 		}
 		r.due = now.Add(r.wait)
 	}
 }
 
-// ran moves r's wait on, its job having run of its own: the next run is armed from then.
-func (r *retrying) ran() {
-	r.wait, r.due = min(2*r.wait, r.retry.Max), time.Time{}
+// ran moves r's wait on retry, its job having run of its own: the next run is armed from then.
+func (r *retrying) ran(retry bootprobe.Retry) {
+	r.wait, r.due = min(2*r.wait, retry.Max), time.Time{}
 }
 
 // isDue is whether at, a job's due time, has come by now; a zero at never does.
@@ -989,16 +989,16 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 	}
 	w.prepareAtStart(ctx)
 	retry := w.reads().retry
-	reread, recovery, heard, live := retrying{retry: retry}, retrying{retry: retry}, retrying{retry: retry}, retrying{retry: retry}
+	var reread, recovery, heard, live retrying
 	liveFailed := false
 	for {
 		now := time.Now()
 		bad := w.badAnswers()
-		reread.stand(len(bad) != 0, now)
+		reread.stand(len(bad) != 0, now, retry)
 		unread := append(w.recoveringReasons(), w.unreadReasons()...)
-		recovery.stand(len(unread) != 0, now)
-		heard.stand(w.heardPending.Load(), now)
-		live.stand(liveFailed, now)
+		recovery.stand(len(unread) != 0, now, retry)
+		heard.stand(w.heardPending.Load(), now, retry)
+		live.stand(liveFailed, now, retry)
 		recoverAt, cut := recovery.due, false
 		if left, due := w.recoveryHoldLeft(); due && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
 			recoverAt, cut = now.Add(left), true
@@ -1033,7 +1033,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 				w.log.Info("workflow: reading GitHub again for the repositories whose last answer was bad",
 					"waiting", bad, "waited", reread.wait.String())
 				w.rereadBadAnswers(ctx)
-				reread.ran()
+				reread.ran(retry)
 			}
 			if isDue(recoverAt, now) {
 				w.log.Info("workflow: recovering again the issues of the repositories GitHub did not answer for",
@@ -1042,16 +1042,16 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 				if cut {
 					recovery.due = time.Time{}
 				} else {
-					recovery.ran()
+					recovery.ran(retry)
 				}
 			}
 			if isDue(heard.due, now) {
 				_ = w.republishHeard(ctx)
-				heard.ran()
+				heard.ran(retry)
 			}
 			if isDue(live.due, now) {
 				liveFailed = w.refreshLive(ctx) != nil
-				live.ran()
+				live.ran(retry)
 			}
 			if isDue(heldAt, now) {
 				w.rereadHeldBranches(ctx, now)

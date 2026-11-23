@@ -531,11 +531,13 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 	}
 }
 
-// withReads is a rig option (repositoryRigWith's opts) giving the runtime the production read
-// bounds as change leaves them (repositoryReadBounds), for its refresher and its reads alone.
+// withReads is a rig option (repositoryRigWith's opts) giving the runtime its read bounds as they
+// stand (reads: the production ones, or those an earlier option gave) as change leaves them
+// (repositoryReadBounds), for its refresher and its reads alone. Options compose: each starts from
+// the bounds the one before it left.
 func withReads(change func(*repositoryReadBounds)) func(*workflowRuntime) {
 	return func(w *workflowRuntime) {
-		reads := productionRepositoryReads()
+		reads := w.reads()
 		change(&reads)
 		w.readBounds = &reads
 	}
@@ -873,8 +875,7 @@ func TestASlowButAnsweringGitHubIsServedOnARefresh(t *testing.T) {
 	t.Parallel()
 	installs := &installations{delay: 600 * time.Millisecond}
 	installs.setFailing(errors.New("GitHub answered 502"), "implement zeta/tools")
-	w, _, installs, _ := repositoryRigWith(t, installs, withReads(func(reads *repositoryReadBounds) {
-		reads.retry.Initial, reads.retry.Max = 20*time.Millisecond, 40*time.Millisecond
+	w, _, installs, _ := repositoryRigWith(t, installs, quickInstallReads, withReads(func(reads *repositoryReadBounds) {
 		reads.attempt = 2 * time.Second
 	}), func(w *workflowRuntime) {
 		calls := productionAppCalls()
@@ -1259,6 +1260,35 @@ func TestTheUnreadRepositoryBackoffDoublesToItsCapAndResets(t *testing.T) {
 	testwait.Eventually(t, "a wait after orbit/tools is left unread", func() bool { return len(recorded()) > idle })
 	if got := recorded()[idle]; got != w.reads().retry.Initial {
 		t.Fatalf("the first wait after orbit/tools was left unread = %s, want %s", got, w.reads().retry.Initial)
+	}
+}
+
+// A zero retrying is a job whose cause has not stood yet, and it waits the retry it is given:
+// armed at the initial wait when its cause first stands, doubled to the cap at each run of its own,
+// and back to the initial wait once its cause is gone. Control: while the retry was a field of
+// retrying, a zero one held a zero retry, so a cause that stood armed its job at once and every
+// run of its own armed it at once again (stand: due = now, ran: wait = min(0, 0)), a refresher that
+// ran the job on every pass.
+func TestAZeroRetryingWaitsTheRetryItIsGiven(t *testing.T) {
+	t.Parallel()
+	retry := productionRepositoryReads().retry
+	now := time.Now()
+	var job retrying
+	job.stand(true, now, retry)
+	if want := now.Add(retry.Initial); !job.due.Equal(want) {
+		t.Fatalf("a zero retrying whose cause stands is due at %s, want %s: the initial wait", job.due, want)
+	}
+	for _, want := range []time.Duration{2 * retry.Initial, 4 * retry.Initial, 8 * retry.Initial, 16 * retry.Initial, retry.Max, retry.Max} {
+		job.ran(retry)
+		job.stand(true, now, retry)
+		if got := job.due.Sub(now); got != want {
+			t.Fatalf("a job that ran of its own is due %s later, want %s: its wait doubled to its cap", got, want)
+		}
+	}
+	job.stand(false, now, retry)
+	job.stand(true, now, retry)
+	if got := job.due.Sub(now); got != retry.Initial {
+		t.Fatalf("a job whose cause went and came back is due %s later, want the initial %s", got, retry.Initial)
 	}
 }
 

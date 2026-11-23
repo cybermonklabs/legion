@@ -209,10 +209,6 @@ type overrides struct {
 	// productionAppCalls. A test of the boot's App calls shortens them for the daemons it boots
 	// alone, so it runs beside every other test.
 	appCalls *appCallBounds
-	// reads are the bounds of the workflow runtime's reads for a repository and of its refresher's
-	// waits (repositoryReadBounds); nil is productionRepositoryReads. A test of the refresher
-	// shortens them for the daemon it boots alone, so it runs beside every other test.
-	reads *repositoryReadBounds
 	// entrySweep is how often the daemon converges the phase entries with no fact arriving
 	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of
 	// the sweep shortens it, so it waits out its own period rather than the daemon's.
@@ -466,7 +462,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource, o.appCalls, o.reads)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource, o.appCalls)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
