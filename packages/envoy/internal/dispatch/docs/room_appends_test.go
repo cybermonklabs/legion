@@ -254,7 +254,7 @@ func TestQueuedBrowserUpdatesOfOneRoomCommitInOneTransactionOffTheSharedPool(t *
 	// session queued on the document's lock passes for it. The append answers on no channel.
 	storetest.WaitForQueuedBehindBackend[struct{}](t, observer, holder, tracer.lockingBackend(t, artifactID, since), nil)
 	unlock()
-	waitFor(t, roomWait(t), "every queued update to be stored", func() bool {
+	waitUntil(t, "every queued update to be stored", func() bool {
 		return storedHead(t, observer, artifactID) >= before+queued
 	})
 	waitForLandedAppends(t, service, artifactID)
@@ -579,11 +579,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 			if err := adapter.StoreUpdateContext(ctx, artifactID, updates[1]); err != nil {
 				t.Errorf("the second queued update's call on the failed room = %v, want it dropped", err)
 			}
-			select {
-			case <-evicting:
-			case <-time.After(roomWait(t)):
-				t.Fatal("the failed room's eviction never started")
-			}
+			testwait.Receive(t, "the failed room's eviction to start", evicting)
 			release()
 			if err := service.awaitRoomRecovery(ctx, artifactID); err != nil {
 				t.Fatalf("wait for the failed room's eviction: %v", err)
@@ -673,11 +669,7 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 		appends.mu.Unlock()
 
 		first := typeInRoom(t, service, artifactID, 1, alice, step("Alice", 2*round))
-		select {
-		case <-gate.entered:
-		case <-time.After(roomWait(t)):
-			t.Fatalf("round %d: the first peer's append never reached the store", round)
-		}
+		testwait.Receive(t, fmt.Sprintf("round %d: the first peer's append to reach the store", round), gate.entered)
 		second := typeInRoom(t, service, artifactID, 2, bob, step("Bob", round))
 		if _, err := joinedApplyOps(service, artifactID, []model.EditOp{
 			{Op: "replace", Find: fmt.Sprintf("Agent %d.", round), With: fmt.Sprintf("Agent %d.", round+1)},
@@ -715,7 +707,7 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 		gate.let()
 
 		state := service.room(artifactID)
-		waitFor(t, roomWait(t), "every update but the retired instance's to be stored", func() bool {
+		waitUntil(t, "every update but the retired instance's to be stored", func() bool {
 			state.mu.Lock()
 			defer state.mu.Unlock()
 			return len(state.updateClasses) == 1 && state.durableAppends.Load() == 1
@@ -913,8 +905,8 @@ func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
 				case <-gate.entered:
 				case err := <-returned[index]:
 					t.Fatalf("%s returned (%v) before it reached the store", what, err)
-				case <-time.After(roomWait(t)):
-					t.Fatalf("%s never reached the store", what)
+				case <-testwait.Context(t).Done():
+					t.Fatalf("%s had not reached the store by the test binary's deadline less testwait's margin", what)
 				}
 			}
 			if test.loneFirst {
@@ -930,13 +922,8 @@ func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
 			}
 			for _, held := range test.let {
 				gates[held].let()
-				select {
-				case err := <-returned[arrived[held]]:
-					if err != nil {
-						t.Fatalf("the call for update %d: %v", arrived[held], err)
-					}
-				case <-time.After(roomWait(t)):
-					t.Fatalf("the call for update %d never returned once its append was let go", arrived[held])
+				if err := testwait.Receive(t, fmt.Sprintf("the call for update %d to return once its append was let go", arrived[held]), returned[arrived[held]]); err != nil {
+					t.Fatalf("the call for update %d: %v", arrived[held], err)
 				}
 			}
 
@@ -1174,7 +1161,7 @@ func TestARoomAppendWhoseUnlockDoesNotFreeTheLockClosesItsConnection(t *testing.
 	if held := appends.Stat().TotalConns(); held != 0 {
 		t.Fatalf("the room-appends pool holds %d connections after an unlock that answered false, want none: a connection whose locks are unknown went back to the pool", held)
 	}
-	waitFor(t, roomWait(t), "the backend of the append's connection to end with it", func() bool {
+	waitUntil(t, "the backend of the append's connection to end with it", func() bool {
 		var running bool
 		if err := database.Pool.QueryRow(ctx, `select exists (select 1 from pg_stat_activity where pid = $1)`, backend.Load()).Scan(&running); err != nil {
 			t.Fatalf("read the state of the append backend: %v", err)
@@ -1396,16 +1383,11 @@ func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
 	}
 	// The connection the rollback's bound closed is destroyed rather than returned, which puddle
 	// does on a goroutine of its own, so the pool empties a moment after the call returns.
-	waitFor(t, roomWait(t), "the stuck connection to leave the room-appends pool", func() bool {
+	waitUntil(t, "the stuck connection to leave the room-appends pool", func() bool {
 		return appends.Stat().TotalConns() == 0
 	})
 	close(reading)
-	select {
-	case err := <-held:
-		if err != nil {
-			t.Fatalf("the room's next writer takes a connection of the room-appends pool: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room's next writer never took a connection of the room-appends pool")
+	if err := testwait.Receive(t, "the room's next writer to take a connection of the room-appends pool", held); err != nil {
+		t.Fatalf("the room's next writer takes a connection of the room-appends pool: %v", err)
 	}
 }
