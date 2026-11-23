@@ -66,3 +66,28 @@ func TestASpecOutcomesRecordedEventIsAFact(t *testing.T) {
 		t.Fatalf("decode of a record with no head = no error, want it refused")
 	}
 }
+
+// A write of the approved spec of a repository (spec.approved_written) is a fact too: another
+// issue's approval or an import moves what every change request of that repository is read
+// against, so the daemon reads the spec gates of that repository again. The event's own issue
+// must be the one its payload names, and it names the repository; anything else is refused.
+func TestASpecApprovedWrittenEventIsAFact(t *testing.T) {
+	key := fmt.Sprintf("%s-%d", "ACME", 53)
+	payload := fmt.Sprintf(`{"issue": %q, "repo": "acme/widgets", "act": "approval", "nodes": [{"id": "a-second-charge-fails", "kind": "check", "version": 2}]}`, key)
+	got, unread, err := DecodeDispatchEvent("ACME", key, specEvent(key, "spec.approved_written", 11, payload))
+	if err != nil || len(unread) != 0 {
+		t.Fatalf("decode spec.approved_written = %v, unread %v", err, unread)
+	}
+	want := ApprovedSpecWritten{Key: key, Seq: 11, Repo: "acme/widgets", Act: "approval"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("fact = %#v, want %#v", got, want)
+	}
+	for _, bad := range []string{
+		fmt.Sprintf(`{"issue": %q, "repo": "acme/widgets", "act": "approval", "nodes": []}`, fmt.Sprintf("%s-%d", "OTHER", 1)),
+		fmt.Sprintf(`{"issue": %q, "repo": "", "act": "import", "nodes": []}`, key),
+	} {
+		if _, _, err := DecodeDispatchEvent("ACME", key, specEvent(key, "spec.approved_written", 12, bad)); err == nil {
+			t.Errorf("decode of %s = no error, want it refused", bad)
+		}
+	}
+}
