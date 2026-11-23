@@ -352,14 +352,9 @@ func TestAnInstructionsCopyThatCannotBeReplacedIsLoggedOnce(t *testing.T) {
 	writeInstructions(t, arm, "Write a long plan with a test for each step.\n")
 	rt.prompt(d.spawn(worker("LEGION-2", claim.RoleImplementer)))
 	rt.prompt(d.spawn(worker("LEGION-3", claim.RoleTester)))
-	var refused []string
-	for _, line := range errorLines(logs.String()) {
-		if strings.Contains(line, instructionsKeptLine) {
-			refused = append(refused, line)
-		}
-	}
-	if len(refused) != 1 || !strings.Contains(refused[0], "its copy could not be replaced") || !strings.Contains(refused[0], `"file":"`+arm+`"`) {
-		t.Fatalf("ERROR lines saying %q = %d, want one naming %s and its copy:\n%s", instructionsKeptLine, len(refused), arm, strings.Join(refused, "\n"))
+	refused := loggedLines(t, logs.String(), instructionsKeptLine)
+	if len(refused) != 1 || refused[0]["level"] != "ERROR" || refused[0]["msg"] != instructionsKeptLine+": its copy could not be replaced" || refused[0]["file"] != arm {
+		t.Fatalf("lines saying %q = %v, want one at ERROR naming %s and its copy", instructionsKeptLine, refused, arm)
 	}
 
 	if err := os.RemoveAll(copied); err != nil {

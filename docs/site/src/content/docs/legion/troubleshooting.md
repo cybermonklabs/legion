@@ -62,7 +62,6 @@ legion config check --config legion.yaml
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files entry <file> is under no runtime.kubernetes.pod.volume_mounts mount_path: …` (or `… is not among the items volume <name> projects …`) | As for a role's overlay: under Kubernetes an arm's overlay must be a file the operator's mounts carry, so mount the ConfigMap holding it, or add the item. It is refused at `mode: off` too, since a unit already drawn into the arm still names it. Mounting it replaces every live issue pod of the deployment, so add it when no role of an affected issue is mid-turn. |
 | `projects.<KEY>.experiments.<NAME>.variants.<ARM>.config_files …` or `projects.<KEY>.experiments.<NAME>.variants.<ARM>.instructions …` (another refusal) | The message names the entry: an empty list, a relative or unclean path, a path holding `:`, which separates the overlays `PI_CONFIG_FILES` names, a path named twice, or, under tmux, an overlay no role drawn into the arm could read. |
 | `instructions file <path> of experiment <experiment> variant <variant> could not be read: …` or `instructions file <path> of experiment <experiment> variant <variant> is empty` | Boot reads every declared arm's `instructions` from the daemon's own disk and puts its text in the prompt of every role of a unit drawn into that arm, so give it a readable file with text in it, or take the key out, which appends nothing. Boot reads it whatever the experiment's mode is, since a unit already drawn into the arm is given it. |
-| `legion daemon launches with the instructions it last read: the file no longer reads` (WARN, in the daemon's log, with `file` and `error`) or `legion daemon launches with the instructions it last read: its copy could not be replaced` (ERROR) | A running daemon read an `instructions` file again before a launch, and the file was missing, unreadable or blank (`error` says which), or the daemon could not replace its copy under the state directory. Launches go on carrying the text the daemon last read. Fix the file `file` names: the next launch reads it again and logs `legion daemon read an edited instructions file` or `legion daemon reads an instructions file again`. The daemon logs each refusal once, so a launch with no new line still carries the old text. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] must be "owner/name" (got "…")` or `projects.<KEY>.commit_issue_trailer_repos names <owner>/<name> twice` | Each entry is one repository, written `owner/name`, and one repository is named once: names are compared as GitHub compares them, without case, so a second spelling of one name is the file saying the same thing twice. |
 | `projects.<KEY>.commit_issue_trailer_repos[<n>] (<owner>/<name>) and projects.<KEY>.commit_issue_trailer_repos[<m>] (<owner>/<name>) name one repository: repository_renames makes … one repository, so the list names it twice; name it once` | A configured rename makes the two entries select the same repository. Keep the one the project uses now and delete the other. |
 | `<PROJECT> is already running (pid <n>)` (from `legion start` itself) | A daemon for this project is already registered on the machine: `legion status <PROJECT>`, `legion legions`. |
@@ -196,6 +195,30 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 
   A model key that fails at boot refuses the boot even when the cause is a passing network blip,
   since the probe cannot tell the two apart. Start the daemon again once the cause is gone.
+
+## An edited instructions file does not reach the workers
+
+A running daemon reads the deployment's `instructions` file, and each declared arm's, again before
+every launch, so an edit reaches each role at its next launch. A role that is running keeps the
+prompt it launched with until then.
+
+- **The daemon logs `legion daemon launches with the instructions it last read: the file no longer
+  reads` at WARN.** The file `file` names was missing, unreadable or blank when a launch read it
+  (`error` says which). Launches go on carrying the text the daemon read last. Fix the file: the
+  next launch reads it again and logs `legion daemon read an edited instructions file`, or
+  `legion daemon reads an instructions file again` when it holds the text the daemon kept.
+- **The daemon logs `legion daemon launches with the instructions it last read: its copy could not
+  be replaced` at ERROR.** The daemon read the edit but could not write its own copy under the state
+  directory, which the prompt is composed from (`error` names the path and the cause). Launches go
+  on carrying the old text. Give the daemon's user write access to the state directory, or remove
+  what stands at the copy's path; the next launch writes the copy and logs the edit.
+- **The daemon logs neither line, and the edit is still not in a new launch's prompt.** Under
+  Kubernetes, check how the daemon's pod mounts the file: the kubelet updates a ConfigMap mounted as
+  a directory, but never a file mounted by `subPath`, so the daemon goes on reading the text of its
+  pod's start. The kubelet also takes up to its sync period, about a minute, to update a mounted
+  ConfigMap.
+
+The daemon logs each refusal once, so a launch with no new line carries the same text as the last.
 
 ## The daemon stops
 

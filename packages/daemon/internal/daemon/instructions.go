@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"path/filepath"
 	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -61,7 +60,7 @@ func readArmInstructions(experiment string, variant config.Variant) ([]byte, err
 // writeInstructionsCopies writes the copy of each instructions file boot read (readBoot) before
 // the first pane opens, and returns the copies a launch refreshes with the path of the
 // deployment's own, "" when the configuration names none. The deployment's copy is
-// config.DeploymentInstructionsFile under the state directory; each arm's is under its
+// config.DeploymentInstructionsCopy; each arm's is under its
 // experiment's own directory, since two names may hold `-` and neither may hold `/`, and the
 // `memory` block's arm at the block's own `memory-instructions.md`
 // (config.VariantInstructionsFile, where a launch's arms read the copies back from:
@@ -89,7 +88,7 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 		}); err != nil {
 			return nil, "", err
 		}
-		deployment = filepath.Join(cfg.StateDir, config.DeploymentInstructionsFile)
+		deployment = config.DeploymentInstructionsCopy(cfg.StateDir)
 	}
 	for _, arm := range reads.variantInstructions {
 		experiment, variant := arm.experiment, arm.variant

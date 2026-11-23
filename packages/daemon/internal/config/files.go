@@ -13,6 +13,12 @@ import (
 // under the state directory.
 const DeploymentInstructionsFile = "deployment-instructions.md"
 
+// DeploymentInstructionsCopy is the copy of the operator's instructions under stateDir: the one
+// path WriteDeploymentInstructions writes and every launch's prompt reads.
+func DeploymentInstructionsCopy(stateDir string) string {
+	return filepath.Join(stateDir, DeploymentInstructionsFile)
+}
+
 // ExperimentsDir is the directory under the state directory holding the copies of every declared
 // variant's instructions, a directory per experiment: a launch's prompt reads the copy of each
 // arm its unit was drawn into. It is a directory per experiment rather than one flat
@@ -169,7 +175,7 @@ func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) (st
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)
 	}
-	target := filepath.Join(stateDir, DeploymentInstructionsFile)
+	target := DeploymentInstructionsCopy(stateDir)
 	body := fmt.Sprintf("# Deployment instructions (%s)\n\n%s", legionID, contents)
 	if err := writeAtomically(target, body); err != nil {
 		return "", fmt.Errorf("write %s: %w", target, err)
