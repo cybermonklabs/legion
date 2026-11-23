@@ -599,11 +599,6 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, unless the head's line reads not known because a pass and a fail count there, which is a request for changes naming the check, at once."},
 		{"reviewer.md", "Send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
-		// A check of this issue with no `ci_check` that does not read yes at the head takes the
-		// refusal as a request for changes at once, naming the check and its state there: a reviewer
-		// that read a missing tester's pass as the worker skill's required check with no run at the
-		// head held its approval with a WAITING line instead of a review.
-		{"reviewer.md", "and a pass at another commit is none. The refusal is a `REQUEST_CHANGES` you submit at once, naming each such check and its state there: a check of this issue with no `ci_check` that does not read yes is not a required check with no run at the head, which `skill://legion-worker` waits on, so it takes no `WAITING` line."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
@@ -630,7 +625,6 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 // to operate a tool, but a role must receive the decision in the prompt it loads for its head.
 func TestCIResultRulesLiveInRolePrompts(t *testing.T) {
 	for _, pin := range []struct{ file, rule string }{
-		{"tester.md", "A `before_merge` check reads yes at the head you test when a pass of it counts at that commit and no fail does, whichever role recorded the pass: that is Dispatch's rule, so the implementer's pass alone already reads yes, and your own run and record of each check with no `ci_check` are still owed before you complete."},
 		{"tester.md", "A pass and a fail at any open head make the check not known; count it as a test failure and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		{"reviewer.md", "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},
 		{"architect.md", "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read."},

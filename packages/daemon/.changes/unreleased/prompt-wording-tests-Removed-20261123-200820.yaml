@@ -1,0 +1,11 @@
+kind: Removed
+body: |-
+  No test of this change reads the wording of a role prompt. The check that the composed prompts
+  say Dispatch's states decide the testing move and that no completion carries a verdict is gone,
+  and so are the phrases this change pinned in the tester's row of the compose-order test and in
+  the role-part and CI-result pins, and the two base phrases of the tester's verdict, which the
+  prompts no longer hold. The tests of what `Compose` does, of the rule search and of the
+  scenario scorer stay.
+time: 2026-11-23T20:08:20Z
+custom:
+  Issue: prompt-wording-tests

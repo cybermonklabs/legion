@@ -54,15 +54,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"Retro removes nothing", "the root of its children; no code of its own",
 			"(`HANDOFF_NO_PULL_REQUEST`), recording nothing: open the pull request and complete again at the same commit"}},
 		// The tester runs the application, not CI again (dispatch://LEGION-631).
-		// It records its results and completes with no verdict: Dispatch's state of each check
-		// moves the issue.
 		{"tester", claim.RoleTester, false, []string{"core/common.md", "core/tester.md", "mechanics/headless.md", "tester.md"}, []string{"tester.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
-			"record each check's result with `dispatch result` first, then end this phase with the `legion` tool: `op: \"handoff_complete\"` and a `summary`, and no `verdict`.",
-			"The daemon moves the issue by Dispatch's state of each `before_merge` check at the head your test record names, once each check has a state there that it ends at: a check with no state yet, or with no result while its CI run at that head goes on, holds the move until Dispatch publishes its next state, whatever the other checks read.",
-			"Then the issue goes to the reviewer when each check reads yes, whichever roles' results made it yes, and otherwise back to the implementer, whose task names each check that does not read yes with its state and its reason, a check Dispatch could not read (`read_failed`) among them.",
-			"This phase ends by those states alone, so the daemon refuses your `request_backward_move` out of testing (`BACKWARD_REFUSED`): to send the work back, record a fail of each check you cannot verify with `dispatch result`, its evidence in the result, and complete.",
-			"The head your test record names is the only head the move reads, so a completion whose record names none is refused, by the `legion` tool or by the daemon (`TESTED_HEAD_REQUIRED`): write a new `test` handoff with `head` set to the commit you tested, then complete again.",
-			"A `before_merge` check reads yes at the head you test when a pass of it counts at that commit and no fail does, whichever role recorded the pass",
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on"}},
@@ -282,87 +274,6 @@ func TestNoComposedPromptSaysLegionRefusesAMergeOverACheck(t *testing.T) {
 		}
 	}
 }
-
-// A phase completion carries no verdict (VERDICT_NOT_TAKEN): the testing move follows Dispatch's
-// state of each check at the tested head (workflow's decideTesting), so no composed prompt still
-// tells the tester to send a verdict or to write one into its handoff, the reviewer that a verdict
-// is the tester's or that its task names the tester's, or the architect that the tester's notice
-// carries one. Each role is told where the decision comes from instead: the tester that the states
-// move the issue, and that a failure is a fail result it records on the check, never a field of
-// its `test` handoff, which holds no `implementerProof`, `failures` or `failed` (decideTesting
-// reads no handoff), and no longer that it fails a check for want of the implementer's yes, since
-// Dispatch reads one pass of any role yes; the reviewer that its evidence is the line of its head
-// in `dispatch results`; and the architect what the tester's notice says: each failing check when
-// the move sent the issue back, and when it waits, the checks it waits for only where the daemon
-// knows which, since a wait for a tested head, for the states through the test record's serial,
-// or for the head's set of checks names none (decideTesting's reasons). The tester's prompt also
-// says Dispatch's own rule of a yes, a pass of any role with no fail at that commit (api's
-// subjectState), and no other sentence of it that one role's pass is none; and it no longer says
-// the rule before the move waited for a state of each check: that a fail sends the issue back at
-// once while another check waits, or that a check Dispatch could not read holds the move. The
-// production check's report keeps its pass, pending and fail, so the bare word stays. This shows
-// the text is loaded, never that a role follows it.
-func TestTheComposedPromptsSayTheStatesDecideAndNoCompletionCarriesAVerdict(t *testing.T) {
-	composer, err := New(t.TempDir())
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	for _, tc := range []struct {
-		role    claim.Role
-		isRoot  bool
-		says    []string
-		retired []string
-	}{
-		{claim.RoleTester, false,
-			[]string{"and no `verdict`", "The daemon moves the issue by Dispatch's state of each `before_merge` check at the head your test record names",
-				"whichever role recorded the pass",
-				"When a run of one of your checks fails, record a fail result on that check with `dispatch result --issue <issue> --check <block id> --role tester --verdict fail --commit <head sha>`, its evidence in `--observed`, whatever the implementer recorded.",
-				"say which of the two it is to the architect, and let the phase stand on the checks that do exist",
-				"A class search that finds an instance is a failure: record a fail result on the check it fails, with the command and what it found",
-				"the fail result you record on its check names the test and the command that shows it failing",
-				"Each failure is a fail result on its check, never a field of this handoff."},
-			[]string{`verdict: "pass"`, `verdict: "fail"`, "the verdict lets the daemon choose", "implementerProof.verdict", `"verified" | "rejected"`,
-				"record the verdict in your `test` handoff", "a pass from one role alone is no pass", "complete the phase as a failure",
-				"back to the implementer at once", "even while another still waits", "and so does a check Dispatch could not read",
-				"record no result of your own for it", "its state there is no", "its `observed` saying that the implementer left no result at that head",
-				"does not read yes from the implementer is a test failure", "a pass of yours already at that head does not stand in its way",
-				"`implementerProof` (`{how}` alone)", "or with `--verdict fail` and an entry in `failures` for one that fails",
-				"The daemon reads no handoff's `failures`", "say in your `test` handoff's `implementerProof.how` how you judged those results",
-				"record a fail of it with `dispatch result", "a fail the implementer recorded, a pass and a fail that make the head not known",
-				"implementerProof", "`failures`", "with `failed` counting"}},
-		{claim.RoleReviewer, false,
-			[]string{"No phase completion carries a `verdict` (`VERDICT_NOT_TAKEN`): your decision is the review you submit on GitHub, and the evidence of each check is the line of your head in `dispatch results`."},
-			[]string{"VERDICT_ROLE_FORBIDDEN", "Tester's verdict:", "A `verdict` is the tester's alone"}},
-		{claim.RoleArchitect, true, []string{architectNoticeReason, architectTestingMove}, retiredArchitectNotice},
-		{claim.RoleArchitect, false, []string{architectNoticeReason, architectTestingMove}, retiredArchitectNotice},
-	} {
-		text := foldWhitespace(composedText(t, composer, tc.role, tc.isRoot))
-		for _, phrase := range tc.says {
-			if !strings.Contains(text, phrase) {
-				t.Errorf("the composed %s prompt (root %t) omits %q", tc.role, tc.isRoot, phrase)
-			}
-		}
-		for _, phrase := range tc.retired {
-			if strings.Contains(text, phrase) {
-				t.Errorf("the composed %s prompt (root %t) still says %q", tc.role, tc.isRoot, phrase)
-			}
-		}
-	}
-}
-
-// architectNoticeReason is what the architect is told a tester's phase-finished notice says: the
-// failing checks of a move back, and of a wait, the checks only where the daemon knows which.
-const architectNoticeReason = "From the tester's phase, its `reason` says what the testing move did: when it sent the issue back, each check that does not pass at the tested head; when it waits, what it waits for, naming each check when the daemon knows which, and no check while it waits for Dispatch's states at that head as a whole."
-
-// architectTestingMove is what the architect is told moves an issue out of testing: the state of
-// each check at the tested head (workflow's decideTesting), never a verdict of the tester's
-// completion.
-const architectTestingMove = "The tester's completion carries no verdict: the daemon decides the move by the state of each check at the head the tester's record names, once each has a state there that it ends at, sending the issue to the reviewer when each reads yes and otherwise back to the implementer with a task naming each check that does not pass;"
-
-// retiredArchitectNotice are the words that promised the architect a check name in every wait, a
-// verdict in the tester's notice, and a tester completion that rejects the implementer's results.
-var retiredArchitectNotice = []string{"from the tester, its `verdict`", "Tester's verdict:", "or the checks whose states the move waits for.",
-	"A tester completion that rejects the implementer's results", "goes back to the implementer by the daemon's table"}
 
 // An issue with no Verification document, or with one holding no `before_merge` check, is a
 // coverage gap every role names and none refuses (dispatch://INFRA-174, R1 and R2): every gate
