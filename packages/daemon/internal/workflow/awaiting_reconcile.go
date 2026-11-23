@@ -11,9 +11,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -128,7 +128,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 				"declared_seq", root.DeclaredSeq)
 			changed = true
 		default:
-			intake.OnCommit(ctx, func() {
+			store.OnCommit(ctx, func() {
 				e.log.Debug("workflow: a root that handed work to a person starts no wait on that person", "issue", root.Key, "why", decision.Why)
 			})
 		}

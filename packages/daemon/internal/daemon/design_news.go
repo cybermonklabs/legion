@@ -100,7 +100,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 	}
 	var root *record.Issue
 	var owed record.TreeNews
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if root, err = r.records.Issue(ctx, tx, row.Issue); err != nil || root == nil {
 			return err
@@ -123,7 +123,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 	// A tree that names no pair, such as one owed an opening alone, has no change set to read.
 	var recorded map[record.VersionPair]record.DesignChanges
 	if len(baselines.pairs) > 0 {
-		if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			recorded, err = r.records.DesignChangesOf(ctx, tx, baselines.pairs)
 			return err
@@ -134,7 +134,7 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 	read, readErr := r.readChangeSets(ctx, row, baselines.pairs, recorded)
 	if len(read) > 0 || len(baselines.fills) > 0 || len(baselines.unread) > 0 {
 		at := r.now().UTC()
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 			for _, changes := range read {
 				if err := r.records.PutDesignChanges(ctx, tx, changes); err != nil {
 					return err
@@ -488,13 +488,15 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 // A tree that lingers, a member out of the workflow, one that merged, or one whose phase has no
 // holder is owed nothing (record.OwedNews), so nothing is queued for it. Each start reads again,
 // when it runs, what it carries and whether it may reach its claim (the start executor's
-// newsForStart and newsOnlyRefusal), since the record can move before then.
+// newsForStart and newsOnlyRefusal), since the record can move before then. The lines that say
+// what the settlement queued and raised are hooks of its commit (store.OnCommit), so a settlement
+// that rolls back says nothing, and one whose commit reply is lost says it once the store says it
+// committed.
 func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree string) error {
 	now := r.now().UTC()
-	var queued []owedHolder
-	raised := 0
 	if err := r.settleUnderFacts(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		queued, raised = nil, 0
+		var queued []owedHolder
+		raised := 0
 		root, err := r.records.Issue(ctx, tx, tree)
 		if err != nil || root == nil {
 			return err
@@ -577,15 +579,17 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			}
 			queued = append(queued, start)
 		}
+		store.OnCommit(ctx, func() {
+			for _, start := range queued {
+				r.log.Info("outbox design_changes queued a news-only start", "row", row.ID, "tree", tree, "issue", start.issue.Key, "role", start.role)
+			}
+			if raised > 0 || len(queued) > 0 {
+				r.log.Info("outbox design_changes settled the news its tree is owed", "row", row.ID, "tree", tree, "raised", raised, "starts", len(queued))
+			}
+		})
 		return nil
 	}); err != nil {
 		return fmt.Errorf("settle the news the tree of %s is owed: %w", tree, err)
-	}
-	for _, start := range queued {
-		r.log.Info("outbox design_changes queued a news-only start", "row", row.ID, "tree", tree, "issue", start.issue.Key, "role", start.role)
-	}
-	if raised > 0 || len(queued) > 0 {
-		r.log.Info("outbox design_changes settled the news its tree is owed", "row", row.ID, "tree", tree, "raised", raised, "starts", len(queued))
 	}
 	return nil
 }
@@ -627,7 +631,7 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 	carried := record.DeliveryNews{Task: payload.Task}
 	sent := renderedNews{task: payload.Task}
 	roundNamed := payload.RoundNamed
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Tree)
 		if err != nil {
 			return err
@@ -720,7 +724,7 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 // unavailable, and a review history it cannot read is recorded unread (designChangesAttempts).
 func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (bool, error) {
 	var unrecorded bool
-	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Tree)
 		if err != nil {
 			return err
@@ -761,7 +765,7 @@ func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (
 // outbox's own hold reads (record's outboxPauseFree), as admit's readStallFloor reads it.
 func (w *workflowRuntime) queueOwedDesignNews(ctx context.Context) error {
 	var owed []string
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		owed = nil
 		pause, found, err := store.OpenOrLastPauseTx(ctx, tx, w.dispatchProject)
 		if err != nil || (found && !pause.Ended()) {
@@ -795,13 +799,12 @@ func (w *workflowRuntime) queueOwedDesignNews(ctx context.Context) error {
 // takes so that none queues a second beside one still to run. The lanes are woken as it commits.
 func (w *workflowRuntime) queueDesignNews(ctx context.Context, trees []string) error {
 	now := time.Now().UTC()
-	scoped, committed := intake.WithCommitHooks(ctx)
-	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
-		if err := intake.SerializeFacts(scoped, tx); err != nil {
+	if err := store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize the queue with every fact: %w", err)
 		}
 		for _, tree := range trees {
-			if err := record.QueueDesignNews(scoped, w.records, tx, tree, now); err != nil {
+			if err := record.QueueDesignNews(ctx, w.records, tx, tree, now); err != nil {
 				return err
 			}
 		}
@@ -809,6 +812,5 @@ func (w *workflowRuntime) queueDesignNews(ctx context.Context, trees []string) e
 	}); err != nil {
 		return fmt.Errorf("queue the reconcile of the news of %v: %w", trees, err)
 	}
-	committed()
 	return nil
 }

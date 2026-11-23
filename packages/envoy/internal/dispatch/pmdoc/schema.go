@@ -15,6 +15,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
+// A change to blocks.json ships with a store migration that writes the node of each type or
+// attribute it adds or alters, moves every block type's supertag node to the file's new version,
+// and appends each value it states as a value tuple at the source_event sentinel 0, as
+// 20261113230000_graph_supertags_check_ci_check does: the server installs the store's types and
+// not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
+// build made for the new version installs the old one. A new type migration runs once: written
+// after the store's backfill, it writes under the migration census's bounded-write rule and cannot
+// run twice unchanged, so only the type migrations before the backfill (typeMigrations in
+// cmd/dispatch/supertag_nodes_test.go) run a second time, and a new one joins no list there.
+//
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte
 
@@ -26,25 +36,28 @@ var blockSchemaJSON []byte
 // element of it - a node, a mark, a typed block, a typed block's attribute, an enum attribute's
 // choice - may say from which schema version a build reads it (since) and from which a build may
 // create it (creatable_since); both are 1 when it says neither. This build reads every element
-// its manifest declares and creates those whose creatable_since is at most Version
-// (SchemaVersion).
+// the installed manifest declares and creates those whose creatable_since is at most Version
+// (SchemaVersion). The installed manifest is the store's once the server has read it (Install):
+// the typed blocks the store's supertag nodes declare, beside this build's own nodes and marks.
+// blocks.json is what those nodes were seeded from, and what is installed until then.
 
 // LinkKinds is the edge kinds the manifest's `block[]` attributes make, sorted: each such
 // attribute's name, once however many types declare it. None is a structural edge kind
 // (model.GraphEdgeKinds).
 func LinkKinds() []string {
-	return slices.Clone(active.linkKinds)
+	return slices.Clone(active.Load().linkKinds)
 }
 
 // HasLinkKinds reports whether the manifest declares any `block[]` attribute (LinkKinds is not
 // empty).
 func HasLinkKinds() bool {
-	return len(active.linkKinds) > 0
+	return len(active.Load().linkKinds) > 0
 }
 
-// SchemaJSON returns a copy of the canonical server-owned block schema JSON.
+// SchemaJSON returns a copy of the installed block schema as JSON: what the store's nodes built,
+// or the embedded file where nothing has been installed over it.
 func SchemaJSON() []byte {
-	return append([]byte(nil), blockSchemaJSON...)
+	return append([]byte(nil), active.Load().json...)
 }
 
 // IsTypedBlock reports whether name is a typed block the schema declares.
@@ -54,13 +67,14 @@ func IsTypedBlock(name string) bool {
 }
 
 func typedBlock(name string) (BlockTypeSchema, bool) {
-	typ, ok := active.types[name]
+	typ, ok := active.Load().types[name]
 	return typ, ok
 }
 
 func typedBlockNames() []string {
-	names := make([]string, 0, len(active.schema.Types))
-	for _, typ := range active.schema.Types {
+	types := active.Load().schema.Types
+	names := make([]string, 0, len(types))
+	for _, typ := range types {
 		names = append(names, typ.Name)
 	}
 	sort.Strings(names)

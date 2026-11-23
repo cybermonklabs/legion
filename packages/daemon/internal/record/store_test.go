@@ -48,7 +48,7 @@ func migratedStore(t *testing.T) *store.Store {
 
 func inTx(t *testing.T, st *store.Store, fn func(pgx.Tx)) {
 	t.Helper()
-	if err := st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		fn(tx)
 		return nil
 	}); err != nil {
@@ -135,7 +135,7 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := issueFixture("LEGION-301")
 			tc.change(&issue)
-			err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, issue) })
+			err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutIssue(ctx, tx, issue) })
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("PutIssue = %v, want %q", err, tc.want)
 			}
@@ -155,7 +155,7 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			moved := recorded
 			tc.change(&moved)
-			err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) })
+			err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) })
 			want := "record issue LEGION-302: it is recorded on acme/widgets@release/v7.1 (GitHub's Acme/Widgets), and a record keeps its repository and default branch: only the one-time rename pass writes another repository name on it"
 			if err == nil || err.Error() != want {
 				t.Fatalf("PutIssue = %v, want %q", err, want)
@@ -798,7 +798,7 @@ func TestStoreRoundTripsLingerStateAndRefusesHeldFromHeld(t *testing.T) {
 
 	invalid := issueFixture("LEGION-211")
 	invalid.Hold = &Hold{From: phase.Held}
-	err := st.Tx(ctx, func(tx pgx.Tx) error {
+	err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, invalid)
 	})
 	if err == nil {
@@ -930,7 +930,7 @@ func TestStoreRoundTripsProductionChecksAndListsTheOpenOnesByTree(t *testing.T) 
 	})
 	refused := done
 	refused.Outcome = "shrug"
-	if err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutProductionCheck(ctx, tx, refused) }); err == nil || !strings.Contains(err.Error(), "check constraint") {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.PutProductionCheck(ctx, tx, refused) }); err == nil || !strings.Contains(err.Error(), "check constraint") {
 		t.Fatalf("PutProductionCheck with outcome %q = %v, want the check constraint to refuse it", refused.Outcome, err)
 	}
 }
@@ -1229,7 +1229,7 @@ func TestClaimRowLeasesADueRowExactlyOnceUntilItsLeaseLapses(t *testing.T) {
 		row = due[0]
 	})
 
-	tx1, err := st.BeginTx(ctx, pgx.TxOptions{})
+	tx1, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	first, ok, err := records.ClaimRow(ctx, tx1, row.ID, now, time.Minute)
 	must(t, err)
@@ -1242,7 +1242,7 @@ func TestClaimRowLeasesADueRowExactlyOnceUntilItsLeaseLapses(t *testing.T) {
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		tx2, err := st.BeginTx(ctx, pgx.TxOptions{})
+		tx2, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1741,7 +1741,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 	})
 
 	// Daemon A's lane claims the suspend and is a moment from committing.
-	txA, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txA, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	_, okA, err := records.ClaimRow(ctx, txA, suspendID, now, time.Minute)
 	must(t, err)
@@ -1758,7 +1758,7 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		txB, err := st.BeginTx(ctx, pgx.TxOptions{})
+		txB, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1832,7 +1832,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 	})
 
 	// Daemon A's lifecycle lane claims the suspend and is a moment from committing.
-	txA, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txA, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	_, okA, err := records.ClaimRow(ctx, txA, suspendID, now, time.Minute)
 	must(t, err)
@@ -1848,7 +1848,7 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 	}
 	second := make(chan attempt, 1)
 	go func() {
-		txB, err := st.BeginTx(ctx, pgx.TxOptions{})
+		txB, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			second <- attempt{err: err}
 			return
@@ -1933,7 +1933,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	})
 
 	// The lane's lease of the catch-up, a moment from committing.
-	txLane, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txLane, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txLane.Rollback(ctx) }()
 	if _, leased, err := records.ClaimRow(ctx, txLane, catchUp, now, time.Minute); err != nil || !leased {
@@ -1944,7 +1944,7 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 	// drop that returned before then read the row without waiting on the lane at all.
 	dropped := make(chan error, 1)
 	go func() {
-		dropped <- st.Tx(ctx, func(tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "LEGION-1", now) })
+		dropped <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "LEGION-1", now) })
 	}()
 	returned := false
 	testwait.Eventually(t, "the drop to wait on the lane's lease or to return", func() bool {
@@ -2016,7 +2016,7 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	})
 
 	// The adoption's transaction locks the tree's decisions.
-	txAdopt, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txAdopt, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txAdopt.Rollback(ctx) }()
 	if _, _, err := records.UnclaimedKept(ctx, txAdopt, "LEGION-1"); err != nil {
@@ -2025,7 +2025,9 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	// The lane's finish deletes the row and waits on those decisions.
 	finished := make(chan error, 1)
 	go func() {
-		finished <- st.Tx(ctx, func(tx pgx.Tx) error { return records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken) })
+		finished <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			return records.FinishOutbox(ctx, tx, leased.ID, leased.LeaseToken)
+		})
 	}()
 	testwait.Eventually(t, "the finish to wait on the decisions the adoption locked", func() bool {
 		var waiting int
@@ -2100,7 +2102,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	})
 
 	// The drop, which takes both rows and holds its lock from here until it commits.
-	txDrop, err := st.BeginTx(ctx, pgx.TxOptions{})
+	txDrop, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	must(t, err)
 	defer func() { _ = txDrop.Rollback(ctx) }()
 	must(t, records.DropCatchUps(ctx, txDrop, "LEGION-1", now))
@@ -2109,7 +2111,7 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 	claimed := make(chan error, 1)
 	leased := make(chan bool, 1)
 	go func() {
-		claimed <- st.Tx(ctx, func(tx pgx.Tx) error {
+		claimed <- store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			_, ok, err := records.ClaimRow(ctx, tx, copyID, now, time.Minute)
 			leased <- ok
 			return err

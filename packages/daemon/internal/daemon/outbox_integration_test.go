@@ -149,7 +149,7 @@ func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
 	if first.LeaseToken == second.LeaseToken {
 		t.Fatal("replacement lease reused the stale token")
 	}
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.FinishOutbox(context.Background(), tx, first.ID, first.LeaseToken)
 	}); err != nil {
 		t.Fatalf("finish stale lease: %v", err)
@@ -164,7 +164,7 @@ func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
 func claimDueOutboxRow(t *testing.T, pool *store.Pool, records record.Store, now time.Time) record.OutboxRow {
 	t.Helper()
 	var claimed record.OutboxRow
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		due, err := records.DueRows(context.Background(), tx, "LEGION", "", nil, now)
 		if err != nil {
 			return err
@@ -198,7 +198,7 @@ func mustOutboxRow(t *testing.T, issue string, payload record.OutboxPayload, now
 
 func enqueueOutbox(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error { return records.Enqueue(context.Background(), tx, row) }); err != nil {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error { return records.Enqueue(context.Background(), tx, row) }); err != nil {
 		t.Fatalf("enqueue outbox row: %v", err)
 	}
 }
