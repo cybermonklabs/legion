@@ -6,9 +6,8 @@ body: |-
   names, once each check has a state it ends at (a check with no state yet, or with no result while
   its CI run goes on, holds the move): to the reviewer when each reads yes, and otherwise back to
   the implementer with a task naming each check that does not read yes, a check Dispatch could not
-  read among them. Its `test` handoff's `implementerProof` is `{how}` alone, it records a check it
-  runs and finds failing with `--verdict fail` and an entry in `failures`, and its own fail, not the
-  handoff's `failures`, sends the issue back, since the daemon reads no handoff's `failures`; it is
+  read among them. It records a check it runs and finds failing with `--verdict fail`, and that fail
+  result, not its handoff, sends the issue back, since the daemon reads no handoff; it is
   told Dispatch's own rule of a yes: a pass of any role with no fail at that commit. The reviewer is
   told no phase completion carries a verdict
   (`VERDICT_NOT_TAKEN`) and that the evidence of each check is the line of its head in

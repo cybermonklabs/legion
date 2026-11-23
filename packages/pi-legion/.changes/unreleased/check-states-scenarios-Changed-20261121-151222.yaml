@@ -1,9 +1,9 @@
 kind: Changed
 body: |-
   The skill-scenario rig follows the check states. The reviewer's task names no verdict of the
-  tester, as the daemon's no longer does, and the tester's record in each heads world carries
-  `implementerProof` as `{how}` alone; tester-proof's record passes only with no
-  `implementerProof.verdict` and no failures. reviewer-own-head gains the cases no-verdict-pass
+  tester, as the daemon's no longer does, and the tester's record in each heads world carries no
+  verdict; tester-proof's record passes only with no verdict. reviewer-own-head gains the cases
+  no-verdict-pass
   (a pass of each role at #702's head) and no-verdict-fail (the implementer's pass, the test record,
   then the tester's fail there), and architect-pass-and-fail the same two cases beside its own
   world, whose runs keep their names. The ablate label `ablate-states-read`, searched over the

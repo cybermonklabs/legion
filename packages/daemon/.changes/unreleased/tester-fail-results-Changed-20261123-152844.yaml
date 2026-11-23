@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The tester's prompt no longer asks for `implementerProof`, `failures` or `failed` in its `test`
+  handoff: each failure is a fail result on its check, never a field of the handoff. When a run of
+  one of its checks fails, the tester records a fail result on that check with `dispatch result
+  --verdict fail`, its evidence in `--observed`, at the head its `test` record names and before it
+  pushes a commit after that head. A check with no pass from the implementer is not a fail of its
+  own, and a defect that no check covers goes to the architect. The prompt no longer tells the
+  tester to judge the implementer's results in `implementerProof.how`, to name a whole-suite check
+  or a missing Verification document there, or to put a class search's instance or a red test in
+  `failures`: each of these goes to the architect or is a fail result on its check.
+time: 2026-11-23T15:28:44Z
+custom:
+    Issue: tester-fail-results

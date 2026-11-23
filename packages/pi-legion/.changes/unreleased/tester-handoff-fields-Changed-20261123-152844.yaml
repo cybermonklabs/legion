@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The skill-scenario scorer reads a tester's `test` handoff that holds no `implementerProof`,
+  `failures` or `failed`. `TestHandoff` refuses a body that holds one of them, with an issue at that
+  key whose message is `a test handoff holds no <key>`, so tester-proof's record fails on such a
+  body and no longer on a verdict or a count of failures. ci-pass-and-fail's tester passes when its
+  own test record exists and `TestHandoff` reads it, no reply starts `WAITING` before that record,
+  and the run records no `dispatch result` on k1, a check that CI proves; its notes name the
+  record, the WAITING lines and the count of results on k1, and no verdict or failure. The heads
+  worlds seed a `test` record with none of the three keys.
+time: 2026-11-23T15:28:44Z
+custom:
+    Issue: tester-handoff-fields
