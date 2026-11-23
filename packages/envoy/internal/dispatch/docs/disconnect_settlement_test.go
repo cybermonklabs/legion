@@ -9,6 +9,8 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestLastPeerDisconnectSettlesDocumentBeforeEviction(t *testing.T) {
@@ -17,7 +19,10 @@ func TestLastPeerDisconnectSettlesDocumentBeforeEviction(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	connection, response, err := gws.DefaultDialer.Dial(
+	// The dialer has no handshake bound of its own (gws.DefaultDialer's is a fixed 45 s): the upgrade
+	// is answered once the service admits the socket, and the dial's one bound is the test binary's
+	// deadline less testwait's margin (testwait.Context).
+	connection, response, err := (&gws.Dialer{}).DialContext(testwait.Context(t),
 		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID,
 		http.Header{"X-Dispatch-User": []string{"alice"}},
 	)
