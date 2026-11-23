@@ -227,14 +227,16 @@ describe("an inbound frame's text is read as well-formed Unicode", () => {
   });
 
   test("renderInbound: a message's JSON renders, such a half in a key or a value shown as U+FFFD", () => {
+    // The later of two keys that read alike wins, as JSON.parse keeps the later of two keys
+    // spelled alike.
     const raw = JSON.stringify({
       event_id: "event-1",
       source: "agent",
-      payload: String.raw`{"text":"a\ud800b","\udc00":1}`,
+      payload: String.raw`{"text":"a\ud800b","\udc00":1,"\ufffd":2}`,
     });
     const card = decode(renderInbound(raw, reader).content) as { envoy: { message?: unknown } };
 
-    expect(card.envoy.message).toEqual({ text: "a\uFFFDb", "\uFFFD": 1 });
+    expect(card.envoy.message).toEqual({ text: "a\uFFFDb", "\uFFFD": 2 });
   });
 
   test("renderInbound (a Dispatch event's payload): a comment whose body holds such a half renders", () => {
@@ -258,5 +260,18 @@ describe("an inbound frame's text is read as well-formed Unicode", () => {
     ) as { envoy: { message?: unknown } };
 
     expect(card.envoy.message).toBe("\u{1F600}");
+  });
+});
+
+describe("an inbound frame is read at every depth JSON.parse reads", () => {
+  // JSON.parse reads a value nested past 9,999 levels; a reviver, which Bun calls recursively,
+  // gave up near 4,500 levels, and the frame then rendered as `payload was not JSON`.
+  test("renderInbound: a frame holding a value nested 9,999 deep renders as it does without it", () => {
+    const fields = `"event_id":"event-1","source":"agent","payload":"hello"`;
+    const deep = `${"[".repeat(9_999)}${"]".repeat(9_999)}`;
+
+    expect(renderInbound(`{${fields},"deep":${deep}}`, reader).content).toBe(
+      renderInbound(`{${fields}}`, reader).content
+    );
   });
 });

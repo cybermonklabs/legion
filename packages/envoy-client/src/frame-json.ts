@@ -18,25 +18,37 @@
  * escape, so the card shows where the text was unreadable and the whole of the rest.
  */
 export function parseFrameJSON(text: string): unknown {
-  // JSON.parse leaves out a key whose reviver answers `undefined`, and sets the value it answers
-  // otherwise; it calls the reviver on an object after its members, so the object's own keys are
-  // the last thing left to read.
-  return JSON.parse(text, (key, value: unknown) => {
-    if (key === "__proto__") return undefined;
-    if (typeof value === "string") return value.replace(LONE_SURROGATE, "\uFFFD");
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
-    for (const name in value) {
-      if (name.search(LONE_SURROGATE) !== -1) {
-        return Object.fromEntries(
-          Object.entries(value).map(([member, held]) => [
-            member.replace(LONE_SURROGATE, "\uFFFD"),
-            held,
-          ])
-        );
+  const value: unknown = JSON.parse(text);
+  if (typeof value === "string") return value.replace(LONE_SURROGATE, "\uFFFD");
+  // The walk keeps the objects and arrays it has still to read on a stack of its own rather than
+  // the call stack: JSON.parse reads a value nested past 9,999 levels, and a recursive walk (a
+  // reviver is one) gives up thousands of levels before that.
+  const containers: object[] = typeof value === "object" && value !== null ? [value] : [];
+  for (let next = containers.pop(); next !== undefined; next = containers.pop()) {
+    const members = next as Record<string, unknown>;
+    delete members.__proto__;
+    let names = Object.keys(members);
+    if (names.some((name) => name.search(LONE_SURROGATE) !== -1)) {
+      // Each member is set again in order, so of two keys the rule makes one the later wins, as
+      // JSON.parse keeps the later of two keys spelled alike.
+      const held = names.map((name) => members[name]);
+      for (const name of names) delete members[name];
+      names.forEach((name, index) => {
+        members[name.replace(LONE_SURROGATE, "\uFFFD")] = held[index];
+      });
+      names = Object.keys(members);
+    }
+    for (const name of names) {
+      const member = members[name];
+      if (typeof member === "string") {
+        const readable = member.replace(LONE_SURROGATE, "\uFFFD");
+        if (readable !== member) members[name] = readable;
+      } else if (typeof member === "object" && member !== null) {
+        containers.push(member);
       }
     }
-    return value;
-  });
+  }
+  return value;
 }
 
 // With the `u` flag a whole surrogate pair is one code point, so only a half standing alone is in
