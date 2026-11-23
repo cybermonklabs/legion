@@ -132,6 +132,24 @@ deployment that configures none (`e2e/run-server.sh` and `e2e/harness-broker.ts`
 switch). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
+Off CI, each Chromium project's browser runs in a network namespace of its own
+(`e2e/browser-namespace.ts`): Chromium fails every request that is waiting for a
+connection with `net::ERR_NETWORK_CHANGED` when its namespace gains or loses an
+address, which a machine running docker does all day, and a lazy chunk that fails
+that way reloads the page under the row. The namespace holds a loopback device and
+one dummy link, so the page still counts itself online, and Chromium reaches the
+host's loopback, every port of it and nothing else, through a SOCKS5 proxy; a page
+still opens `http://127.0.0.1:<port>`, a secure context. It needs an unprivileged
+user namespace, `unshare` with `--map-user` (util-linux 2.38) and `ip`. Where the
+machine makes none, the run says so once and Chromium shares the host's network.
+`DISPATCH_E2E_BROWSER_NETWORK` chooses instead: `own` makes a machine that cannot
+an error, and `host` runs Chromium on the host's network, as CI does. A row that
+sets `launchOptions` of its own builds them with `chromiumLaunchOptions`, since
+they replace the project's whole. Firefox, WebKit and the visual review's
+container start their browsers as before. A headed run whose display is forwarded
+over SSH (`DISPLAY=localhost:10`) cannot reach that display's TCP port from inside
+the namespace: run it with `DISPATCH_E2E_BROWSER_NETWORK=host`.
+
 `DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
 server's meaning search at it: the server calls it as it calls Bedrock, and it counts the calls
 it was asked for, so a row reads back how many embeddings a stretch of typing cost. The rows of

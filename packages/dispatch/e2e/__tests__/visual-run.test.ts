@@ -17,13 +17,19 @@ import { rowLimit, runBounded } from "./bounded-subprocess";
 // What e2e/visual-run.sh tells a reader of a failed run: where a failed row's shots are, if a row
 // ran and failed, and, for a run in reverse order, that a row failing there alone needs a seed
 // mark and not a new baseline; that it never says shots exist, since it cannot tell that a row
-// ran; and that however the run ends, the stack it started is stopped. The script runs
-// whole, as CI runs it, with `bun` and `docker` standing in on PATH: the stand-in `bun` prints
-// the stack's last variable for `e2e/harness-up.ts` and holds the stack up as the real one does,
-// writing its pid to `STUB_STACK_PID` where that is set, and the stand-in `docker` exits with the
-// status the row asks for, which is the status the Playwright run inside the container would
-// have, after writing its pid to `STUB_DOCKER_STARTED` and holding `STUB_DOCKER_HOLD` seconds
-// where those are set.
+// ran; that a zero exit which left no run record of Playwright's fails; and that however the run
+// ends, the stack it started is stopped. The script runs whole, as CI runs it, with `bun` and
+// `docker` standing in on PATH: the stand-in `bun` prints the stack's last variable for
+// `e2e/harness-up.ts` and holds the stack up as the real one does, writing its pid to
+// `STUB_STACK_PID` where that is set, and answers `e2e/visual-relay.ts` with the relay's ready
+// line and holds it up too; the stand-in `docker` exits with the status the row asks for, which
+// is the status the Playwright run inside the container would have, after writing its pid to
+// `STUB_DOCKER_STARTED`, holding `STUB_DOCKER_HOLD` seconds and writing the run record
+// `STUB_DOCKER_RECORD` names, where those are set.
+//
+// Each run is of a copy of the script in a package tree of its own, which the script works in:
+// a run removes the run record in its results directory before the container starts, and a run
+// of this package's own script would remove a person's record of their last run.
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const stubs = mkdtempSync(join(tmpdir(), "visual-run-"));
 afterAll(() => rmSync(stubs, { force: true, recursive: true }));
@@ -36,6 +42,9 @@ case "$1" in
     [ -z "$STUB_STACK_PID" ] || echo $$ > "$STUB_STACK_PID"
     echo 'export DISPATCH_E2E_REUSE_SERVERS=1'
     exec sleep 60 2>/dev/null ;;
+  e2e/visual-relay.ts)
+    echo 'visual-relay: ready'
+    exec sleep 60 2>/dev/null ;;
   *) exit 0 ;;
 esac
 `
@@ -45,22 +54,41 @@ writeFileSync(
   `#!/bin/sh
 [ -z "$STUB_DOCKER_STARTED" ] || echo $$ > "$STUB_DOCKER_STARTED"
 [ -z "$STUB_DOCKER_HOLD" ] || sleep "$STUB_DOCKER_HOLD"
+if [ "$STUB_DOCKER_STATUS" = 0 ] && [ -n "$STUB_DOCKER_RECORD" ]; then
+  mkdir -p "$(dirname "$STUB_DOCKER_RECORD")" && echo '{"status":"passed","failedTests":[]}' > "$STUB_DOCKER_RECORD"
+fi
 exit "$STUB_DOCKER_STATUS"
 `
 );
 chmodSync(join(stubs, "bun"), 0o755);
 chmodSync(join(stubs, "docker"), 0o755);
 
-/** One run of the script with the stand-ins, the container's status and the order given. */
-function visualRun(status: number, order: string | undefined, args: readonly string[]) {
+/** A package tree of its own under the stand-ins' directory, holding a copy of the script. */
+function scriptTree(): string {
+  const tree = join(mkdtempSync(join(stubs, "tree-")), "packages/dispatch");
+  mkdirSync(join(tree, "e2e"), { recursive: true });
+  copyFileSync(join(dispatchPackage, "e2e/visual-run.sh"), join(tree, "e2e/visual-run.sh"));
+  return tree;
+}
+
+/** One run of the script with the stand-ins, the container's status and the order given, in
+ *  `tree` (a new one unless given), the container writing the run record `record` names, a path
+ *  from the tree, where it is given. */
+function visualRun(
+  status: number,
+  order: string | undefined,
+  args: readonly string[],
+  { record, tree = scriptTree() }: { readonly record?: string; readonly tree?: string } = {}
+) {
   return runBounded({
     argv: ["sh", "e2e/visual-run.sh", ...args],
     bound: "short",
-    cwd: dispatchPackage,
+    cwd: tree,
     env: {
       DISPATCH_E2E_VISUAL_ORDER: order,
       HOME: process.env.HOME,
       PATH: `${stubs}:/usr/bin:/bin`,
+      STUB_DOCKER_RECORD: record,
       STUB_DOCKER_STATUS: String(status),
       TMPDIR: stubs,
     },
@@ -252,12 +280,66 @@ test(
 test(
   "a run that passed says nothing of either, on either stream",
   async () => {
-    const run = await visualRun(0, "reverse", ["--output=e2e/test-results-reverse"]);
+    const run = await visualRun(0, "reverse", ["--output=e2e/test-results-reverse"], {
+      record: "e2e/test-results-reverse/.last-run.json",
+    });
     expect(run.code).toBe(0);
     for (const stream of [run.stderr, run.stdout]) {
       expect(stream).not.toContain("the run failed");
       expect(stream).not.toContain(seedMark);
     }
+  },
+  rowLimit("short")
+);
+
+// With no `--output`, Playwright writes its record under the config's own output directory,
+// `e2e/test-results` (e2e/playwright.config.ts's `outputDir` is read from the config's directory),
+// which is where the script must look: a record looked for anywhere else fails every run that
+// passed, as CI's normal-order visual step runs.
+test(
+  "a run that passed with Playwright's own output directory passes",
+  async () => {
+    const run = await visualRun(0, undefined, [], { record: "e2e/test-results/.last-run.json" });
+    expect(run.stderr).not.toContain("without writing");
+    expect(run.code).toBe(0);
+  },
+  rowLimit("short")
+);
+
+// Playwright writes its run record (`.last-run.json`, in the first project's output directory)
+// only once it has run, so a zero exit that left none compared nothing: a container whose
+// command ended before Playwright started passed the whole review that way.
+test(
+  "a zero exit that left no run record fails, naming the record it looked for",
+  async () => {
+    const named = await visualRun(0, undefined, ["--output=e2e/test-results-no-record"]);
+    expect(named.code).toBe(1);
+    expect(named.stderr).toContain(
+      "e2e/visual-run.sh: Playwright exited 0 without writing e2e/test-results-no-record/.last-run.json."
+    );
+    const own = await visualRun(0, undefined, []);
+    expect(own.code).toBe(1);
+    expect(own.stderr).toContain(
+      "e2e/visual-run.sh: Playwright exited 0 without writing e2e/test-results/.last-run.json."
+    );
+  },
+  rowLimit("short", "short")
+);
+
+// A record an earlier run left is that run's: the script removes it before the container starts,
+// so a run that wrote none fails even where one was there before it.
+test(
+  "a run record an earlier run left passes no run that wrote none",
+  async () => {
+    const tree = scriptTree();
+    mkdirSync(join(tree, "e2e/test-results"), { recursive: true });
+    writeFileSync(
+      join(tree, "e2e/test-results/.last-run.json"),
+      '{"status":"passed","failedTests":[]}'
+    );
+    const run = await visualRun(0, undefined, [], { tree });
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain("without writing e2e/test-results/.last-run.json.");
   },
   rowLimit("short")
 );
@@ -278,7 +360,7 @@ test(
         "--output=e2e/x",
       ],
       bound: "short",
-      cwd: dispatchPackage,
+      cwd: scriptTree(),
       env: { ...heldRun(dir, 130, undefined), DISPATCH_E2E_VISUAL_ORDER: "reverse" },
       from: import.meta.url,
     });
@@ -330,7 +412,7 @@ test(
         "--output=e2e/x",
       ],
       bound: "short",
-      cwd: dispatchPackage,
+      cwd: scriptTree(),
       env: { ...heldRun(dir, 1, undefined), DISPATCH_E2E_VISUAL_ORDER: "reverse" },
       from: import.meta.url,
     });
@@ -358,7 +440,7 @@ test(
     mkdirSync(join(dashed, "-x"));
     copyFileSync(join(dispatchPackage, "e2e/visual-run.sh"), join(dashed, "e2e/visual-run.sh"));
     for (const [cwd, args] of [
-      [dispatchPackage, []],
+      [scriptTree(), []],
       [dashed, ["--output=-x"]],
     ] as const) {
       const dir = mkdtempSync(join(stubs, "int-"));
@@ -400,7 +482,7 @@ test(
         "visual-run",
       ],
       bound: "short",
-      cwd: dispatchPackage,
+      cwd: scriptTree(),
       env: heldRun(dir, 1, "1"),
       from: import.meta.url,
     });

@@ -1,4 +1,5 @@
 import { publishAgentStreamFrame } from "./api";
+import { chromiumLaunchOptions } from "./browser-namespace";
 import {
   COST_RIG_IDS,
   COST_RIG_TURNS,
@@ -45,8 +46,9 @@ import { asUser } from "./users";
 // `performance.memory` is a quantised constant in a Chromium launched without this switch: a
 // page read the same 131,000,000 bytes with no view open and with eight, which is no reading of
 // what a view costs. With it, the same page read 13.5 MB before any view and 213.6 MB with
-// eight open. The row that reads the heap asks for the switch itself, as `heapBytes` says.
-test.use({ launchOptions: { args: ["--enable-precise-memory-info"] } });
+// eight open. The row that reads the heap asks for the switch itself, as `heapBytes` says, through
+// `chromiumLaunchOptions`, since these options replace the project's whole.
+test.use({ launchOptions: chromiumLaunchOptions({ args: ["--enable-precise-memory-info"] }) });
 
 /** One turn a session publishes to whoever is subscribed to it now, past the end of the replay
  *  it answers a new viewer with. */

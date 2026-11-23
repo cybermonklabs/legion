@@ -77,8 +77,9 @@ export function frontLiveView(page: Page): Locator {
  * moves: without the switch it quantises `usedJSHeapSize` so heavily that reads either side of
  * a hundred megabytes of transcript come back identical (measured: a constant 131,000,000, where
  * the same page with the switch read 13.5 MB before any view and 213.6 MB with eight open). A
- * row whose claim is the heap asks for it itself:
- * `test.use({ launchOptions: { args: ["--enable-precise-memory-info"] } })`.
+ * row whose claim is the heap asks for it itself, through `chromiumLaunchOptions`
+ * (e2e/browser-namespace.ts), since a row's own launch options replace the project's whole:
+ * `test.use({ launchOptions: chromiumLaunchOptions({ args: ["--enable-precise-memory-info"] }) })`.
  */
 export function heapBytes(page: Page): Promise<number | null> {
   return page.evaluate(() => {

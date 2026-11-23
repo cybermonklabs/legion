@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig, devices, type Project, type ReporterDescription } from "@playwright/test";
 import { baseUrl } from "./api";
+import { chromiumLaunchOptions, guardChromiumLaunches, guardedChromium } from "./browser-namespace";
 import {
   clockFileOnCommandLine,
   clockProjectNames,
@@ -16,6 +17,12 @@ import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
 import { inVisualOrder, visualOrder } from "./visual-order";
+
+// Every process that loads this config, each worker included, refuses a Chromium launch that does
+// not start through e2e/browser-namespace.sh while the run's browser network is its own: a row's
+// or a file's `launchOptions` replace the project's whole, and one written without
+// `chromiumLaunchOptions` would otherwise start Chromium on the host's network with nothing said.
+guardChromiumLaunches(guardedChromium());
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -269,7 +276,7 @@ const multiprocessProjects = [
     name: "chromium",
     testMatch: harnessSignIn === "oidc" ? signInSpecs : multiprocessSpecs,
     testIgnore: harnessSignIn === "oidc" ? undefined : signInSpecs,
-    use: { ...devices["Desktop Chrome"] },
+    use: { ...devices["Desktop Chrome"], launchOptions: chromiumLaunchOptions() },
     retries: 0,
   },
 ];
@@ -292,6 +299,12 @@ const readersPlaceRows =
 const visualSpecs = /visual\.e2e\.ts$/;
 
 // Every project that runs as wide as the run's own workers.
+//
+// Each Chromium project that runs on this machine's own network launches through
+// `chromiumLaunchOptions` (e2e/browser-namespace.ts, which says why): outside CI its Chromium gets
+// a network namespace of its own, so a network the host adds or removes fails none of its
+// requests. The visual projects' Chromium has the container's, and Firefox and WebKit start as
+// they always have.
 const parallelProjects = [
   // The desktop half of the pair: every row of the suite except the two kinds this project is
   // not the one for. A `@phone-only` row has no desktop case to make, and the one row of
@@ -300,13 +313,17 @@ const parallelProjects = [
     name: "chromium",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
-    use: { ...devices["Desktop Chrome"] },
+    use: { ...devices["Desktop Chrome"], launchOptions: chromiumLaunchOptions() },
   },
   {
     name: "iphone",
     testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
     grep: phoneRowTagged,
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      launchOptions: chromiumLaunchOptions(),
+    },
   },
   // WebKit runs the rows a WebKit decision can change, and nothing else: it selects by the
   // `@webkit` tag, so each row it runs carries that tag and a comment naming the clause below it
@@ -443,7 +460,9 @@ const parallelProjects = [
     use: {
       ...devices["Desktop Chrome"],
       baseURL: plainHttpOrigin,
-      launchOptions: { args: [`--host-resolver-rules=MAP ${plainHttpHost} 127.0.0.1`] },
+      launchOptions: chromiumLaunchOptions({
+        args: [`--host-resolver-rules=MAP ${plainHttpHost} 127.0.0.1`],
+      }),
     },
   },
   // The keyed write path's sign-out rows on that same plain-HTTP origin, which is no secure
@@ -457,7 +476,9 @@ const parallelProjects = [
     use: {
       ...devices["Desktop Chrome"],
       baseURL: plainHttpOrigin,
-      launchOptions: { args: [`--host-resolver-rules=MAP ${plainHttpHost} 127.0.0.1`] },
+      launchOptions: chromiumLaunchOptions({
+        args: [`--host-resolver-rules=MAP ${plainHttpHost} 127.0.0.1`],
+      }),
     },
   },
 ] satisfies Project[];
@@ -530,7 +551,7 @@ const aloneProjects = [
     name: "chromium-alone",
     default: false,
     testMatch: clockSpecPattern,
-    use: { ...devices["Desktop Chrome"] },
+    use: { ...devices["Desktop Chrome"], launchOptions: chromiumLaunchOptions() },
     workers: 1,
     retries: 0,
   },
@@ -588,7 +609,14 @@ const aloneProjects = [
  * screenshot comparison that fails and then passes is a tolerance that is too tight or a page
  * that is not settled, and either one is the thing this layer exists to find, so it is reported
  * as a failure rather than as a flake.
+ *
+ * `timezoneId: "UTC"`, the zone `e2e/visual-seed.ts` keeps its corpus inside one day of. A page
+ * heads a list by the day of its own clock (`dayLabel`, web/src/features/activity/
+ * activity-model.ts), so the zone decides where that day ends, and a zone read from whatever
+ * environment ran the browser would let a run end it somewhere the seed did not look.
  */
+const visualTimezoneId = "UTC";
+
 const visualProjects = [
   {
     name: "visual",
@@ -602,7 +630,11 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    use: {
+      ...devices["Desktop Chrome"],
+      timezoneId: visualTimezoneId,
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -611,7 +643,11 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      timezoneId: visualTimezoneId,
+    },
     workers: 1,
     retries: 0,
   },
@@ -660,6 +696,7 @@ const stubProjects = [
     use: {
       ...devices["Desktop Chrome"],
       baseURL: stub.recording ? baseUrl : stubOrigin(),
+      launchOptions: chromiumLaunchOptions(),
     },
   },
   // The phone half, which `iphone` is to `chromium`, and exactly that: `stub` runs every stub
@@ -682,6 +719,7 @@ const stubProjects = [
       ...devices["iPhone 13"],
       browserName: "chromium" as const,
       baseURL: stub.recording ? baseUrl : stubOrigin(),
+      launchOptions: chromiumLaunchOptions(),
     },
   },
 ] satisfies Project[];

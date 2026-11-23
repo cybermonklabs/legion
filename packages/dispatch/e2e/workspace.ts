@@ -30,6 +30,10 @@ import { sessionIds } from "./session-ids";
 // folds), a direct message, a broadcast and an issue's Conversation. `e2e/workspace.e2e.ts`
 // proves each surface renders non-empty.
 
+/** How long the Archivist has been silent when the workspace is seeded: past the Agents page's
+ *  ten minutes (`QUIET_AFTER_MS`, `web/src/features/agents/agent-groups.ts`), so it is `Quiet`. */
+const ARCHIVIST_SILENT_MS = 20 * 60_000;
+
 // Four sessions carry no `last_seen`, which the fake Envoy answers as "live now" on every read,
 // so they never fall under `Quiet` however long an instance runs. The Archivist is the one that
 // must: twenty minutes stale already, it only grows staler after this module is evaluated.
@@ -71,7 +75,7 @@ export const workspaceSessions: FakeSession[] = [
   {
     capabilities: ["aside", "btw"],
     dir: "/workspaces/archivist",
-    last_seen: Date.now() - 20 * 60_000,
+    last_seen: Date.now() - ARCHIVIST_SILENT_MS,
     machine_id: "review-host",
     roles: ["archivist"],
     session_id: sessionIds.archivist,
@@ -79,6 +83,20 @@ export const workspaceSessions: FakeSession[] = [
   },
 ];
 export const workspaceSessionIds = workspaceSessions.map((session) => session.session_id);
+
+/** `workspaceSessions` with every heartbeat fixed against one instant, `at` in epoch
+ *  milliseconds: the four live sessions seen at `at` itself and the Archivist
+ *  `ARCHIVIST_SILENT_MS` before it. The visual review reads its pages on a clock pinned to `at`
+ *  (`e2e/visual.e2e.ts`), and a heartbeat read from the real clock - stamped on every read for a
+ *  session that carries none, or taken when this module was evaluated - would sit a run's own pace
+ *  away from that clock, so a relative label would read "just now" in a fast run and "in 1
+ *  minute" in a slow one. */
+export function workspaceSessionsSeenAt(at: number): FakeSession[] {
+  return workspaceSessions.map((session) => ({
+    ...session,
+    last_seen: session.session_id === sessionIds.archivist ? at - ARCHIVIST_SILENT_MS : at,
+  }));
+}
 
 const workflowSpec =
   "# Local testing workflow\n\nOne command, a seeded corpus, a signed-in browser.\n\n" +
@@ -112,7 +130,8 @@ export interface SeededWorkspace {
  *  decision block (`awaitDecisionBlock`), and at the end for the Inbox rows it declares
  *  (`awaitSeededInbox`), which every caller reads next. Each wait gets the whole of `boundMs`, the
  *  bound its caller's own checks use, so a browser row's seed gives up before the row's own
- *  clock ends it and hides the wait's message. The abort of `signal` stops the Inbox wait. */
+ *  clock ends it and hides the wait's message; `Number.POSITIVE_INFINITY` gives the waits no
+ *  bound of their own (`awaitFact`). The abort of `signal` stops either wait. */
 export async function seedWorkspace({
   boundMs,
   signal,
@@ -178,7 +197,8 @@ export async function seedWorkspace({
   const decisionBlockId = await awaitDecisionBlock(
     workflow.key,
     async () => (await getIssue(workflow.key)).open_asks ?? [],
-    boundMs
+    boundMs,
+    signal
   );
   await Promise.all([
     patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" }),

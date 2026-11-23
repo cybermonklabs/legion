@@ -9,7 +9,6 @@
 import AxeBuilder from "@axe-core/playwright";
 
 import { type AccessibilityExclusion, accessibilityExclusions } from "./accessibility-exclusions";
-import { expectTimeout } from "./expect-timeout";
 import { scannedRoutes, waitForRouteSettled } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { expect, test } from "./test";
@@ -64,8 +63,37 @@ for (const route of scannedRoutes) {
   test(`${route.name} has no serious or critical accessibility violation in light or dark`, async ({
     browser,
   }, testInfo) => {
-    // The seed's waits give up at the bound this row's own assertions use, inside the row's clock.
-    const seed = await seedReviewRoutes({ boundMs: expectTimeout });
+    // The seed's waits have no bound of their own (`awaitFact`), so a slow machine slows the seed
+    // and fails nothing. This row's own timeout is what ends a seed that never settles: the poll
+    // has no deadline of its own either, so it fails a quarter-second before that timeout,
+    // naming the seed, and the abort then stops the seed's waits, so none of its writes reaches
+    // the next row's database.
+    const stopSeed = new AbortController();
+    const seeding = seedReviewRoutes({
+      boundMs: Number.POSITIVE_INFINITY,
+      signal: stopSeed.signal,
+    });
+    let seedSettled = false;
+    seeding.then(
+      () => {
+        seedSettled = true;
+      },
+      () => {
+        seedSettled = true;
+      }
+    );
+    try {
+      await expect
+        .poll(() => seedSettled, {
+          intervals: [100],
+          message: "the review corpus (seedReviewRoutes) did not finish seeding",
+          timeout: 0,
+        })
+        .toBe(true);
+    } finally {
+      if (!seedSettled) stopSeed.abort();
+    }
+    const seed = await seeding;
     await withAlice(browser, async (page) => {
       await page.goto(route.path(seed));
       // `styles.css` eases `color`, `background-color` and `border-color` over 150ms on every
