@@ -167,6 +167,21 @@ const stressSessions: FakeSession[] = Array.from({ length: 12 }, (_, index) => (
   },
 }));
 
+/** A session that takes only Steer, which no broadcast defaults to, so selecting every agent
+ *  excludes it, and whose title is as long as a lane's gets: the composer's chip for it carries
+ *  the title and the reason it is left out, which must wrap or shrink inside the composer at
+ *  every width rather than scroll it sideways. It runs on a machine of its own, in no pane, so
+ *  the machine pages draw what they drew. */
+const excludedLongSession: FakeSession = {
+  capabilities: ["steer"],
+  dir: "/workspaces/legion/INFRA-5200-layout-rule-excluded",
+  machine_id: "layout-stress-steer-host",
+  roles: [],
+  session_id: stressSessionId(13),
+  title:
+    "Legion reviewer · INFRA-5200 · a session whose title runs long enough to fill the broadcast composer's chip at a tablet width",
+};
+
 function sessionActor(session: FakeSession): { actor: Actor; as: "agent" } {
   return {
     actor: { id: session.session_id, kind: "session", origin: { session_title: session.title } },
@@ -240,7 +255,7 @@ export async function seedLayoutStress({
 }): Promise<LayoutSeed> {
   const review = await seedReviewRoutes({ boundMs });
   const issue = review.issue;
-  await setLiveSessions([...workspaceSessions, ...stressSessions]);
+  await setLiveSessions([...workspaceSessions, ...stressSessions, excludedLongSession]);
   await seedGithub(issue);
   await putArchitectureSource("CORE", { branch: "main", repo: ARCHITECTURE_REPO });
   const source = await syncArchitectureSource("CORE", ARCHITECTURE_REPO);
