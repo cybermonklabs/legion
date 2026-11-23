@@ -2753,6 +2753,8 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		if err := m.mayForget(ctx, "retry"); err != nil {
 			return err
 		}
+		// lastRefusal is the provider's words for the newest refused turn, which the claim stores
+		// for the reason LastRefusal gives.
 		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
 			"refusedRun", m.claim.RefusedRun(), "lastRefusal", m.claim.LastRefusal())
 		// The failure the claim carries is the fuller answer where it has one — a provider error
@@ -2782,10 +2784,11 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // role never changes, so the refusal cannot race the decision it guards.
 //
 // It relaunches the session the claim records, unless the retry asks for a new one
-// (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
-// launch budget: retry forgets the session in either case, so the launch spawns a fresh agent,
-// because resuming a session whose turns the provider refused would be refused again. A launch
-// whose session no session store holds any more starts a fresh agent too (startFresh).
+// (RequestOperatorRetry.FreshSession) or the provider refused that session's last
+// launch_failure_limit turns in a row: retry forgets the session in either case, so the launch
+// spawns a fresh agent, because resuming a session whose turns the provider refused would be
+// refused again. A launch whose session no session store holds any more starts a fresh agent too
+// (startFresh).
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 	if m.claim.Role == claim.RoleController {
 		return &RefusedError{State: m.claim.State, Request: "retry",

@@ -19,6 +19,7 @@ import type {
   SessionContext,
 } from "@legion/pi-shared/pi-types";
 import { classifyProviderError, classifyTurnEnd } from "@legion/pi-shared/provider-refusal";
+import { turnGoesOn } from "./turn-end";
 
 /**
  * The session's model across a provider's refusal (INFRA-956 R1): a content filter that refuses a
@@ -458,12 +459,10 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
   };
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
-    // The host is about to go on with this turn itself, with a retry or a hook's continuation, so
-    // it has not settled; acting on it would step the session down twice
-    // (`session/agent-session.ts:5902-5910` at the pinned tag). An end that waits only on a
-    // background job's result (`awaitingAsyncWork`) has settled: the host reaches it only after
-    // each of its own retries and continuations has declined the turn (`:6012-6015`), and the
-    // job's result starts the next turn on the model this end leaves the session on.
+    // The host is about to go on with this turn itself (`turnGoesOn`), so it has not settled;
+    // acting on it would step the session down twice (`session/agent-session.ts:5902-5910` at the
+    // pinned tag). An end that waits only on a background job's result has settled, and the job's
+    // result starts the next turn on the model this end leaves the session on.
     //
     // One window stays open there. The host does not wait for this handler (it fires the
     // extensions' `agent_end` without awaiting them, `:6560`), and it picks each request's model
@@ -477,7 +476,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     // `setModel`), not a bound; a `setModel` that waits on the network (a local backend's model
     // metadata) can be slow. What would close it is in the host: awaiting the extensions'
     // `agent_end` handlers before it starts the run a background job's result asks for.
-    if (event.willContinue === true && event.awaitingAsyncWork !== true) return;
+    if (turnGoesOn(event)) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;
     const outcome = classifyTurnEnd(event);

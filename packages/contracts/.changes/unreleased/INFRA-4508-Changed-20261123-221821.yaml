@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `LegionTurnOutcomeResponse`, the answer of `POST /legion/v1/claims/turn-outcome`, keeps its
+  `failed` field, and a daemon of this release always answers it false: a run of turns the
+  provider refused fails no claim. The `turn-outcome.json` fixture carries `failed: false` to
+  match. The schema itself is unchanged, so a plugin already deployed still reads the answer.
+time: 2026-11-23T22:18:21.976763556Z
+custom:
+  Issue: INFRA-4508

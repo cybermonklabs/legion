@@ -93,7 +93,10 @@ func (c Claim) RefusedRun() int {
 
 // LastRefusal is what the provider said about the newest refused turn the claim keeps, and "" when
 // it keeps none or the provider said nothing. The retry that leaves a refused session behind logs
-// it (retry).
+// it (retry). The words are stored for more than that line: a turn the plugin starts itself, a
+// phase reminder among them, has no prompt result, so its report is the daemon's one record of
+// what the provider answered that turn, and dispatch://INFRA-4508's R4 is to judge such a turn by
+// that report.
 func (c Claim) LastRefusal() string {
 	for i := len(c.TurnOutcomes) - 1; i >= 0; i-- {
 		if c.TurnOutcomes[i].Refused {
@@ -116,9 +119,7 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // clear sends the task to the same session again on the ladder, with no attempt limit, and tells
 // the project's controller once at providerErrorRunTold turns in a row; one that cannot clear
 // fails the claim at once and holds the issue for its architect. A report cannot tell the two
-// apart, so it decides neither. Failing the claim here at the launch failure limit failed it at
-// three refusals by default, before the controller's notice at six, and ended the ladder that
-// exists to keep such a claim. The run the report leaves decides only whether a retry starts a
+// apart, so it decides neither. The run the report leaves decides only whether a retry starts a
 // new session (freshSession).
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)

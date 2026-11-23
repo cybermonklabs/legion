@@ -113,9 +113,9 @@ func (r *turnReports) turnEnded(refusal string) {
 }
 
 // post makes one report and logs what the daemon made of it: the run of refused turns the claim's
-// reports now end with, and whether this one failed the claim, which is the one place the pane
-// shows the count being made. A report the daemon refuses is logged and nothing else: the turn is
-// over, and the bridge has nothing to do about it.
+// reports now end with, which is the one place the pane shows the count being made. A report the
+// daemon refuses is logged and nothing else: the turn is over, and the bridge has nothing to do
+// about it.
 func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -154,8 +154,7 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	case response.StatusCode/100 != 2:
 		r.log.Printf("the daemon refused the outcome of turn %d (%s): %s", request.Sequence, request.Outcome, answer)
 	case decoded.Failed:
-		// Only a daemon from before dispatch://INFRA-4508 answers this: a run of refused turns
-		// fails no claim now (claim.TurnOutcomeResponse).
+		// claim.TurnOutcomeResponse says which daemon sets Failed.
 		r.log.Printf("the daemon failed this claim: its provider refused %d turns in a row", decoded.RefusedRun)
 	case decoded.RefusedRun > 0:
 		r.log.Printf("reported turn %d as %s; the daemon counts %d refused turns in a row", request.Sequence, request.Outcome, decoded.RefusedRun)

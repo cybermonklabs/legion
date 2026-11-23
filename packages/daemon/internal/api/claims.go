@@ -286,7 +286,7 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run := m.Claim().RefusedRun()
-	// A report fails no claim, so the answer's `failed` is always false (claim.TurnOutcomeResponse).
+	// claim.TurnOutcomeResponse says what the answer's Failed holds.
 	s.writeAnswer(w, r, AnswerTurnOutcome, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run})
 }
 
@@ -314,7 +314,8 @@ func (s *server) turnOutcomeCaller(w http.ResponseWriter, r *http.Request, req c
 // launch the claim has moved past is refused, and so is a report for any generation but that
 // launch's. A pane left running from a replaced launch — one the daemon could not stop, one whose
 // container outlived its stop — would otherwise add its provider's refusals to the run the daemon
-// counts for the pane that replaced it, and fail a claim whose own agent is working.
+// counts for the pane that replaced it, and a retry of that claim would leave the replacement's
+// session behind for refusals it never had (supervise's freshSession).
 func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, caller claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, bool) {
 	launch, known, err := s.bootTokens.Resolve(r.Context(), caller.BootToken)
 	if err != nil {

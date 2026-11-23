@@ -268,8 +268,10 @@ func (r *freshSessionRig) wantsHeldForTheArchitect() {
 // makes: its producer's report of the turn, refused, and the result of the prompt the turn ran,
 // which names the status and is what decides (supervise's providerErrored). The claim keeps its
 // session and the task it owes, which are the architect's to decide, and the task is not sent
-// again. The supervise tests of the same decision have no workflow, so this is where the hold is
-// held.
+// again. The supervise tests of the same decision have no workflow, and the retry test below reads
+// the same hold after a run of refused turns that reaches launch_failure_limit, so this is the one
+// test in which a single refused turn holds the issue, with the claim's task kept and sent no
+// second time.
 func TestARefusal400HoldsTheIssueForItsArchitect(t *testing.T) {
 	t.Parallel()
 	rig := newFreshSessionRig(t)

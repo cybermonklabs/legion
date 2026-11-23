@@ -3,6 +3,7 @@ import { type LegionDaemonClient, retryWhileDaemonRestarts } from "@legion/pi-sh
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import { assistantRefusal } from "@legion/pi-shared/phase-stall";
 import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
+import { turnGoesOn } from "./turn-end";
 
 /**
  * The Oh My Pi half of the turn-outcome report (INFRA-714). Every turn this pane ends — one the
@@ -61,19 +62,13 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       const refusal = assistantRefusal(
         event.messages?.findLast((message) => message.role === "assistant")
       );
-      // A refusal Oh My Pi goes on from ends no turn: the host has already scheduled a retry or the
-      // next model of its fallback chain (`willContinue`), and the end of that attempt is the
-      // turn's end, reported in its turn. Counted, each fallback step was one more refused turn of
-      // the run (dispatch://INFRA-4508). An end that waits only on a background job's result
-      // (`awaitingAsyncWork`) has settled, as src/model-fallback.ts reads it, so it is reported; so
-      // is an answered end the host goes on from, which ends the run of refusals before it.
-      if (
-        refusal !== undefined &&
-        event.willContinue === true &&
-        event.awaitingAsyncWork !== true
-      ) {
-        return;
-      }
+      // A refusal Oh My Pi goes on from ends no turn (`turnGoesOn`): the host has already scheduled
+      // a retry or the next model of its fallback chain, and the end of that attempt is the turn's
+      // end, reported in its turn. Counted, each fallback step was one more refused turn of the run
+      // (dispatch://INFRA-4508). An end that waits only on a background job's result has settled,
+      // so it is reported; so is an answered end the host goes on from, which ends the run of
+      // refusals before it.
+      if (refusal !== undefined && turnGoesOn(event)) return;
       // Taken before the first await, so two turns can never take the same number nor take them
       // out of the order they ended in. A generation this producer has not counted within starts
       // the count again, as a fresh launch's does.

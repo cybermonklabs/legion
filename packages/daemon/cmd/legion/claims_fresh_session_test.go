@@ -13,6 +13,56 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
+// A worker whose agent registered a session and was then stopped still records that session, and
+// `legion claims retry --fresh-session` starts the claim in a new session rather than resuming
+// it: the runtime is asked to spawn, with no transcript to resume. A retry without the flag
+// resumes the session a stopped claim records, so the new session here is the flag's doing. The
+// claim is a phase worker's because the daemon refuses the operator's stop of the tree's root
+// claim.
+func TestClaimsRetryFreshSessionStartsAStoppedClaimInANewSession(t *testing.T) {
+	d := newOperatorDaemon(t)
+	d.succeed(d.spawnArgs()...)
+	d.ready(architectClaim)
+	const workerClaim = legionclaim.Token("legion-legion-legion-209-implementer")
+	d.succeed(append(append([]string{"spawn"}, d.reach()...), "--tree", "LEGION-208", "--issue", "LEGION-209",
+		"--role", "implementer", "--prompt-file", writeFile(t, "implementer.md", "Implement."))...)
+	d.ready(workerClaim)
+
+	stopped := d.succeed(append(append([]string{"stop"}, d.reach()...), "--claim", string(workerClaim))...)
+	if !strings.Contains(stopped, " retired ") {
+		t.Fatalf("stop stdout = %q, want the worker retired", stopped)
+	}
+	m, ok := d.claimSupervisor.Machine(workerClaim)
+	if !ok {
+		t.Fatalf("the daemon supervises no %s", workerClaim)
+	}
+	if c := m.Claim(); c.Session != "ses_"+string(workerClaim) || c.SessionFile == "" {
+		t.Fatalf("the stopped worker records session %q (%q), want the one its agent registered", c.Session, c.SessionFile)
+	}
+	spawns, resumes := len(d.runtime.CallsOf("Spawn")), len(d.runtime.CallsOf("Resume"))
+
+	out := d.succeed(append(append([]string{"retry"}, d.reach()...), "--claim", string(workerClaim), "--fresh-session")...)
+
+	seen := d.lastOperatorRequest()
+	wantOperatorRequest(t, seen, http.MethodPost, "/legion/v1/operator/claims/"+string(workerClaim)+"/retry")
+	if want := `{"freshSession":true}`; string(seen.body) != want {
+		t.Fatalf("retry --fresh-session sent %q, want %q", seen.body, want)
+	}
+	if !strings.Contains(out, " launching ") {
+		t.Fatalf("retry --fresh-session stdout = %q, want the claim launching again", out)
+	}
+	if got := len(d.runtime.CallsOf("Resume")); got != resumes {
+		t.Fatalf("the runtime saw %d resumes, want the stopped session left alone", got-resumes)
+	}
+	started := d.runtime.CallsOf("Spawn")
+	if len(started) != spawns+1 {
+		t.Fatalf("the runtime saw %d spawns, want the retry's fresh start", len(started)-spawns)
+	}
+	if file := started[len(started)-1].Spec.ResumeSessionFile; file != "" {
+		t.Fatalf("the fresh start resumes %q, want a session of its own", file)
+	}
+}
+
 // `legion claims retry --fresh-session` sends the one body the retry route reads,
 // `{"freshSession":true}`, and the claim starts a new session rather than resuming the one it
 // recorded: what a claim whose provider refused its session needs, since resuming it would be

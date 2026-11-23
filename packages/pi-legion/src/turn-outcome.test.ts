@@ -180,6 +180,20 @@ test("a refusal Oh My Pi goes on from reports nothing and spends no sequence", a
   expect(posted.map((body) => [body.sequence, body.outcome])).toEqual([[1, "refused"]]);
 });
 
+// A fallback walk whose next model answers is one turn, and an answered one: the refused step
+// reports nothing, so the one report the turn makes is clean, and it ends the daemon's run of
+// refusals rather than adding one to it.
+test("a refusal Oh My Pi goes on from, then an answered end, reports one clean turn", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, step);
+  await report(SESSION, clean);
+
+  expect(posted).toHaveLength(1);
+  expect(posted[0]).toMatchObject({ sequence: 1, outcome: "clean" });
+  expect(posted[0]).not.toHaveProperty("message");
+});
+
 // The host also goes on from an answered turn, as when the phase reminder continues it: that turn
 // ended clean, and it ends the run of refusals before it.
 test("an answered turn the host goes on from is reported clean", async () => {

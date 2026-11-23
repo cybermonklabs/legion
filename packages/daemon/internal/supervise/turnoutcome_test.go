@@ -58,6 +58,22 @@ func (h *harness) refusedTurn(sequence uint64, status int, message string) {
 	h.errorTurn(StreamPromptResult{Error: message, HTTPStatus: status})
 }
 
+// refusedUntilA400 is a working claim whose provider refused launch_failure_limit turns in a row:
+// each but the last with a 529, which can clear, so the ladder sends the task again after it, and
+// the last with a 400, which cannot clear and fails the claim. It answers the claim's harness and
+// that limit.
+func refusedUntilA400(t *testing.T) (*harness, int) {
+	t.Helper()
+	h := workingClaim(t)
+	limit := testLimits().LaunchFailures
+	for turn := 1; turn < limit; turn++ {
+		h.refusedTurn(uint64(turn), 529, "overloaded_error: Overloaded")
+		h.climbs(turn, promptRetryDelay(turn))
+	}
+	h.refusedTurn(uint64(limit), 400, "invalid_request_error: messages: unexpected role")
+	return h, limit
+}
+
 // A run of refused turns fails no claim, however long it is (dispatch://INFRA-4508). Each turn
 // here ends as an Oh My Pi worker's turn ends when its provider is overloaded: the producer
 // reports it refused, and the prompt's result names a 529, an error that can clear. Twenty-five
@@ -113,14 +129,7 @@ func TestARunOfRefusedTurnsThatCanClearHasNoAttemptLimit(t *testing.T) {
 // refusal in a row: the claim's failure names the status the prompt's result gave, not a run of
 // refused turns, the claim keeps the task it owes for its architect, and nothing is sent again.
 func TestARefusedTurnWhoseErrorCannotClearFailsTheClaimAtOnce(t *testing.T) {
-	h := workingClaim(t)
-	limit := testLimits().LaunchFailures
-	for turn := 1; turn < limit; turn++ {
-		h.refusedTurn(uint64(turn), 529, "overloaded_error: Overloaded")
-		h.climbs(turn, promptRetryDelay(turn))
-	}
-
-	h.refusedTurn(uint64(limit), 400, "invalid_request_error: messages: unexpected role")
+	h, limit := refusedUntilA400(t)
 
 	h.wantState(StateFailed)
 	c := h.claim()
@@ -252,13 +261,7 @@ func TestTheRefusedRunCarriesAcrossAGenerationThatResumesTheSameSession(t *testi
 // claim here fails at its last refused turn, whose provider error cannot clear. The claim spawns
 // instead of resuming, and the new session starts with a fresh run.
 func TestTheRetryOfAClaimItsProviderRefusedStartsANewSession(t *testing.T) {
-	h := workingClaim(t)
-	limit := testLimits().LaunchFailures
-	for turn := 1; turn < limit; turn++ {
-		h.refusedTurn(uint64(turn), 529, "overloaded_error: Overloaded")
-		h.climbs(turn, promptRetryDelay(turn))
-	}
-	h.refusedTurn(uint64(limit), 400, "invalid_request_error: messages: unexpected role")
+	h, limit := refusedUntilA400(t)
 	h.wantState(StateFailed)
 	h.wantRefusedRun(limit)
 	spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))

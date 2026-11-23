@@ -182,10 +182,12 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 // pane's log saying the daemon has counted three refusals in a row is the one place an operator
 // sees the count being made.
 //
-// Failed is always false. A daemon from before dispatch://INFRA-4508 set it when the report took
-// the run to the launch failure limit and failed the claim; a run of refused turns fails no claim
-// now, and the result of the prompt the turn ran decides what its provider error does. The field
-// stays so that a plugin already deployed, whose reader requires it, still reads the answer.
+// Failed is always false: a report fails no claim (dispatch://INFRA-4508). A daemon from before
+// that change set it when the report took the run to the launch failure limit and failed the
+// claim. The field stays so that a plugin already deployed, whose reader requires it, still reads
+// the answer. This is where the rule is stated, with its TypeScript mirror
+// (LegionTurnOutcomeResponse in packages/contracts/src/legion-api.ts); every other reader of
+// Failed points here.
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`
