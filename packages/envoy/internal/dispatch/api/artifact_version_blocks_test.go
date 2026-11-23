@@ -109,6 +109,46 @@ func TestAVersionsBlocksIndexTheMarkdownItsAnswerCarries(t *testing.T) {
 	}
 }
 
+// A plan task names the role of its sub-owner in owner and the task it is a part of in part_of,
+// and Dispatch keeps each as the block writes it: a version read gives part_of whole, the
+// reference of a task's block as the plan writes it, and a word that names no block too, since
+// the daemon resolves each reference itself and refuses one that names no task of its plan.
+func TestAVersionReadCarriesOwnerAndPartOfWhole(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createArtifactIssue(t, handler)
+	const reference = "dispatch://I-1/artifact/plan-md#b-f"
+	plan := createIssueDocument(t, handler, issue.Key, "plan.md",
+		":::plan_task{#f owner=\"architect\"}\nThe whole task.\n:::\n\n"+
+			":::plan_task{#f1 part_of=\""+reference+"\" steps=\"implementer\"}\nOne part of it.\n:::\n\n"+
+			":::plan_task{#f2 part_of=\"no-such-task\" steps=\"implementer\"}\nAnother part.\n:::\n")
+	answer := readVersionBlocks(t, handler, "/api/v1/artifacts/"+plan.ID+"/versions/1?blocks=true")
+	attributes := map[string]map[string]string{}
+	for _, block := range *answer.Blocks {
+		attributes[block.ID] = map[string]string{}
+		for _, attribute := range block.Attributes {
+			attributes[block.ID][attribute.Name] = attribute.Value
+		}
+	}
+	for id, want := range map[string]map[string]string{
+		"f":  {"owner": "architect"},
+		"f1": {"part_of": reference, "steps": "implementer"},
+		"f2": {"part_of": "no-such-task", "steps": "implementer"},
+	} {
+		got, listed := attributes[id]
+		if !listed {
+			t.Fatalf("version 1 lists no block %s among %+v", id, *answer.Blocks)
+		}
+		for name, value := range want {
+			if got[name] != value {
+				t.Fatalf("block %s carries %s = %q, want %q whole (its attributes: %+v)", id, name, got[name], value, got)
+			}
+		}
+	}
+	if _, named := attributes["f"]["part_of"]; named {
+		t.Fatalf("block f carries part_of %q, which its block does not write", attributes["f"]["part_of"])
+	}
+}
+
 // createIssueDocument uploads a markdown document onto an issue as version 1.
 func createIssueDocument(t *testing.T, handler http.Handler, issueKey, name, content string) model.Artifact {
 	t.Helper()

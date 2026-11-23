@@ -1897,10 +1897,12 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	if err != nil {
 		return err
 	}
-	// A catch-up goes to the architect of its own issue and to no other (noticeArchitect), so it is
-	// judged against that architect's claim and that issue's generation: a child's catch-up is
-	// superseded by the child's architect's later launch, never by its tree root's.
-	architect, err := noticeArchitect(tree.project, tree.issues, issue, payload, r.holdsItsRole)
+	// The notice goes to the claim it names, else to the architect that owns its issue
+	// (noticeRecipient). A catch-up names none and goes to the architect of its own issue and to
+	// no other (noticeArchitect), so it is judged against that architect's claim and that issue's
+	// generation: a child's catch-up is superseded by the child's architect's later launch, never
+	// by its tree root's.
+	architect, err := noticeRecipient(tree.project, tree.issues, issue, payload, r.holdsItsRole)
 	if err != nil {
 		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
 	}

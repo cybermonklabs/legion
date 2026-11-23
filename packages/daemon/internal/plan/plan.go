@@ -12,6 +12,7 @@ package plan
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -97,6 +98,11 @@ type Deployment struct{ Roles map[string]RoleDef }
 // whole plan, and the reason as the owner reads it.
 type Refusal struct{ Task, Reason string }
 
+// Giver is who gives a version of a plan: "" for the owner of the issue, an architect of its
+// tree, else the id of the task whose sub-owner gives it. Each may change only the tasks it
+// writes (OwnershipRefusals, WriterOf).
+type Giver string
+
 // BuiltinRoles is Legion's own roles of a step, each with its type and the phase it runs as: the
 // planner, the implementer, the tester, the reviewer and acceptance, the owner's reading of the
 // finished work. The architect, the merger and the controller are no roles of a step. The answer
@@ -150,6 +156,31 @@ func StepsOf(t Task, defaults []Step) []Step {
 		return defaults
 	}
 	return nil
+}
+
+// PartsOf is the ids of the tasks of p that are parts of task, the tasks whose PartOf is task, in
+// the order of their ids; none where task has no part.
+func (p Plan) PartsOf(task string) []string {
+	var parts []string
+	for _, t := range p.Tasks {
+		if t.PartOf == task {
+			parts = append(parts, t.ID)
+		}
+	}
+	slices.Sort(parts)
+	return parts
+}
+
+// WriterOf is the writer of task in p, who alone changes it: "" for a task of the top level,
+// which the owner of the issue writes, else its PartOf, the task whose sub-owner writes it. A
+// task p does not hold answers "".
+func (p Plan) WriterOf(task string) string {
+	for _, t := range p.Tasks {
+		if t.ID == task {
+			return t.PartOf
+		}
+	}
+	return ""
 }
 
 // Line is the phases a task walks in this release, where each step runs as the phase of its

@@ -361,6 +361,11 @@ type Notice struct {
 	Version int         `json:"version,omitempty"`
 	Reason  string      `json:"reason,omitempty"`
 	Topic   string      `json:"topic,omitempty"`
+	// To is the claim the notice goes to, where the workflow decides it from the task the notice
+	// is about: the owner of a part's task, which is that task's sub-owner, or a task's own
+	// sub-owner. Empty, the notice goes to the architect that owns its issue, as every notice
+	// that names no claim does (the daemon's noticeRecipient).
+	To claim.Token `json:"to,omitempty"`
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
 	// in, the copy of that hold the controller reads, and the worker-died that names the death

@@ -515,9 +515,10 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 }
 
 // releaseWaiting makes due at once every notice waiting for a later attempt that goes to one of
-// architects now (noticeArchitect), once their claims are ready: each agent said it can be
-// prompted (supervise.SaidReady), having booted or taken its Envoy role back. A boot's ready comes
-// before the name — the session claims its role at its first turn — so a notice this releases, and
+// architects now (noticeRecipient: the claim the notice names, else the architect that owns its
+// issue), once their claims are ready: each agent said it can be prompted (supervise.SaidReady),
+// having booted or taken its Envoy role back. A boot's ready comes before the name — the session
+// claims its role at its first turn — so a notice this releases, and
 // the catch-up that same ready writes, can still be refused no_holder and wait the outbox's own
 // backoff (record.RetryBackoff, one second doubling to a cap of 64) until the name is taken. What
 // the release ends is the wait for the architect, not the wait for the role. That covers a copy
@@ -563,7 +564,7 @@ func (r *outbox) releaseWaiting(ctx context.Context, architects ...claim.Token) 
 			if err != nil {
 				return err
 			}
-			if owner, err := noticeArchitect(route.project, route.issues, issue, notice, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
+			if owner, err := noticeRecipient(route.project, route.issues, issue, notice, r.holdsItsRole); err == nil && slices.Contains(architects, owner) {
 				released = append(released, row)
 			}
 		}

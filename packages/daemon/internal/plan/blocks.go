@@ -107,6 +107,71 @@ func ChangedTasks(held, next Plan) []string {
 	return changed
 }
 
+// OwnershipRefusals is why giver may not give next over held: one reason for each task next
+// changes (ChangedTasks) whose writer (WriterOf) is not giver, in held where held has the task or
+// in next where next has it, in the order of the ids, and none when giver writes each. The owner
+// of the issue writes the tasks of the top level, and the sub-owner of a task writes its parts,
+// so the owner's reason says what it can do instead. A first version is compared with an empty
+// held plan, so the owner's first version that writes a part is refused as a later one is. A task
+// that next removes together with the task it is a part of, directly or through its tasks, is no
+// change of that task's parts but goes with it, since a part cannot outlive its task, so it is
+// refused nothing.
+func OwnershipRefusals(held, next Plan, giver Giver) []Refusal {
+	before := make(map[string]Task, len(held.Tasks))
+	for _, task := range held.Tasks {
+		before[task.ID] = task
+	}
+	after := make(map[string]bool, len(next.Tasks))
+	for _, task := range next.Tasks {
+		after[task.ID] = true
+	}
+	var refusals []Refusal
+	for _, id := range ChangedTasks(held, next) {
+		task, inHeld := before[id]
+		if !after[id] && removedWithItsTask(task, before, after) {
+			continue
+		}
+		var writers []string
+		if inHeld {
+			writers = append(writers, held.WriterOf(id))
+		}
+		if after[id] {
+			writers = append(writers, next.WriterOf(id))
+		}
+		for _, writer := range writers {
+			if writer == string(giver) {
+				continue
+			}
+			reason := fmt.Sprintf("task %s is not a part of task %s, and the sub-owner of task %s changes only the parts of %s.", id, giver, giver, giver)
+			if giver == "" {
+				reason = fmt.Sprintf("task %s is a part of task %s, and only the sub-owner of task %s changes the parts of %s. "+
+					"Leave the parts of %s to its sub-owner, which writes them, or write this work as tasks of your own, with needs and no part_of.",
+					id, writer, writer, writer, writer)
+			}
+			refusals = append(refusals, Refusal{Task: id, Reason: reason})
+			break
+		}
+	}
+	return refusals
+}
+
+// removedWithItsTask says whether a held task that the next version lacks is a part of a task
+// the next version lacks too, directly or through its tasks: before is the held plan's tasks by
+// id, and after the ids of the next version's.
+func removedWithItsTask(task Task, before map[string]Task, after map[string]bool) bool {
+	seen := map[string]bool{}
+	for above := task.PartOf; above != "" && !seen[above]; above = before[above].PartOf {
+		seen[above] = true
+		if _, held := before[above]; !held {
+			return false
+		}
+		if !after[above] {
+			return true
+		}
+	}
+	return false
+}
+
 // sameBlock says whether two tasks of one id say the same thing.
 func sameBlock(a, b Task) bool {
 	return a.Text == b.Text && a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&

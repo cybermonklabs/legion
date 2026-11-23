@@ -129,12 +129,13 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 	return route.issues[key], route, nil
 }
 
-// earlierNoticeFor is the oldest of tree's earlier notices that goes to architect as the claims
+// earlierNoticeFor is the oldest of tree's earlier notices that goes to recipient as the claims
 // run now — its id and the moment it is due — or 0 and the zero moment when there is none. Each
-// earlier notice's architect is resolved again rather than recorded when it was held, since a
+// earlier notice's recipient is resolved again rather than recorded when it was held, since a
 // sub-architect can start or end while it waits, and by the rule its own publish follows
-// (noticeArchitect). An earlier row whose architect cannot be resolved is no architect's, so it
-// holds back no later notice; it finishes on its own attempt (notice).
+// (noticeRecipient), so a notice held for the claim it names holds back no notice of the
+// architect, nor the other way round. An earlier row whose recipient cannot be resolved is no
+// claim's, so it holds back no later notice; it finishes on its own attempt (notice).
 //
 // The moment is what the row behind it waits for: an earlier row the wake pacing holds is due
 // minutes out — at the moment the pacing reserved for a catch-up (record.Notice.PacedAt), or, for
@@ -142,7 +143,7 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 // whichever comes first (parkedWait) — and the row behind it runs once, then (deliverNotice's
 // wait.Until), rather than climbing its backoff to it. So a park that ends before its turn holds
 // the row behind it for at most the bound as well.
-func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.Token) bool) (int64, time.Time) {
+func earlierNoticeFor(tree treeSnapshot, recipient claim.Token, runs func(claim.Token) bool) (int64, time.Time) {
 	for _, other := range tree.earlier {
 		payload, err := record.DecodeOutboxPayload(other)
 		if err != nil {
@@ -156,7 +157,7 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 		if !ok {
 			continue
 		}
-		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err == nil && owner == architect {
+		if to, err := noticeRecipient(tree.project, tree.issues, issue, notice, runs); err == nil && to == recipient {
 			return other.ID, other.NextAt
 		}
 	}
@@ -173,15 +174,26 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 // suspended rather than ended. A root's catch-up gets no such check: besides the endings every
 // notice has, catchUpSuperseded, stoppedWithTree and architectEnded end it. Every other notice
 // goes to the architect that owns its issue (record.OwningArchitect), by runs, from the issue's
-// parent for a notice the architect above it must hear (record.NoticeStartsAtParent). The
-// publish (deliverNotice), the fence (earlierNoticeFor) and a ready's release (releaseWaiting)
-// all ask this, so each finds a notice the same architect. project is the tree's claim project
-// token.
+// parent for a notice the architect above it must hear (record.NoticeStartsAtParent). A notice
+// that names the claim it goes to is not this function's (noticeRecipient). project is the
+// tree's claim project token.
 func noticeArchitect(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
 	if notice.CatchUp != nil {
 		return claim.NewToken(project, issue.Key, claim.RoleArchitect)
 	}
 	return record.OwningArchitect(project, tree, issue, record.NoticeStartsAtParent(notice.Kind, notice.Role), runs)
+}
+
+// noticeRecipient is the claim notice, of issue in tree, goes to: the claim the notice names
+// (record.Notice.To), which the workflow decided from the task the notice is about, else the
+// architect noticeArchitect finds. The publish (deliverNotice), the fence (earlierNoticeFor) and
+// a ready's release (releaseWaiting) all ask this, so each finds a notice the same recipient.
+// project is the tree's claim project token.
+func noticeRecipient(project string, tree map[string]record.Issue, issue record.Issue, notice record.Notice, runs func(claim.Token) bool) (claim.Token, error) {
+	if notice.To != "" {
+		return notice.To, nil
+	}
+	return noticeArchitect(project, tree, issue, notice, runs)
 }
 
 // holdsRole is whether held's claim keeps its role through the decision in flight: the record's

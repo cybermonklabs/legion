@@ -278,9 +278,10 @@ func manifestAsOf(t *testing.T, version int) []byte {
 // (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
 // repairing or rebuilding the document. The name says "this version" from when version 3 was the
 // manifest's; the Verification document's check names the row, so it keeps its name, and the
-// elements versions 4 and 5 add each have a row of their own
+// elements versions 4, 5 and 9 add each have a row of their own
 // (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree,
-// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour).
+// TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour,
+// TestABuildOneVersionBackRefusesOwnerAndPartOf).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
 	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
@@ -413,5 +414,65 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 	}
 	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
 		t.Errorf("a build at version %d reading a stored plan task carrying steps = %v, want ErrUnknownElement", before, err)
+	}
+}
+
+// The plan_task block's owner and part_of attributes, which manifest version 9 adds (the role of
+// a task's sub-owner, and the task that a task is a part of), are staged by their own numbers in
+// the same way. Each is a string Dispatch keeps as written: owner names a role, and part_of names
+// a task as the plan writes it, the reference of a plan_task block of the same document or that
+// block's id, which the daemon resolves itself. This build reads and writes a plan task carrying
+// either, whole; a build at version 8 - the release before it - declares the plan_task block but
+// neither attribute, so it creates none carrying one and reads a stored plan task carrying one as
+// an element it does not know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT).
+func TestABuildOneVersionBackRefusesOwnerAndPartOf(t *testing.T) {
+	const adds = 9
+	for _, name := range []string{"owner", "part_of"} {
+		attribute := Element{Kind: AttributeElement, Block: "plan_task", Name: name}
+		versions, declared := attribute.Versions()
+		if !declared || versions.Since != adds || versions.CreatableSince != adds {
+			t.Fatalf("attribute %s of plan_task = %+v, %t; want since and creatable_since %d", name, versions, declared, adds)
+		}
+	}
+	if SchemaVersion() < adds {
+		t.Fatalf("SchemaVersion() = %d, below the version %d that adds owner and part_of", SchemaVersion(), adds)
+	}
+	const owner = ":::plan_task{#b-f owner=\"architect\"}\nThe whole task.\n:::\n"
+	const part = ":::plan_task{#b-f1 steps=\"implementer\" part_of=\"dispatch://ACME-1/artifact/plan-md#b-f\"}\nOne part of it.\n:::\n"
+	const neither = ":::plan_task{#b-h steps=\"implementer\"}\nAfter it.\n:::\n"
+	document := owner + "\n" + part
+	stored, err := Parse(document)
+	if err != nil {
+		t.Fatalf("this build reads a plan task carrying owner and one carrying part_of: %v", err)
+	}
+	if rendered, err := Render(stored); err != nil || rendered != document {
+		t.Fatalf("this build reads back %q (%v), want the document as written, %q", rendered, err, document)
+	}
+	if _, err := ParseForWrite(document, nil); err != nil {
+		t.Fatalf("this build writes a plan task carrying owner and one carrying part_of: %v", err)
+	}
+
+	before := adds - 1
+	restore, err := UseManifestForTest(manifestAsOf(t, before))
+	if err != nil {
+		t.Fatalf("install the manifest as of version %d: %v", before, err)
+	}
+	t.Cleanup(restore)
+	if !IsTypedBlock("plan_task") {
+		t.Fatalf("a build at version %d does not declare the plan_task block, which version 3 adds", before)
+	}
+	if _, err := Parse(neither); err != nil {
+		t.Errorf("a build at version %d reading a plan task carrying neither = %v, want no error", before, err)
+	}
+	if _, err := ParseForWrite(neither, nil); err != nil {
+		t.Errorf("a build at version %d writing a plan task carrying neither = %v, want no error", before, err)
+	}
+	for name, markdown := range map[string]string{"owner": owner, "part_of": part} {
+		if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), name) {
+			t.Errorf("a build at version %d writing a plan task carrying %s = %v, want ErrUnknownElement naming it", before, name, err)
+		}
+	}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+		t.Errorf("a build at version %d reading a stored document carrying owner and part_of = %v, want ErrUnknownElement", before, err)
 	}
 }

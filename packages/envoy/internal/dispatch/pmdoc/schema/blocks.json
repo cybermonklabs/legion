@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 9,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -129,6 +129,16 @@
           "kind": "string",
           "since": 5,
           "creatable_since": 5
+        },
+        "owner": {
+          "kind": "string",
+          "since": 9,
+          "creatable_since": 9
+        },
+        "part_of": {
+          "kind": "string",
+          "since": 9,
+          "creatable_since": 9
         }
       },
       "since": 3,
