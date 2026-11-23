@@ -1442,14 +1442,39 @@ func TestAVerificationEditOfAnApprovedCheckClosesAPersonsApproval(t *testing.T) 
 	}
 
 	// A repository with no spec source keeps today's gate: the edit of its Verification document is
-	// no input of it. The spec's next version, applied after the edit, closes it as a version
-	// always has, and the one closed-gate message the merger gets is that version's.
-	plainKey, plainMerger := walk(plain, "approval")
+	// no input of it. Its root is approved by the person and planning, and the root's architect is
+	// told each move of the gate as the merger is (workflow's tellGateMoved); the walk's GitHub
+	// reviews name liveRepo alone, so this root does not walk to merging. The spec's next version,
+	// applied after the edit, closes the gate as a version always has, and the one closed-gate
+	// message the architect gets is that version's.
+	plainKey := r.issues[plain.title].key
+	if status, body := r.register(plainKey, 1); status != http.StatusOK {
+		t.Fatalf("the registration of %s = %d %s, want 200", plainKey, status, body)
+	}
+	r.approve(r.issues[plain.title], r.session(plainKey, claim.RoleArchitect), true)
+	r.on(plainKey)
+	r.waitPhase(phase.Planning)
+	if gate, _ := r.gate(plainKey); gate.ApprovedVersion == nil || *gate.ApprovedVersion != gate.CurrentVersion || gate.Rule != "approval" {
+		t.Fatalf("the gate of %s is %+v, want it approved by the person under today's rule", plainKey, gate)
+	}
+	architectTopic := notify.RoleTopicPrefix + string(r.tokenOf(plainKey, claim.RoleArchitect))
+	closedToArchitect := func() []string {
+		var closed []string
+		for _, published := range r.notices.acceptedOn(architectTopic) {
+			if strings.HasPrefix(published.Message, "The design gate of "+plainKey+" closed:") {
+				closed = append(closed, published.Message)
+			}
+		}
+		return closed
+	}
 	r.editVerification(plainKey, deleteBlock(specGateCheck), insertAtEnd(specGateCheckBlock("1", "A second charge of one order fails within a day.")))
 	r.editSpec(plainKey, insertAtEnd("The runner names its log file.\n"))
-	plainMerger.waitMessages("closed", 1, "the next spec version of a repository with no spec source")
-	if closed := plainMerger.messages("closed")[0]; strings.Contains(closed, "Verification document") || !strings.Contains(closed, "of its spec document") {
-		t.Fatalf("the merger of %s was told %q; want the closed gate of its spec's version, not of its Verification document", plainKey, closed)
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the architect of "+plainKey+" to be told the gate closed", func() bool {
+		return len(closedToArchitect()) > 0
+	})
+	time.Sleep(liveSettle)
+	if closed := closedToArchitect(); len(closed) != 1 || strings.Contains(closed[0], "Verification document") || !strings.Contains(closed[0], "of its spec document") {
+		t.Fatalf("the architect of %s was told %q; want one closed gate, its spec's version's, and none of its Verification document", plainKey, closed)
 	}
 	if gate, _ := r.gate(plainKey); gate.Rule != "approval" || gate.VerificationVersion != 0 || gate.ChecksUnapproved {
 		t.Fatalf("the design gate of %s is %+v, want today's gate, which reads no Verification document", plainKey, gate)
