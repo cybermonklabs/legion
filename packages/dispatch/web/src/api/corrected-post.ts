@@ -36,6 +36,8 @@ import type {
   MyAnswersResponse,
   MyRepliesResponse,
   MyReplyRow,
+  PersonNode,
+  PersonNodes,
   ReferenceLink,
   ReferenceTarget,
   ReplyBlockWithTrees,
@@ -180,6 +182,12 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
       : isThreadPage(answer)
         ? markedThreadPage(answer, post)
         : undefined,
+  /** A person's page (`["people", login, "nodes"]`, pages): each row of the post, which the page
+   *  names by the first line of its words (`PersonPage`). */
+  people: (answer, post) =>
+    isPages<PersonNodes>(answer)
+      ? markedPages(answer, (page) => markedPersonPage(page, post))
+      : undefined,
   /** Each names read (`referenceTargetsQuery`): every member naming the post or a block of it. */
   "reference-targets": (answer, post) =>
     post.names === undefined
@@ -294,6 +302,7 @@ export const NO_POST_FAMILIES: Readonly<Record<string, string>> = {
  * - a thread row of the reader's (`["me", "replies", …]`) whose root is the post (`subject`
  *   empty) or whose latest reply is (`reply.first_line` empty), and a reply of the reader's
  *   answers (`["me", "answers"]`, `body` empty);
+ * - a row of a person's page (`["people", login, "nodes"]`) that is the post: an empty `title`;
  * - a search hit of the post (`["search", …]`): an empty `snippet` and no `snippet_tree`;
  * - a graph read (`["references", "to", …]`) whose node is the post or a block of it, and each of
  *   its edges whose other end is: the node with no text, no tree and no pinned text, and an edge
@@ -1132,6 +1141,27 @@ function markedThreadRow(row: MyReplyRow, post: CorrectedPost): MyReplyRow | und
     marked = { ...marked, reply: { ...replyKept, ...marks, first_line: "" } };
   }
   return marked;
+}
+
+/** One page of a person's nodes once `post` is corrected: each row of the post; undefined where
+ *  none is. */
+function markedPersonPage(page: PersonNodes, post: CorrectedPost): PersonNodes | undefined {
+  const rows = markEach(page.rows, (row) =>
+    row.kind === post.kind && row.id === post.id ? markedPersonNode(row, post.mark) : undefined
+  );
+  return rows === undefined ? undefined : { ...page, rows };
+}
+
+/** A row of a person's page that is the post, once `mark` is written: the edit's time, or the
+ *  delete's mark with no title, as the server answers the row of a deleted comment, whose cleared
+ *  body leaves no first line (`listPersonNodes` in `api/person_nodes.go`). An edit keeps the title,
+ *  as every other copy keeps its words, until a read gives the new ones. */
+function markedPersonNode(row: PersonNode, mark: PostMark): PersonNode {
+  if (mark.kind === "edited") {
+    return { ...row, edited_at: editedAfter(row.edited_at, mark.at) };
+  }
+  const { deleted_by: _by, ...kept } = row;
+  return { ...kept, ...deletionMarks(mark.deletion), title: "" };
 }
 
 /** A search answer once `post` is corrected: each hit of the post; undefined where none is. */

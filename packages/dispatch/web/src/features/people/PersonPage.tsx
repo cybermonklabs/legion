@@ -17,7 +17,8 @@ import {
   textMutedOnCanvas,
   textPrimaryOnCanvas,
 } from "../../theme/classes";
-import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { EditedMark, PostPreview } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 
@@ -33,7 +34,10 @@ const RELATION_LABELS: Record<string, string> = {
 /** `/people/<login>`: one person's page, from one `GET /api/v1/people/{login}/nodes` — what they
  *  wrote and what reached them, newest first, read from the node and tuple store. Every row is
  *  re-read from that route: the page holds no list of its own and walks no edge, because the
- *  route takes no kind, filter or traversal. */
+ *  route takes no kind, filter or traversal. A comment its author deleted keeps its row, drawn
+ *  as the deleted line in place of its title (`DeletedBody`), and one its author edited says
+ *  ` · edited` after its title (`EditedMark`), as every surface that prints a post marks it
+ *  (dispatch://INFRA-1523, R2 and R3). */
 export function PersonPage(): ReactNode {
   const { login = "" } = useParams();
   useDocumentTitle(`${login} · Dispatch`);
@@ -70,27 +74,43 @@ export function PersonPage(): ReactNode {
         />
       ) : (
         <ul aria-label="Person nodes" className="space-y-3">
-          {rows.map((row) => (
-            <li
-              className={`rounded-xl border p-3 ${card} ${borderDefault}`}
-              key={`${row.kind}:${row.id}`}
-            >
-              <div className={`flex flex-wrap items-center gap-2 text-xs ${textMutedOnCanvas}`}>
-                <Timestamp at={row.created_at} />
-                <span>{row.kind}</span>
-                {(row.relations ?? []).map((relation) => (
-                  <LabelPill key={relation}>{RELATION_LABELS[relation] ?? relation}</LabelPill>
-                ))}
-              </div>
-              <MarkdownPreview className="mt-2 text-sm" fullTitle lines={2} markdown={row.title} />
-              <Link
-                className={`mt-2 inline-block min-h-11 py-2 text-sm ${linkText} ${linkHoverText}`}
-                to={row.href}
+          {rows.map((row) => {
+            const deleted = postDeletion(row);
+            return (
+              <li
+                className={`rounded-xl border p-3 ${card} ${borderDefault}`}
+                key={`${row.kind}:${row.id}`}
               >
-                Open
-              </Link>
-            </li>
-          ))}
+                <div className={`flex flex-wrap items-center gap-2 text-xs ${textMutedOnCanvas}`}>
+                  <Timestamp at={row.created_at} />
+                  <span>{row.kind}</span>
+                  {(row.relations ?? []).map((relation) => (
+                    <LabelPill key={relation}>{RELATION_LABELS[relation] ?? relation}</LabelPill>
+                  ))}
+                </div>
+                <div className="mt-2 flex min-w-0 items-baseline gap-1 text-sm">
+                  <PostPreview
+                    className="min-w-0"
+                    deleted={deleted}
+                    fullTitle
+                    lines={2}
+                    markdown={row.title}
+                  />
+                  <EditedMark
+                    at={row.edited_at}
+                    className={`shrink-0 ${textMutedOnCanvas}`}
+                    deleted={deleted}
+                  />
+                </div>
+                <Link
+                  className={`mt-2 inline-block min-h-11 py-2 text-sm ${linkText} ${linkHoverText}`}
+                  to={row.href}
+                >
+                  Open
+                </Link>
+              </li>
+            );
+          })}
         </ul>
       )}
       <ShowMore

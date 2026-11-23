@@ -410,6 +410,18 @@ function appendAnswersPage(targets: RefreshTarget[], event: DispatchEvent): void
   }
 }
 
+/** A person's page (`["people", <login>, "nodes"]`) lists each comment its person wrote or was
+ *  delivered, with the first line of its words and its edit and delete marks (INFRA-1523, R2 and
+ *  R3). An edit or a delete of a comment refreshes every person's page, so a page that is open
+ *  reads the new words: the cached correction (corrected-post.ts) writes the mark at once, but not
+ *  the words, which an edit event can carry cut short. The query exists only while a person's page
+ *  is open. */
+function appendPersonPages(targets: RefreshTarget[], event: DispatchEvent): void {
+  if (event.type === "comment.edited" || event.type === "comment.deleted") {
+    targets.push({ queryKey: ["people"] });
+  }
+}
+
 // An ask or comment that is written, re-anchored or edited in a document is an `anchored_to` edge
 // into it, and one a project document owns an `owned_by` edge: that document's backlink panel
 // lists both, each row showing the head of the item's text, which an edit moves and a comment's
@@ -986,6 +998,7 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
     targets.push({ queryKey: myRepliesKey });
   }
   appendAnswersPage(targets, event);
+  appendPersonPages(targets, event);
   appendDocumentPanel(targets, event);
   if (event.type === "subscription.removed") {
     targets.push({ queryKey: ["subscribers", id] });
@@ -1298,6 +1311,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       targets.push({ queryKey: ["artifact", document] });
     }
     appendAnswersPage(targets, event);
+    appendPersonPages(targets, event);
     appendDocumentPanel(targets, event);
     return targets;
   }
@@ -1324,6 +1338,7 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     appendCommentReads(targets, event);
     appendAnswersPage(targets, event);
+    appendPersonPages(targets, event);
     appendDocumentPanel(targets, event);
     return targets;
   }

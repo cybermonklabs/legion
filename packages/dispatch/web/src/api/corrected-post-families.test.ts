@@ -922,6 +922,43 @@ const ROWS: readonly WriteRow[] = [
     key: ["me", "replies", "unread", "CORE-1"],
     kind: "message",
   },
+  // A person's page (`PersonPage`, pages): the post's row, named by the first line of its words,
+  // beside another comment's.
+  {
+    answer: {
+      pageParams: [0],
+      pages: [
+        {
+          limit: 50,
+          offset: 0,
+          person: "alice",
+          rows: [
+            {
+              created_at: "2026-11-19T00:00:00Z",
+              href: `/issues/CORE-1/comments/${POST}`,
+              id: POST,
+              kind: "comment",
+              relations: ["authored_by"],
+              title: OLD_WORDS,
+            },
+            {
+              created_at: "2026-11-18T00:00:00Z",
+              href: `/issues/CORE-1/comments/${OTHER}`,
+              id: OTHER,
+              kind: "comment",
+              relations: ["authored_by"],
+              title: "Agreed.",
+            },
+          ],
+          total: 2,
+        },
+      ],
+    },
+    copies: (answer) => [marksAt(answer, "pages", 0, "rows", 0)],
+    family: "people",
+    key: ["people", "alice", "nodes"],
+    kind: "comment",
+  },
   // A names read naming the post, and a block of it, with each member's words.
   {
     answer: {
