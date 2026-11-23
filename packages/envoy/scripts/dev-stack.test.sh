@@ -119,17 +119,13 @@ readonly admin_url='postgres://tester:s3cret@127.0.0.1:5999/postgres?sslmode=dis
 readonly admin_url_no_query=${admin_url%%\?*}
 readonly server_url=${admin_url%/postgres*}
 # The stop's grace and a readiness request's bound are the driver's defaults unless a row sets one,
-# so the caller's own environment decides neither. Each default is read from the one line of the
-# driver that sets it, not copied here: every ready row checks the readiness default by the bound
-# each of its requests was given, and (e10) the grace default by how long the stop waits with it.
+# so the caller's own environment decides neither. The two defaults are pinned here, as the rows
+# before these variables pinned them: 10 s and 5 s, production's values. A change to either is a
+# product change that changes these lines too. The driver is held to them by what it does: every
+# ready row by the bound each of its requests was given, and (e10b) by how long the stop waits
+# when nothing sets its grace.
 unset DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS
-stop_grace_default="$(sed -n 's/^DEFAULT_STOP_GRACE_SECONDS=\([1-9][0-9]*\)$/\1/p' "$driver")"
-readiness_default="$(sed -n 's/^DEFAULT_READINESS_REQUEST_SECONDS=\([1-9][0-9]*\)$/\1/p' "$driver")"
-if [[ ! "$stop_grace_default" =~ ^[1-9][0-9]*$ || ! "$readiness_default" =~ ^[1-9][0-9]*$ ]]; then
-  echo "FAIL: dev-stack.sh sets no DEFAULT_STOP_GRACE_SECONDS or DEFAULT_READINESS_REQUEST_SECONDS line of one whole number each ('$stop_grace_default', '$readiness_default')" >&2
-  exit 1
-fi
-readonly stop_grace_default readiness_default
+readonly stop_grace_default=10 readiness_default=5
 
 declare -a instance_pid=()
 cleanup() {
@@ -1318,14 +1314,14 @@ assert_databases_dropped "$label" "$psql_calls1" "$(suffix_of "$silent_work_dir"
 printf 'PASS: SIGTERM to a run whose health check was outstanding at a listener that answers nothing stopped it with 143 inside 15 s, every process stopped and both databases dropped\n'
 
 # (e9a) A process of the stack that ignores SIGTERM, as a server stuck in its shutdown does: the
-# stop gives each process its grace after its SIGTERM, 2 s here (DEV_STACK_STOP_GRACE_SECONDS;
-# (e10) holds the default), then SIGKILL, saying so with the time from its SIGTERM to the kill,
-# and still drops both databases. Before, the stop waited on that process for good, with its
-# databases, and ignored every further INT and TERM while it waited. The time is the stop's own
-# record of when it signalled and when it killed, so a row that is slow to look cannot fail a stop
-# that kept its grace. It is held from the grace to 1.5 s past it, for the stop's 0.1 s look on a
-# loaded runner: a stop that killed before its grace, or that waited a grace other than the one
-# it was given, fails here.
+# stop gives each process its grace after its SIGTERM, 2 s here (DEV_STACK_STOP_GRACE_SECONDS),
+# then SIGKILL, saying so with the time from its SIGTERM to the kill, and still drops both
+# databases, inside wait_for_exit's 20 s. Before, the stop waited on that process for good, with
+# its databases, and ignored every further INT and TERM while it waited. The time is the stop's
+# own record of when it signalled and when it killed, so a row that is slow to look cannot fail a
+# stop that kept its grace, and a kill before the grace fails here. How long past the grace a
+# loaded runner wakes the stop is no fault of it, so this row sets no upper bound of its own: the
+# exact grace, the one given and the default, is held by (e10b) under a clock of its own.
 label='the run whose issuer ignores SIGTERM'
 DEV_STACK_STOP_GRACE_SECONDS=2 DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
@@ -1337,11 +1333,11 @@ killed_line="$(grep -F "dev-stack: dev-oidc-issuer (pid ${stubborn_issuer}) did 
 [[ "$killed_line" =~ \ killing\ it\ ([0-9]+)\.([0-9]{3})\ s\ after\ it$ ]] ||
   fail "$label did not say it killed the issuer, and how long after its SIGTERM: $(grep 'did not stop' "$log1" || true)"
 issuer_held_ms=$((10#${BASH_REMATCH[1]} * 1000 + 10#${BASH_REMATCH[2]}))
-((issuer_held_ms >= 2000 && issuer_held_ms <= 3500)) ||
-  fail "$label killed the issuer ${issuer_held_ms} ms after its SIGTERM, not when its 2 s grace ran out"
+((issuer_held_ms >= 2000)) ||
+  fail "$label killed the issuer ${issuer_held_ms} ms after its SIGTERM, before its 2 s grace ran out"
 assert_everything_stopped "$label"
 assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
-printf "PASS: an issuer that ignores SIGTERM was killed when the stop's grace (2 s here) ran out, %s ms after its SIGTERM by the stop's own record, which the stop said, and both databases were dropped\n" "$issuer_held_ms"
+printf "PASS: an issuer that ignores SIGTERM was killed once the stop's grace (2 s here) ran out, %s ms after its SIGTERM by the stop's own record, which the stop said, and both databases were dropped\n" "$issuer_held_ms"
 
 # (e9b) The SIGHUP a terminal sends the group as it closes, here to the run alone, while the stop
 # runs: the stop goes on and drops both databases. Before, HUP kept its default action there and
@@ -1397,7 +1393,7 @@ for helper in running_child stop_bounded stop_process; do
   grep -q "^${helper}() {\$" <<<"$stop_helpers" || fail "dev-stack.sh defines no ${helper}() at the start of a line"
 done
 grep -qx "DEFAULT_STOP_GRACE_SECONDS=${stop_grace_default}" <<<"$stop_helpers" ||
-  fail "the stop's helpers were read without the driver's DEFAULT_STOP_GRACE_SECONDS line"
+  fail "dev-stack.sh has no line DEFAULT_STOP_GRACE_SECONDS=${stop_grace_default}, the pinned default grace: $(grep '^DEFAULT_STOP_GRACE_SECONDS' "$driver" || true)"
 stop_out="${temporary_dir}/stop-helpers.out"
 # A process this test's shells did not start: its own shell exits at once, so it belongs to no one
 # here, as a process that took a reused pid belongs to no one in the run.
@@ -1435,21 +1431,34 @@ kill "$stranger" 2>/dev/null || true
 [[ "$(cat "$stop_out")" == returned ]] || fail "the stop's helpers printed more than they should: $(cat "$stop_out")"
 printf 'PASS: the stop stopped a running child, waited on no child that had exited, even one bash still listed, and left alone pid %s, which a process it never started held in place of one that exited\n' "$stranger"
 
-# (e10b) The stop's grace when nothing sets one, held by what the stop does, not by its text: the
-# same helpers run in a shell of their own with DEV_STACK_STOP_GRACE_SECONDS unset, on a child that
-# ignores SIGTERM, under that shell's own clock. EPOCHREALTIME, once unset, is a plain variable,
-# and `sleep` there is a function that moves it on by the 0.1 s the stop asks for and returns at
-# once, so the whole grace passes in the stop's own polls, with no real wait, and its kill line
-# names the time by that clock. It must be the driver's DEFAULT_STOP_GRACE_SECONDS exactly: a stop
-# that took another grace when the variable is unset, or killed before its grace, names another.
-# The child says it ignores SIGTERM before the stop signals it, so the signal cannot end it first.
-grace_out="${temporary_dir}/stop-grace-default.out"
-grace_status=0
-# shellcheck disable=SC2016 # the helpers' shell expands these, not this one
-env -u DEV_STACK_STOP_GRACE_SECONDS timeout 15 bash -c "$stop_helpers"$'\n''
-ready="$1"
+# (e10b) The stop's grace, the default and one a caller gives, held by what the stop does: the
+# same helpers run in a shell of their own on a child that ignores SIGTERM, under that shell's own
+# clock. EPOCHREALTIME, once unset, is a plain variable, and `sleep` there is a function that moves
+# it on by the 0.1 s the stop asks for and returns at once, so the whole grace passes in the stop's
+# own polls, with no real wait and no scheduler to wake it late, and its kill line names the time
+# by that clock. With DEV_STACK_STOP_GRACE_SECONDS unset it must be the pinned default exactly, and
+# with it set to 3, 3 s exactly: a stop that took another grace, a literal of its own, or killed
+# before its grace names another. The child says it ignores SIGTERM before the stop signals it, so
+# the signal cannot end it first, and the shell kills its own child on any way out, a timeout's
+# TERM included, and writes its pid where this row kills it if the shell itself was killed, so no
+# such child outlives a failing row.
+grace_by_clock() { # <want seconds> [DEV_STACK_STOP_GRACE_SECONDS value]
+  local want="$1" out="${temporary_dir}/stop-grace-clock.out" child_file="${temporary_dir}/stop-grace-clock.pid"
+  local -a grace_env=(-u DEV_STACK_STOP_GRACE_SECONDS)
+  local label="the stop with no grace set" status=0 child
+  if [[ $# -ge 2 ]]; then
+    grace_env=("DEV_STACK_STOP_GRACE_SECONDS=$2")
+    label="the stop given a grace of $2 s"
+  fi
+  rm -f "$child_file" "${temporary_dir}/stop-grace-clock.ready"
+  # shellcheck disable=SC2016 # the helpers' shell expands these, not this one
+  env "${grace_env[@]}" timeout -k 5 15 bash -c "$stop_helpers"$'\n''
+ready="$1" child_file="$2"
 (trap "" TERM; : >"$ready"; exec sleep 600) &
 stubborn=$!
+printf "%s\n" "$stubborn" >"$child_file"
+trap '"'"'kill -KILL "$stubborn" 2>/dev/null; wait "$stubborn" 2>/dev/null'"'"' EXIT
+trap "exit 1" TERM
 for _ in $(seq 1 200); do [ -e "$ready" ] && break; sleep 0.05; done
 [ -e "$ready" ] || { echo "the child that ignores SIGTERM never said so"; exit 1; }
 unset EPOCHREALTIME
@@ -1461,11 +1470,19 @@ sleep() {
 }
 stop_bounded "a child that ignores SIGTERM" "$stubborn"
 kill -0 "$stubborn" 2>/dev/null && echo "a child that ignores SIGTERM outlived the grace"
-exit 0' _ "${temporary_dir}/stubborn-child.ready" >"$grace_out" 2>&1 || grace_status=$?
-[[ "$grace_status" -eq 0 ]] || fail "the stop's helpers with no grace set did not return within 15 s (status $grace_status): $(cat "$grace_out")"
-[[ "$(cat "$grace_out")" == "dev-stack: a child that ignores SIGTERM (pid "*") did not stop within ${stop_grace_default} s of its SIGTERM; killing it ${stop_grace_default}.000 s after it" ]] ||
-  fail "the stop with no grace set did not kill a child that ignores SIGTERM ${stop_grace_default} s after its SIGTERM, the driver's DEFAULT_STOP_GRACE_SECONDS: $(cat "$grace_out")"
-printf "PASS: with no grace set, the stop killed a child that ignores SIGTERM %s s after its SIGTERM by its own clock, the driver's DEFAULT_STOP_GRACE_SECONDS, and no sooner\n" "$stop_grace_default"
+exit 0' _ "${temporary_dir}/stop-grace-clock.ready" "$child_file" >"$out" 2>&1 || status=$?
+  child="$(cat "$child_file" 2>/dev/null || true)"
+  if [[ "$child" =~ ^[1-9][0-9]*$ ]] && kill -0 "$child" 2>/dev/null; then
+    kill -KILL "$child" 2>/dev/null || true
+    fail "$label left its child that ignores SIGTERM (pid $child) running: $(cat "$out")"
+  fi
+  [[ "$status" -eq 0 ]] || fail "$label did not return within 15 s (status $status): $(cat "$out")"
+  [[ "$(cat "$out")" == "dev-stack: a child that ignores SIGTERM (pid "*") did not stop within ${want} s of its SIGTERM; killing it ${want}.000 s after it" ]] ||
+    fail "$label did not kill a child that ignores SIGTERM ${want} s after its SIGTERM by its own clock: $(cat "$out")"
+}
+grace_by_clock "$stop_grace_default"
+grace_by_clock 3 3
+printf "PASS: the stop killed a child that ignores SIGTERM exactly when its grace ran out by its own clock: %s s with no grace set, 3 s when given 3\n" "$stop_grace_default"
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
