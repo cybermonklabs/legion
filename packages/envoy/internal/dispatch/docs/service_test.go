@@ -6364,6 +6364,7 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 // eviction moved the room's generation its retry arms nothing: the next write to the room settles
 // on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
+	t.Parallel()
 	service, artifactID := evictMidSettle(t)
 	// The next write settles on its own. The eviction left the document owing the settlement it
 	// cut short, and this write's reload of the room arms that owed settlement (onLoadDocument), so
@@ -6384,6 +6385,7 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 // settlement's version holds the evicted room's edit, "after", and the next version, the write's
 // own settlement's, holds the write, "later".
 func TestAnEvictionsOwedSettlementBeforeTheNextWritesCommitLosesNoEdit(t *testing.T) {
+	t.Parallel()
 	service, artifactID := evictMidSettle(t)
 	var owed int
 	err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
