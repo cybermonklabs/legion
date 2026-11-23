@@ -30,7 +30,8 @@
  *    not clip it (an absolutely positioned element above its positioned ancestor, a fixed one).
  *  - `group-over-cap`: a group marked `data-layout-group` shows more entries than its
  *    `data-layout-max` (10 when unset), not counting the one control marked `data-layout-more`
- *    that opens the rest, unless the reader opened it (`data-layout-open`).
+ *    that opens the rest, unless the reader opened it (`data-layout-open`); or it declares a cap
+ *    that is not a whole number from 1 to 10, which is a breach however many it shows.
  *
  *  An element is read only where it draws (`checkVisibility`): the content of a closed
  *  `<details>` keeps a box in Chromium, and is no breach.
@@ -346,12 +347,26 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   // A group that shows more entries than its cap, unless the reader opened it with its "+N"
   // control (`data-layout-open`): then it shows every entry by the reader's own choice. The
   // group itself may draw no box (`display: contents`), so only its entries are asked whether
-  // they are shown.
+  // they are shown. A cap is a whole number from 1 to 10: a group that declares any other
+  // (`data-layout-max="11"`, "0", "abc") has raised or dropped the rule's cap, and is a breach
+  // however many entries it shows, opened or not.
   const groups = new Set<string>();
   for (const group of document.querySelectorAll("[data-layout-group]")) {
     groups.add(group.getAttribute("data-layout-group") ?? "");
+    const declared = group.getAttribute("data-layout-max");
+    const max = declared === null ? 10 : Number(declared);
+    if (declared !== null && !(/^\d+$/.test(declared) && max >= 1 && max <= 10)) {
+      breaches.push({
+        detail: `declares the cap ${JSON.stringify(declared)}; a cap is a whole number from 1 to 10`,
+        kind: "group-over-cap",
+        listed: listedFor([group]),
+        locator: locatorOf(group),
+        text: textOf(group),
+        where: path(group),
+      });
+      continue;
+    }
     if (group.hasAttribute("data-layout-open")) continue;
-    const max = Number(group.getAttribute("data-layout-max") ?? "10");
     const entries = [...group.children].filter(
       (child) => shown(child) && !child.hasAttribute("data-layout-more")
     ).length;

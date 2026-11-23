@@ -138,6 +138,25 @@ const defects: readonly {
     locator: '[data-layout-group="links"]',
     name: "a closed group past its own cap of three",
   },
+  {
+    // A group that raises its own cap past the rule's ten, and shows as many as it declares.
+    body: `<div data-layout-group="checks" data-layout-max="11">${entries(11)}</div>`,
+    kind: "group-over-cap",
+    locator: '[data-layout-group="checks"]',
+    name: "a group declaring a cap of eleven and showing eleven",
+  },
+  {
+    body: `<div data-layout-group="roles" data-layout-max="abc">${entries(2)}</div>`,
+    kind: "group-over-cap",
+    locator: '[data-layout-group="roles"]',
+    name: "a group declaring a cap that is no number",
+  },
+  {
+    body: `<div data-layout-group="options" data-layout-max="0">${entries(0)}</div>`,
+    kind: "group-over-cap",
+    locator: '[data-layout-group="options"]',
+    name: "a group declaring a cap of nought",
+  },
 ];
 
 /** Every case the rule allows, on one page: none of them may be reported. */

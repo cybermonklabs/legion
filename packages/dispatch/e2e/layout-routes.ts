@@ -35,6 +35,25 @@ export const AGENT_PICTURE = "layout-stress-screenshot-of-the-issue-header-at-12
 export const AGENT_REPLY_OPENING = "The audit is read.";
 /** The repository CORE's architecture source is read from. */
 export const ARCHITECTURE_REPO = "acme/layout-architecture";
+/** The stress issue's title and labels, as `e2e/layout-seed.ts` writes them (its `prose(…, 170)`
+ *  title and its `LABELS`): the new issue page's ready locators name them, so a page that drew
+ *  another issue, or this one without its stress data, never settles. */
+export const STRESS_TITLE =
+  "Local testing workflow for Dispatch, with every header property production holds - measured on production at every width from 360 to 1920 pixels, where a row of elements";
+export const STRESS_LABELS = [
+  "dispatch",
+  "layout",
+  "issue-header",
+  "inbox",
+  "accessibility",
+  "regression",
+  "phone-width",
+  "needs-design-review",
+  "customer-visible",
+  "performance-budget",
+  "browser-test",
+  "priority-escalation",
+];
 
 /** What the page draws once the reader has acted on it: a drawer open, rows selected, a group
  *  expanded. `act` runs on the settled page and returns once what it opened is drawn. */
@@ -169,7 +188,22 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     // title are drawn once its read of the issue answered (`e2e/issue-page.ts`'s `gotoIssue`).
     ready: (page) => [
       page.getByTestId("issue-column"),
-      page.locator("[data-issue-page]").getByRole("heading", { level: 1 }),
+      // The stress issue's whole title, and its labels: one of them drawn, or - where the page
+      // folds every one of them by width under INFRA-1196's R13, as at 360 px - its count of all
+      // twelve.
+      page
+        .locator("[data-issue-page]")
+        .getByRole("heading", { exact: true, level: 1, name: STRESS_TITLE }),
+      page
+        .locator("[data-issue-page]")
+        .getByText(new RegExp(`^(${STRESS_LABELS.join("|")})$`))
+        .filter({ visible: true })
+        .or(
+          page
+            .locator("[data-issue-page]")
+            .getByRole("button", { exact: true, name: `+${STRESS_LABELS.length} labels` })
+        )
+        .first(),
     ],
   },
   {
