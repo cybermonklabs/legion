@@ -230,14 +230,15 @@ func TestVerdictOfKeysTheWaitOnTheStallWarning(t *testing.T) {
 	}
 }
 
-// TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere drives Watch.Failure past each bound: a
-// horizon that never warned past Base, and one whose newest warning or holder came past Extension
-// ago. A watch on a Dispatch process (NewWatch) is failed at each, which is the control that this
-// row reads a watch the bounds can end. A watch in the test's own process (the watch
-// NewWatchInProcess makes, here over a stand-in pool) is failed at neither, whatever its reads of
-// the holder find, and reads the holder no more often than every Poll; it is failed at the drain
-// before the run's deadline, naming what it waited for and the newest holder it read, and on a
-// holder of the test's own database past OwnHoldBound that its own read found.
+// TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere drives both watches' Failure past each
+// bound: a horizon that never warned past Base, and one whose newest warning or holder came past
+// Extension ago. A watch on a Dispatch process (NewWatch) is failed at each, which is the control
+// that this row reads a watch the bounds can end. A watch in the test's own process (the
+// InProcessWatch NewWatchInProcess makes, here over a stand-in pool) is failed at neither,
+// whatever its reads of the holder find; it reads the holder no more often than every Poll, and not
+// again within Extension of a holder it found; it is failed at the drain before the run's
+// deadline, naming what it waited for and the newest holder it read, and on a holder of the test's
+// own database past OwnHoldBound that its own read found.
 func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
 	const ownDatabase = "dispatch_test_ab"
 	const what = "an event of events"
@@ -250,7 +251,16 @@ func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
 		watch.drain = time.Time{}
 		return watch
 	}
-	inProcess := func(t *testing.T, probe Querier) *Watch { return newWatch(t, noWarnings, ownDatabase, probe, true) }
+	// inProcess is a watch in the test's own process reading the holder through probe, begun twice
+	// the longer of Base and Extension ago when past is true, and given no drain.
+	inProcess := func(t *testing.T, probe Querier, past bool) *InProcessWatch {
+		watch := newInProcessWatch(t, ownDatabase, probe)
+		if past {
+			watch.began = time.Now().Add(-2 * max(Base, Extension))
+		}
+		watch.drain = time.Time{}
+		return watch
+	}
 	refused := failing{errors.New("connection refused")}
 
 	t.Run("a watch on a Dispatch process", func(t *testing.T) {
@@ -274,52 +284,62 @@ func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
 			"whose read finds a foreign holder": heldBy{database: "other_service", since: time.Minute},
 			"whose read fails":                  refused,
 		} {
-			if failure := pastBoth(inProcess(t, probe)).Failure(what); failure != "" {
+			if failure := inProcess(t, probe, true).Failure(what); failure != "" {
 				t.Errorf("past Base, %s: Failure = %q, want the wait to go on", name, failure)
 			}
 		}
 		// A foreign holder read once, then past Extension since: the watch reads it again and
 		// goes on.
-		foreign := pastBoth(inProcess(t, heldBy{database: "other_service", since: time.Minute}))
+		reads := 0
+		foreign := inProcess(t, readsCounted{next: heldBy{database: "other_service", since: time.Minute}, reads: &reads}, true)
 		for read := 1; read <= 2; read++ {
 			if failure := foreign.Failure(what); failure != "" {
 				t.Errorf("read %d of a foreign holder: Failure = %q, want the wait to go on", read, failure)
 			}
-			foreign.rose, foreign.probed = foreign.rose.Add(-2*Extension), foreign.probed.Add(-2*Extension)
+			foreign.heldAt, foreign.read = foreign.heldAt.Add(-2*Extension), foreign.read.Add(-2*Extension)
 		}
-		if foreign.current.warnings != 2 {
-			t.Errorf("the watch counted %d holders over two reads past Extension apart, want 2", foreign.current.warnings)
+		if reads != 2 {
+			t.Errorf("the watch read the holder %d times over two Failures past Extension apart, want 2", reads)
 		}
 	})
 
 	t.Run("its reads of the holder", func(t *testing.T) {
 		reads := 0
 		counted := readsCounted{next: noHolder{}, reads: &reads}
-		if failure := inProcess(t, counted).Failure(what); failure != "" || reads != 0 {
+		if failure := inProcess(t, counted, false).Failure(what); failure != "" || reads != 0 {
 			t.Errorf("inside Base: Failure = %q after %d reads of the holder, want the wait to go on with none", failure, reads)
 		}
-		paced := pastBoth(inProcess(t, counted))
+		paced := inProcess(t, counted, true)
 		for range 3 {
 			paced.Failure(what)
 		}
 		if reads != 1 {
 			t.Errorf("three Failures inside one Poll past Base read the holder %d times, want once", reads)
 		}
-		paced.probed = paced.probed.Add(-Poll)
+		paced.read = paced.read.Add(-Poll)
 		paced.Failure(what)
 		if reads != 2 {
 			t.Errorf("a Failure a Poll after the last read made %d reads in all, want 2", reads)
 		}
+		// A read that found a holder puts the next read Extension away, though Poll has passed.
+		heldReads := 0
+		held := inProcess(t, readsCounted{next: heldBy{database: "other_service", since: time.Minute}, reads: &heldReads}, true)
+		held.Failure(what)
+		held.read = held.read.Add(-Poll)
+		held.Failure(what)
+		if heldReads != 1 {
+			t.Errorf("a Failure a Poll after a read that found a holder, within Extension of it, made %d reads in all, want 1", heldReads)
+		}
 	})
 
 	t.Run("the drain", func(t *testing.T) {
-		held := pastBoth(inProcess(t, heldBy{database: "other_service", since: time.Minute}))
+		held := inProcess(t, heldBy{database: "other_service", since: time.Minute}, true)
 		held.Failure(what)
 		held.drain = time.Now().Add(-time.Millisecond)
 		if failure := held.Failure(what); !strings.HasPrefix(failure, what+" did not arrive in the ") || !strings.Contains(failure, "database=other_service") {
 			t.Errorf("past the drain after a read found a foreign holder: Failure = %q, want the drain's failure naming %q and that holder", failure, what)
 		}
-		unread := pastBoth(inProcess(t, refused))
+		unread := inProcess(t, refused, true)
 		unread.Failure(what)
 		unread.drain = time.Now().Add(-time.Millisecond)
 		if failure := unread.Failure(what); !strings.HasPrefix(failure, what+" did not arrive in the ") || !strings.Contains(failure, "was none") || !strings.Contains(failure, "connection refused") {
@@ -330,10 +350,10 @@ func TestAWatchInTheTestsOwnProcessIsEndedBySilenceNowhere(t *testing.T) {
 	t.Run("an own hold", func(t *testing.T) {
 		// The wait's own read of the holder finds a transaction of the test's own database that
 		// has stood twice OwnHoldBound.
-		if failure := pastBoth(inProcess(t, heldBy{database: ownDatabase, since: 2 * OwnHoldBound})).Failure(what); !strings.Contains(failure, "a client of the test's own database") || !strings.Contains(failure, "pid 4242") {
+		if failure := inProcess(t, heldBy{database: ownDatabase, since: 2 * OwnHoldBound}, true).Failure(what); !strings.Contains(failure, "a client of the test's own database") || !strings.Contains(failure, "pid 4242") {
 			t.Errorf("an own holder the read found past OwnHoldBound: Failure = %q, want the own-hold failure naming the client", failure)
 		}
-		if failure := pastBoth(inProcess(t, heldBy{database: ownDatabase, since: time.Second})).Failure(what); failure != "" {
+		if failure := inProcess(t, heldBy{database: ownDatabase, since: time.Second}, true).Failure(what); failure != "" {
 			t.Errorf("an own holder the read found inside OwnHoldBound: Failure = %q, want the wait to go on", failure)
 		}
 	})
