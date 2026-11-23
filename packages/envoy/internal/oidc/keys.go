@@ -345,7 +345,11 @@ func (k *Keys) refreshInBackground(ctx context.Context) {
 }
 
 // wait is inflight's set, or its error, once it ends; or ErrKeySet when the caller's wait ends
-// first: ctx ending, or the keys deadline ctx carries (WithKeysDeadline) passing.
+// first: ctx ending, or the keys deadline ctx carries (WithKeysDeadline) passing. A wait that has
+// ended before it begins (a caller that hung up before it asked, a keys deadline already past) is
+// ErrKeySet even where the read has ended too by then: a select picks at random among the cases
+// ready when it runs, so the select alone would answer that caller with the read's set or with
+// ErrKeySet by chance.
 func (k *Keys) wait(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey, error) {
 	wait := ctx
 	if deadline, budgeted := keysDeadline(ctx); budgeted {
@@ -353,12 +357,14 @@ func (k *Keys) wait(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey
 		wait, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
-	select {
-	case <-inflight.done:
-		return inflight.keys, inflight.err
-	case <-wait.Done():
-		return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, k.jwksURI, wait.Err())
+	if wait.Err() == nil {
+		select {
+		case <-inflight.done:
+			return inflight.keys, inflight.err
+		case <-wait.Done():
+		}
 	}
+	return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, k.jwksURI, wait.Err())
 }
 
 // complete runs inflight's read on ctx, which no caller ends, and releases every caller waiting on

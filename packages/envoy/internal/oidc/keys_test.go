@@ -13,6 +13,7 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // testAlgorithm is the algorithm oidctest signs and publishes with, the one a caller asks Key for.
@@ -454,31 +455,117 @@ func TestAGoodReadAfterAFailedOneSettlesAMissingKeyID(t *testing.T) {
 }
 
 // A caller that hangs up ends only its own wait: the read it started runs on, reaches the issuer
-// and is kept, so the next caller is answered from that read with no read of its own.
+// and is kept, so the next caller is answered from that read with no read of its own. The caller
+// that hung up is ErrKeySet in either order of its leaving and its read's end, each held here
+// (hungUpCaller): its read still at the issuer when the caller has its answer, and its read ended
+// before the caller looks at it, the order a loaded runner gave in CI. The second order runs 64
+// times: where wait leaves the choice to a select, each run is the read's set or ErrKeySet at
+// random, so 64 runs that are all ErrKeySet pass by chance once in 2^64.
 func TestACallerThatHangsUpEndsOnlyItsOwnWait(t *testing.T) {
 	issuer := oidctest.New(t)
-	keys, _ := keysFor(t, issuer, "exchange-key")
+	source, _ := keysFor(t, issuer, "exchange-key")
+	for _, order := range []struct {
+		name          string
+		readEndsFirst bool
+		runs          int
+	}{
+		{"the caller leaves while its read is held at the issuer", false, 1},
+		{"the read ends before the caller looks at it", true, 64},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			for run := range order.runs {
+				hungUpCaller(t, issuer, source.jwksURI, order.readEndsFirst, run, order.runs)
+			}
+		})
+	}
+}
+
+// hungUpCaller is one caller that hung up before it asked a new Keys at jwksURI for a key no read
+// has fetched: it must be ErrKeySet, and the read it started must be kept and answer the next
+// caller, with no read of that caller's own. The read is held at the issuer until the test lets it
+// go, so the test sets the order. With readEndsFirst the caller is held where its wait begins (its
+// keys deadline's look-up, heldWait) until its read, let go, has ended; without it the caller has
+// its answer while its read is still held, and the read is let go after.
+func hungUpCaller(t *testing.T, issuer *oidctest.Issuer, jwksURI string, readEndsFirst bool, run, runs int) {
+	t.Helper()
+	keys := NewKeysAt(jwksURI)
+	release := make(chan struct{})
+	keys.HTTPClient = &http.Client{Transport: heldRead{next: http.DefaultTransport, release: release}}
+	var released sync.Once
+	letGo := func() { released.Do(func() { close(release) }) }
+	defer letGo()
+	inFlight := func() *keysFetch {
+		keys.mu.Lock()
+		defer keys.mu.Unlock()
+		return keys.inflight
+	}
+	reads := issuer.JWKSFetches()
 	hungUp, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := keys.Key(hungUp, "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
-		t.Fatalf("Key for a caller that hung up before any set was read: err = %v, want ErrKeySet", err)
+	var caller context.Context = hungUp
+	held := false
+	if readEndsFirst {
+		caller = &heldWait{Context: hungUp, hold: func() {
+			read := inFlight()
+			if read == nil {
+				t.Fatalf("run %d of %d: no read in flight where the hung-up caller's wait begins, though the issuer holds it", run+1, runs)
+			}
+			letGo()
+			testwait.Receive(t, "the end of the read the hung-up caller started", read.done)
+			held = true
+		}}
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, fetched := keys.state(); !fetched.IsZero() {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the read the hung-up caller started never landed within 5 s (key set read %d times)", issuer.JWKSFetches())
-		}
-		time.Sleep(10 * time.Millisecond)
+	if _, err := keys.Key(caller, "exchange-key", testAlgorithm); !errors.Is(err, ErrKeySet) {
+		t.Fatalf("Key for a caller that hung up before any set was read: err = %v, want ErrKeySet (run %d of %d)", err, run+1, runs)
+	}
+	if readEndsFirst && !held {
+		t.Fatalf("run %d of %d: the hung-up caller's wait never looked its keys deadline up, so its read did not end first: the order was not held", run+1, runs)
+	}
+	if read := inFlight(); read != nil {
+		letGo()
+		testwait.Receive(t, "the end of the read the hung-up caller started", read.done)
+	}
+	if _, fetched := keys.state(); fetched.IsZero() {
+		t.Fatalf("run %d of %d: the hung-up caller's read was not kept: no set has been read", run+1, runs)
 	}
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
-		t.Fatalf("Key after the hung-up caller's read landed: %v, want the key from that read", err)
+		t.Fatalf("run %d of %d: Key after the hung-up caller's read landed: %v, want the key from that read", run+1, runs, err)
 	}
-	if fetches := issuer.JWKSFetches(); fetches != 1 {
-		t.Fatalf("key set read %d times, want 1: the hung-up caller's read, kept for the next", fetches)
+	if fetches := issuer.JWKSFetches() - reads; fetches != 1 {
+		t.Fatalf("run %d of %d: key set read %d times, want 1: the hung-up caller's read, kept for the next", run+1, runs, fetches)
 	}
+}
+
+// heldRead holds each key-set read at the issuer until release is closed, or until the read's own
+// context ends, and then sends it on to next.
+type heldRead struct {
+	next    http.RoundTripper
+	release <-chan struct{}
+}
+
+func (h heldRead) RoundTrip(r *http.Request) (*http.Response, error) {
+	select {
+	case <-h.release:
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	return h.next.RoundTrip(r)
+}
+
+// heldWait is a caller's context whose first look-up of the keys deadline runs hold. wait looks
+// the keys deadline up before it looks at the read or at the caller's end, so hold runs where the
+// caller's wait begins, after the read the caller joined or started is under way.
+type heldWait struct {
+	context.Context
+	once sync.Once
+	hold func()
+}
+
+func (c *heldWait) Value(key any) any {
+	if _, deadline := key.(keysDeadlineKey); deadline {
+		c.once.Do(c.hold)
+	}
+	return c.Context.Value(key)
 }
 
 // Callers that hang up while a key set accepts the connection and never answers start no extra
