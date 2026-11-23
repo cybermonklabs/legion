@@ -548,6 +548,11 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.RunIdentityChecks: update table":                   {},
 	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.CheckVersionsOfAnEarlierRunner: update table":      {},
 	"packages/envoy/internal/pgmigrate/pgmigratetest/identity.go#pgmigratetest.CheckVersionsOfAnEarlierRunner: insert into table": {},
+	// A consumer-name family's selection records and sentinel (consumernames/pgstore's put, the
+	// store of Dispatch's and the daemons' families): intake_consumers
+	// (consumernames.IntakeConsumersTable), which is not projected.
+	"packages/envoy/consumernames/pgstore/pgstore.go#pgstore.*Store.put: insert into table": {},
+	"packages/envoy/consumernames/pgstore/pgstore.go#pgstore.*Store.put: update table":      {},
 }
 
 // runtimeTableHead matches a literal that ends where a write's table begins, the expression
