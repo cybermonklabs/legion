@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `listenerwire.SendResponse`, `KeptSendResponse` and `PublishResponse` hold their
+  `expects_reply` as `listenerwire.ExpectsAsSpoken` - the request's value, and whether the request
+  said no reply as the retired `"none"` - rather than the request's raw bytes, and
+  `listenerwire.ParseExpectsAsSpoken` reads it. The listener's answer to a send or a publish still
+  writes the request's own word back: `false`, `"optional"`, `"required"` or `"none"`, and no key
+  for a request that named none. A word the request wrote with JSON escapes now comes back without
+  them.
+time: 2026-11-23T08:04:41Z
+custom:
+    Issue: pr4368
