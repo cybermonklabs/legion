@@ -372,7 +372,7 @@ func testTheRecoveryStartsNoClaimReleasePass(t *testing.T) {
 	fixtures := bootClaimListing()
 	rig := newBootClaimRig(t, fixtures, nil)
 	keep := func(map[string]*record.Issue, dispatch.IssueSummary) bool { return true }
-	if err := rig.w.reconcileListing(context.Background(), rig.client.listing, keep, false); err != nil {
+	if _, err := rig.w.reconcileListing(context.Background(), rig.client.listing, keep, false); err != nil {
 		t.Fatalf("recovery reconcile: %v", err)
 	}
 	if got := rig.queued(); len(got) != 0 {

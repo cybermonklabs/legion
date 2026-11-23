@@ -1098,11 +1098,20 @@ func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
 // the swap (review 5911599468 of cybermonklabs/legion#4087 made that interleaving with a delay).
 func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap func(nats.KeyValue) nats.KeyValue) {
 	t.Helper()
+	swapSessionHandle(t, sessions, func(old bus.KeyValue) bus.KeyValue {
+		return bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+	})
+}
+
+// swapSessionHandle is swapSessionBucket for a test that replaces more than the legacy handle: the
+// jetstream context the bucket's stream is read through (bus.KeyValue.Streams), which the stream
+// leader's reads take, among them.
+func swapSessionHandle(t *testing.T, sessions *session.SessionRegistry, swap func(bus.KeyValue) bus.KeyValue) {
+	t.Helper()
 	registry := reflect.ValueOf(sessions).Elem()
 	field := registry.FieldByName("watcher")
 	watcher := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
-	old := watcher.Interface().(*kvwatch.Watcher).KV()
-	swapped := bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+	swapped := swap(watcher.Interface().(*kvwatch.Watcher).KV())
 	replacement := reflect.ValueOf(kvwatch.New("session registry", swapped, discardingCache{}))
 	// The cast below trusts the field's type, so the type is checked first: a sync.Mutex there
 	// would compile, and RWMutex.Lock would write past it into the next field.
@@ -3305,7 +3314,9 @@ func TestRegisterV1Routes_UnknownRouteReturnsJSONError(t *testing.T) {
 // JetStream duplicate, which the stream stores no second time; the answer has to say so, or
 // Dispatch records the retry as an ordinary send and the attempt history claims a delivery that
 // never happened. A send under a key its caller chose carries no MsgId, so it can never be one;
-// a key minted once for its message can.
+// a key minted once for its message can. Each send names the key-taken answer as one it reads,
+// as Dispatch's client does: a Dispatch copy names no session, so its repeat is answered with the
+// copy's ids alone (requestSender.answer), whose event_id is the first send's.
 func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{"ses_target"})
@@ -3314,7 +3325,7 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	send := func(t *testing.T, body string) listenerwire.SendResponse {
 		t.Helper()
 		recorder := httptest.NewRecorder()
-		sendHandler(state, logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body)))
+		sendHandler(state, logging.New("test")).ServeHTTP(recorder, readingKeyTaken(httptest.NewRequest(http.MethodPost, "/v1/messages/send", strings.NewReader(body))))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 		}
@@ -3326,15 +3337,16 @@ func TestSendHandler_ReportsAJetStreamDuplicate(t *testing.T) {
 	}
 
 	const dispatchSend = `{"target_session":"ses_target","source":"dispatch","message":"ship it","idempotency_key":"message-dup:steer"}`
-	if first := send(t, dispatchSend); first.Duplicate {
+	first := send(t, dispatchSend)
+	if first.Duplicate {
 		t.Fatalf("first send reported a duplicate; the stream held nothing")
 	}
 	second := send(t, dispatchSend)
 	if !second.Duplicate {
 		t.Fatalf("a repeat of a landed idempotency key must answer duplicate: %+v", second)
 	}
-	if second.EventID == "" {
-		t.Fatalf("a duplicate still names the envelope this request minted: %+v", second)
+	if second.EventID != first.EventID {
+		t.Fatalf("a duplicate names event %s, want the copy the stream holds, the first send's %s: %+v", second.EventID, first.EventID, second)
 	}
 
 	// The control: a different key is not a duplicate, so the flag is not simply what every

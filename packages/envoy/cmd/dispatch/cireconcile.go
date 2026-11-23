@@ -11,11 +11,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
-	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logging"
 )
@@ -81,8 +81,11 @@ func (r *registeredInstance) get() string {
 // instance is the holder the registration fills in (registeredInstance), which each pass records
 // its row under: the loop starts before the process is registered, so a pass has to ask for the
 // id rather than be handed it.
+//
+// renames is the rename pairs the boot read, which each pass names its repositories by
+// (cireconcile.Reconciler.Renames).
 func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer string,
-	interval time.Duration, instance *registeredInstance) (*cireconcile.Reconciler, error) {
+	interval time.Duration, instance *registeredInstance, renames refs.Renames) (*cireconcile.Reconciler, error) {
 	if natsClient == nil {
 		return nil, nil
 	}
@@ -111,6 +114,7 @@ func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppCo
 	}
 	return &cireconcile.Reconciler{
 		Pool:          database.Pool,
+		Renames:       renames,
 		GitHub:        github,
 		Limits:        limits,
 		Open:          open,
@@ -119,8 +123,5 @@ func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppCo
 		Pace:          cireconcile.RequestPace,
 		PassTimeout:   interval,
 		Instance:      instance.get,
-		// The WARN of a mapped name GitHub could not hold names the request of the settings
-		// route that mends the mapping, read by the route's own package.
-		MappingRepairs: api.MappingRepairs(database.Pool),
 	}, nil
 }

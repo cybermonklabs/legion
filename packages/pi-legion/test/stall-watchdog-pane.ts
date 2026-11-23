@@ -11,6 +11,7 @@ import {
   type Cleanup,
   call,
   deliveryFor,
+  isSelfCheck,
   messageStream,
   ompNatsGuard,
   ompRoot,
@@ -88,12 +89,6 @@ export const cleanup: Cleanup = [];
 /** A Messages request's whole conversation, as one string to find texts in. */
 export function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
-}
-
-/** A Messages request's last message, which is what started the turn it answers. */
-export function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
 }
 
 /**
@@ -386,9 +381,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   const { requests, base } = serveStandin(cleanup, (url, body) => {
     if (url.pathname === "/anthropic/v1/messages") {
       const request: Request = { path: url.pathname, body };
-      const own =
-        conversation(request).includes("WATCH-ROLE-ASSIGNMENT") &&
-        !lastMessage(request).includes("<btw>");
+      const own = conversation(request).includes("WATCH-ROLE-ASSIGNMENT") && !isSelfCheck(request);
       if (!own) {
         sides += 1;
         return new Response(

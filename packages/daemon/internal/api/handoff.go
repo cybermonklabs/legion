@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -977,40 +978,40 @@ type completionPosition struct {
 // row names the entry it was last raised to; an issue the workflow does not record is a position
 // with no issue and no error.
 func (s *server) handoffPosition(ctx context.Context, key string, role claim.Role) (completionPosition, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		return completionPosition{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issue, err := s.records.Issue(ctx, tx, key)
-	if err != nil || issue == nil {
-		return completionPosition{}, err
-	}
-	root := issue
-	if !claim.IsTreeRoot(issue.Key, issue.Tree) {
-		if root, err = s.records.Issue(ctx, tx, issue.Tree); err != nil {
-			return completionPosition{}, err
+	var position completionPosition
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := s.records.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
 		}
-		if root == nil {
-			return completionPosition{}, fmt.Errorf("the tree root %s of %s is not recorded", issue.Tree, issue.Key)
+		root := issue
+		if !claim.IsTreeRoot(issue.Key, issue.Tree) {
+			if root, err = s.records.Issue(ctx, tx, issue.Tree); err != nil {
+				return err
+			}
+			if root == nil {
+				return fmt.Errorf("the tree root %s of %s is not recorded", issue.Tree, issue.Key)
+			}
 		}
-	}
-	rows, err := s.records.Phases(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
-	completing := record.PhaseRowOf(rows, role)
-	pass, lastHandoff := implementer.Pass, implementer.LastHandoff
-	pr, err := s.records.PullRequest(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	check, err := s.records.ProductionCheck(ctx, tx, key)
-	if err != nil {
-		return completionPosition{}, err
-	}
-	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
-		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
-		pullRequest: pr, check: check}, tx.Commit(ctx)
+		rows, err := s.records.Phases(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
+		completing := record.PhaseRowOf(rows, role)
+		pass, lastHandoff := implementer.Pass, implementer.LastHandoff
+		pr, err := s.records.PullRequest(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		check, err := s.records.ProductionCheck(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		position = completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
+			lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
+			pullRequest: pr, check: check}
+		return nil
+	})
+	return position, err
 }

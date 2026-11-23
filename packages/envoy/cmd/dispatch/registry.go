@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -82,6 +83,27 @@ func joinRegistry(ctx context.Context, database *store.Store, instance processes
 	go processes.RunPrune(ctx, database.Pool, leases)
 	go announcer.Run(ctx)
 	return registration, nil
+}
+
+// schemaRefreshTimeout bounds one write of this process's schema numbers into its registry row
+// (refreshRegistrySchema), so a database that does not answer delays the installer's next read by
+// no more than this.
+const schemaRefreshTimeout = 5 * time.Second
+
+// refreshRegistrySchema writes the schema numbers this process serves now into its registry row
+// (processes.Registration.RefreshSchema). The server runs it on every reinstall that moved the
+// schema, before it closes its document sockets, and once after it registers, for a reinstall
+// that came between the numbers its registration read and the moment the installer could reach
+// the registration. A failure is logged: the row keeps its numbers until the next reinstall or
+// the next refresh, and the document sockets are closed all the same.
+func refreshRegistrySchema(ctx context.Context, registration *processes.Registration) {
+	ctx, cancel := context.WithTimeout(ctx, schemaRefreshTimeout)
+	defer cancel()
+	if err := registration.RefreshSchema(ctx, func() (int, int) {
+		return pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()
+	}); err != nil {
+		slog.Warn("dispatch: refresh this server process's schema numbers in the registry", "instance", registration.ID, "error", err)
+	}
 }
 
 // deregisterAfterDrain is the deregistration shutdown runs once HTTP has drained: registration's

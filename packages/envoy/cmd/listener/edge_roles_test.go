@@ -286,7 +286,7 @@ func (kv stalledSessionGetKV) Get(key string) (natsgo.KeyValueEntry, error) {
 }
 
 // The edge names a role's holder only when that holder is a session of the reader's projects
-// (edgeScope.holder): a role of the reader's project can be claimed by any session, and its claim
+// (edgeScope.holderConfirmed): a role of the reader's project can be claimed by any session, and its claim
 // record can be written by any writer of the role bucket, so a holder outside the reader's
 // projects is no holder the edge names, in a role read or in the answers of a role send. A PRIV
 // role's claim names S_pub, a live in-house session of PUB, under a distinctive process, and
@@ -434,22 +434,25 @@ func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
 // refusal gets (403 for a publish the server denied), and the refusal goes to the log. A holder
 // the scope shows is answered with the refusal as it is. The forward is the edge's own only once
 // a server denies it, which the edge's grant does not for an agent subject, so the row hands the
-// send its refusal. Control: with edge mode off, the scope shows every holder and the row fails.
+// send its refusal. Each holder's record is stored as another listener's registration, so the
+// leader read that confirms a holder the scope shows (edgeScope.holderConfirmed) finds a writer's
+// record. Control: with edge mode off, the scope shows every holder and the row fails.
 func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 	rig := newEdgeRig(t)
 	var scope *edgeScope
 	if rig.edgeOn() {
-		scope = &edgeScope{projects: rig.projects}
+		scope = &edgeScope{projects: rig.projects, logger: rig.harness.config.logger}
 	}
 	const hidden, shown = "ses_edge_forward_pub", "ses_edge_forward_priv"
 	for _, holder := range []struct {
 		id       string
 		projects []string
 	}{{hidden, []string{"PUB"}}, {shown, []string{"PRIV"}}} {
+		rig.placeElsewhere(t, holder.id, holder.projects...)
 		recorder := httptest.NewRecorder()
 		send := &roleSend{w: recorder, record: &requestRecord{logger: rig.harness.config.logger, line: "listener publish", laneKey: "topic"},
-			d: rig.deps, scope: scope, role: "legion-priv-priv-5-tester", arrived: time.Now()}
-		send.hold(roles.Resolution{State: roles.Live, Holder: holder.id, HolderState: session.Live, Entry: session.SessionEntry{Projects: holder.projects}})
+			d: rig.deps, ctx: t.Context(), scope: scope, role: "legion-priv-priv-5-tester", arrived: time.Now()}
+		send.hold(roles.Resolution{State: roles.Live, Holder: holder.id, HolderState: session.Live, Entry: session.SessionEntry{SessionID: holder.id, Projects: holder.projects}})
 		send.refused(fmt.Errorf("%w: nats: Permissions Violation for Publish to %q", bus.ErrPublishDenied, contracts.LegacyAgentSubject(holder.id)))
 		body := strings.TrimSpace(recorder.Body.String())
 		t.Logf("the refused forward to %s: status %d %s", holder.id, recorder.Code, body)
@@ -469,8 +472,10 @@ func TestAnEdgeRefusedRoleForwardNamesNoHiddenHolder(t *testing.T) {
 // to. So at the edge the answer for a holder the scope does not show is the listener's own text,
 // still the 503 maybe_stored with Retry-After that every listener gives such a send, and the
 // error goes to the log; a holder the scope shows is answered with the error as it is. Each send
-// runs through sendToRole, whose every forward ends in process until its window ends. Control:
-// with edge mode off, the scope shows every holder and the row fails.
+// runs through sendToRole, whose every forward ends in process until its window ends. Each holder
+// is stored as another listener's registration (placeElsewhere), so the leader read that confirms
+// a holder the scope shows (edgeScope.holderConfirmed) finds a writer's record. Control: with edge
+// mode off, the scope shows every holder and the row fails.
 func TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder(t *testing.T) {
 	rig := newEdgeRig(t)
 	const hidden, shown = "ses_edge_in_process_pub", "ses_edge_in_process_priv"
@@ -487,14 +492,15 @@ func TestAnEdgeRoleSendThatEndedInProcessNamesNoHiddenHolder(t *testing.T) {
 // sendEndingInProcess claims role for holder, a session of project another listener registered,
 // and sends a message to role through sendToRole under the edge's scope (none under the control),
 // with every forward ending while an earlier forward is in process, its error naming the subject
-// it went to. With movedTo set, movedTo is a session of PRIV past the live window, and the role
-// moves to it under the first forward. It fails t unless the answer is the 503 maybe_stored with
+// it went to. With movedTo set, movedTo is a session of PRIV past the live window whose record the
+// scope shows (confirmed before the send), and the role moves to it under the first forward. It
+// fails t unless the answer is the 503 maybe_stored with
 // Retry-After of an earlier attempt in process, and returns the answer's body.
 func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, movedTo string) string {
 	t.Helper()
 	var scope *edgeScope
 	if rig.edgeOn() {
-		scope = &edgeScope{projects: rig.projects}
+		scope = &edgeScope{projects: rig.projects, logger: rig.harness.config.logger}
 	}
 	rig.placeElsewhere(t, holder, project)
 	if _, err := rig.deps.registry.SetRole(holder, "shared-listener", role, false); err != nil {
@@ -504,7 +510,10 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 		var raw natsgo.KeyValue
 		swapSessionBucket(t, rig.harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue { raw = kv; return kv })
 		live, _ := rig.deps.sessions.Windows()
-		lapsed, err := json.Marshal(session.SessionEntry{MachineID: "shared-listener", SelfSubscribed: true, Title: movedTo, Projects: []string{"PRIV"},
+		// The record names its own key, so it is a registration the edge shows (edgeScope.shows):
+		// a record naming no key is no session's, and the row could not tell the holder the forward
+		// went to from the holder the send resolved last.
+		lapsed, err := json.Marshal(session.SessionEntry{SessionID: movedTo, MachineID: "shared-listener", SelfSubscribed: true, Title: movedTo, Projects: []string{"PRIV"},
 			UpdatedAt: time.Now().Add(-live - time.Minute).UnixMilli()})
 		if err != nil {
 			t.Fatal(err)
@@ -514,6 +523,17 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 		}
 		if !testwait.Holds(5*time.Second, testwait.Poll, func() bool { entry, _ := rig.deps.sessions.Lookup(movedTo); return entry.Title == movedTo }) {
 			t.Fatalf("%s's entry never reached this listener's copy", movedTo)
+		}
+		// The send judges the holder it resolves on the record its resolution reads
+		// (roleHolderSessions.Holder, which reads the bucket for a holder past the live window) through
+		// edgeScope.holderConfirmed, so the guard reads the record and judges it the same way.
+		read, err := roleHolderSessions{rig.deps.sessions}.Holder(context.Background(), movedTo)
+		if err != nil {
+			t.Fatalf("UNKNOWN: the resolution's read of %s: %v", movedTo, err)
+		}
+		judged, err := scope.holderConfirmed(context.Background(), rig.deps.sessions, roles.Resolution{State: roles.Lapsed, Holder: movedTo, Entry: read})
+		if err != nil || judged.Holder != movedTo {
+			t.Fatalf("UNKNOWN: the scope names %+v for %s, the holder the send resolves last (%v); want %s, so the row tells the holder the forward went to from the one the send resolved last", judged, movedTo, err, movedTo)
 		}
 	}
 	var forwards atomic.Int32
@@ -531,7 +551,8 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 	arrived := time.Now()
 	ctx, cancel := context.WithDeadline(context.Background(), arrived.Add(publishDeliveryWindow))
 	defer cancel()
-	sendToRole(ctx, recorder, scope, record, rig.deps, listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-in-process"), nil, role, false, arrived, nil)
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-in-process")
+	sendToRole(ctx, recorder, scope, record, rig.deps, item, senderOf(httptest.NewRequest(http.MethodPost, "/v1/messages/publish", nil), item), nil, role, false, arrived, nil)
 	body := strings.TrimSpace(recorder.Body.String())
 	t.Logf("the send to %s after %d forwards answered %d, Retry-After %q: %s", role, forwards.Load(), recorder.Code, recorder.Header().Get("Retry-After"), body)
 	var answer listenerwire.APIError
@@ -548,12 +569,56 @@ func sendEndingInProcess(t *testing.T, rig *edgeRig, role, holder, project, move
 // shows (PRIV) whose session is past the live window, so the send forwards nothing more, and its
 // window ends. The 503 maybe_stored carries the first forward's error, which names the PUB
 // holder's agent subject, so it is judged by the holder that forward went to, not by the holder
-// the send resolved last: it names neither the hidden holder nor its subject. Control: with edge
-// mode off, the scope shows every holder and the row fails.
+// the send resolved last: it names neither the hidden holder nor its subject. The later holder's
+// record names its own key, and the scope is shown to name it before the send
+// (edgeScope.namesHolderConfirmed), so a judgment by the later holder would let the error through.
+// Controls: with edge mode off, the scope shows every holder and the row fails; with the error
+// judged when the window ends, by the holder the send resolved last (endedInProcess calling
+// shownForwardError, as the edge-mode change had it before its fix), the row fails.
 func TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo(t *testing.T) {
 	const hidden, shown = "ses_edge_moved_in_process_pub", "ses_edge_moved_in_process_priv"
 	body := sendEndingInProcess(t, newEdgeRig(t), "legion-priv-priv-7-tester", hidden, "PUB", shown)
 	requireNamesNone(t, "the send's answer after the role moved", body, hidden)
+}
+
+// A sender's repeat after it took the role, an echo, is answered from the forward the route stored
+// for the role's earlier holder (roleSend.deliveredHeld). When that forward cannot be read back, a
+// verdict naming no sequence here, the 503's read error names the subject it read, the earlier
+// holder's agent subject. At the edge, for an earlier holder the scope does not show (PUB), the
+// answer is in the listener's own words, under the same status, Retry-After and prefix, and names
+// neither that holder nor its subject, although the holder this send resolved, the sender itself
+// (PRIV), is one the scope shows: each session's record is stored as another listener's
+// registration (placeElsewhere), so the leader read that confirms a holder the scope shows
+// (edgeScope.holderConfirmed, edgeScope.namesHolderConfirmed) finds a writer's record. Control:
+// with edge mode off, the scope shows every holder and the row fails.
+func TestAnEdgeEchoJudgesAnUnreadStoredForwardByTheEarlierHolderItWentTo(t *testing.T) {
+	const hidden, sender, role = "ses_edge_echo_unread_pub", "ses_edge_echo_unread_priv", "legion-priv-priv-8-tester"
+	rig := newEdgeRig(t)
+	var scope *edgeScope
+	if rig.edgeOn() {
+		scope = &edgeScope{projects: rig.projects, logger: rig.harness.config.logger}
+	}
+	rig.placeElsewhere(t, hidden, "PUB")
+	rig.placeElsewhere(t, sender, "PRIV")
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-echo-unread")
+	item.SourceSession = sender
+	recorder := httptest.NewRecorder()
+	send := &roleSend{w: recorder, record: &requestRecord{logger: rig.harness.config.logger, line: "listener publish", laneKey: "topic"}, d: rig.deps, ctx: t.Context(),
+		scope: scope, item: item, sender: senderOf(httptest.NewRequest(http.MethodPost, "/v1/messages/publish", nil), item), role: role, arrived: time.Now()}
+	send.hold(roles.Resolution{State: roles.Live, Holder: sender, HolderState: session.Live,
+		Entry: session.SessionEntry{SessionID: sender, MachineID: "shared-listener", SelfSubscribed: true, Title: sender, Projects: []string{"PRIV"}}})
+	if send.shown.Holder != sender {
+		t.Fatalf("UNKNOWN: the send names holder %+v, not %s, so the row cannot tell the earlier holder's judgement from the resolved holder's", send.shown, sender)
+	}
+	send.deliveredHeld(t.Context(), hidden, 0, sendSkipped)
+	body := strings.TrimSpace(recorder.Body.String())
+	t.Logf("the echo whose earlier holder's forward was not read answered %d, Retry-After %q: %s", recorder.Code, recorder.Header().Get("Retry-After"), body)
+	var answer listenerwire.APIError
+	_ = json.Unmarshal(recorder.Body.Bytes(), &answer)
+	if recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "1" || !strings.HasPrefix(answer.Error, storedCopyUnreadablePrefix) {
+		t.Errorf("the echo: status %d, Retry-After %q, %s; want the 503 with Retry-After: 1 of a stored copy not read", recorder.Code, recorder.Header().Get("Retry-After"), body)
+	}
+	requireNamesNone(t, "the echo whose earlier holder's forward was not read", body, hidden)
 }
 
 // A session that holds a role of another project when it registers at the edge, which another
@@ -561,12 +626,12 @@ func TestAnEdgeRoleSendJudgesAnInProcessErrorByTheHolderItsForwardWentTo(t *test
 // renewed, and the answer's warnings name it, as a claim of that role at the edge is refused. A
 // message on that role's lane after the registration then reaches no holder, and the session's
 // role of the token's project stays and is renewed. A role message the lane forwarded to the
-// session's agent subject before the registration still reaches it
-// (TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration), and so does one forwarded under a
-// later claim another writer makes: the relay's check of each frame's topic (edgeFrameVerdict),
-// which comes with #4819, holds those frames. Controls: with edge mode off, and with the edge's
-// release (edgeTopicHold.releaseRefusedRoles) releasing nothing, the INFRA claim still names the
-// session after the registration, and the row fails.
+// session's agent subject before the registration is withheld from it
+// (TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration), and so is one forwarded under a
+// later claim another writer makes: the relay's check of each frame's topic (edgeFrameVerdict)
+// holds those frames. Controls: with edge mode off, and with the edge's release
+// (edgeTopicHold.releaseRefusedRoles) releasing nothing, the INFRA claim still names the session
+// after the registration, and the row fails.
 func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 	rig := newEdgeRig(t)
 	const moved, privIssues = "ses_edge_role_moved", "notifications.dispatch.issue.PRIV.>"
@@ -619,18 +684,17 @@ func TestAnEdgeReleasesTheRoleClaimsOfOtherProjects(t *testing.T) {
 }
 
 // A role message the role lane forwarded to a session's own agent subject before its edge
-// registration still reaches the session after that registration released the role: an edge
-// listener runs with its grant, which turns the frame takeover off (takeOverFrame), and nothing
-// else at the edge holds a frame already forwarded. This row states that gap, as the edge section
-// of packages/envoy/README.md does: the relay's check of each frame's topic (edgeFrameVerdict),
-// which comes with #4819, withholds the frame, and once it is in, this row fails and is turned to
-// require the frame withheld. Here the session holds INFRA's role through another listener, the
-// shared listener's role lane forwards a message of that role to it, and the session then
-// registers at the edge under a PRIV token. Controls: with edge mode off, the role is not
-// released and the row fails; with the rig's listener running without the edge's grant, the
-// takeover copies the frame to the role's kept lane, the session's first frame is the PRIV event,
-// and the row fails.
-func TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
+// registration is withheld after that registration: its topic is of INFRA, a project the session's
+// PRIV token does not list, so the edge's relay check of each frame's topic withholds it
+// (edgeFrameVerdict), a frame already forwarded to the session's own subject held by it like any
+// other. An edge listener runs with its grant, which turns the frame takeover off (takeOverFrame),
+// so nothing copies the forward to the role's kept lane; the relay holds it in place. Here the
+// session holds INFRA's role through another listener, the shared listener's role lane forwards a
+// message of that role to it, and the session then registers at the edge under a PRIV token, which
+// releases the INFRA claim. Its first frame is the PRIV sentinel, not the INFRA forward. Live
+// control: the frame rule off at the relay (edgeWithholds back to the base's GitHub-only verdict)
+// lets the INFRA forward through, and the row fails naming it.
+func TestAnEdgeWithholdsARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
 	rig := newEdgeRig(t)
 	const sessionID, infraRole = "ses_edge_forwarded_before", "legion-infra-infra-5-tester"
 	rig.placeElsewhere(t, sessionID, "INFRA")
@@ -657,12 +721,9 @@ func TestAnEdgeRelaysARoleMessageForwardedBeforeItsRegistration(t *testing.T) {
 		t.Fatalf("after the registration at the edge %s's claim reads %+v (%v): the role was not released, so a frame of it is not one the release left", infraRole, claim, err)
 	}
 	sentinel, _ := rig.storeEvent(t, "notifications.dispatch.issue.PRIV.PRIV-1.comment.created")
-	// The relay sends in stream order, so the forward, stored first, is the first frame unless the
-	// relay holds it.
-	if first := standIn.collect(t, 1, 10*time.Second)[0].item; first.EventID != item.EventID {
-		t.Fatalf("the session's first frame at the edge is %s on %s, not INFRA's %s message forwarded before the registration: the relay held that frame, "+
-			"as the relay's check of each frame's topic (edgeFrameVerdict, with #4819) does; turn this row to require it withheld", first.EventID, first.Topic, infraRole)
-	}
+	// The relay sends in stream order, so the forward, stored first, would be the first frame were
+	// it not withheld. Its role topic is of INFRA, a project the session's PRIV token does not list,
+	// so the edge withholds it (edgeFrameVerdict): the session's first frame is the PRIV sentinel.
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), sentinel)
 }
 

@@ -60,17 +60,24 @@ import (
 const testOperatorToken = "operator-bearer-for-daemon-tests"
 
 // testDSN is the one database this run's tests write in, made by TestMain on the devbox and CI
-// Postgres LEGION_TEST_PG_DSN names (testdb.RunDatabaseMain). The daemon has no in-memory mode:
-// what it does on a boot is what its store recorded, and a boot migrates Legion's schema into
-// whatever database it is given, so the run owns one rather than sharing the server's. A test
-// that sets LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set.
+// Postgres LEGION_TEST_PG_DSN names (testdb.RunDatabaseMain). A pool opened on it, the daemon's
+// under test among them, holds testdb.PoolConns connections unless LEGION_TEST_PG_DSN sets a size
+// of its own, which it keeps (testdb.PoolBounded). The daemon has no in-memory mode: what it does
+// on a boot is what its store recorded, and a boot migrates Legion's schema into whatever database
+// it is given, so the run owns one rather than sharing the server's. A test that sets
+// LEGION_TEST_PG_DSN itself, to a server its own test needs, gets the value it set, under the same
+// rule for its pool size.
 func testDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv("LEGION_TEST_PG_DSN")
 	if dsn == "" {
 		t.Skip(testdb.SkipMessage)
 	}
-	return testdb.RunDatabaseFor(dsn)
+	bounded, err := testdb.PoolBounded(dsn, testdb.RunDatabaseFor(dsn))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bounded
 }
 
 // shortTempDir is a state directory short enough for the worker stream's unix socket: a socket
@@ -186,30 +193,39 @@ func TestThePortsHandedToADaemonCannotBeTakenBeforeItBinds(t *testing.T) {
 	}
 }
 
-// heldPorts are the listeners holdPortOn holds, by address, until a daemon takes one (heldListen).
+// heldPorts are the listeners holdPortAt holds, by address, until a daemon takes one (heldListen).
 var heldPorts = struct {
 	sync.Mutex
 	byAddress map[string]net.Listener
 }{byAddress: map[string]net.Listener{}}
 
-// holdPortOn listens on a free port of host for t and returns it. The listener is held until a
-// daemon of t's takes it through heldListen, or t ends. It is held under net.JoinHostPort(host,
-// port), the address the daemon builds from bind, not the listener's Addr(): Go reports a 0.0.0.0
-// listener as [::]:<port>, the dual-stack wildcard.
+// holdPortOn listens on a free port of host for t and returns it (holdPortAt).
 func holdPortOn(t *testing.T, host string) int {
 	t.Helper()
-	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	return holdPortAt(t, host, 0)
+}
+
+// holdPortAt listens on port of host for t, a free one where port is 0, and returns the port it
+// holds. The listener is held until a daemon of t's takes it through heldListen, or t ends, whose
+// cleanup drops it only while it is still the one held for its address. It is held under
+// net.JoinHostPort(host, port), the address the daemon builds from bind, not the listener's
+// Addr(): Go reports a 0.0.0.0 listener as [::]:<port>, the dual-stack wildcard.
+func holdPortAt(t *testing.T, host string, port int) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
-		t.Fatalf("hold a free port on %s: %v", host, err)
+		t.Fatalf("hold the port %d (0 for a free one) on %s: %v", port, host, err)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
+	port = listener.Addr().(*net.TCPAddr).Port
 	address := net.JoinHostPort(host, strconv.Itoa(port))
 	heldPorts.Lock()
 	heldPorts.byAddress[address] = listener
 	heldPorts.Unlock()
 	t.Cleanup(func() {
 		heldPorts.Lock()
-		delete(heldPorts.byAddress, address)
+		if heldPorts.byAddress[address] == listener {
+			delete(heldPorts.byAddress, address)
+		}
 		heldPorts.Unlock()
 		_ = listener.Close()
 	})
@@ -911,7 +927,7 @@ func TestTheStateListsTheHeldLifecycleRowBehindItsIssuesRunningOne(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, held); err != nil {
 			return err
 		}
@@ -1082,7 +1098,7 @@ func TestTheStateNamesThePacedCatchUpWaitingOnItsOutboxRow(t *testing.T) {
 	// written rather than that moment less a few hundred nanoseconds.
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	due := now.Add(30 * time.Second)
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		root := runningRoot(issue, phase.Implementing)
 		if err := records.PutIssue(ctx, tx, root); err != nil {
 			return err

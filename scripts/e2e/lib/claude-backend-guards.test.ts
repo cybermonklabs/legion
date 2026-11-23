@@ -112,6 +112,10 @@ scratch=$(mktemp -d "$SCRATCH/run.XXXXXX")
 started=()
 # The shell's own notice of each job the trap stops goes nowhere: it is no output of a row.
 trap '{ for p in \${started[@]+"\${started[@]}"}; do stop_tree "$p"; done; } 2>/dev/null' EXIT
+# args_laid_out PID holds once PID's command line reads: the kernel names an exec's program
+# (/proc/<pid>/exe) before it lays out that program's arguments, and /proc/<pid>/cmdline reads
+# nothing until then (environ_laid_out, lib/process-tree.sh, tells why).
+args_laid_out() { local -a words; process_args "$1" words; }
 spawn() {
   "$@" </dev/null >/dev/null 2>&1 &
   pid=$!
@@ -134,8 +138,9 @@ await_child() {
   [ -n "$child" ] && [ "$seen" = "$want" ] ||
     { echo "no child of $pid running $want within 10 s (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
 }
-# await_below EXE sets below to the process anywhere below pid that runs EXE once one does, read
-# through every process's children and the kernel's record of what each runs, never a name.
+# await_below EXE sets below to the process anywhere below pid that runs EXE, once one does and its
+# command line, which the rows read, is laid out (args_laid_out); read through every process's
+# children and the kernel's record of what each runs, never a name.
 await_below() {
   local want i p queue
   want=$(realpath -e -- "$1")
@@ -144,7 +149,7 @@ await_below() {
     queue=("$pid")
     while [ "\${#queue[@]}" -gt 0 ] && [ -z "$below" ]; do
       for p in $(cat /proc/"\${queue[0]}"/task/*/children 2>/dev/null || :); do
-        if [ "$(readlink "/proc/$p/exe" 2>/dev/null || :)" = "$want" ]; then below=$p; else queue+=("$p"); fi
+        if [ "$(readlink "/proc/$p/exe" 2>/dev/null || :)" = "$want" ] && args_laid_out "$p"; then below=$p; else queue+=("$p"); fi
       done
       queue=("\${queue[@]:1}")
     done

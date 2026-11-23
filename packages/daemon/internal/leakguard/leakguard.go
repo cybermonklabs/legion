@@ -222,7 +222,7 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	defer check.remove()
 	if check.path != "" {
 		if err := g.shared(ctx, what, child{
-			argv:  []string{check.path, "check-public-text", "-"},
+			argv:  modeArgv(check.path, "check-public-text", "-"),
 			stdin: strings.NewReader(req.Text),
 		}); err != nil {
 			return err

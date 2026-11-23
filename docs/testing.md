@@ -42,6 +42,7 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+  A port a test holds so that another bind of it fails is held at the address that bind names: a wildcard listener from `net.Listen` (`0.0.0.0` or `[::]`, which sets `SO_REUSEADDR`) keeps a bind of one address off its port under Linux but not under gVisor, whose netstack lets a second socket that sets `SO_REUSEADDR` bind that address beside it (`internal/testnats`'s `TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady` holds its server's profiler port at the server's own host for this reason).
 
 - A listener a client dials — a test NATS server, a relay, proxy or fake in front of one — listens on `testport.ListenLoopback()` in `packages/envoy` and on `testnats.ListenLoopback()` in `packages/daemon`: a port the kernel chooses at a loopback address of its own, one of `127.0.0.0/8` chosen at random on Linux (`LoopbackIP`), and `127.0.0.1` elsewhere.
   A client a test leaves behind keeps dialing its server's address (a bus client reconnects forever), and the kernel or Docker gives a freed port to the next listener that asks, in the same test binary or in another one `go test` runs beside it; on `127.0.0.1` that listener's test takes the stranger's connections for its own.
@@ -313,8 +314,14 @@ and each command runs there.
 - `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
   one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
   a report of every row that failed, with how many of its runs failed, its seed and the command
-  that runs it again, and of every failure that belongs to no row.
-  `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
+  that runs it again, and of every failure that belongs to no row. A SIGTERM or a SIGINT stops it:
+  it stops Bun and reports each test file a worker was in, with the run and the row it was in, by
+  the row's place and name. One that comes after Bun has ended, while it writes its report, is
+  named in the report beside Bun's results. A worker, or Bun's test process, killed from outside,
+  as the out-of-memory killer kills one, is named the same way: each file it was in, with the run
+  and the row. `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three
+  seeds, under a deadline that sends it that SIGTERM; the step `exec`s `timeout`, so the SIGINT
+  that GitHub's runner sends a cancelled step, or one at its budget, reaches it too.
 
 - A rerun of a file keeps every module the run before loaded, so a module-level store or cache
   keeps what that run left in it. Where a row needs such state empty, the module exports a reset and
@@ -346,12 +353,11 @@ and each command runs there.
   what a page draws without a read comes at once. A row that waits for what the page draws at
   once, then reads what a read brings without waiting for it, fails there under every seed, where
   under `test:web` it fails only on a runner loaded enough to split the two commits:
-  `settings.test.tsx`'s mapping row read the sidebar's Settings link after the page's heading,
-  and the sidebar draws its links only once its inbox, pinned issues and projects have answered.
-  The wait is the real
-  `setImmediate`, which a fake clock does not hold, and a cache a row seeds, a mutation and a write
-  of the page's store run no `queryFn`, so none of them is held. A row that fails there and
-  passes under `test:web` reads before it waits. Waiting fixes none of three other kinds of
+  a row of `settings.test.tsx` read the sidebar's Settings link after the page's heading, and the
+  sidebar draws its links only once its inbox, pinned issues and projects have answered. The wait
+  is the real `setImmediate`, which a fake clock does not hold, and a cache a row seeds, a mutation
+  and a write of the page's store run no `queryFn`, so none of them is held. A row that fails there
+  and passes under `test:web` reads before it waits. Waiting fixes none of three other kinds of
   failure, which the head of `hold-read-answers.ts` names: a row that times a read's answer (the
   query client's own rows, a write's 401 path through the sign-in check), a row that ends while a
   read it never reads is out, whose late answer React reports outside `act`, and a page that
@@ -549,15 +555,28 @@ schema.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.
-`internal/store`'s own tests take that same `Database`, from the leaf package
+`internal/store`'s own tests take that same `Database`, from the package
 `packages/daemon/internal/testpg/testdb` that holds it: `internal/testpg` imports `internal/store`
 to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
-imports nothing of the module and so is open to every package of it.
+imports no package of the module except `internal/testwait`, which imports none, and so is open to
+every package of it.
 A package whose tests migrate into the database their DSN names, rather than taking one each,
 takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
 `testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
 database they are given).
+
+A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
+its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater
+of 4 and the machine's CPU count, so on a large machine one test could ask for more connections
+than PostgreSQL's default 100 allow, and pass only on a small one. `testdb.PoolBounded` gives a
+URL the pool keys `LEGION_TEST_PG_DSN` sets, or `pool_max_conns=4` where it sets no size;
+`testdb.Database`, `testpg`'s `Clone`, and the `testDSN` of `internal/daemon` and
+`internal/store` answer such URLs. A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or
+another child process reads takes `testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which
+hold none of pgxpool's keys even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a
+key to the server, which refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets
+`pool_max_conns`.
 
 A test that needs one of envoy's binaries takes it from
 `packages/daemon/internal/testbuild`'s `EnvoyBinary`, which builds each command once per test
@@ -685,6 +704,30 @@ Two scratch tests checked it, each with the 10 s clock and with this wait:
 
 - 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3 with the 9 s bound and 1 of 1 with the 16 s one.
 - An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s with the 9 s bound and at 16.0 and 16.2 s with the 16 s one, naming the stall and the room's counts.
+
+## A test that reads a model request's messages
+
+Oh My Pi sends its date/cwd reminder (`<system-reminder>\nToday: …`) with a model request: ahead
+of a user turn that is new since the session's previous request, or, when the local date or the
+working directory has changed since then and the request holds no such turn, as a message of its
+own after the request's newest message, where it stays in every later request. A run that crosses
+midnight therefore sends requests that a run within one day does not, and a test that takes a
+request's last message for the one that started its turn, or reads a message by its place or its
+exact text, fails for the date alone. The stall watch's restart row did, in merge-group run
+44963211024, whose case ran across midnight UTC: the turn ran, and its request ended with the
+reminder.
+
+- Read a stand-in's requests through `ownMessages` and `newestMessage`
+  (`packages/pi-shared/test/omp-harness.ts`), which give the messages as the session sent them,
+  without the reminder in either form, and tell a side turn with `isSelfCheck`, which reads the
+  newest of them. The daemon's live proofs skip the reminder message with `isDateCwdReminder`
+  (`packages/daemon/internal/daemon/claim_compaction_live_test.go`).
+- A plugin's own context hook needs neither: it runs before the provider transform that adds the
+  reminder (`agent-loop.ts` of the pinned Oh My Pi).
+- Prove such a read with the date moved inside the host: start omp with `TZ=Etc/GMT+12`, and set
+  `process.env.TZ = "Etc/GMT-14"` from an extension of the pane at the moment the row needs. The
+  two zones are 26 hours apart, so the local date moves on whatever the time of day, and Bun
+  applies a TZ set at run time.
 
 ## A writer a test holds
 

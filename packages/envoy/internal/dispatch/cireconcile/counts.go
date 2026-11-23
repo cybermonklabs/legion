@@ -37,13 +37,15 @@ type counts struct {
 	// observation the store applied as no change, which is what every observation of a head the
 	// listener already recorded is, changes no record, so a pass that mended nothing reports none.
 	records int
-	// mappingsSkipped counts the repositories the pass skipped, one for each canonical name it
-	// could not reconcile, so mappings renamed onto one repository are skipped once between
-	// them; tooLarge counts the heads whose answer was past what githubapp reads.
-	mappingsSkipped int
+	// defaultsSkipped counts the repositories the pass skipped, one for each canonical name it
+	// could not reconcile, so the names a rename joins into one repository are skipped once
+	// between them. A project's default repository the App is missing from is counted here, and
+	// so is every other skip of resolve, whoever names the repository (appAbsent). tooLarge
+	// counts the heads whose answer was past what githubapp reads.
+	defaultsSkipped int
 	tooLarge        int
 	// withoutApp counts the repositories only an issue names that the App is not installed on,
-	// which the pass passes over and which are no part of mappingsSkipped: nothing is there to
+	// which the pass passes over and which are no part of defaultsSkipped: nothing is there to
 	// mend, where a skipped repository is a fault (appAbsent).
 	withoutApp int
 	// pace is the gap the pass left between its requests, which it set from the work it expected
@@ -134,7 +136,7 @@ func (r *Reconciler) known() int {
 // answering, and where the pass after it will take up. A field added to the line is written
 // after the fields already there, which leaves the order of those unchanged: the last of them
 // is repositories_without_app, the repositories only an issue names that the App is not
-// installed on, which mappings_skipped does not count.
+// installed on, which defaults_skipped does not count.
 func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
 	attrs := []any{
 		"list_pages", c.listPages,
@@ -142,7 +144,7 @@ func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
 		"head_requests", c.headRequests,
 		"heads_not_modified", c.notModified,
 		"records", c.records,
-		"mappings_skipped", c.mappingsSkipped,
+		"defaults_skipped", c.defaultsSkipped,
 		"heads_too_large", c.tooLarge,
 		"rate_limited", at != nil,
 	}

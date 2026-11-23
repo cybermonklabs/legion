@@ -1,6 +1,7 @@
 package testbin
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,7 +31,7 @@ func TestTheJJProbeTakesNoVariableOfTheProcess(t *testing.T) {
 	}
 
 	home := t.TempDir()
-	probe := probeCommand(home)
+	probe := probeCommand(context.Background(), home)
 	env := probe.Env
 	if probe.Dir != home {
 		t.Errorf("the probe runs in %s, want the empty home %s, since jj opens the closest .jj above the directory it runs in", probe.Dir, home)

@@ -48,7 +48,7 @@ func requireNoPrivateReference(t *testing.T, line string) {
 func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
-	createProjects(t, handler, "ACME", "KERNEL")
+	createTestProject(t, handler, "ACME", "KERNEL")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
 	long := "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case."
@@ -264,7 +264,7 @@ func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 func TestThePullRequestLineCarriesNoRunAndNoNegativeControl(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
-	createProjects(t, handler, "ACME")
+	createTestProject(t, handler, "ACME")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
 	recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, map[string]any{
@@ -374,31 +374,68 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords(t *testing.T) {
 	requireNoPrivateReference(t, check.CI.Line)
 }
 
-// The run a check's ci_check names is text the check's author wrote, and every line Dispatch writes
-// for such a check names it, so the line keeps of the name what it keeps of a reading. A name it
-// keeps nothing of reads as the run the check names. The run `go-test`, which names no project,
-// stays whole: the other CI tests of this package hold its lines.
+// The run a check's ci_check names is text the check's author wrote. A pull-request line names the
+// run only when it keeps every word of the name, and otherwise reads `the CI run the check names`:
+// the words left of a name that lost some are a run nobody can find, as `0)` is of
+// `unit_tests (test_build.py, 0)`, whose `_` words the plain-word rule drops, and the legs of a
+// matrix job would read alike. A name holding an issue key loses that word, so it reads the same.
+// The runs `e2e build` and `e2e  build`, every word of which the line keeps, are named, the second
+// with its blanks as one. Each row is reported, so a rule that gets several rows wrong shows each.
 func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESCQ", "CI run name", "A spec\n")
 	withControl := `negative_control="` + ciCheckNegativeControl + `" `
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
 		ciCheckBlock("c1", withControl+`ci_check="e2e `+issue.Key+`"`)+"\n"+
-			ciCheckBlock("c2", withControl+`ci_check="`+issue.Key+`"`))
+			ciCheckBlock("c2", withControl+`ci_check="`+issue.Key+`"`)+"\n"+
+			ciCheckBlock("c3", withControl+`ci_check="unit_tests (test_build.py, 0)"`)+"\n"+
+			ciCheckBlock("c4", withControl+`ci_check="unit_tests (test_build.py, 1)"`)+"\n"+
+			ciCheckBlock("c5", withControl+`ci_check="e2e build"`)+"\n"+
+			ciCheckBlock("c6", withControl+`ci_check="e2e  build"`))
 
 	read := readResults(t, handler, issue.Key)
 	for _, want := range []struct{ check, line string }{
-		{"c1", "- Check c1 (before_merge): CI run e2e has no result (no_head)"},
+		{"c1", "- Check c1 (before_merge): the CI run the check names has no result (no_head)"},
 		{"c2", "- Check c2 (before_merge): the CI run the check names has no result (no_head)"},
+		{"c3", "- Check c3 (before_merge): the CI run the check names has no result (no_head)"},
+		{"c4", "- Check c4 (before_merge): the CI run the check names has no result (no_head)"},
+		{"c5", "- Check c5 (before_merge): CI run e2e build has no result (no_head)"},
+		{"c6", "- Check c6 (before_merge): CI run e2e build has no result (no_head)"},
 	} {
 		check := checkOf(t, read, want.check)
 		if check.CI == nil {
-			t.Fatalf("%s carries no ci", want.check)
+			t.Errorf("%s carries no ci", want.check)
+			continue
 		}
 		if check.CI.Line != want.line {
-			t.Fatalf("%s's pull-request line = %q, want %q", want.check, check.CI.Line, want.line)
+			t.Errorf("%s's pull-request line = %q, want %q", want.check, check.CI.Line, want.line)
 		}
 		requireNoPrivateReference(t, check.CI.Line)
+	}
+}
+
+// A pass or a fail names the run that proved it as a line with no result does: a name the line
+// keeps only part of reads `the CI run the check names`, and the check's words follow the run. The
+// run's own name, which the read answers in ci.run, stays whole.
+func TestTheCIVerdictLineNamesTheRunOnlyWhenItKeepsEveryWordOfIt(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCQ", "acme/widgets", "CI verdict line")
+	const run = "unit_tests (test_build.py, 0)"
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		ciCheckBlock("c1", `negative_control="`+ciCheckNegativeControl+`" ci_check="`+run+`"`))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.set(headCommit, completedRun(31, run, "success"))
+
+	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	if check.CI == nil {
+		t.Fatalf("c1 carries no ci")
+	}
+	if check.CI.Run != run {
+		t.Errorf("c1's ci.run = %q, want the name whole, %q", check.CI.Run, run)
+	}
+	want := "- Check c1 (before_merge): pass at " + headCommit + ", from the CI run the check names. The server builds at the head."
+	if check.CI.Line != want {
+		t.Errorf("c1's pull-request line = %q, want %q", check.CI.Line, want)
 	}
 }
 

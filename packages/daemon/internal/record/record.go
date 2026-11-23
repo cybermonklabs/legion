@@ -987,10 +987,10 @@ type PullRequest struct {
 	// withJudgement), and so does a move of the head (classify's advance): it names its own head,
 	// and a read of another head confirms nothing of it.
 	ConflictRead *ConflictRead
-	// MergeForward is the daemon's ask that the implementer merge the base forward onto a head
-	// whose conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands.
-	// The issue keeps its phase, and the ask is a message on the implementer's role topic rather
-	// than a phase start: it names the head and the base branch of the conflict, the phase the
+	// MergeForward is the daemon's ask that a role merge the base forward onto a head whose
+	// conflict was confirmed and acted on (dispatch://INFRA-4374 R1), nil while none stands. The
+	// issue keeps its phase, and the ask is a message on the role's own topic rather than a phase
+	// start: it names the head and the base branch of the conflict, the role asked, the phase the
 	// issue stood in and stays in, why the act was needed, when it was asked, and, once a new head
 	// arrives, that head (MergeForward.Landed). It also keeps every merge forward that landed
 	// before it in the same stretch of work (MergeForward.Earlier).
@@ -1038,27 +1038,40 @@ type ConflictRead struct {
 	At   time.Time `json:"at"`
 }
 
-// MergeForward is the daemon's ask that the implementer merge Base forward onto Head
-// (PullRequest.MergeForward). Phase is the phase the issue stood in when the daemon asked, and
-// stays in. Why is the first of R0's reasons that held (dispatch://INFRA-4374 R0, ConflictWhy).
-// AskedAt is when the ask was written. Landed is the first new head that arrived after the ask, ""
-// until one does; ReviewAsked is whether that landing asked the reviewer to read the merge, which
-// it does when the issue stands past review. Earlier is every merge forward that landed before
-// this ask in the same stretch of work, oldest first: a later ask replaces the one the record
-// holds, so when the head a merge left conflicts in its turn and is merged forward again, Earlier
-// is what still names the head the first merge replaced (PullRequest.MergeForward says how long
-// the stretch lasts). It is stored as the jsonb of pull_requests.merge_forward (migration
-// 20261119003157), null for nil; the jsonb takes Earlier with no migration of its own, and leaves
-// it out while it is empty.
+// MergeForward is the daemon's ask that a role merge Base forward onto Head
+// (PullRequest.MergeForward). Role is the role asked: the implementer before merging, and the
+// merger in merging (MergeForwardAsker, cybermonklabs/legion#4979); Asked reads it. Phase is the phase
+// the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
+// held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
+// first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
+// landing asked the reviewer to read the merge, which it does when the issue stands past review.
+// Earlier is every merge forward that landed before this ask in the same stretch of work, oldest
+// first: a later ask replaces the one the record holds, so when the head a merge left conflicts in
+// its turn and is merged forward again, Earlier is what still names the head the first merge
+// replaced (PullRequest.MergeForward says how long the stretch lasts). It is stored as the jsonb
+// of pull_requests.merge_forward (migration 20261119003157), null for nil; the jsonb takes Earlier
+// and Role with no migration of their own, and leaves each out while it is empty.
 type MergeForward struct {
 	Head        string               `json:"head"`
 	Base        string               `json:"base"`
+	Role        claim.Role           `json:"role,omitempty"`
 	Phase       phase.Phase          `json:"phase"`
 	Why         ConflictWhy          `json:"why"`
 	AskedAt     time.Time            `json:"askedAt"`
 	Landed      string               `json:"landed,omitempty"`
 	ReviewAsked bool                 `json:"reviewAsked,omitempty"`
 	Earlier     []LandedMergeForward `json:"earlier,omitempty"`
+}
+
+// Asked is the role the ask names: Role, or the implementer for an ask that names none, which a
+// daemon before cybermonklabs/legion#4979 wrote, since it asked the implementer in every phase. So an
+// implementer that daemon asked in merging still merges after the upgrade, and the merger is asked
+// only by a new act (workflow's mergeForward).
+func (m MergeForward) Asked() claim.Role {
+	if m.Role == "" {
+		return claim.RoleImplementer
+	}
+	return m.Role
 }
 
 // LandedMergeForward is a merge forward that landed before the ask the record holds
@@ -1078,8 +1091,8 @@ type LandedMergeForward struct {
 type ConflictWhy string
 
 const (
-	// ConflictMergeNext: the issue stands in accepting, retro or merging, or is held from one of
-	// them (PastReview).
+	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict in accepting
+	// or retro waits for merging, where the merger merges the base forward (cybermonklabs/legion#4979).
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"
@@ -1089,22 +1102,35 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardPhases is the phases a merge forward is asked in: implementing, where the work
-// already is, and every phase after it up to the merge, which the issue keeps while the
-// implementer merges (dispatch://INFRA-4374 R1). An issue that stands in none of them - before its
-// implementation, or out of the workflow - has no pull request work to merge forward. They are
-// also the phases a head move is read for a conflict in (classify.MergeStateReadOwed), since that
-// read is what can lead to the ask. Both read it through StandsIn, so a hold from one of them
-// counts as standing there.
+// MergeForwardPhases is the phases a merge forward stands in: implementing, where the work
+// already is, and every phase after it up to the merge, which the issue keeps while the role asked
+// (MergeForwardAsker) merges (dispatch://INFRA-4374 R1). In accepting and retro nothing is asked
+// (classify.ConflictNeedsMerge): the merger merges the base forward once the issue reaches merging
+// (cybermonklabs/legion#4979), and an ask made before stands there until it lands. An issue that
+// stands in none of them - before its implementation, or out of the workflow - has no pull request
+// work to merge forward. They are also the phases a head move is read for a conflict in
+// (classify.MergeStateReadOwed), since that read is what records the conflict an ask is made for.
+// Both read it through StandsIn, so a hold from one of them counts as standing there.
 var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
+
+// MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
+// in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
+// the implementer in every earlier phase of MergeForwardPhases. The ask's row goes to it
+// (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
+func MergeForwardAsker(at phase.Phase) claim.Role {
+	if at == phase.Merging {
+		return claim.RoleMerger
+	}
+	return claim.RoleImplementer
+}
 
 // BaseRules is what the daemon read of the rules a pull request's base branch holds for its
 // required status checks, on a read that found the head conflicting with that base
 // (intake.PullRequestMergeability.Rules). It is what R0 decides a confirmed conflict on
 // (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge): a base that requires a check which has
 // not passed on the head, or that requires a pull request to be current with it, is a base the
-// head cannot merge into until the implementer merges it forward, and GitHub runs no check at
-// all on a head that conflicts with its base.
+// head cannot merge into until the base is merged forward, and GitHub runs no check at all on a
+// head that conflicts with its base.
 //
 // Required is every required status-check context, each once and sorted: the contexts of each
 // `required_status_checks` rule the base's rulesets apply, then a classic protection rule's
@@ -1728,7 +1754,10 @@ type Carried[T any] struct {
 func Carry[T any](value T) Carried[T] { return Carried[T]{Value: value, Carried: true} }
 
 // DispatchReading is one reading of a Dispatch issue at Seq, the sequence Dispatch had run to when
-// it was read: the values it carries, and the claim it showed (ClaimSeq above zero).
+// it was read: the values it carries, and the claim it showed (ClaimSeq above zero). Applied says
+// the reading is an issue fact the daemon applies through its handlers — an issue event, or a view
+// intake let through — rather than a reading that decides nothing: a listing, the periodic turn's
+// re-read, or the release's read of the children it adopts.
 type DispatchReading struct {
 	Key, Project string
 	Seq          int64
@@ -1739,6 +1768,7 @@ type DispatchReading struct {
 	Rank         Carried[string]
 	ClaimedBy    string
 	ClaimSeq     int64
+	Applied      bool
 }
 
 // Store contains only transactional operations. The caller owns each transaction so intake can
@@ -1829,7 +1859,9 @@ type Store interface {
 	// and an older one changes nothing at all. A value the reading does not carry stays as the copy
 	// holds it, and on a new row takes its column's default at sequence 0, written by no reading.
 	// A parent of "" is Dispatch showing no parent, a value written like any other. The row's Seq
-	// becomes the highest sequence of any reading it took. The claim is fenced apart, on ClaimSeq,
+	// becomes the highest sequence of any reading it took. An applied reading (Applied) also raises
+	// the row's applied sequence to its own where that stands lower, whatever its values did, and
+	// any other reading leaves it (DispatchIssueApplied). The claim is fenced apart, on ClaimSeq,
 	// whatever the values did: a reading carrying a claim (ClaimSeq above zero) writes it only over
 	// an older claim, and one carrying none leaves the stored claim as it stands. A reading whose
 	// Seq is zero — a fact the daemon minted from its own record, which Dispatch never said — writes
@@ -1866,6 +1898,12 @@ type Store interface {
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
+	// DispatchIssueApplied is the highest sequence of an issue fact of key the daemon applied (a
+	// reading PutDispatchIssue took as Applied), 0 when it applied none or the copy holds no row of
+	// key: blockers.Mirror writes every issue fact the daemon applies first, in the fact's own
+	// transaction, whether or not the daemon records the issue, and no listing or turn's re-read
+	// moves it.
+	DispatchIssueApplied(ctx context.Context, tx pgx.Tx, key string) (int64, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,

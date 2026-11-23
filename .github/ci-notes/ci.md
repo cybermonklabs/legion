@@ -243,6 +243,9 @@ holds the reviewer's prompt to, the GitHub App helper
 internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
+It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
+and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
+patches nats-server with.
 No bun_install and no skills/** - the two pages of skills/ this filter names are all
 this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
@@ -1325,7 +1328,8 @@ only which lane it runs: that job's `lane:` input reads the label, and
 
 The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
 them on the tree the change lands as, and that is where their result normally comes from;
-a pull request runs them only when it carries the label `full-ci`. Each is false on a
+a pull request runs them only when it carries the label `full-ci`, or one of them when it
+carries that one's `lane:<output>` label (the next entry). Each is false on a
 pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
 it reads any other output, and no job's `if:` knows about the label. The label is read
 from the pull request the run's own event carries, so it takes effect at the next push,
@@ -1334,6 +1338,36 @@ trigger, which would start a run that joins this workflow's concurrency group an
 pull request's run in progress. Take the label off once the run it was added for passes,
 since every later push would run the slow suites again, unless a `ci_check` of the issue
 names one of them, which reads `skipped` on a pull request without the label.
+
+## A lane label turns on one slow suite on a pull request
+
+A pull request label `lane:<output>` turns on that one output of `changes`, where its paths
+matched, as `full-ci` turns on all of them. `<output>` is one of the nine outputs the
+`full-ci` term gates: `envoy_go`, `envoy_go_race`, `envoy_go_race_api`, `envoy_go_claim_model`,
+`envoy_go_race_docs` (which gates envoy-go-race-docs and envoy-go-docs-finalizers both),
+`dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds` and `envoy_smoke`. It is for
+a pull request that needs one slow suite's result at its head - a test that only that suite
+runs, or a `ci_check` naming that job - without running the other nine. Each output's term
+names its own label, so the label that turns an output on is written beside it and nowhere
+else, and the paths term stays: a lane label never runs a suite its filter did not select.
+
+A label that names no such output - a misspelling, a job id such as `lane:envoy-go` where the
+output is `lane:envoy_go`, or an output with no `full-ci` term - turns on nothing and fails
+nothing. The label decides only what runs, never the verdict, and ci-ok's report names each
+job the label held back, so a misspelt label shows as its job not run. Failing the run on such
+a label would fail every check of it for a typo and need a step of its own that reads the
+labels. GitHub compares the label without regard to case. dispatch-browser's lane is not an
+output, and stays the `full-ci` label's to choose.
+
+A lane label is read as `full-ci` is, from the pull request the run's own event carries: it
+takes effect at the next push, reopen or ready-for-review, not when it is added, since this
+workflow takes no `labeled` trigger. On a head with no new commit to push, close the pull
+request and reopen it. Take it off once the run it was added for passes, as `full-ci`.
+.github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
+(.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
+own output and leaves every other output as an unlabelled pull request has it, `full-ci` still
+turns all nine on, the paths term still holds under both, and a label naming no such output
+turns on nothing.
 
 ## Why envoy-go's fast half comes back on every push
 
@@ -1603,6 +1637,9 @@ Postgres, the tools and the cache they need. It left the test job in dispatch://
 where one filter had to cover both: a change to a shell script, to packages/claude-envoy or
 to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
 and test, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives.
+
+It runs as two jobs of .github/workflows/ci-job-daemon-go.yaml at the same time: the race step
+in one, the rest in the other (ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own).
 
 ## Why the three plugin pack tests are a job of their own
 
