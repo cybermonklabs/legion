@@ -85,20 +85,23 @@ bun scripts/dispatch/check-runs-census.ts texts \
 ```
 
 It reads two sources. One is each document under **Referenced by** of the comment
-`--referenced-by` names, whose issue is neither done nor in `retro`, with that issue's plan; the
-Verification document of the reading names the comment. The other is each issue of `--project`
-that is neither done nor in `retro`, every page of each status, with the row count compared
-against the total the listing reports. `--keys <file>` reads the listed issues instead, done or
-not; `rounds` writes such a file. A document an issue's list does not name counts as read, with no
-checks.
+`--referenced-by` names, by its issue and slug, whose issue is neither done nor in `retro`, with
+that issue's plan; the Verification document of the reading names the comment. A list whose edges
+name no document reports UNKNOWN. The other is each issue of `--project` that is neither done nor
+in `retro`, every page of each status, with the unique issues compared against the total the
+listing reports, so a page that repeats issues already read reports UNKNOWN too. `--keys <file>`
+reads the listed issues instead, done or not; `rounds` writes such a file. A document an issue's
+list does not name counts as read, with no checks. A reference, page or text that does not load
+is a row of the report's UNKNOWN, and the run keeps what it found elsewhere.
 
 In each text it looks for the six wordings of the old rule as fixed strings, over the text with
 bold marks taken out and each run of whitespace folded to one space, so a wording broken across
 lines is still found. Over the sentences that hold none of them it runs the two patterns of the
 measurements: the old rule in other words, and the rule that a role records a check from a CI run.
-A pattern hit whose sentence names one of that document's own checks is the owner's narrower rule
-for that check, and is not listed. Each row names the issue, the document, its version and token,
-the match and its paragraph.
+A pattern hit whose sentence names one of that document's own checks, and holds no words on checks
+in general (`any`, `each`, `every`, `all`, `no` or `other` before `check`, or `checks`), is the
+owner's narrower rule for that check, and is not listed. Each row names the issue, the document,
+its version and token, the match and its paragraph.
 
 `--limit <n>` reads one page of `n` issues for each status, which is how the control that a short
 list reports UNKNOWN is run. `--break-patterns` makes the two patterns match nothing, which is the
@@ -115,20 +118,33 @@ bun scripts/dispatch/check-runs-census.ts rounds \
 It lists each issue of the project updated since `--since` whose events show a move into `testing`
 after it, reads each `test` handoff of those issues for its version, session and head, and reads
 the results of each check. It writes the issue list to `<out>/keys.txt`, which `texts --keys`
-reads.
+reads. A run that reads no round — no updated issue moved into testing, or no round of one could
+be read — reports UNKNOWN, and so does a listing that does not load.
 
-A check is left out of a round, and named with the reason, where its `when` is not `before_merge`,
-where it carries `ci_check`, where a workflow step records it (`dispatch result` under `.github/`
-at the round's head, the step naming the check), where its words give its run only to another
-runner, or where the issue's plan gives it one run at a head. A check whose command a job of an
-ordinary pull request runs is printed as CI's; a job a label such as `full-ci` or the merge queue
-gates runs on no ordinary pull request, so the run prints it and counts it for nothing.
+At each round's head it reads the workflows of an ordinary pull request. A step proves a check
+only where it runs the check's own command: the step's script split into its commands at each
+unquoted newline, `;`, `&&`, `||` and `|`, so `echo 'bun test x'` runs no `bun test x`. A job or
+step whose `if` is `false` never runs and proves nothing; one that runs only on another event or
+with a label such as `full-ci` proves nothing on an ordinary pull request; and an `if` of any
+other form than a chain of terms true on a ready pull request (`!github.event.pull_request.draft`,
+`github.event_name != 'merge_group'` and the like), or a trigger that filters by path or branch,
+makes the check UNKNOWN rather than CI's. A workflow or commit the run cannot read is UNKNOWN.
 
-For each check left, the run looks for a result of the round's session, at the round's head,
-between the move into testing and the handoff. It lists a check with no such result, one whose
-reading carries an earlier run, and one whose linked output shows a run at another head. A result
-that links no output, or whose output does not load, reports UNKNOWN, never a pass. The run also
-names each result it took whose actor does not carry `proven`.
+A check is left out of a round, and named with the reason, where its `when` is not `before_merge`
+or where a workflow step at the head records it (`dispatch result` under `.github/`, in a step
+that runs and names the check). Then it is read against the jobs (`v-open-work` step 2): a check
+with no `ci_check` whose command such a job runs is listed, and is CI's; a `ci_check` that names no
+job running the check's command is listed; and a result a role recorded during the round on a
+check that carries `ci_check` now is listed, for the check carried none then. A check its named job
+proves is CI's. Every other check is left out where its words give its run only to another runner,
+or where the issue's plan gives it one run at a head.
+
+For each check left (`v-open-work` step 3), the run looks for a result of the round's session, at
+the round's head, between the move into testing and the handoff. It lists a check with no such
+result, one whose reading carries an earlier run, and one whose linked output shows a run at
+another head. A result that links no output, whose output does not load, or whose output at the
+head does not show the check's own command, reports UNKNOWN, never a pass. The run also names
+each result it took whose actor does not carry `proven`.
 
 ### `main-read`: the reading of main after a merge
 
@@ -138,12 +154,18 @@ bun scripts/dispatch/check-runs-census.ts main-read \
   --repo /path/to/clone/at/main --out /path/to/out
 ```
 
+The reading reads one commit: the checkout's `HEAD`, which the report names as `subject.read`.
 First the order: the merge commit of the pull request `--after` names (`gh pr view`) must be an
-ancestor of `--merge`. A pull request with no merge commit fails that step. Then the three greps
-of the readings over the prompt files, and the three pin tests, each run where a package under
-`packages/daemon` holds it and reported as `not run` with the reason where none does. It writes
-each file its reader reads under `<out>/files/`, lists them in `<out>/files.txt` with the ones the
-checkout lacks, and writes the whole report to `<out>/report.json`.
+ancestor of `--merge`, and the read commit must hold `--merge`. A pull request with no merge commit
+fails the order; a `gh` that cannot answer is UNKNOWN. Then the three greps of the readings over
+the prompt files at the read commit — a file the commit lacks is UNKNOWN, never a clean grep — and
+the three pin tests, each run where a package under `packages/daemon` holds it and reported as
+`not run` with the reason where none does. A checkout whose tracked files differ from its commit
+is UNKNOWN, and runs no test. It writes each file its reader reads at the read commit under
+`<out>/files/`: the tester's parts as `Compose` in `prompts.go` names them there, `prompts.go`
+itself, and the other files of the readings. It lists them in `<out>/files.txt` with the ones the
+commit lacks, and writes the whole report to `<out>/report.json`. A part `Compose` names that the
+commit lacks, or a `Compose` of a form the census cannot read, is UNKNOWN.
 
 ## Display read census
 

@@ -9,9 +9,10 @@
  * eight issues read at a time, and `--json` printing one object and nothing else.
  *
  * Exit 0: the run is complete and nothing is listed. Exit 1: the run is complete and holds rows
- * for a reader. Exit 3: UNKNOWN, with the reason — a list below its total, a text or handoff that
- * did not load, an issue Dispatch does not know, or no issue at all. A run that enumerated nothing
- * says so rather than reading clean.
+ * for a reader. Exit 3: UNKNOWN, with the reason — a list below its total, a text, page or
+ * handoff that did not load, an issue Dispatch does not know, or no issue or round at all. A run
+ * that enumerated nothing says so rather than reading clean, and a source it could not read is
+ * a row of the report's `unknown`, never a bare error.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -59,8 +60,8 @@ type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
 /**
  * One listed row. Each mode fills the members of its own reading, so one shape carries the whole
  * report: `texts` names the issue, the document, its version and token, the match and its
- * paragraph; `rounds` names the round, its head and session, the check and its words; `main-read`
- * names the step and what it printed.
+ * paragraph; `rounds` names the round, its head and session, the check, its words and the step
+ * of the reading that lists it; `main-read` names the step and what it printed.
  */
 export interface CensusRow {
   readonly issue: string;
@@ -103,7 +104,7 @@ export interface CensusExcluded {
   readonly detail?: string;
 }
 
-/** A check whose command a job of an ordinary pull request runs: CI's, not the round's. */
+/** A check a job of an ordinary pull request proves at the round's head: CI's, not the round's. */
 export interface CensusCICheck {
   readonly issue: string;
   readonly round: number;
@@ -130,14 +131,29 @@ export interface CensusReport {
   readonly notRead?: CensusNotRead[];
   readonly excluded?: CensusExcluded[];
   readonly ci?: CensusCICheck[];
-  /** A job a label or the merge queue gates, which is no job of an ordinary pull request. */
+  /** A job or step a label, another event or the merge queue gates: no proof on an ordinary
+   *  pull request. */
   readonly gated?: { readonly job: string; readonly gate: string }[];
+  /** A job or step whose condition is false: it never runs, so it proves nothing. */
+  readonly disabled?: { readonly job: string; readonly condition: string }[];
   /** Each result the run took whose actor does not carry `proven`. */
   readonly unproven?: string[];
   readonly issues?: string[];
   readonly steps?: CensusStep[];
-  /** The files the reading of main wrote for its reader, and the ones the checkout lacks. */
-  readonly files?: { readonly written: string[]; readonly missing: string[] };
+  /** The one commit the reading of main read, and the merges its order step held it to. */
+  readonly subject?: {
+    readonly read: string;
+    readonly merge: string;
+    readonly after: number;
+    readonly afterMerge?: string;
+  };
+  /** The files the reading of main wrote for its reader, the tester's parts among them as
+   *  `Compose` names them at the read commit, and the ones the commit lacks. */
+  readonly files?: {
+    readonly tester: string[];
+    readonly written: string[];
+    readonly missing: string[];
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -163,10 +179,16 @@ const NEVER = /(?!x)x/;
 
 /** The old rule in other words, and the CI-recording rule in other words: the two patterns of the
  *  measurements' section on plans that give a check one run (`v3ocounts.py`, its lines 51 to 60). */
-const OLD =
-  /records? (?:each|every) check once|(?:each|every) check is recorded once|recorded once,? at|tester (?:does not|doesn't|never|need not|will not) (?:run|re-?run|repeat)|repeats? no check|implementer records (?:each|every) check|no role (?:repeats|re-?runs)|(?:each|every) check (?:is )?(?:run|recorded) (?:only )?by the implementer|runs once at (?:that|the) head|(?:does not|doesn't|never) (?:run|re-?run) (?:it |a check |the row )?again/i;
-const CIREC =
-  /record\w*[^.]{0,60}?from (?:the |a |CI's |its )?(?:CI|GitHub)(?:'s)? (?:run|job|check run)|record\w*[^.]{0,40}?(?:result|check)[^.]{0,40}?from (?:the |a )?CI run/i;
+export const DEFAULT_PATTERNS = {
+  old: /records? (?:each|every) check once|(?:each|every) check is recorded once|recorded once,? at|tester (?:does not|doesn't|never|need not|will not) (?:run|re-?run|repeat)|repeats? no check|implementer records (?:each|every) check|no role (?:repeats|re-?runs)|(?:each|every) check (?:is )?(?:run|recorded) (?:only )?by the implementer|runs once at (?:that|the) head|(?:does not|doesn't|never) (?:run|re-?run) (?:it |a check |the row )?again/i,
+  cirec:
+    /record\w*[^.]{0,60}?from (?:the |a |CI's |its )?(?:CI|GitHub)(?:'s)? (?:run|job|check run)|record\w*[^.]{0,40}?(?:result|check)[^.]{0,40}?from (?:the |a )?CI run/i,
+} as const;
+
+/** Words that give a sentence's rule to checks in general: a quantifier on `check`, or `checks`.
+ *  A sentence that holds one is a rule on every check, even where it also names one of its own
+ *  checks as an example. */
+const ON_EVERY_CHECK = /\b(?:any|each|every|all|no|other)\b[^.;:]{0,40}?\bchecks?\b|\bchecks\b/i;
 
 /** A plan line that gives a check one run at a head, as the measurements' `ONCE` reads it. */
 const ONCE = /\bonce,? at (?:the|that|each) head|\bits only run\b|\bruns? once\b|\bonly once\b/i;
@@ -202,12 +224,14 @@ function sentencesOf(paragraph: string): string[] {
   return paragraph.split(/(?<=[.;])\s+/);
 }
 
-/** Whether a sentence names one of the document's own checks, which makes it an owner's rule for
- *  that check rather than a rule on every check. */
-function namesOwnCheck(sentence: string, ownChecks: ReadonlySet<string>): boolean {
-  for (const id of ownChecks) {
-    const named = new RegExp(`(^|[^\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w-]|$)`);
-    if (named.test(sentence)) return true;
+function escaped(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Whether a text names one of `ids` as a word of its own. */
+function namesCheck(text: string, ids: ReadonlySet<string>): boolean {
+  for (const id of ids) {
+    if (new RegExp(`(^|[^\\w-])${escaped(id)}([^\\w-]|$)`).test(text)) return true;
   }
   return false;
 }
@@ -221,7 +245,7 @@ function checkIdsOf(markdown: string): Set<string> {
   return ids;
 }
 
-interface TextMatch {
+export interface TextMatch {
   readonly rules: string[];
   readonly match: string;
   readonly paragraph: string;
@@ -229,8 +253,9 @@ interface TextMatch {
 
 /**
  * Each sentence of a text that holds the old rule: first the fixed strings p1 to p6, then the two
- * patterns over the sentences that hold none of them. A pattern hit whose sentence names one of
- * the document's own checks is the owner's narrower rule for that check, and is not listed.
+ * patterns over the sentences that hold none of them. A pattern hit whose sentence restricts its
+ * rule to one of the document's own checks — it names the check and holds no words on checks in
+ * general — is the owner's narrower rule for that check, and is not listed.
  */
 export function matchesIn(
   markdown: string,
@@ -256,7 +281,7 @@ export function matchesIn(
       const old = patterns.old.exec(sentence);
       const cirec = patterns.cirec.exec(sentence);
       if (old === null && cirec === null) continue;
-      if (namesOwnCheck(sentence, ownChecks)) continue;
+      if (namesCheck(sentence, ownChecks) && !ON_EVERY_CHECK.test(sentence)) continue;
       found.push({
         rules: [...(old === null ? [] : ["old-rule"]), ...(cirec === null ? [] : ["ci-recording"])],
         match: (old ?? cirec)?.[0] ?? sentence,
@@ -273,7 +298,7 @@ export function matchesIn(
  * `The same` under a first row that does.
  */
 export function oneRunLines(markdown: string, id: string): string[] {
-  const named = new RegExp(`(^|[^\\w-])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^\\w-]|$)`);
+  const named = new Set([id]);
   const flagged: string[] = [];
   let firstRowRuns: boolean | null = false;
   for (const line of markdown.split("\n")) {
@@ -283,7 +308,7 @@ export function oneRunLines(markdown: string, id: string): string[] {
     }
     if (line.startsWith("|") && firstRowRuns === null) firstRowRuns = ONCE.test(line);
     else if (!line.startsWith("|")) firstRowRuns = false;
-    if (!named.test(line)) continue;
+    if (!namesCheck(line, named)) continue;
     if (line.startsWith("|")) {
       const cells = (line.replace(/^\||\|$/g, "").split("|")[0] ?? "")
         .split(",")
@@ -359,30 +384,46 @@ async function issueEvents(config: DispatchConfig, issue: string): Promise<Recor
   }
 }
 
-/** Every issue of one status, page by page, with the total the listing reports. A run that read
- *  fewer rows than the total has not read the status, and its caller reports UNKNOWN. */
+/** One status's listing: its unique issues, the total the listing reports, and how many rows
+ *  repeated an issue already read. */
+interface StatusListing {
+  readonly keys: string[];
+  readonly total: number;
+  readonly repeated: number;
+}
+
+/**
+ * Every issue of one status, page by page, with the total the listing reports and how many rows
+ * repeated an issue already read. The walk ends at the total, at an empty page, or at a page that
+ * adds no new issue, so a listing that repeats itself ends the walk short rather than forever; its
+ * caller then holds the unique count against the total.
+ */
 async function issuesOfStatus(
   config: DispatchConfig,
   project: string,
   status: string,
   onePageOf?: number
-): Promise<{ keys: string[]; total: number }> {
-  const keys: string[] = [];
+): Promise<StatusListing> {
+  const seen = new Set<string>();
   const limit = onePageOf ?? MAX_ISSUE_PAGE_LIMIT;
+  let repeated = 0;
   let offset = 0;
-  let total = 0;
   while (true) {
     const page = await get<IssuePage>(
       config,
       `/api/v1/issues?project=${encodeURIComponent(project)}&status=${encodeURIComponent(status)}` +
         `&limit=${limit}&offset=${offset}`
     );
-    total = page.total;
     const rows = page.issues ?? [];
-    keys.push(...rows.map((row) => row.key));
+    const before = seen.size;
+    for (const row of rows) {
+      if (seen.has(row.key)) repeated += 1;
+      else seen.add(row.key);
+    }
     offset += rows.length;
-    if (onePageOf !== undefined || rows.length === 0 || keys.length >= total) {
-      return { keys, total };
+    const added = seen.size - before;
+    if (onePageOf !== undefined || added === 0 || seen.size >= page.total) {
+      return { keys: [...seen], total: page.total, repeated };
     }
   }
 }
@@ -420,7 +461,7 @@ async function eachIssue<T>(
 }
 
 /** The document a reference edge names: an artifact node is its own document, and a block node is
- *  the document it belongs to. */
+ *  the document it belongs to. Any other edge names no document. */
 function documentOfEdge(edge: GraphEdge): { issue: string; slug: string } | undefined {
   const { node } = edge;
   const reference = node.kind === "artifact" ? node.ref : node.document;
@@ -468,65 +509,97 @@ function documentNamed(issue: IssueRead, slug: string): DocumentRow | undefined 
   return role === undefined ? undefined : documents.find((document) => document.role === role);
 }
 
-async function runTexts(config: DispatchConfig, options: TextsOptions): Promise<CensusReport> {
-  const rows: CensusRow[] = [];
-  const unknown: CensusUnknown[] = [];
-  const notRead: CensusNotRead[] = [];
-  const patterns = options.breakPatterns
-    ? { old: NEVER, cirec: NEVER }
-    : { old: OLD, cirec: CIREC };
-  const work = new Map<string, TextWork>();
-  const fromReferences: { issue: string; slug: string }[] = [];
-
-  if (options.keysPath === undefined) {
-    const reference = options.referencedBy;
-    if (reference === undefined) {
-      throw new Error(
-        "texts without --keys needs --referenced-by: the reference of the comment " +
-          "whose Referenced by list names the documents of the first source"
-      );
-    }
+/** The first source: each document the comment's Referenced by list names, by issue and slug. */
+async function referencedDocuments(
+  config: DispatchConfig,
+  reference: string,
+  unknown: CensusUnknown[]
+): Promise<{ issue: string; slug: string }[]> {
+  let edges: GraphEdge[];
+  try {
     const references = await get<Pick<GraphReferences, "edges">>(
       config,
       `/api/v1/references?to=${encodeURIComponent(reference)}`
     );
-    const edges = references.edges ?? [];
-    if (edges.length === 0) {
+    edges = references.edges ?? [];
+  } catch (error) {
+    unknown.push({ issue: "", what: reference, reason: why(error) });
+    return [];
+  }
+  const documents = new Map<string, { issue: string; slug: string }>();
+  for (const edge of edges) {
+    const document = documentOfEdge(edge);
+    if (document !== undefined) documents.set(`${document.issue}/${document.slug}`, document);
+  }
+  if (documents.size === 0) {
+    unknown.push({
+      issue: "",
+      what: reference,
+      reason: `its Referenced by list of ${edges.length} edge(s) named no document`,
+    });
+  }
+  return [...documents.values()];
+}
+
+/** The second source: each issue of the project neither done nor in `retro`, every page of each
+ *  status, with the unique issues held against each status's total. */
+async function openIssues(
+  config: DispatchConfig,
+  options: TextsOptions,
+  unknown: CensusUnknown[]
+): Promise<string[]> {
+  const keys: string[] = [];
+  for (const status of OPEN_STATUSES) {
+    const what = `the ${status} listing of ${options.project}`;
+    let listing: StatusListing;
+    try {
+      listing = await issuesOfStatus(config, options.project, status, options.onePageOf);
+    } catch (error) {
+      unknown.push({ issue: "", what, reason: why(error) });
+      continue;
+    }
+    if (listing.keys.length < listing.total) {
+      const repeated =
+        listing.repeated === 0 ? "" : `; ${listing.repeated} row(s) repeated an issue already read`;
       unknown.push({
         issue: "",
-        what: reference,
-        reason: "the Referenced by list of that comment named no document",
+        what,
+        reason: `it holds ${listing.keys.length} of ${listing.total} issues${repeated}`,
       });
     }
-    for (const edge of edges) {
-      const document = documentOfEdge(edge);
-      if (document === undefined) continue;
-      if (!fromReferences.some((held) => held.issue === document.issue)) {
-        fromReferences.push(document);
-      }
+    keys.push(...listing.keys);
+  }
+  return keys;
+}
+
+async function runTexts(config: DispatchConfig, options: TextsOptions): Promise<CensusReport> {
+  const rows: CensusRow[] = [];
+  const unknown: CensusUnknown[] = [];
+  const notRead: CensusNotRead[] = [];
+  const patterns = options.breakPatterns ? { old: NEVER, cirec: NEVER } : DEFAULT_PATTERNS;
+  const work = new Map<string, TextWork>();
+
+  if (options.keysPath === undefined) {
+    const reference = options.referencedBy;
+    if (reference === undefined) {
+      throw new Error("texts without --keys needs --referenced-by");
     }
-    for (const status of OPEN_STATUSES) {
-      const listing = await issuesOfStatus(config, options.project, status, options.onePageOf);
-      if (listing.keys.length < listing.total) {
-        unknown.push({
-          issue: "",
-          what: `the ${status} listing of ${options.project}`,
-          reason: `it holds ${listing.keys.length} of ${listing.total} issues`,
-        });
-      }
-      for (const key of listing.keys) wants(work, key, VERIFICATION_SLUG);
-    }
-    for (const document of fromReferences) {
+    for (const document of await referencedDocuments(config, reference, unknown)) {
       wants(work, document.issue, document.slug);
       wants(work, document.issue, PLAN_SLUG);
     }
+    for (const key of await openIssues(config, options, unknown)) {
+      wants(work, key, VERIFICATION_SLUG);
+    }
   } else {
-    const listed = (await readFile(options.keysPath, "utf8"))
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "" && !line.startsWith("#"));
-    if (listed.length === 0) {
-      unknown.push({ issue: "", what: options.keysPath, reason: "the file names no issue" });
+    let listed: string[] = [];
+    try {
+      listed = (await readFile(options.keysPath, "utf8"))
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "" && !line.startsWith("#"));
+    } catch (error) {
+      unknown.push({ issue: "", what: options.keysPath, reason: why(error) });
     }
     for (const key of listed) {
       wants(work, key, VERIFICATION_SLUG);
@@ -621,126 +694,386 @@ function command(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * The commands a shell script runs, one each: lines joined across a trailing backslash, then split
+ * at each unquoted newline, `;`, `&&`, `||` and `|`, with any leading `NAME=value` assignments and
+ * comments left out. A command quoted inside another, as `echo 'bun test x'` holds one, stays a
+ * part of that other command.
+ */
+export function commandsOf(script: string): string[] {
+  const joined = script.replace(/\\\r?\n/g, " ");
+  const parts: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (let index = 0; index < joined.length; index++) {
+    const character = joined[index] as string;
+    if (quote !== null) {
+      current += character;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      current += character;
+      continue;
+    }
+    const pair = joined.slice(index, index + 2);
+    if (pair === "&&" || pair === "||") {
+      parts.push(current);
+      current = "";
+      index += 1;
+      continue;
+    }
+    if (character === "\n" || character === ";" || character === "|") {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  parts.push(current);
+  return parts
+    .map((part) => command(part.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, "")))
+    .filter((part) => part !== "" && !part.startsWith("#"));
+}
+
+/** Whether a step's commands run a check's commands, in order: each as written, the last one
+ *  with arguments of its own after it (a redirection, a reporter). */
+function executesCommand(ran: readonly string[], wanted: readonly string[]): boolean {
+  if (wanted.length === 0) return false;
+  for (let start = 0; start + wanted.length <= ran.length; start++) {
+    const matches = wanted.every((part, offset) => {
+      const step = ran[start + offset] as string;
+      return step === part || (offset === wanted.length - 1 && step.startsWith(`${part} `));
+    });
+    if (matches) return true;
+  }
+  return false;
+}
+
+/** What a job's or step's condition says of an ordinary pull request: it runs there, it never
+ *  runs (`off`), it runs only on another event, a label or the merge queue (`gated`), or the
+ *  census cannot tell (`unsure`). */
+type Condition =
+  | { readonly kind: "runs" }
+  | { readonly kind: "off" | "gated" | "unsure"; readonly text: string };
+
+const RUNS: Condition = { kind: "runs" };
+
+/** The terms of a condition that hold on an ordinary pull request that is ready for review. */
+const TRUE_ON_A_PULL_REQUEST: Record<string, true> = {
+  true: true,
+  "!github.event.pull_request.draft": true,
+  "github.event_name == 'pull_request'": true,
+  "github.event_name != 'merge_group'": true,
+  "github.event_name != 'push'": true,
+  "github.event_name != 'workflow_dispatch'": true,
+  "success()": true,
+  "!cancelled()": true,
+  "always()": true,
+};
+
+/**
+ * A job's or step's `if`, read as far as it can be read without a run: no condition, or a chain of
+ * `&&` terms each in `TRUE_ON_A_PULL_REQUEST`, runs; `false` never runs; a term on another event
+ * or on a label gates it; anything else — an `||`, a `needs` output, a path filter — is a question
+ * for a reader, never proof.
+ */
+function conditionOf(value: unknown): Condition {
+  if (value === undefined || value === null) return RUNS;
+  if (typeof value === "boolean") return value ? RUNS : { kind: "off", text: "false" };
+  if (typeof value !== "string") return { kind: "unsure", text: JSON.stringify(value) };
+  const text = command(value);
+  const bare = text.replace(/^\$\{\{\s*([\s\S]*?)\s*\}\}$/, "$1").trim();
+  if (bare.includes("||")) return { kind: "unsure", text };
+  let verdict: Condition = RUNS;
+  for (const raw of bare.split("&&")) {
+    const term = command(raw).replace(/"/g, "'");
+    if (term === "false") return { kind: "off", text };
+    if (TRUE_ON_A_PULL_REQUEST[term] === true) continue;
+    const gates =
+      /^github\.event_name == '[^']+'$/.test(term) ||
+      /^contains\(github\.event\.pull_request\.labels\.\*\.name, '[^']+'\)$/.test(term);
+    if (gates) verdict = { kind: "gated", text };
+    else if (verdict.kind === "runs") verdict = { kind: "unsure", text };
+  }
+  return verdict;
+}
+
+const CONDITION_RANK: Record<Condition["kind"], number> = { runs: 0, unsure: 1, gated: 2, off: 3 };
+
+/** Two conditions that both apply: the stronger bar of the two. */
+function both(outer: Condition, inner: Condition): Condition {
+  return CONDITION_RANK[inner.kind] > CONDITION_RANK[outer.kind] ? inner : outer;
+}
+
+/** A parsed workflow's trigger on an ordinary pull request, or nothing where it has none. A
+ *  `pull_request` trigger that filters by path or branch runs only for some pull requests, which
+ *  the census cannot tell, so it is a reader's question. */
+function pullRequestTrigger(workflow: object): Condition | undefined {
+  if (!("on" in workflow)) return undefined;
+  const on = workflow.on;
+  if (on === "pull_request") return RUNS;
+  if (Array.isArray(on)) return on.includes("pull_request") ? RUNS : undefined;
+  if (on === null || typeof on !== "object" || !("pull_request" in on)) return undefined;
+  const trigger = on.pull_request;
+  if (trigger === null || typeof trigger !== "object") return RUNS;
+  for (const filter of ["paths", "paths-ignore", "branches", "branches-ignore"]) {
+    if (filter in trigger) {
+      return { kind: "unsure", text: `its pull_request trigger filters by ${filter}` };
+    }
+  }
+  if ("types" in trigger && Array.isArray(trigger.types)) {
+    const types: unknown[] = trigger.types;
+    if (!types.includes("opened") && !types.includes("synchronize")) {
+      return { kind: "gated", text: `it runs on pull request events ${types.join(", ")}` };
+    }
+  }
+  return RUNS;
+}
+
+/** A step of a workflow job that runs a shell script. */
+interface WorkflowStep {
+  readonly condition: unknown;
+  readonly run: string;
+}
+
 /** A job of a workflow, as the reading of a parsed workflow narrows it: a workflow file is
  *  whatever the checkout holds, so each member is read and checked rather than assumed. */
 interface WorkflowJob {
-  readonly gate?: string;
+  readonly condition: unknown;
+  readonly name?: string;
   readonly uses?: string;
-  readonly runs: string[];
-}
-
-/** A job's gate, where a label or the merge queue decides whether it runs on an ordinary pull
- *  request. Such a job proves no check at the head of one. */
-function gateOf(value: object): string | undefined {
-  const condition = "if" in value && typeof value.if === "string" ? value.if : "";
-  const inputs = "with" in value ? JSON.stringify(value.with) : "";
-  const words = `${condition} ${inputs}`;
-  return /full-ci|merge_group/.test(words) ? command(words) : undefined;
+  /** Where the inputs a called workflow is given name a label or the merge queue. */
+  readonly gate?: string;
+  readonly steps: WorkflowStep[];
 }
 
 function jobOf(value: unknown): WorkflowJob {
-  if (value === null || typeof value !== "object") return { runs: [] };
-  const gate = gateOf(value);
+  if (value === null || typeof value !== "object") return { condition: undefined, steps: [] };
+  const inputs = "with" in value ? JSON.stringify(value.with) : "";
+  const name = "name" in value && typeof value.name === "string" ? value.name : undefined;
   const uses = "uses" in value && typeof value.uses === "string" ? value.uses : undefined;
-  const steps = "steps" in value && Array.isArray(value.steps) ? value.steps : [];
-  const runs: string[] = [];
-  for (const step of steps) {
-    if (
-      step !== null &&
-      typeof step === "object" &&
-      "run" in step &&
-      typeof step.run === "string"
-    ) {
-      runs.push(step.run);
-    }
+  const steps: WorkflowStep[] = [];
+  const listed = "steps" in value && Array.isArray(value.steps) ? value.steps : [];
+  for (const step of listed) {
+    if (step === null || typeof step !== "object") continue;
+    if (!("run" in step) || typeof step.run !== "string") continue;
+    steps.push({ condition: "if" in step ? step.if : undefined, run: step.run });
   }
-  return { runs, ...(gate === undefined ? {} : { gate }), ...(uses === undefined ? {} : { uses }) };
+  return {
+    condition: "if" in value ? value.if : undefined,
+    steps,
+    ...(name === undefined ? {} : { name }),
+    ...(uses === undefined ? {} : { uses }),
+    ...(/full-ci|merge_group/.test(inputs) ? { gate: command(inputs) } : {}),
+  };
 }
 
 /** The jobs of a parsed workflow, by their ids. */
-function jobsOf(workflow: unknown): Map<string, WorkflowJob> {
-  if (workflow === null || typeof workflow !== "object" || !("jobs" in workflow)) return new Map();
+function jobsOf(workflow: object): Map<string, WorkflowJob> {
+  if (!("jobs" in workflow)) return new Map();
   const jobs = workflow.jobs;
   if (jobs === null || typeof jobs !== "object") return new Map();
   return new Map(Object.entries(jobs).map(([id, job]) => [id, jobOf(job)]));
 }
 
-/** Whether a parsed workflow runs on an ordinary pull request. */
-function runsOnPullRequest(workflow: unknown): boolean {
-  if (workflow === null || typeof workflow !== "object" || !("on" in workflow)) return false;
-  const on = workflow.on;
-  if (typeof on === "string") return on === "pull_request";
-  if (Array.isArray(on)) return on.includes("pull_request");
-  return on !== null && typeof on === "object" && "pull_request" in on;
-}
-
-/** A workflow file as YAML, or nothing where it is no YAML object. */
-function parseWorkflow(body: string): unknown {
+/** A workflow file as a YAML object, or the reason it is none. */
+function parseWorkflow(path: string, body: string): object | string {
+  let parsed: unknown;
   try {
-    return Bun.YAML.parse(body);
-  } catch {
-    return undefined;
+    parsed = Bun.YAML.parse(body);
+  } catch (error) {
+    return `${path} does not parse as YAML: ${why(error)}`;
   }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return `${path} is no workflow: its YAML is no mapping`;
+  }
+  return parsed;
 }
 
-/** What the workflows at one head say: each step that records a result, each command a job of an
- *  ordinary pull request runs, and each job a label or the merge queue gates. */
+/** One step of an ordinary pull request's job that runs at the head: the commands it runs, the
+ *  names a `ci_check` may give its job, and the condition the census could not read, if any. */
+interface Execution {
+  readonly file: string;
+  readonly job: string;
+  readonly names: readonly string[];
+  readonly script: string;
+  readonly commands: readonly string[];
+  readonly unsure?: string;
+}
+
+/** What the workflows at one head say, and what of them the census could not read. */
 interface WorkflowReads {
-  readonly recorders: { file: string; line: number; text: string }[];
-  readonly commands: { job: string; command: string }[];
+  readonly executions: Execution[];
+  /** The lines the reading's search for `dispatch result` found, with the two after each. */
+  readonly hits: { file: string; line: number; text: string; first: string }[];
   readonly gated: { job: string; gate: string }[];
+  readonly disabled: { job: string; condition: string }[];
+  readonly failures: string[];
 }
 
 function readWorkflows(repo: string, head: string): WorkflowReads {
-  const recorders: WorkflowReads["recorders"] = [];
-  const commands: WorkflowReads["commands"] = [];
-  const gated: WorkflowReads["gated"] = [];
+  const reads: WorkflowReads = { executions: [], hits: [], gated: [], disabled: [], failures: [] };
+  const resolved = git(repo, ["rev-parse", "--verify", "--quiet", `${head}^{commit}`]);
+  if (resolved.exitCode !== 0) {
+    reads.failures.push(`the checkout holds no commit ${head}`);
+    return reads;
+  }
   const bodies = new Map<string, string>();
   const bodyOf = (path: string): string | undefined => {
-    if (bodies.has(path)) return bodies.get(path);
+    const held = bodies.get(path);
+    if (held !== undefined) return held;
     const shown = git(repo, ["show", `${head}:${path}`]);
-    if (shown.exitCode !== 0) return undefined;
+    if (shown.exitCode !== 0) {
+      reads.failures.push(
+        `git show ${head}:${path} answered ${shown.exitCode}: ${command(shown.stderr)}`
+      );
+      return undefined;
+    }
     bodies.set(path, shown.stdout);
     return shown.stdout;
   };
 
-  // A check that a workflow step records is left out of the round, so the recording steps are
-  // read first, from the search the reading names.
+  // The search the reading names, for the steps that record a result themselves.
   const search = git(repo, ["grep", "-n", "-E", "dispatch result( |$)", head, "--", ".github/"]);
+  if (search.exitCode > 1) {
+    reads.failures.push(
+      `git grep for dispatch result answered ${search.exitCode}: ${command(search.stderr)}`
+    );
+  }
   for (const line of search.stdout.split("\n")) {
     const matched = line.match(/^[^:]*:([^:]+):(\d+):(.*)$/);
     if (matched === null) continue;
-    const [, file = "", number = "0", text = ""] = matched;
-    const body = bodyOf(file);
-    const lines = body === undefined ? [text] : body.split("\n");
+    const [, file = "", number = "0", first = ""] = matched;
+    const lines = (bodyOf(file) ?? first).split("\n");
     const at = Number(number) - 1;
-    const whole = body === undefined ? text : lines.slice(at, at + 3).join("\n");
-    recorders.push({ file, line: Number(number), text: whole });
+    reads.hits.push({
+      file,
+      line: Number(number),
+      first,
+      text: lines.slice(at, at + 3).join("\n"),
+    });
   }
 
-  const listed = git(repo, ["ls-tree", "-r", "--name-only", head, "--", ".github/workflows"]);
-  const stepCommands = (file: string, jobs: Map<string, WorkflowJob>): void => {
+  const walk = (
+    file: string,
+    jobs: Map<string, WorkflowJob>,
+    above: Condition,
+    caller?: { readonly id: string; readonly name?: string }
+  ): void => {
     for (const [id, job] of jobs) {
-      if (job.gate !== undefined) {
-        gated.push({ job: `${file} ${id}`, gate: job.gate });
+      const label = `${file} ${id}`;
+      let condition = both(above, conditionOf(job.condition));
+      if (job.gate !== undefined) condition = both(condition, { kind: "gated", text: job.gate });
+      if (condition.kind === "off") {
+        reads.disabled.push({ job: label, condition: condition.text });
         continue;
       }
-      for (const run of job.runs) commands.push({ job: `${file} ${id}`, command: run });
-      const called = job.uses?.match(/^\.\/(\.github\/workflows\/[^@]+)$/);
-      if (called?.[1] === undefined) continue;
-      const body = bodyOf(called[1]);
+      if (condition.kind === "gated") {
+        reads.gated.push({ job: label, gate: condition.text });
+        continue;
+      }
+      const own = [id, ...(job.name === undefined ? [] : [job.name])];
+      const callers =
+        caller === undefined
+          ? []
+          : [caller.id, ...(caller.name === undefined ? [] : [caller.name])];
+      const names =
+        callers.length === 0
+          ? own
+          : [...own, ...callers.flatMap((outer) => own.map((inner) => `${outer} / ${inner}`))];
+      for (const step of job.steps) {
+        const stepCondition = both(condition, conditionOf(step.condition));
+        if (stepCondition.kind === "off") {
+          reads.disabled.push({ job: `${label} step`, condition: stepCondition.text });
+          continue;
+        }
+        if (stepCondition.kind === "gated") {
+          reads.gated.push({ job: `${label} step`, gate: stepCondition.text });
+          continue;
+        }
+        reads.executions.push({
+          file,
+          job: label,
+          names,
+          script: step.run,
+          commands: commandsOf(step.run),
+          ...(stepCondition.kind === "unsure" ? { unsure: stepCondition.text } : {}),
+        });
+      }
+      const called = job.uses?.match(/^\.\/(\.github\/workflows\/[^@]+)$/)?.[1];
+      if (called === undefined) continue;
+      const body = bodyOf(called);
       if (body === undefined) continue;
-      stepCommands(called[1], jobsOf(parseWorkflow(body)));
+      const parsed = parseWorkflow(called, body);
+      if (typeof parsed === "string") {
+        reads.failures.push(parsed);
+        continue;
+      }
+      walk(called, jobsOf(parsed), condition, {
+        id,
+        ...(job.name === undefined ? {} : { name: job.name }),
+      });
     }
   };
-  for (const path of listed.stdout.split("\n").filter((line) => line !== "")) {
+
+  const listed = git(repo, ["ls-tree", "-r", "--name-only", head, "--", ".github/workflows"]);
+  if (listed.exitCode !== 0) {
+    reads.failures.push(
+      `git ls-tree of .github/workflows answered ${listed.exitCode}: ${command(listed.stderr)}`
+    );
+    return reads;
+  }
+  for (const path of listed.stdout.split("\n").filter((line) => /\.ya?ml$/.test(line))) {
     const body = bodyOf(path);
     if (body === undefined) continue;
-    const parsed = parseWorkflow(body);
-    if (!runsOnPullRequest(parsed)) continue;
-    stepCommands(path, jobsOf(parsed));
+    const parsed = parseWorkflow(path, body);
+    if (typeof parsed === "string") {
+      reads.failures.push(parsed);
+      continue;
+    }
+    const trigger = pullRequestTrigger(parsed);
+    if (trigger === undefined) continue;
+    if (trigger.kind === "gated" || trigger.kind === "off") {
+      reads.gated.push({ job: path, gate: trigger.text });
+      continue;
+    }
+    walk(path, jobsOf(parsed), trigger);
   }
-  return { recorders, commands, gated };
+  return reads;
+}
+
+/** How a workflow step records a check itself: a step that runs at the head and whose command
+ *  names the check, as the reading's search finds it. A search line in a step that never runs
+ *  records nothing there; one outside a workflow file, or in a step under a condition the census
+ *  cannot read, is a question for a reader. */
+function recorderOf(
+  reads: WorkflowReads,
+  id: string
+): { kind: "none" } | { kind: "records"; detail: string } | { kind: "unsure"; reason: string } {
+  const named = new Set([id]);
+  for (const hit of reads.hits) {
+    if (!namesCheck(hit.text, named)) continue;
+    if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(hit.file)) {
+      return {
+        kind: "unsure",
+        reason: `the search found dispatch result naming it in ${hit.file}, which is no workflow step`,
+      };
+    }
+    const step = reads.executions.find(
+      (execution) => execution.file === hit.file && execution.script.includes(hit.first.trim())
+    );
+    if (step === undefined) continue;
+    if (step.unsure !== undefined) {
+      return {
+        kind: "unsure",
+        reason: `the step that records it runs under a condition the census cannot read: ${step.unsure}`,
+      };
+    }
+    return { kind: "records", detail: `${hit.file}:${hit.line}: ${command(hit.text)}` };
+  }
+  return { kind: "none" };
 }
 
 // ---------------------------------------------------------------------------
@@ -771,6 +1104,13 @@ function time(value: string): number {
   return parsed;
 }
 
+/** Whether a result was recorded during the round: after the move that started it, by the
+ *  handoff that ended it. */
+function duringRound(result: Pick<CheckResult, "created_at">, round: Round): boolean {
+  const at = time(result.created_at);
+  return at > round.from && at <= round.to;
+}
+
 /** Every link a result names, which the reading of its run reads. */
 function linksOf(result: Pick<CheckResult, "run" | "observed">): string[] {
   const text = `${result.run} ${result.observed}`;
@@ -799,27 +1139,92 @@ function namesHead(output: string, head: string): boolean {
   return named.test(output);
 }
 
+/** The rounds of one issue since `--since`: one for each `test` handoff, its head and session from
+ *  the handoff, its start the last move into testing before the handoff. */
+async function roundsOf(
+  config: DispatchConfig,
+  key: string,
+  moves: readonly number[],
+  since: number,
+  unknown: CensusUnknown[]
+): Promise<Round[]> {
+  let handoffs: HandoffSummary[];
+  try {
+    handoffs = await get<HandoffSummary[]>(
+      config,
+      `/api/v1/issues/${encodeURIComponent(key)}/handoffs`
+    );
+  } catch (error) {
+    unknown.push({ issue: key, what: "the handoffs", reason: why(error) });
+    return [];
+  }
+  const tests = handoffs
+    .filter((handoff) => handoff.phase === "test")
+    .sort((left, right) => left.version - right.version);
+  if (tests.length === 0) {
+    unknown.push({
+      issue: key,
+      what: "the test handoffs",
+      reason: "the issue moved into testing and holds no test handoff, so no round can be read",
+    });
+  }
+  const rounds: Round[] = [];
+  for (const summary of tests) {
+    const what = `test handoff ${summary.version}`;
+    let handoff: Handoff;
+    try {
+      handoff = await get<Handoff>(config, `/api/v1/handoffs/${encodeURIComponent(summary.id)}`);
+    } catch (error) {
+      unknown.push({ issue: key, what, reason: why(error) });
+      continue;
+    }
+    let head: unknown;
+    try {
+      const body: unknown = JSON.parse(handoff.body);
+      head = body !== null && typeof body === "object" && "head" in body ? body.head : undefined;
+    } catch (error) {
+      unknown.push({ issue: key, what, reason: `its body is no JSON object: ${why(error)}` });
+      continue;
+    }
+    if (typeof head !== "string" || head === "") {
+      unknown.push({ issue: key, what, reason: "its body names no head" });
+      continue;
+    }
+    const to = time(handoff.created_at);
+    const starts = moves.filter((move) => move <= to);
+    rounds.push({
+      version: summary.version,
+      head,
+      session: handoff.author.id,
+      from: starts.length === 0 ? since : Math.max(...starts),
+      to,
+    });
+  }
+  return rounds;
+}
+
 async function runRounds(config: DispatchConfig, options: RoundsOptions): Promise<CensusReport> {
   const rows: CensusRow[] = [];
   const unknown: CensusUnknown[] = [];
   const excluded: CensusExcluded[] = [];
   const ci: CensusCICheck[] = [];
   const gated: { job: string; gate: string }[] = [];
+  const disabled: { job: string; condition: string }[] = [];
   const unproven: string[] = [];
   const listed: string[] = [];
   const since = time(options.since);
+  const source = `the issues of ${options.project} updated since ${options.since}`;
+  let roundsRead = 0;
 
-  const updated = await get<IssueKeyRow[]>(
-    config,
-    `/api/v1/issues?project=${encodeURIComponent(options.project)}` +
-      `&updated_since=${encodeURIComponent(options.since)}`
-  );
-  if (updated.length === 0) {
-    unknown.push({
-      issue: "",
-      what: `the issues of ${options.project} updated since ${options.since}`,
-      reason: "the listing holds no issue",
-    });
+  let updated: IssueKeyRow[] | undefined;
+  try {
+    updated = await get<IssueKeyRow[]>(
+      config,
+      `/api/v1/issues?project=${encodeURIComponent(options.project)}` +
+        `&updated_since=${encodeURIComponent(options.since)}`
+    );
+  } catch (error) {
+    unknown.push({ issue: "", what: source, reason: why(error) });
   }
 
   const readIssue = async (key: string): Promise<void> => {
@@ -841,114 +1246,57 @@ async function runRounds(config: DispatchConfig, options: RoundsOptions): Promis
     if (moves.length === 0) return;
     listed.push(key);
 
-    let handoffs: HandoffSummary[];
-    try {
-      handoffs = await get<HandoffSummary[]>(
-        config,
-        `/api/v1/issues/${encodeURIComponent(key)}/handoffs`
-      );
-    } catch (error) {
-      unknown.push({ issue: key, what: "the handoffs", reason: why(error) });
-      return;
-    }
-    const tests = handoffs
-      .filter((handoff) => handoff.phase === "test")
-      .sort((left, right) => left.version - right.version);
-    if (tests.length === 0) {
-      unknown.push({
-        issue: key,
-        what: "the test handoffs",
-        reason: "the issue moved into testing and holds no test handoff, so no round can be read",
-      });
-      return;
-    }
-
-    const rounds: Round[] = [];
-    for (const summary of tests) {
-      let handoff: Handoff;
-      try {
-        handoff = await get<Handoff>(config, `/api/v1/handoffs/${encodeURIComponent(summary.id)}`);
-      } catch (error) {
-        unknown.push({ issue: key, what: `test handoff ${summary.version}`, reason: why(error) });
-        continue;
-      }
-      let head: unknown;
-      try {
-        const body: unknown = JSON.parse(handoff.body);
-        head = body !== null && typeof body === "object" && "head" in body ? body.head : undefined;
-      } catch (error) {
-        unknown.push({
-          issue: key,
-          what: `test handoff ${summary.version}`,
-          reason: `its body is no JSON object: ${why(error)}`,
-        });
-        continue;
-      }
-      if (typeof head !== "string" || head === "") {
-        unknown.push({
-          issue: key,
-          what: `test handoff ${summary.version}`,
-          reason: "its body names no head",
-        });
-        continue;
-      }
-      const to = time(handoff.created_at);
-      const starts = moves.filter((move) => move <= to);
-      rounds.push({
-        version: summary.version,
-        head,
-        session: handoff.author.id,
-        from: starts.length === 0 ? since : Math.max(...starts),
-        to,
-      });
-    }
-
+    const rounds = await roundsOf(config, key, moves, since, unknown);
     let results: IssueCheckResults;
+    let plan = "";
     try {
       results = await get<IssueCheckResults>(
         config,
         `/api/v1/issues/${encodeURIComponent(key)}/results`
       );
-    } catch (error) {
-      unknown.push({ issue: key, what: "the results", reason: why(error) });
-      return;
-    }
-
-    let plan = "";
-    try {
       const issue = await issueRead(config, key);
       const named = documentNamed(issue, PLAN_SLUG);
       if (named !== undefined) plan = (await documentText(config, key, named.slug)).markdown;
     } catch (error) {
-      unknown.push({ issue: key, what: PLAN_SLUG, reason: why(error) });
+      unknown.push({ issue: key, what: "the results and the plan", reason: why(error) });
       return;
     }
 
     for (const round of rounds) {
+      roundsRead += 1;
       const workflows = readWorkflows(options.repo, round.head);
-      for (const job of workflows.gated) gated.push(job);
+      for (const failure of workflows.failures) {
+        unknown.push({ issue: key, what: `the workflows at ${round.head}`, reason: failure });
+      }
+      gated.push(...workflows.gated);
+      disabled.push(...workflows.disabled);
       for (const check of results.checks ?? []) {
-        const left = await judgeCheck({
-          config,
-          issue: key,
-          round,
-          check,
-          plan,
-          workflows,
-        });
-        if (left.excluded !== undefined) excluded.push(left.excluded);
-        if (left.ci !== undefined) ci.push(left.ci);
-        if (left.row !== undefined) rows.push(left.row);
-        if (left.unknown !== undefined) unknown.push(left.unknown);
-        if (left.unproven !== undefined) unproven.push(left.unproven);
+        const verdict = await judgeCheck({ config, issue: key, round, check, plan, workflows });
+        if (verdict.excluded !== undefined) excluded.push(verdict.excluded);
+        if (verdict.ci !== undefined) ci.push(verdict.ci);
+        if (verdict.unproven !== undefined) unproven.push(verdict.unproven);
+        rows.push(...verdict.rows);
+        unknown.push(...verdict.unknown);
       }
     }
   };
 
   await eachIssue(
-    updated.map((row) => row.key),
+    (updated ?? []).map((row) => row.key),
     readIssue
   );
+
+  // A population the run enumerated nothing of is no clean reading.
+  if (updated !== undefined && roundsRead === 0) {
+    unknown.push({
+      issue: "",
+      what: "the testing rounds",
+      reason:
+        listed.length === 0
+          ? `none of the ${updated.length} issue(s) of ${source} moved into testing after ${options.since}, so no round was read`
+          : "no round of the issues that moved into testing could be read",
+    });
+  }
 
   listed.sort();
   await mkdir(options.out, { recursive: true });
@@ -961,20 +1309,32 @@ async function runRounds(config: DispatchConfig, options: RoundsOptions): Promis
     excluded,
     ci,
     gated,
+    disabled,
     unproven,
     issues: listed,
   };
 }
 
-/** What one check of one round is: left out, CI's, listed, or a run the reading could read. */
+/** What one check of one round is: left out, CI's, listed, or a run the reading could read. A
+ *  check can be listed by step 2 and still be read by step 3, so its rows and its unknowns are
+ *  lists. */
 interface CheckVerdict {
-  readonly excluded?: CensusExcluded;
-  readonly ci?: CensusCICheck;
-  readonly row?: CensusRow;
-  readonly unknown?: CensusUnknown;
-  readonly unproven?: string;
+  excluded?: CensusExcluded;
+  ci?: CensusCICheck;
+  unproven?: string;
+  readonly rows: CensusRow[];
+  readonly unknown: CensusUnknown[];
 }
 
+/**
+ * One `before_merge` check of one round, by the reading's steps. A check a workflow step records
+ * is left out of both. Step 2 reads the check against the ordinary pull request's jobs at the
+ * head: a check with no `ci_check` whose command such a job runs is listed, and so is a `ci_check`
+ * whose named job does not run its command, and a result a role recorded in the round on a check
+ * that carries `ci_check` now. A check such a job proves is CI's, and step 3 reads no run of it.
+ * Step 3 then looks for the round session's own run at the head, unless the check's words or the
+ * issue's plan give its run to another runner or one run at a head.
+ */
 async function judgeCheck(input: {
   config: DispatchConfig;
   issue: string;
@@ -986,103 +1346,153 @@ async function judgeCheck(input: {
   const { config, issue, round, check, plan, workflows } = input;
   const id = check.block_id;
   const place = { issue, round: round.version, check: id };
+  const what = `${id} at ${round.head}`;
+  const verdict: CheckVerdict = { rows: [], unknown: [] };
   if (check.when !== "before_merge") {
-    return { excluded: { ...place, reason: `its when is ${check.when}` } };
+    verdict.excluded = { ...place, reason: `its when is ${check.when}` };
+    return verdict;
   }
-  if (check.ci_check !== undefined && check.ci_check !== "") {
-    return { excluded: { ...place, reason: "it carries ci_check" } };
+  const recorder = recorderOf(workflows, id);
+  if (recorder.kind === "unsure") {
+    verdict.unknown.push({ issue, what, reason: recorder.reason });
+    return verdict;
   }
-  const recorder = workflows.recorders.find((step) => namesOwnCheck(step.text, new Set([id])));
-  if (recorder !== undefined) {
-    return {
-      excluded: {
-        ...place,
-        reason: "a workflow step records it",
-        detail: `${recorder.file}:${recorder.line}: ${command(recorder.text)}`,
-      },
-    };
+  if (recorder.kind === "records") {
+    verdict.excluded = { ...place, reason: "a workflow step records it", detail: recorder.detail };
+    return verdict;
   }
+
+  const row = { ...place, head: round.head, session: round.session, words: flat(check.text) };
+  const wanted = commandsOf(check.run);
+  const running = workflows.executions.filter((execution) =>
+    executesCommand(execution.commands, wanted)
+  );
+  const sure = running.filter((execution) => execution.unsure === undefined);
+  const unsure = running.filter((execution) => execution.unsure !== undefined);
+  const attribute = check.ci_check ?? "";
+
+  // Step 2: the check against the ordinary pull request's jobs at the head.
+  let proved: Execution | undefined;
+  if (attribute === "") {
+    proved = sure[0];
+    if (proved !== undefined) {
+      verdict.rows.push({
+        ...row,
+        step: "v-open-work step 2",
+        reason: "a job of an ordinary pull request runs its command, and it carries no ci_check",
+        detail: sure.map((execution) => execution.job).join(", "),
+      });
+    } else if (unsure[0] !== undefined) {
+      verdict.unknown.push({
+        issue,
+        what,
+        reason: `a job runs its command under a condition the census cannot read: ${unsure[0].unsure}`,
+      });
+      return verdict;
+    }
+  } else {
+    proved = sure.find((execution) => execution.names.includes(attribute));
+    const named = unsure.find((execution) => execution.names.includes(attribute));
+    if (proved === undefined && named !== undefined) {
+      verdict.unknown.push({
+        issue,
+        what,
+        reason: `the job its ci_check names runs under a condition the census cannot read: ${named.unsure}`,
+      });
+      return verdict;
+    }
+    if (proved === undefined) {
+      verdict.rows.push({
+        ...row,
+        step: "v-open-work step 2",
+        reason: `its ci_check names ${attribute}, and no job of that name runs its command on an ordinary pull request`,
+      });
+    }
+    const recorded = (check.results ?? []).filter((result) => duringRound(result, round));
+    if (recorded.length > 0) {
+      verdict.rows.push({
+        ...row,
+        step: "v-open-work step 2",
+        reason:
+          "a role recorded a result on it during the round, so it carried no ci_check when that result was written",
+        detail: recorded.map((result) => result.id).join(", "),
+      });
+    }
+  }
+  if (proved !== undefined) {
+    verdict.ci = { ...place, job: proved.job, command: command(check.run) };
+    return verdict;
+  }
+
+  // Step 3: the round session's own run at the head.
   const words = `${check.run}\n${check.text}`;
   if (!TESTER.test(words) && RUNNER.test(words)) {
-    return { excluded: { ...place, reason: "its words give its run only to another runner" } };
+    verdict.excluded = { ...place, reason: "its words give its run only to another runner" };
+    return verdict;
   }
   const oneRun = oneRunLines(plan, id);
   if (oneRun.length > 0) {
-    return {
-      excluded: {
-        ...place,
-        reason: "its plan gives it one run at a head",
-        detail: oneRun.join(" "),
-      },
+    verdict.excluded = {
+      ...place,
+      reason: "its plan gives it one run at a head",
+      detail: oneRun.join(" "),
     };
+    return verdict;
   }
-  const job = workflows.commands.find(
-    (entry) => check.run !== "" && command(entry.command).includes(command(check.run))
-  );
-  if (job !== undefined) {
-    return { ci: { ...place, job: job.job, command: command(check.run) } };
-  }
-
   const taken = (check.results ?? [])
     .filter(
       (result) =>
         result.session === round.session &&
         result.commit_sha === round.head &&
-        time(result.created_at) > round.from &&
-        time(result.created_at) <= round.to
+        duringRound(result, round)
     )
     .sort((left, right) => time(left.created_at) - time(right.created_at))
     .at(-1);
-  const row = {
-    ...place,
-    head: round.head,
-    session: round.session,
-    words: flat(check.text),
-  };
+  const audit = { ...row, step: "v-open-work step 3" };
   if (taken === undefined) {
-    return { row: { ...row, reason: "no result of the round's session at the head" } };
+    verdict.rows.push({ ...audit, reason: "no result of the round's session at the head" });
+    return verdict;
   }
-  const unproven = taken.actor.proven === true ? undefined : taken.id;
+  if (taken.actor.proven !== true) verdict.unproven = taken.id;
   const carried = CARRIED.exec(`${taken.run} ${taken.observed}`);
   if (carried !== null) {
-    return {
-      row: { ...row, reason: `its reading carries an earlier run: ${carried[0]}` },
-      ...(unproven === undefined ? {} : { unproven }),
-    };
+    verdict.rows.push({ ...audit, reason: `its reading carries an earlier run: ${carried[0]}` });
+    return verdict;
   }
   const links = linksOf(taken);
   if (links.length === 0) {
-    return {
-      unknown: {
-        issue,
-        what: `${id} at ${round.head}`,
-        reason: "its result links no output, so the reading cannot see a run",
-      },
-      ...(unproven === undefined ? {} : { unproven }),
-    };
+    verdict.unknown.push({
+      issue,
+      what,
+      reason: "its result links no output, so the reading cannot see a run",
+    });
+    return verdict;
   }
   const outputs: string[] = [];
   for (const link of links) {
     try {
       outputs.push(await readLink(config, link));
     } catch (error) {
-      return {
-        unknown: {
-          issue,
-          what: `${id} at ${round.head}`,
-          reason: `its output did not load: ${why(error)}`,
-        },
-        ...(unproven === undefined ? {} : { unproven }),
-      };
+      verdict.unknown.push({ issue, what, reason: `its output did not load: ${why(error)}` });
+      return verdict;
     }
   }
-  if (!outputs.some((output) => namesHead(output, round.head))) {
-    return {
-      row: { ...row, reason: "its output shows no run at the head" },
-      ...(unproven === undefined ? {} : { unproven }),
-    };
+  const atHead = outputs.filter((output) => namesHead(output, round.head));
+  if (atHead.length === 0) {
+    verdict.rows.push({ ...audit, reason: "its output shows no run at the head" });
+    return verdict;
   }
-  return unproven === undefined ? {} : { unproven };
+  // The output must show this check's own procedure at the head, not only the head.
+  const procedure = command(check.run);
+  if (procedure === "" || !atHead.some((output) => command(output).includes(procedure))) {
+    verdict.unknown.push({
+      issue,
+      what,
+      reason:
+        "its output does not show the check's procedure, so the reading cannot tie the run to this check",
+    });
+  }
+  return verdict;
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,6 +1507,7 @@ interface ReadingOptions {
 }
 
 const PROMPTS = "packages/daemon/internal/prompts";
+const PROMPTS_GO = `${PROMPTS}/prompts.go`;
 
 /** The three files of the tester whose words the failure grep reads. */
 const TESTER_FILES = [
@@ -1119,14 +1530,13 @@ const READER_FILES = [
 
 const WORKER_COMMON = `${PROMPTS}/go/worker-common.md`;
 
-/** Each file a reader of these steps reads at the head, which the run writes out for it. */
-const READING_FILES = [
+/** The files the reader of the other steps reads beside the tester's parts. A base that lacks one
+ *  names it as absent, and that part of the reading is not run there. */
+const OTHER_READING_FILES = [
+  PROMPTS_GO,
   ...TESTER_FILES,
   ...READER_FILES,
   WORKER_COMMON,
-  `${PROMPTS}/roles/core/common.md`,
-  `${PROMPTS}/mechanics/headless.md`,
-  `${PROMPTS}/roles/mechanics/headless.md`,
   `${PROMPTS}/go/reviewer.md`,
   `${PROMPTS}/roles_test.go`,
   "packages/pi-legion/scripts/skill-scenarios/gate-search.ts",
@@ -1173,17 +1583,130 @@ const GREPS: readonly GrepStep[] = [
   },
 ];
 
-function orderStep(options: ReadingOptions): { step: CensusStep; row?: CensusRow } {
+/** The parts of a Go string expression the census can evaluate, split at its top-level `sep`. */
+function splitTopLevel(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quoted = false;
+  let current = "";
+  for (const character of text) {
+    if (character === '"') quoted = !quoted;
+    if (!quoted && character === "(") depth += 1;
+    if (!quoted && character === ")") depth -= 1;
+    if (!quoted && depth === 0 && character === separator) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += character;
+  }
+  parts.push(current);
+  return parts.map((part) => part.trim()).filter((part) => part !== "");
+}
+
+/** A Go string expression of `Compose` — a literal, `name`, `string(role)`, a `+` of those, or a
+ *  `filepath.Join` of those — or nothing where it is of another form. */
+function evaluateGo(expression: string, name: string, role: string): string | undefined {
+  const text = expression.trim();
+  const literal = text.match(/^"([^"\\]*)"$/);
+  if (literal?.[1] !== undefined) return literal[1];
+  if (text === "name") return name;
+  if (text === "string(role)") return role;
+  const join = text.match(/^filepath\.Join\(([\s\S]*)\)$/);
+  if (join?.[1] !== undefined) {
+    const parts = splitTopLevel(join[1], ",").map((part) => evaluateGo(part, name, role));
+    return parts.some((part) => part === undefined) ? undefined : parts.join("/");
+  }
+  const sum = splitTopLevel(text, "+");
+  if (sum.length > 1) {
+    const parts = sum.map((part) => evaluateGo(part, name, role));
+    return parts.some((part) => part === undefined) ? undefined : parts.join("");
+  }
+  return undefined;
+}
+
+/**
+ * The prompt parts `Compose` in `prompts.go` gives a phase worker's role, read from the source:
+ * the case that names `claim.Role<Role>`, its `name`, `shared` and `daemonParts`, with each
+ * shared part under `roles/` and each daemon part under `go/`, as `New` syncs the two. A source of
+ * any other form returns the reason, which the reading reports UNKNOWN, never a list of its own.
+ */
+export function composeParts(source: string, role: string): string[] | string {
+  if (
+    !source.includes('eachPart(roleParts, "roles"') ||
+    !source.includes('eachPart(goParts, "go"')
+  ) {
+    return "prompts.go does not sync its shared parts from roles and its own from go";
+  }
+  const compose = source.indexOf("func (c *Composer) Compose(");
+  if (compose === -1) return "prompts.go holds no Compose";
+  const roleName = `${role[0]?.toUpperCase() ?? ""}${role.slice(1)}`;
+  const clause = source
+    .slice(compose)
+    .match(
+      new RegExp(
+        `\\n\\s*case ([^\\n:]*\\bclaim\\.Role${roleName}\\b[^\\n:]*):\\n([\\s\\S]*?)(?=\\n\\s*(?:case |default:))`
+      )
+    )?.[2];
+  if (clause === undefined) return `Compose holds no case for claim.Role${roleName}`;
+  const nameExpression = clause.match(/\bname := ([^\n]+)/)?.[1];
+  const name = nameExpression === undefined ? role : evaluateGo(nameExpression, role, role);
+  const shared = clause.match(/\bshared(?:, daemonParts)? = \[\]string\{([^}]*)\}/)?.[1];
+  const daemon =
+    clause.match(/\bdaemonParts = \[\]string\{([^}]*)\}/)?.[1] ??
+    clause.match(/\bshared, daemonParts = \[\]string\{[^}]*\}, \[\]string\{([^}]*)\}/)?.[1];
+  if (name === undefined || shared === undefined || daemon === undefined) {
+    return `Compose's case for claim.Role${roleName} is of a form the census cannot read`;
+  }
+  const parts: string[] = [];
+  for (const [list, root] of [
+    [shared, "roles"],
+    [daemon, "go"],
+  ] as const) {
+    for (const element of splitTopLevel(list, ",")) {
+      const part = evaluateGo(element, name, role);
+      if (part === undefined) return `Compose names a part the census cannot read: ${element}`;
+      parts.push(`${PROMPTS}/${root}/${part}`);
+    }
+  }
+  return parts;
+}
+
+interface StepRun {
+  readonly step: CensusStep;
+  readonly row?: CensusRow;
+  readonly unknown?: CensusUnknown;
+}
+
+function failed(name: string, reason: string, detail?: string): StepRun {
+  const extra = detail === undefined ? {} : { detail };
+  return {
+    step: { name, verdict: "fail", reason, ...extra },
+    row: { issue: "", step: name, reason, ...extra },
+  };
+}
+
+function unreadable(name: string, reason: string): StepRun {
+  return {
+    step: { name, verdict: "not run", reason },
+    unknown: { issue: "", what: name, reason },
+  };
+}
+
+/** The order step: the merge commit of the pull request `--after` names must be an ancestor of
+ *  `--merge`. A pull request with no merge commit fails it; a `gh` that cannot answer is UNKNOWN. */
+function orderStep(options: ReadingOptions): { run: StepRun; afterMerge?: string } {
   const view = Bun.spawnSync(["gh", "pr", "view", String(options.after), "--json", "mergeCommit"], {
     cwd: options.repo,
     stdout: "pipe",
     stderr: "pipe",
   });
   if (view.exitCode !== 0) {
-    const reason = `gh pr view ${options.after} answered ${view.exitCode}: ${command(view.stderr.toString()).slice(0, 200)}`;
     return {
-      step: { name: "order", verdict: "fail", reason },
-      row: { issue: "", step: "order", reason },
+      run: unreadable(
+        "order",
+        `gh pr view ${options.after} answered ${view.exitCode}: ${command(view.stderr.toString()).slice(0, 200)}`
+      ),
     };
   }
   let oid: unknown;
@@ -1195,74 +1718,110 @@ function orderStep(options: ReadingOptions): { step: CensusStep; row?: CensusRow
         : undefined;
     oid = merge !== null && typeof merge === "object" && "oid" in merge ? merge.oid : undefined;
   } catch (error) {
-    const reason = `gh pr view ${options.after} answered no JSON: ${why(error)}`;
     return {
-      step: { name: "order", verdict: "fail", reason },
-      row: { issue: "", step: "order", reason },
+      run: unreadable("order", `gh pr view ${options.after} answered no JSON: ${why(error)}`),
     };
   }
   if (typeof oid !== "string" || oid === "") {
-    const reason = `pull request ${options.after} has no merge commit, so the order step fails`;
     return {
-      step: { name: "order", verdict: "fail", reason },
-      row: { issue: "", step: "order", reason },
+      run: failed(
+        "order",
+        `pull request ${options.after} has no merge commit, so the order step fails`
+      ),
     };
   }
   const ancestor = git(options.repo, ["merge-base", "--is-ancestor", oid, options.merge]);
-  if (ancestor.exitCode === 0) return { step: { name: "order", verdict: "pass", detail: oid } };
+  if (ancestor.exitCode === 0) {
+    return { run: { step: { name: "order", verdict: "pass", detail: oid } }, afterMerge: oid };
+  }
   if (ancestor.exitCode === 1) {
-    const reason = `the merge commit of pull request ${options.after} (${oid}) is no ancestor of the merge read (${options.merge})`;
     return {
-      step: { name: "order", verdict: "fail", reason },
-      row: { issue: "", step: "order", reason },
+      run: failed(
+        "order",
+        `the merge commit of pull request ${options.after} (${oid}) is no ancestor of the merge read (${options.merge})`
+      ),
+      afterMerge: oid,
     };
   }
-  const reason = `git merge-base --is-ancestor answered ${ancestor.exitCode}: ${command(ancestor.stderr)}`;
   return {
-    step: { name: "order", verdict: "fail", reason },
-    row: { issue: "", step: "order", reason },
+    run: unreadable(
+      "order",
+      `git merge-base --is-ancestor answered ${ancestor.exitCode}: ${command(ancestor.stderr)}`
+    ),
+    afterMerge: oid,
   };
 }
 
-function grepStep(
-  repo: string,
-  step: GrepStep
-): { step: CensusStep; row?: CensusRow; unknown?: CensusUnknown } {
-  const run = git(repo, ["grep", "-n", "-E", step.pattern, "--", ...step.files]);
+function holdsMergeStep(options: ReadingOptions, read: string): StepRun {
+  const name = "the read commit holds the merge";
+  const held = git(options.repo, ["merge-base", "--is-ancestor", options.merge, read]);
+  if (held.exitCode === 0) return { step: { name, verdict: "pass" } };
+  if (held.exitCode === 1) {
+    return failed(name, `the read commit ${read} does not hold the merge ${options.merge}`);
+  }
+  return unreadable(
+    name,
+    `git merge-base --is-ancestor answered ${held.exitCode}: ${command(held.stderr)}`
+  );
+}
+
+function holds(repo: string, read: string, path: string): boolean {
+  return git(repo, ["cat-file", "-e", `${read}:${path}`]).exitCode === 0;
+}
+
+function grepStep(repo: string, read: string, step: GrepStep): StepRun {
+  // A grep over a file the commit lacks prints nothing, which would read as a pass.
+  const absent = step.files.filter((path) => !holds(repo, read, path));
+  if (absent.length > 0) {
+    return unreadable(
+      step.name,
+      `the read commit lacks ${absent.join(", ")}, so the grep cannot read it`
+    );
+  }
+  const run = git(repo, ["grep", "-n", "-E", step.pattern, read, "--", ...step.files]);
   if (run.exitCode > 1) {
-    const reason = `git grep answered ${run.exitCode}: ${command(run.stderr).slice(0, 300)}`;
-    return {
-      step: { name: step.name, verdict: "not run", reason },
-      unknown: { issue: "", what: step.name, reason },
-    };
+    return unreadable(
+      step.name,
+      `git grep answered ${run.exitCode}: ${command(run.stderr).slice(0, 300)}`
+    );
   }
   const printed = run.stdout.split("\n").filter((line) => line !== "");
   if (step.wants === "nothing") {
     if (printed.length === 0) return { step: { name: step.name, verdict: "pass" } };
-    const reason = `it printed ${printed.length} line(s) and must print none`;
-    return {
-      step: { name: step.name, verdict: "fail", reason, detail: printed.join("\n") },
-      row: { issue: "", step: step.name, reason, detail: printed.join("\n") },
-    };
+    return failed(
+      step.name,
+      `it printed ${printed.length} line(s) and must print none`,
+      printed.join("\n")
+    );
   }
   if (printed.length > 0) return { step: { name: step.name, verdict: "pass" } };
-  const reason = "it printed nothing and must print at least one line";
-  return {
-    step: { name: step.name, verdict: "fail", reason },
-    row: { issue: "", step: step.name, reason },
-  };
+  return failed(step.name, "it printed nothing and must print at least one line");
 }
 
-function pinTestStep(repo: string, name: string): { step: CensusStep; row?: CensusRow } {
-  const held = git(repo, ["grep", "-l", "-E", `^func ${name}\\(`, "--", "packages/daemon"]);
-  const files = held.stdout.split("\n").filter((line) => line !== "");
-  const file = files[0];
-  if (held.exitCode > 1 || file === undefined) {
+function pinTestStep(repo: string, read: string, name: string, coherent: boolean): StepRun {
+  const held = git(repo, ["grep", "-l", "-E", `^func ${name}\\(`, read, "--", "packages/daemon"]);
+  if (held.exitCode > 1) {
+    return unreadable(name, `git grep answered ${held.exitCode}: ${command(held.stderr)}`);
+  }
+  const file = held.stdout
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => line.slice(line.indexOf(":") + 1))[0];
+  if (file === undefined) {
     return {
       step: {
         name,
         verdict: "not run",
-        reason: `no package under packages/daemon holds it (git grep answered ${held.exitCode})`,
+        reason: `no package under packages/daemon holds it at ${read}`,
+      },
+    };
+  }
+  if (!coherent) {
+    return {
+      step: {
+        name,
+        verdict: "not run",
+        reason: "the checkout's tracked files differ from the read commit, so no test runs on it",
       },
     };
   }
@@ -1284,58 +1843,66 @@ function pinTestStep(repo: string, name: string): { step: CensusStep; row?: Cens
   const output = `${run.stdout.toString()}${run.stderr.toString()}`;
   // A run that selected no test, or that skipped, proves nothing and fails its step.
   if (output.includes("--- SKIP") || output.includes("no tests to run")) {
-    const reason = "the run selected no test, or skipped it";
-    return {
-      step: { name, verdict: "fail", reason, detail: output.slice(-2000) },
-      row: { issue: "", step: name, reason },
-    };
+    return failed(name, "the run selected no test, or skipped it", output.slice(-2000));
   }
   if (run.exitCode === 0) return { step: { name, verdict: "pass", detail: relative } };
-  const reason = `go test answered ${run.exitCode} in ${relative}`;
-  return {
-    step: { name, verdict: "fail", reason, detail: output.slice(-2000) },
-    row: { issue: "", step: name, reason, detail: output.slice(-2000) },
-  };
+  return failed(name, `go test answered ${run.exitCode} in ${relative}`, output.slice(-2000));
 }
 
 async function runMainRead(options: ReadingOptions): Promise<CensusReport> {
   const rows: CensusRow[] = [];
   const unknown: CensusUnknown[] = [];
   const steps: CensusStep[] = [];
+  const record = (run: StepRun): void => {
+    steps.push(run.step);
+    if (run.row !== undefined) rows.push(run.row);
+    if (run.unknown !== undefined) unknown.push(run.unknown);
+  };
 
-  const inside = git(options.repo, ["rev-parse", "--git-dir"]);
-  if (inside.exitCode !== 0) {
+  // The one commit every step of the reading reads.
+  const head = git(options.repo, ["rev-parse", "--verify", "HEAD^{commit}"]);
+  if (head.exitCode !== 0) {
     unknown.push({
       issue: "",
       what: options.repo,
-      reason: `it is no git checkout: ${command(inside.stderr)}`,
+      reason: `it is no git checkout with a commit: ${command(head.stderr)}`,
+    });
+    return { mode: "main-read", complete: false, rows, unknown, steps };
+  }
+  const read = head.stdout.trim();
+  const status = git(options.repo, ["status", "--porcelain", "--untracked-files=no"]);
+  const coherent = status.exitCode === 0 && status.stdout.trim() === "";
+  if (!coherent) {
+    unknown.push({
+      issue: "",
+      what: "the checkout",
+      reason: `its tracked files differ from ${read}: ${command(status.stdout || status.stderr).slice(0, 300)}`,
     });
   }
 
   const order = orderStep(options);
-  steps.push(order.step);
-  if (order.row !== undefined) rows.push(order.row);
+  record(order.run);
+  record(holdsMergeStep(options, read));
+  for (const step of GREPS) record(grepStep(options.repo, read, step));
+  for (const name of PIN_TESTS) record(pinTestStep(options.repo, read, name, coherent));
 
-  for (const step of GREPS) {
-    const run = grepStep(options.repo, step);
-    steps.push(run.step);
-    if (run.row !== undefined) rows.push(run.row);
-    if (run.unknown !== undefined) unknown.push(run.unknown);
+  // The tester's parts as `Compose` names them at the read commit, and the other files.
+  const source = git(options.repo, ["show", `${read}:${PROMPTS_GO}`]);
+  const composed =
+    source.exitCode === 0 ? composeParts(source.stdout, "tester") : `${read} lacks ${PROMPTS_GO}`;
+  const tester = typeof composed === "string" ? [] : composed;
+  if (typeof composed === "string") {
+    unknown.push({ issue: "", what: "the tester's parts", reason: composed });
   }
-
-  for (const name of PIN_TESTS) {
-    const run = pinTestStep(options.repo, name);
-    steps.push(run.step);
-    if (run.row !== undefined) rows.push(run.row);
-  }
-
   const written: string[] = [];
   const missing: string[] = [];
-  for (const path of READING_FILES) {
-    if (written.includes(path) || missing.includes(path)) continue;
-    const shown = git(options.repo, ["show", `${options.merge}:${path}`]);
+  for (const path of [...new Set([...tester, ...OTHER_READING_FILES])]) {
+    const shown = git(options.repo, ["show", `${read}:${path}`]);
     if (shown.exitCode !== 0) {
       missing.push(path);
+      if (tester.includes(path) || path === PROMPTS_GO) {
+        unknown.push({ issue: "", what: path, reason: `Compose names it, and ${read} lacks it` });
+      }
       continue;
     }
     const target = join(options.out, "files", path);
@@ -1345,7 +1912,11 @@ async function runMainRead(options: ReadingOptions): Promise<CensusReport> {
   }
   await writeFile(
     join(options.out, "files.txt"),
-    [...written.map((path) => `read ${path}`), ...missing.map((path) => `absent ${path}`)]
+    [
+      `read ${read}`,
+      ...written.map((path) => `written ${path}`),
+      ...missing.map((path) => `absent ${path}`),
+    ]
       .map((line) => `${line}\n`)
       .join("")
   );
@@ -1356,7 +1927,13 @@ async function runMainRead(options: ReadingOptions): Promise<CensusReport> {
     rows,
     unknown,
     steps,
-    files: { written, missing },
+    subject: {
+      read,
+      merge: options.merge,
+      after: options.after,
+      ...(order.afterMerge === undefined ? {} : { afterMerge: order.afterMerge }),
+    },
+    files: { tester, written, missing },
   };
 }
 
@@ -1364,6 +1941,9 @@ async function runMainRead(options: ReadingOptions): Promise<CensusReport> {
 // The run
 
 function printReport(report: CensusReport): void {
+  if (report.subject !== undefined) {
+    console.log(`Read commit ${report.subject.read}; merge ${report.subject.merge}`);
+  }
   if (report.steps !== undefined) {
     console.log("Steps");
     console.table(report.steps.map(({ name, verdict, reason }) => ({ name, verdict, reason })));
@@ -1384,15 +1964,19 @@ function printReport(report: CensusReport): void {
     console.table(report.ci);
   }
   if (report.gated !== undefined && report.gated.length > 0) {
-    console.log("Jobs a label or the merge queue gates, which prove no check at a head");
+    console.log("Jobs another event, a label or the merge queue gates, which prove no check here");
     console.table(report.gated);
+  }
+  if (report.disabled !== undefined && report.disabled.length > 0) {
+    console.log("Jobs and steps that never run, which prove nothing");
+    console.table(report.disabled);
   }
   if (report.unproven !== undefined && report.unproven.length > 0) {
     console.log(`Results taken whose actor does not carry proven: ${report.unproven.join(", ")}`);
   }
   if (report.files !== undefined) {
     console.log(
-      `Files written: ${report.files.written.length}; the checkout lacks ${report.files.missing.length}`
+      `Files written: ${report.files.written.length}; the read commit lacks ${report.files.missing.length}`
     );
   }
   console.log("Listed");
@@ -1471,7 +2055,7 @@ function parseArguments(argv: readonly string[]): Options {
   }
   if (mode === "main-read") {
     const { merge, after, repo, out } = values;
-    if (merge === undefined) throw new Error("--merge is required: the merge commit read");
+    if (merge === undefined) throw new Error("--merge is required: the merge commit of this work");
     if (after === undefined) {
       throw new Error("--after is required: the pull request whose merge must come first");
     }
