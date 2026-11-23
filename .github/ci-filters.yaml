@@ -422,6 +422,7 @@ daemon_go_tests:
   - '!packages/daemon/internal/daemon/owner_steps_client_live_test.go'
   - '!packages/daemon/internal/daemon/owner_steps_live_test.go'
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
+  - '!packages/daemon/internal/daemon/plan_experiment_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
   - '!packages/daemon/internal/daemon/review_range_live_test.go'
@@ -518,6 +519,7 @@ plugin_pack:
   - '!packages/daemon/internal/daemon/owner_steps_client_live_test.go'
   - '!packages/daemon/internal/daemon/owner_steps_live_test.go'
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
+  - '!packages/daemon/internal/daemon/plan_experiment_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
   - '!packages/daemon/internal/daemon/review_range_live_test.go'
@@ -2653,6 +2655,7 @@ tool_fallback:
   - '.github/actions/install-uv/**'
   - '.github/actions/install-pulumi/**'
   - '.github/actions/install-docker-plugin/**'
+  - '.github/actions/install-helm/**'
   - '.bun-version'
   - 'packages/daemon/docker/worker.Dockerfile'
   - *ci_router

@@ -106,7 +106,8 @@ const StatusNotTakenYet = "A status that you wrote and that the daemon has not t
 // InWorkflow says whether an issue is in the workflow: its Dispatch status is one the workflow
 // runs in (OutOfWorkflow) and its phase is short of done. One still admitted counts, since it
 // will run — a root reopened inside its linger (admit's readmit) stands in admitted with no
-// role's phase until its architect reaches planning, and is running again from the reopen. It is
+// role's phase until its task's first step starts (planning, in the default steps), and is
+// running again from the reopen. It is
 // the production check's "runs again" predicate (workflow's check.go) and the outbox's
 // (checkLookHolds): a look of an issue that runs again would resume the checking role and
 // relaunch its Sandbox under the run, so none starts.
@@ -163,8 +164,8 @@ func StandsIn(issue Issue, phases ...phase.Phase) bool {
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
 //
-// A parent held before its retro for the issues beneath it (HoldForChildren, a parent whose plan
-// has no acceptance step) is not accepted: the hold stands in place of its retro until those
+// A parent held before its retro for the issues beneath it (HoldForChildren, a parent whose task's
+// last step is not the owner's acceptance) is not accepted: the hold stands in place of its retro until those
 // issues have run, so each of them must start beneath it and be counted by its wait. Read as
 // accepted, it would hold a child at admitted until the parent closed (HeldUnderAccepted), leave
 // that child out of the wait (OpenBeneath), and start its retro and merge without the child's work.
@@ -925,17 +926,19 @@ func AtWork(issue Issue, gate TreeGate) bool {
 
 // PhaseKeepsSlot is the one list of the phases that hold one of the cap's slots: admitted, where
 // a root's architect writes its design and a started child waits to be entered again;
-// awaiting_person; the four phases a worker works up to the review — planning, implementing,
-// testing and reviewing; and held, which is reached here only where the record names no earlier
-// phase for the hold (StandsAt). Every other phase holds none: accepting, retro and merging each
-// stand past the issue's review, and done has finished.
+// awaiting_person; the four phases a step's worker runs besides the owner's acceptance —
+// planning, implementing, testing and reviewing; and held, which is reached here only where the
+// record names no earlier phase for the hold (StandsAt). Every other phase holds none: accepting,
+// retro and merging (in the default steps, the phases after the review), and done, which has
+// finished. A step after accepting whose phase keeps a slot waits for one again
+// (workflow.StartOrOwe).
 //
 // It is written as one list so that a later change adds or removes one entry and every reader of
 // the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
 // the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
 // waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
-// no slot. PastReview is the complement of the three phases this refuses, for the repair that
-// must reach an issue holding no row.
+// no slot. InSlotlessPhase is the complement of the three working phases this refuses, for the
+// repair that must reach an issue holding no row.
 func PhaseKeepsSlot(at phase.Phase) bool {
 	switch at {
 	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
@@ -947,26 +950,26 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 }
 
 // KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
-// the moment the daemon starts it until its work is past its review — accepting, retro and
-// merging hold none — or until it is done or Dispatch takes it out of the workflow
-// (InWorkflow). Every phase up to the review keeps the row — admitted, awaiting_person, the four
-// worker phases and a hold the record names no phase for (PhaseKeepsSlot) — so an issue waiting
-// for a person or for its review keeps its place against the cap and wins none back from the
-// line when the wait ends. A wait on another issue is the one wait that is not read here: an
-// issue the daemon has started that waits on one gives its row back and stands in the line for
-// one again, by the rule beside this (blockers.waitsOf, admit's releaseSlotsForWaits), save the
-// roots that rule names as keepers. That rule reads this one first, so an issue past its review
-// waits on nothing there (blockers.waitsOf). The rule whole is "Admission and the `legion` label"
-// in docs/site/src/content/docs/legion/concepts.md.
+// the moment the daemon starts it until it stands in accepting, retro or merging, which hold
+// none, or until it is done or Dispatch takes it out of the workflow (InWorkflow). Every other
+// phase keeps the row — admitted, awaiting_person, the four worker phases and a hold the record
+// names no phase for (PhaseKeepsSlot) — so an issue waiting for a person or for its review keeps
+// its place against the cap and wins none back from the line when the wait ends. A wait on
+// another issue is the one wait that is not read here: an issue the daemon has started that waits
+// on one gives its row back and stands in the line for one again, by the rule beside this
+// (blockers.waitsOf, admit's releaseSlotsForWaits), save the roots that rule names as keepers.
+// That rule reads this one first, so an issue in accepting, retro or merging waits on nothing
+// there (blockers.waitsOf). The rule whole is "Admission and the `legion` label" in
+// docs/site/src/content/docs/legion/concepts.md.
 //
-// The cap bounds the work in progress, and an issue whose review has passed writes no more of
-// the change: its sign-off, its retro and its merge run on no slot at all, so their starts are
+// The cap bounds the work in progress, and an issue in accepting, retro or merging writes no more
+// of the change there: accepting, retro and merging run on no slot at all, so their starts are
 // claimable the moment they are written (workflow.StartOrOwe) and a tree's last phases count
 // against none of the issues that have a change still to write. Work the architect sends back
 // from accepting or from retro to implementing is at work again, so it takes a slot again, and
-// it waits for one among the issues whose work came back. A merged root stands in merging until
-// the rest of its tree leaves the workflow (workflow's closeMerged), and it stands there on no
-// slot, as every phase past the review does.
+// it waits for one among the issues whose work came back; so does a step after accepting whose
+// phase keeps a slot. A merged root stands in merging until the rest of its tree leaves the
+// workflow (workflow's closeMerged), and it stands there on no slot, as accepting and retro do.
 //
 // Where the issue stands is StandsAt's reading and not the record's field alone, so an issue a
 // failed claim held keeps exactly the row the phase it was working keeps.
@@ -984,32 +987,35 @@ func KeepsSlot(issue Issue) bool {
 	return InWorkflow(issue) && PhaseKeepsSlot(StandsAt(issue))
 }
 
-// PastReview says whether issue's work stands past its own review: in accepting, in its retro
-// or in its merge, or held from one of them (StandsIn, as Accepted is written). Those are
-// exactly the three phases that hold none of the cap's slots (PhaseKeepsSlot), so this is that
-// list read the other way round.
+// InSlotlessPhase says whether issue stands in a working phase that holds none of the cap's slots,
+// or is held from one (StandsAt): a phase of phase.Order that PhaseKeepsSlot refuses, which in
+// this release is accepting, retro or merging in every order a task's steps run in. It is
+// PhaseKeepsSlot read the other way round over the working phases, and it reads that list rather
+// than a copy of its own.
 //
 // It exists so that the list lives in this package alone. The repair of a worker with no task
-// (admit's resumeSlottedWorkers) must reach an issue standing past its review, because such an
-// issue holds no row and the repair's own domain is the slot holders. Written there as a list of
-// its own, a phase added to or taken out of PhaseKeepsSlot would move the cap and leave the
-// repair behind, and the worker of that phase would be repaired by nothing. Read from here, the
-// two move together.
+// (admit's resumeSlottedWorkers) must reach an issue standing in one of those phases, because
+// such an issue holds no row and the repair's own domain is the slot holders; and the `why` of an
+// issue at work in one of them is no answer (projection's atWorkInSlotlessPhase). Written there
+// as a list of their own, a phase added to or taken out of PhaseKeepsSlot would move the cap and
+// leave them behind, and the worker of that phase would be repaired by nothing. Read from here,
+// they move together.
 //
 // It is not Accepted, and the two must not be merged: Accepted names the two phases whose head,
 // the one the last step of the task passed, the daemon has accepted, which is the rule the
 // acceptance order is written over (its doc names them there and nowhere else), and leaves out a
 // parent held before its retro for its children; this one is the slot rule's complement and
 // counts accepting, and that parent, with them.
-func PastReview(issue Issue) bool {
-	return StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging)
+func InSlotlessPhase(issue Issue) bool {
+	at := StandsAt(issue)
+	return slices.Contains(phase.Order, at) && !PhaseKeepsSlot(at)
 }
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,
 // with a root that does not linger after its close — and the issue keeps a slot where it stands
-// (KeepsSlot). An issue holds its admission slot from the moment the daemon starts it until its
-// work is past its review, until it is done or until it leaves the workflow, except while it
-// waits on another issue before that point (docs/site/src/content/docs/legion/concepts.md,
+// (KeepsSlot). An issue holds its admission slot while it stands in a phase that keeps one
+// (PhaseKeepsSlot), from the moment the daemon starts it until it is done or until it leaves
+// the workflow, except while it waits on another issue there (docs/site/src/content/docs/legion/concepts.md,
 // "Admission and the `legion` label"), so the cap counts the
 // issues the daemon has started whose change is still to write, rather than the ones a worker of
 // them is running this second. Nothing of a tree that has left the workflow works until its
@@ -1299,7 +1305,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// arrival, which ran is written over and the promotion that opens the root's own tree
 		// clears) while the tree of its own has still to be opened. Dropped from the line,
 		// nothing would promote it, the release would keep its row (NeedsSlot) and no later pass
-		// would find it again. A root that arrives past its review holds no row at all and
+		// would find it again. A root that arrives in accepting, retro or merging holds no row at all and
 		// reaches the line by the other half of the branch, as any queued root does. The tree it
 		// left usually takes a carried row back first — its root lingers from its close, and the
 		// release reads the linger in the transaction that records the close, before the
@@ -1480,7 +1486,7 @@ func queuedRoots(issues []Issue, facts LineFacts) []Issue {
 // (liveRoots): a lifecycle that stands open says the tree once opened, not that this generation
 // of the root is running, and a root whose tree ran and ended queues again with that row still
 // standing until its cleanup confirms. The slot does not answer it either: a root arriving from
-// another tree in a phase up to its review may carry the row it held there while the tree of
+// another tree in a phase that keeps a slot may carry the row it held there while the tree of
 // its own has still to be opened, which Waiting's queued-root loop states at the skip it guards.
 func QueuedRoot(issue Issue, gate TreeGate) bool {
 	if !issue.HandedOver || !claim.IsTreeRoot(issue.Key, issue.Tree) || ran(issue, gate) {

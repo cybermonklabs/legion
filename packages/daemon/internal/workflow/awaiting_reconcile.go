@@ -281,7 +281,7 @@ type awaitDecision struct {
 //
 // Rule 0 is the spec's own condition (dispatch://INFRA-980, "Which issue needs a slot"): a root
 // enters awaiting_person only while it holds a slot, which now says the daemon has started it
-// and its work is not yet past its review (record.KeepsSlot); a root at admitted whose gate has
+// and it stands in a phase that keeps a slot (record.KeepsSlot); a root at admitted whose gate has
 // never opened keeps that slot through a wait on another issue (blockers.waitsOf). It is read as
 // the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for

@@ -236,6 +236,11 @@ jobs:
       - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
         run: bash loadtest/common.test.sh
         working-directory: packages/envoy
+      # The cluster suite's render of nats.yaml runs this helm, the version render-nats.sh pins,
+      # instead of building helm with `go run`, which downloads and compiles it first: the render
+      # took 40.6 s that way in job 137308591036, 60.0 s in job 137294623668 and 52.1 s in job
+      # 137388344183.
+      - uses: ./.github/actions/install-helm
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         run: bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy

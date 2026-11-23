@@ -843,13 +843,15 @@ ci.yaml's tool-fallback and tool-fallback-arm jobs, the live proof of the second
 source every tool install reads when the first source does not serve the bytes:
 the manifest that names both sources of each row, the fetch helper every install
 goes through, the filler and the gate beside it, the rig and the fault proxy it
-drives, the eight actions it installs through, and the two files a row's version is
+drives, the nine actions it installs through, and the two files a row's version is
 pinned in that the job itself reads (.bun-version for the bun rows and the
 worker image's Dockerfile for mise, jj and uv).
 packages/envoy/infra/internal/pulumitest/pulumitest.go, whose
 `const DockerPluginVersion` the gate holds the pulumi-docker row's version to,
-is not here and no step of either job reads it: a raise of that constant must
-move the row, and .github/ci-tools.yaml is in this list.
+and packages/envoy/loadtest/cluster/render-nats.sh, whose `HELM=` line the gate
+holds the helm row's version to, are not here and no step of either job reads
+them: a raise of either pin must move its row, and .github/ci-tools.yaml is in
+this list.
 One filter for the two jobs, as `envoy_go_race_docs` is for its two: the arm64
 job drives the same action over the same manifest through the same helper, so a
 change that selects one of them must select both, and one list cannot drift from
@@ -1495,8 +1497,8 @@ and checks: write are the ci-ok-report step's.
 ## The tool fallback proof: what it drives, what it only reasons about, and how to read it when it is red
 
 The live proof of the second source every tool install of this repository now has: it faults
-the host the first source is on, installs all eight tools through the source
-.github/ci-tools.yaml names for each, and then serves sixteen corrupted payloads and reads
+the host the first source is on, installs all nine tools through the source
+.github/ci-tools.yaml names for each, and then serves eighteen corrupted payloads and reads
 the refusal of every one of them.
 It is permanent rather than a scaffold. A second source nothing exercises rots — a copy
 nothing fills, a seam a refactor dropped, a digest nobody reads — and the hour of 504s this
@@ -1514,7 +1516,7 @@ binary a third party installed seeds mise's install directory from that staged p
 rather than downloading one inside the fault.
 That is what keeps ci-ok green during the very outage this job proves survivable: this job
 is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's
-Dockerfile, the manifest and the helper beside it, and the eight actions, so
+Dockerfile, the manifest and the helper beside it, and the nine actions, so
 a step of it that waited on a release host would turn every pull request touching one of
 those files red on exactly the day the fallback is doing its work.
 .github/scripts/ci-tools-proof.sh is the rig, which this job and tool-fallback-arm drive;
@@ -1569,11 +1571,11 @@ and `timeout-minutes: 1` whose action slept 180 s was ended after 72 s, and the 
 it read it as `outcome='failure' conclusion='success'`, so the failure is in the value an
 assertion reads while the job's own result says nothing happened.
 So on a step with no `continue-on-error` a bound is loud: it fails the job. This job's steps
-are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-four installs
+are in .github/workflows/ci-job-tool-fallback.yaml, and on one of the twenty-six installs
 there whose control passes a step whose `outcome` is `failure`, a bound is silent: a hang
 would satisfy that control and leave the job green, where the job's own ceiling would have
 cancelled it and failed ci-ok. That is why each of those installs is timed as well as read -
-the eight with nowhere to go by the control step "Check all eight installs with nowhere to go failed, and failed in their own time", the sixteen corrupted cases by
+the eight with nowhere to go by the control step "Check all eight installs with nowhere to go failed, and failed in their own time", the eighteen corrupted cases by
 `report` itself - and why a new bound on a step some later assertion accepts the failure of
 needs the same treatment or none at all (dispatch://INFRA-2605).
 

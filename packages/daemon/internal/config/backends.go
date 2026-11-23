@@ -19,9 +19,9 @@ func (c Config) BackendFor(role claim.Role) runtime.Backend {
 	return runtime.BackendOmp
 }
 
-// Backends are the backends the daemon launches agents on, each once, in the order the workflow
-// reaches the first role on it: every issue role's (BackendFor), then the controller's when the
-// daemon launches it. Boot resolves each one's launch (readTmux).
+// Backends are the backends the daemon launches agents on, each once, in the order of the first
+// role on it in claim.Roles (the order of the default steps): every issue role's (BackendFor),
+// then the controller's when the daemon launches it. Boot resolves each one's launch (readTmux).
 func (c Config) Backends() []runtime.Backend {
 	roles := slices.Clone(claim.Roles)
 	if c.ControllerLaunch == ControllerLaunchDaemon {

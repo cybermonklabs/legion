@@ -269,6 +269,13 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
+	// experimentSource is the random source admission and the workflow draw every `random`
+	// experiment with: admission's draw of each tree and issue it records, and the workflow's of
+	// each child it records (experiment.Draw). nil, in production, is experiment.CryptoSource; a
+	// test that compares a run's draws with a seed's hands in a source of that seed. The API's draw
+	// at an operator's spawn keeps its own: it draws only the tree-unit experiments, and an
+	// experiment that sets how an issue is done draws for each issue (config's checkExperimentPlans).
+	experimentSource func(uint64) (uint64, error)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -445,7 +452,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, plan.installed, log, o.workflowTokens, o.githubAPI, reserveWake, plan.clock.Now, o.experimentSource)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {

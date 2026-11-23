@@ -368,9 +368,10 @@ type ProjectSettings struct {
 	ProductionCheck string `json:"production_check"`
 	// DefaultSteps is `default_steps` as the file writes it, each step one word (`planner`, or
 	// `acceptance:owner`): the steps a task runs when its plan block names neither steps nor a
-	// sub-owner, and the steps of the one task of an issue whose owner gives no plan. It is what
-	// the project runs by default (config.Project.RunsByDefault), so a project that names none
-	// shows today's line up to the owner's acceptance rather than no step.
+	// sub-owner, and the steps of the one task of an issue whose owner gives no plan or whose
+	// experiment's group takes none. It is what the project runs by default
+	// (config.Project.RunsByDefault), so a project that names none shows today's line up to the
+	// owner's acceptance rather than no step.
 	DefaultSteps []string `json:"default_steps"`
 	// Deploys is `projects.<KEY>.deploys`, reported while the loader still accepts the key and
 	// reads nothing from it (config's readProject, which warns a project that sets it): no
@@ -418,7 +419,7 @@ func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
 		}
 		for _, variant := range experiment.Variants {
 			declared.Variants = append(declared.Variants, config.Variant{Name: variant.Name, Weight: variant.Weight,
-				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions})
+				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions, Plan: config.PlanGroup(variant.Plan)})
 		}
 		project.Experiments = append(project.Experiments, declared)
 	}
@@ -453,15 +454,16 @@ type ExperimentSettings struct {
 
 // VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
 // random draw gives it against its siblings, the Oh My Pi overlays each role its experiment
-// reaches of a unit drawn into it names, `[]` for an arm that names none, and the one
-// instructions file such a role's system prompt takes, absent where the arm names none. The
-// paths are the operator's own file names, which no credential rides in, as the `memory` block's
-// are.
+// reaches of a unit drawn into it names, `[]` for an arm that names none, the one instructions
+// file such a role's system prompt takes, absent where the arm names none, and how the issues
+// drawn into it are done (`plan`), absent where the arm names none. The paths are the operator's
+// own file names, which no credential rides in, as the `memory` block's are.
 type VariantSettings struct {
 	Name         string   `json:"name"`
 	Weight       int      `json:"weight"`
 	ConfigFiles  []string `json:"config_files"`
 	Instructions string   `json:"instructions,omitempty"`
+	Plan         string   `json:"plan,omitempty"`
 }
 
 // DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
@@ -784,7 +786,7 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 		}
 		for _, variant := range experiment.Variants {
 			entry.Variants = append(entry.Variants, VariantSettings{Name: variant.Name, Weight: variant.Weight,
-				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath})
+				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath, Plan: string(variant.Plan)})
 		}
 		declared = append(declared, entry)
 	}

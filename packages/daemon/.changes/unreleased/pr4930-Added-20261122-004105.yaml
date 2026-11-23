@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  A project's experiment can decide how each new issue is done: each variant may name `plan`
+  (`projects.<KEY>.experiments.<name>.variants[].plan`), `owner`, where the issue's owning
+  architect gives its plan as before, or `default`, where the issue runs the project's default
+  steps. Such an experiment must draw for each issue (`unit: issue`), every one of its variants
+  must name `plan`, only one experiment of a project may set it, and `experiments.memory` may
+  not; `owner-alone` is refused, since this release does not carry it out yet. Name the key only
+  once every daemon that reads the file runs this release, since an earlier one refuses the whole
+  file.
+
+  Each draw records the `plan` of the arm it drew, and the issue keeps that group for its whole
+  run. On an issue of the group `default`, the owner's `register_plan` and `stop_task` answer
+  `409 PLAN_NOT_TAKEN` and record nothing, so the same call sent again gets the same answer; a
+  plan given before the draw is passed over at the issue's first step, and the owner gets one
+  `plan-not-taken` notice. The state and the issue record serve each assignment's `plan`; the
+  daemon API contract is 220, and a caller below it gets each assignment without the key.
+
+  One migration adds the column `experiment_assignments.plan`. An earlier image boots with it in
+  place; take `plan` out of `legion.yaml` before you pin one. The Kubernetes guide says what the
+  rollback costs.
+time: 2026-11-22T00:41:05Z
+custom:
+    Issue: pr4930

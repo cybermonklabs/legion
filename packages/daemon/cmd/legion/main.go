@@ -189,8 +189,8 @@ func pluginsLine(cfg config.Config) string {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
-	// The roles Claude Code may run at all (runtime.Backends), in the order the workflow reaches
-	// them: a role worker_backends puts on it is always one of them, since the loader refuses any
+	// The roles Claude Code may run at all (runtime.Backends), in claim.Roles' order, the default
+	// steps' order: a role worker_backends puts on it is always one of them, since the loader refuses any
 	// other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {
@@ -341,7 +341,7 @@ func productionCheckLine(key string, project config.Project) string {
 // acceptance for a project that names none), as the file would write the list (plan.Words), and
 // what they decide.
 func defaultStepsLine(key string, project config.Project) string {
-	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan, runs these steps, then Legion's retro and merge",
+	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge",
 		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
 }
 
