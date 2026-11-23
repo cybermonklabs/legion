@@ -36,6 +36,11 @@ export const LAYOUT_GROUP_MAX = 10;
  * Given `list`, the group is a list named by it: a `ul` with each entry in an `li`, and the
  * control in an `li` of its own, which then carries `data-layout-more`, since the measure skips
  * only a direct child that carries it.
+ *
+ * Given `open` and `onOpenChange`, whether the group is open is its host's: a host whose group
+ * can be drawn again from nothing - a row a windowed list unmounts when it scrolls out and
+ * mounts when it scrolls back - keeps the reader's choice there, so the group comes back as the
+ * reader left it. Without them the group keeps the choice itself.
  */
 export function CappedGroup({
   children,
@@ -44,6 +49,8 @@ export function CappedGroup({
   list,
   max = LAYOUT_GROUP_MAX,
   name,
+  onOpenChange,
+  open: heldOpen,
 }: {
   children: ReactNode;
   className?: string;
@@ -51,8 +58,15 @@ export function CappedGroup({
   list?: string;
   max?: number;
   name: string;
+  onOpenChange?: (open: boolean) => void;
+  open?: boolean;
 }): ReactNode {
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = heldOpen ?? ownOpen;
+  const setOpen = (next: boolean) => {
+    if (heldOpen === undefined) setOwnOpen(next);
+    onOpenChange?.(next);
+  };
   const groupId = useId();
   const entries = Children.toArray(children);
   const hidden = entries.length - max;
@@ -67,7 +81,7 @@ export function CappedGroup({
         }
         className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full outline-none focus-visible:ring-2 ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
         data-layout-more={list === undefined ? "" : undefined}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => setOpen(!open)}
         type="button"
       >
         <span

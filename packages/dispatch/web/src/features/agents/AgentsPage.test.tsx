@@ -5311,6 +5311,51 @@ test("a row the reader opened keeps its draft when the window scrolls past it", 
   }
 });
 
+// INFRA-5200's rule, point 6: a row's roles the reader opened past their "+N" stay open when
+// the window stops drawing the row and draws it again. The row is not opened, so the window
+// unmounts it with the scroll; the page, not the row, holds the roles' state.
+test("a row's opened roles are still open when the window scrolls past the row and back", async () => {
+  const user = userEvent.setup();
+  const roles = Array.from({ length: 14 }, (_, index) => `role-${index + 1}`);
+  const listed = manySessions(60).map((session, index) =>
+    index === 5 ? { ...session, roles } : session
+  );
+  const layout = scrollingList();
+  const page = renderAgents({ listedAgents: listed });
+  const rolesOf = (region: HTMLElement) =>
+    region.querySelector<HTMLElement>('[data-agent-row="session-05"] [data-layout-group="roles"]');
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await within(region).findByText("Session 05", { exact: true });
+    await user.click(
+      within(card(region, "Session 05")).getByRole("button", { name: "Show 4 more roles" })
+    );
+    expect(rolesOf(region)).toHaveAttribute("data-layout-open");
+    // The press left the focus in the row, and the window keeps the focused row drawn: the focus
+    // goes to another row's box first, so this row is one the window lets go of.
+    act(() => {
+      card(region, "Session 00").focus();
+    });
+
+    layout.scrollTo(2_000);
+    // The row is gone from the page: nothing of it can hold the reader's choice.
+    expect(region.querySelector('[data-agent-row="session-05"]')).toBeNull();
+
+    layout.scrollTo(0);
+    const group = rolesOf(region);
+    expect(group).toHaveAttribute("data-layout-open");
+    expect(within(group as HTMLElement).getByText("role-14")).toBeTruthy();
+    expect(
+      within(card(region, "Session 05")).getByRole("button", { name: "Show fewer roles" })
+    ).toBeTruthy();
+  } finally {
+    layout.restore();
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // The keys walk the page's list of sessions, not the rows in the DOM: at the bottom of the drawn
 // range a walk over `[data-agent-row]` would stop dead, with no row left to step to.
 test("j from the bottom of the drawn range reaches the next session and focuses its row", async () => {

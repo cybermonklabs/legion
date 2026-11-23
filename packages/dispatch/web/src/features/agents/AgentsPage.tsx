@@ -38,7 +38,6 @@ import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
-import { TruncatedText } from "../../components/TruncatedText";
 import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -116,20 +115,21 @@ import { storeAgentState, unreadRepliesLabel, useMarkRepliesRead, useUnreadAtOpe
 
 /** The composer's one notice slot: the recipient limit, the exclusions, or the mode the selection
  *  sends in, one at a time. In the compact grid it sits between the mode and Send on a narrow
- *  screen, wrapping to at most three lines, and is the third and last row on a short one, one
- *  line; past that it ends in an ellipsis, with the whole notice as its title, so it never
- *  scrolls sideways and the composer keeps its height budget. Every exclusion stays reachable on
- *  the excluded agent's own chip, which names its reason. A refusal or an exclusion reads as a
- *  warning; the mode alone does not. */
+ *  screen, three lines high, and is the third and last row on a short one, one line high; a
+ *  longer notice scrolls up and down inside that height rather than being cut, so the composer
+ *  keeps its height budget and a touch reader, who has no hover, reads every word of it: Send's
+ *  refusal and its remedy among them. It wraps and never scrolls sideways. Every exclusion is
+ *  also on the excluded agent's own chip, which says its reason in words. A refusal or an
+ *  exclusion reads as a warning; the mode alone does not. */
 const composerLineLayout =
-  "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:min-w-0 narrow-or-short:line-clamp-3 narrow-or-short:text-xs narrow-or-short:[overflow-wrap:anywhere] short:order-3 short:col-span-4 short:col-start-1 short:line-clamp-1";
+  "mt-2 text-sm narrow-or-short:order-2 narrow-or-short:col-start-2 narrow-or-short:mt-0 narrow-or-short:max-h-12 narrow-or-short:min-w-0 narrow-or-short:overflow-y-auto narrow-or-short:text-xs narrow-or-short:[overflow-wrap:anywhere] short:order-3 short:col-span-4 short:col-start-1 short:max-h-4";
 const composerLine = `${composerLineLayout} ${dangerText}`;
 /** Where the composer is its compact grid: styles.css's `narrow-or-short` variant, in its own
  *  pixels, which the two must keep in step. */
 const COMPACT_COMPOSER_QUERY = "(max-width: 767px), (max-height: 500px)";
 /** How many recipients the compact composer shows before its "+N": one chip, its state mark and
  *  live link, held to `max-w-40`, and the control fit on one line of a 360 px screen, so the
- *  composer's height does not grow with the selection. */
+ *  composer's height does not grow with the selection. A chip's words wrap inside it. */
 const COMPACT_RECIPIENTS_SHOWN = 1;
 
 /**
@@ -554,7 +554,9 @@ function AgentRow({
   onPin,
   onSelect,
   opened,
+  onRolesOpen,
   pinned,
+  rolesOpen,
   section,
   selected,
   unreadReplies,
@@ -589,6 +591,11 @@ function AgentRow({
    *  no more discards than a pin does. A send and its refusal are the held-send store's. */
   opened: boolean;
   pinned: boolean;
+  /** Whether the reader opened this row's roles past their "+N". The page holds this, not the
+   *  row, as it holds `expanded`: a row the window stops drawing loses its own state, and the
+   *  roles a reader opened would be folded again when it scrolls back. */
+  rolesOpen: boolean;
+  onRolesOpen: (open: boolean) => void;
   /** The group the row is listed under, which `keyboard.ts` reads to find that group's
    *  heading (`data-agent-section`). */
   section: AgentGroup;
@@ -729,6 +736,8 @@ function AgentRow({
             className="flex min-w-0 max-w-full flex-wrap items-center gap-1"
             label="roles"
             name="roles"
+            onOpenChange={onRolesOpen}
+            open={rolesOpen}
           >
             {(agent.roles ?? []).map((role) => (
               <span className="min-w-0 max-w-full" key={role}>
@@ -1191,8 +1200,11 @@ function BroadcastComposer({
       >
         Broadcast to {recipients.length} of {selected.size} selected
       </h2>
+      {/* Each chip shrinks to the list's width and its words wrap inside it, the excluded or
+          unchecked agent's reason with them, so no chip is cut and none scrolls the composer
+          sideways, however long the session's title. */}
       <CappedGroup
-        className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-3"
+        className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-3 [&>li]:min-w-0 [&>li]:max-w-full"
         label="agents"
         list="Selected agents"
         max={compact ? COMPACT_RECIPIENTS_SHOWN : LAYOUT_GROUP_MAX}
@@ -1206,22 +1218,19 @@ function BroadcastComposer({
           return (
             // The deselect button keeps the name; the agent's live link sits beside it.
             <AgentName
-              className="flex items-center"
+              className="flex min-w-0 max-w-full items-center"
               control={(name) => (
                 <button
-                  className={`inline-flex min-h-8 items-center gap-1 rounded-full border px-2 py-1 text-left text-xs narrow-or-short:min-h-11 narrow-or-short:max-w-40 ${secondaryButtonBorder} ${left === undefined ? secondaryButtonText : dangerText} ${secondaryButtonHoverBorder}`}
+                  className={`inline-flex min-h-8 min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-1 text-left text-xs narrow-or-short:min-h-11 narrow-or-short:max-w-40 ${secondaryButtonBorder} ${left === undefined ? secondaryButtonText : dangerText} ${secondaryButtonHoverBorder}`}
                   onClick={() => onDeselect(sessionID)}
                   title={`Remove ${text.sessionText(sessionID, agent?.title)} from this broadcast`}
                   type="button"
                 >
-                  <TruncatedText
-                    className="min-w-0 narrow-or-short:flex-1"
-                    title={`${text.sessionText(sessionID, agent?.title)}${noteText}`}
-                  >
+                  <span className="min-w-0 [overflow-wrap:anywhere]">
                     {name}
                     {/* not stored prose: the dashboard's own word for why it gets none */}
                     {noteText}
-                  </TruncatedText>{" "}
+                  </span>{" "}
                   ✕
                 </button>
               )}
@@ -1262,14 +1271,11 @@ function BroadcastComposer({
         writing={dispatchWritingBox("broadcast", "broadcast")}
       />
       {sendState.notice !== null ? (
-        <p className={composerLine} id={noticeId} title={sendState.notice.map(text.part).join("")}>
+        <p className={composerLine} id={noticeId}>
           <AgentParts parts={sendState.notice} />
         </p>
       ) : asideOnly.length > 0 ? (
-        <p
-          className={`${composerLineLayout} ${textMutedOnSurface}`}
-          title={asideLine.map(text.part).join("")}
-        >
+        <p className={`${composerLineLayout} ${textMutedOnSurface}`}>
           <AgentParts parts={asideLine} />
         </p>
       ) : null}
@@ -1642,6 +1648,16 @@ export function AgentsPage(): ReactNode {
   // that kept its own answer would have nothing to tell the window.
   const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(() => new Set());
   const [openedRows, setOpenedRows] = useState<ReadonlySet<string>>(() => new Set());
+  /** The rows whose roles the reader opened past their "+N", kept here for the same reason. */
+  const [rolesOpenRows, setRolesOpenRows] = useState<ReadonlySet<string>>(() => new Set());
+  const openRoles = (sessionID: string, open: boolean) => {
+    setRolesOpenRows((current) => {
+      const next = new Set(current);
+      if (open) next.add(sessionID);
+      else next.delete(sessionID);
+      return next;
+    });
+  };
   const expandRow = (sessionID: string, open: boolean) => {
     setExpandedRows((current) => {
       const next = new Set(current);
@@ -1733,7 +1749,9 @@ export function AgentsPage(): ReactNode {
       onPin={() => togglePin(agent.session_id)}
       onSelect={(next) => select(agent.session_id, next)}
       opened={openedRows.has(agent.session_id)}
+      onRolesOpen={(open) => openRoles(agent.session_id, open)}
       pinned={pinned.includes(agent.session_id)}
+      rolesOpen={rolesOpenRows.has(agent.session_id)}
       section={group}
       selected={selected.has(agent.session_id)}
       unreadReplies={agentStates[agent.session_id]?.unread_replies ?? 0}

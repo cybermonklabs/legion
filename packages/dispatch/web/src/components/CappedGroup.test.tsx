@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 
 import { CappedGroup } from "./CappedGroup";
 
@@ -125,6 +126,58 @@ test("given a list name, the group is a named list whose control sits in an item
     expect(drawn(list)).toEqual(labels(12));
     expect(within(list).getAllByRole("listitem")).toHaveLength(13);
     expect(screen.getByRole("button", { name: "Show fewer agents" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host that keeps the open state draws the group as it says, tells it of each press, and a
+// group drawn again from nothing - unmounted and mounted, as a windowed row is - comes back open.
+test("given open and onOpenChange, the group is opened by its host and comes back open", async () => {
+  const user = userEvent.setup();
+  const presses: boolean[] = [];
+  function Host() {
+    const [open, setOpen] = useState(false);
+    const [mounted, setMounted] = useState(true);
+    return (
+      <>
+        <button onClick={() => setMounted(!mounted)} type="button">
+          Toggle mount
+        </button>
+        {mounted ? (
+          <CappedGroup
+            label="labels"
+            name="labels"
+            onOpenChange={(next) => {
+              presses.push(next);
+              setOpen(next);
+            }}
+            open={open}
+          >
+            {labels(12).map((label) => (
+              <span key={label}>{label}</span>
+            ))}
+          </CappedGroup>
+        ) : null}
+      </>
+    );
+  }
+  const view = render(<Host />);
+  const group = () => view.container.querySelector<HTMLElement>('[data-layout-group="labels"]');
+  try {
+    await user.click(screen.getByRole("button", { name: "Show 2 more labels" }));
+    expect(presses).toEqual([true]);
+    expect(drawn(group() as HTMLElement)).toEqual(labels(12));
+
+    await user.click(screen.getByRole("button", { name: "Toggle mount" }));
+    expect(group()).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Toggle mount" }));
+    expect(drawn(group() as HTMLElement)).toEqual(labels(12));
+    expect(group()).toHaveAttribute("data-layout-open");
+
+    await user.click(screen.getByRole("button", { name: "Show fewer labels" }));
+    expect(presses).toEqual([true, false]);
+    expect(drawn(group() as HTMLElement)).toEqual(labels(10));
   } finally {
     view.unmount();
   }

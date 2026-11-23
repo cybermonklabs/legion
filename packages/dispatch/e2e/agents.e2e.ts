@@ -1293,7 +1293,7 @@ async function openNoticeFixture(page: Page, sessions: FakeSession[]) {
   };
 }
 
-test("with half the recipients unable to take the mode, the compact composer keeps its budget, the notice names every exclusion, and each stays reachable on its own chip", async ({
+test("with half the recipients unable to take the mode, the compact composer keeps its budget, and the last exclusion and its reason can be read on a phone, in the notice and on its own chip", async ({
   browser,
 }) => {
   const alice = await asUser(browser, "alice");
@@ -1310,28 +1310,70 @@ test("with half the recipients unable to take the mode, the compact composer kee
     // element added to the compact composer has no room: the budget goes red while the composer
     // is still inside its 50vh cap and nothing on screen looks wrong.
     await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
-      // All twenty are named in the notice and in its title; past the lines the slot allows it
-      // ends in an ellipsis, and it never scrolls sideways.
+      // The notice names all twenty. It is bounded, not cut: a touch reader scrolls it, and its
+      // last name, scrolled to, stands whole inside the notice's own box, with no title to ask.
       for (let index = 21; index <= 40; index += 1) {
         await expect
           .soft(fixture.excludedLine, at)
           .toContainText(`Planner ${index} (does not advertise BTW)`);
-        await expect
-          .soft(fixture.excludedLine, at)
-          .toHaveAttribute("title", new RegExp(`Planner ${index} \\(does not advertise BTW\\)`));
       }
-      const line = await fixture.excludedLine.evaluate((element) => ({
-        clamped: getComputedStyle(element).webkitLineClamp !== "none",
-        scrolls: element.scrollWidth > element.clientWidth + 1,
-      }));
-      expect.soft(line, at).toEqual({ clamped: true, scrolls: false });
+      const last = await fixture.excludedLine.evaluate((element) => {
+        const style = getComputedStyle(element);
+        // Each excluded agent is drawn by `AgentName`: its name is the text of its live link.
+        const link = [...element.querySelectorAll("[data-agent-name] a")].find(
+          (node) => node.textContent === "Planner 40"
+        );
+        if (link === undefined) {
+          return { boxes: "no link", clamped: true, scrollable: false, visible: false };
+        }
+        // The name's words, not the link's box: an inline link's padding runs past its line, and
+        // what a reader reads is the text. Scroll the notice so the words' top edge meets the
+        // notice's, as a reader's swipe would, then read both again.
+        const words = document.createRange();
+        words.selectNodeContents(link);
+        element.scrollTop +=
+          words.getBoundingClientRect().top - element.getBoundingClientRect().top;
+        const [name, line] = [words.getBoundingClientRect(), element.getBoundingClientRect()];
+        return {
+          boxes: `the name at ${name.top}-${name.bottom} in the notice at ${line.top}-${line.bottom}`,
+          clamped: style.webkitLineClamp !== "none" || style.textOverflow === "ellipsis",
+          scrollable: style.overflowY === "auto" || style.overflowY === "visible",
+          visible:
+            name.top >= line.top - 0.5 &&
+            name.bottom <= line.bottom + 0.5 &&
+            element.scrollWidth <= element.clientWidth + 1,
+        };
+      });
+      const { boxes, ...read } = last;
+      expect.soft(read, `${at}: ${boxes}`).toEqual({
+        clamped: false,
+        scrollable: true,
+        visible: true,
+      });
     });
-    // Each exclusion is on its excluded agent's own chip, which names the reason: "+39" opens
-    // the recipients, and every one of the twenty is there.
+    // Each exclusion is on its excluded agent's own chip, which says its reason in words: "+39"
+    // opens the recipients, and the last excluded chip shows its whole text, nothing cut, inside
+    // the screen once it is in view.
+    await page.setViewportSize({ height: 664, width: 390 });
     await fixture.composer.getByRole("button", { name: "Show 39 more agents" }).click();
     for (let index = 21; index <= 40; index += 1) {
       await expect(fixture.excludedChip(`Planner ${index}`)).toHaveCount(1);
     }
+    const lastChip = fixture.excludedChip("Planner 40");
+    await lastChip.scrollIntoViewIfNeeded();
+    await expect(lastChip).toBeInViewport({ ratio: 1 });
+    const drawn = await lastChip.evaluate((chip) => {
+      const parts = [chip, ...chip.querySelectorAll("*")] as HTMLElement[];
+      return {
+        cut: parts.some(
+          (part) =>
+            part.scrollWidth > part.clientWidth + 1 ||
+            getComputedStyle(part).textOverflow === "ellipsis"
+        ),
+        text: (chip as HTMLElement).innerText.replace(/\s+/g, " ").trim(),
+      };
+    });
+    expect(drawn).toEqual({ cut: false, text: "Planner 40 · does not advertise BTW ✕" });
   } finally {
     await alice.close();
   }
