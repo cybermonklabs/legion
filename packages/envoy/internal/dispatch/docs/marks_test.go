@@ -1196,6 +1196,17 @@ func waitFor(t *testing.T, timeout time.Duration, description string, condition 
 	testwait.WithinPolling(t, timeout, 5*time.Millisecond, description, condition)
 }
 
+// waitUntil waits for condition to hold, at waitFor's pace. It sets no span of its own: its one
+// bound is the test binary's deadline less testwait's margin (testwait.UntilPolling), where it
+// fails naming description, so a loaded machine that takes long to reach the fact still passes and
+// a fact that never comes fails by name before go test's alarm.
+func waitUntil(t *testing.T, description string, condition func() bool) {
+	t.Helper()
+	testwait.UntilPolling(t, 5*time.Millisecond, description, func() (struct{}, bool) {
+		return struct{}{}, condition()
+	})
+}
+
 // askTree parses markdown and gives its ask blocks the ids named, in document order, repeats
 // included: a browser write can leave two asks under one id until settlement's repair runs, and
 // parsing alone never produces that document.

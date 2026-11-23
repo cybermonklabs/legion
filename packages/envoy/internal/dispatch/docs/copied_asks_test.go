@@ -1038,25 +1038,46 @@ func sharesOneAsk(t *testing.T, service *Service, copies []string, opener string
 // copyLockWait is the LIKE pattern of a statement waiting on a project's copy lock.
 const copyLockWait = "%" + projectCopiesLock + "%"
 
-// settlementBarrier is a settlement hook (afterSettleLock, afterSettleReconcile) that holds each
-// settlement calling it until all of the copies' settlements have called it or wait on their
+// settlementBarrier returns a settlement hook (afterSettleLock, afterSettleReconcile) that holds
+// each settlement calling it until all of the copies' settlements have called it or wait on their
 // project's copy lock (lockProjectCopies). Each settlement is named by its own backend, the
 // connection its read of its copy's owner went out on (lockArtifactOwner, which recorder saw), and
 // counted as waiting when that backend waits at the copy lock's statement: the lock's holder is
 // another of the settlements, whose backend a reader of one cannot pick, so the wait reads the
 // settlement's own lock wait (storetest.WaitsOnLock), and no other session waiting on the copy lock
-// is counted. It runs on settlement's goroutine, so a failed read is reported with t.Errorf and
-// lets the settlement go on.
+// is counted.
+//
+// The hook ends its wait on that fact alone. Its one bound is the test binary's deadline less
+// twice roomWaitMargin, read here on the test's goroutine: it gives up there, before the test's own
+// wait for the settlements (testwait.Receive, the margin before the deadline), so the settlements
+// it holds have returned when that wait reads them. The hook runs on settlement's goroutine, which
+// may not stop the test, so it records what ended its wait - that bound, or a read that failed -
+// and lets the settlement go on; the test's goroutine reports it, by name, when the test ends.
 func settlementBarrier(t *testing.T, service *Service, recorder *roundTripRecorder, copies []string) func(string) {
 	t.Helper()
+	giveUp := time.Now().Add(testwait.Remaining(t, 2*roomWaitMargin))
 	var mu sync.Mutex
 	arrived := 0
+	var failure string
+	t.Cleanup(func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if failure != "" {
+			t.Error(failure)
+		}
+	})
+	fail := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failure == "" {
+			failure = fmt.Sprintf(format, args...)
+		}
+	}
 	return func(string) {
 		mu.Lock()
 		arrived++
 		mu.Unlock()
-		deadline := time.Now().Add(10 * time.Second)
-		for time.Now().Before(deadline) {
+		for {
 			waiting := 0
 			for _, document := range copies {
 				settlement, ok := recorder.firstConnOf(document, ownerReadStatement, false)
@@ -1065,7 +1086,7 @@ func settlementBarrier(t *testing.T, service *Service, recorder *roundTripRecord
 				}
 				queued, err := storetest.WaitsOnLock(context.Background(), service.store, settlement.PgConn().PID(), copyLockWait)
 				if err != nil {
-					t.Errorf("read whether a settlement waits on the copy lock: %v", err)
+					fail("read whether a settlement waits on the copy lock: %v", err)
 					return
 				}
 				if queued {
@@ -1078,24 +1099,23 @@ func settlementBarrier(t *testing.T, service *Service, recorder *roundTripRecord
 			if reached+waiting >= len(copies) {
 				return
 			}
+			if time.Now().After(giveUp) {
+				fail("the copies' settlements never all reached the barrier or the copy lock before the test binary's deadline: %d of %d reached it and %d waited on the lock", reached, len(copies), waiting)
+				return
+			}
 			time.Sleep(2 * time.Millisecond)
 		}
-		t.Errorf("settlements never all reached the barrier or the copy lock")
 	}
 }
 
 // roomGeneration is document's room generation once its live updates are durable, the generation a
-// settlement of it runs at (settleCurrentGeneration).
+// settlement of it runs at (settleCurrentGeneration). It waits for those updates as
+// settleCurrentGeneration does (awaitRoomAppends): on the room's idle signal, failing only on
+// appends that have stopped or at the test binary's deadline, never at a span of its own.
 func roomGeneration(t *testing.T, service *Service, document string) uint64 {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, document); err != nil {
-		t.Fatalf("wait for live updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, document); err != nil {
-		t.Fatalf("wait for live updates to become durable: %v", err)
-	}
+	awaitRoomAppends(t, service, document, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, document, "become durable", service.waitForDurableAppends)
 	state := service.room(document)
 	state.mu.Lock()
 	defer state.mu.Unlock()
@@ -1144,11 +1164,16 @@ func TestThreeProjectCopiesOfARetractedAskSettlingAtOnceShareOneAsk(t *testing.T
 	recorder.reset()
 	service.afterSettleLock = settlementBarrier(t, service, recorder, copies)
 	service.afterSettleReconcile = settlementBarrier(t, service, recorder, copies)
-	var settling sync.WaitGroup
-	for index, copy := range copies {
-		settling.Go(func() { service.settleRoom(copy, generations[index]) })
-	}
-	settling.Wait()
+	settled := make(chan struct{})
+	go func() {
+		var settling sync.WaitGroup
+		for index, copy := range copies {
+			settling.Go(func() { service.settleRoom(copy, generations[index]) })
+		}
+		settling.Wait()
+		close(settled)
+	}()
+	testwait.Receive(t, "the copies' three settlements to return", settled)
 	service.afterSettleLock, service.afterSettleReconcile = nil, nil
 
 	open := openAsksUnder(t, service, "shared")
