@@ -540,7 +540,16 @@ async function startRolePane(): Promise<RolePane> {
     publish: (payload) => relay(sessionId, payload, seq++),
     until: waitFor,
     timerRecord: async () => {
-      const text = await readFile(timerRecordFile, "utf8").catch(() => "");
+      // A record that is missing or cannot be read fails the row, never reads as empty: an empty
+      // record sums to 0 ms and would pass the bound below whatever the plugins did.
+      let text: string;
+      try {
+        text = await readFile(timerRecordFile, "utf8");
+      } catch (error) {
+        throw new Error(
+          `the pane's timer record ${timerRecordFile} could not be read: ${String(error)}`
+        );
+      }
       return completeLines(text).map((line) => JSON.parse(line) as TimerStep);
     },
   };
@@ -627,6 +636,14 @@ test.skipIf(skip)(
 
     // How far the pane's timer record ran before the frame was sent: each later step came after.
     const beforePublish = (await pane.timerRecord()).length;
+    // The pane arms its Envoy heartbeat as its session starts (`context.setInterval` in
+    // packages/pi-envoy/extensions/envoy.ts), so by now the record holds at least that timer. One
+    // that holds none is a record the pane's preload never wrote, which could show no plugin's
+    // timer either.
+    expect(
+      beforePublish,
+      "the pane's timer record holds none of its timers before the frame was sent"
+    ).toBeGreaterThan(0);
     const published = await pane.publish(
       forwardedRoleEnvelope(MESSAGE_SUMMARY, `bgsub-${randomUUID()}`)
     );
