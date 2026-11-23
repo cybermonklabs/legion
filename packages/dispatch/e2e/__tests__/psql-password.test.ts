@@ -1,6 +1,17 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import {
+  accessSync,
+  chmodSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, delimiter, isAbsolute, join, relative, sep } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
@@ -14,6 +25,40 @@ import { resetSession, sql, sqlAt } from "../psql";
  *  registered after the helper's own, writes it into the directory. */
 const standIn = temporaryDirectory("psql-password");
 const record = join(standIn, "record");
+
+/** The real `name` a stand-in hands its call on to, resolved once at test start, before any
+ *  stand-in directory goes first on PATH: the first `name` on PATH outside `standIn` that is no
+ *  mise shim. A mise shim is a link to the `mise` binary, and where no version of the tool is
+ *  active it falls back to the next `name` on PATH - which, once the row's stand-in directory is
+ *  first, is the stand-in itself, and mise stops with "shim fallback recursion detected". So a
+ *  shim is replaced by what `mise which` names, or, where it names nothing, by the next `name` on
+ *  PATH, the one the shim would have fallen back to. On a machine with no mise the first `name`
+ *  on PATH is the answer, as `Bun.which` gives. */
+function realExecutable(name: string): string | undefined {
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (directory === "") continue;
+    const fromStandIn = relative(standIn, directory);
+    const outside =
+      fromStandIn === ".." || fromStandIn.startsWith(`..${sep}`) || isAbsolute(fromStandIn);
+    if (!outside) continue;
+    const candidate = join(directory, name);
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (!statSync(candidate).isFile()) continue;
+    } catch {
+      continue;
+    }
+    const target = realpathSync(candidate);
+    if (basename(target) !== "mise") return candidate;
+    const named = Bun.spawnSync([target, "which", name]);
+    const path = named.stdout.toString().trim();
+    if (named.exitCode === 0 && path !== "" && existsSync(path)) return path;
+  }
+  return undefined;
+}
+
+/** The real tool each stand-in of the run-server rows hands its call on to. */
+const realTools = { env: realExecutable("env"), python3: realExecutable("python3") };
 
 /** What the stand-in psql was last handed. */
 function handed(): { args: string[]; pgpassword: string } {
@@ -307,10 +352,10 @@ for (const signIn of serverSignIns) {
       // A python3 and an env first on PATH that record their arguments before they run, as
       // held-port.py and env would carry a setting named to them, and a stand-in server that
       // writes its own arguments and the settings it was given.
-      for (const tool of ["python3", "env"]) {
+      for (const tool of ["python3", "env"] as const) {
         writeFileSync(
           join(work, "bin", tool),
-          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${Bun.which(tool)} "$@"\n`,
+          `#!/bin/sh\nprintf '%s\\n' "${tool} $*" >>'${work}/argv'\nexec ${realTools[tool]} "$@"\n`,
           { mode: 0o755 }
         );
       }
