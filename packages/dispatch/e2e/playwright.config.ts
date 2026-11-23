@@ -747,6 +747,14 @@ export default defineConfig({
     // `retry === 1`), and a row is flaky exactly when its retry passed, so that mode would keep
     // a trace of a green run and leave the failure none. Locally, with `retries: 0`, the first
     // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
+    //
+    // Recording every first attempt leaves each worker's trace files in its artifacts directory
+    // (`<outputDir>/.playwright-artifacts-<n>/traces`) until the worker exits: about 5,500 files
+    // after a hundred rows. Playwright 1.64.1's runner removed them before it let the worker's
+    // stop end, and timed that wait by heartbeats of a worker that had already exited, so a slow
+    // disk printed "worker-<n> process did not exit within 300000ms after stop" for a worker that
+    // had exited. patches/playwright@1.64.1.patch removes them in the background instead, and
+    // e2e/__tests__/playwright-worker-exit.test.ts holds that.
     trace: "retain-on-first-failure",
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and

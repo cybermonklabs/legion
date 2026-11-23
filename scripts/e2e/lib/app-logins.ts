@@ -444,7 +444,10 @@ async function githubRead(
     });
     body = await response.text();
   } catch (error) {
-    throw new Error(`${read} failed: ${error instanceof Error ? error.message : String(error)}`);
+    // No answer at all, or none whole: the connection refused or reset, or the 30 s passed. Named
+    // as that, so a reader tells it from an answer GitHub gave and this run refused.
+    const cause = error instanceof Error ? error.message : String(error);
+    throw new Error(`${read}: GitHub did not answer (${cause})`);
   }
   const head = redactTokens(body.split(credential).join("<credential>")).slice(0, 300);
   if (!response.ok) throw new Error(`${read} answered ${response.status}: ${head}`);

@@ -161,7 +161,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// record is read again rather than taken from the snapshot above, because closing the
 	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
 	// The same departure may be the last one an ancestor held before its retro waited for, a
-	// parent whose plan has no acceptance step (record.HoldForChildren): the fact's settle starts
+	// parent whose last step is not the owner's acceptance (record.HoldForChildren): the fact's settle starts
 	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
 	// it.
 	for _, ancestor := range above {

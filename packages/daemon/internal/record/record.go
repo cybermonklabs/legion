@@ -374,9 +374,9 @@ const HoldEscalated HoldReason = "escalated"
 // (TaskPlace.Started) waits for that step again, as a task never stopped does.
 const HoldTaskStopped HoldReason = "task-stopped"
 
-// HoldForChildren is a hold that stands in place of the retro of an issue whose plan has no
-// acceptance step, while issues beneath it are still open (From is phase.Retro, which holds no
-// slot): the retro starts once the last of them has left.
+// HoldForChildren is a hold that stands in place of the retro of an issue whose task's last step
+// is not the owner's acceptance, while issues beneath it are still open (From is phase.Retro,
+// which holds no slot): the retro starts once the last of them has left.
 const HoldForChildren HoldReason = "children"
 
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
@@ -576,11 +576,12 @@ type PhaseRow struct {
 	// record and which the implementer's plugin holds to be its pushed @- on
 	// legion/<issue>@origin; and the commit retro and merging stand on.
 	HandoffCommit string
-	// Pass counts the moves the issue has made back into an earlier phase, each of which opens one
-	// more run of the implementing, testing and reviewing stretch. It tells one pass through a
-	// phase from the last, which is what the handoff completion key is built on (internal/api's
-	// handoffPosition), and so it is never reset while the record of the work stands: a completion
-	// at a commit an earlier pass already reported has to be a fact of its own.
+	// Pass counts the moves the issue has made back to an earlier step of its task (by the task's
+	// order, workflow's Walk.MovesBack), each of which runs the task's steps again from the step it
+	// went back to. It tells one pass through a phase from the last, which is what the handoff
+	// completion key is built on (internal/api's handoffPosition), and so it is never reset while
+	// the record of the work stands: a completion at a commit an earlier pass already reported has
+	// to be a fact of its own.
 	Pass int
 	// HandoffRecord and HandoffVersion are the Dispatch handoff record the role's completion of its
 	// current phase named, for a phase with a handoff (phase.Handoff), and that record's version
@@ -601,7 +602,7 @@ type PhaseRow struct {
 	// (workflow's recordRound).
 	ConflictRounds int
 	// BackwardMoves is how many times the issue moved back by each kind of move, keyed
-	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
+	// "<from>-<to>" as phase.MovePairs() writes the pairs: "testing-implementing",
 	// "reviewing-implementing", "merging-implementing" and the rest. It is counted on the
 	// implementer's row alone, beside Pass and in the same place (workflow's recordPass), and the
 	// two count the same moves to different ends: Pass rises on every move back, because a phase
@@ -611,7 +612,7 @@ type PhaseRow struct {
 	// opened the round, and no pair at all, since nobody sent the work back, so no hook fires
 	// for it.
 	// The map starts empty when the migration lands and is never filled in from the past, so an
-	// issue already in flight reads counts that add up to less than its Rounds.
+	// issue already in flight reads counts that add up to less than its Pass.
 	BackwardMoves map[string]int
 	// CapTold is the review_round_cap value this row last posted the cap's message and its
 	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
@@ -1067,9 +1068,9 @@ type ConflictRead struct {
 // the issue stood in when the daemon asked, and stays in. Why is the first of R0's reasons that
 // held (dispatch://INFRA-4374 R0, ConflictWhy). AskedAt is when the ask was written. Landed is the
 // first new head that arrived after the ask, "" until one does; ReviewAsked is whether that
-// landing asked the reviewer to read the merge, which it does when the issue stands past review
-// and its task has a reviewer step (workflow's mergeForwardLanded), and which the merger's task and
-// its landed message read. Earlier is every merge forward that landed before this ask in the same
+// landing asked the reviewer to read the merge, which it does when the reviewer step of the
+// issue's task already ran (workflow's mergeForwardLanded), and which the merger's task and its
+// landed message read. Earlier is every merge forward that landed before this ask in the same
 // stretch of work, oldest first: a later ask replaces the one the record holds, so when the head a
 // merge left conflicts in its turn and is merged forward again, Earlier is what still names the
 // head the first merge replaced (PullRequest.MergeForward says how long the stretch lasts). It is
@@ -1116,8 +1117,10 @@ type LandedMergeForward struct {
 type ConflictWhy string
 
 const (
-	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict in accepting
-	// or retro waits for merging, where the merger merges the base forward (cybermonklabs/legion#4979).
+	// ConflictMergeNext: the issue stands in merging, or is held from it. A conflict where the
+	// merge comes next before merging - retro, or accepting where no step of the task follows the
+	// acceptance (classify.MergeComesNext) - waits for merging, where the merger merges the base
+	// forward (cybermonklabs/legion#4979).
 	ConflictMergeNext ConflictWhy = "merge-next"
 	// ConflictRulesUnread: the daemon could not read the base branch's rules.
 	ConflictRulesUnread ConflictWhy = "base-rules-unread"
@@ -1127,20 +1130,10 @@ const (
 	ConflictCheckNotGreen ConflictWhy = "required-check-not-green"
 )
 
-// MergeForwardPhases is the phases a merge forward stands in: implementing, where the work
-// already is, and every phase after it up to the merge, which the issue keeps while the role asked
-// (MergeForwardAsker) merges (dispatch://INFRA-4374 R1). In accepting and retro nothing is asked
-// (classify.ConflictNeedsMerge): the merger merges the base forward once the issue reaches merging
-// (cybermonklabs/legion#4979), and an ask made before stands there until it lands. An issue that
-// stands in none of them - before its implementation, or out of the workflow - has no pull request
-// work to merge forward. They are also the phases a head move is read for a conflict in
-// (classify.MergeStateReadOwed), since that read is what records the conflict an ask is made for.
-// Both read it through StandsIn, so a hold from one of them counts as standing there.
-var MergeForwardPhases = []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging}
-
 // MergeForwardAsker is the role the daemon asks to merge the base forward while the issue stands
 // in at (cybermonklabs/legion#4979): the merger in merging, where the merge is its own work, and
-// the implementer in every earlier phase of MergeForwardPhases. The ask's row goes to it
+// the implementer in every earlier phase where a merge forward stands (classify.MergeForwardStands:
+// implementing, or a phase after it on the task's line). The ask's row goes to it
 // (MergeForwardMessage), and the record's ask keeps it (MergeForward.Role).
 func MergeForwardAsker(at phase.Phase) claim.Role {
 	if at == phase.Merging {
@@ -2842,8 +2835,8 @@ func (i Issue) LingersAt(generation uint64) bool {
 }
 
 // Readmittable says whether a todo on this record starts a new generation of its tree: it is a
-// root, and its tree lingers after its sign-off or was closed. A child's done is only the
-// child's.
+// root whose tree lingers after its close (Lingers), or a root that is done. A child's done is
+// only the child's.
 //
 // It is the one definition of that question, because two readers decide opposite ways on it and
 // neither may fire where the other does: admission re-admits such a todo at a new generation

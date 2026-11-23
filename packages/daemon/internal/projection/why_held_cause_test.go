@@ -44,9 +44,9 @@ type heldFixture struct {
 // The walk is read off a projected state, never from the renderer alone, so the row the pass
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
 // the test: an entry added to the table is given a fixture here. at_work is the one exception:
-// the issues that read it stand past their review and are not held (record.HeldAtWork), one
-// whose tree runs is served no answer (atWorkPastReview), and no fixture here builds the member of
-// a tree that runs nothing that the entry is served to.
+// the issues that read it stand in accepting, retro or merging, which keep no slot, and are not
+// held (record.HeldAtWork), one whose tree runs is served no answer (atWorkInSlotlessPhase), and no
+// fixture here builds the member of a tree that runs nothing that the entry is served to.
 func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
 	// The Dispatch link a blocked fixture adds: LEGION-101 waits on LEGION-900, which is open.
@@ -193,7 +193,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"The daemon has accepted the head of LEGION-101 that the last step of its task passed, and LEGION-101 stands above it, so nothing of its own work starts while that issue stands in retro or merging."},
 		{record.HeldChildrenBeforeRetro, api.WhyUnlisted}: {childrenBeforeRetro,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldChildrenBeforeRetro, HeldBy: []string{"LEGION-101"}},
-			"It passed the last step of its task, and its plan has no acceptance step, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},
+			"It passed the last step of its task, which is not the owner's acceptance, so the daemon holds it before its retro while these issues beneath it are still in the workflow: LEGION-101. Its retro does not start while one of them is."},
 		{record.HeldTaskStopped, api.WhyUnlisted}: {taskStopped,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldTaskStopped},
 			"Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs until a later version of its plan changes the task (register_plan) or, on a root, a person sets it todo; a retry of its hold starts none."},

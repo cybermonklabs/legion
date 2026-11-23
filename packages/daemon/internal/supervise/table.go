@@ -296,7 +296,9 @@ type PodUpdateOpen struct {
 // that outlives endsAt never keeps a role from pushing its own commits. The answer comes after the
 // work, so a role that follows the steps answers with nothing of its own running. A role whose
 // work finishes after its answer pushes what that work made and answers again with the same
-// round, which podUpdateSignalled records in place of the first answer.
+// round, which podUpdateSignalled records in place of the first answer. The text goes to role, and
+// the reviewer creates no commit and pushes nothing (its role part), so its text says so in step 1
+// and asks no commit or push of what its work made (createsNoCommit).
 //
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
@@ -315,8 +317,16 @@ type PodUpdateOpen struct {
 //
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
-func UpdateTask(round, reasons string, endsAt time.Time) string {
+func UpdateTask(role claim.Role, round, reasons string, endsAt time.Time) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
+	push := "1. Push every commit that you want to keep to this issue's branch."
+	made := " Then commit and push what it made."
+	after := "If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again"
+	if createsNoCommit(role) {
+		push = "1. You create no commit, so you push nothing."
+		made = ""
+		after = "If a subagent or a background job finishes after you answer, call `ready_for_update` again"
+	}
 	return "The daemon must replace the pod that runs this issue's roles. " +
 		fmt.Sprintf("The reasons are: %s.", reasons) +
 		fmt.Sprintf(`
@@ -327,13 +337,13 @@ If every role answers, the round can end before that moment. It then ends once e
 
 This message can arrive while you are in a turn. Do these five steps, in this order:
 
-1. Push every commit that you want to keep to this issue's branch.
-2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s. Then commit and push what it made.
+%[3]s
+2. Let each subagent and each background job that you started finish. Stop one that cannot finish before %[2]s.%[4]s
 3. If you need a scratch file as evidence, put it on Dispatch.
 4. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%[1]s".
 5. End your turn.
 
-If a subagent or a background job finishes after you answer, commit and push what it made. Then call `+"`ready_for_update`"+` again with round: "%[1]s" before you end that turn.
+%[5]s with round: "%[1]s" before you end that turn.
 
 A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.
 
@@ -347,7 +357,16 @@ These things go with the pod when the round ends:
 - The pod's test database.
 - The pod's caches.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends)
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round, ends, push, made, after)
+}
+
+// createsNoCommit says whether role creates no commit and pushes nothing: the reviewer, whose
+// handoff is a record on the Dispatch issue (roles/reviewer.md). The update task asks no commit or
+// push of it. The merger is not one: it makes and pushes the merge of the base forward in merging
+// (roles/merger.md, workflow's mergeForward), and a merge commit it has not pushed when the pod is
+// replaced is lost with the pod.
+func createsNoCommit(role claim.Role) bool {
+	return role == claim.RoleReviewer
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
@@ -375,9 +394,9 @@ type PodUpdateEnded struct {
 // Round is the round the worker answers for, which the ask it read named (UpdateTask): an answer
 // counts only for the round the claim stands in, and one naming any other round is refused
 // (podUpdateSignalled). Head is the commit it reports as the head of its issue branch at origin,
-// "" when the branch is not there — a planner before its first push — and is the worker's word,
-// which nothing verifies. Generation and Session are the claim it says it holds, as every agent
-// request carries them.
+// "" when the branch is not there — a planner step that runs before the branch's first push — and
+// is the worker's word, which nothing verifies. Generation and Session are the claim it says it
+// holds, as every agent request carries them.
 type PodUpdateSignalled struct {
 	Claim      claim.Token
 	Generation uint64

@@ -225,7 +225,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +
   "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
-  "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
+  "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
+  "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
   "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
   "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
   "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
@@ -233,8 +234,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +
   "The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
-  "The architect that owns an issue in accepting moves it, named by `issue`, back to planning, implementing or testing. That move " +
-  "counts no review round. " +
+  "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
+  "That move counts no review round: only a review that requests changes counts one. " +
   "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
   "It also reports the contract the daemon states on its answer to the health route. " +
   "That contract is null where the daemon stated none, where the daemon refused the health route and where no answer reached this process at all, and a note of its own says which. " +
@@ -249,7 +250,8 @@ const OMP_LEGION_TOOL_DESCRIPTION_BEFORE_STOP_TASK =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
   "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-  "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
+  "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
+  "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
   "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
   "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
   "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
@@ -281,11 +283,13 @@ const STOP_TASK_TERMS = {
   ],
 } as const;
 
-/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names
- * each refusal code its text gives, and says why a parent waits for the issues beneath it. */
+/** `sign_off`'s part of the description, by its terms: it opens with the tool's name, names where
+ * the sign-off moves the task, names each refusal code its text gives, and says why a parent waits
+ * for the issues beneath it. */
 const SIGN_OFF_TERMS = {
   opens: "sign_off ",
   names: [
+    "moving its task to its next step, or to retro where the acceptance is the task's last step",
     "(SIGNOFF_OUTSIDE_ACCEPTING)",
     "(SIGNOFF_CHILD_IN_WORKFLOW",
     "(ISSUE_NOT_OWNED",
@@ -322,7 +326,7 @@ const OMP_LEGION_TOOL_DESCRIPTION_AFTER_SIGN_OFF =
   "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
   "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-  "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
+  "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
   "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
@@ -1582,8 +1586,8 @@ test("a completion once the issue moved on posts the role's own newest record of
   const recorded = { commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version };
   for (const [phase, role, issue, read, report] of [
     // A review ends its round on its own: a request for changes moves the issue to implementing at
-    // once, an approval to accepting once the pull request is mergeable, and the reviewer
-    // completes after it.
+    // once, an approval to its task's next step (accepting, in the default steps) once the pull
+    // request is mergeable, and the reviewer completes after it.
     ["implementing", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["accepting", "reviewer", "LEGION-208", ["LEGION-208 review"], recorded],
     ["reviewing", "tester", "LEGION-208", ["LEGION-208 test"], recorded],

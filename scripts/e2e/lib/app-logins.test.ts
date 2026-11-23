@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   constants,
   copyFileSync,
@@ -38,10 +38,22 @@ const script = join(import.meta.dir, "app-logins.ts");
 // The home every child of this file runs under, so none of them reads the caller's.
 const home = join(dir, "home");
 
-// A GitHub that never answers: the port of a server stopped before any run.
-const closed = Bun.serve({ port: 0, fetch: () => new Response() });
+// A GitHub that never answers: a listener of this file's own, held until the file ends, that closes
+// every connection it accepts before a byte of an answer (fetch reads ECONNRESET). The port of a
+// server stopped before any run, which this was, is free for any process to take, and under
+// `bun test --parallel` another file's stand-in GitHub, which accepts these tokens, can take it.
+const closed = Bun.listen({
+  hostname: "127.0.0.1",
+  port: 0,
+  socket: {
+    open(socket) {
+      socket.end();
+    },
+    data() {},
+  },
+});
 const unreachable = `http://127.0.0.1:${closed.port}/`;
-await closed.stop(true);
+afterAll(() => closed.stop(true));
 
 const releaseIDs = [101, 202, 303, 404];
 // The stand-in Apps whose own key a row puts behind a private_key_command.
@@ -603,11 +615,34 @@ describe("app-logins.ts", () => {
     expect(stderr).toContain("acts as a-person, not an App's bot");
   });
 
-  test("a GitHub that never answers is named by the App's role and app id", async () => {
+  test("a GitHub that never answers is named by the App's role and app id, as one that did not answer", async () => {
     const { code, stdout, stderr } = await run(config(app("101"), app("202")), {}, unreachable);
     expect(code).toBe(1);
     expect(stdout).toBe("");
     expect(stderr).toMatch(namesApp("implement", "101"));
+    expect(stderr).toContain(": GitHub did not answer (");
+  });
+
+  // The control of the row above: a GitHub that answers, but with nothing the run can read (a 200
+  // whose body is `{}`), also fails the run naming the App, so only the text above tells the two
+  // apart. A run that named an answer as no answer, or no answer as a wrong answer, fails one of
+  // these two rows.
+  test("a GitHub that answers with nothing readable is named by the App, and not as one that did not answer", async () => {
+    const answering = Bun.serve({ port: 0, fetch: () => Response.json({}) });
+    try {
+      const { code, stdout, stderr } = await run(
+        config(app("101"), app("202")),
+        {},
+        `http://127.0.0.1:${answering.port}/`
+      );
+      expect(code).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toMatch(namesApp("implement", "101"));
+      expect(stderr).toContain("answered no login: {}");
+      expect(stderr).not.toContain("GitHub did not answer");
+    } finally {
+      await answering.stop(true);
+    }
   });
 
   test("two roles on one App are refused, as the daemon refuses them at boot", async () => {
@@ -854,7 +889,7 @@ describe("read_app_logins", () => {
     ]);
   });
 
-  test("a GitHub that never answers fails the run, naming the App it could not read", async () => {
+  test("a GitHub that never answers fails the run, naming the App it could not read and that GitHub did not answer", async () => {
     const { code, stdout, stderr } = await readAppLogins(
       config(app("101"), app("202")),
       "echo after-read",
@@ -863,6 +898,7 @@ describe("read_app_logins", () => {
     expect(code).toBe(1);
     expect(stdout).not.toContain("after-read");
     expect(stderr).toMatch(namesApp("implement", "101"));
+    expect(stderr).toContain(": GitHub did not answer (");
     expect(stderr).toMatch(/^FAIL boot: /m);
   });
 });

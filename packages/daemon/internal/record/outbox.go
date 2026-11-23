@@ -1217,7 +1217,7 @@ type SuperviseRequest struct {
 	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
 	// entry and its task on the role's phases row, the notices — is written in the transition's
 	// own transaction and waits for nothing. A start into accepting, retro or merging carries no
-	// mark, since an issue past its review holds no row for such a start to wait for, and it is
+	// mark, since an issue in those phases holds no row for such a start to wait for, and it is
 	// claimable the moment it commits. workflow.StartOrOwe is the
 	// one writer of the mark, which it reads from the start's own phase, so no caller decides
 	// it. The hold is on this row's claimability alone (store.go's outboxInOrder): a row that is
@@ -1673,7 +1673,7 @@ func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 // starts with (`Legion hook `), which its role prompt and skill both name. The pull-request
 // sentence is left out for an issue with no pull request.
 //
-// The counts are listed in the order phase.BackwardPairs() gives rather than the map's own, so
+// The counts are listed in the order phase.MovePairs() gives rather than the map's own, so
 // two readings of one row read alike; a pair the map does not hold is left out. An empty map
 // reads `Counts by move: none.` rather than dropping the sentence: the firing counted the move
 // that fired it, so the map cannot normally be empty, and a sentence that says `none` tells a
@@ -1681,7 +1681,7 @@ func (HookPrompt) OutboxKind() OutboxKind { return OutboxKindHookPrompt }
 // would leave it to guess.
 func (p HookPrompt) Message(issue string) string {
 	listed := make([]string, 0, len(p.Counts))
-	for _, pair := range phase.BackwardPairs() {
+	for _, pair := range phase.MovePairs() {
 		if count, ok := p.Counts[pair]; ok {
 			listed = append(listed, fmt.Sprintf("%s=%d", pair, count))
 		}
@@ -1843,9 +1843,8 @@ const (
 	MergeForwardHold MergeForwardStep = "hold"
 	// MergeForwardLanded tells that same worker that the merge landed, and which head it left.
 	MergeForwardLanded MergeForwardStep = "landed"
-	// MergeForwardReview asks the reviewer to read the merge that landed on an issue standing
-	// past its review whose task has a reviewer step, and to approve the new head or request
-	// changes.
+	// MergeForwardReview asks the reviewer to read the merge that landed on an issue whose task's
+	// reviewer step already ran, and to approve the new head or request changes.
 	MergeForwardReview MergeForwardStep = "review"
 )
 
@@ -1879,7 +1878,7 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 // Head in the issue workspace and push (MergeForwardAsk), and tells the worker of the phase the
 // issue stays in, where that is another role, to stop writing that workspace while the merge runs
 // (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
-// the reviewer of an issue past its review whose task has a reviewer step to read the merge
+// the reviewer to read the merge where the reviewer step of the issue's task already ran
 // (MergeForwardReview).
 //
 // Role is the recipient, and Step the message (mergeForwardRoles says which role each step goes
@@ -1959,8 +1958,8 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // tells the reviewer to read the merge the same way and to approve the new head by its SHA, with
 // its review's Legion footer naming that head, or to request changes, with no handoff and no
 // completion, and then to tell what it decided, on their role topics, to the architect and to the
-// worker of the phase the issue stands in (the implementer in retro, the merger in merging; the
-// architect alone in accepting).
+// worker of the phase the issue stands in (the tester in testing, the implementer in retro, the
+// merger in merging; the architect alone in accepting).
 func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 	pull := fmt.Sprintf("pull request %s#%d", pr.Repo, p.PullRequest)
 	switch p.Step {
@@ -2000,17 +1999,19 @@ func (p MergeForwardMessage) Message(issue string, pr PullRequest) string {
 			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.%s",
 			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge(), merge)
 	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
-		tell := "the architect, on its role topic,"
+		tell := "the architect what you decided, on its role topic"
 		switch p.Phase {
+		case phase.Testing:
+			tell = "the architect and the tester what you decided, each on its own role topic"
 		case phase.Retro:
-			tell = "the architect and the implementer, each on its own role topic,"
+			tell = "the architect and the implementer what you decided, each on its own role topic"
 		case phase.Merging:
-			tell = "the architect and the merger, each on its own role topic,"
+			tell = "the architect and the merger what you decided, each on its own role topic"
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
 			" Read what the merge changed since the old head: %s"+
 			" Then approve the new head %s by its SHA, with the Legion footer of your review naming that head, or request changes."+
-			" Write no handoff and make no completion for this review. Then tell %s what you decided.",
+			" Write no handoff and make no completion for this review. Then tell %s.",
 			issue, p.Base, pull, p.Phase, p.Head, p.Landed, p.readMerge(), p.Landed, tell)
 	}
 }
@@ -2524,7 +2525,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if !claim.IsRole(value.Role) || value.Role == claim.RoleArchitect {
 			return fmt.Errorf("a hook prompt goes to a phase worker of the issue, never to an architect, whose own wake the daemon writes as a notice; %q is neither", value.Role)
 		}
-		if !phase.MovesBack(value.From, value.To) {
+		// A move back is one by the order of the issue's task (workflow's Walk.MovesBack), which need
+		// not be today's, so the pair is any of two different workflow phases (phase.MovePairs).
+		if !phase.IsMovePair(value.From, value.To) {
 			return fmt.Errorf("a hook prompt names the move back that fired it; %q to %q is no move back", value.From, value.To)
 		}
 		if value.Count <= 0 {
@@ -2665,7 +2668,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
 // architect, in its reason.
 //
-// `retro-held` is a parent whose plan has no acceptance step, held before its retro because it
+// `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
 // passed its last step while issues beneath it are still in the workflow (workflow's
 // beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
 // retro starts when the last one leaves (workflow's releaseHeldParents).

@@ -73,7 +73,7 @@ func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCuto
 	}
 	if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
-		Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound),
+		Text: supervise.UpdateTask(claim.RoleImplementer, podUpdateRound, podUpdateDrift, podUpdateBound),
 	}); err != nil || !written {
 		t.Fatalf("queue the earlier release's ask = %t, %v; want it written", written, err)
 	}
@@ -287,7 +287,7 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 			rig.drifts(podUpdateDrift)
 			rig.tick()
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound)
+			text := supervise.UpdateTask(claim.RoleImplementer, podUpdateRound, podUpdateDrift, podUpdateBound)
 			for range 2 {
 				if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,

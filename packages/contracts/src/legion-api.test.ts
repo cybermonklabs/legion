@@ -900,7 +900,7 @@ test("a backward move rejects future read-only phases", () => {
 
 // Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
-// before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
+// before the merge, in `accepting`, which the list holds between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production
 // check after the close is no phase, so no phase follows `integrating` but the close itself.
 test("the phase lists are the daemon's, with awaiting_person after admitted and accepting before retro", () => {
@@ -1394,8 +1394,8 @@ test("register_plan answers each task of the plan it took with its steps", () =>
 });
 
 // Contract 219 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
-// (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
-// acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
+// (its owner stopped its task with stop_task) or `children` (a parent whose task's last step is
+// not the owner's acceptance waits, before its retro, for the issues beneath it). A state with a stopped
 // task and a held parent parses, each reason kept; a reason outside the three is refused.
 test("a state with a stopped task and a parent held for its children parses", () => {
   const state = fixture("state.json") as {

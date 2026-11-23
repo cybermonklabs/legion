@@ -328,9 +328,9 @@ def bun_job(job, workflow=""):
     install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
-        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
+        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-61)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
-        ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
+        ("patches/**", f"{install} applies package.json:52-61 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
@@ -2497,12 +2497,12 @@ SCRIPT_TEST_GATES = [
     # for this repository's addresses, so that script is a second subject of this step.
     harness("check_ci_tools_test", "Test the tool manifest check", f"{SCRIPTS}/check-ci-tools.test.sh", [
         (f"{SCRIPTS}/check-ci-tools.sh", "the script under test"),
-        (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:885-887 runs it in bash for plugin_download_url, and "
+        (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:981-982 runs it in bash for plugin_download_url, and "
                                      "check-ci-tools.test.sh:103 links it into every fixture"),
     ]),
     harness("ci_tools_proof_test", "Test the tool fallback rig", f"{SCRIPTS}/ci-tools-proof.test.sh", [
         (f"{SCRIPTS}/ci-tools-proof.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-tools.sh", "ci-tools-proof.sh:379 sources the fetch helper, so every case of the harness reads it"),
+        (f"{SCRIPTS}/ci-tools.sh", "ci-tools-proof.sh:389 sources the fetch helper, so every case of the harness reads it"),
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
@@ -3513,6 +3513,11 @@ GATES = [
         (f"{ENVOY}/loadtest/cluster/nats-*.tgz",
          f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh runs render-nats.sh, which checks "
          "the vendored archive's sha256 and renders it"),
+        # The helm the cluster suite's render runs, installed by its own step from the helm row.
+        (".github/actions/install-helm/**", at("envoy-go-checks", "./.github/actions/install-helm")),
+        (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
+                                        "reads that row's two sources"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
         # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
@@ -3984,7 +3989,7 @@ GATES = [
     # The tool-fallback job: the live proof that every tool install reads the second source
     # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
     # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
-    # the gate beside it, the rig and the fault proxy it drives, the eight actions it installs
+    # the gate beside it, the rig and the fault proxy it drives, the nine actions it installs
     # through, and the two files a row's version is pinned in that a step of it reads.
     gate("tool_fallback", "tool-fallback", reads=reads(
         (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
@@ -4016,7 +4021,7 @@ GATES = [
          "faulted installs left to the version its row pins"),
         (".github/scripts/tool-fallback-final-state.sh",
          f"{at('tool-fallback', TOOL_FINAL_STEP)} is that script, which reads what this runner "
-         "holds after the sixteen refusals"),
+         "holds after the eighteen refusals"),
         (".github/actions/install-crane/**", at("tool-fallback", "./.github/actions/install-crane")),
         (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
         (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),
@@ -4026,6 +4031,7 @@ GATES = [
         (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",
          at("tool-fallback", "./.github/actions/install-docker-plugin")),
+        (".github/actions/install-helm/**", at("tool-fallback", "./.github/actions/install-helm")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                                "to name mise's own install directory for that tool, and "
                                                ".github/actions/install-jj reads that same ARG, while the mise row "

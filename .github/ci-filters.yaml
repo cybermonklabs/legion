@@ -2653,6 +2653,7 @@ tool_fallback:
   - '.github/actions/install-uv/**'
   - '.github/actions/install-pulumi/**'
   - '.github/actions/install-docker-plugin/**'
+  - '.github/actions/install-helm/**'
   - '.bun-version'
   - 'packages/daemon/docker/worker.Dockerfile'
   - *ci_router

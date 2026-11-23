@@ -41,7 +41,7 @@ type Hook struct {
 }
 
 // HookEventWorkBack is the one event a hook of this engine stands on: an issue's work went back
-// a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.BackwardPairs).
+// a phase, which the daemon counts by the move's own `<from>-<to>` pair (phase.MovePairs).
 // It is the word the configuration spells as well (config.HookEventWorkBack), written out again
 // here because this package imports no configuration: a hook reaches the engine with its event
 // as the operator wrote it, and recordPass fires the hooks that name this one.
@@ -114,9 +114,11 @@ type Config struct {
 	// ReadMergeState is asked, on the commit of a fact that owes a read of GitHub's merge state
 	// (askMergeState, basePush, through askMergeStateFor), to read it for the pull request's head:
 	// a fact that leaves a review round waiting on GitHub's answer, which is what moves an approved
-	// issue to accepting; and, by the gate classify.MergeStateReadOwed, a head move of an issue in
-	// implementing through merging and a base push of an issue in testing through merging, each of
-	// which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
+	// issue on to its task's next step (accepting, in the default steps); and, by the gate
+	// classify.MergeStateReadOwed, a head move of an issue where a merge forward stands
+	// (classify.MergeForwardStands: implementing, or a phase after it on the task's line) and a
+	// base push of an issue in a phase after implementing on that line, each of which can turn the
+	// head conflicting with its base (dispatch://INFRA-4374 R0). The daemon
 	// answers it with a ladder of reads (workflowRuntime.queueMergeState); nil asks for none, which
 	// is the API-only daemon and a test that drives the reads itself.
 	ReadMergeState func(issue string)
@@ -2271,10 +2273,9 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}, freshSession); err != nil {
 		return "", err
 	}
-	// The release puts the issue back in a phase, and a hold owed it nothing (record.OwedNews names
-	// a held issue UntoldHeld), so it queues the reconcile of the tree's news as a move does after
-	// its start (queueMovedNews). It puts the issue back in the phase the hold is from, which is no
-	// move between phases, so the merge forward stands as the hold left it.
+	// The release puts the issue back in a phase, so it queues the reconcile of the tree's news as
+	// a move does after its start (queueMovedNews). It puts the issue back in the phase the hold is
+	// from, which is no move between phases, so the merge forward stands as the hold left it.
 	return from, e.queueMovedNews(ctx, tx, issue)
 }
 
@@ -2383,9 +2384,13 @@ func endChildrenFirst(hold string) string {
 		" When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
 }
 
-// signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
-// retro and starts the implementer there, told the review's handoff and the pull request as the
-// approval told it before acceptance existed. Outside accepting it changes nothing and says so.
+// signOff is the architect's acceptance of the step before it: it moves the issue from accepting
+// to the task's next step, or to retro where the acceptance is the task's last step (the default
+// steps), and starts that step's role told the report of the step the owner accepted: the handoff
+// on the phases row of the role of the step before accepting, with the pull request. An issue with
+// no plan rows walks today's line, where that step is the review, so its retro is told the
+// review's handoff, as the approval told it before acceptance existed. Outside accepting it
+// changes nothing and says so.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
 // (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them, since a parent is accepted only once
@@ -2412,7 +2417,11 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 			"A parent is accepted only once no issue beneath it is still in the workflow. Sign off again when each of them has left the workflow.",
 			issue.Key, strings.Join(open, ", "))+" "+endChildrenFirst("acceptance")), nil
 	}
-	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+	accepted, err := e.acceptedRole(ctx, tx, *issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	report, err := e.phaseRow(ctx, tx, issue.Key, accepted)
 	if err != nil {
 		return intake.Result{}, err
 	}
@@ -2420,7 +2429,23 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", review, pr, "")
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
+}
+
+// acceptedRole is the role of the step the owner's acceptance of issue accepts: the step before
+// the acceptance's place on the task of its walk, by place and never by type, so the step after
+// the sign-off reads the report the owner read. An issue with no plan rows walks today's line,
+// where the review stands before accepting.
+func (e *Engine) acceptedRole(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Role, error) {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored {
+		return claim.RoleReviewer, err
+	}
+	place, ok := w.PlaceOf(phase.Accepting)
+	if !ok || place.Kind != record.PlaceStep || place.Position < 2 {
+		return "", fmt.Errorf("sign off %s: task %s of its line %v has no step before its acceptance", issue.Key, w.Task, w.Line)
+	}
+	return claim.Role(w.Steps[place.Position-2].Role), nil
 }
 
 func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
@@ -2470,8 +2495,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// move back asks for its work to be done again, and the completion of the entry before it
 	// does not answer for that however its commit reads (record.PhaseRow.EntryMovedBack,
 	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
-	// few lines down, which would leave the start comparing a phase with itself.
-	movedBack := phase.MovesBack(issue.Phase, row.To)
+	// few lines down, which would leave the start comparing a phase with itself. A move back is one
+	// by the order of the walk's task (Walk.MovesBack), so a task in another order than today's
+	// counts its own moves back, and an issue with no plan rows counts by today's line.
+	movedBack := w.MovesBack(issue.Phase, row.To)
 	if movedBack {
 		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr); err != nil {
 			return err
@@ -2482,7 +2509,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	// A parent whose plan has no acceptance step passes its last step into its retro, and while an
+	// A parent whose last step is not the owner's acceptance passes that step into its retro, and while an
 	// issue beneath it is still in the workflow Legion holds it before its retro instead
 	// (beneathRetro, holdBeforeRetro).
 	beneath, err := e.beneathRetro(ctx, tx, issue, w, row.To)
@@ -2555,10 +2582,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
-	// it, and a move at a head held in a confirmed conflict asks for it where the phase entered
-	// needs a head that merges. It comes after the start, so the worker of the phase entered is
+	// it, and a move at a head held in a confirmed conflict asks for it where the merge comes
+	// next. It comes after the start, so the worker of the phase entered is
 	// started before the hold that tells it to wait for the merge.
-	if err := e.mergeForwardOnEntry(ctx, tx, issue, from); err != nil {
+	if err := e.mergeForwardOnEntry(ctx, tx, issue, w); err != nil {
 		return err
 	}
 	if mergedAlready {
@@ -2626,13 +2653,17 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 	return from, nil
 }
 
-// holdBeforeRetro is the pass of a parent's last step into to, its retro, on a plan with no
-// acceptance step while beneath, the issues beneath it, are still in the workflow (beneathRetro):
-// the task moves to its retro's place and the issue stands in held for its children
+// holdBeforeRetro is the pass of a parent's last step into to, its retro, on a task whose last
+// step is not the owner's acceptance while beneath, the issues beneath it, are still in the
+// workflow (beneathRetro): the task moves to its retro's place and the issue stands in held for
+// its children
 // (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
 // retro, which starts once none of them is open beneath it (releaseHeldParents), and keeps the last step's
 // handoff for the retro's task, which no clear of a handoff takes. The architect is told the pass
-// and the hold.
+// and the hold. The hold asks nothing of the merge forward: the retro is where the merge comes
+// next (classify.MergeComesNext), where a move asks nothing (mergeForwardOnEntry). An ask made in
+// implementing stays on the record, neither the hold nor its release (startHeldRetro) asks it
+// again, and the move into merging asks the merger.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
 	handoff record.PhaseRow, pr *record.PullRequest, reason string, beneath []string) error {
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, reason)
@@ -2655,6 +2686,12 @@ func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Is
 // its news, as a task to the architect that owns it, beside the phase-finished notice. A move into
 // any other phase queues it too, so news whose change set no start could carry yet is sent once
 // the reconcile has recorded it.
+//
+// Each release out of held calls it after the start of the phase it releases into, as a move does
+// (restartTask, retryPhase, startHeldRetro): a hold owes the issue nothing (record.OwedNews names a
+// held issue UntoldHeld), so a version approved while it was held can reach the holder of the
+// phase entered with no change set recorded, which that start cannot carry and the reconcile
+// records and sends.
 func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, issue.Tree)
 	if err != nil {
@@ -2664,22 +2701,6 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 		return record.QueueDesignNews(ctx, e.store, tx, issue.Tree, e.now())
 	}
 	return nil
-}
-
-// releasedIntoPhase is what a release of a held issue into a phase (startHeldRetro, restartTask)
-// does once it has started that phase's worker, as a move does after its start (transition). It
-// queues the reconcile of the tree's news (queueMovedNews): the hold owed the issue nothing
-// (record.OwedNews names a held issue UntoldHeld), so a version approved while it was held can
-// reach the holder of the phase entered with no change set recorded, which that start cannot carry
-// and the reconcile records and sends. And it acts on the pull request's merge forward as a move
-// from from, the phase the hold is from, into the phase entered does (mergeForwardOnEntry): a
-// release into implementing drops an ask made before the hold, which would otherwise hold back
-// every later ask of its head (mergeForward asks once for each head).
-func (e *Engine) releasedIntoPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, from phase.Phase) error {
-	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
-		return err
-	}
-	return e.mergeForwardOnEntry(ctx, tx, issue, from)
 }
 
 // noticeFor is what a transition on trigger out of from into to tells the architect: that from

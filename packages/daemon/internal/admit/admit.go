@@ -652,8 +652,8 @@ type phaseWorker struct {
 // an issue of this project whose phase has a worker role (workflow.OpenPhaseRole) and whose work
 // the record shows under way in a tree that does not linger. project is the project's claim
 // token (claim.ProjectToken), and byKey is the project's live records by key, which the tree
-// roots are read from and which the slot repair walks its slots and its issues past review
-// through.
+// roots are read from and which the slot repair walks its slots and its issues in accepting,
+// retro or merging through.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers,
 // through phaseWorkers) and the selection of the roles behind the entry their phases row names
@@ -1184,9 +1184,9 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 	// daemon itself wrote and Dispatch had not shown yet. It is taken only while the issue's tree
 	// is not live: a running tree's member keeps what the record says, because the tree is the
 	// thing that says the work is under way, and the row the member holds, or does not hold, says
-	// nothing about it: it keeps that row through every phase up to its review, worked or not
-	// (record.KeepsSlot), holds none past it, and gives it back while it waits on another issue
-	// before then (releaseSlotsForWaits).
+	// nothing about it: it keeps that row through every phase that keeps one, worked or not
+	// (record.KeepsSlot), holds none in accepting, retro or merging, and gives it back while it
+	// waits on another issue (releaseSlotsForWaits).
 	if summary.Status == "todo" && stored.Status == "in_progress" {
 		if _, running := live[stored.Tree]; running {
 			return nil
@@ -1637,14 +1637,15 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 // (record.NeedsSlot, the one statement of the release of an issue that needs no slot at all,
 // whose phase half the grant reads too — record.KeepsSlot) and reports those issues in slot
 // order. Each release is logged once the fact commits. A tree leaving the workflow, a root
-// finishing, an issue whose work passes its review, an issue reaching its done, and a linger all
-// read the same predicate, so one rule says when an issue stops needing a slot where it stands.
+// finishing, an issue moving into accepting, retro or merging, an issue reaching its done, and a
+// linger all read the same predicate, so one rule says when an issue stops needing a slot where
+// it stands.
 // The daemon makes one other release, releaseSlotsForWaits, judged by blockers.waitsOf rather
 // than by record.NeedsSlot, which frees the row of an issue that goes on working and waits on
 // another issue; the two are apart because they free rows for opposite reasons — this one
 // because the issue's phase holds no row, that one because the work is held — and only that one
-// leaves a mark, since only its issue stands in the line for the row again. An issue past its
-// review is never one it frees (blockers.waitsOf says why).
+// leaves a mark, since only its issue stands in the line for the row again. An issue in
+// accepting, retro or merging is never one it frees (blockers.waitsOf says why).
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
@@ -2226,20 +2227,23 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // predicate, so no pass hands out a row the next pass would take back.
 //
 // It reads the phase the candidate's record carries rather than the phase its promotion leaves
-// it in, and the two agree wherever this is asked: KeepsSlot refuses the three phases past an
-// issue's review — accepting, retro and merging — a phase of done and a Dispatch status out of
-// the workflow, and no promotion moves an issue into or out of any of them. A first phase
-// starts at phase.Planning from a record standing at admitted, an answered root goes from
-// awaiting_person back to admitted, a returning issue keeps the worker phase it stands in, and
-// a root whose tree is opened keeps the phase it ran in the tree it left.
+// it in, and the two agree wherever this is asked: KeepsSlot refuses accepting, retro and
+// merging (in the default steps, the phases after the review), a phase of done and a Dispatch
+// status out of the workflow, and no promotion moves an issue into or out of any of them. A first
+// phase starts at the phase of the task's first step from a record standing at admitted —
+// planning or implementing, since every tester, reviewer and acceptance step stands after the
+// implementer — an answered root goes from awaiting_person back to admitted, a returning issue
+// keeps the worker phase it stands in, and a root whose tree is opened keeps the phase it ran in
+// the tree it left.
 //
 // So a root another tree handed over carrying accepting, retro or merging is a candidate this
 // refuses, and its promotion opens its tree while it holds no row. That follows from the rule
-// and is intended: the work of such a root is its sign-off, its retro and its merge, which
-// write no more of the change, and the cap counts the issues whose change is still to write.
-// The tree opens, the phase's own worker starts on a row the outbox holds for no slot
-// (workflow.StartOrOwe), and the root takes a row again only where its architect sends the work
-// back to a phase that keeps one.
+// and is intended: the work of such a root in those phases is its sign-off, its retro and its
+// merge, which write no more of the change, and the cap counts the issues whose change is still
+// to write. The tree opens, the phase's own worker starts on a row the outbox holds for no slot
+// (workflow.StartOrOwe), and the root takes a row again only where its work moves to a phase
+// that keeps one: its architect sends the work back, or a step after its acceptance whose phase
+// keeps a slot starts, and it waits for that row in the line.
 //
 // A candidate that holds a row takes no second one: the line carries holders (the kinds
 // record.LineEntry.Holds names). A candidate that takes no slot is promoted whatever the cap:
@@ -2257,7 +2261,7 @@ func slotFor(entry record.LineEntry) bool {
 //
 // It is the one statement of the cap's half, and two readers ask it: the promotion itself
 // (promoteHolds) and the stall measure's free-slot term (lineCanMove). Read apart, the measure
-// said the cap held a queued root past its review that the promotion of the same pass started,
+// said the cap held a queued root in accepting, retro or merging that the promotion of the same pass started,
 // and told the controller of a stall that was not one.
 func capLets(entry record.LineEntry, held, cap int) bool {
 	if cap <= 0 {
@@ -2389,8 +2393,8 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 //
 // Holding no slot is the normal state of a root waiting to start: the cap counts the issues the
 // daemon has started whose change is still to write, so a root waiting in the line, one whose
-// tree has left the workflow and one standing past its review — in accepting, retro or
-// merging — hold none, and a started root before its review that waits on another issue — a
+// tree has left the workflow and one standing in accepting, retro or
+// merging hold none, and a started root in a phase that keeps one that waits on another issue — a
 // blocker of it that is not done, or an open child its own first phase waits for — gives its row
 // back for that wait as well. Three started roots keep the row they were started with through
 // such a wait (blockers.waitsOf): one waiting on a person (awaiting_person, answered or not), one
@@ -2757,7 +2761,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	// fresher of the two, and the copy among the records is passed over. It is walked last, the
 	// place the appended copy held, so the order of the rows this writes is unchanged. Reading
 	// both would start one member twice: a phase worker handed the same task on two rows, which
-	// the start of a phase past its review no longer coalesces into one (workflow.StartOrOwe).
+	// the start of accepting, retro or merging no longer coalesces into one (workflow.StartOrOwe).
 	walk := func(member record.Issue) error {
 		if member.Tree != root.Tree || record.OutOfWorkflow(member.Status) {
 			return nil
@@ -2980,7 +2984,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // among them.
 //
 // Its domain is the issues holding one of the cap's slots and this project's issues that stand
-// past their review (record.PastReview, the complement of the phases that keep a row), by key
+// in accepting, retro or merging (record.InSlotlessPhase, the complement of the phases that keep a row), by key
 // and once each, and beside them the architect of each root released for a wait
 // (readSlotHolders says why that root's architect alone). The second half is there because such
 // an issue holds no row at all now (record.KeepsSlot) and its worker would otherwise be repaired
@@ -2990,7 +2994,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 //
 // The second half asks of the record the three terms the first half gets from the row itself,
 // and it must: a slot row exists only while record.NeedsSlot holds, which is the issue in the
-// workflow, its tree running and its root not lingering, while an issue past its review is in
+// workflow, its tree running and its root not lingering, while an issue in accepting, retro or merging is in
 // the pass's records whatever Dispatch now says of it, since record.Store.LiveIssues answers
 // every record that is not done, a parked one included. So this half asks each of the three —
 // record.InWorkflow, whose own statement is record.OutOfWorkflow over the Dispatch status, and
@@ -3003,7 +3007,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // record.TreeRuns is asked of each such issue's root rather than record.RunningRoots being
 // built once for the call: the set costs a walk of every record of the project and a map the
 // size of it on every pass, while the rule asked here costs two map lookups for each issue
-// past its review, of which a healthy project has a handful.
+// in accepting, retro or merging, of which a healthy project has a handful.
 //
 // Only the role of each candidate's current phase is read (workflow.OpenPhaseRole, in the
 // selection both repairs over phase workers make, phaseWorkerOf), and a root's own architect
@@ -3024,7 +3028,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // answers false for a root at admitted once its design gate has opened, where the architect is
 // still the only role at work on the root itself, and a relaunched architect of exactly such a
 // root is the measured defect (dispatch://INFRA-2614). The architect of every root of the domain
-// is weighed here, slotted, past its review or released for a wait, and the reach that decides
+// is weighed here, slotted, in accepting, retro or merging, or released for a wait, and the reach that decides
 // which of them is owed anything is read once its claim is behind (architectReached,
 // workflow.ArchitectAtWork): a root at admitted whatever its gate, a root a hand-over carried in
 // while it stands in the run that hand-over carried it into, and a root past admitted under its
@@ -3038,7 +3042,7 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // architects this names are exactly those the pass sends a start to, and the sweep's gate opens
 // for no root the pass would send nothing.
 //
-// The slots are walked here, in the order the store answered, then the issues past their review
+// The slots are walked here, in the order the store answered, then the issues in accepting, retro or merging
 // in the order the pass holds them, and the candidates those two halves make are what the
 // selection is given: it is the tick's silent list that walks the project's live issues
 // (silentWorkers). The roots released for a wait come last and give that selection nothing,
@@ -3067,9 +3071,9 @@ func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []reco
 // review or a root released for a wait: the issue, its tree's root, the role and its claim token,
 // in the shape both selections answer (phaseWorker: phaseWorkerOf and rootArchitectOf), and when
 // the issue was admitted (record.Slot.AdmittedAt), which the gate arm of the stall reading weighs
-// its bound from (architectStalls). An issue past its review and a root released for a wait hold
+// its bound from (architectStalls). An issue in accepting, retro or merging and a root released for a wait hold
 // no slot and carry the zero time, and that arm reads a root at admitted with no step of its
-// design gate registered alone, which no issue past its review is, and no released root either:
+// design gate registered alone, which no issue in accepting, retro or merging is, and no released root either:
 // a root at admitted is released only once its design gate has opened (blockers.waitsOf).
 type slotHolder struct {
 	phaseWorker
@@ -3088,7 +3092,7 @@ type slotReading struct {
 }
 
 // readSlotHolders is the reading owedEntryRoles weighs, over its domain: every slot of the
-// project, then each issue of the project past its review in a tree that runs, then the architect
+// project, then each issue of the project in accepting, retro or merging in a tree that runs, then the architect
 // of each root of the project released for a wait in a tree that runs. Only the role of each
 // candidate's current phase is held, and a root's own architect.
 //
@@ -3110,7 +3114,7 @@ type slotReading struct {
 // a row (releaseSlots clears it), and the loop asks the same two terms the past-review half asks,
 // so a parked root, or one whose tree left the workflow, is weighed by nothing here.
 //
-// It reads over at most the cap's worth of slotted issues, the handful past their review and the
+// It reads over at most the cap's worth of slotted issues, the handful in accepting, retro or merging and the
 // roots released for a wait, which the cap does not bound, through one batched record.RoleRuns
 // read rather than a read per candidate, and one batched read
 // of the phase entry each holder's row names with the moment it was raised
@@ -3159,7 +3163,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		}
 	}
 	for _, issue := range issues {
-		if !record.PastReview(issue) || !record.InWorkflow(issue) {
+		if !record.InSlotlessPhase(issue) || !record.InWorkflow(issue) {
 			continue
 		}
 		root, rooted := byKey[issue.Tree]
@@ -3313,7 +3317,7 @@ func (a *Admission) architectReached(ctx context.Context, tx pgx.Tx, root record
 // sub-architect claim outside the rule, since its start, which the child's first phase start
 // queues (workflow's gateOpened), carries no task and raises no entry). The slotted form
 // reads nothing, because root is one readSlotHolders holds: it holds one of the slots this pass
-// read, or stands past its review in a tree that runs, or was released for a wait in a tree that
+// read, or stands in accepting, retro or merging in a tree that runs, or was released for a wait in a tree that
 // runs (record.TreeRuns, which no queued root does), and so waits for none. And the root must be
 // inside the reach (workflow.ArchitectAtWork): a root standing at admitted, whatever its design
 // gate, a root a hand-over carried in while it stands in the run that hand-over carried it into,
@@ -3344,7 +3348,7 @@ func (a *Admission) architectServed(ctx context.Context, tx pgx.Tx, root record.
 // entry (workflow's SendOwedEntry). A root's own architect is sent its start instead, which
 // differs from a phase worker's in the two ways a root architect's start differs: the row waits
 // for no admission slot, because a root architect's start takes no slot, whether the root holds
-// its row, holds none past its review (record.KeepsSlot) or gave it back for a wait
+// its row, holds none in accepting, retro or merging (record.KeepsSlot) or gave it back for a wait
 // (releaseSlotsForWaits), and a task the derivation wrote is derived again from the
 // record rather than taken off the row, while a task the resume of a person's answer wrote is
 // sent as written (workflow's SendArchitectStart, over record.PhaseRow.EntryVerbatim). Where the

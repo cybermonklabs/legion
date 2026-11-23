@@ -538,11 +538,12 @@ var lineKinds = []EnumeratedValue{
 }
 
 // heldReasons is every word of a held row's `reason`. The field arrived at heldContract with
-// eleven words, and its list grew once: `children_before_retro`, a parent whose plan has no
-// acceptance step held before its retro for the issues beneath it, and `task_stopped`, a task its
-// owner stopped, arrived at OwnerPlanContract (version.go's 219). So it is written out value by
-// value, sorted by value, as waitAnswers is. It names each constant rather than reading
-// record.HeldReasons, because a word added to the ladder later arrives at its own contract.
+// eleven words, and its list grew once: `children_before_retro`, a parent whose task's last step
+// is not the owner's acceptance, held before its retro for the issues beneath it, and
+// `task_stopped`, a task its owner stopped, arrived at OwnerPlanContract (version.go's 219). So
+// it is written out value by value, sorted by value, as waitAnswers is. It names each constant
+// rather than reading record.HeldReasons, because a word added to the ladder later arrives at
+// its own contract.
 var heldReasons = []EnumeratedValue{
 	{Value: string(record.HeldAcceptedAncestor), Since: heldContract},
 	{Value: string(record.HeldAncestry), Since: heldContract},
@@ -560,7 +561,7 @@ var heldReasons = []EnumeratedValue{
 }
 
 // holdReasons is every reason an issue's hold can carry (record.HoldReason). `escalated` is older
-// than the floor; `children`, a parent whose plan has no acceptance step waiting before its retro
+// than the floor; `children`, a parent whose last step is not the owner's acceptance, waiting before its retro
 // for the issues beneath it, and `task-stopped`, a task its owner stopped, arrived at
 // OwnerPlanContract. Written out value by value, sorted by value, as waitAnswers is.
 var holdReasons = []EnumeratedValue{
