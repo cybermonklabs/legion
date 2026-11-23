@@ -128,6 +128,57 @@ func TestAConditionalStopDeletesTheEntryACopyOneWriteBehindAnswers(t *testing.T)
 	}
 }
 
+// A conditional stop (DeleteIf) deletes the entry its own client instance registered even where the
+// copy of the bucket a direct get reaches still holds another instance's registration under the
+// same session id: a new client instance took the session id over and stopped at once, before
+// the copy applied its registration. A keep is judged on the bucket stream leader's record, which
+// is the stopping instance's. Before, the stop kept the entry on the copy's record, answered
+// EntryKeptForAnotherInstance (DELETE /v1/sessions: 200 and deleted:false) and the leader's
+// record stood until it expired. Control: with a current copy holding the other instance's
+// registration, the stop keeps it.
+func TestAConditionalStopDeletesItsOwnEntryWhereACopyBehindHoldsAnotherInstances(t *testing.T) {
+	const (
+		stopping  = "3c8e1a5f9b2d7c4e3c8e1a5f9b2d7c4e"
+		other     = "9d4b2f7a1c6e8b3d9d4b2f7a1c6e8b3d"
+		sessionID = "ses_stop_copy_other_instance"
+	)
+	for _, tc := range []struct {
+		name   string
+		behind bool
+	}{
+		{"the copy holds the other instance's registration the stopping instance replaced", true},
+		{"control: a current copy holds the other instance's registration", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := openRegistryForInstanceDelete(t)
+			putForInstanceDelete(t, reg, sessionID, other)
+			others, err := reg.watcher.KV().Legacy().Get(sessionID)
+			if err != nil {
+				t.Fatalf("read %s's registration by instance %s: %v", sessionID, other, err)
+			}
+			if tc.behind {
+				putForInstanceDelete(t, reg, sessionID, stopping)
+			}
+			useKV(t, reg, olderCopyKV{KeyValue: reg.watcher.KV().Legacy(), key: sessionID, older: others})
+			if read, err := reg.watcher.KV().Get(sessionID); err != nil || read.Revision() != others.Revision() {
+				t.Fatalf("a direct get of %s through the copy = %v (%v), want revision %d: the copy is not as the row needs it", sessionID, read, err, others.Revision())
+			}
+			want := map[bool]DeleteOutcome{true: EntryDeleted, false: EntryKeptForAnotherInstance}[tc.behind]
+			outcome, err := reg.DeleteIf(context.Background(), sessionID, DeleteConditions{ClientInstanceID: stopping})
+			if err != nil || outcome != want {
+				t.Errorf("DeleteIf(%s) for instance %s = %s (%v), want %s", sessionID, stopping, outcome, err, want)
+			}
+			_, err = reg.watcher.KV().GetFromLeader(context.Background(), sessionID)
+			switch {
+			case tc.behind && !errors.Is(err, natsgo.ErrKeyNotFound):
+				t.Fatalf("the bucket's leader holds %s after its stop (read: %v), want no entry: the stop kept the stopping instance's entry on the copy's record of another instance", sessionID, err)
+			case !tc.behind && err != nil:
+				t.Fatalf("the bucket's leader read of %s after the stop = %v, want the other instance's registration kept", sessionID, err)
+			}
+		})
+	}
+}
+
 // conditionalStop is DeleteIf naming instance, failing unless it answers EntryDeleted.
 func conditionalStop(instance string) func(*SessionRegistry, string) error {
 	return func(reg *SessionRegistry, sessionID string) error {
