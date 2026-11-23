@@ -55,6 +55,7 @@ import {
   proxyRepository,
   type StandInRun,
   type StandIns,
+  serviceGrant,
   unknownsCounted,
   unlistedPerson,
   workflowInputs,
@@ -672,7 +673,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the positive control: the full member's browser minted an agent token, 201 (revoked: 204), and approved a machine login, 200 (revoked: 200)"
         );
         expect(pass.get("sweep")?.got).toContain(
-          `the full member's browser read ${proxyRepository}'s workflow runs through the proxy: 200`
+          `the full member's browser session read ${proxyRepository}'s workflow runs through the proxy: 200`
         );
         // The writer's line in its `write <began> <ended> <comment id> <message id> delivered` form.
         expect(pass.get("sweep")?.got).toContain(
@@ -800,31 +801,40 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the sweep runs without the full member's cookie and reads UNKNOWN, and reads UNKNOWN with fills that lack a proxy read's line",
+      "without the full member's cookie the sweep's proxy reads use their token: PASS where Dispatch takes it, UNKNOWN naming the refusal where a build reads the proxy as a browser's person alone, and UNKNOWN with fills that lack a proxy read's line",
       async () => {
-        const [noCookie, gap] = await runStandIns(
+        const [noCookie, refused, gap] = await runStandIns(
           { ...passingControls, cookie: "absent" },
+          { ...passingControls, cookie: "absent", proxyRefusesToken: true },
           {
             ...passingControls,
             fillsLeaveOut: "GET /api/v1/github/app-installation/{owner}/{repo}",
           }
         );
-        if (noCookie === undefined || gap === undefined) throw new Error("two runs, want two");
-        // Without the cookie the sweep still runs on the full member's token: fills mode writes
-        // fills with no proxy read's line and the writer writes. Its proxy rows have no positive
-        // control, so the row reads UNKNOWN; P7 has no positive control either.
+        if (noCookie === undefined || refused === undefined || gap === undefined) {
+          throw new Error("three runs, want three");
+        }
+        // Without the cookie the sweep runs on the full member's token, its fills' proxy reads
+        // and the box's proxy control among them, and passes where Dispatch takes the token; P7
+        // has no positive control, which only a browser session makes.
         expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
-          verdicts: { sweep: "UNKNOWN", P7: "UNKNOWN" },
+          verdicts: { sweep: "PASS", P7: "UNKNOWN" },
         });
         expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain(
-          "its GitHub proxy rows have no positive control: no full member's browser session"
-        );
-        expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain(
-          "OUTSIDE_FULL_COOKIE_FILE is unset"
+          "the full member's token read example-owner/private-repo's workflow runs through the proxy: 200"
         );
         expect(existsSync(join(noCookie.state, "fills-read-the-cookie"))).toBe(false);
-        expect(existsSync(join(noCookie.state, "fills-without-cookie"))).toBe(true);
+        expect(existsSync(join(noCookie.state, "fills-read-the-token"))).toBe(true);
         expect(existsSync(join(noCookie.state, "writer-stopped"))).toBe(true);
+        // A build whose proxy reads a browser's person alone refuses the token: the fills hold no
+        // proxy read's line, and the row reads UNKNOWN naming that refusal.
+        expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
+          verdicts: { sweep: "UNKNOWN" },
+        });
+        expect(rowsOf(refused.stdout).get("sweep")?.got).toContain(
+          "was refused 403 OAUTH_SCOPE_REQUIRED: this build of Dispatch reads the proxy as a browser's person alone"
+        );
+        expect(existsSync(join(refused.state, "fills-without-cookie"))).toBe(true);
         // Fills that lack a proxy read's full-member answer hold the sweep, and only the sweep.
         expect({ verdicts: verdictsOf(gap.stdout), stdout: gap.stdout }).toMatchObject({
           verdicts: { sweep: "UNKNOWN", P7: "PASS" },
@@ -833,8 +843,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "the sweep's fills hold no full member's answer that can fail for GET /api/v1/github/app-installation/{owner}/{repo}"
         );
       },
-      // The two runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short"] })
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
     );
 
     test(
@@ -1329,6 +1339,7 @@ const browserRows = [
   "sign-in",
   "projects",
   "limits",
+  "grants",
   "public",
   "sweep",
   "pins-end",
@@ -1395,7 +1406,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(rows.get("T5")?.got).toContain("T5-cookie at at most");
         expect(rows.get("T5")?.got).toContain("T5-passkey at at most");
         // The workflow got the browser checks, Dispatch's routed control, the owner's one link
-        // (not the link OUTSIDE_WORKFLOW_INPUTS held) and the issue row's key, on stdin alone.
+        // (not the link OUTSIDE_WORKFLOW_INPUTS held), the issue row's key and the probe grant,
+        // the one grant of the full member's list with no approver and no operator, on stdin alone.
         const links = readFileSync(join(run.state, "links"), "utf8").trim().split("\n");
         expect(links).toHaveLength(1);
         const inputs = JSON.parse(
@@ -1407,9 +1419,15 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           routed_controls: "dispatch-healthz",
           invite_url: links[0],
           sweep_member_issue: "EXAMPLE-7",
+          grants_probe_id: serviceGrant,
           sweep_project: "PRIV",
           sweep_fills: expect.any(String),
         });
+        // The full member's list was read before the run and after it, with the token.
+        expect(rows.get("grants")?.got).toContain(
+          "the full member's list held 1 grants every signed-in person is listed before the run and 1 after, 1 in both"
+        );
+        expect(run.seen.filter((each) => each === "GET /api/v1/credential-grants")).toHaveLength(2);
         expect(readFileSync(join(run.state, "workflow-args"), "utf8")).not.toContain(linkToken);
         expect(`${run.stdout}${run.stderr}`).not.toContain(linkToken);
         // The window was read from the step's status; the owner's remove took the person off.
@@ -1496,25 +1514,33 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "with no full member's cookie the sweep runs on the full member's token, and its row and the gate read UNKNOWN while the owner's rows pass",
+      "with no full member's cookie the sweep's proxy reads use the full member's token, and only a build that refuses it holds the sweep row, while the owner's rows pass on their commands",
       async () => {
-        const [noCookie] = await runStandIns({ ...browserRun({}), cookie: "absent" });
-        if (noCookie === undefined) throw new Error("one run, want one");
-        // The sweep's one input that is a person's: a full member's browser session, which
-        // Dispatch's GitHub proxy reads as and no token. Without it the sweep still runs on the
-        // full member's token, its fills going to the workflow with no proxy read's line, and its
-        // proxy rows have no positive control: the sweep row, and so the gate, reads UNKNOWN,
-        // never PASS, while the owner's rows still pass on their commands.
+        const [noCookie, refused] = await runStandIns(
+          { ...browserRun({}), cookie: "absent" },
+          { ...browserRun({}), cookie: "absent", proxyRefusesToken: true }
+        );
+        if (noCookie === undefined || refused === undefined) throw new Error("two runs, want two");
+        // Where Dispatch takes the token on its GitHub proxy, no cookie is needed: the fills and
+        // the box's proxy control read with the token, and every row passes.
         expect({ verdicts: verdictsOf(noCookie.stdout), stdout: noCookie.stdout }).toMatchObject({
+          verdicts: { sweep: "PASS", unlisted: "PASS", T5: "PASS", gate: "PASS" },
+        });
+        expect(existsSync(join(noCookie.state, "fills-read-the-token"))).toBe(true);
+        expect(noCookie.code).toBe(0);
+        // A build whose proxy reads a browser's person alone refuses the token: the fills go to
+        // the workflow with no proxy read's line, and the sweep row, and so the gate, reads
+        // UNKNOWN naming that refusal, never PASS.
+        expect({ verdicts: verdictsOf(refused.stdout), stdout: refused.stdout }).toMatchObject({
           verdicts: { sweep: "UNKNOWN", unlisted: "PASS", T5: "PASS", gate: "UNKNOWN" },
         });
-        expect(rowsOf(noCookie.stdout).get("sweep")?.got).toContain(
-          "its GitHub proxy rows have no positive control: no full member's browser session"
+        expect(rowsOf(refused.stdout).get("sweep")?.got).toContain(
+          "refused 403 OAUTH_SCOPE_REQUIRED: this build of Dispatch reads the proxy as a browser's person alone"
         );
-        expect(existsSync(join(noCookie.state, "fills-without-cookie"))).toBe(true);
-        expect(existsSync(join(noCookie.state, "writer-stopped"))).toBe(true);
+        expect(existsSync(join(refused.state, "fills-without-cookie"))).toBe(true);
+        expect(existsSync(join(refused.state, "writer-stopped"))).toBe(true);
         const fills = (
-          JSON.parse(readFileSync(join(noCookie.state, "workflow-inputs.json"), "utf8")) as Record<
+          JSON.parse(readFileSync(join(refused.state, "workflow-inputs.json"), "utf8")) as Record<
             string,
             string
           >
@@ -1523,10 +1549,175 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           `proxy_repo\t${proxyRepository}`
         );
         expect(Buffer.from(fills ?? "", "base64").toString()).not.toContain("can_fail");
-        expect(noCookie.code).toBe(2);
+        expect(refused.code).toBe(2);
       },
-      // The one run, a bounded child under the short bound.
-      rowLimit("short")
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
+    );
+
+    test(
+      "the grants row passes on the runner's two rows and a control both reads hold, fails on either row's FAIL with or without the control, and reads UNKNOWN on an empty control, a probe grant that names an approver or an operator, or no artifact",
+      async () => {
+        const [listed, revokedBare, bare, named, guarded, absent] = await runStandIns(
+          browserRun({ grantRows: ["FAIL", "PASS"] }),
+          browserRun({ grantRows: ["PASS", "FAIL"], fullGrants: "no-everyone" }),
+          browserRun({ fullGrants: "no-everyone" }),
+          browserRun({ fullGrants: "judged-only" }),
+          browserRun({ grantRows: ["PASS", "UNKNOWN"] }),
+          browserRun({ grantRows: "none" })
+        );
+        if (
+          listed === undefined ||
+          revokedBare === undefined ||
+          bare === undefined ||
+          named === undefined ||
+          guarded === undefined ||
+          absent === undefined
+        ) {
+          throw new Error("six runs, want six");
+        }
+        const probeOf = (run: StandInRun) =>
+          (
+            JSON.parse(readFileSync(join(run.state, "workflow-inputs.json"), "utf8")) as Record<
+              string,
+              string
+            >
+          ).grants_probe_id;
+        // Another session's grant on the person's list is a FAIL by itself.
+        expect({ verdicts: verdictsOf(listed.stdout), stdout: listed.stdout }).toMatchObject({
+          verdicts: { grants: "FAIL", limits: "PASS" },
+        });
+        expect(listed.code).toBe(1);
+        // A revoke let through fails though no grant every signed-in person is listed was there,
+        // and with no grant of no approver and no operator, no probe grant is passed at all.
+        expect(verdictsOf(revokedBare.stdout)).toMatchObject({ grants: "FAIL" });
+        expect(probeOf(revokedBare)).toBeUndefined();
+        // An empty list proves nothing where nothing was there to list.
+        expect(verdictsOf(bare.stdout)).toMatchObject({ grants: "UNKNOWN" });
+        expect(rowsOf(bare.stdout).get("grants")?.got).toContain(
+          "0 grants every signed-in person is listed before the run and 0 after, 0 in both"
+        );
+        // A list whose only grant with no approver names the full member as its operator, beside
+        // one the model judge approved for anyone: the control holds, and no probe grant is given.
+        expect(verdictsOf(named.stdout)).toMatchObject({ grants: "UNKNOWN" });
+        expect(rowsOf(named.stdout).get("grants")?.got).toContain(
+          "no grant of the list before the run had no approver and no operator, so no probe grant was given"
+        );
+        expect(probeOf(named)).toBeUndefined();
+        // The driver's own guard, a probe grant its list shows naming an approver or an operator,
+        // makes no revoke and reads UNKNOWN.
+        expect(verdictsOf(guarded.stdout)).toMatchObject({ grants: "UNKNOWN" });
+        // No artifact is no PASS.
+        expect(verdictsOf(absent.stdout)).toMatchObject({ grants: "UNKNOWN" });
+        expect(rowsOf(absent.stdout).get("grants")?.got).toContain(
+          "the run left no outside-edge-grants.tsv"
+        );
+      },
+      // The six runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
+    );
+
+    test(
+      "the owner's acts by the owner's browser session, with the called origin's Origin: every row passes with no owner command; a write sent another Origin is refused 403 invalid request origin, which the rows name; and with neither, the rows read UNKNOWN naming both",
+      async () => {
+        const [byCookie, otherOrigin, neither] = await runStandIns(
+          browserRun({ ownerByCookie: true }),
+          {
+            ...browserRun({ ownerByCookie: true }),
+            legChange: (text) =>
+              text.replace(
+                '-H "Origin: $OUTSIDE_TAILNET_DISPATCH_URL"',
+                '-H "Origin: https://elsewhere.example"'
+              ),
+          },
+          { ...browserRun({ ownerByCookie: true }), cookie: "absent" }
+        );
+        if (byCookie === undefined || otherOrigin === undefined || neither === undefined) {
+          throw new Error("three runs, want three");
+        }
+        expect({ verdicts: verdictsOf(byCookie.stdout), stdout: byCookie.stdout }).toMatchObject({
+          verdicts: Object.fromEntries(browserRows.map((name) => [name, "PASS"])),
+        });
+        expect(byCookie.seen).toEqual(
+          expect.arrayContaining([
+            "PUT /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com",
+            "GET /api/v1/projects/EXAMPLE/access",
+            "POST /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com/invitations",
+            "DELETE /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com",
+          ])
+        );
+        expect(rowsOf(byCookie.stdout).get("unlisted")?.got).toContain(
+          "refused 409 PERSON_NOT_LISTED"
+        );
+        expect(`${byCookie.stdout}${byCookie.stderr}`).not.toContain(linkToken);
+        // The control: the same acts sent another Origin are refused, and no run starts.
+        expect({
+          verdicts: verdictsOf(otherOrigin.stdout),
+          stdout: otherOrigin.stdout,
+        }).toMatchObject({ verdicts: { unlisted: "UNKNOWN", public: "UNKNOWN", T5: "UNKNOWN" } });
+        expect(rowsOf(otherOrigin.stdout).get("unlisted")?.got).toContain(
+          "refused 403 invalid request origin"
+        );
+        expect(rowsOf(otherOrigin.stdout).get("public")?.got).toContain(
+          "exited 1 (403 invalid request origin)"
+        );
+        expect(existsSync(join(otherOrigin.state, "workflow-args"))).toBe(false);
+        // Neither a command nor the session: each owner row names both.
+        expect(verdictsOf(neither.stdout)).toMatchObject({
+          unlisted: "UNKNOWN",
+          public: "UNKNOWN",
+        });
+        expect(rowsOf(neither.stdout).get("unlisted")?.got).toContain(
+          "neither OUTSIDE_OWNER_INVITE_COMMAND nor the owner's browser session OUTSIDE_FULL_COOKIE_FILE is given"
+        );
+        expect(existsSync(join(neither.state, "workflow-args"))).toBe(false);
+      },
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "outside-agent-grants.sh run alone prints the probe grant, `no grant with no approver and no operator` (exit 1), or UNKNOWN without the token (exit 2)",
+      async () => {
+        const prepared = await Promise.all(
+          (["default", "judged-only"] as const).map((fullGrants) =>
+            prepareStandIn(scratch, browserRun({ fullGrants }))
+          )
+        );
+        try {
+          const preflight = (each: PreparedStandIn, env: Record<string, string> = {}) =>
+            runLeg(join(each.leg, "..", "outside-agent-grants.sh"), [], {
+              PATH: each.env.PATH ?? "",
+              HOME: each.env.HOME ?? "",
+              OUTSIDE_ALLOW_HTTP: "1",
+              OUTSIDE_TAILNET_DISPATCH_URL: each.dispatch.origin,
+              OUTSIDE_SWEEP_FULL_TOKEN_FILE: each.env.OUTSIDE_SWEEP_FULL_TOKEN_FILE ?? "",
+              OUTSIDE_PERSON: "outside-e2e@example.com",
+              ...env,
+            });
+          const [found, none] = prepared;
+          if (found === undefined || none === undefined) throw new Error("two stand-ins, want two");
+          const [grant, noGrant, noToken] = await Promise.all([
+            preflight(found),
+            preflight(none),
+            preflight(found, { OUTSIDE_SWEEP_FULL_TOKEN_FILE: "" }),
+          ]);
+          expect({ code: grant.code, stdout: grant.stdout }).toEqual({
+            code: 0,
+            stdout: `grant ${serviceGrant}\n`,
+          });
+          expect({ code: noGrant.code, stdout: noGrant.stdout }).toEqual({
+            code: 1,
+            stdout: "no grant with no approver and no operator\n",
+          });
+          expect(noToken.code).toBe(2);
+          expect(noToken.stdout).toStartWith("UNKNOWN: OUTSIDE_SWEEP_FULL_TOKEN_FILE is unset");
+        } finally {
+          for (const each of prepared) each.dispatch.stop();
+        }
+      },
+      // Two preparations, then the three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
     );
 
     test(

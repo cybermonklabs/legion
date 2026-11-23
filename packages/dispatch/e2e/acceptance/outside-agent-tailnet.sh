@@ -34,13 +34,17 @@
 # T5 from the rows T5-cookie (30 s) and T5-passkey (325 s) of that step's artifact
 # outside-edge-t5; and, in place of P1-P10, prints the rows of the workflow's own checks from their
 # artifacts: refusals and reach (each check's exit, its `.code`), and the driver's sign-in,
-# projects and limits (outside-edge.tsv). Its row public is the run's conclusion. Its sweep still
-# reads with OUTSIDE_FULL_COOKIE_FILE, a full member's browser session (Dispatch's GitHub proxy
-# reads as a browser's person, never as a token), the gate's one input a person makes; without it
-# the sweep row reads UNKNOWN. It refuses OUTSIDE_PUBLIC_COMMAND, since only the workflow's step
-# status opens its window. Its TSV's rows are pins, issue, unlisted, T5, refusals, reach, sign-in,
-# projects, limits, public, sweep, pins-end and the gate. Any other value of OUTSIDE_GATE is
-# refused: every row UNKNOWN, exit 2.
+# projects and limits (outside-edge.tsv); and the row grants, the driver's probe of other sessions'
+# credential grants (outside-edge-grants), held to a full member's list read with
+# OUTSIDE_SWEEP_FULL_TOKEN_FILE seconds before the run starts and again after it ends. Its row
+# public is the run's conclusion. Its sweep's GitHub proxy reads use OUTSIDE_FULL_COOKIE_FILE, a
+# full member's browser session, where it is given, and else the full member's token
+# (OUTSIDE_SWEEP_FULL_TOKEN_FILE), which a Dispatch build that reads the proxy as a browser's person
+# alone refuses, so the sweep row then reads UNKNOWN naming that refusal; the same session makes
+# the owner's acts where their commands are unset (below). It refuses OUTSIDE_PUBLIC_COMMAND, since
+# only the workflow's step status opens its window. Its TSV's rows are pins, issue, unlisted, T5,
+# refusals, reach, sign-in, projects, limits, grants, public, sweep, pins-end and the gate. Any
+# other value of OUTSIDE_GATE is refused: every row UNKNOWN, exit 2.
 #
 # Inputs (environment), each named by the row that cannot run without it:
 #   $1                           the scratch project's key.
@@ -79,15 +83,18 @@
 #                                also passes to the workflow as `sweep_project`, a file holding a
 #                                full member's personal token of the person scope for Dispatch's
 #                                private origin (the sweep's reads, its writer's comment and direct
-#                                message, and the agent view), the
+#                                message, and the agent view, and the browser gate's grants
+#                                control: its list of credential grants and its whoami), the
 #                                conversation file of a session that worked in that project alone,
 #                                and a scratch issue of it the writer comments on every 15 s while
 #                                the public leg runs.
 #   OUTSIDE_FULL_COOKIE_FILE     a file holding a full member's browser session at Dispatch's
 #                                private origin, `<name>=<value>` as the Cookie header carries it.
-#                                The positive controls of T3, P7 and the sweep's GitHub proxy rows
-#                                read with it, and the sweep's fills mode reads the proxy with it
-#                                (as SWEEP_FULL_COOKIE), so rows T3, P7 and sweep need it.
+#                                The positive controls of T3 and P7 read with it, so those rows
+#                                need it; the sweep's GitHub proxy reads use it where it is given
+#                                (as SWEEP_FULL_COOKIE), and the full member's token where it is
+#                                not; and the browser gate's owner acts are made with it where
+#                                their commands are unset.
 #   OUTSIDE_WORKFLOW_REPO        owner/name of the repository whose workflow runs the public leg;
 #                                OUTSIDE_WORKFLOW names the workflow (outside-edge-e2e.yaml), and
 #                                OUTSIDE_WORKFLOW_INPUTS holds its other inputs, one name=value a
@@ -125,10 +132,16 @@
 # OUTSIDE_OWNER_INVITE_COMMAND, run likewise, makes the address's invitation link and prints it
 # alone (exit 0), or prints Dispatch's refusal as `<status> <code>` on its first line (exit 1), or
 # exits 2 when it could not tell; OUTSIDE_OWNER_LIST_COMMAND, run with the project as its last word,
-# prints the addresses on the project's access list, one a line (exit 0). The browser gate needs
-# all four and asks no terminal; its `invite_url` is the owner invite's link, and an `invite_url`
-# line in OUTSIDE_WORKFLOW_INPUTS is left out. OUTSIDE_UNLISTED_PERSON is the address row unlisted
-# asks a link for (default outside-e2e-unlisted-<random>@example.com, which no list names).
+# prints the addresses on the project's access list, one a line (exit 0). An owner command left
+# unset is made by the leg itself where OUTSIDE_FULL_COOKIE_FILE holds the owner's own browser
+# session (the project's owner, who holds the person and approve scopes no agent token holds
+# today): at OUTSIDE_TAILNET_DISPATCH_URL, PUT and DELETE /api/v1/projects/<key>/access/people/
+# <address>, GET /api/v1/projects/<key>/access and POST .../people/<address>/invitations, read as
+# the command's contract above (owner_by_browser). The browser gate needs each act, by its command
+# or by that session, and asks no terminal; with neither, the rows that need it read UNKNOWN naming
+# both. Its `invite_url` is the owner invite's link, and an `invite_url` line in
+# OUTSIDE_WORKFLOW_INPUTS is left out. OUTSIDE_UNLISTED_PERSON is the address row unlisted asks a
+# link for (default outside-e2e-unlisted-<random>@example.com, which no list names).
 #
 # What each service says of the build it serves: Dispatch's /healthz names `commit`, the legion
 # commit its binary was built from, and `fleet_commit`, the commit every live server process
@@ -161,7 +174,7 @@ export LC_ALL
 
 case $0 in */*) here=${0%/*} ;; *) here=. ;; esac
 here=$(cd "$here" && pwd)
-for support in outside-agent-lib.sh outside-agent-peer.sh outside-agent-sweep.sh outside-agent-pins.sh; do
+for support in outside-agent-lib.sh outside-agent-peer.sh outside-agent-sweep.sh outside-agent-pins.sh outside-agent-grants.sh; do
   if [ ! -r "$here/$support" ]; then
     echo "UNKNOWN: $support is not beside this file in $here"
     exit 2
@@ -175,6 +188,8 @@ done
 . "$here/outside-agent-sweep.sh"
 # shellcheck source=outside-agent-pins.sh
 . "$here/outside-agent-pins.sh"
+# shellcheck source=outside-agent-grants.sh
+. "$here/outside-agent-grants.sh"
 tab=$(printf '\t')
 newline='
 '
@@ -238,7 +253,7 @@ peer=${OUTSIDE_PEER_SESSION:-outside-e2e-peer-$nonce}
 # The gate this run holds (the header): `all`, both legs, or `browser`, the browser leg alone, which
 # prints no P row and, in their place, the rows of the workflow's own checks.
 outside_gate=${OUTSIDE_GATE:-all}
-browser_rows='refusals reach sign-in projects limits'
+browser_rows='refusals reach sign-in projects limits grants'
 gate_words='both legs'
 if [ "$outside_gate" = browser ]; then
   public_rows=''
@@ -549,11 +564,13 @@ EOF
 fi
 
 # --- The full member's browser session (OUTSIDE_FULL_COOKIE_FILE) at Dispatch's private origin.
-# Dispatch's GitHub proxy reads as the browser's person and never as a token, and no broker token
-# approves, so the positive controls of the sweep's proxy rows, of T3 and of P7 read with it. The
-# cookie reaches curl in a header file of mode 0600 alone, never on a command line. whoami names
-# the member, whose address is the operator of the full member's helper (T3 and P7's control). The
-# pins row has already held OUTSIDE_TAILNET_DISPATCH_URL. ---
+# No broker token approves, so the positive controls of T3 and P7 read with it; the browser gate's
+# owner acts are made with it where their commands are unset; and the sweep's GitHub proxy reads
+# use it where it is given and the full member's token (below) where it is not, which a build of
+# Dispatch that reads the proxy as a browser's person alone refuses. The cookie reaches curl in a
+# header file of mode 0600 alone, never on a command line. whoami names the member, whose address
+# is the operator of the full member's helper (T3 and P7's control). The pins row has already held
+# OUTSIDE_TAILNET_DISPATCH_URL. ---
 browser_header="$work/full-browser.h"
 full_login=''
 browser_problem=$(lacking OUTSIDE_FULL_COOKIE_FILE)
@@ -590,6 +607,13 @@ if [ -z "$browser_problem" ]; then
   esac
 fi
 
+# --- The full member's personal token (OUTSIDE_SWEEP_FULL_TOKEN_FILE, the person scope) at
+# Dispatch's private origin: the sweep's proxy control where no browser session is given, and the
+# browser gate's grants control. It reaches curl in a header file of mode 0600 alone, never on a
+# command line. ---
+token_header="$work/full-token.h"
+token_problem=$(token_setup)
+
 # --- The read sweep's full-member half, its writer and its proxy control (outside-agent-sweep.sh).
 sweep_setup
 sweep_prepare
@@ -601,8 +625,9 @@ sweep_proxy_control
 # owner's invite for an address on no list. A command's output is never quoted, since a link is a
 # secret: a row says its exit and, of a refusal, the `<status> <code>` it printed alone. ---
 # owner NAME OUT WORD...: runs the owner command the variable NAME holds, split on blanks, with
-# WORD... as its last words, its stdout in OUT and its stderr in OUT.err; prints its exit status,
-# 127 when NAME holds no command.
+# WORD... as its last words, its stdout in OUT and its stderr in OUT.err; prints its exit status.
+# With NAME unset and the owner's browser session read (OUTSIDE_FULL_COOKIE_FILE), the leg makes
+# the act itself with that session (owner_by_browser); with neither, it prints 127.
 owner() {
   local name=$1 out=$2
   local -a command
@@ -612,11 +637,103 @@ owner() {
   command=(${!name:-})
   set +f
   if [ "${#command[@]}" -eq 0 ]; then
-    printf 127
+    if [ -z "$browser_problem" ]; then
+      owner_by_browser "$name" "$out" "$@"
+    else
+      printf 127
+    fi
     return
   fi
   "${command[@]}" "$@" >"$out" 2>"$out.err" </dev/null
   printf '%s' "$?"
+}
+# owner_input NAME: nothing where the owner act NAME names can be made, by its command or by the
+# owner's browser session; else why not, naming both.
+owner_input() {
+  [ -z "${!1:-}" ] || return 0
+  [ -n "$browser_problem" ] || return 0
+  printf 'neither %s nor the owner'"'"'s browser session OUTSIDE_FULL_COOKIE_FILE is given (%s)' "$1" "$browser_problem"
+}
+# owner_by_browser NAME OUT WORD...: the owner act NAME's command makes, made with the owner's
+# browser session at Dispatch's private origin (`browser`), its output in OUT and its exit printed
+# as the command's contract says (the header): the add and the remove print nothing and exit 0 on
+# a 2xx, the list prints the access list's people one a line, and the invite prints the link
+# alone; a refusal prints `<status> <code>` and exits 1; no answer, an answer that is not the
+# route's, or an address or project a path cannot carry as written, exits 2.
+owner_by_browser() {
+  local name=$1 out=$2 address='' key status answer words path rest each
+  shift 2
+  case $name in
+    OUTSIDE_OWNER_LIST_COMMAND) key=$1 ;;
+    *) address=$1 key=$2 ;;
+  esac
+  : >"$out"
+  : >"$out.err"
+  case "$address $key" in *[!A-Za-z0-9@._+\ -]*)
+    printf 2
+    return
+    ;;
+  esac
+  path="/api/v1/projects/$key/access"
+  printf '{}\n' >"$work/owner-body.json"
+  case $name in
+    OUTSIDE_OWNER_ADD_COMMAND) status=$(browser PUT "$path/people/$address" "$out.json" "$work/owner-body.json") ;;
+    OUTSIDE_OWNER_REMOVE_COMMAND) status=$(browser DELETE "$path/people/$address" "$out.json") ;;
+    OUTSIDE_OWNER_INVITE_COMMAND) status=$(browser POST "$path/people/$address/invitations" "$out.json" "$work/owner-body.json") ;;
+    OUTSIDE_OWNER_LIST_COMMAND) status=$(browser GET "$path" "$out.json") ;;
+    *)
+      printf 127
+      return
+      ;;
+  esac
+  answer=$(tr -d ' \n' <"$out.json" 2>/dev/null)
+  words=$(tr -d '\n' <"$out.json" 2>/dev/null)
+  # The invite's answer holds the link: it lives in OUT alone from here, as a command's would.
+  rm -f "$out.json"
+  case $status in
+    2??) ;;
+    000)
+      printf 2
+      return
+      ;;
+    *)
+      # Dispatch's refusal names its code, or, where its body holds none (the router's own, such as
+      # 403 `invalid request origin` for a cookie write whose Origin is not the origin called), its
+      # words, which hold no link.
+      each=$(json_field code "$answer")
+      [ -n "$each" ] || each=$(json_field error "$words" | tr -cd 'A-Za-z0-9_ ')
+      printf '%s %s\n' "$status" "$each" >"$out"
+      printf 1
+      return
+      ;;
+  esac
+  case $name in
+    OUTSIDE_OWNER_LIST_COMMAND)
+      case $answer in *'"people":['*) ;; *)
+        printf 2
+        return
+        ;;
+      esac
+      rest=${answer#*\"people\":[}
+      rest=${rest%%]*}
+      rest=${rest//\"/}
+      while [ -n "$rest" ]; do
+        each=${rest%%,*}
+        [ -z "$each" ] || printf '%s\n' "$each" >>"$out"
+        [ "$each" != "$rest" ] || break
+        rest=${rest#*,}
+      done
+      ;;
+    OUTSIDE_OWNER_INVITE_COMMAND)
+      each=$(json_field url "$answer")
+      if [ -z "$each" ]; then
+        printf 2
+        return
+      fi
+      printf '%s\n' "$each" >"$out"
+      ;;
+  esac
+  printf 0
 }
 # owner_lists ADDRESS: whether the owner's list command names ADDRESS on the project's access list,
 # case ignored: true, false, or what was read.
@@ -634,24 +751,30 @@ owner_lists() {
   done <"$work/owner-list"
   printf '%s' "$found"
 }
-# owner_refusal OUT: the `<status> <code>` of a refusal OUT's first line holds, or nothing.
+# owner_refusal OUT: the `<status> <code>` of a refusal OUT's first line holds, or nothing; the code
+# may be a refusal's words where Dispatch named no code (owner_by_browser), and holds no `:`, `/` or
+# `#`, so no link reads as one.
 owner_refusal() {
   local first=''
   IFS= read -r first <"$1"
   first=${first%$'\r'}
-  [[ $first =~ ^[1-5][0-9][0-9]\ [A-Z][A-Z0-9_]*$ ]] && printf '%s' "$first"
+  [[ $first =~ ^[1-5][0-9][0-9]\ [A-Za-z][A-Za-z0-9_\ ]*$ ]] && printf '%s' "$first"
 }
 invite_link=''
 link_problem=''
 if [ "$outside_gate" = browser ]; then
-  link_problem=$(lacking OUTSIDE_PERSON OUTSIDE_OWNER_ADD_COMMAND OUTSIDE_OWNER_LIST_COMMAND OUTSIDE_OWNER_INVITE_COMMAND OUTSIDE_OWNER_REMOVE_COMMAND)
+  link_problem=$(lacking OUTSIDE_PERSON)
+  for each in OUTSIDE_OWNER_ADD_COMMAND OUTSIDE_OWNER_LIST_COMMAND OUTSIDE_OWNER_INVITE_COMMAND OUTSIDE_OWNER_REMOVE_COMMAND; do
+    problem=$(owner_input "$each")
+    [ -z "$problem" ] || link_problem="${link_problem:+$link_problem; }$problem"
+  done
   [ -n "$link_problem" ] || [ -n "$work" ] || link_problem='mktemp -d made no scratch directory'
   if [ -z "$link_problem" ]; then
     say "the owner puts $person on $project's access list and makes their link"
     added=$(owner OUTSIDE_OWNER_ADD_COMMAND "$work/owner-add" "$person" "$project")
     listed=$(owner_lists "$person")
     if [ "$listed" != true ]; then
-      link_problem="the owner add command exited $added, and then $person is not read on $project's access list ($listed)"
+      link_problem="the owner add command exited $added$(added_said=$(owner_refusal "$work/owner-add") && printf ' (%s)' "$added_said"), and then $person is not read on $project's access list ($listed)"
     else
       invited=$(owner OUTSIDE_OWNER_INVITE_COMMAND "$work/owner-invite" "$person" "$project")
       line=''
@@ -683,7 +806,7 @@ if [ "$outside_gate" = browser ]; then
   # above. ---
   unlisted=${OUTSIDE_UNLISTED_PERSON:-outside-e2e-unlisted-$nonce@example.com}
   want_unlisted="the owner's invite for $unlisted, an address on no access list of $project, refused 409 PERSON_NOT_LISTED, beside the owner's invite for ${person:-<OUTSIDE_PERSON>} answered with a link; a link made reads FAIL, any other answer UNKNOWN"
-  problem=$(lacking OUTSIDE_OWNER_INVITE_COMMAND)
+  problem=$(owner_input OUTSIDE_OWNER_INVITE_COMMAND)
   [ -n "$problem" ] || [ -n "$work" ] || problem='mktemp -d made no scratch directory'
   if [ -n "$problem" ]; then
     row unlisted "$want_unlisted" "$problem" UNKNOWN
@@ -707,6 +830,19 @@ if [ "$outside_gate" = browser ]; then
     esac
   fi
 fi
+
+# --- The browser gate's grants control (row grants, outside-agent-grants.sh): the full member's own
+# list of credential grants, read with OUTSIDE_SWEEP_FULL_TOKEN_FILE seconds before the run starts
+# (grants_read_before, which picks the probe grant) and again once it has ended. A grant every
+# signed-in person is listed that both reads hold was live while the runner read the test person's
+# own list, which must hold no such grant; the row passes only where there is one. The driver reads
+# its own list again just before its revoke, and sends none where that list shows the probe grant
+# naming an approver or an operator. `bash outside-agent-grants.sh` alone is the same read, the
+# preflight a person runs before asking for a live gate. ---
+grants_problem=''
+grants_probe=''
+grants_before=''
+[ "$outside_gate" != browser ] || grants_problem=$token_problem
 
 # --- The public leg: the workflow on a runner on the public internet, or a local command. The
 # browser gate starts the workflow alone, and only with the owner's link for the test person. ---
@@ -759,6 +895,9 @@ else
       # and the issue the person's own comment and issue message go on.
       inputs="{\"checks\":\"browser\",\"project\":$(json_string "$project"),\"routed_controls\":\"dispatch-healthz\",\"invite_url\":$(json_string "$invite_link")"
       [ -z "$issue_key" ] || inputs="$inputs,\"sweep_member_issue\":$(json_string "$issue_key")"
+      # The probe grant, read seconds before the run starts.
+      grants_read_before
+      [ -z "$grants_probe" ] || inputs="$inputs,\"grants_probe_id\":$(json_string "$grants_probe")"
     else
       inputs="{\"checks\":\"all\",\"project\":$(json_string "$project"),\"peer_session\":$(json_string "$peer"),\"tailnet_user_code\":$(json_string "$code")"
     fi
@@ -1167,7 +1306,7 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   else
     artifacts='outside-agent-public outside-edge-revocations restricted-sweep'
     [ "$outside_gate" != browser ] ||
-      artifacts='outside-edge-refusals outside-path-reach outside-edge restricted-sweep outside-edge-t5'
+      artifacts='outside-edge-refusals outside-path-reach outside-edge outside-edge-grants restricted-sweep outside-edge-t5'
     for artifact in $artifacts; do
       gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n "$artifact" -D "$results" >/dev/null 2>&1 </dev/null
     done
@@ -1486,12 +1625,62 @@ limits_row() {
     row limits "$1" "$read_ok" PASS
   fi
 }
+# grants_row: row grants, from the driver's rows grants-list and grants-revoke (outside-edge-grants.tsv)
+# and the full member's two reads. A FAIL of either driver row is evidence by itself and stands
+# without the control; a PASS needs both rows PASS, a probe grant given, and at least one grant
+# every signed-in person is listed in both reads.
+grants_row() {
+  local tsv="$results/outside-edge-grants.tsv" list_read revoke_read list_verdict revoke_verdict
+  local want got control after_problem after='' before_count=0 after_count=0 both=0 id
+  want="the test person's own credential-grants list holds no grant of another session (the driver's grants-list PASS), and their revoke of a grant no person may end, picked from a full member's list, is refused by Dispatch itself, 403 RESTRICTED_MEMBER (grants-revoke PASS); the control: a grant every signed-in person is listed, in the full member's list both before and after the run"
+  if [ -n "$public_problem" ]; then
+    row grants "$want" "$public_problem" UNKNOWN
+    return
+  fi
+  list_read=$(tsv_part "$tsv" grants-list)
+  revoke_read=$(tsv_part "$tsv" grants-revoke)
+  list_verdict=${list_read%%"$tab"*}
+  revoke_verdict=${revoke_read%%"$tab"*}
+  got="grants-list ${list_verdict:-absent}${list_read:+: ${list_read#*"$tab"}}; grants-revoke ${revoke_verdict:-absent}${revoke_read:+: ${revoke_read#*"$tab"}}"
+  [ -f "$tsv" ] || got="the run left no outside-edge-grants.tsv"
+  if [ -n "$grants_problem" ]; then
+    control="no control: $grants_problem"
+  else
+    after_problem=$(grants_read after)
+    [ -n "$after_problem" ] || after=$(everyone_grants "$work/grants-after.rows")
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      before_count=$((before_count + 1))
+      case "$newline$after$newline" in *"$newline$id$newline"*) both=$((both + 1)) ;; esac
+    done <<EOF
+$grants_before
+EOF
+    while IFS= read -r id; do [ -z "$id" ] || after_count=$((after_count + 1)); done <<EOF
+$after
+EOF
+    control="the full member's list held $before_count grants every signed-in person is listed before the run and $after_count after, $both in both"
+    [ -z "$after_problem" ] || control="$control; $after_problem"
+    [ -n "$grants_probe" ] || control="$control; no grant of the list before the run had no approver and no operator, so no probe grant was given"
+  fi
+  case " $list_verdict $revoke_verdict " in
+    *' FAIL '*) row grants "$want" "$got; $control" FAIL ;;
+    ' PASS PASS ')
+      if [ "$both" -gt 0 ] && [ -n "$grants_probe" ]; then
+        row grants "$want" "$got; $control" PASS
+      else
+        row grants "$want" "$got; $control, so an empty list proves nothing" UNKNOWN
+      fi
+      ;;
+    *) row grants "$want" "$got; $control" UNKNOWN ;;
+  esac
+}
 if [ "$outside_gate" = browser ]; then
   check_row refusals outside-edge-refusals "the workflow's HTTPS refusal check (outside-edge-refusals.sh), with dispatch-healthz its one routed control, exits 0: that control shows its marker, and every refusal line is answered the edge's own 404"
   check_row reach outside-path-reach "the workflow's TCP reach check (outside-path-reach.sh) exits 0: no internal address, and no port of the edge address but 443, answers the runner"
   driver_row sign-in "the driver's row sign-in PASS: the owner's link enrolls one passkey and signs ${person:-<OUTSIDE_PERSON>} in at the edge's Dispatch origin, and GET /auth/whoami names them"
   driver_row projects "the driver's row projects PASS: GET /api/v1/projects lists exactly [$project]"
   limits_row "every limit row of the driver PASS, at least one: the run's peak stays under half of each rule of the edge's Dispatch origin"
+  grants_row
 fi
 
 # --- public: the public leg's own last word. Each public row is held above to what this leg saw
@@ -1507,7 +1696,7 @@ elif [ "$outside_gate" = browser ]; then
   # A run concludes `failure` for a check's FAIL and its UNKNOWN alike, so the exits say which.
   exits=''
   failed=''
-  for each in outside-edge-refusals.code outside-path-reach.code outside-edge.code restricted-sweep.exit outside-edge-t5.code; do
+  for each in outside-edge-refusals.code outside-path-reach.code outside-edge.code outside-edge-grants.code restricted-sweep.exit outside-edge-t5.code; do
     read_exit=none
     [ ! -f "$results/$each" ] || read_exit=$(tr -d ' \r\n' <"$results/$each")
     exits="${exits:+$exits, }${each%.*} $(cell "${read_exit:0:40}")"

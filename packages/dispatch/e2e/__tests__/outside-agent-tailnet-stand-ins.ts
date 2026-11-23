@@ -41,9 +41,9 @@ export const proxyRepository = "example-owner/private-repo";
 const deployRepository = "example-owner/example-deploy";
 export const workflowRepository = "example-owner/example-workflows";
 /** The inputs `outside-edge-e2e.yaml` declares under `workflow_dispatch`, in the deployment
- *  repository at 0b57ecd8ba, with the browser gate's two, `routed_controls` and
- *  `sweep_member_issue`, which that repository's pull requests for the browser gate add; GitHub
- *  refuses a dispatch carrying any other with a 422. */
+ *  repository at 0b57ecd8ba, with the browser gate's three, `routed_controls`,
+ *  `sweep_member_issue` and `grants_probe_id`, which that repository's pull requests for the
+ *  browser gate add; GitHub refuses a dispatch carrying any other with a 422. */
 export const workflowInputs = [
   "checks",
   "invite_url",
@@ -54,7 +54,13 @@ export const workflowInputs = [
   "sweep_fills",
   "routed_controls",
   "sweep_member_issue",
+  "grants_probe_id",
 ];
+/** The full member's personal token the stand-in Dispatch takes (inputs/token). */
+export const fullToken = "example-token";
+/** The grant of the stand-in full member's list that no person may end: a pod's, got without
+ *  asking, with no approver and no operator; the probe grant the browser gate passes. */
+export const serviceGrant = "5f0c3a9b-1d2e-4f3a-8b4c-6d7e8f9a0b1c";
 export const inviteUrl = "https://dispatch.edge.example/enroll#example-invite-token";
 /** The ids of the stand-in writer's comments (`c1`, `c2`) and direct messages (`m1`, `m2`), in the
  *  lowercase 8-4-4-4-12 form of the ids Dispatch gives them. */
@@ -64,6 +70,40 @@ export const writeIds = {
   c2: "1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b",
   m2: "9e8d7c6b-5a49-4382-9716-05f4e3d2c1b0",
 } as const;
+
+/** The full member's credential-grants lists the stand-in Dispatch answers (`grants`), each a
+ *  plant of the browser gate's grants control: `default`, the service grant beside the full
+ *  member's own; `no-everyone`, their own alone, so no grant every signed-in person is listed;
+ *  `judged-only`, their own, one the model judge approved for `anyone` on another person's session,
+ *  and an automatic grant on the full member's own session, so no grant has no approver and no
+ *  operator. */
+export type FullGrants = "default" | "no-everyone" | "judged-only";
+
+/** The stand-in full member's list of credential grants, as the broker's compact JSON. */
+export function fullGrantsList(kind: FullGrants): string {
+  const grant = (id: string, granted: string, operator: string, approver: string | null) => ({
+    grant_id: id,
+    granted,
+    record_id: approver === null ? null : `record-${id.slice(0, 8)}`,
+    enrollment: { kind: "pod", runtime_id: `pod-${id.slice(0, 8)}`, operator, slot: null },
+    names: ["EXAMPLE_SECRET"],
+    approver,
+    decided_by: approver,
+    expires_at: null,
+    created_at: "2026-01-01T00:00:00Z",
+  });
+  const own = grant("0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", "approval", fullLogin, fullLogin);
+  const grants = {
+    default: [grant(serviceGrant, "automatic", "", null), own],
+    "no-everyone": [own],
+    "judged-only": [
+      own,
+      grant("1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "approval", "other@example.com", "anyone"),
+      grant("2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f6a", "automatic", fullLogin, null),
+    ],
+  }[kind];
+  return JSON.stringify({ grants });
+}
 
 export interface StandIns {
   /** Whether the stand-in Dispatch approves the full member's machine login and serves the GitHub
@@ -77,6 +117,12 @@ export interface StandIns {
   /** Whether OUTSIDE_FULL_COOKIE_FILE is given, and the proxy read the fills leave out, if any. */
   readonly cookie?: "given" | "absent";
   readonly fillsLeaveOut?: string;
+  /** The stand-in Dispatch's GitHub proxy refuses the full member's token, 403
+   *  OAUTH_SCOPE_REQUIRED, as a build whose proxy reads a browser's person alone does; fills mode
+   *  with no cookie then writes no `can_fail` line. */
+  readonly proxyRefusesToken?: boolean;
+  /** A change made to the copy of the leg, as a plant of its own text. */
+  readonly legChange?: (text: string) => string;
   /** Whether the public leg approves the scratch login; a login nobody approves ends `expired`. */
   readonly approve?: boolean;
   /** The verdicts of the public leg's revoke rows of the scratch login, in order: more than one is
@@ -159,6 +205,15 @@ export interface BrowserStandIns {
   readonly limits?: readonly string[];
   /** OUTSIDE_PUBLIC_COMMAND set beside the workflow. */
   readonly publicCommand?: boolean;
+  /** No owner command is given: the leg makes each owner act with the owner's browser session,
+   *  which the stand-in Dispatch answers from the list the state keeps. */
+  readonly ownerByCookie?: boolean;
+  /** The full member's list of credential grants the stand-in Dispatch answers (default
+   *  `default`). */
+  readonly fullGrants?: FullGrants;
+  /** The verdicts of the driver's rows grants-list and grants-revoke (default both PASS); `none`
+   *  writes no outside-edge-grants.tsv. */
+  readonly grantRows?: readonly [string, string] | "none";
 }
 
 export interface StandInRun extends LegRun {
@@ -420,6 +475,8 @@ function standInDispatch(
         commit,
         fleetCommit: serving === "split" ? repo.apart : commit,
         fullLogin,
+        fullToken,
+        linkToken,
         proxyRepository,
       }),
     },
@@ -517,6 +574,7 @@ function browserStandIn(
   browser: BrowserStandIns
 ): { readonly run: string; readonly env: Record<string, string> } {
   writeFileSync(join(state, "browser"), "");
+  writeFileSync(join(state, "full-grants.json"), fullGrantsList(browser.fullGrants ?? "default"));
   if (browser.noWindow === true) writeFileSync(join(state, "no-window"), "");
   writeFileSync(
     join(state, "listed"),
@@ -584,6 +642,12 @@ check() {
 check outside-edge-refusals ${code("outside-edge-refusals")} 'PASS: every refusal line was refused'
 check outside-path-reach ${code("outside-path-reach")} 'PASS: every target is unreachable from this device'
 check outside-edge ${code("outside-edge")} 'the driver wrote its rows'
+${
+  browser.grantRows === "none"
+    ? ""
+    : `printf 'grants-list\\tthe list\\tlisted 0 grants\\t%s\\ngrants-revoke\\tthe revoke\\trefused 403 RESTRICTED_MEMBER\\t%s\\n' '${browser.grantRows?.[0] ?? "PASS"}' '${browser.grantRows?.[1] ?? "PASS"}' >"$out/outside-edge-grants.tsv"`
+}
+check outside-edge-grants ${code("outside-edge-grants")} 'the grants probe wrote its rows'
 printf 'row\\twant\\tgot\\tverdict\\nsign-in\\tthe sign-in\\tsigned in at https://dispatch.edge.example as the invited person\\tPASS\\nprojects\\tthe projects\\t[EXAMPLE]\\tPASS\\n' >"$out/outside-edge.tsv"
 ${limits}
 { printf 'the workflow note\\nlive window 2026-01-01T00:00:00Z 2026-01-01T00:00:09Z\\n'; cat '${state}/sweep-verdict'; } >"$out/restricted-sweep.log"
@@ -617,10 +681,14 @@ exit "$worst"
       OUTSIDE_WORKFLOW_REPO: workflowRepository,
       // A link here is left out: the browser gate's link is the owner invite's.
       OUTSIDE_WORKFLOW_INPUTS: `invite_url=${inviteUrl}`,
-      OUTSIDE_OWNER_ADD_COMMAND: `bash ${add}`,
-      OUTSIDE_OWNER_LIST_COMMAND: `bash ${list}`,
-      OUTSIDE_OWNER_INVITE_COMMAND: `bash ${invite}`,
-      OUTSIDE_OWNER_REMOVE_COMMAND: `bash ${remove}`,
+      ...(browser.ownerByCookie === true
+        ? {}
+        : {
+            OUTSIDE_OWNER_ADD_COMMAND: `bash ${add}`,
+            OUTSIDE_OWNER_LIST_COMMAND: `bash ${list}`,
+            OUTSIDE_OWNER_INVITE_COMMAND: `bash ${invite}`,
+            OUTSIDE_OWNER_REMOVE_COMMAND: `bash ${remove}`,
+          }),
       ...(browser.unlistedListed === true ? { OUTSIDE_UNLISTED_PERSON: unlistedPerson } : {}),
       ...(browser.publicCommand === true ? { OUTSIDE_PUBLIC_COMMAND: `bash ${run}` } : {}),
     },
@@ -708,7 +776,8 @@ export async function prepareStandIn(
   );
   const repo = checkout(scratch);
   const inputs = scratch("inputs");
-  const leg = copyLeg(scratch, tailnetLeg);
+  const leg = copyLeg(scratch, tailnetLeg, standIns.legChange);
+  if (standIns.proxyRefusesToken === true) writeFileSync(join(state, "proxy-refuses-token"), "");
   const legDir = leg.slice(0, leg.lastIndexOf("/"));
   if (standIns.window !== undefined) {
     writeFileSync(join(legDir, "outside-agent-probe.ts"), standInPeerProbe(standIns.peerAheadMs));
@@ -726,8 +795,13 @@ export async function prepareStandIn(
 case $SWEEP_MODE in
   fills)
     ${standIns.sweep?.fillsRefused === true ? "echo 'UNKNOWN: fills mode writes no file that lacks a fill: dm_session'; exit 2" : ""}
+    # With no cookie the fills' proxy reads are the token's, which a build whose proxy reads a
+    # browser's person alone refuses: those fills hold no can_fail line.
     if [ -n "\${SWEEP_FULL_COOKIE:-}" ]; then
       : >'${state}/fills-read-the-cookie'
+      cat '${state}/fills' >"$SWEEP_FILLS_FILE"
+    elif [ ! -f '${state}/proxy-refuses-token' ]; then
+      : >'${state}/fills-read-the-token'
       cat '${state}/fills' >"$SWEEP_FILLS_FILE"
     else
       : >'${state}/fills-without-cookie'
@@ -801,7 +875,7 @@ exit ${standIns.publicExit ?? 0}
       : browserStandIn(state, inputs, standIns, standIns.browser);
   const revision = script(join(inputs, "revision.sh"), `#!/bin/sh\necho ${repo.built}\n`);
   writeFileSync(join(inputs, "cookie"), "session=full\n");
-  writeFileSync(join(inputs, "token"), "example-token\n");
+  writeFileSync(join(inputs, "token"), `${fullToken}\n`);
   const dispatch = standInDispatch(state, standIns.controls, repo, standIns.serving ?? "pinned");
   try {
     if (standIns.failAfterDispatch === true) {
