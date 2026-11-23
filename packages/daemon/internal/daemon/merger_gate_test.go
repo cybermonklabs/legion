@@ -119,7 +119,7 @@ func TestTheMergersStartWaitsWhileItsTreesRegisteredVerificationDocumentIsClosed
 // putOutboxGate records a tree's design gate.
 func putOutboxGate(t *testing.T, pool *store.Pool, records record.Store, gate record.DesignGate) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutGate(context.Background(), tx, gate)
 	}); err != nil {
 		t.Fatalf("put the design gate of %s: %v", gate.Issue, err)
@@ -129,7 +129,7 @@ func putOutboxGate(t *testing.T, pool *store.Pool, records record.Store, gate re
 // putOutboxTold records what issue's holder took of its tree's approved design.
 func putOutboxTold(t *testing.T, pool *store.Pool, records record.Store, issue string, versions map[record.DesignStep]int) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.RaiseTold(context.Background(), tx, issue, record.AudienceHolder, raisedTo(versions), time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("record what %s's holder took: %v", issue, err)
@@ -140,7 +140,7 @@ func putOutboxTold(t *testing.T, pool *store.Pool, records record.Store, issue s
 // read it.
 func putOutboxChanges(t *testing.T, pool *store.Pool, records record.Store, pair record.VersionPair) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutDesignChanges(context.Background(), tx, record.DesignChanges{VersionPair: pair, State: record.DesignChangesRead,
 			Sections: []record.SectionChange{{Heading: "Design", Change: "changed"}}, ReadAt: time.Now().UTC()})
 	}); err != nil {

@@ -1,21 +1,23 @@
 // Package testdb gives a test a Postgres database of its own on the devbox and CI Postgres that
-// LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows, and a way
-// to reach it across a network's delay (Delayed). A test is skipped without it: there is nothing
-// to run against.
+// LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows; ways to
+// reach it across a network's delay (Delayed) or through a proxy that holds or cuts a commit's
+// reply (CommitFaults); and a pool whose transactions are cancelled between two statements
+// (CancelAfterScan). A test is skipped without that Postgres: there is nothing to run against.
 //
 // Database is an empty database, as a URL a pgx pool opens (PoolBounded), and PlainDatabase the
 // same as a URL any other client reads. A test that needs the daemon's schema takes
 // internal/testpg's Clone or CloneStore instead, which copy a template that package migrated once.
 //
-// This package imports nothing of this module, and nothing added here may: migrating the template
-// needs internal/store, so internal/testpg imports it, and a test binary of internal/store that
-// imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
-// internal/store's own tests take the same fixture every other package's tests take.
+// This package imports no package of this module except internal/testwait, which imports none,
+// and nothing added here may import another: migrating the template needs internal/store, so
+// internal/testpg imports it, and a test binary of internal/store that imported internal/testpg
+// back would be a cycle. Keeping the schema-free half apart is what lets internal/store's own
+// tests take the same fixture every other package's tests take.
 //
-// DatabaseURL, Delayed and PoolBounded are the rewrites of LEGION_TEST_PG_DSN a test binary of
-// this module makes, each through rewriteDSN; DatabaseURL's comment says which callers make them
-// and what the check refuses. RandomName is exported for internal/testpg alone, which names its
-// template and each clone of it with it.
+// DatabaseURL, Delayed, CommitFaults and PoolBounded are the rewrites of LEGION_TEST_PG_DSN a test
+// binary of this module makes, each through rewriteDSN; DatabaseURL's comment says which callers
+// make them and what the check refuses. RandomName is exported for internal/testpg alone, which
+// names its template and each clone of it with it.
 package testdb
 
 import (
@@ -152,9 +154,9 @@ type Execer interface {
 // has not, which a run under load reaches (envoy's storetest retries the same code). Both
 // refusals are waited out for 30 seconds; any other error is the caller's at once.
 //
-// It lives here rather than in internal/testpg because this package imports nothing of the
-// module, so every package's tests can take it — internal/store's among them, whose own tests
-// cannot import internal/testpg at all.
+// It lives here rather than in internal/testpg because this package imports no package of the
+// module except internal/testwait, which imports none, so every package's tests can take it —
+// internal/store's among them, whose own tests cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for attempt := 0; ; attempt++ {
@@ -201,9 +203,10 @@ func RandomName(prefix string) (string, error) {
 // readers that are no pool, and PoolBounded puts the pool keys back for a pool. Every database a
 // test binary of this module names from LEGION_TEST_PG_DSN is named here — create above, and
 // internal/testpg's prepare and Clone — so one place reads each rewrite back, and no caller checks
-// itself. Delayed's proxy URL and PoolBounded's pool URL are the other rewrites of a DSN this
-// package makes, and they take the same check (rewriteDSN below). dsn is what LEGION_TEST_PG_DSN
-// holds, which every caller read from that variable, and a refusal names it.
+// itself. The proxy URLs of Delayed and CommitFaults and PoolBounded's pool URL are the other
+// rewrites of a DSN this package makes, and they take the same check (rewriteDSN below). dsn is
+// what LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a refusal names
+// it.
 //
 // A rewrite from which pgx reads anything other than dsn's reading with the change asked for is
 // refused: another host, port, user or database, and another password, run-time parameter or
@@ -307,10 +310,11 @@ func PoolBounded(server, dsn string) (string, error) {
 }
 
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
-// rewrite must name (DatabaseURL), the address it must send the connection to (Delayed), and the
-// pool keys of its query. With pools set, the rewrite takes every pool key out of the query and
-// appends pool, the raw pairs pgx reads as poolRead: none for DatabaseURL, the server's own or
-// pool_max_conns=PoolConns for PoolBounded. A field left empty is one the rewrite keeps.
+// rewrite must name (DatabaseURL), the address it must send the connection to (Delayed,
+// CommitFaults), and the pool keys of its query. With pools set, the rewrite takes every pool key
+// out of the query and appends pool, the raw pairs pgx reads as poolRead: none for DatabaseURL,
+// the server's own or pool_max_conns=PoolConns for PoolBounded. A field left empty is one the
+// rewrite keeps.
 type rewrite struct {
 	database string
 	host     string

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -216,9 +217,9 @@ func recordedAs(t *testing.T, w *workflowRuntime, key string) string {
 func repoNoteOf(t *testing.T, w *workflowRuntime, key string) *record.RepoNote {
 	t.Helper()
 	var note *record.RepoNote
-	if err := pgx.BeginFunc(context.Background(), w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(context.Background(), w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		note, err = w.records.RepoNote(context.Background(), tx, key)
+		note, err = w.records.RepoNote(ctx, tx, key)
 		return err
 	}); err != nil {
 		t.Fatal(err)

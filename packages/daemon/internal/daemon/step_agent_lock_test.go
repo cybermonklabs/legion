@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -45,7 +46,7 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 	w.attach(&supervision{supervisor: sup, log: quietLogger()})
 	planner := mustClaimToken(t, "LEGION-208", claim.RolePlanner)
 
-	fact, err := pool.Begin(ctx)
+	fact, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 	if _, err := st.HoldSessions(ctx, "legion", planner, supervise.RecordedHolds("ses-planner", "")); err != nil {
 		t.Fatalf("hold ses-planner for %s: %v", planner, err)
 	}
-	next, err := pool.Begin(ctx)
+	next, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +177,7 @@ func TestAStepsAgentNamesNoSessionItsClaimDoesNotHold(t *testing.T) {
 			t.Fatalf("create %s recording %s: %v", c.token, c.session, err)
 		}
 	}
-	fact, err := pool.Begin(ctx)
+	fact, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestTheReadOfAStepsAgentWritesNoHoldUnderTheFactLock(t *testing.T) {
 		SuspendedBy: supervise.SuspendedByOperator, Session: "ses-planner"}, ""); err != nil {
 		t.Fatalf("create the planner: %v", err)
 	}
-	fact, err := pool.Begin(ctx)
+	fact, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

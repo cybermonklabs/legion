@@ -524,7 +524,7 @@ func TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt(t *testing.T) 
 	held := r.pauseLegion()
 	r.resume()
 
-	first, err := r.st.BeginTx(r.ctx, pgx.TxOptions{})
+	first, err := r.st.Pool().BeginTx(r.ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,7 +583,7 @@ func TestAResumeWaitsForAStopTransactionUnderWay(t *testing.T) {
 	r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 	held := r.pauseLegion()
 
-	first, err := r.st.BeginTx(r.ctx, pgx.TxOptions{})
+	first, err := r.st.Pool().BeginTx(r.ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +672,7 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 		t.Fatalf("released held rows logged = %v, want none while the later pause holds the start", lines)
 	}
 	var heldRows []record.PauseHeldRow
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		heldRows, err = record.NewStore().PauseHeldRows(r.ctx, tx, "LEGION", time.Now())
 		return err

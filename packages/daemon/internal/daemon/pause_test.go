@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -17,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -134,7 +136,7 @@ func TestTheResumeLaunchesAClaimOfAnotherProjectsIssueOnlyForTheWorkThePauseHeld
 				for _, key := range []string{owedIssue, idleIssue} {
 					recorded := r.root(key, phase.Planning)
 					recorded.Project = "OTHERPROJECT"
-					if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+					if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 						t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", key, err)
 					}
 				}
@@ -634,7 +636,7 @@ func TestTheResumedSpawnOfAnotherProjectsRootArchitectTouchesNoRowOfThatProjectA
 	const issue = "OTHERPROJECT-9"
 	recorded := r.root(issue, phase.Planning)
 	recorded.Project = "OTHERPROJECT"
-	if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+	if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 		t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
 	}
 	const task = "Summarize the incident for the operator."
@@ -769,7 +771,7 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 			r.boot()
 			recorded := r.root(issue, phase.Planning)
 			recorded.Project = "OTHERPROJECT"
-			if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+			if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 				t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
 			}
 			// The launch reads the issue's repository from Dispatch, so Dispatch holds the issue.
@@ -855,7 +857,7 @@ func TestThePausesStopOfASpawnOfAnotherProjectsIssueTouchesNoRoleHoldersRowOfTha
 	const issue = "OTHERPROJECT-9"
 	recorded := r.root(issue, phase.Planning)
 	recorded.Project = "OTHERPROJECT"
-	if err := r.st.Tx(r.ctx, func(tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
+	if err := store.Transact(r.ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error { return r.records.PutIssue(r.ctx, tx, recorded) }); err != nil {
 		t.Fatalf("record %s as the OTHERPROJECT daemon's issue: %v", issue, err)
 	}
 	holderRows := func() (int, string) {
