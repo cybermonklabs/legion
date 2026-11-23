@@ -1,0 +1,35 @@
+kind: Fixed
+body: |-
+  The leak guard's private-name pass over a push now reads each annotated tag the push sends:
+  its message, its tagger and the name it was made with, and a tag it points to in turn. Before,
+  it followed a pushed tag to its commit and read nothing of the tag, so a private name in a tag's
+  message reached a public repository unread. A lightweight tag adds nothing to read, and a tag
+  the destination holds at that ref already is not read.
+
+  It also reads each commit's whole header, as git stores it, where it read only the author, the
+  committer and the message: a signed tag that `git merge` copies into a merge commit (its tagger
+  and message), an encoding, and a field git does not know. The header is read by git's own rules:
+  a commit's parents are the ones git counts, a tag points to the object its first field names,
+  and a field of git's own names out of git's place, such as a second committer or a parent after
+  the committer, is read whole as text. A commit stored in another encoding than UTF-8 is read as
+  git shows it too, whichever encoding field comes first. A signature, a commit's or at the end of
+  a tag's message, is read like any other text: a name written into its base64 is refused.
+
+  Any text the rules read that is not UTF-8, such as a commit in an encoding git cannot convert or
+  a line of a Windows-1252 file, is read a second time as Windows-1252, so a name joined by a
+  no-break space or an en or em dash written as one byte of a single-byte encoding is refused.
+  Text that holds NUL bytes, such as a tag message in UTF-16, is read again with them taken out.
+
+  A ref that holds a blob or a tree, or a tag of one, is refused: git pushes that object, and no
+  commit's read reaches its text.
+
+  A tag or a commit that could not be read refuses the push, as a diff that could not be read
+  does, and the setup failure now says "the push's commits and tags could not be read".
+
+  A child of the guard that the caller's deadline kept from starting, which a loaded machine can
+  cause, is now said as a stop by its bound, with its time and its bound counted from the moment
+  the guard began to start it, as for a child the deadline stopped after its start, where it said
+  "the shared public leak check could not be run: context deadline exceeded".
+time: 2026-11-22T15:39:53Z
+custom:
+    Issue: leak-guard-tag-read

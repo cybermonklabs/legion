@@ -48,105 +48,60 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 		fixture.Run(repo, "git", "checkout", "--quiet", "-B", name, base)
 	}
 
-	for _, tc := range []struct {
-		name string
-		// build makes the case's commit on a branch of its own and answers its sha.
-		build func(t *testing.T) string
-		// ref is the ref the destination would hold, "refs/heads/main" where the case leaves it
-		// empty.
-		ref string
-		// newRef is whether the destination holds that ref already: a new one has no sha of its
-		// own to read the push's commits from, so they are read from the remote-tracking refs.
-		newRef bool
-		// want is the report, as a function of the commit's sha, and nil where the push passes.
-		want func(head string) []string
-	}{
+	// onMain is the update that moves the destination's main from the commit it holds to head.
+	onMain := func(head string) Update {
+		return Update{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}
+	}
+	runPushCases(t, repo, []pushCase{
 		{
 			name: "the message names a host",
-			build: func(t *testing.T) string {
+			build: func(t *testing.T) (Update, []string) {
 				branch(t, "message")
 				write(t, "README.md", "one\ntwo\n")
-				return commit(t, "moved the run to "+theHost+" this morning")
-			},
-			want: func(head string) []string {
-				return []string{"commit " + short(head) + " message: " + theClass}
+				head := commit(t, "moved the run to "+theHost+" this morning")
+				return onMain(head), []string{"commit " + short(head) + " message: " + theClass}
 			},
 		},
 		{
 			name: "the author identity names a host",
-			build: func(t *testing.T) string {
+			build: func(t *testing.T) (Update, []string) {
 				branch(t, "author")
 				write(t, "README.md", "one\nthree\n")
-				return commit(t, "a message of no interest", "GIT_AUTHOR_EMAIL=builder@"+theHost)
-			},
-			want: func(head string) []string {
-				return []string{"commit " + short(head) + " author: " + theClass}
+				head := commit(t, "a message of no interest", "GIT_AUTHOR_EMAIL=builder@"+theHost)
+				return onMain(head), []string{"commit " + short(head) + " author: " + theClass}
 			},
 		},
 		{
 			name: "an added line of a tracked file names a host",
-			build: func(t *testing.T) string {
+			build: func(t *testing.T) (Update, []string) {
 				branch(t, "line")
 				write(t, "README.md", "one\nthe runner answers at "+theHost+"\n")
-				return commit(t, "a message of no interest")
+				return onMain(commit(t, "a message of no interest")), []string{"README.md: " + theClass}
 			},
-			want: func(string) []string { return []string{"README.md: " + theClass} },
 		},
 		{
+			// A ref the destination does not hold has no sha of its own to read the push's
+			// commits from, so they are read from the remote-tracking refs.
 			name: "the ref name names a host",
-			build: func(t *testing.T) string {
+			build: func(t *testing.T) (Update, []string) {
 				branch(t, "ref-name")
 				write(t, "README.md", "one\nfour\n")
-				return commit(t, "a message of no interest")
+				return newRef("refs/heads/legion/"+theHost, commit(t, "a message of no interest")),
+					[]string{"the ref name: " + theClass}
 			},
-			ref:    "refs/heads/legion/" + theHost,
-			newRef: true,
-			want:   func(string) []string { return []string{"the ref name: " + theClass} },
 		},
 		{
 			name: "a commit that names nothing",
-			build: func(t *testing.T) string {
+			build: func(t *testing.T) (Update, []string) {
 				branch(t, "clean")
 				if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o700); err != nil {
 					t.Fatal(err)
 				}
 				write(t, "docs/notes.md", "a line of ordinary prose\n")
-				return commit(t, "a message of no interest")
+				return onMain(commit(t, "a message of no interest")), nil
 			},
 		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			head := tc.build(t)
-			ref, remoteSHA := tc.ref, base
-			if ref == "" {
-				ref = "refs/heads/main"
-			}
-			if tc.newRef {
-				remoteSHA = noSHA
-			}
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), PushRequest{
-				Dir:    repo,
-				Remote: "origin",
-				URL:    "https://github.com/invented-org/invented-repo.git",
-				Updates: []Update{{
-					LocalRef:  ref,
-					LocalSHA:  head,
-					RemoteRef: ref,
-					RemoteSHA: remoteSHA,
-				}},
-			})
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("a push that names nothing: %v", err)
-				}
-				return
-			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want(head)) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want(head))
-			}
-		})
-	}
+	})
 }
 
 // A push the destination already holds everything of adds no commit and so has no record but its
@@ -476,4 +431,49 @@ func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
 			t.Errorf("gitSaid = %d bytes, want %d: the count of 10 and the last %d bytes", len(said), len(want), gitErrorBytes)
 		}
 	})
+}
+
+// pushOf is guard's answer to a push of update from repo to a public destination.
+func pushOf(t *testing.T, guard *Guard, repo string, update Update) error {
+	t.Helper()
+	return guard.Push(bound(t), PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{update},
+	})
+}
+
+// pushCase is one push a test makes and the report it wants: build makes what the push moves and
+// answers the update and the report, nil where the push passes.
+type pushCase struct {
+	name  string
+	build func(t *testing.T) (Update, []string)
+}
+
+// runPushCases pushes each case's update from repo, as a subtest of its own, through a guard whose
+// shared check passes everything and whose destinations are public, so that its rules are the
+// whole of what refuses the push, and holds the answer to the case's report.
+func runPushCases(t *testing.T, repo string, cases []pushCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			update, want := tc.build(t)
+			err := pushOf(t, guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public), repo, update)
+			if want == nil {
+				if err != nil {
+					t.Fatalf("a push that names nothing: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, want)
+			}
+		})
+	}
+}
+
+// newRef is the update of a push that creates ref at sha.
+func newRef(ref, sha string) Update {
+	return Update{LocalRef: ref, LocalSHA: sha, RemoteRef: ref, RemoteSHA: noSHA}
 }

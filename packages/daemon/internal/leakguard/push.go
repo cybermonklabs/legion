@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -110,9 +111,14 @@ func PushName(remote string) string {
 // Push checks a push before it is made. The shared check runs in its pre-push shape — the update
 // lines on its standard input, the repository as its working directory — and then, for a
 // destination GitHub reports public, this repository's own rules read the push's records: each
-// ref name, and for each commit the destination does not already hold, the author, the
-// committer, the message, each added or renamed path, and each added line. Under a deployment
-// that runs no shared check (sharedCheck) the rules are the whole of it.
+// ref name; each annotated tag a ref the push moves holds, its tagger, its message and its other
+// header fields; and for each commit the destination does not already hold, the author, the
+// committer, the message, the other header fields (a signed tag a merge carries among them),
+// each added or renamed path, and each added line. Under a deployment that runs no shared check
+// (sharedCheck) the rules are the whole of it.
+//
+// The records are scanned one at a time as git writes them (pass), so the rule pass never holds
+// the push's whole diff.
 func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.sharedCheck(what)
@@ -143,41 +149,98 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if !public {
 		return nil
 	}
-	records, err := g.pushRecords(ctx, req)
+	pass, err := g.rulePass(ctx, what)
 	if err != nil {
-		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
+		return err
 	}
-	return g.rules(ctx, what, records)
+	if err := g.pushRecords(ctx, req, pass.add); err != nil && pass.err == nil {
+		return &SetupFailure{What: what, Why: "the push's commits and tags could not be read", Err: err}
+	}
+	return pass.end(what)
 }
 
-// pushRecords is everything a push would publish, as records: one per ref name, and for each
-// commit the push would add, one for the author identity, one for the committer identity, one
-// for the message, one for each added or renamed path and one for each added line. A commit
-// reached by two of the push's refs is read once.
-func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, error) {
-	var records []Record
+// pushRecords hands emit everything a push would publish, as records: one per ref name; for each
+// annotated tag a ref the push moves holds, the tag's records (tagRecords); and for each commit
+// the push would add, the records of its header and message (objectRecords), one for each added
+// or renamed path and one for each added line. A commit or a tag reached by two of the push's
+// refs is read once. An error of emit stops the read and is the answer.
+func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	for _, update := range req.Updates {
 		if ref := update.ref(); ref != "" {
-			records = append(records, RefRecord(ref))
+			if err := emit(RefRecord(ref)); err != nil {
+				return err
+			}
+		}
+		if err := g.tagRecords(ctx, req.Dir, update, read, emit); err != nil {
+			return err
 		}
 		commits, err := g.commits(ctx, req, update)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		for _, commit := range commits {
-			if read[commit] {
+			if read[commit.id] {
 				continue
 			}
-			read[commit] = true
-			of, err := g.commitRecords(ctx, req.Dir, commit)
-			if err != nil {
-				return nil, err
+			read[commit.id] = true
+			if err := g.commitRecords(ctx, req.Dir, commit, emit); err != nil {
+				return err
 			}
-			records = append(records, of...)
 		}
 	}
-	return records, nil
+	return nil
+}
+
+// tagRecords hands emit the annotated tags that update's local sha, the object a ref of the push
+// is moved to, begins: a ref can hold a tag object rather than a commit, and the push sends that
+// tag, its tagger and its message, with the commit it points to. Guard.commits' rev-list follows a
+// tag to its commit and reads nothing of the tag itself. A tag can point to a tag, which the push
+// sends too, so each is read in turn down to the first object that is not a tag, whose type git
+// is asked for rather than read from the tag that points to it. A lightweight tag is a ref that
+// holds a commit, and adds no record of its own; a deletion adds none either, and neither does a
+// ref the destination holds at that sha already, which the push does not move. A tag already in
+// read is not read again, and neither is what it points to. The walk stops at the first object
+// that is not a tag; that it is a commit is the same update's rev-list check (Guard.commits),
+// which refuses a blob or a tree, or a tag of one, in git's own words. A tag whose first field is
+// not the object it points to is an error, as a commit git could not read is: git follows that
+// first field and nothing else, and a tag without it has nothing the guard could follow in its
+// place.
+func (g *Guard) tagRecords(ctx context.Context, dir string, update Update, read map[string]bool, emit func(Record) error) error {
+	sha := update.LocalSHA
+	if sha == update.RemoteSHA {
+		return nil
+	}
+	for sha != "" && !zeroSHA(sha) && !read[sha] {
+		kind, err := g.git(ctx, dir, "cat-file", "-t", sha)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(kind) != "tag" {
+			return nil
+		}
+		read[sha] = true
+		raw, err := g.git(ctx, dir, "cat-file", "tag", sha)
+		if err != nil {
+			return err
+		}
+		links, err := objectRecords("tag "+short(sha), raw, true, emit)
+		if err != nil {
+			return err
+		}
+		if links.object == "" {
+			return fmt.Errorf("tag %s does not start with the object it points to", short(sha))
+		}
+		sha = links.object
+	}
+	return nil
+}
+
+// pushed is one commit a push would add: its id, and the number of its parents as git counts
+// them, which says how its diff is read (diffTree).
+type pushed struct {
+	id      string
+	parents int
 }
 
 // commits are the commits one update would add to the destination, oldest first: the commits
@@ -189,11 +252,23 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 // the destination has as much as for a new one. Without them, a forward merge (the default
 // branch merged onto an older tip of the branch) would read every commit of the default branch
 // since that tip, not only the merge and the branch's own commits. A deletion adds no commit.
-func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]string, error) {
+//
+// The local sha is read as `<sha>^{commit}`: every annotated tag in front of it peeled off, and
+// a commit required at the end. A ref can hold a blob or a tree, or a tag of one, and git pushes
+// that object; rev-list given it bare lists no commit and exits 0, so the push would add nothing
+// to read and pass with the object's text unread. Given ^{commit}, git refuses with exit 128
+// ("expected commit type, but the object dereferences to blob type"), which Guard.git makes an
+// error of and Guard.Push a setup failure, as for any record git could not read. The "--" ends
+// the revisions, so git names the revision it refused and says nothing of a path.
+//
+// Each commit's parents are git's own, from rev-list --parents, and not read out of the commit's
+// header by this package: git takes only the parent fields straight after the tree, in hex of
+// either case, and a count read any other way would read a merge's diff in the wrong shape.
+func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]pushed, error) {
 	if update.LocalSHA == "" || zeroSHA(update.LocalSHA) {
 		return nil, nil
 	}
-	argv := []string{"rev-list", "--reverse", update.LocalSHA, "--not"}
+	argv := []string{"rev-list", "--reverse", "--parents", update.LocalSHA + "^{commit}", "--not"}
 	held, err := g.holds(ctx, req.Dir, update.RemoteSHA)
 	if err != nil {
 		return nil, err
@@ -205,12 +280,18 @@ func (g *Guard) commits(ctx context.Context, req PushRequest, update Update) ([]
 	if req.Remote != "" {
 		remotes += "=" + req.Remote
 	}
-	argv = append(argv, remotes)
+	argv = append(argv, remotes, "--")
 	out, err := g.git(ctx, req.Dir, argv...)
 	if err != nil {
 		return nil, err
 	}
-	return strings.Fields(out), nil
+	var commits []pushed
+	for line := range strings.Lines(out) {
+		if ids := strings.Fields(line); len(ids) > 0 {
+			commits = append(commits, pushed{id: ids[0], parents: len(ids) - 1})
+		}
+	}
+	return commits, nil
 }
 
 // holds is whether the repository has the commit sha names: false for a ref the push creates
@@ -233,46 +314,66 @@ func zeroSHA(sha string) bool {
 	return sha != "" && strings.Trim(sha, "0") == ""
 }
 
-// commitRecords is one commit as records. The identities and the message come from the commit
-// itself; the added and renamed paths and the added lines come from its diff, read in the shape
-// its number of parents calls for (diffTree).
+// commitRecords hands emit one commit as records. The header and the message come from the commit
+// as git stores it, read by git's rules (objectRecords): the identities, a signed tag a merge
+// carries (mergetag), an encoding, any field git does not know and any field out of git's place,
+// besides the message. A commit with an encoding field that names another encoding than UTF-8 is
+// read a second time as git shows it (inUTF8). The added and renamed paths and the added lines
+// come from its diff, read in the shape its number of parents calls for (diffTree).
 //
 // A record about a file carries that file's path as its label and the line or the path as its
 // text, so that the engine reads the path as a path: the rule file's one path-scoped allowlist
 // is anchored on a whole path, and a label carrying anything else would take it away.
-func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record, error) {
-	// git writes the separator for itself, as %x00 in the format: an argument of this process's
-	// own holding a zero byte is a child that cannot be started at all. %P comes before the
-	// body, which is the one field that can hold a newline, so the parents are read without a
-	// second git.
-	const separator = "%x00"
-	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color",
-		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%P"+separator+"%B"+separator, commit)
+func (g *Guard) commitRecords(ctx context.Context, dir string, commit pushed, emit func(Record) error) error {
+	raw, err := g.git(ctx, dir, "cat-file", "commit", commit.id)
 	if err != nil {
-		return nil, err
+		return err
+	}
+	label := "commit " + short(commit.id)
+	links, err := objectRecords(label, raw, false, emit)
+	if err != nil {
+		return err
+	}
+	if links.otherEncoding {
+		if err := g.inUTF8(ctx, dir, commit.id, label, emit); err != nil {
+			return err
+		}
+	}
+	if err := g.addedPaths(ctx, dir, commit.id, commit.parents, emit); err != nil {
+		return err
+	}
+	return g.addedLines(ctx, dir, commit.id, commit.parents, emit)
+}
+
+// inUTF8 hands emit one commit's identities and message as git shows them, converted into UTF-8
+// from the encoding the commit names, which is the text a reader of the destination sees. The
+// bytes the commit stores are read as well (objectRecords), but in another encoding a character
+// the rules know, such as a no-break space or a dash between two words, is not the UTF-8 the rules
+// match. git converts from the first encoding field; this is asked for wherever any of them names
+// another encoding than UTF-8, so no order of the fields leaves the converted text unread.
+func (g *Guard) inUTF8(ctx context.Context, dir, commit, label string, emit func(Record) error) error {
+	// git writes the separator for itself, as %x00 in the format: an argument of this process's
+	// own holding a zero byte is a child that cannot be started at all.
+	const separator = "%x00"
+	out, err := g.git(ctx, dir, "show", "--no-patch", "--no-color", "--encoding=UTF-8",
+		"--format="+separator+"%an <%ae>"+separator+"%cn <%ce>"+separator+"%B"+separator, commit)
+	if err != nil {
+		return err
 	}
 	parts := strings.Split(out, "\x00")
-	if len(parts) < 5 {
-		return nil, fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
+	if len(parts) < 4 {
+		return fmt.Errorf("git show %s answered no identity and message", short(commit))
 	}
-	parents := len(strings.Fields(parts[3]))
-	records := []Record{
-		{Label: "commit " + short(commit) + " author", Text: parts[1]},
-		{Label: "commit " + short(commit) + " committer", Text: parts[2]},
-		{Label: "commit " + short(commit) + " message", Text: parts[4]},
+	for _, record := range []Record{
+		{Label: label + " author in UTF-8", Text: parts[1]},
+		{Label: label + " committer in UTF-8", Text: parts[2]},
+		{Label: label + " message in UTF-8", Text: parts[3]},
+	} {
+		if err := emit(record); err != nil {
+			return err
+		}
 	}
-	paths, err := g.addedPaths(ctx, dir, commit, parents)
-	if err != nil {
-		return nil, err
-	}
-	for _, path := range paths {
-		records = append(records, Record{Label: path, Text: path})
-	}
-	added, err := g.addedLines(ctx, dir, commit, parents)
-	if err != nil {
-		return nil, err
-	}
-	return append(records, added...), nil
+	return nil
 }
 
 // diffTree is a diff-tree of one commit, in the shape its parents call for: --root for a root
@@ -302,43 +403,48 @@ func diffTree(parents int, args ...string) []string {
 	return append(argv, args...)
 }
 
-// addedPaths are the paths one commit adds or renames a file to, which are the paths the
-// destination would hold that it does not hold already.
+// addedPaths hands emit, as a record of each, the paths one commit adds or renames a file to,
+// which are the paths the destination would hold that it does not hold already. They are read as
+// git writes them, one field at a time (eachField).
 //
 // A merge's combined diff writes one status letter per parent and one path, with no path a
 // rename came from, where an ordinary diff writes one letter and, for a rename, the two paths.
 // Both are read here: a status of as many letters as the commit has parents is the combined
 // shape.
-func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int) ([]string, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
-	if err != nil {
-		return nil, err
-	}
+func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int, emit func(Record) error) error {
 	combined := parents > 1
-	fields := strings.Split(out, "\x00")
-	var paths []string
-	for i := 0; i < len(fields); i++ {
-		switch status := fields[i]; {
-		case status == "":
-		case !combined && strings.HasPrefix(status, "R"):
-			// A rename is three fields: the status, the path it was at, and the path it is at.
-			// The destination learns the new path alone.
-			if i+2 < len(fields) {
-				paths = append(paths, fields[i+2])
+	// pending is how many paths of the current entry are still to come; the last is the one the
+	// destination learns. Zero is a field that is a status.
+	pending := 0
+	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
+		return eachField(out, 0, func(field []byte) error {
+			field = bytes.TrimSuffix(field, []byte{0})
+			if pending == 0 {
+				switch status := string(field); {
+				case status == "":
+				case !combined && strings.HasPrefix(status, "R"):
+					// A rename is three fields: the status, the path it was at, and the path it
+					// is at. The destination learns the new path alone.
+					pending = 2
+				default:
+					pending = 1
+				}
+				return nil
 			}
-			i += 2
-		default:
-			if i+1 < len(fields) {
-				paths = append(paths, fields[i+1])
+			pending--
+			if pending > 0 {
+				return nil
 			}
-			i++
-		}
-	}
-	return paths, nil
+			path := string(field)
+			return emit(Record{Label: path, Text: path})
+		})
+	}, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
+	return err
 }
 
-// addedLines are the lines one commit adds, each as a record of the file it is added to. The
-// diff is read with no context lines, so every line of it that a patch marks as added is one.
+// addedLines hands emit the lines one commit adds, each as a record of the file it is added to.
+// The diff is read with no context lines, so every line of it that a patch marks as added is one,
+// and it is read as git writes it, one line held at a time (eachField).
 //
 // A merge's combined diff marks each line with one column per parent, so a line added against
 // any of them begins with that many characters, one of which is a "+" ("++text" for a line of
@@ -347,36 +453,71 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 // holds. The "+++ b/<path>" that names the file is read only where a header stands, between a
 // "diff --" line and the hunk that follows it, so a line of content that reads like one is not
 // mistaken for the name of a file.
-func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", commit)...)
-	if err != nil {
-		return nil, err
-	}
+func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int, emit func(Record) error) error {
 	width := max(parents, 1)
-	var records []Record
 	path, header := "", false
-	for line := range strings.Lines(out) {
-		line = strings.TrimRight(line, "\r\n")
-		switch {
-		case strings.HasPrefix(line, "diff --"):
-			path, header = "", true
-		case header && strings.HasPrefix(line, "+++ "):
-			path = diffPath(strings.TrimPrefix(line, "+++ "))
-		case strings.HasPrefix(line, "@@"):
-			header = false
-		case header || path == "" || len(line) < width:
-		case strings.Contains(line[:width], "+"):
-			if text := line[width:]; strings.TrimSpace(text) != "" {
-				records = append(records, Record{Label: path, Text: text})
+	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
+		return eachField(out, '\n', func(line []byte) error {
+			line = bytes.TrimRight(line, "\r\n")
+			switch {
+			case bytes.HasPrefix(line, []byte("diff --")):
+				path, header = "", true
+			case header && bytes.HasPrefix(line, []byte("+++ ")):
+				path = diffPath(string(line[len("+++ "):]))
+			case bytes.HasPrefix(line, []byte("@@")):
+				header = false
+			case header || path == "" || len(line) < width:
+			case bytes.Contains(line[:width], []byte("+")):
+				if text := line[width:]; len(bytes.TrimSpace(text)) != 0 {
+					return emit(Record{Label: path, Text: string(text)})
+				}
+			}
+			return nil
+		})
+	}, diffTree(parents, "--unified=0", "--no-color", commit)...)
+	return err
+}
+
+// eachField hands each field of r that ends in delim to fn, delim included where it has one, as
+// a slice fn must copy what it keeps of: a line of a diff for '\n', a field of a -z listing for 0.
+// It holds one field at a time, however long: a field longer than its buffer is gathered whole
+// before fn sees it. An error of fn stops the read and is the answer.
+func eachField(r io.Reader, delim byte, fn func(field []byte) error) error {
+	in := bufio.NewReaderSize(r, 64<<10)
+	var long []byte
+	for {
+		chunk, err := in.ReadSlice(delim)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			long = append(long, chunk...)
+			continue
+		}
+		field := chunk
+		if len(long) > 0 {
+			long = append(long, chunk...)
+			field = long
+		}
+		if len(field) > 0 {
+			if err := fn(field); err != nil {
+				return err
 			}
 		}
+		// A long field's buffer is let go rather than kept for the rest of the read.
+		long = nil
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
-	return records, nil
 }
 
 // diffPath is the path a patch's "+++" line names, with the b/ prefix off and the C quoting a
-// path with a byte git will not print raw undone. A deletion's /dev/null names no file.
+// path with a byte git will not print raw undone. A deletion's /dev/null names no file. git ends
+// the line with a tab where the path holds a space, and that tab is no part of the path: a tab of
+// the path itself is always C-quoted.
 func diffPath(field string) string {
+	field = strings.TrimSuffix(field, "\t")
 	if field == "/dev/null" {
 		return ""
 	}
@@ -398,9 +539,22 @@ func short(commit string) string {
 // failed on its standard error. Reading the two apart also keeps a warning git writes on its
 // standard error out of the records parsed from its output.
 func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, error) {
-	argv := gitArgv(args...)
+	return g.gitWith(ctx, dir, nil, args...)
+}
+
+// gitWith is git with its standard output read by stdout as git writes it (Guard.readOutput),
+// where stdout is not nil, rather than answered whole: a push's added paths and diff are read so.
+func (g *Guard) gitWith(ctx context.Context, dir string, stdout func(io.Reader) error, args ...string) (string, error) {
 	var stderr bytes.Buffer
-	status, out, err := g.run(ctx, child{argv: argv, dir: dir, stderr: &stderr})
+	c := child{argv: gitArgv(args...), dir: dir, stderr: &stderr}
+	var status int
+	var out string
+	var err error
+	if stdout == nil {
+		status, out, err = g.run(ctx, c)
+	} else {
+		status, err = g.readOutput(ctx, c, stdout)
+	}
 	if err != nil {
 		return "", procgroup.Said(err, gitSaid(stderr.String()))
 	}

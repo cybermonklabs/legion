@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
@@ -28,6 +30,10 @@ const theHost = "wobble-fern.quiet-harbor.ts" + ".net"
 // theClass is what the rules call that host: the description of tailnet_host_rule, which is what
 // a report names and the whole of what it says about the text.
 const theClass = "names a Tailscale MagicDNS host"
+
+// repositoryClass is what the rules call a match of the repository rule: the description of
+// repository_rule. Its path rule's description is this with " in its path" after it.
+const repositoryClass = "names the private deployment repository or its Dispatch project key"
 
 // noSHA is git's "this ref is not there", which a pre-push line carries for a ref the push
 // creates and for one it deletes.
@@ -355,8 +361,7 @@ func TestTheReportMasksAPathComponent(t *testing.T) {
 	// A path record is read twice over, as a path by the path rules and as a text by the content
 	// rules, so a path that names the deployment repository earns both of that class's wordings.
 	refused := refusal(t, guard.Rules(bound(t), Record{Label: path, Text: path}))
-	const class = "names the private deployment repository or its Dispatch project key"
-	want := []string{"packages/<name>/main.go: " + class, "packages/<name>/main.go: " + class + " in its path"}
+	want := []string{"packages/<name>/main.go: " + repositoryClass, "packages/<name>/main.go: " + repositoryClass + " in its path"}
 	if !slices.Equal(refused.Lines, want) {
 		t.Fatalf("the report is %q, want %q", refused.Lines, want)
 	}
@@ -968,4 +973,56 @@ func sha256sumLineDigest(t *testing.T, dir string, files []string) string {
 	}
 	sum := sha256.Sum256([]byte(lines.String()))
 	return fmt.Sprintf("%x", sum)
+}
+
+// A refusal written to a log or a terminal writes no character of a path that a terminal could act
+// on or show as something else: a path is the push author's choice, and an escape sequence in it
+// (C0 or C1) would act on the terminal that shows the refusal, erasing the line that names the
+// file, a line break would start a line the guard did not write, and U+202E would reverse how the
+// rest of the path reads. The report's lines keep the path as it is; Error escapes each such
+// character and a byte that is not UTF-8 (termsafe.Escaped), and writes a backslash as it is, so
+// the shared check's already escaped lines pass unchanged.
+func TestARefusalWritesNoControlByteOfAPathRaw(t *testing.T) {
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	labels := []string{
+		"a b\x1b[2Kx.md",
+		"c\nLEAK CHECK: clean\x7f.md",
+		"c1\u009b2Kz.md",
+		"bidi\u202edm.x.txt",
+		`back\x1b.md`,
+		"bad\xffz.md",
+		"tag\U000e0041.md",
+	}
+	records := make([]Record, 0, len(labels))
+	lines := make([]string, 0, len(labels))
+	for _, label := range labels {
+		records = append(records, Record{Label: label, Text: "the runner answers at " + theHost})
+		lines = append(lines, label+": "+theClass)
+	}
+	refused := refusal(t, guard.Rules(bound(t), records...))
+	if !slices.Equal(refused.Lines, lines) {
+		t.Fatalf("the report is %q, want %q", refused.Lines, lines)
+	}
+	written := refused.Error()
+	for _, want := range []string{
+		"\n  a b\\x1b[2Kx.md: ",
+		"\n  c\\nLEAK CHECK: clean\\x7f.md: ",
+		"\n  c1\\u009b2Kz.md: ",
+		"\n  bidi\\u202edm.x.txt: ",
+		"\n  back\\x1b.md: ",
+		"\n  bad\\xffz.md: ",
+		"\n  tag\\U000e0041.md: ",
+	} {
+		if !strings.Contains(written, want+theClass) {
+			t.Errorf("the refusal is %q, want it to hold %q", written, want+theClass)
+		}
+	}
+	if !utf8.ValidString(written) || strings.Count(written, "\n") != len(refused.Lines) {
+		t.Errorf("the refusal writes a byte that is not UTF-8 or a line of its own: %q", written)
+	}
+	for _, r := range written {
+		if r != '\n' && !unicode.IsPrint(r) {
+			t.Errorf("the refusal writes %U raw: %q", r, written)
+		}
+	}
 }
