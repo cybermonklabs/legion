@@ -2,7 +2,9 @@
 # A Bun frozen install resolves every root workspace from its manifest. Docker's cache-friendly
 # install layer therefore must COPY every root workspace package.json before each
 # `bun install --frozen-lockfile` in the Dockerfile stage that runs it. Missing one fails the
-# install only after a root workspace is added, so check the Dockerfile contract directly.
+# install only after a root workspace is added, so check the Dockerfile contract directly. A stage
+# that copies no root package.json installs a project of its own (a package.json and bun.lock of
+# its own), which reads no root workspace, so it owes none of their manifests.
 #
 # Run from anywhere: .github/scripts/check-bun-workspace-manifests.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
@@ -131,6 +133,15 @@ for dockerfile in checked:
             except CopyParseError as error:
                 problems.append((str(dockerfile), f"{dockerfile}:{line}: {error}"))
         elif command == "RUN" and FROZEN_INSTALL.search(instruction):
+            # A stage that copied neither the root package.json nor the whole context installs a
+            # project of its own (the worker image's omp-plugins and codegraph stages: a
+            # package.json and bun.lock of their own under /opt), which reads no root workspace.
+            if "package.json" not in copied and "." not in copied:
+                print(
+                    f"{dockerfile}: bun install --frozen-lockfile at line {line} is in a stage that "
+                    "copies no root package.json, so it installs a project of its own"
+                )
+                continue
             frozen_installs += 1
             print(
                 f"{dockerfile}: checked {len(manifests)} root workspaces before "
@@ -155,8 +166,9 @@ if not covered_installs:
     problems.append(
         (
             "package.json",
-            "no Dockerfile runs bun install --frozen-lockfile: this check covered 0 frozen "
-            f"installs across {len(checked)} Dockerfile(s), so it proves nothing",
+            "no Dockerfile runs bun install --frozen-lockfile in a stage that copies the root "
+            f"package.json: this check covered 0 root installs across {len(checked)} Dockerfile(s), "
+            "so it proves nothing",
         )
     )
 

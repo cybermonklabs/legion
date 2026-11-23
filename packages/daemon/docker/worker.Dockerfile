@@ -240,7 +240,7 @@ ARG AZURE_CLI_PYTHON_VERSION=3.13.17
 ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
 # The CodeGraph CLI and the Oh My Pi tool that wraps it are pinned to the versions the devbox runs
 # (`codegraph --version`, `omp/plugins/package.json`). Each one installs from a committed lockfile
-# in the plugin-deps stage: the tool, @bopstack/pi-codegraph, from packages/daemon/docker/omp-plugins,
+# in a stage of its own: the tool, @bopstack/pi-codegraph, from packages/daemon/docker/omp-plugins,
 # and the CLI, @colbymchenry/codegraph, from packages/daemon/docker/codegraph. Each package.json
 # pins its one package, and each bun.lock pins everything Bun installs beside it, so, as for the
 # language servers, there is no ARG pin to keep in step with them. An ARG cannot be that one place
@@ -257,14 +257,50 @@ ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS bun
 
 # ------------------------------------------------------------------------------------------------
-# plugin-deps: the workspace install, the playwright-core packages/dispatch locks, the Oh My Pi
-# plugins' frozen install and the CodeGraph CLI's frozen install: everything of the plugins' build
-# that reads manifests and lockfiles and no application source. The runtime stage copies the
-# CodeGraph CLI and the Oh My Pi plugins from here, and the webkit-check stage binds playwright-core
-# from here, so a change to the plugins' source or to skills/ reruns none of those layers. BuildKit
-# keys a layer copied from another stage on that stage's own steps first, and reads the copied files
-# only after it has run that whole stage; from the plugin stage, which copies the source, every
-# such layer waited for the workspace install and the packs before BuildKit could reuse it.
+# omp-plugins: the Oh My Pi plugins the runtime stage links into the `legion` profile (its step 3),
+# installed with `bun install --frozen-lockfile` from the committed lockfile at
+# packages/daemon/docker/omp-plugins, a project of its own (no root workspace), into its own prefix,
+# /opt/omp-plugins, which the runtime stage copies whole. The tree is the lockfile's whatever the
+# registry has published since, and a package.json the lockfile does not match fails the install
+# instead of resolving afresh; lifecycle scripts stay off, as for the language servers. A stage of
+# its own on bun that reads these two files alone, so neither a change to the workspace's manifests
+# or lockfile nor one to the plugins' source runs it again, and the runtime stage's copy of it waits
+# for no workspace install.
+FROM bun AS omp-plugins
+WORKDIR /opt/omp-plugins
+COPY packages/daemon/docker/omp-plugins/package.json packages/daemon/docker/omp-plugins/bun.lock ./
+RUN bun install --frozen-lockfile --ignore-scripts
+
+# ------------------------------------------------------------------------------------------------
+# codegraph: the CodeGraph CLI (@colbymchenry/codegraph), installed the same way, from the committed
+# lockfile at packages/daemon/docker/codegraph, a project of its own, in a stage of its own for the
+# same reason. `bin.codegraph` in the main npm package is a thin `#!/usr/bin/env node` launcher shim
+# that locates and execs the per-platform optionalDependency (`@colbymchenry/codegraph-linux-x64`) —
+# but this stage's base image has no system `node` (only bun's own fallback shim, which the final
+# runtime stage does not copy over), so the shim itself cannot start. The platform package's own
+# `bin/codegraph` is a `#!/bin/sh` wrapper that execs a *bundled* Node 24 runtime sitting beside it —
+# fully self-contained, no system node required anywhere — so this copies that platform package
+# alone, as `/opt/codegraph` in the runtime stage. The lockfile pins that bundle too, which the
+# unlocked global install this replaced resolved afresh at every build. The bundled Node's version
+# goes to /out/codegraph-node-version, for the notices stage to fetch that release's LICENSE.
+FROM bun AS codegraph
+WORKDIR /opt/codegraph-cli
+COPY packages/daemon/docker/codegraph/package.json packages/daemon/docker/codegraph/bun.lock ./
+RUN mkdir -p /out \
+    && bun install --frozen-lockfile --ignore-scripts \
+    && cp -a node_modules/@colbymchenry/codegraph-linux-x64 /out/codegraph \
+    && /out/codegraph/bin/codegraph --version \
+    && /out/codegraph/node --version > /out/codegraph-node-version
+
+# ------------------------------------------------------------------------------------------------
+# plugin-deps: the workspace install and the playwright-core packages/dispatch locks: everything of
+# the plugins' build that reads the root manifests and lockfile and no application source. The
+# plugin stage builds on it, and the webkit-check stage binds playwright-core from it, so a change
+# to the plugins' source or to skills/ reruns neither this stage nor that bind. BuildKit keys a
+# layer copied from another stage, and a RUN's bind mount of one, on that stage's own steps first,
+# and reads the files only after it has run that whole stage; so this stage holds no source, and
+# the Oh My Pi plugins and the CodeGraph CLI install in stages of their own, apart from the
+# workspace install.
 FROM bun AS plugin-deps
 WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
@@ -302,38 +338,6 @@ RUN --mount=type=bind,source=packages/daemon/docker/resolve-playwright-core.mjs,
     core="$(bun /tmp/resolve-playwright-core.mjs /repo/packages/dispatch/package.json)"; \
     mkdir -p /out; cp -a "$core" /out/playwright-core; \
     echo "playwright-core: $(jq -r .version /out/playwright-core/package.json) from $core"
-# The Oh My Pi plugins the runtime stage links into the `legion` profile (its step 3), installed with
-# `bun install --frozen-lockfile` from the committed lockfile at packages/daemon/docker/omp-plugins, a
-# project of its own (no root workspace), into its own prefix, /opt/omp-plugins, which the runtime
-# stage copies whole. The tree is the lockfile's whatever the registry has published since, and a
-# package.json the lockfile does not match fails the install instead of resolving afresh; lifecycle
-# scripts stay off, as for the language servers. It follows the workspace install because every
-# frozen Bun install in this file comes after the root workspace manifests
-# (.github/scripts/check-bun-workspace-manifests.sh).
-WORKDIR /opt/omp-plugins
-COPY packages/daemon/docker/omp-plugins/package.json packages/daemon/docker/omp-plugins/bun.lock ./
-RUN bun install --frozen-lockfile --ignore-scripts
-# CodeGraph CLI (@colbymchenry/codegraph), installed the same way, from the committed lockfile at
-# packages/daemon/docker/codegraph, a project of its own. `bin.codegraph` in the main npm package
-# is a thin `#!/usr/bin/env node` launcher shim that locates and execs the per-platform
-# optionalDependency (`@colbymchenry/codegraph-linux-x64`) — but this stage's base image has no
-# system `node` (only bun's own fallback shim, which the final runtime stage does not copy over),
-# so the shim itself cannot start. The platform package's own `bin/codegraph` is a `#!/bin/sh`
-# wrapper that execs a *bundled* Node 24 runtime sitting beside it — fully self-contained, no
-# system node required anywhere — so this copies that platform package alone, as `/opt/codegraph`
-# in the runtime stage. The lockfile pins that bundle too, which the unlocked global install this
-# replaced resolved afresh at every build. The install is in plugin-deps, which copies no
-# application source, so a source change to the plugins the plugin stage packs never invalidates
-# its layer. The bundled Node's
-# version goes to /out/codegraph-node-version, for the notices stage to fetch that release's
-# LICENSE.
-WORKDIR /opt/codegraph-cli
-COPY packages/daemon/docker/codegraph/package.json packages/daemon/docker/codegraph/bun.lock ./
-RUN mkdir -p /out \
-    && bun install --frozen-lockfile --ignore-scripts \
-    && cp -a node_modules/@colbymchenry/codegraph-linux-x64 /out/codegraph \
-    && /out/codegraph/bin/codegraph --version \
-    && /out/codegraph/node --version > /out/codegraph-node-version
 
 # ------------------------------------------------------------------------------------------------
 # plugin: the two packed plugins and claude-envoy, built on plugin-deps from this checkout's source.
@@ -498,9 +502,9 @@ ENV GOPROXY=https://proxy.golang.org|direct
 # whole image build with `unable to resolve git version: failed to execute git version: exec:
 # "git": executable file not found in $PATH` (cybermonklabs/legion#3536, run 43047193527), where
 # the same layer had built from the proxy an hour earlier. git is installed here rather than at
-# the layer that met it, because every `go` command of this stage reads that same GOPROXY. It
-# stays in this stage: the runtime base is debian:trixie-slim, whose own git is what the workers
-# run (/usr/bin/git, above), and nothing of this stage but the two static binaries is copied out.
+# the layer that met it, because every Go stage below builds on this one and reads that same
+# GOPROXY. It stays in these stages: the runtime base is debian:trixie-slim, whose own git is what
+# the workers run (/usr/bin/git, above), and no git leaves them.
 # The package carries no version pin, for the reason the apt packages above carry none (DL3008,
 # the ARG block): Alpine's repository serves only its branch's current version of a package, so a
 # pinned version stops resolving at the next update. The base image's digest is the pin.
@@ -511,7 +515,7 @@ RUN apk add --no-cache git
 # go-licenses (pinned in go-third-party-notices.sh), for the go-notices stage, and gopls, for the
 # runtime stage, each in a stage of its own: neither reads this checkout's source or module files,
 # so neither a source change nor a dependency bump rebuilds them, and the two build beside each
-# other and beside go-modules, where one stage built them one after the other before the download.
+# other and beside go-modules.
 # Each `go install` keeps its build cache and module downloads in cache mounts, which no layer
 # holds: the layers carry the binaries alone, so the cache main's builds export
 # (worker-image.yaml's cache-to) stays small.
@@ -554,8 +558,8 @@ COPY packages/envoy/go.mod packages/envoy/go.sum packages/envoy/
 # `.zip` of a pinned version still come from the cache. The final stage's toolchain step refuses
 # an image that ships one of these files again.
 # The download also fetches from sum.golang.org the go.mod sums go.work.sum lacks, into the cache's
-# sumdb directory (240 lines and 487 files on 2026-11-22), and those tiles and lookups differ with
-# the hour they are read. So the RUN deletes that directory too: the cache it ships is then the same
+# sumdb directory, and those tiles and lookups differ with the hour they are read. So the RUN
+# deletes that directory too: the cache it ships is then the same
 # bytes for the same module files, and the runtime stage's layer of it, with every layer after it,
 # is reused rather than built and pushed again on every build. A pod's go reads this cache only
 # through GOPROXY's file proxy, and a go asks a proxy for the checksum database at
@@ -569,8 +573,8 @@ RUN go mod download \
 # ------------------------------------------------------------------------------------------------
 # go-source: this checkout's two Go modules on go-modules, which the go and go-notices stages build
 # from, beside each other, and the list of every package the two binaries compile that is not this
-# checkout's own: the standard library's and the dependencies' (1,224 of 1,337 on 2026-11-22, 83%
-# of a cold build's compile time: 265 of 318 CPU-seconds, on a development host pinned to 4 CPUs).
+# checkout's own: the standard library's and the dependencies', most of a cold build's compile
+# time (the measurement is in this change's pull request).
 # The list is sorted, so it changes only when the set of packages outside the two modules does,
 # not when this checkout's own imports reorder, and go-deps, which compiles it, is reused while the
 # source changes. Listing extracts every module it reads into /gomodcache and writes package
@@ -1112,7 +1116,7 @@ ARG KUBECTL_VERSION
 ARG YQ_VERSION
 ARG GO_VERSION
 ARG GOPLS_VERSION
-COPY --from=plugin-deps /out/codegraph-node-version /in/codegraph-node-version
+COPY --from=codegraph /out/codegraph-node-version /in/codegraph-node-version
 COPY packages/daemon/docker/language-servers/package.json /in/language-servers/package.json
 COPY packages/daemon/docker/codegraph/package.json /in/codegraph/package.json
 # The twenty-two reads below (sixteen LICENSE/NOTICE fetches, six HEAD checks) are independent
@@ -1252,10 +1256,14 @@ RUN set -eu; mkdir -p /out; . /in/tags.env; \
 # runtime user before the switch; the RUN prints the line too. It reads Node from the toolchain
 # stage's /opt/node and playwright-core from the plugin-deps stage's /out/playwright-core, both by bind
 # mount, and HOME, TMPDIR and PLAYWRIGHT_BROWSERS_PATH point into a scratch directory the step
-# removes, so the browser is downloaded there. BuildKit reads a bind mount's source by content, so
-# the stage reruns only when runtime-base or its packages, the Node pin, the locked Playwright or
-# webkit-launch.mjs changes — never for a change to the plugins, the skills, the toolchain step or
-# `legion`. BuildKit builds only the stages the target stage reaches, and the runtime stage's bind
+# removes, so the browser is downloaded there. BuildKit reads a bind mount's source by content once
+# it has the source stage's result, so the download reruns only when runtime-base or its packages,
+# the Node pin, the locked Playwright or webkit-launch.mjs changes, never for a change to the
+# plugins' source, the skills, the toolchain step or `legion`. A change to the workspace's
+# manifests or lockfile makes BuildKit run plugin-deps' install first to read playwright-core, and
+# the download stays cached while that Playwright is the same (job 137303621398, 2026-11-22,
+# printed it CACHED after a 126 s install). BuildKit builds only the stages the target stage
+# reaches, and the runtime stage's bind
 # mount of this /out is what reaches this one: that mount is what makes BuildKit build the stage at
 # all, so the gate stays as long as the mount does.
 FROM runtime-base AS webkit-check
@@ -1276,15 +1284,11 @@ RUN --mount=type=bind,from=plugin-deps,source=/out/playwright-core,target=/tmp/p
 # runtime: the final stage, the image itself, on runtime-base.
 FROM runtime-base AS runtime
 LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
-# The toolchain goes in first, on runtime-base. A layer is reused only while every layer before it is,
-# so this stage copies in the order its inputs change, least often first (main commits in the 30
-# days to 2026-11-22): the toolchain pins and gopls (at most two each), Bun, jj, gh and mise, the
-# CodeGraph tool's lockfiles (two), Oh My Pi (.omp-pin: nine), legion-testpg (nine), the probe
-# layer, the module cache (go.work's module files: 40), the toolchain step, the Claude Code pin, the
-# WebKit marker, the notices, then the plugins (their source: 40 of 180 main commits on 2026-11-21
-# and 22) and `legion`, which changes on every commit. A toolchain pin bump reruns the probe layer
-# and its natives, which an Oh My Pi bump reruns anyway; an Oh My Pi, module or plugin change reruns
-# none of the toolchain. It lands outside HOME, in /opt and /usr/local/bin, so no volume a pod
+# The toolchain goes in first, on runtime-base. Two rules order this stage. A layer is reused only
+# while every layer before it is, so the layers whose inputs change least go first; and the copies
+# and markers that run no build step (the Claude Code pin, the WebKit marker, the notices) go after
+# the toolchain step, so a bump of one reruns no RUN above it. Each layer's own comment says why it
+# sits where it does. The toolchain lands outside HOME, in /opt and /usr/local/bin, so no volume a pod
 # mounts under HOME shadows it, and /usr/local/bin is on the image PATH and on every pod's
 # (imagePath, packages/daemon/internal/runtime/sandbox/names.go). /opt/go is the Go toolchain,
 # /opt/language-servers carries the language servers (node_modules), /opt/google-cloud-sdk is the
@@ -1304,6 +1308,8 @@ COPY --from=gopls /out/gopls /usr/local/bin/gopls
 # oven/bun:${BUN_VERSION}-slim).
 COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 RUN ln -s bun /usr/local/bin/bunx
+# jj, gh and mise come from the tools stage, which also fetches Oh My Pi, so an Oh My Pi pin bump
+# runs that stage again; BuildKit then finds these three layers unchanged by their content.
 COPY --from=tools /opt/tools/jj /usr/local/bin/jj
 COPY --from=tools /opt/tools/gh /usr/local/bin/gh
 # mise, the binary the tools stage installed and checked against MISE_SHA256, so there is no pin of
@@ -1314,15 +1320,12 @@ COPY --from=tools /opt/tools/gh /usr/local/bin/gh
 # GitHub (mise reads MISE_GITHUB_TOKEN when it is set).
 COPY --from=tools /usr/local/bin/mise /usr/local/bin/mise
 # CodeGraph CLI (@colbymchenry/codegraph): the self-contained per-platform bundle alone (bundled
-# Node runtime + app), never the npm package's own launcher shim — see the plugin-deps stage's comment.
-COPY --from=plugin-deps /out/codegraph /opt/codegraph
-# The Oh My Pi plugins' frozen install (the plugin-deps stage's), root's like the plugins below, so no
+# Node runtime + app), never the npm package's own launcher shim — see the codegraph stage's comment.
+COPY --from=codegraph /out/codegraph /opt/codegraph
+# The Oh My Pi plugins' frozen install (the omp-plugins stage's), root's like the plugins below, so no
 # role can change the CodeGraph plugin code the profile's link (step 3 below) resolves to.
-COPY --from=plugin-deps /opt/omp-plugins /opt/omp-plugins
+COPY --from=omp-plugins /opt/omp-plugins /opt/omp-plugins
 COPY --from=tools /opt/omp /opt/omp
-# legion-testpg: root-owned and mode 0555, like every other program on the image's PATH, so a role
-# cannot rewrite the script the roles container's launcher runs.
-COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-testpg
 # /var/run/legion/testpg.log is the mount point an issue pod's role-init binds the pod's test
 # server log at, read-only (packages/daemon/internal/launcher, roleinit_linux.go; legion-testpg
 # says what the server logs there): inside a role's namespaces the role is the runtime user, which
@@ -1436,9 +1439,13 @@ RUN set -eu; \
 # --chown makes the cache the runtime user's. Its files are mode 0644 in mode 0755 directories,
 # which is what lets a role add a module the cache does not hold. The read-only 0444 files and 0555
 # directories of a module cache are in the extracted trees, which this is not. The COPY comes after
-# the probe layer, which reads no module, and before the toolchain step, which checks the cache, in
-# the order the toolchain's comment gives.
+# the probe layer, which reads no module, and before the toolchain step, which checks the cache.
 COPY --from=go-modules --chown=1000:1000 /gomodcache/cache/download /home/legion/go/pkg/mod/cache/download
+# legion-testpg: root-owned and mode 0555, like every other program on the image's PATH, so a role
+# cannot rewrite the script the roles container's launcher runs (a COPY makes root's files whatever
+# USER says). It goes after the probe layer, which does not run it, so a change to it reruns no
+# probe, and before the toolchain step, which does.
+COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-testpg
 # Corepack resolves a project with no `packageManager` to the pnpm and yarn it ships as defaults,
 # never to npm's newest release, so every place the image runs (a pod, `docker run`, the check below)
 # gets one version until the Node pin moves. It is image ENV, not a pod variable, for that reason.

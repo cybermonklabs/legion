@@ -130,4 +130,47 @@ check "exits 1" "$(is "$status" 1)"
 check "says nothing was covered" \
   "$(contains "$out" 'no Dockerfile runs bun install --frozen-lockfile')"
 
+echo "case: an install of a project of its own, in a stage that copies no root manifest, needs no workspace manifests"
+root=$(fixture own-project)
+write_passing_dockerfile "$root"
+cat >> "$root/docker/worker.Dockerfile" <<'DOCKERFILE'
+FROM oven/bun:1.3.14 AS tool
+WORKDIR /opt/tool
+COPY tool/package.json tool/bun.lock ./
+RUN bun install --frozen-lockfile --ignore-scripts
+DOCKERFILE
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says the install reads no root workspace" \
+  "$(contains "$out" 'docker/worker.Dockerfile: bun install --frozen-lockfile at line 10 is in a stage that copies no root package.json')"
+check "still checks the root install" \
+  "$(contains "$out" 'checked 2 root workspaces before bun install --frozen-lockfile at line 6')"
+
+echo "case: a stage that copies the root manifest is still held to every workspace manifest"
+root=$(fixture root-copied-manifest-missing)
+cat > "$root/docker/worker.Dockerfile" <<'DOCKERFILE'
+FROM oven/bun:1.3.14 AS cli
+WORKDIR /opt/tool
+COPY package.json bun.lock ./
+COPY packages/alpha/package.json packages/alpha/package.json
+RUN bun install --frozen-lockfile --ignore-scripts
+DOCKERFILE
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the missing workspace manifest" \
+  "$(contains "$out" 'missing COPY for packages/beta/package.json before bun install --frozen-lockfile')"
+
+echo "case: a tree whose only frozen installs are projects of their own covers nothing and fails"
+root=$(fixture only-own-projects)
+cat > "$root/docker/worker.Dockerfile" <<'DOCKERFILE'
+FROM oven/bun:1.3.14 AS tool
+WORKDIR /opt/tool
+COPY tool/package.json tool/bun.lock ./
+RUN bun install --frozen-lockfile
+DOCKERFILE
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says no root install was covered" \
+  "$(contains "$out" 'covered 0 root installs')"
+
 summary "check-bun-workspace-manifests.sh"

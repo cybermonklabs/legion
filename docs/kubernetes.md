@@ -782,7 +782,8 @@ So a pull request that moves `packages/dispatch` to a Playwright whose WebKit ne
 Playwright checks that download against no hash, so nothing it writes may reach the image:
 only the launch's one line, `webkit: Playwright <version> launched WebKit <version>`, crosses, as a marker file the runtime stage binds, prints and checks right after the toolchain step and the Claude Code pin.
 That bind is what makes BuildKit build the stage at all.
-The stage reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin-deps stage by bind mount, and BuildKit reads a bind mount's source by content, so it reruns only when the base or its packages, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins, the skills, the toolchain step or `legion`.
+The stage reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin-deps stage by bind mount, and BuildKit reads a bind mount's source by content once it has that stage's result, so the download reruns only when the base or its packages, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins' source, the skills, the toolchain step or `legion`.
+A change to the workspace's manifests or lockfile makes the build run the plugin-deps install first, to read `playwright-core`, and the download stays cached while that Playwright is the same.
 To check a published image's toolchain end to end, a project Python install included:
 
 ```sh
