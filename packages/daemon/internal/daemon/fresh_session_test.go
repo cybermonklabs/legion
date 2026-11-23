@@ -293,6 +293,45 @@ func TestARefusal400HoldsTheIssueForItsArchitect(t *testing.T) {
 	}
 }
 
+// A turn that ran no prompt of the daemon's — the phase reminder's, which the plugin starts itself
+// with pi.sendMessage — has no prompt result, so the daemon judges it from its producer's report,
+// marked unprompted and carrying the status the provider refused it with (supervise's
+// turnOutcome, dispatch://INFRA-4508's R4). Refused with a 400, it fails the claim at once with
+// cause provider_error, and the workflow holds the issue for its architect, as a refused prompt's
+// 400 does in the test above. The claim first finishes its task's turn with no error, so it is
+// idle and owes nothing, which is where a worker is when its reminder fires.
+func TestAPluginTurnRefused400HoldsTheIssueForItsArchitect(t *testing.T) {
+	t.Parallel()
+	rig := newFreshSessionRig(t)
+	rig.machine.Wait()
+	pending := rig.machine.Claim().Pending
+	if pending == nil {
+		t.Fatal("the implementer holds no task to finish before its reminder's turn")
+	}
+	rig.must(supervise.StreamTurnStart{Claim: rig.implementer})
+	rig.must(supervise.StreamTurnEnd{Claim: rig.implementer})
+	rig.must(supervise.StreamPromptResult{Claim: rig.implementer, DeliveryID: pending.ID, AgentInvoked: true})
+	rig.machine.Wait()
+	if got := rig.machine.Claim(); got.State != supervise.StateIdle || got.Pending != nil {
+		t.Fatalf("after its task's turn the implementer is %s holding %+v, want it idle owing nothing", got.State, got.Pending)
+	}
+
+	rig.must(supervise.RequestTurnOutcome{Claim: rig.implementer, Generation: rig.machine.Claim().Generation, Sequence: 2,
+		Refused: true, Message: refusal400, HTTPStatus: 400, Unprompted: true})
+	rig.machine.Wait()
+
+	got := rig.machine.Claim()
+	if got.State != supervise.StateFailed || got.FailureCause != supervise.CauseProviderError ||
+		!strings.Contains(got.Failure, "cannot clear") || !strings.Contains(got.Failure, "HTTP 400") {
+		t.Fatalf("the implementer is %s (%q, %q), want it failed by a provider error that cannot clear, naming HTTP 400",
+			got.State, got.FailureCause, got.Failure)
+	}
+	if got.Session != oldSession {
+		t.Fatalf("the failed implementer records session %q, want %q kept for its architect's retry", got.Session, oldSession)
+	}
+	rig.wantsHeldForTheArchitect()
+}
+
 // A claim whose provider refused the recorded session's last launch_failure_limit turns in a row
 // takes a new session at its retry, whoever retries it (supervise's freshSession). The run of
 // refusals fails no claim (dispatch://INFRA-4508): this one fails because the prompt those turns

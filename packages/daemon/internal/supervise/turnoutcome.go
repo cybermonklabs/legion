@@ -56,17 +56,23 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 
 // recordTurnOutcome puts a report in the claim's window, in (generation, sequence) order, and
 // trims the window to its bound (turnOutcomeWindow). A report whose key the window already holds
-// replaces it, so a producer that repeats one changes nothing. No count is kept anywhere: every
-// reader derives what it needs from the window as it stands (RefusedRun), which is what makes a
+// replaces it, so a producer that repeats one changes nothing. No count is kept in the window:
+// every reader derives what it needs from it as it stands (RefusedRun), which is what makes a
 // late report and an in-order one leave the same answer.
+//
+// It reports whether the report is new to the window and kept in it. A repeat of a report the
+// window holds is not — pi-legion sends a report again when the daemon restarted under its first
+// attempt (retryWhileDaemonRestarts) — and nor is one older than everything a full window keeps,
+// so what a report decides (turnOutcome) is decided once for its turn.
 //
 // The message is the provider's text, so it is kept as the daemon keeps a far side's text
 // (storetext.FarSideText: made valid, then read whole by the URL rule) before redact.Runes cuts
 // it, so the window in memory is the window the store holds, and the cut cannot leave half a
 // credential.
-func (m *Machine) recordTurnOutcome(o TurnOutcome) {
+func (m *Machine) recordTurnOutcome(o TurnOutcome) bool {
 	o.Message = redact.Runes(storetext.FarSideText(o.Message), maxRefusalMessage)
 	at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes)
+	kept := !found
 	if found {
 		m.claim.TurnOutcomes[at] = o
 	} else {
@@ -74,7 +80,9 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) {
 	}
 	if extra := len(m.claim.TurnOutcomes) - m.turnOutcomeWindow(); extra > 0 {
 		m.claim.TurnOutcomes = slices.Delete(m.claim.TurnOutcomes, 0, extra)
+		kept = kept && at >= extra
 	}
+	return kept
 }
 
 // RefusedRun is the run of refused turns the claim's reports end with, in the order the turns ran,
@@ -93,10 +101,10 @@ func (c Claim) RefusedRun() int {
 
 // LastRefusal is what the provider said about the newest refused turn the claim keeps, and "" when
 // it keeps none or the provider said nothing. The retry that leaves a refused session behind logs
-// it (retry). The words are stored for more than that line: a turn the plugin starts itself, a
-// phase reminder among them, has no prompt result, so its report is the daemon's one record of
-// what the provider answered that turn, and dispatch://INFRA-4508's R4 is to judge such a turn by
-// that report.
+// it (retry). The words are stored for more than that line: a turn that ran no prompt of the
+// daemon's, a phase reminder among them, has no prompt result, so its report is the daemon's one
+// record of what the provider answered that turn. The report's status, never these words, is what
+// judges such a turn (turnOutcome).
 func (c Claim) LastRefusal() string {
 	for i := len(c.TurnOutcomes) - 1; i >= 0; i-- {
 		if c.TurnOutcomes[i].Refused {
@@ -113,19 +121,66 @@ func (c Claim) LastRefusal() string {
 func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 
 // turnOutcome records the turn its producer reported and derives the claim's trailing run of
-// refused turns from the window that leaves. It fails no claim, however long the run
-// (dispatch://INFRA-4508). A turn the provider refused ended in a provider error, and the result
-// of the prompt that turn ran decides what that error does (providerErrored): an error that can
-// clear sends the task to the same session again on the ladder, with no attempt limit, and tells
-// the project's controller once at providerErrorRunTold turns in a row; one that cannot clear
-// fails the claim at once and holds the issue for its architect. A report cannot tell the two
-// apart, so it decides neither. The run the report leaves decides only whether a retry starts a
-// new session (freshSession).
+// refused turns from the window that leaves. The run fails no claim, however long
+// (dispatch://INFRA-4508): it decides only whether a retry starts a new session (freshSession).
+//
+// What a refused turn's provider error does is decided once for each turn, by the one record of
+// that turn that can say: the result of the prompt the turn ran (providerErrored), or, for a turn
+// that ran no prompt of the daemon's, this report (unpromptedTurnEnded). The producer says which
+// (RequestTurnOutcome.Unprompted), because only it sees what started the turn: Oh My Pi's
+// agent_end and the worker stream's turn end name no prompt, and the report and the prompt's
+// result reach the daemon on two channels, in either order. So the report of a turn a prompt ran
+// is never judged, whether it arrives before that prompt's result or after it, and a turn that ran
+// none is judged from its report alone. The judgment is made for a report new to the window
+// (recordTurnOutcome) and of the generation the claim runs now: a report of a generation the claim
+// has left is a turn of a process that is gone, recorded in its place and judged by nothing.
+//
+// A turn that ran no prompt of the daemon's — a phase reminder the plugin sent (pi.sendMessage),
+// an Envoy message, a background job's result — is held to dispatch://INFRA-4508's R1 as a
+// prompt's turn is. A refusal whose status cannot clear (holdsTheIssue) fails the claim at once
+// with CauseProviderError, so the workflow holds the issue for its architect, and the plugin's
+// reminders end: their record check drops every reminder of a failed claim. A refusal that can
+// clear, or whose report carries no status, fails nothing, and the reminders keep their pace; it
+// counts in the claim's one run of provider-error turns (ProviderErrorRun) beside refused prompts,
+// so the project's controller is told once when that run reaches providerErrorRunTold. A clean
+// such turn ends the run, as a clean prompt's turn does.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
-	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
+	kept := m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "refusedRun", m.claim.RefusedRun(), "freshSessionAt", m.deps.Limits.LaunchFailures)
+		"refused", r.Refused, "httpStatus", r.HTTPStatus, "unprompted", r.Unprompted,
+		"refusedRun", m.claim.RefusedRun(), "freshSessionAt", m.deps.Limits.LaunchFailures)
+	if !r.Unprompted || !kept || r.Generation != m.claim.Generation {
+		return m.persist(ctx)
+	}
+	return m.unpromptedTurnEnded(ctx, r)
+}
+
+// unpromptedTurnEnded judges a turn that ran no prompt of the daemon's from its report, as
+// providerErrored judges a prompt's turn from that prompt's result, with one difference: no task
+// is the turn's to keep or send again, since whatever the claim owes, this turn did not carry it,
+// and the reminder that started it keeps its own pace (packages/pi-shared/src/phase-reminder.ts).
+// The cause is built from the status alone (providerErrorCause), and the controller's notice names
+// no model, since a report carries none.
+func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome) error {
+	if !r.Refused {
+		if m.claim.ProviderErrorRun != 0 {
+			m.log.Info("supervise: a turn that ran no prompt of the daemon's ended with no provider error; the run of provider errors is over",
+				"generation", r.Generation, "sequence", r.Sequence, "providerErrorRun", m.claim.ProviderErrorRun)
+			m.claim.ProviderErrorRun = 0
+		}
+		return m.persist(ctx)
+	}
+	cause := providerErrorCause(r.HTTPStatus)
+	m.claim.ProviderErrorRun++
+	m.log.Warn("supervise: a turn that ran no prompt of the daemon's ended in a provider error",
+		"generation", r.Generation, "sequence", r.Sequence, "httpStatus", r.HTTPStatus,
+		"providerErrorRun", m.claim.ProviderErrorRun)
+	m.tellControllerOfProviderErrors("", cause)
+	if holdsTheIssue(r.HTTPStatus) {
+		return m.fail(ctx, CauseProviderError,
+			"a provider error that cannot clear ended a turn this claim's agent ran with no prompt of the daemon's: "+cause)
+	}
 	return m.persist(ctx)
 }
 

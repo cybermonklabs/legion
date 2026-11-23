@@ -2,7 +2,7 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { type LegionDaemonClient, retryWhileDaemonRestarts } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import { assistantRefusal } from "@legion/pi-shared/phase-stall";
-import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
+import type { AgentEndEvent, InputEvent } from "@legion/pi-shared/pi-types";
 import { turnGoesOn } from "./turn-end";
 
 /**
@@ -12,6 +12,27 @@ import { turnGoesOn } from "./turn-end";
  * the reports, and the run fails no claim (dispatch://INFRA-4508): it decides only whether a retry
  * of the claim starts a new session rather than resuming the one every recent turn of which was
  * refused (`freshSession`, `packages/daemon/internal/supervise/turnoutcome.go`).
+ *
+ * A refused turn's report carries the HTTP status the provider answered, where the host recorded
+ * one (`errorStatus` on the assistant message that ended the turn, the field the host's own
+ * `prompt_result` takes its `httpStatus` from), and the report of a turn that ran no prompt of the
+ * daemon's says so (`unprompted`). Such a turn — a phase reminder this plugin starts itself with
+ * `pi.sendMessage`, an Envoy message, a background job's result — has no prompt result, so the
+ * daemon judges it from this report alone, as it judges a prompted turn from that prompt's result
+ * (dispatch://INFRA-4508's R4): a refusal whose status cannot clear fails the claim and holds the
+ * issue, and any other refusal counts in the claim's run of provider-error turns. No status is
+ * ever read out of the refusal's words.
+ *
+ * Which turns a prompt ran is read the way the host decides which run a `prompt_result` reports
+ * (`RpcPromptResults`, `packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts` at the pinned
+ * tag): a prompt the daemon sent arrives as `input` with `source: "rpc"` — the daemon is this
+ * pane's one RPC client — and its result reports the first run that starts after it, up to the
+ * first end the host does not go on from itself (`turnGoesOn`) and that leaves no message waiting
+ * to run next. Every report from that run's start to that end is a prompted one, which the result
+ * alone judges, whichever of the two reaches the daemon first. Where this reading could part from
+ * the host's — a prompt the host refused as busy after its `input`, which leaves the next run
+ * taken for that prompt's — the report goes as prompted, so that the turn goes uncounted rather
+ * than counted twice.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
@@ -42,26 +63,47 @@ export interface TurnOutcomeReporterDeps {
 }
 
 export interface TurnOutcomeReporter {
+  /** Input is about to run in the session (`input`): one with `source: "rpc"` is a prompt the
+   * daemon sent, whose result reports the next run to start. */
+  readonly inputArrived: (sessionID: string, event: InputEvent) => void;
+  /** A run started in the session (`agent_start`). */
+  readonly runStarted: (sessionID: string) => void;
   /**
-   * Reports the turn that `agent_end` just ended, for the claim the session holds. Never rejects:
-   * Oh My Pi does not await an `agent_end` handler, so a rejection here would be an unhandled one,
-   * and nothing of the turn waits on the report either way.
+   * Reports the turn that `agent_end` just ended, for the claim the session holds. `pending` is
+   * the host's `hasPendingMessages()` at that end: a message waiting to run next, which the run
+   * it starts carries on. Never rejects: Oh My Pi does not await an `agent_end` handler, so a
+   * rejection here would be an unhandled one, and nothing of the turn waits on the report either
+   * way.
    */
-  readonly report: (sessionID: string, event: AgentEndEvent) => Promise<void>;
+  readonly report: (sessionID: string, event: AgentEndEvent, pending?: boolean) => Promise<void>;
 }
 
 export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOutcomeReporter {
   /** The generation the sequence below counts within, and the last number it gave out. */
   let counting: number | undefined;
   let sequence = 0;
+  /** A prompt the daemon sent has arrived and no run has started since: the next run is its. */
+  let promptOwed = false;
+  /** The run going now is a prompt's, up to the end that prompt's result reports. */
+  let prompted = false;
 
   return {
-    report: async (sessionID, event) => {
+    inputArrived: (sessionID, event) => {
+      if (deps.claim(sessionID) === undefined) return;
+      if (event.source === "rpc") promptOwed = true;
+    },
+    runStarted: (sessionID) => {
+      if (deps.claim(sessionID) === undefined) return;
+      if (promptOwed) {
+        prompted = true;
+        promptOwed = false;
+      }
+    },
+    report: async (sessionID, event, pending = false) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return;
-      const refusal = assistantRefusal(
-        event.messages?.findLast((message) => message.role === "assistant")
-      );
+      const last = event.messages?.findLast((message) => message.role === "assistant");
+      const refusal = assistantRefusal(last);
       // A refusal Oh My Pi goes on from ends no turn (`turnGoesOn`): the host has already scheduled
       // a retry or the next model of its fallback chain, and the end of that attempt is the turn's
       // end, reported in its turn. Counted, each fallback step was one more refused turn of the run
@@ -69,6 +111,10 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       // so it is reported; so is an answered end the host goes on from, which ends the run of
       // refusals before it.
       if (refusal !== undefined && turnGoesOn(event)) return;
+      const unprompted = !prompted;
+      // The end a prompt's result reports is the first the host does not go on from with nothing
+      // waiting to run next; a run after it is no prompt's until another prompt arrives.
+      if (!turnGoesOn(event) && !pending) prompted = false;
       // Taken before the first await, so two turns can never take the same number nor take them
       // out of the order they ended in. A generation this producer has not counted within starts
       // the count again, as a fresh launch's does.
@@ -80,6 +126,16 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
       // The number this report owns: `sequence` moves on as the next turn ends, and the lines
       // below are written after an await.
       const mine = sequence;
+      // The status the host recorded on the refused message, and none for a number that is no
+      // HTTP status, since the daemon refuses a report whose status is outside 100 to 599.
+      const recorded = refusal === undefined ? undefined : last?.errorStatus;
+      const status =
+        typeof recorded === "number" &&
+        Number.isInteger(recorded) &&
+        recorded >= 100 &&
+        recorded <= 599
+          ? recorded
+          : undefined;
       const request = {
         claimToken: claim.claimToken,
         sessionId: claim.sessionID,
@@ -88,6 +144,8 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         sequence: mine,
         outcome: refusal === undefined ? ("clean" as const) : ("refused" as const),
         ...(refusal === undefined ? {} : { message: refusal }),
+        ...(status === undefined ? {} : { httpStatus: status }),
+        ...(unprompted ? { unprompted: true } : {}),
       };
       try {
         // A send that fails on nothing but a restarting daemon is retried until it lands: the
@@ -104,6 +162,8 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
           role: claim.role,
           sequence: mine,
           outcome: request.outcome,
+          httpStatus: status,
+          unprompted,
           refusedRun: outcome.refusedRun,
           failed: outcome.failed,
         });

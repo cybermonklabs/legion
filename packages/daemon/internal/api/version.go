@@ -3362,4 +3362,24 @@ package api
 // 219, and a reading of all 533 open heads between 2026-11-23T01:59:53Z and 02:00:28Z found 219
 // declared only by #4611 and by #4902, #4948 and #5161, each stacked on this branch and carrying
 // this entry, so this entry kept 219, and OwnerPlanContract comes after 217 in SupportedContracts.)
-const DaemonAPIVersion = 219
+//
+// 239: dispatch://INFRA-4508 -- `POST /legion/v1/claims/turn-outcome` takes two optional fields.
+// `httpStatus` is the HTTP status the provider refused the turn with, from 100 to 599, where the
+// producer's provider library gives one (Oh My Pi's `errorStatus` on the refused assistant
+// message, Claude Code's `api_error_status`); one outside that range is refused
+// `400 httpStatus <n> is no HTTP status: give one from 100 to 599, or none`. `unprompted: true`
+// says the turn ran no prompt the daemon sent: a phase reminder, an Envoy message, a background
+// job's result. The daemon judges such a turn from its report, as it judges a prompt's turn from
+// that prompt's result: a refusal whose status cannot clear (a 4xx other than 401, 403, 408 and
+// 429) fails the claim at once with cause `provider_error` and holds the issue, and the answer's
+// `failed` is then true; a refusal that can clear, or with no status, fails nothing and counts in
+// the claim's run of provider-error turns, whose sixth in a row tells the controller once; a clean
+// one ends that run. A report without `unprompted` is judged by nothing, so the report of a turn a
+// prompt ran is never counted beside that prompt's result. The daemon reads every body strictly,
+// so a report from this contract that carries either field is refused by a daemon before 239; the
+// boot gate refuses the mixed pair. (239 is the lowest number above main's 219 that no open pull
+// request declared at a reading of every open pull request that changes this file, 132 heads read
+// at refs/pull/<n>/head between 2026-11-23T22:41:49Z and 22:44:42Z, which found each of 219 to 238
+// declared. Read main's own number and every open head again at the next merge rather than from
+// this line.)
+const DaemonAPIVersion = 239

@@ -112,8 +112,9 @@ func TestATurnOutcomeFromAReplacedLaunchIsRefusedAndRecordsNothing(t *testing.T)
 
 // Every body the route cannot act on is refused with the sentence that says what to send, and
 // nothing is recorded: a caller that names no identity or both, a sequence of 0 (how a body that
-// named none decodes, which would collide every turn on one key), a generation of 0, and an
-// outcome that is neither word.
+// named none decodes, which would collide every turn on one key), a generation of 0, an outcome
+// that is neither word, and a status outside the HTTP range, which is no status a provider
+// answered.
 func TestATurnOutcomeTheRouteCannotActOnIsRefusedAndRecordsNothing(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
@@ -153,6 +154,14 @@ func TestATurnOutcomeTheRouteCannotActOnIsRefusedAndRecordsNothing(t *testing.T)
 			body:    func(req claim.TurnOutcomeRequest) claim.TurnOutcomeRequest { req.Outcome = "refused-ish"; return req },
 			status:  http.StatusBadRequest,
 			message: `outcome "refused-ish" is neither "clean" nor "refused"`,
+		},
+		"with a status outside the HTTP range": {
+			body: func(req claim.TurnOutcomeRequest) claim.TurnOutcomeRequest {
+				req.Outcome, req.HTTPStatus, req.Unprompted = claim.TurnRefused, 1400, true
+				return req
+			},
+			status:  http.StatusBadRequest,
+			message: "httpStatus 1400 is no HTTP status: give one from 100 to 599, or none",
 		},
 		"with the wrong secret": {
 			body:    func(req claim.TurnOutcomeRequest) claim.TurnOutcomeRequest { req.Secret = "not the secret"; return req },
@@ -196,5 +205,38 @@ func TestAReportOfAnEarlierGenerationIsRecordedInItsOwnPlace(t *testing.T) {
 	kept := h.stored(token).TurnOutcomes
 	if len(kept) != 1 || kept[0].Generation != 1 || kept[0].Sequence != 9 {
 		t.Fatalf("the claim keeps %+v, want the report under its own (generation, sequence)", kept)
+	}
+}
+
+// The report of a turn that ran no prompt of the daemon's is that turn's one record, so the daemon
+// judges the turn from it (supervise's turnOutcome): refused with a status that can clear, it
+// fails nothing, and refused with one that cannot, a 400, it fails the claim, and the answer's
+// `failed` says so (claim.TurnOutcomeResponse).
+func TestAnUnpromptedTurnsReportIsJudgedAndAnswersWhetherItFailedTheClaim(t *testing.T) {
+	h := newHarness(t)
+	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
+	registered := h.registered(boot, "ses_architect")
+	report := func(sequence uint64, status int) (*httptest.ResponseRecorder, claim.TurnOutcomeResponse) {
+		return h.turnOutcome(claim.TurnOutcomeRequest{
+			ClaimToken: token, SessionID: "ses_architect", Secret: registered.Secret,
+			Generation: 1, Sequence: sequence, Outcome: claim.TurnRefused, Message: "the provider refused the reminder's turn",
+			HTTPStatus: status, Unprompted: true,
+		})
+	}
+
+	if recorder, answer := report(1, 529); recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 1}) {
+		t.Fatalf("the 529 = %d %+v, want 200 with a run of 1 and no failure", recorder.Code, answer)
+	}
+	if stored := h.stored(token); stored.State == supervise.StateFailed || stored.ProviderErrorRun != 1 {
+		t.Fatalf("after the 529 the claim is %s with a run of %d provider errors, want it live with 1", stored.State, stored.ProviderErrorRun)
+	}
+
+	recorder, answer := report(2, 400)
+
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 2, Failed: true}) {
+		t.Fatalf("the 400 = %d %+v, want 200 with a run of 2 and the claim failed", recorder.Code, answer)
+	}
+	if stored := h.stored(token); stored.State != supervise.StateFailed || stored.FailureCause != supervise.CauseProviderError {
+		t.Fatalf("after the 400 the claim is %s (%q), want it failed by a provider error", stored.State, stored.FailureCause)
 	}
 }

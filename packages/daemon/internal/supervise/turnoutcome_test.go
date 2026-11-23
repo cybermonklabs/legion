@@ -7,7 +7,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// report is one turn's outcome as its producer reports it, at the claim's current generation.
+// report is one turn's outcome as its producer reports it, at the claim's current generation, for
+// a turn the daemon's prompt ran: the report is not marked unprompted, so that prompt's result,
+// and never the report, judges the turn (turnOutcome).
 func (h *harness) report(sequence uint64, refused bool, message string) {
 	h.t.Helper()
 	h.must(RequestTurnOutcome{
@@ -174,8 +176,8 @@ func TestALateReportLandsInItsOwnPlaceInTheRun(t *testing.T) {
 
 // The reports alone fail nothing either: a run of refused reports past the launch failure limit
 // is recorded and persisted, counted up to that limit, and leaves the claim where it was, with
-// its process and its session. A report cannot tell an error that clears from one that does not,
-// so it decides neither (turnOutcome).
+// its process and its session. These are reports of turns the daemon's prompts ran, which those
+// prompts' results judge, so the reports decide neither (turnOutcome).
 func TestARunOfRefusedReportsPastTheLimitLeavesTheClaimWhereItWas(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)

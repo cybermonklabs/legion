@@ -512,7 +512,9 @@ type Claim struct {
 	// clears it (clearUpdate).
 	UpdateLeftRound string
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row, and 0
-	// for a claim whose last turn ended with none (promptResulted). At providerErrorRunTold the
+	// for a claim whose last turn ended with none. A turn a prompt ran is counted from that
+	// prompt's result (promptResulted), and a turn that ran no prompt of the daemon's from its
+	// report (unpromptedTurnEnded), in the one run. At providerErrorRunTold the
 	// project's controller is told once, and not again until a turn with no error puts it back to
 	// zero. It bounds nothing: R2 of dispatch://INFRA-956 forbids an attempt limit here, since a
 	// limit would fail every claim of a project at once in a provider outage.

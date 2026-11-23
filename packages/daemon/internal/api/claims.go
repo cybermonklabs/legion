@@ -246,8 +246,10 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 
 // turnOutcome is a producer reporting how one turn of its agent ended, clean or refused by the
 // provider, with its own sequence within the launch generation. The daemon keeps the report and
-// derives the claim's run of refused turns from the reports it holds (supervise's turnOutcome),
-// which fails no claim; the answer says what the run now is.
+// derives the claim's run of refused turns from the reports it holds, which fails no claim. A turn
+// that ran no prompt of the daemon's is judged from its report, as a prompt's turn is from its
+// result (supervise's turnOutcome): a refusal whose status cannot clear fails the claim at once.
+// The answer says what the run now is and whether this report failed the claim.
 //
 // The caller is the claim's, proved one of two ways. An Oh My Pi session's pi-legion holds the
 // registration's secret and names the claim with it, as the ready and the exit do. The Claude
@@ -271,6 +273,13 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("outcome %q is neither %q nor %q", req.Outcome, claim.TurnClean, claim.TurnRefused))
 		return
 	}
+	if req.HTTPStatus != 0 && (req.HTTPStatus < 100 || req.HTTPStatus > 599) {
+		// A status outside the HTTP range is no status a provider answered, and the decision the
+		// status makes (supervise's holdsTheIssue) would read it as one; it is refused rather
+		// than taken for a status that cannot be read.
+		s.refuse(w, r, http.StatusBadRequest, fmt.Sprintf("httpStatus %d is no HTTP status: give one from 100 to 599, or none", req.HTTPStatus))
+		return
+	}
 	token, m, ok := s.turnOutcomeCaller(w, r, req)
 	if !ok {
 		return
@@ -280,14 +289,21 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	err := m.Handle(ctx, supervise.RequestTurnOutcome{
 		Claim: token, Generation: req.Generation, Sequence: req.Sequence,
 		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
+		HTTPStatus: req.HTTPStatus, Unprompted: req.Unprompted,
 	})
 	if err != nil {
 		s.claimFailure(w, r, "turn outcome", token, err)
 		return
 	}
-	run := m.Claim().RefusedRun()
-	// claim.TurnOutcomeResponse says what the answer's Failed holds.
-	s.writeAnswer(w, r, AnswerTurnOutcome, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run})
+	c := m.Claim()
+	// A failed claim refuses every report (supervise's table), so a claim found failed once this
+	// report is handled is one this report failed (claim.TurnOutcomeResponse).
+	failed := c.State == supervise.StateFailed
+	if failed {
+		s.log.Error("api: a turn that ran no prompt of the daemon's ended in a provider error that cannot clear", "claim", token,
+			"generation", req.Generation, "sequence", req.Sequence, "httpStatus", req.HTTPStatus, "failure", c.Failure)
+	}
+	s.writeAnswer(w, r, AnswerTurnOutcome, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: c.RefusedRun(), Failed: failed})
 }
 
 // turnOutcomeCaller is the claim a turn outcome is reported for and its machine: the claim the

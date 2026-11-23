@@ -28,7 +28,11 @@ var errReportTimeout = fmt.Errorf("the daemon gave no answer within the report's
 // bridge ends is reported to the daemon, clean or refused, with the bridge's own sequence within
 // its launch generation (POST /legion/v1/claims/turn-outcome). The daemon derives the claim's run
 // of refused turns from those reports. The run fails no claim (dispatch://INFRA-4508); it decides
-// whether a retry starts a new session.
+// whether a retry starts a new session. A turn that ran no prompt of the daemon's — one an inbox
+// delivery started, the phase hook's reminder among them, or one Claude Code started itself when a
+// background task finished — is judged by the daemon from its report alone, since no prompt
+// result comes for it (supervise's turnOutcome), so its report says so and carries the status the
+// provider refused it with.
 //
 // The bridge is the producer because it is what sees the refusal: a step Claude Code ends with an
 // error is the assistant message it writes with stopReason "error" (result), and the pane's own
@@ -94,9 +98,12 @@ func missingReportInputs(cfg Config) string {
 	return strings.Join(missing, ", ")
 }
 
-// turnEnded reports the turn the bridge has just ended: refused, with what the provider said, when
-// a step of it failed, and clean otherwise. It takes the next sequence and returns at once.
-func (r *turnReports) turnEnded(refusal string) {
+// turnEnded reports the turn the bridge has just ended: refused, with what the provider said and
+// the HTTP status it answered (0 where Claude Code named none), when a step of it failed, and clean
+// otherwise. prompted is whether the turn ran the daemon's prompt, whose prompt_result then judges
+// it: the report of a turn that ran none is marked unprompted, which is what has the daemon judge
+// it. It takes the next sequence and returns at once.
+func (r *turnReports) turnEnded(refusal string, status int, prompted bool) {
 	if r == nil {
 		return
 	}
@@ -105,9 +112,16 @@ func (r *turnReports) turnEnded(refusal string) {
 		Generation: r.generation,
 		Sequence:   r.sequence.Add(1),
 		Outcome:    claim.TurnClean,
+		Unprompted: !prompted,
 	}
 	if refusal != "" {
 		request.Outcome, request.Message = claim.TurnRefused, refusal
+		// A number outside the HTTP range is no status the provider answered, and the daemon
+		// refuses a report that carries one, so such a refusal goes as one whose status cannot be
+		// read.
+		if status >= 100 && status <= 599 {
+			request.HTTPStatus = status
+		}
 	}
 	go r.post(request)
 }
@@ -154,8 +168,8 @@ func (r *turnReports) post(request claim.TurnOutcomeRequest) {
 	case response.StatusCode/100 != 2:
 		r.log.Printf("the daemon refused the outcome of turn %d (%s): %s", request.Sequence, request.Outcome, answer)
 	case decoded.Failed:
-		// claim.TurnOutcomeResponse says which daemon sets Failed.
-		r.log.Printf("the daemon failed this claim: its provider refused %d turns in a row", decoded.RefusedRun)
+		// claim.TurnOutcomeResponse says which report sets Failed.
+		r.log.Printf("the daemon failed this claim: turn %d ran no prompt of the daemon's and the provider refused it with an error that cannot clear (%s)", request.Sequence, request.Message)
 	case decoded.RefusedRun > 0:
 		r.log.Printf("reported turn %d as %s; the daemon counts %d refused turns in a row", request.Sequence, request.Outcome, decoded.RefusedRun)
 	}

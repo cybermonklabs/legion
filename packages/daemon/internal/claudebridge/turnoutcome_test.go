@@ -139,7 +139,9 @@ func (r *rig) untilTurnEnds() {
 // The bridge reports every turn it ends, clean and refused alike, with its own sequence counted
 // from 1 within the launch generation and the launch's boot token as its name: the daemon's count
 // of refused turns is made of these reports and of nothing else. A step Claude Code ended with an
-// error is the turn's refusal, carrying what it said.
+// error is the turn's refusal, carrying what it said and the status Claude Code named in
+// api_error_status. Both turns ran the daemon's prompt, so neither report is marked unprompted:
+// their prompt results judge them.
 func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 
@@ -165,6 +167,9 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	}
 	if refused.Message == "" || refused.BootToken != testBootToken {
 		t.Fatalf("the refused turn was reported %+v, want the provider's message and the launch's boot token", refused)
+	}
+	if refused.HTTPStatus != 529 || refused.Unprompted {
+		t.Fatalf("the refused turn was reported %+v, want the 529 Claude Code named and no unprompted mark: the daemon's prompt ran it", refused)
 	}
 }
 
@@ -206,7 +211,8 @@ func TestOnlyTheStepsTheProviderRefusedAreReportedRefused(t *testing.T) {
 // refused with nothing queued behind it ends its turn, and that turn is reported refused. A
 // delivery that arrives after it starts a turn of its own rather than continuing the one that
 // ended, and the step that runs there is a turn of its own, reported clean — which is what clears
-// the refused run the daemon counts (bridge.go's result).
+// the refused run the daemon counts (bridge.go's result). That turn ran no prompt of the daemon's,
+// so its report is marked unprompted, which is what has the daemon judge it from the report.
 func TestARefusalWithNothingQueuedEndsItsTurnAndTheNextDeliveryIsANewOne(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 	inbox := r.dialInbox()
@@ -229,6 +235,9 @@ func TestARefusalWithNothingQueuedEndsItsTurnAndTheNextDeliveryIsANewOne(t *test
 	clean := r.reported()
 	if clean.Outcome != claim.TurnClean || clean.Sequence != 2 || clean.Message != "" {
 		t.Fatalf("the delivery's turn was reported %+v, want the run's second turn clean: it is a turn of its own, and it clears the refusal", clean)
+	}
+	if !clean.Unprompted || refused.Unprompted {
+		t.Fatalf("the prompt's turn was reported %+v and the delivery's %+v, want only the delivery's marked unprompted", refused, clean)
 	}
 	if answer := inbox.answer(); !answer.OK || answer.ID != "ev1" {
 		t.Fatalf("the inbox answered %+v, want ev1 taken", answer)

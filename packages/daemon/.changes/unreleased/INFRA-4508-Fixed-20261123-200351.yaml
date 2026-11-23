@@ -4,13 +4,21 @@ body: |-
   failed a claim once its plugin had reported `launch_failure_limit` refused turns in a row (3 by
   default), with `the provider refused <n> turns in a row: <message>`, before the controller's
   notice at six such turns. That ended the provider-error ladder, which sends the task to the same
-  session again with no attempt limit. The prompt's own result now decides alone: an error that
-  can clear sends the task again on the ladder, and the controller is told once at six turns in a
-  row; an error that cannot clear, a 4xx other than 401, 403, 408 and 429, still fails the claim at
-  once and holds the issue for its architect. The run of refused turns now decides only whether a
-  retry of the claim starts a new session, at `launch_failure_limit` as before. The answer of
-  `POST /legion/v1/claims/turn-outcome` keeps its `failed` field for the plugins already deployed,
-  and it is now always false.
+  session again with no attempt limit. Each refused turn is now judged once, by the HTTP status the
+  provider answered: an error that cannot clear, a 4xx other than 401, 403, 408 and 429, fails the
+  claim at once with cause `provider_error` and holds the issue for its architect; any other
+  error, or one with no status, fails nothing, and the project's controller is told once when the
+  claim's turns that ended in a provider error reach six in a row, and not again until a turn ends
+  with none. A turn the daemon's prompt ran is judged by that prompt's result, and its task goes to
+  the same session again on the ladder. A turn that ran no prompt of the daemon's, such as a phase
+  reminder the plugin starts itself, has no prompt result, so the daemon judges it from its report
+  to `POST /legion/v1/claims/turn-outcome`, which now carries the provider's `httpStatus` and
+  marks such a turn `unprompted` (daemon API contract 239; the Claude bridge sends both fields
+  too): a refusal that cannot clear fails the claim, which ends the plugin's reminders; one that
+  can clear, or whose report carries no status, fails nothing, and the reminders keep their pace
+  of one every 5 minutes. The run of refused turns the reports make now decides only whether a
+  retry of the claim starts a new session, at `launch_failure_limit` as before. The answer's
+  `failed` is true only for the report that failed the claim.
 time: 2026-11-23T20:03:51.993913529Z
 custom:
   Issue: INFRA-4508

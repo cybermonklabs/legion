@@ -1974,6 +1974,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       refuses: (message: string) => hook(handlers, "session_stop")(refusedBy(message), context),
       /** The run's end, which is what reports the turn's outcome to the daemon. */
       ends: (event: unknown) => hook(handlers, "agent_end")(event, context),
+      /** The daemon's prompt arriving over RPC, as Oh My Pi hands it to `input`. */
+      prompted: (text: string) => hook(handlers, "input")({ text, source: "rpc" }, context),
+      /** A run starting, whatever started it. */
+      starts: () => hook(handlers, "agent_start")({}, context),
     });
     /** jj's root commit: `@-` of a workspace fresh from `jj git init`, which is what a phase that
      * writes no handoff (retro, here) reports as the commit it stands on. */
@@ -2226,11 +2230,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One
-    // timer is armed all the same: the task the refused turn carried ended with it, and the daemon
-    // counts the turn and fails no claim for it (dispatch://INFRA-4508), so without it a single
-    // transient refusal would leave the issue idle with nothing to wake it. The timer's record
-    // check drops the reminder once the daemon has failed the claim, as it does for a provider
-    // error that cannot clear.
+    // timer is armed all the same: the task the refused turn carried ended with it, and nothing
+    // else would wake this worker, so without it a single transient refusal would leave the issue
+    // idle. What ends the reminders is the daemon failing the claim, which the timer's record
+    // check reads: it does at once for a refusal whose status cannot clear, of the task's prompt or
+    // of a reminder's own turn, which no prompt ran and which the daemon judges from its
+    // turn-outcome report (dispatch://INFRA-4508). A refusal that can clear fails nothing, so the
+    // reminders keep their pace, and the controller is told once at six such turns in a row.
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2252,8 +2258,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     // The daemon's own counter: every turn's end is reported, under a sequence this plugin counts
-    // itself within the claim's launch generation, so the daemon can fail a claim whose provider
-    // refuses turn after turn.
+    // itself within the claim's launch generation, from which the daemon derives the claim's run of
+    // refused turns. A turn the daemon's prompt ran is judged by that prompt's result; a turn no
+    // prompt ran, a reminder's, is marked unprompted and carries the status the provider refused it
+    // with, which is what the daemon judges it by.
     test("every turn's end reports its outcome to the daemon, in sequence", async () => {
       const worker = await bootStalling({});
       const outcomes = () =>
@@ -2261,10 +2269,18 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
           .map((request) => request.body);
 
+      await worker.prompted("Continue the task.");
+      await worker.starts();
       await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await worker.starts();
       await worker.ends({
         messages: [
-          { role: "assistant", stopReason: "error", errorMessage: "Overloaded: the model is busy" },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "Overloaded: the model is busy",
+            errorStatus: 529,
+          },
         ],
       });
 
@@ -2285,6 +2301,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           sequence: 2,
           outcome: "refused",
           message: "Overloaded: the model is busy",
+          httpStatus: 529,
+          unprompted: true,
         },
       ]);
     });

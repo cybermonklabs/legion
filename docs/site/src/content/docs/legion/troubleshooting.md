@@ -542,8 +542,20 @@ ended this claim's turn: <cause>`, where the cause names that status, and the ho
 architect's to retry or escalate as any held phase is. The claim's own record carries that
 failure under the cause word `provider_error`, with the same sentence as its `detail`.
 
-**After six turns of one claim in a row have ended in a provider error**, the project's controller
-is told once, as `provider-errors on <KEY>`, with the run, the model and the cause
+**A turn that no prompt of the daemon's ran** — a phase reminder the plugin starts itself, an Envoy
+message, a background job's result — has no prompt result, so the daemon judges it from the
+plugin's turn-outcome report, which carries the HTTP status the provider answered and marks the
+turn `unprompted`. The same rule holds: a status that cannot clear fails the claim at once, with
+`why` reading `a provider error that cannot clear ended a turn this claim's agent ran with no
+prompt of the daemon's: <cause>`, holds the issue under the cause word `provider_error`, and so
+ends the plugin's reminders. Any other refusal, or one whose report carries no status, fails
+nothing and logs `supervise: a turn that ran no prompt of the daemon's ended in a provider error`;
+the reminders keep their pace of one every 5 minutes, and the turn counts in the claim's run of
+provider-error turns below. Nothing is sent again for such a turn: it carried no task.
+
+**After six turns of one claim in a row have ended in a provider error**, whether a prompt of the
+daemon's ran them or not, the project's controller is told once, as `provider-errors on <KEY>`,
+with the run, the model where the prompt's result named one, and the cause
 (`supervise: a run of turns that ended in a provider error; the controller is told`). Nothing is
 held and nothing is stopped by that count: the task is still kept and still sent again. The run
 goes back to zero three ways: at a turn of that claim that ends with no provider error, at a
