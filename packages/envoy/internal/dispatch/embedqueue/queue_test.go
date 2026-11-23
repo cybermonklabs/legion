@@ -1474,7 +1474,7 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 		items, current, _, _, _ := coverage(t, database, configuredIdentity)
 		return items == 2 && current == 2
 	})
-	storetest.AwaitQuiet(t, counter, time.Second, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, time.Second)
 	storetest.RequireNoStatements(t, counter, 7*time.Second, "Run with nothing pending and nothing changing")
 }
 
@@ -1503,7 +1503,7 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	eventually(t, 10*time.Second, "NTFY-1 embedded at boot", func() bool { return pendingCount(t, database) == 0 })
 	// The catch-up signal earns a scan no sooner than retryInterval after the boot scan began.
 	time.Sleep(time.Until(started.Add(retryInterval + time.Second)))
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
+	storetest.AwaitQuiet(t, counter, 500*time.Millisecond)
 
 	insertCommentWithWindow(t, database.Pool, "NTFY-1", "Written while the queue is idle")
 	if got := pendingCount(t, database); got != 1 {

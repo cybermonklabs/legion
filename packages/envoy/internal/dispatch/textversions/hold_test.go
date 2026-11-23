@@ -198,7 +198,7 @@ func TestACaughtUpFillSendsNoStatement(t *testing.T) {
 
 	// Longer than the horizon's longest re-read (rereadMax), so a fill still reading it again is
 	// not taken for one at rest.
-	storetest.AwaitQuiet(t, &tracer.others, rereadMax+time.Second, time.Minute)
+	storetest.AwaitQuiet(t, &tracer.others, rereadMax+time.Second)
 	renewed := tracer.renewals.Load()
 	storetest.RequireNoStatements(t, &tracer.others, 10*time.Second, "a fill caught up with nothing written")
 	if tracer.renewals.Load() == renewed {

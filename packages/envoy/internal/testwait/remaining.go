@@ -67,6 +67,28 @@ func spent(left, spare, timeout time.Duration, known bool) string {
 	}
 }
 
+// binaryStart is when this package was initialised, which is before the test binary's tests begin
+// (testing.M starts its alarm then, M.startAlarm), so binaryStart plus the -timeout is no later
+// than the binary's deadline.
+var binaryStart = time.Now()
+
+// BinaryRemaining is Remaining for code that runs with no *testing.T - a TestMain's work after
+// m.Run - and so cannot read t.Deadline: how long a wait that begins now may last when it must
+// leave spare before the test binary's deadline, the -timeout read from testing's flag counted
+// from this package's start. It answers false, and no span, when the binary has no deadline
+// (-timeout 0) or the flag cannot be read; and 0 with true when spare or less is left.
+func BinaryRemaining(spare time.Duration) (time.Duration, bool) {
+	timeout, known := binaryTimeout()
+	if !known || timeout <= 0 {
+		return 0, false
+	}
+	left := time.Until(binaryStart.Add(timeout)) - spare
+	if left < 0 {
+		left = 0
+	}
+	return left, true
+}
+
 // binaryTimeout is the -timeout the test binary began its tests under, testing's -test.timeout
 // flag, and false when that flag cannot be read.
 func binaryTimeout() (time.Duration, bool) {
