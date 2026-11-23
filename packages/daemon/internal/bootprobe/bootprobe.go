@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/backoff"
 )
 
 // Retry is the wait between attempts whose failure is transient: after the i-th such failure the
@@ -106,16 +108,9 @@ type WallClock struct{}
 // Now is the time of day.
 func (WallClock) Now() time.Time { return time.Now() }
 
-// Sleep waits d on a timer, or returns ctx's error once ctx ends first.
+// Sleep waits d on a timer, or returns ctx's error once ctx ends first (backoff.Sleep).
 func (WallClock) Sleep(ctx context.Context, d time.Duration) error {
-	wait := time.NewTimer(d)
-	defer wait.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-wait.C:
-		return nil
-	}
+	return backoff.Sleep(ctx, d)
 }
 
 // RunOn is Run on clock: a rate-limited attempt's wait is its Until less clock's Now, and every

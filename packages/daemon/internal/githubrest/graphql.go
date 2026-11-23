@@ -105,8 +105,9 @@ func (c Client) GraphQL(ctx context.Context, query string, variables map[string]
 			budget = BudgetGraphQL
 		}
 		limit := limitHeaders(headers)
+		wait, _ := limit.WaitAt(time.Now())
 		return &Answer{Method: http.MethodPost, Path: path, Status: http.StatusOK, Body: body, RateLimited: true,
-			RetryAfter: limit.WaitAt(time.Now()), Budget: budget, Limit: limit}
+			RetryAfter: wait, Budget: budget, Limit: limit}
 	}
 	data := len(answer.Data) > 0 && string(answer.Data) != "null"
 	if data {

@@ -205,9 +205,10 @@ type overrides struct {
 	// the catch-up's reads shortens it, so each of its boots does not wait out two seconds a read.
 	catchUpRetry time.Duration
 	// appCalls are the bounds of the start's App calls (appCallBounds): their attempt, the retry
-	// between attempts that failed transiently, and the rate-limit policy; nil is
-	// productionAppCalls. A test of the boot's App calls shortens them for the daemons it boots
-	// alone, so it runs beside every other test.
+	// between attempts that failed transiently, the rate-limit policy, and the clock every wait of
+	// theirs reads and waits on; nil is productionAppCalls. A test of the boot's App calls shortens
+	// them, or puts their waits on a clock of its own, for the daemons it boots alone, so it runs
+	// beside every other test.
 	appCalls *appCallBounds
 	// entrySweep is how often the daemon converges the phase entries with no fact arriving
 	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of

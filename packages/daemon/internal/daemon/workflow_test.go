@@ -133,7 +133,7 @@ func TestOpenWorkflowRefusesAReviewLoginItCannotTellFromTheImplementers(t *testi
 func TestAppLoginsAtBootReturnsTheReviewAppLogin(t *testing.T) {
 	t.Parallel()
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
-	login, err := appLoginsAtBoot(context.Background(), tokens, newStartWaits(productionAppCalls(), time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	login, err := appLoginsAtBoot(context.Background(), tokens, newStartWaits(productionAppCalls()), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("appLoginsAtBoot: %v", err)
 	}
@@ -162,7 +162,7 @@ func (c countedLogins) AppLogin(_ context.Context, role appauth.AppRole) (string
 func TestTheLoginsReadReadsNoAppAgainOnceItReadItsLogin(t *testing.T) {
 	t.Parallel()
 	reads := countedLogins{}
-	login, err := appLoginsAtBoot(context.Background(), reads, newStartWaits(*quickAppMints(), time.Now), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	login, err := appLoginsAtBoot(context.Background(), reads, newStartWaits(*quickAppMints()), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if want := "legion-" + string(appauth.Review) + "[bot]"; err != nil || login != want {
 		t.Fatalf("appLoginsAtBoot = %q, %v; want %q, the review App's login, after one transient failure", login, err, want)
 	}
@@ -241,10 +241,12 @@ func TestStartWaitsDecidesEachWait(t *testing.T) {
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			now := start
-			waits := newStartWaits(productionAppCalls(), func() time.Time { return now })
+			clock := &setClock{now: start}
+			calls := productionAppCalls()
+			calls.clock = clock
+			waits := newStartWaits(calls)
 			for index, step := range row.steps {
-				now = start.Add(step.at)
+				clock.now = start.Add(step.at)
 				until, waited, ended := waits.wait(step.call, step.answer)
 				if ended != step.ended || waited != step.waited || !step.ended && !until.Equal(start.Add(step.until)) {
 					t.Fatalf("step %d: until %s, waited %s, ended %v; want until %s, waited %s, ended %v",
@@ -253,4 +255,14 @@ func TestStartWaitsDecidesEachWait(t *testing.T) {
 			}
 		})
 	}
+}
+
+// setClock is a clock a test sets by hand (now), for a start's waits read with no sleep between
+// them; its Sleep is never reached.
+type setClock struct{ now time.Time }
+
+func (c *setClock) Now() time.Time { return c.now }
+
+func (c *setClock) Sleep(context.Context, time.Duration) error {
+	panic("setClock: nothing sleeps on a clock set by hand")
 }
