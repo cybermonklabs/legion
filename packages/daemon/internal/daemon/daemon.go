@@ -5,6 +5,7 @@
 package daemon
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -2555,20 +2556,52 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 // stop: each is still launch_uncertain, in memory as in the store, and nothing else in this boot
 // releases it, so the caller retries it (relaunchUnfinished). ctx is the relaunches' context; each
 // relaunch derives a context of its own from it.
+//
+// It runs in three steps. Every claim's uncertain launch is released first, each on a goroutine of
+// its own. Then the turns of the released ones are reserved in the wake pacing one at a time, in
+// the order their work was owed (unfinishedTurns), and only then is every launch posted at once,
+// each carrying its turn (supervise.RequestSpawn.Turn). Most of these claims were waiting in the
+// previous daemon's pacing when it stopped, and a wake is memory only, so this is the queue that
+// daemon was draining, rebuilt: reserved instead as each goroutine reached the gate, its order was
+// chance, and a claim that had waited most of an hour went back to a random place behind hundreds
+// at each restart (dispatch://INFRA-5482).
 func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token) []claim.Token {
 	refused := make([]bool, len(tokens))
-	var launching sync.WaitGroup
+	released := make([]*supervise.Machine, len(tokens))
+	var releasing sync.WaitGroup
 	for i, token := range tokens {
 		m, ok := s.supervisor.Machine(token)
 		if !ok {
 			continue
 		}
+		releasing.Add(1)
+		go func() {
+			defer releasing.Done()
+			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
+			// hold mark of its own rather than ctx's.
+			var spawnable bool
+			spawnable, refused[i] = s.releaseUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
+			if spawnable {
+				released[i] = m
+			}
+		}()
+	}
+	releasing.Wait()
+	turns := s.unfinishedTurns(released)
+	var launching sync.WaitGroup
+	for i, token := range tokens {
+		m := released[i]
+		if m == nil {
+			continue
+		}
 		launching.Add(1)
 		go func() {
 			defer launching.Done()
-			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
-			// hold mark of its own rather than ctx's.
-			refused[i] = s.launchUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
+			s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
+			spawn := supervise.RequestSpawn{Claim: token, Turn: turns[i]}
+			if err := m.Handle(store.ForConcurrentWorker(ctx), spawn); err != nil {
+				s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
+			}
 		}()
 	}
 	launching.Wait()
@@ -2581,25 +2614,83 @@ func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token
 	return failed
 }
 
-// launchUnfinishedClaim releases one unfinished launch and launches it again, both on ctx, and
-// reports whether the store refused the release (launchUnfinished).
-func (s *supervision) launchUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) bool {
+// releaseUnfinishedClaim releases one unfinished launch on ctx, and reports whether the claim is
+// now queued with no process, the one claim launchUnfinished launches again, and whether the
+// store refused the release (launchUnfinished).
+func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) (spawnable, refused bool) {
 	released, err := m.ReleaseUncertainLaunch(ctx)
 	if err != nil {
-		return s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
+		return false, s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
 			"supervise: release an uncertain launch; retrying at the next orphan sweep")
 	}
 	c := m.Claim()
 	if !released || c.State != supervise.StateQueued || c.Locator != nil {
 		s.log.Info("supervise: unrecorded launch settled without relaunch", "claim", token, "state", c.State)
-		return false
+		return false, false
 	}
-	s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
-	spawn := supervise.RequestSpawn{Claim: token}
-	if err := m.Handle(ctx, spawn); err != nil {
-		s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
+	return true, false
+}
+
+// unfinishedTurns reserves a turn in the wake pacing for each claim of released that the pacing
+// would hold, one at a time, the claim whose work was owed longest first (owedSince), and answers
+// each claim's turn at its index, the zero time for one it reserved nothing for. That is every
+// claim while the pacing is off or the project is paused — the pause's gate holds those launches
+// and takes no turn of them (supervise's pauseGate) — and the project controller's claim, which
+// the pacing never holds (claim.IsController): each of those launches as its gate decides.
+func (s *supervision) unfinishedTurns(released []*supervise.Machine) []time.Time {
+	turns := make([]time.Time, len(released))
+	deps := s.supervisor.deps
+	if deps.WakePace.Reserve == nil {
+		return turns
 	}
-	return false
+	if deps.Paused != nil {
+		if _, paused := deps.Paused(); paused {
+			return turns
+		}
+	}
+	type owed struct {
+		index int
+		claim supervise.Claim
+	}
+	var queue []owed
+	for i, m := range released {
+		if m == nil {
+			continue
+		}
+		if c := m.View().Claim; !claim.IsController(c.Role, c.Issue, c.Tree) {
+			queue = append(queue, owed{index: i, claim: c})
+		}
+	}
+	slices.SortStableFunc(queue, func(a, b owed) int {
+		return cmp.Or(compareOwed(owedSince(a.claim), owedSince(b.claim)), cmp.Compare(a.claim.Token, b.claim.Token))
+	})
+	for _, waiting := range queue {
+		turns[waiting.index] = deps.WakePace.Reserve(deps.Clock.Now())
+	}
+	return turns
+}
+
+// owedSince is when the work an unfinished launch is for was first owed: the moment the task the
+// claim holds was queued to it, and the zero time for a claim that holds none.
+func owedSince(c supervise.Claim) time.Time {
+	if c.Pending == nil {
+		return time.Time{}
+	}
+	return c.Pending.QueuedAt
+}
+
+// compareOwed orders two owedSince moments, the earlier first, and a claim owed nothing after every
+// claim owed work: its launch holds up no task.
+func compareOwed(a, b time.Time) int {
+	switch {
+	case a.IsZero() && b.IsZero():
+		return 0
+	case a.IsZero():
+		return 1
+	case b.IsZero():
+		return -1
+	}
+	return a.Compare(b)
 }
 
 // relaunchUnfinished launches tokens' unfinished launches on a goroutine of its own, never on the

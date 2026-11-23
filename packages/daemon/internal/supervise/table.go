@@ -421,6 +421,15 @@ type RequestSpawn struct {
 	// launches is the fault the pacing exists to fix, and a wake let through by default would
 	// put it back one caller at a time.
 	Exempt bool
+	// Turn is a moment the caller has already reserved for this launch in the wake pacing, which
+	// the gate takes in place of reserving one of its own (reserveWake, Machine.reservedTurn), and
+	// the zero time for every caller but one: the boot's relaunch of the launches the previous
+	// daemon left waiting (internal/daemon's launchUnfinished), which reserves their turns one by
+	// one in the order their claims' work was owed before it posts them all at once, so the queue
+	// a restart rebuilds keeps the order the previous daemon was draining (dispatch://INFRA-5482).
+	// A launch the gate does not reach — refused, or held by a project pause — leaves that moment
+	// spent, as a dropped wake leaves its token spent (wakepace.Limiter.Reserve).
+	Turn time.Time
 }
 
 // RequestRegister is the agent's registration, already authenticated by its boot token: the
@@ -2551,7 +2560,11 @@ func noTurn(m *Machine, ctx context.Context, _ Event) error {
 	return m.promptFailed(ctx, fmt.Sprintf("acknowledged, and no turn started within %s", m.deps.Timeouts.RPC), taskRead)
 }
 
+// spawn launches a queued claim, at the turn its caller reserved when it carries one
+// (RequestSpawn.Turn, Machine.reservedTurn), and otherwise at the turn the gate reserves.
 func spawn(m *Machine, ctx context.Context, ev Event) error {
+	m.reservedTurn = ev.(RequestSpawn).Turn
+	defer func() { m.reservedTurn = time.Time{} }()
 	return m.revive(ctx, exemptWake(ev), nil)
 }
 

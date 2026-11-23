@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -25,20 +26,24 @@ type launcherCredential struct {
 }
 
 // launcherSecret is what the runtime holds of one role's launcher Secret for one Sandbox: the
-// credential a read or a binding of the Secret gave it (held), or else when its latest read failed.
+// credential a read or a binding of the Secret gave it (held), or else when its latest read failed;
+// and when a binding of it at a hello (bindAtHello) last failed, which a binding that lands clears.
 type launcherSecret struct {
-	credential launcherCredential
-	held       bool
-	failedAt   time.Time
+	credential   launcherCredential
+	held         bool
+	failedAt     time.Time
+	bindFailedAt time.Time
 }
 
 // launcherCredentials are the launcher Secrets the runtime holds, by name and then by the UID of
 // the Sandbox each was read or bound for, so a Sandbox's entry is never another's of the same
-// name; and the reads of them in flight, one per Secret of a Sandbox (launcherCredential).
+// name; the reads of them in flight, one per Secret of a Sandbox (launcherCredential); and the
+// bindings at a hello in flight, one per Sandbox (bindAtHello).
 type launcherCredentials struct {
 	mu      sync.Mutex
 	secrets map[string]map[types.UID]launcherSecret
 	reads   singleflight.Group
+	binds   singleflight.Group
 }
 
 // credentialRetry is how long after a launcher Secret's read failed a hello needing it is refused
@@ -54,6 +59,12 @@ const credentialRetry = 10 * time.Second
 // (launcherCredential), so a restart's reconnecting launchers cost one read each and
 // unauthenticated hellos cannot turn into an unbounded stream of Kubernetes requests. A hello waits
 // for that read up to apiTimeout.
+//
+// A launcher holding its role's current token from the Sandbox's current pod, which no Secret
+// binds, is of a pod no launch made: the Agent Sandbox controller recreated it after an eviction or
+// a node loss. Its pod is bound at that hello (bindAtHello), which the hello waits for up to the
+// same apiTimeout, and the launcher is accepted once the binding names its pod, so its roles need
+// not wait for the supervisor's next launch, nor that launch replace the pod once more.
 //
 // An accepted launcher is answered with the acknowledgement launcherHelloAck builds for its pod's
 // kind, which the listener writes whole; every refusal answers the zero acknowledgement, which
@@ -80,7 +91,18 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher token is not current"
 		}
 		if credential.podUID != hello.PodUID {
-			return nil, shimwire.LauncherHelloAck{}, "launcher pod UID is not bound to its Secret epoch"
+			switch err := r.bindAtHello(ctx, view.sandbox, view.pod, role); {
+			case errors.Is(err, errNotBindable):
+				return nil, shimwire.LauncherHelloAck{}, "launcher pod UID is not bound to its Secret epoch"
+			case err != nil:
+				return nil, shimwire.LauncherHelloAck{}, "launcher pod could not be bound to its Secret epoch"
+			}
+			// The binding holds what it wrote, so this is answered from memory, and it is checked
+			// again as a whole: the binding read each Secret afresh.
+			credential, err = r.launcherCredential(ctx, view.sandbox, role)
+			if err != nil || subtle.ConstantTimeCompare(credential.hash[:], hash[:]) != 1 || credential.podUID != hello.PodUID {
+				return nil, shimwire.LauncherHelloAck{}, "launcher pod UID is not bound to its Secret epoch"
+			}
 		}
 		// Options.Project is the legion.dev/project label's value (its own doc comment), not
 		// necessarily already a claim.ProjectToken: a deployment's own project name may carry
@@ -203,6 +225,93 @@ func credentialFromSecret(secret *corev1.Secret) launcherCredential {
 		issue: secret.Annotations[annotationIssue], hash: sha256.Sum256(secret.Data[LauncherTokenFile])}
 }
 
+// errNotBindable is a hello's pod that bindAtHello does not bind (bindable).
+var errNotBindable = errors.New("the pod is not its Sandbox's current live pod")
+
+// bindable reports whether pod, the pod s owns in the pod store (view), is one a hello may bind its
+// launchers to: s is not Suspended, and pod is neither being deleted nor ended. A pod of a
+// Suspended Sandbox is on its way out, as such a pod is.
+func bindable(s *sandbox, pod *corev1.Pod) bool {
+	return s.mode() != modeSuspended && pod.DeletionTimestamp == nil && !terminal(pod)
+}
+
+// bindAtHello binds the launcher Secrets of pod, the pod s owns in the pod store, to pod where no
+// launch did, for a hello of role's launcher. After an eviction or a node loss the Agent Sandbox
+// controller makes a Running Sandbox's pod again from the template the Sandbox stores, under a new
+// uid, and that pod projects the Secrets a launch bound to the pod before it: its launchers hold
+// each role's current token and name a pod no Secret binds. The caller has checked the hello's
+// token against role's credential, so a hello without the current token writes nothing, and nor
+// does one from a pod that is not bindable. The binding is single-flight per Sandbox and outlives
+// the hello that began it, as a credential's read does (launcherCredential): the hello waits for it
+// until ctx ends and is then refused, and the launcher's next hello joins the same binding or
+// finds what it held. A binding whose writes failed is not begun again for role's Secret for
+// credentialRetry, and a hello meanwhile is refused without a request, so the launchers of a pod
+// the API server will not bind, each saying hello again a second after its refusal, ask for one
+// binding each credentialRetry.
+func (r *Runtime) bindAtHello(ctx context.Context, s *sandbox, pod *corev1.Pod, role claim.Role) error {
+	if !bindable(s, pod) {
+		return errNotBindable
+	}
+	if from := r.launcherAuth.bindFrom(roleSecretName(s.Name, role), s.UID); r.now().Before(from) {
+		return fmt.Errorf("sandbox %s: its pod's last binding failed; it is bound again from %s", s.Name, from.UTC().Format(time.RFC3339))
+	}
+	bind := r.launcherAuth.binds.DoChan(string(s.UID), func() (any, error) { return nil, r.bindCurrentPod(s.Name, s.UID, pod.UID) })
+	select {
+	case result := <-bind:
+		return result.Err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// bindCurrentPod binds the launcher Secrets of the pod with uid podUID to it, where that pod is
+// still the bindable pod of the Sandbox named name with uid sandboxUID once the pod's launch turn
+// is held. The turn is taken only where nothing holds it: a launch, a suspension or a release that
+// holds it decides the pod itself, so the binding is refused at once rather than waiting the turn
+// out, and the launcher's next hello finds what that left. It writes the Secret of each role of the
+// pod that no held credential binds to it yet, so the launchers of one pod write each Secret once
+// however many of them say hello, and it holds what it wrote (bindLauncherSecrets), so the next
+// hello is accepted without a request. It runs for the runtime's lifetime, as
+// readLauncherCredential does; each request is bounded by apiTimeout (requestConfig).
+func (r *Runtime) bindCurrentPod(name string, sandboxUID, podUID types.UID) error {
+	release, free := r.tryLockPod(name)
+	if !free {
+		return fmt.Errorf("sandbox %s: its pod's launch turn is held", name)
+	}
+	defer release()
+	v, err := r.view(name)
+	if err != nil {
+		return err
+	}
+	if v.sandbox == nil || v.sandbox.UID != sandboxUID || v.pod == nil || v.pod.UID != podUID || !bindable(v.sandbox, v.pod) {
+		return errNotBindable
+	}
+	kind, err := podKindOf(v.sandbox.Labels)
+	if err != nil {
+		return err
+	}
+	var unbound []claim.Role
+	for _, role := range kind.roles() {
+		if credential, held, _ := r.launcherAuth.lookup(roleSecretName(name, role), sandboxUID); !held || credential.podUID != string(podUID) {
+			unbound = append(unbound, role)
+		}
+	}
+	if len(unbound) == 0 {
+		return nil
+	}
+	if err := r.bindLauncherSecrets(r.lifetime, v.sandbox, unbound, string(podUID)); err != nil {
+		for _, role := range unbound {
+			r.launcherAuth.failBind(roleSecretName(name, role), sandboxUID, r.now())
+		}
+		r.log.Warn("sandbox runtime: binding the role launchers of a pod made outside a launch failed; its launchers' hellos are refused until a binding lands",
+			"sandbox", name, "pod", podUID, "bindAgainAfter", credentialRetry, "err", err)
+		return err
+	}
+	r.log.Info("sandbox runtime: bound the role launchers of a pod made outside a launch to that pod",
+		"sandbox", name, "pod", podUID, "roles", unbound)
+	return nil
+}
+
 // lookup is the credential held as name's for the Sandbox with uid, if one is (held), and otherwise
 // when a read of it may next begin: credentialRetry after that Sandbox's latest failed read, the
 // zero time when none failed.
@@ -220,8 +329,9 @@ func (c *launcherCredentials) lookup(name string, uid types.UID) (credential lau
 }
 
 // bind holds credential, a binding write's or a binding check's, as name's for the Sandbox with
-// uid, in place of whatever was held. A binding is made under a launch of that Sandbox's pod, which
-// proves it holds the name now, so every other Sandbox's entry of the name, a deleted one's, goes.
+// uid, in place of whatever was held. A binding is made under that Sandbox's pod's launch turn, by
+// a launch or by a hello's binding of its current pod (bindAtHello), which proves it holds the name
+// now, so every other Sandbox's entry of the name, a deleted one's, goes.
 func (c *launcherCredentials) bind(name string, uid types.UID, credential launcherCredential) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -233,26 +343,51 @@ func (c *launcherCredentials) bind(name string, uid types.UID, credential launch
 
 // store holds credential, a read's, as name's for the Sandbox with uid, unless that Sandbox holds
 // one already: a binding that completed during the read is newer than it. It is the credential the
-// Sandbox holds.
+// Sandbox holds. A failed binding at a hello stays recorded (failBind).
 func (c *launcherCredentials) store(name string, uid types.UID, credential launcherCredential) launcherCredential {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if held := c.secrets[name][uid]; held.held {
+	held := c.secrets[name][uid]
+	if held.held {
 		return held.credential
 	}
-	c.put(name, uid, launcherSecret{credential: credential, held: true})
+	c.put(name, uid, launcherSecret{credential: credential, held: true, bindFailedAt: held.bindFailedAt})
 	return credential
 }
 
 // fail records that a read of name for the Sandbox with uid failed at at, unless that Sandbox
-// holds a credential.
+// holds a credential. A failed binding at a hello stays recorded (failBind).
 func (c *launcherCredentials) fail(name string, uid types.UID, at time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.secrets[name][uid].held {
+	held := c.secrets[name][uid]
+	if held.held {
 		return
 	}
-	c.put(name, uid, launcherSecret{failedAt: at})
+	c.put(name, uid, launcherSecret{failedAt: at, bindFailedAt: held.bindFailedAt})
+}
+
+// failBind records that a binding of name at a hello for the Sandbox with uid failed at at,
+// keeping whatever else is held of it.
+func (c *launcherCredentials) failBind(name string, uid types.UID, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	secret := c.secrets[name][uid]
+	secret.bindFailedAt = at
+	c.put(name, uid, secret)
+}
+
+// bindFrom is when a binding of name at a hello for the Sandbox with uid may next begin:
+// credentialRetry after its latest failed one, the zero time when none failed since the Secret was
+// last bound.
+func (c *launcherCredentials) bindFrom(name string, uid types.UID) time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	failed := c.secrets[name][uid].bindFailedAt
+	if failed.IsZero() {
+		return time.Time{}
+	}
+	return failed.Add(credentialRetry)
 }
 
 // forget drops whatever is held of name, for every Sandbox. A read that lands afterwards for a

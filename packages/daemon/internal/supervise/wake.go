@@ -6,12 +6,13 @@ package supervise
 // until its turn (parkWake) and run when that turn comes (wakeNow); a request a person is waiting
 // on is let through unpaced (exemptWake). A request that reaches a claim a wake parked over no
 // process takes that wake off the machine first and gives it back if it launched nothing
-// (dropWakeFor, reparkWake), and an operator's task over a launch parked above a process the
-// claim still records runs that launch there and then, unpaced (runParkedLaunchNow). Every wake
-// writes one line as it runs, in a shape the daemon's own catch-up lane shares (wakeRan,
-// WakeRanMessage, WakeRanFields). A launch the issue pod's start gate cannot grant at once parks
-// on the machine as a wake too, whose turn is that gate's grant rather than a moment of the
-// pacing's (askPod, wake.park, podStartDue).
+// (dropWakeFor, reparkWake), an operator's retry no row of the state the gate found decides runs
+// that wake's launch there and then (runDroppedLaunchForRetry), and an operator's task over a launch
+// parked above a process the claim still records runs that launch there and then, unpaced
+// (runParkedLaunchNow). Every wake writes one line as it runs, in a shape the daemon's own catch-up
+// lane shares (wakeRan, WakeRanMessage, WakeRanFields). A launch the issue pod's start gate cannot
+// grant at once parks on the machine as a wake too, whose turn is that gate's grant rather than a
+// moment of the pacing's (askPod, wake.park, podStartDue).
 
 import (
 	"context"
@@ -193,7 +194,8 @@ type wake struct {
 // reserveWake is the wake gate: it asks the pacing when this wake may run and, when that moment
 // is later than now, parks the wake on the machine until its turn (parkWake, wakeNow) and returns
 // with the caller's work left to that turn. A wake that need not wait runs that work here, having
-// written the line it writes as it goes (wakeRan).
+// written the line it writes as it goes (wakeRan). A spawn whose caller reserved its turn already
+// (RequestSpawn.Turn, Machine.reservedTurn) is given that moment and reserves none of its own.
 //
 // A claim that records no process when the gate holds it — a spawn from queued, a rule resume
 // from suspended, a retry from failed or retired, a process already retired by the decision that
@@ -269,7 +271,16 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 	// above 0 (the daemon's run), which is why nothing here reads WakePace.Rate, whose doc says
 	// it is read for the line alone.
 	now := m.deps.Clock.Now()
-	at := reserve(now)
+	// A caller that reserved this launch's turn already, in an order of its own
+	// (RequestSpawn.Turn), was charged that moment, and a second reservation would charge it twice.
+	at, turn := now, m.reservedTurn
+	m.reservedTurn = time.Time{}
+	switch {
+	case turn.IsZero():
+		at = reserve(now)
+	case turn.After(now):
+		at = turn
+	}
 	m.wakeLetOut(at)
 	if !at.After(now) {
 		m.wakeRan(kind, true, 0)
@@ -730,6 +741,32 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 	m.log.Info("supervise: an operator's task reached a claim whose paced launch waits over the process it replaces; that launch runs now and the task goes to the process it starts",
 		"kind", waiting.kind, "due", waiting.at, "state", m.claim.State)
 	return m.runWake(ctx, waiting, false)
+}
+
+// runDroppedLaunchForRetry is an operator's retry of a claim whose launch the pacing parked over no
+// process, where the state the gate found is one no retry row acts on: queued, which every spawn
+// and the boot's relaunch of an unfinished launch park from, and suspended, which a rule's resume
+// parks from. The claim reads launching for the whole wait, so a person who sees it stuck reaches
+// for `legion claims retry`; refusing that retry as "a queued claim is spawned, not retried" left
+// the claim behind a restart's whole queue, an hour of it on 2026-11-23 (dispatch://INFRA-5482).
+// The person is asking for the claim to run, and the launch the dropped wake holds is the one that
+// runs it, so that launch runs here, unpaced, exactly as its turn would have run it: the claim is
+// put back launching, where the park wrote it (waitOnMachine), and the wake goes through runWake,
+// lifecycle recheck and all. ran is false, and nothing is done, for every other request, for a
+// claim whose gate-found state a retry row decides (failed, retired), and for a launch the
+// project pause's gate holds, which the operator's retry is refused for before it gets here (the
+// API's refusedWhilePaused) and which nothing but the controller may run while the pause holds.
+//
+// The launch takes no second token, as an operator's task over a parked launch takes none
+// (runParkedLaunchNow): the wakes behind it keep the turns they already hold.
+func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, dropped *wake) (ran bool, err error) {
+	if _, retry := ev.(RequestOperatorRetry); !retry || dropped == nil || dropped.pause != 0 || m.held != nil {
+		return false, nil
+	}
+	m.log.Info("supervise: an operator's retry reached a claim whose paced launch waits over no process; that launch runs now",
+		"kind", dropped.kind, "due", dropped.at, "state", dropped.state)
+	m.claim.State = StateLaunching
+	return true, m.runWake(ctx, dropped, false)
 }
 
 // reparkWake takes a dropped wake up again when the decision it was dropped for launched nothing

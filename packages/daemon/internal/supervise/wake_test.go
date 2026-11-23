@@ -381,10 +381,45 @@ func TestAnOperatorsForgetSessionOfAWaitingClaimIsDecidedAndTheWakeKeepsItsTurn(
 	}
 }
 
-// An operator's retry of a waiting claim the gate found suspended is refused, as it is of any
-// suspended claim — a suspended claim is resumed, not retried — and the refusal costs the claim
-// nothing: the wake it dropped is taken up again and runs at the moment it already held.
-func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.T) {
+// An operator's retry of a claim whose launch the pacing holds over no process runs that launch at
+// once, whatever state the gate found the claim in. A boot's relaunch of an unfinished launch and
+// every spawn park from queued, and the claim reads launching for the whole wait, so a person who
+// sees it stuck reaches for `legion claims retry`; answering "a queued claim is spawned, not
+// retried" left that claim waiting its turn behind a restart's whole queue (dispatch://INFRA-5482).
+// The launch is the one the wake held, so it runs once: the turn it held launches nothing more, and
+// the claim behind it keeps the turn it already holds.
+func TestAnOperatorsRetryOfAClaimWaitingFromQueuedLaunchesAtOnce(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+	third := h.machineFor(wakeClaim(thirdToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	h.wantStarts(secondToken, 0)
+
+	h.mustPostTo(second, RequestOperatorRetry{Claim: secondToken})
+
+	h.wantStarts(secondToken, 1)
+	if got := second.Claim(); got.State != StateLaunching || got.Locator == nil {
+		t.Fatalf("the retried claim is %s recording %+v, want %s recording the process the retry started", got.State, got.Locator, StateLaunching)
+	}
+	if held := second.View().WakeWaiting; held != nil {
+		t.Fatalf("the retried claim still names wake %+v, want none: its launch ran", held)
+	}
+	h.wantWakeLine(secondToken, "kind=launch", "paced=false")
+	h.mustPostTo(third, RequestSpawn{Claim: thirdToken})
+	h.clock.Advance(2*wakeInterval + 2*wakePart)
+	second.Wait()
+	third.Wait()
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(thirdToken, "waitedFor="+(2*wakeInterval+2*wakePart).String())
+}
+
+// The same retry of a claim the gate found suspended runs the launch the rule's resume parked —
+// the session the claim records, resumed — rather than being refused as a retry of a suspended
+// claim: a person waiting on the claim is not made to know which state a launching claim was in
+// before the pacing took it.
+func TestAnOperatorsRetryOfAClaimWaitingFromSuspendedResumesItAtOnce(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	second := h.machineFor(wakeClaim(secondToken, StateSuspended))
 
@@ -392,22 +427,23 @@ func TestAnOperatorsRetryRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
 	h.clock.Advance(wakeInterval / 4)
 	second.Wait()
-
-	err := h.postTo(second, RequestOperatorRetry{Claim: secondToken})
-
-	var refused *RefusedError
-	if !errors.As(err, &refused) || refused.State != StateSuspended {
-		t.Fatalf("the operator's retry answered %v, want a refusal naming %s", err, StateSuspended)
-	}
-	h.clock.Advance(wakeInterval + wakePart - wakeInterval/4 - time.Nanosecond)
-	second.Wait()
 	h.wantStarts(secondToken, 0)
 
-	h.clock.Advance(time.Nanosecond)
-	second.Wait()
+	h.mustPostTo(second, RequestOperatorRetry{Claim: secondToken})
 
+	resumed := 0
+	for _, call := range h.rt.CallsOf("Resume") {
+		if call.Spec.Claim == secondToken {
+			resumed++
+		}
+	}
+	if resumed != 1 {
+		t.Fatalf("the retry resumed %s %d times, want once, the launch its wake held", secondToken, resumed)
+	}
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval/4).String(), "paced=false")
+	h.clock.Advance(wakeInterval + wakePart)
+	second.Wait()
 	h.wantStarts(secondToken, 1)
-	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
 }
 
 // A wake over a claim whose process still runs leaves the claim exactly as it was — its state and

@@ -1661,13 +1661,20 @@ type Machine struct {
 	// fires (wakeNow); nil for none. It lives as long as that timer, which letGo disarms with it,
 	// and it is memory only, as relaunch and staleRelaunch are: a restart loses no wake. A
 	// process-less one parked the claim launching with no process, which the boot repairs to
-	// launch_uncertain and relaunches; one over a process still running is posted again by the
-	// boot's own stale-plugin pass, or raised again by the runtime's next observation of a
-	// process that has died. Each is paced again from an empty bucket, and no wake runs twice. A
-	// launch waiting for its issue pod's start is held here too, until the gate's grant fires
-	// TimerPodStart (askPod, wake.park, podStartDue), and a restart finds it as it finds a
-	// process-less wake.
+	// launch_uncertain and relaunches, reserving the relaunches' turns in the order their claims'
+	// work was owed (RequestSpawn.Turn) so the queue it rebuilds keeps the order this one drained;
+	// one over a process still running is posted again by the boot's own stale-plugin pass, or
+	// raised again by the runtime's next observation of a process that has died. Each is paced
+	// again from an empty bucket, and no wake runs twice. A launch waiting for its issue pod's
+	// start is held here too, until the gate's grant fires TimerPodStart (askPod, wake.park,
+	// podStartDue), and a restart finds it as it finds a process-less wake.
 	wake *wake
+	// reservedTurn is the moment a spawn's caller reserved in the wake pacing for the launch this
+	// decision raises (RequestSpawn.Turn), which the gate takes in place of a reservation of its own
+	// (reserveWake); the zero time for every other launch. The spawn row sets it and clears it as
+	// it returns, so it never outlives the decision that carried it, and the gate takes it once: a
+	// retry that re-enters the gate later reserves afresh, as every retry does (launchAfter).
+	reservedTurn time.Time
 	// pluginRelaunch is the intent of the stale-plugin relaunch this machine is raising: the
 	// contract that relaunch is made for and the wake kind its launch waits under
 	// (pluginIntent, markPluginRelaunch), and nil whenever the launch being raised is not one.
@@ -1846,9 +1853,10 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // event that is stale is logged once and dropped. A suspension of a claim whose agent is in a turn
 // answers ErrSuspendHeld (holdSuspension). A request the wake pacing never makes wait, reaching a
 // claim a paced wake parked with no process, drops that wake before the lookup and is then
-// decided against the state the gate found (dropWakeFor); an operator's task the claim can take,
-// over a launch parked above a process the claim still records, runs that launch first, so the
-// row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
+// decided against the state the gate found (dropWakeFor); an operator's retry no row of that state
+// decides runs the dropped launch itself (runDroppedLaunchForRetry); an operator's task the claim
+// can take, over a launch parked above a process the claim still records, runs that launch first,
+// so the row that queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
 //
 // Handle returns when the decision is made, which includes the runtime call it makes: a stop
 // waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
@@ -1930,6 +1938,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 		return fmt.Errorf("supervise: no row for %s in %s", k.kind, k.state)
 	}
 	if r.act == nil {
+		if ran, err := m.runDroppedLaunchForRetry(ctx, ev, dropped); ran {
+			return err
+		}
 		// The refusal names the state that decided it, which is the state the gate found for a
 		// claim whose wake was just dropped: the re-park moves the claim back to launching after.
 		var refusal error
