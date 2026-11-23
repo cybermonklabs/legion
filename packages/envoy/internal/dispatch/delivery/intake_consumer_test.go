@@ -660,9 +660,16 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	// Two more of the intake's tries after the one that stood by, each of which reads the bound
 	// durable and leaves it: waited for, not slept, so a slow machine reads the durable after
 	// those tries rather than before them. The try that wrote the line may not be counted yet,
-	// hence three.
+	// hence three. A try that takes the durable over ends the tries (the intake then delivers), so
+	// a durable deleted or recreated ends the wait too, and the checks below say what changed.
 	stoodBy := tries.Load()
-	waitFor(t, 20*time.Second, func() bool { return tries.Load() >= stoodBy+3 }, func() string {
+	waitFor(t, 20*time.Second, func() bool {
+		if tries.Load() >= stoodBy+3 {
+			return true
+		}
+		info, err := holder.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		return errors.Is(err, natsgo.ErrConsumerNotFound) || err == nil && !info.Created.Equal(before.Created)
+	}, func() string {
 		return fmt.Sprintf("the intake made %d tries after it stood by, want 3", tries.Load()-stoodBy)
 	})
 	after := awaitPushBound(t, holder, "the other process lost its binding to the durable")
@@ -743,11 +750,18 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	}
 	// Three of the take-over's tries, each skipped (duty writes the line as it skips, once a
 	// try): counted, not slept, so a slow machine reads the durable after those tries rather than
-	// before them.
+	// before them. A try that changes the durable writes no skip line, so a durable deleted,
+	// recreated or bound ends the wait too, and the checks below say what changed.
 	waitFor(t, 20*time.Second, func() bool { return skips() >= 1 }, func() string {
 		return fmt.Sprintf("the intake never reported skipping the %s lease: %v", consumerLease(bus.DispatchDeliveryDurable), logs())
 	})
-	waitFor(t, 20*time.Second, func() bool { return skips() >= 3 }, func() string {
+	waitFor(t, 20*time.Second, func() bool {
+		if skips() >= 3 {
+			return true
+		}
+		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		return errors.Is(err, natsgo.ErrConsumerNotFound) || err == nil && (!info.Created.Equal(before.Created) || info.PushBound)
+	}, func() string {
 		return fmt.Sprintf("the intake skipped the %s lease %d times, want 3: %v", consumerLease(bus.DispatchDeliveryDurable), skips(), logs())
 	})
 	after, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
