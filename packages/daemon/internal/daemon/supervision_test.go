@@ -1151,7 +1151,7 @@ func admitIssue(t *testing.T, cfg config.Config, issue string, role claim.Role, 
 	}
 	defer st.Close()
 	records := recordpkg.NewStore()
-	if err := st.Tx(context.Background(), func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		record := recordpkg.Issue{
 			Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: issue, Project: cfg.Project, Title: issue, Phase: phase.Admitted,
 			Generation: 1, Status: "in_progress",
