@@ -619,33 +619,14 @@ func keyCarried(t *testing.T, issue map[string]json.RawMessage, key string) bool
 }
 
 // publishChecks publishes CI's settlement of the pull request at head, with one run of each name
-// reported and none of them failing or cancelled, as Envoy relays the listener's settlement
-// (intake's decodeChecks reads it, which takes the subject as part of the fact's identity). Each
-// run reaches the fence stamped with the head it ran on and the conclusion the settlement's lists
-// give it (classify's stampedRuns), which is what makes it a run of this head's own.
+// reported and none of them failing or cancelled (publishSettlementOf). Each settlement reports
+// runs of its own, so a head settled twice is the same checks re-run rather than the same report
+// again (classify's redundantSettlement): the fence keeps the newest run of each name, so the count
+// of the head's own runs stands where it was.
 func (r *mergeWaitReadableLive) publishChecks(number int, head string, names ...string) {
 	r.t.Helper()
 	r.seq++
-	// Each settlement reports runs of its own, so a head settled twice is the same checks re-run
-	// rather than the same report again (classify's redundantSettlement): the fence keeps the
-	// newest run of each name, so the count of the head's own runs stands where it was.
-	runs := make([]map[string]any, 0, len(names))
-	for i, name := range names {
-		runs = append(runs, map[string]any{"name": name, "id": int64(number)*1000 + r.seq*10 + int64(i) + 1})
-	}
-	none := map[string]any{"count": 0, "checks": []string{}}
-	payload, err := json.Marshal(map[string]any{
-		"kind": "checks", "repo": liveRepo, "number": strconv.Itoa(number), "sha": head, "check_runs": runs,
-		"generation": 0, "snapshot": fmt.Sprintf("snapshot-%s-%d", head[:8], r.seq), "settled_at": time.Now().UnixMilli(),
-		"failed": none, "cancelled": none, "running": none, "queued": none, "skipped": none,
-		"passed":         map[string]any{"count": len(names), "checks": names},
-		"failing_checks": []any{},
-	})
-	if err != nil {
-		r.t.Fatalf("encode the checks payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.checks", r.subjectRepo(), number)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("checks-%d-%d", number, r.seq), string(payload)))
+	r.publishSettlementOf(number, head, r.seq, names, nil)
 }
 
 // publishReview publishes the reviewer's review of the pull request at head (publishReviewAs), its
