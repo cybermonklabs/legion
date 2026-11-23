@@ -64,6 +64,87 @@ the hand-back after its answer responds to that turn. A round with more arrivals
 plus one is flagged. `scripts/e2e/lib/design-gate-approval-requests.jq` reads the same arrivals
 for the stage 4b proof.
 
+## Check runs census
+
+`check-runs-census.ts` is the one command the three readings of the rule on who runs a check run.
+It reads Dispatch as `ask-census.ts` does (`sessionDispatchSettings` over the harness `command`
+reads, eight issues at a time), and it prints one JSON object under `--json` and nothing else.
+
+Every mode answers the same way. **Exit 0**: the run is complete and nothing is listed. **Exit 1**:
+the run is complete and holds rows for a reader. **Exit 3**: UNKNOWN, with the reason — a list
+below its total, a text or handoff that did not load, an issue Dispatch does not know, or no issue
+at all. A run that enumerated nothing says UNKNOWN rather than reading clean.
+
+### `texts`: the documents and plans that still hold the old rule
+
+```bash
+bun scripts/dispatch/check-runs-census.ts texts \
+  --project INFRA \
+  --referenced-by '<the reference of the comment the reading names>' \
+  --json
+```
+
+It reads two sources. One is each document under **Referenced by** of the comment
+`--referenced-by` names, whose issue is neither done nor in `retro`, with that issue's plan; the
+Verification document of the reading names the comment. The other is each issue of `--project`
+that is neither done nor in `retro`, every page of each status, with the row count compared
+against the total the listing reports. `--keys <file>` reads the listed issues instead, done or
+not; `rounds` writes such a file. A document an issue's list does not name counts as read, with no
+checks.
+
+In each text it looks for the six wordings of the old rule as fixed strings, over the text with
+bold marks taken out and each run of whitespace folded to one space, so a wording broken across
+lines is still found. Over the sentences that hold none of them it runs the two patterns of the
+measurements: the old rule in other words, and the rule that a role records a check from a CI run.
+A pattern hit whose sentence names one of that document's own checks is the owner's narrower rule
+for that check, and is not listed. Each row names the issue, the document, its version and token,
+the match and its paragraph.
+
+`--limit <n>` reads one page of `n` issues for each status, which is how the control that a short
+list reports UNKNOWN is run. `--break-patterns` makes the two patterns match nothing, which is the
+control that shows the fixed strings alone miss a document that holds the rule in other words.
+
+### `rounds`: the testing rounds since a time, and the checks with no run in them
+
+```bash
+bun scripts/dispatch/check-runs-census.ts rounds \
+  --project INFRA --since 2026-11-24T09:00:00Z \
+  --repo /path/to/checkout --out /path/to/out
+```
+
+It lists each issue of the project updated since `--since` whose events show a move into `testing`
+after it, reads each `test` handoff of those issues for its version, session and head, and reads
+the results of each check. It writes the issue list to `<out>/keys.txt`, which `texts --keys`
+reads.
+
+A check is left out of a round, and named with the reason, where its `when` is not `before_merge`,
+where it carries `ci_check`, where a workflow step records it (`dispatch result` under `.github/`
+at the round's head, the step naming the check), where its words give its run only to another
+runner, or where the issue's plan gives it one run at a head. A check whose command a job of an
+ordinary pull request runs is printed as CI's; a job a label such as `full-ci` or the merge queue
+gates runs on no ordinary pull request, so the run prints it and counts it for nothing.
+
+For each check left, the run looks for a result of the round's session, at the round's head,
+between the move into testing and the handoff. It lists a check with no such result, one whose
+reading carries an earlier run, and one whose linked output shows a run at another head. A result
+that links no output, or whose output does not load, reports UNKNOWN, never a pass. The run also
+names each result it took whose actor does not carry `proven`.
+
+### `main-read`: the reading of main after a merge
+
+```bash
+bun scripts/dispatch/check-runs-census.ts main-read \
+  --merge <merge commit> --after <pull request number> \
+  --repo /path/to/clone/at/main --out /path/to/out
+```
+
+First the order: the merge commit of the pull request `--after` names (`gh pr view`) must be an
+ancestor of `--merge`. A pull request with no merge commit fails that step. Then the three greps
+of the readings over the prompt files, and the three pin tests, each run where a package under
+`packages/daemon` holds it and reported as `not run` with the reason where none does. It writes
+each file its reader reads under `<out>/files/`, lists them in `<out>/files.txt` with the ones the
+checkout lacks, and writes the whole report to `<out>/report.json`.
+
 ## Display read census
 
 `display-read-census.ts` reads every stored text of a Dispatch deployment through its API and

@@ -1,0 +1,10 @@
+name: rows
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  rows:
+    if: ${{ !github.event.pull_request.draft }}
+    uses: ./.github/workflows/rows-job.yaml
