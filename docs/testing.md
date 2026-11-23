@@ -452,6 +452,16 @@ A test that reads `pg_locks` or `pg_stat_activity` names its own database in the
 databases cloned from the same template, so a predicate on a relation or a lock key alone counts
 their waiters as its own.
 
+A test beside seven others shares the runner's four cores with them, so a test that proves two
+calls run at once, or that a request does not wait on something, by how many milliseconds it
+took, fails on a correct product whenever the machine is busy. Prove it by the order of events
+instead, with the test binary's deadline as the only bound (`testwait.Receive`): hold each call at
+the stand-in until all of them have arrived, or hold the thing the request must not wait on until
+after its response. A product bound the test does not mean to race takes a value past any run
+through a field of the server that only a test sets, as `server.mentionLookupBound` and
+`server.duplicateBound` do; a package variable would change it for the parallel tests beside it
+(`comment_delivery_sender_test.go`, `TestMentionLookupsOfOneCommentRunAtOnce`).
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),

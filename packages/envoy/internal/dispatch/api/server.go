@@ -493,6 +493,13 @@ type server struct {
 	// Only a test sets it, so a budget that ends before every selected session is read is the
 	// test's choice rather than a race against five seconds of wall clock (INFRA-249).
 	broadcastResolveBudget time.Duration
+	// mentionLookupBound replaces mentionLookupTimeout, the bound on each listener lookup a
+	// comment's creation makes, for the target that lookup is of (commentLookupBound); nil, which
+	// every server the deployment builds leaves it, keeps mentionLookupTimeout for every target.
+	// Only a test sets it, so which of a comment's lookups that bound ends and which the listener's
+	// answer ends is the test's choice rather than a race between a loaded machine and 250 ms of
+	// wall clock.
+	mentionLookupBound func(target string) time.Duration
 	// rosters is how this process reads and refreshes the stored listener answer every process's
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.

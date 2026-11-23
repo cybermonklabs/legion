@@ -277,7 +277,9 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The role's lookup must count as answered to pin s1: its bound is past any run, so a loaded
+	// machine cannot end it before the listener's answer is read (job 137748743708 did, at 250 ms).
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, mentionLookupBound: lookupBoundPastAnyRun})
 	issue := createInteractionIssue(t, handler, "TEST", "Pinned mention", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -606,7 +608,9 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// One lookup, answered: its bound is past any run, so a loaded machine cannot leave it
+	// unanswered and have the sender look the role up a second time.
+	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, mentionLookupBound: lookupBoundPastAnyRun})
 	issue := createInteractionIssue(t, handler, "TEST", "Missing role holder", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"route": "role:reviewer"}, "alice")
 	if patched.Code != http.StatusOK {
@@ -747,7 +751,8 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	// Every resolution here is the listener's answer: the lookups' bound is past any run.
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, mentionLookupBound: lookupBoundPastAnyRun})
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	patched := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
 		"route": "role:reviewer",

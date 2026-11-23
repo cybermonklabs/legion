@@ -216,6 +216,12 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
+	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
+	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
+	// answered gives that lookup a bound no run reaches, so a loaded machine cannot turn the
+	// answer into an unanswered lookup.
+	mentionLookupBound func(target string) time.Duration
 	// outboxPublishes is Deps.OutboxPublishes: the server's deployment has an outbox, so a
 	// mention's send waits for the earlier events of its owner the outbox still owes its session.
 	// False is the deployment with no outbox, which every test that runs none is.
@@ -399,6 +405,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	served.mentionLookupBound = options.mentionLookupBound
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
