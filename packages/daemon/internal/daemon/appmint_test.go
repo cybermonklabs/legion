@@ -1058,8 +1058,12 @@ func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 		return true
 	})
 	logs := &syncBuffer{}
+	// The clock starts once the test holds its NATS server and its database: workflowNATS waits for
+	// a server of the package's pool, which every test holding one at the same moment delays, and
+	// that wait is no part of the start the bound ends.
+	cfg := workflowConfig(t, workflowNATS(t))
 	started := time.Now()
-	err := bootsOn(t, workflowConfig(t, workflowNATS(t)), tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
+	err := bootsOn(t, cfg, tokens, calls, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil)))
 	took := time.Since(started)
 	for _, want := range []string{
 		"the GitHub App key proof waited 3s for GitHub's rate limit, the most a start waits, and GitHub still refuses it: ",
