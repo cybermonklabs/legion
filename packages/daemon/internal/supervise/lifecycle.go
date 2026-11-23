@@ -89,7 +89,7 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // refreshStalePlugins in internal/daemon).
 //
 // Two roads reach this line with an intent on the machine, and each is a retry of this lane
-// refused a second time: the retry a failed write of StateLaunching armed (launchNow), and the
+// refused a second time: the retry a failed write of StateLaunching armed (launchTries), and the
 // retry the refused turn of this lane's own parked wake armed (runWake). Both put the intent
 // back as they run and raise the same launch anew from the top, whose own lifecycle check is
 // refused here (launchAfter, retryHolding).

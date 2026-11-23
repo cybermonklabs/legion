@@ -171,12 +171,13 @@ type wake struct {
 	// ended (letOutHeldLaunch), which gives it at and reserved.
 	pause int64
 	// park is the start this launch waits for at its issue pod's gate (askPod), nil for a wake the
-	// pacing or the pause's gate holds. Such a launch has let its process go and written its claim
-	// launching already (launchNow, launchTries), took no token and has no moment to run: it waits
-	// on the machine with no timer of the clock's, is published as no waiting wake (publish), is
-	// no wake of the pacing's for a request that does not wait to drop (dropWakeFor), and leaves
-	// by its grant (TimerPodStart, podStartDue) or by whatever drops the wake with the claim's
-	// timers (letGo, waitOnMachine), which takes its start out of the gate (podPark).
+	// pacing or the pause's gate holds. Such a launch has let its process go, stopped it and
+	// written its claim launching already (launchNow, launchTries, askPod), took no token and has
+	// no moment to run: it waits on the machine with no timer of the clock's, is published as no
+	// waiting wake (publish), is no wake of the pacing's for a request that does not wait to drop
+	// (dropWakeFor), and leaves by its grant (TimerPodStart, podStartDue) or by whatever drops the
+	// wake, which takes its start out of the gate for what dropped it (dropPodPark: suspended,
+	// retire, letGo, waitOnMachine).
 	park *podPark
 }
 
@@ -310,16 +311,16 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // its own at each one, which is a claim failing before launch_failure_limit real failures
 // (judge's own guard answers what they report, and this keeps them from reporting, as probe's
 // own guard keeps the probe interval from being armed again inside the wait). The turn replaces
-// the process and arms the new one's timers (launchNow, armBoot), a turn whose own lifecycle
+// the process and arms the new one's timers (launchTries, armBoot), a turn whose own lifecycle
 // recheck refuses keeps the process and arms these again for it (runWake, watchAgain),
 // and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
 // held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
 // the wake's turn does not run.
 //
-// A launch this wake replaces that waits at its issue pod's gate leaves the gate here: its
-// timer's entry is the park, which takes its start out of the gate's queue (askPod, podPark).
+// A launch this wake replaces that waits at its issue pod's gate leaves the gate here, as a failed
+// launch: its start never ran (dropPodPark).
 func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
-	m.disarm(TimerPodStart)
+	m.dropPodPark(podFailedLaunch)
 	m.wake = waiting
 	if m.claim.Locator != nil {
 		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe, TimerTurn} {
@@ -429,7 +430,7 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // (retryHolding). A refusal leaves a retry only over a live claim that records no process
 // (relaunchRefused's first branch), and this lane does park a wake over such a claim: the
 // launch whose StateLaunching write failed arms a retry that holds the intent, and the wake
-// that retry parks waits over the claim that write left recording none (launchNow,
+// that retry parks waits over the claim that write left recording none (launchTries,
 // relaunchLater, parkWake). So the retry handed on here is a case the machine drives, and the
 // lane's kind is what it must not lose on the way.
 //
@@ -524,7 +525,7 @@ func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error 
 // It answers the three retries a stale-plugin relaunch can leave waiting: the one a refused turn
 // arms, holding the intent the turn took off the wake it was parked with (runWake,
 // relaunchRefused), the one a failed StateLaunching write arms after the launch had already
-// committed the intent (launchNow, relaunchLater), and the one armed where a refusal meets a
+// committed the intent (launchTries, relaunchLater), and the one armed where a refusal meets a
 // retry that has already put its intent back — that retry raises the same launch anew from the
 // top, the lifecycle check of the launch it raises refuses it, and the refusal arms a second
 // retry holding that same intent (launchAfter, relaunchRefused). again is the launch raised anew

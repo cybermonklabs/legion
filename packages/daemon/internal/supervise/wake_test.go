@@ -1996,7 +1996,7 @@ func TestAnOperatorsDeliveryOverAParkedRelaunchNeverReachesTheDeadProcess(t *tes
 // The park over a process that is still booting, which the launch at its turn would retire: the
 // park disarms that process's boot interval and registration deadline (parkWake), so nothing but
 // the launch retires it. Running the launch where the operator's task arrives arms the new
-// process's own timers (launchNow, armBoot), and the claim goes on being watched: the agent that
+// process's own timers (launchTries, armBoot), and the claim goes on being watched: the agent that
 // never registers has its deadline, and the deadline retires its process and relaunches.
 //
 // The negative control is the launch dropped where it is run (dropWakeFor widened to a claim

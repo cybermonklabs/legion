@@ -101,7 +101,7 @@ const (
 	// the claim again, which is why it is the one end told to nobody (TellsOwner).
 	EndNotMade ProcessEnd = "not made"
 	// EndRelaunched is the process let go and stopped and the claim's session brought back on a
-	// new one, which the claim records (launchNow).
+	// new one, which the claim records (launchTries).
 	EndRelaunched ProcessEnd = "relaunched"
 	// EndRelaunchParked is the turn's task taken back (interrupted) and the launch that replaces
 	// the process parked by the wake pacing until its turn (reserveWake, parkWake). The claim
@@ -113,6 +113,17 @@ const (
 	// something has happened to this worker — the task it was serving is owed to it
 	// again — while nothing has been relaunched yet, and the two sentences are not the same news.
 	EndRelaunchParked ProcessEnd = "relaunch parked"
+	// EndRelaunchWaitsForPod is the process let go and stopped and the launch that replaces it
+	// waiting at its issue pod's gate while another role of the pod starts or loads its session
+	// (askPod, wake.park). The claim is written launching and records no process, and the gate's
+	// grant starts the replacement once that other role's load ends or its bound passes
+	// (podStartDue) — unless a suspension or a retirement of the claim takes the launch out of the
+	// gate first (dropPodPark), the start the grant makes is refused until the claim's launch
+	// budget runs out (launchTries, fail), or the daemon's stop leaves the launch to its next boot.
+	// It is an end of its own because the claim alone reads as the relaunch still to make
+	// (EndRelaunchPending), where nothing refused or cut this one short: it is queued behind one
+	// load.
+	EndRelaunchWaitsForPod ProcessEnd = "relaunch waits for its pod"
 	// EndRelaunchPending is the process let go and stopped with nothing in its place: the
 	// launch's own write was refused and the same launch waits on the probe interval
 	// (relaunchLater), or the daemon's stop cut it short and the next boot makes it. The claim
@@ -122,7 +133,7 @@ const (
 	// (endHeld): nothing runs for the claim until it is resumed.
 	EndSuspended ProcessEnd = "suspended"
 	// EndFailed is every try at the replacement failing until the claim's launch budget is gone
-	// (launchNow, fail): nothing runs for the claim and nothing relaunches it.
+	// (launchTries, fail): nothing runs for the claim and nothing relaunches it.
 	EndFailed ProcessEnd = "failed"
 )
 
@@ -133,7 +144,7 @@ const (
 // TestTheNoticeHasWordsForEveryEndThatTellsItsOwner). A fresh slice is returned so that no
 // caller can edit the one the next reads.
 func ProcessEnds() []ProcessEnd {
-	return []ProcessEnd{EndNotMade, EndRelaunched, EndRelaunchParked, EndRelaunchPending, EndSuspended, EndFailed}
+	return []ProcessEnd{EndNotMade, EndRelaunched, EndRelaunchParked, EndRelaunchWaitsForPod, EndRelaunchPending, EndSuspended, EndFailed}
 }
 
 // TellsOwner is whether this end is news for the claim's owner, which is the one thing the
@@ -207,19 +218,23 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 // endReached is the end a replacement made, read from the claim it left beside found, the
 // incarnation that claim recorded when the replacement began, and parked, the wake that claim
 // held before it. The claim says it whole: a claim whose launch the pacing has just parked waits
-// for that wake's turn, one still recording that incarnation was never let go of, one recording
-// another is relaunched, and a claim recording none was let go and is where the let-go left it —
-// suspended, failed, or launching with the launch still to make, since every caller of letGo
-// writes the claim's state in the same step.
+// for that wake's turn, one whose launch waits at its issue pod's gate waits for that gate's
+// grant, one still recording that incarnation was never let go of, one recording another is
+// relaunched, and a claim recording none was let go and is where the let-go left it — suspended,
+// failed, or launching with the launch still to make, since every caller of letGo writes the
+// claim's state in the same step.
 //
-// The park is read first and by identity, because it is the one end the claim alone cannot show:
-// a parked launch leaves the claim exactly as the replacement found it, process and state and
-// all (parkWake), and the wake the machine holds after is this replacement's only where it is
-// not the one it began with. A launch waiting for its issue pod's start is no such park: it let
-// the process go and wrote the claim launching before it parked (askPod, wake.park), so the claim
-// says it, a relaunch still to make. The caller holds mu.
+// The wake is read first and by identity, because it is the one end the claim alone cannot show:
+// a launch the pacing parked leaves the claim exactly as the replacement found it, process and
+// state and all (parkWake), and the wake the machine holds after is this replacement's only where
+// it is not the one it began with. A launch waiting for its issue pod's start left the claim
+// launching with no process (askPod, wake.park), which alone reads as the relaunch still to make,
+// and its wake is what tells the two apart. The caller holds mu.
 func (m *Machine) endReached(found string, parked *wake) ProcessEnd {
-	if m.wake != nil && m.wake != parked && m.wake.park == nil {
+	if m.wake != nil && m.wake != parked {
+		if m.wake.park != nil {
+			return EndRelaunchWaitsForPod
+		}
 		return EndRelaunchParked
 	}
 	if loc := m.claim.Locator; loc != nil {
