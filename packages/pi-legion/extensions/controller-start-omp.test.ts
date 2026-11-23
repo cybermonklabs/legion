@@ -1233,8 +1233,7 @@ function ownRelayStream(
   return stream;
 }
 
-/** Deletes `name` if the server holds it: a try starts with the stream made anew, and the case
- * leaves none. */
+/** Deletes `name` if the server holds it, so the case leaves none. */
 async function deleteIfThere(manager: JetStreamManager, name: string): Promise<void> {
   await manager.streams.delete(name).catch((error: unknown) => {
     if (!(error instanceof Error && error.message.includes("stream not found"))) throw error;
@@ -1261,7 +1260,9 @@ test.skipIf(!natsJetStream)(
     const manager = await connection.jetstreamManager();
     const stream = ownRelayStream(manager, "TWO_CALLS");
     for (let attempt = 1; ; attempt += 1) {
-      await deleteIfThere(manager, stream.name);
+      // A stream another suite left on all of `notifications.>` would refuse this one as an
+      // overlap, and so would this case's own from a try before, so each try starts with none.
+      await deleteRelayCapturingStreams(connection);
       await manager.streams.add(stream);
       const listed = Promise.withResolvers<void>();
       let lists = 0;
@@ -1328,7 +1329,9 @@ test.skipIf(!natsJetStream)(
     const manager = await connection.jetstreamManager();
     const stream = ownRelayStream(manager, "REMADE");
     for (let attempt = 1; ; attempt += 1) {
-      await deleteIfThere(manager, stream.name);
+      // A stream another suite left on all of `notifications.>` would refuse this one as an
+      // overlap, and so would this case's own from a try before, so each try starts with none.
+      await deleteRelayCapturingStreams(connection);
       await manager.streams.add(stream);
       let remade = false;
       const remaking: RelayConnection = {
