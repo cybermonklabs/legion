@@ -442,13 +442,16 @@ function requestSignal(signal: AbortSignal | undefined, deadlineMs: number): Abo
  * `pausesMs` is the wait before each retry in turn, so the write makes at most one attempt more than
  * it has entries, and no retry starts once `withinMs` has passed since the first attempt began. An
  * answer's `Retry-After` longer than the scheduled pause is waited instead. An attempt that goes
- * `silenceMs` without progress before its answer begins - none of its body taken by the connection
- * in that time - is cut off and asked again like one that failed in transport, so a write Dispatch
- * is slow to finish is asked again under its key (and answered `409 KEY_IN_FLIGHT`, then replayed)
- * rather than waited on for the call's whole deadline, while an upload still going out is never
- * cut. Once an attempt of a body under `STREAMED_BODY_MIN` was cut off for silence or answered
- * `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed layer finishes that
- * run whatever the client does, so the write keeps asking until it gets the run's stored answer:
+ * `silenceMs` without progress before its answer begins - no read of its body in that time - is
+ * cut off and asked again like one that failed in transport, so a write Dispatch is slow to finish
+ * is asked again under its key (and answered `409 KEY_IN_FLIGHT`, then replayed) rather than
+ * waited on for the call's whole deadline. A body of `STREAMED_BODY_MIN` or more is read a chunk at
+ * a time as the connection's buffers take it, and they hold megabytes, so an upload on a slow line
+ * can be cut off while it is still going out: when its next read, or the rest of its bytes and the
+ * answer after its last read, take longer than `silenceMs` (README, "Dispatch"). Once an attempt of
+ * a body under `STREAMED_BODY_MIN` was cut off for silence or answered `409 KEY_IN_FLIGHT`, Dispatch
+ * may still be running the write, and its keyed layer finishes that run whatever the client does,
+ * so the write keeps asking until it gets the run's stored answer:
  * every `inFlightPauseMs` at most, unless a shorter pause of the schedule's or a longer
  * `Retry-After` applies, with no retry starting once `inFlightWithinMs` has passed. An upload keeps
  * the schedule alone, since each repeat sends its whole body again. No retry of any write starts
@@ -523,7 +526,7 @@ interface EncodedBody {
 
 /**
  * The size from which an attempt's body goes out as a stream read a chunk at a time
- * (`STREAMED_BODY_CHUNK`), so the connection taking each chunk counts as the attempt's progress.
+ * (`STREAMED_BODY_CHUNK`), so each read of a chunk counts as the attempt's progress.
  * A smaller body leaves in one write to the connection, so there is no progress of it to see.
  */
 const STREAMED_BODY_MIN = 1 << 20;
@@ -531,8 +534,8 @@ const STREAMED_BODY_CHUNK = 64 << 10;
 
 /**
  * What one attempt sends for `body`: its bytes as they are when they are smaller than
- * `STREAMED_BODY_MIN`, or else a stream of them that calls `progress` each time the connection reads
- * a chunk (fetch reads a stream body only as the connection takes it), with the `Content-Length`
+ * `STREAMED_BODY_MIN`, or else a stream of them that calls `progress` each time fetch reads a chunk
+ * (fetch reads a stream body only as the connection's buffers take it), with the `Content-Length`
  * they add up to, so the request on the wire is the one the bytes make.
  */
 function attemptBody(
@@ -2482,9 +2485,9 @@ export class DispatchClient {
 
   /**
    * One attempt of a write, under `limit` (the call's signal and the client's) and a silence bound
-   * of its own: once `silenceMs` pass before its answer begins with none of its body taken by the
-   * connection in that time, it is cut off and fails as `WriteAttemptSilent`. The bound ends with
-   * the answer's headers; its body is read under `limit` alone.
+   * of its own: once `silenceMs` pass before its answer begins with no read of its body in that
+   * time, it is cut off and fails as `WriteAttemptSilent`. The bound ends with the answer's
+   * headers; its body is read under `limit` alone.
    */
   async #attempt(
     url: string,

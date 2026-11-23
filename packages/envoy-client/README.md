@@ -751,12 +751,19 @@ pace: at most five attempts, 1, 2, 4 and 8 s apart, a longer `Retry-After` waite
 attempt started more than 30 s after the first. An attempt that goes 20 s without progress before
 its answer begins (`silenceMs`) is cut off and asked again the same way, so a write Dispatch is
 slow to finish is answered `409 KEY_IN_FLIGHT` and then replayed rather than waited on for the
-whole deadline. Progress is the connection taking the body: a body of a megabyte or more goes out
-as a stream read 64 KiB at a time, with its `Content-Length`, and each read restarts the bound, so
-an upload on a slow line is never cut off while it is still going out; a smaller body leaves in
-one write. Once an attempt was cut off for silence or answered `409 KEY_IN_FLIGHT`, Dispatch may
-still be running the write, and its keyed layer finishes that run whatever the client does, so the
-write keeps asking every 3 s at most (`inFlightPauseMs`; a longer `Retry-After` is still waited),
+whole deadline. Progress is a read of the body: a body of a megabyte or more goes out as a stream
+read 64 KiB at a time, with its `Content-Length`, and each read restarts the bound; a smaller body
+leaves in one write. The bound counts those reads, not the bytes that leave. Bun's fetch reads the
+next 64 KiB only once the connection's buffers have room for it, and they hold megabytes, so on a
+slow line the reads come seconds apart and the last read comes while megabytes are still to go.
+An upload is cut off while it is still going out when its next read, or the rest of its bytes and
+Dispatch's answer after its last read, take longer than `silenceMs`. Measured in build pods
+against a stand-in Dispatch that reads at a fixed rate, with the 20 s bound: at 128 KiB/s an
+upload was cut off 20 s after its last read, 0.88 MiB of its 12 MiB short of the stand-in, and at
+64 KiB/s 20 s after a read part way through, 9.88 MiB short. Once an attempt was cut off for
+silence or answered `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and its keyed
+layer finishes that run whatever the client does, so the write keeps asking every 3 s at most
+(`inFlightPauseMs`; a longer `Retry-After` is still waited),
 with no attempt started more than 55 s after the first (`inFlightWithinMs`), until the run's stored
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
