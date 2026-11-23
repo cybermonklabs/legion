@@ -18,7 +18,7 @@ import (
 // the pass's progress against.
 func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Twenty-five heads are two pages, and every one of them is read over REST, so the pass can
 	// be cut short in the middle of the second page.
 	all := heads(25)
@@ -70,7 +70,7 @@ func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
 // page of the cycle read by a query at all.
 func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -144,7 +144,7 @@ func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
 // below it.
 func TestARepositoryReadOverRESTIsTakenUpAtTheNumberTheCursorNames(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -200,7 +200,7 @@ func TestARepositoryReadOverRESTIsTakenUpAtTheNumberTheCursorNames(t *testing.T)
 	}
 }
 
-// pullsPath is where the stand-in lists the mapped repository's open pull requests, which is
+// pullsPath is where the stand-in lists the harness's repository's open pull requests, which is
 // the read a test answers with a rate limit to end a pass in the listing a refused query sent
 // it to.
 const pullsPath = "/repos/" + gitHubRepository + "/pulls"
@@ -215,7 +215,7 @@ const pullsPath = "/repos/" + gitHubRepository + "/pulls"
 // while the pass that closed the cycle recorded that it had covered them.
 func TestAPageAQueryWasRefusedForIsTakenUpAtItsNumber(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -291,7 +291,7 @@ func TestAPageAQueryWasRefusedForIsTakenUpAtItsNumber(t *testing.T) {
 // and GitHub answers each of them from the pull requests open at the moment it is asked.
 func TestARefusedPageIsReadFromItsNumberWithinOnePass(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
 	h.listHeads(all...)
@@ -346,7 +346,7 @@ func TestARefusedPageIsReadFromItsNumberWithinOnePass(t *testing.T) {
 // query that answered the first page and the query that asks for the second.
 func TestAMergeBelowAQueryCursorMovesNoPageOfTheQuery(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Forty-five heads are three pages of a query.
 	all := heads(45)
 	h.listHeads(all...)
@@ -378,8 +378,8 @@ func TestAMergeBelowAQueryCursorMovesNoPageOfTheQuery(t *testing.T) {
 	}
 }
 
-// mergeWhenRecorded merges the pull requests of the mapped repository that are not in left the
-// moment the pass records a check run of head at: the stand-in answers the repository's open
+// mergeWhenRecorded merges the pull requests of the harness's repository that are not in left
+// the moment the pass records a check run of head at: the stand-in answers the repository's open
 // pull requests with left from then on.
 //
 // It is how a test puts a merge inside one pass, between the query that answered a page and
@@ -406,9 +406,9 @@ type mergingWriter struct {
 	merge func()
 }
 
-func (w *mergingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
-	changed, err := w.Writer.Record(ctx, observation)
-	if observation.Number == w.at {
+func (w *mergingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
+	changed, err := w.Writer.RecordRuns(ctx, observations)
+	if len(observations) > 0 && observations[0].Number == w.at {
 		w.merge()
 	}
 	return changed, err

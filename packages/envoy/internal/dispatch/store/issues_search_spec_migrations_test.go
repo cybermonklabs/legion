@@ -77,8 +77,7 @@ func rankIssue(t *testing.T, ctx context.Context, store *Store, key, query strin
 // rather than at the title's.
 func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeIssuesSearchSpec)
+	store := openMigratedTestStore(t, beforeIssuesSearchSpec)
 	const spec = "The rhumb lines of the Tyrrhenian portolan cross at Capo Testa.\n"
 	key := seedIssueWithSpec(t, ctx, store, 1, "Tide tables for the equinox", spec)
 	bare := seedIssueWithSpec(t, ctx, store, 2, "Sailing directions", "   \n")
@@ -118,10 +117,7 @@ func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T)
 // is the only write that changes the issue's vector without touching the issue's own row.
 func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	key := seedIssueWithSpec(t, ctx, store, 1, "Tide tables for the equinox", "Nothing of note.\n")
 	if matchesIssue(t, ctx, store, key, "Tyrrhenian") {
@@ -153,8 +149,7 @@ func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
 // file would cost the exemption and refuse every deploy carrying it. The limit is injected at one
 // byte so the test needs no gigabyte.
 func TestCensusExemptsTheIssuesSearchTriggerFromTheTableLimit(t *testing.T) {
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, issuesSearchSpec)
+	store := openMigratedTestStore(t, issuesSearchSpec)
 	report, err := census(context.Background(), store.Pool.Config().ConnString(),
 		migrationsThrough(t, issuesSearchSpecTrig), pgmigrate.CensusOptions{TableLimit: 1})
 	if err != nil {

@@ -64,6 +64,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -77,7 +78,7 @@ const mergeWaitBase = "main"
 // The two heads the proof drives: the head the round is approved at, and the head a push moves it
 // to. They are full commit SHAs because a review the review App submits decides a round only when
 // the head its Legion footer names is the pull request's current head, and the daemon reads no
-// shorter spelling there (intake.PullRequestReview.LegionHead, over fullCommitSHA).
+// shorter spelling there (intake.PullRequestReview.LegionHead, over reviewround.IsHead).
 const (
 	mergeWaitFirstHead  = "4c1d0b9a7e52f38610d4c2b7a9e5f0318d6b2c47"
 	mergeWaitSecondHead = "8b3e5f1c9d04a7268f1b3c5d7e9a0b2c4d6e8f13"
@@ -259,7 +260,9 @@ func (r *mergeWaitReadableLive) seed() {
 // it was seeding on an error.
 func (r *mergeWaitReadableLive) write(what string, body func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		r.t.Fatalf("seed %s: %v", what, err)
 	}
 }
@@ -619,33 +622,14 @@ func keyCarried(t *testing.T, issue map[string]json.RawMessage, key string) bool
 }
 
 // publishChecks publishes CI's settlement of the pull request at head, with one run of each name
-// reported and none of them failing or cancelled, as Envoy relays the listener's settlement
-// (intake's decodeChecks reads it, which takes the subject as part of the fact's identity). Each
-// run reaches the fence stamped with the head it ran on and the conclusion the settlement's lists
-// give it (classify's stampedRuns), which is what makes it a run of this head's own.
+// reported and none of them failing or cancelled (publishSettlementOf). Each settlement reports
+// runs of its own, so a head settled twice is the same checks re-run rather than the same report
+// again (classify's redundantSettlement): the fence keeps the newest run of each name, so the count
+// of the head's own runs stands where it was.
 func (r *mergeWaitReadableLive) publishChecks(number int, head string, names ...string) {
 	r.t.Helper()
 	r.seq++
-	// Each settlement reports runs of its own, so a head settled twice is the same checks re-run
-	// rather than the same report again (classify's redundantSettlement): the fence keeps the
-	// newest run of each name, so the count of the head's own runs stands where it was.
-	runs := make([]map[string]any, 0, len(names))
-	for i, name := range names {
-		runs = append(runs, map[string]any{"name": name, "id": int64(number)*1000 + r.seq*10 + int64(i) + 1})
-	}
-	none := map[string]any{"count": 0, "checks": []string{}}
-	payload, err := json.Marshal(map[string]any{
-		"kind": "checks", "repo": liveRepo, "number": strconv.Itoa(number), "sha": head, "check_runs": runs,
-		"generation": 0, "snapshot": fmt.Sprintf("snapshot-%s-%d", head[:8], r.seq), "settled_at": time.Now().UnixMilli(),
-		"failed": none, "cancelled": none, "running": none, "queued": none, "skipped": none,
-		"passed":         map[string]any{"count": len(names), "checks": names},
-		"failing_checks": []any{},
-	})
-	if err != nil {
-		r.t.Fatalf("encode the checks payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.checks", r.subjectRepo(), number)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("checks-%d-%d", number, r.seq), string(payload)))
+	r.publishSettlementOf(number, head, r.seq, names, nil)
 }
 
 // publishReview publishes the reviewer's review of the pull request at head (publishReviewAs), its

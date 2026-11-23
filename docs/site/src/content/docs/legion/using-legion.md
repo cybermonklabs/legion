@@ -15,10 +15,10 @@ questions, approve the spec, and review the pull request. Everything happens in
   operator configured; ask your operator which ones.
 - **Assign the issue to the person who will answer for it.** The assignee's Inbox gets the
   architect's questions and the spec approval for the whole tree. An issue an agent files without
-  one is not left unassigned: it takes its parent's assignee, else the project's default
-  assignee, which every project names. An issue whose assignee someone has cleared still runs,
-  and its questions go to the project's default assignee until someone takes the issue from its
-  header.
+  one is not left unassigned: it takes its parent's assignee when the parent is in the same
+  project, else the project's default assignee, which every project names. An issue whose assignee
+  someone has cleared still runs, and its questions go to the project's default assignee until
+  someone takes the issue from its header.
 - **Write the outcome, not the steps.** A title that says what someone can do afterwards, and a spec
   with the problem, the acceptance criteria and how you would check them, give the architect what it
   needs. It extends your spec rather than replacing it, and it asks about anything it cannot decide.
@@ -89,7 +89,8 @@ options and a recommendation, and it reaches your Inbox.
 
 No code is written until you approve. The approval is for that version of the spec: if the spec
 changes afterwards, you are asked again. (`gates.design` says which documents of the root issue a
-person approves: by default the spec alone, and a deployment can add the issue's decisions
+person approves: by default the spec, and also the issue's Verification document when the
+architect asks you to approve both in one request, and a deployment can add the issue's decisions
 document or its Verification document, each approved the same way. A deployment that sets
 `gates.design: []` turns the design gate off; then the work starts as soon as the spec is written,
 and nobody is asked.)
@@ -113,8 +114,9 @@ template, and the later phases fill in their own lines:
 - **Proven by** and **Checks**: one line per check of the issue's Verification document, each the
   line Dispatch printed when the result was recorded — the check, when it runs, the verdict, the
   commit it ran at and the role that ran it.
-- **Look at first** and **Not proven / risk**: written by Legion's reviewer, naming where a wrong
-  decision would hurt and every claim left unproven.
+- **Look at first** and **Not proven / risk**: written by Legion's reviewer, or by its implementer
+  on a task whose plan has no reviewer step, naming where a wrong decision would hurt and, where
+  one stands, a risk.
 - The `after_merge` check, recorded after the merge closes the issue by the role your project's
   `production_check` names — the tester, unless the setting is `off`, where no production check
   opens — once your deploy carries the change; its line reads `not yet run` until then, or a `fail`
@@ -155,8 +157,7 @@ worked, so a parent is accepted after its children. After the close the role you
 `production_check` names — the tester, unless the setting is `off` — checks the change in
 production and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
-closed issue takes a result for such a check, a comment and a message, and no other write, so
-look in both places.
+closed issue takes a result for such a check, a comment and a message, so look in both places.
 Each look that finds the deploy missing says when it wants to look again, and nothing else brings
 it back.
 The tree's workspace is kept for three days (`linger_hours`, 72 by default) in case the work
@@ -200,9 +201,9 @@ of the phase the issue stands in, at each boot and then every `controller_wake_i
 | `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and parks it only when a person asked for that or its work is done, folded into another issue or no longer needed. |
 | `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
 | `backlog` | a person, the controller, or the architect that owns a child | Should not run now: a person asked for that, for example while it waits on a decision or a deploy. A root also goes here when its work is done, folded into another issue or no longer needed. The architect that owns a child writes `backlog` on it only when a person asked for that, or as the first step of a restart (`backlog`, then `rerun_child`), and it closes a child whose work is done, folded or no longer needed with `done`. Legion does not run it. |
-| `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into planning sets it to `in_progress`. |
-| `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: the implementer merges the base forward while the issue stays in its phase. |
+| `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into its first step sets it to `in_progress`. |
+| `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test or a review returns here. A head that conflicts with its base keeps the status it has: before the review the implementer merges the base forward, and after it the merger does when it merges, while the issue stays in its phase. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
-| `needs_review` | the daemon | The tester passed; Legion's reviewer is reviewing, and once it approves the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
-| `retro` | the daemon | The architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
+| `needs_review` | the daemon | The change is under review, once the step before passed (on the default steps, the tester): Legion's reviewer reviews it where the task has a reviewer step, and then, where the task has the architect's acceptance step, the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
+| `retro` | the daemon | The task's last step passed: on the default steps, the architect accepted. The issue stays here through retro and the merge — and, for a root whose tree still runs, through the wait between its merge and its close. |
 | `done` | the daemon at the merge, a person, or the architect that owns a child | Finished: the pull request merged, or, for a child, the architect that owns it closed it because its work is done, folded into another issue or no longer needed. A root whose tree is still running waits in `retro` until the last of it is done or out of the workflow, then closes. The production check that your project's `production_check` opens after a merge — the tester's, unless the setting is `off` — follows on the pull request; the tree lingers, then closes. |

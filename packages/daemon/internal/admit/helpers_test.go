@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -307,6 +308,28 @@ func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
 	return got
 }
 
+// resumeTaskOf is the resume task engine sends the worker of key's phase, as the record holds
+// the issue now: workflow's Engine.ResumeTask, the one place every resume is composed, read in a
+// transaction it rolls back.
+func resumeTaskOf(t testing.TB, pool *pgxpool.Pool, engine *workflow.Engine, key string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := record.NewStore().Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", key, err)
+	}
+	return task
+}
+
 func putIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -446,22 +469,25 @@ func reconcile(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries
 	reconcileWithPosition(t, pool, admission, summaries, 1, 0, false)
 }
 
-func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries []dispatch.IssueSummary, target, ackFloorStream int64, idle bool) {
+// reconcileWithPosition applies summaries through Reconcile at target and the consumer's position,
+// and answers the keys Reconcile found older than an issue fact the daemon applied.
+func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries []dispatch.IssueSummary, target, ackFloorStream int64, idle bool) []string {
 	t.Helper()
 	position := intake.DispatchConsumerPosition{AckFloorStream: ackFloorStream, Idle: idle}
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	scoped, settle := intake.OpenSettlers(scoped, admission)
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
-			t.Fatalf("Reconcile: %v", err)
+	var refused []string
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, admission)
+		var err error
+		if refused, err = admission.Reconcile(ctx, tx, listed, target, position); err != nil {
+			return err
 		}
-		if err := settle(scoped, tx); err != nil {
-			t.Fatalf("settle the reconcile: %v", err)
-		}
-	})
-	committed()
+		return settle(ctx, tx)
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	return refused
 }

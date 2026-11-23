@@ -4,10 +4,10 @@
 # through Legion's git wrapper.
 #
 # jj makes a push by shelling out to a git (`git -c core.fsmonitor=false … --git-dir <dir> push
-# --porcelain --no-verify …`, measured with jj 0.45.1-sami): the `git` on its PATH, or the
-# `git.executable-path` its configuration names. Legion's git wrapper is what puts the leak
-# guard's pre-push hook in front of jj's push as well as a role's own. So this wrapper does three
-# things:
+# --porcelain --no-verify …`, measured with jj 0.45.1-sami and 0.46.0-sami): the `git` on its
+# PATH, or the `git.executable-path` its configuration names. Legion's git wrapper is what puts
+# the leak guard's pre-push hook in front of jj's push as well as a role's own. So this wrapper
+# does three things:
 #   - it gives every jj it runs `--config=git.executable-path="<the git wrapper>"`, in front of
 #     the command line as a layer of its own, and, after a command it reads as a push, once more
 #     as the last layer of the command line: a configuration jj reads for one command alone (a

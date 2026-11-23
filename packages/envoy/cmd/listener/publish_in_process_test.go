@@ -378,7 +378,7 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	first := make(chan ended, 1)
 	var forwards atomic.Int32
 	forward := rig.d.delivery.forwardRole
-	rig.d.delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() error, error) {
+	rig.d.delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		n := forwards.Add(1)
 		if n != 2 {
 			return forward(subject, item, msgID, timeout)
@@ -389,10 +389,10 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 			first <- ended{err, time.Since(started)}
 			return nil, err
 		}
-		return func() error {
-			err := wait()
+		return func() (bus.StoredAck, error) {
+			ack, err := wait()
 			first <- ended{err, time.Since(started)}
-			return err
+			return ack, err
 		}, nil
 	}
 	rig.requireLeader(t)
@@ -577,5 +577,80 @@ func TestATakeoverCopyPublishesAgainWhileItsMessageIDIsStillInProcess(t *testing
 	}
 	if stored, _, ok := readKeptRoleCopy(t, harness.client, role); !ok || stored.EventID != item.EventID {
 		t.Fatalf("the lane holds %+v (held: %t), want event %s", stored, ok, item.EventID)
+	}
+}
+
+// A delivery exception a clustered stream refuses as still in process under another listener's
+// publish of it (nats-server's 10158, bus.ErrDuplicateInProcess) is no failed publish: that
+// listener raised the same exception from its own durable under the same Nats-Msg-Id,
+// exception.<reason>.<origin> (publishDeliveryException), and its publish stores the one copy. So
+// it is logged at WARN, never the line the deployed publish-failure filter counts,
+// `{ $.level = "ERROR" && $.msg = "listener exception publish failed" }`
+// (packages/envoy/infra/aws/rendering/metricfilters.go), while a failure of the same publish, an
+// exception past the server's max payload, is still logged that line. The in-process row freezes
+// the members' routes, waits until the leader holds the other listener's publish, and raises the
+// exception through applyDeliveryOutcome before the thaw, so the refusal comes by events.
+func TestADeliveryExceptionStillInProcessIsNotLoggedAsAFailedPublish(t *testing.T) {
+	rig := newInProcessRig(t)
+	const topic, recipient, reason = "notifications.team.exception-in-process", "ses_exception_in_process", "delivery_failed"
+	lane := bus.ExceptionTopicPrefix + topic
+	for _, row := range []struct {
+		name      string
+		inProcess bool
+	}{
+		{"refused as still in process under another listener's publish", true},
+		{"past the server's max payload", false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			logs := &cmdtest.LockedBuffer{}
+			cfg := *rig.d.delivery
+			cfg.client = rig.d.client
+			cfg.logger = logging.NewWithWriter("test", logs)
+			item := listenerTestEnvelope(topic, "exception-in-process-"+id.New())
+			origin := "exception-in-process-origin-" + id.New()
+			outcome := deliveryOutcome{sessionID: recipient, exceptionReason: reason, fanoutRefusal: true, origin: origin}
+			want := bus.ErrTooLarge
+			if row.inProcess {
+				want = bus.ErrDuplicateInProcess
+				heard := rig.hear(t, lane)
+				before := rig.copies(t, lane)
+				thaw := rig.cluster.FreezeRoutes(t)
+				t.Cleanup(thaw)
+				other := make(chan error, 1)
+				go func() { other <- publishDeliveryException(rig.d.client, item, reason, recipient, origin) }()
+				awaitHanded(t, heard, 1)
+				applyDeliveryOutcome(cfg, item, outcome)
+				thaw()
+				if err := <-other; err != nil {
+					t.Fatalf("the other listener's publish of the exception: %v; want it stored", err)
+				}
+				rig.requireOneCopy(t, lane, before)
+			} else {
+				item.Payload = strings.Repeat("p", int(rig.d.client.Conn.MaxPayload()))
+				applyDeliveryOutcome(cfg, item, outcome)
+			}
+			var counted, refusals []string
+			for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+				var record map[string]any
+				if json.Unmarshal([]byte(line), &record) != nil || record["topic"] != topic {
+					continue
+				}
+				if record["level"] == "ERROR" && record["msg"] == "listener exception publish failed" {
+					counted = append(counted, line)
+				}
+				if text, _ := record["error"].(string); strings.Contains(text, want.Error()) {
+					refusals = append(refusals, line)
+				}
+			}
+			if len(refusals) != 1 {
+				t.Fatalf("logged %d lines naming %q, want 1:\n%s", len(refusals), want, logs.String())
+			}
+			if row.inProcess && len(counted) != 0 {
+				t.Fatalf("an exception still in process under another listener's publish logged the line the publish-failure filter counts:\n%s", strings.Join(counted, "\n"))
+			}
+			if !row.inProcess && (len(counted) != 1 || counted[0] != refusals[0]) {
+				t.Fatalf("an exception the server refused as too large logged %d lines the publish-failure filter counts, want its one failure line:\n%s", len(counted), logs.String())
+			}
+		})
 	}
 }

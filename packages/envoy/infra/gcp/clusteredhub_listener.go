@@ -111,16 +111,18 @@ func clusteredHubListenerName(release string) string {
 // clusteredHubListenerStartupProbe is the session listener's startup probe: /bin/sh -c of a scrape
 // of the listener's /metrics on the container's loopback port, which passes only when the scrape
 // holds the sample line of clusteredHubListenerServedGauge, so only once /v1 serves. The probe
-// holds no bearer, and a listener that requires one (clusteredHubListenerEnv) refuses /v1 to it
-// in apiAuth before the gate, while every listener serves /metrics to any caller (main's mux, and
-// isAPIAuthExemptPath in packages/envoy/cmd/listener/apiauth.go). The pattern is anchored and ends
-// in the space before the value, so it matches the sample line and never the gauge's "# HELP" or
-// "# TYPE" line. With -f curl prints nothing for an HTTP error, and a pipeline's status is its
-// last command's, grep's, in a POSIX shell without pipefail, which dash, the listener image's
-// /bin/sh, is; TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample runs the rendered
-// script under the package's test shell (shellCommand: /bin/sh, or the shell ENVOY_TEST_SHELL
-// names). --max-time 5 makes curl give up inside the probe's 6 s timeout. 60 failures 10 s apart
-// give /v1 ten minutes to open, after which the kubelet restarts the container.
+// holds no bearer, and a listener that requires one (clusteredHubListenerEnv) answers /v1 to it
+// 503 from its starting gate while /v1 has not opened (startingGate, ahead of apiAuth) and 401
+// from apiAuth once it has, so the probe reads /metrics, which every listener serves to any caller
+// (main's mux, and isAPIAuthExemptPath in packages/envoy/cmd/listener/apiauth.go). The pattern is
+// anchored and ends in the space before the value, so it matches the sample line and never the
+// gauge's "# HELP" or "# TYPE" line. With -f curl prints nothing for an HTTP error, and a
+// pipeline's status is its last command's, grep's, in a POSIX shell without pipefail, which dash,
+// the listener image's /bin/sh, is; TestClusteredNatsHubListenerStartupProbePassesOnlyOnTheSample
+// runs the rendered script under the package's test shell (shellCommand: /bin/sh, or the shell
+// ENVOY_TEST_SHELL names). --max-time 5 makes curl give up inside the probe's 6 s timeout. 60
+// failures 10 s apart give /v1 ten minutes to open, after which the kubelet restarts the
+// container.
 func clusteredHubListenerStartupProbe(port int) *corev1.ProbeArgs {
 	script := "curl -fsS --max-time 5 http://127.0.0.1:" + strconv.Itoa(port) + "/metrics | grep -q '^" + clusteredHubListenerServedGauge + " '"
 	return &corev1.ProbeArgs{
@@ -136,10 +138,11 @@ func clusteredHubListenerStartupProbe(port int) *corev1.ProbeArgs {
 // (clusteredHubListenerStartupProbe) passes only once the listener's /v1 gate is open, and until
 // it has passed the kubelet runs neither readiness nor liveness and the pod is not Ready.
 // So a new pod stays out of its Service until /v1 serves, and the rolling update
-// newClusteredHubListener sets (maxSurge 1, maxUnavailable 0) keeps the old pod serving until the
-// new one is Ready, which the Deployment controller holds. The gate opens without waiting for the
-// durable consumer the old pod holds until it stops (main opens /v1 before bindListenerDurable,
-// packages/envoy/cmd/listener/main.go), so the new pod's gate cannot wait on the old pod.
+// newClusteredHubListener sets while replaceUnderHold is unset or false (maxSurge 1,
+// maxUnavailable 0) keeps the old pod serving until the new one is Ready, which the Deployment
+// controller holds. The gate opens without waiting for the durable consumer the old pod holds
+// until it stops (main opens /v1 before bindListenerDurable, packages/envoy/cmd/listener/main.go),
+// so the new pod's gate cannot wait on the old pod.
 // Readiness and liveness are answersProbe, curl -sS of /livez, which the listener answers 204
 // without touching NATS: they are status-blind, so a fault of the hub, which every pod shares,
 // neither takes the one pod out of its Service nor restarts it, and a listener whose bus is down
@@ -205,17 +208,26 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 	// One pod, and the component writes the count with no input behind it: until
 	// cybermonklabs/legion#2404 gives the listener a delivery lease, each further copy waits the
 	// listener's durable bind deadline for the subscription the first copy holds, gives up and
-	// restarts, for ever. The new pod is surged in before the old one goes, so the rollout is a
-	// handover rather than a gap, and the durable the old pod holds is free by the time the new
-	// one has waited its deadline out.
+	// restarts, for ever. With replaceUnderHold unset or false, the new pod is surged in before the
+	// old one goes, so the rollout is a handover rather than a gap, and the durable the old pod
+	// holds is free by the time the new one has waited its deadline out. Under the writer hold the
+	// hold refuses the new pod's NATS connection, so its /v1 never serves and its startup probe
+	// (clusteredHubListenerStartupProbe) never passes, and a surge would keep the old pod for as
+	// long as the hold lasts: with replaceUnderHold true, which the operator sets for that window,
+	// the Deployment is recreated and not waited for instead (heldReplacement).
+	meta := objectMeta(name, s.namespace)
+	strategy := dispatchStrategy{
+		strategyType:  dispatchStrategyRollingUpdate,
+		rollingUpdate: &dispatchRollingUpdate{maxUnavailable: 0, maxSurge: 1},
+	}
+	if s.listener.replaceUnderHold {
+		strategy = heldReplacement(meta)
+	}
 	if _, err := appsv1.NewDeployment(ctx, name, &appsv1.DeploymentArgs{
-		Metadata: objectMeta(name, s.namespace),
+		Metadata: meta,
 		Spec: appsv1.DeploymentSpecArgs{
 			Replicas: pulumi.Int(1),
-			Strategy: deploymentStrategy(dispatchStrategy{
-				strategyType:  dispatchStrategyRollingUpdate,
-				rollingUpdate: &dispatchRollingUpdate{maxUnavailable: 0, maxSurge: 1},
-			}),
+			Strategy: deploymentStrategy(strategy),
 			Selector: &metav1.LabelSelectorArgs{MatchLabels: pods},
 			Template: corev1.PodTemplateSpecArgs{
 				Metadata: &metav1.ObjectMetaArgs{Labels: pods},
@@ -252,7 +264,7 @@ func newClusteredHubListener(ctx *pulumi.Context, s clusteredHubSettings, classR
 	if namespaces := s.listener.clientNamespaces; len(namespaces) > 0 {
 		ingress = append(ingress, ingressFrom(core.DefaultListenerPort, namespacePeers(namespaces)))
 	}
-	if err := networkPolicy(ctx, name, s.namespace, clusteredHubListenerSelector(s.name), ingress, opts...); err != nil {
+	if _, err := networkPolicy(ctx, name, s.namespace, clusteredHubListenerSelector(s.name), ingress, opts...); err != nil {
 		return err
 	}
 	// The workload is one pod, so a budget of one unavailable allows its eviction: a node drain

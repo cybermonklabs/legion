@@ -26,7 +26,7 @@ var accessSlot = SlotAzureAccessPrefix + base64.RawURLEncoding.EncodeToString([]
 func TestAnAccessPlaceholderIsMintedOnceAndGoesWithTheGrant(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("the release: %v", err)
 	}

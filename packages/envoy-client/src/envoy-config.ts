@@ -37,6 +37,23 @@ export type EnvoyConfigEnvironment = {
 /** How long a `!` command may run before its field is an error. */
 const COMMAND_TIMEOUT_MS = 10_000;
 
+/** Tests only: the variable that sets that bound, for a test that holds a command on its own gate
+ * while it waits on other processes, which a loaded host can stretch past 10 s (claude-envoy's
+ * answers-hook rows set it to their own timeout). It is taken only as whole ms written in digits,
+ * from 1 to `LONGEST_TIMEOUT_MS`; unset, or any other value, the bound is `COMMAND_TIMEOUT_MS`. */
+const COMMAND_TIMEOUT_VARIABLE = "ENVOY_COMMAND_TIMEOUT_MS";
+
+/** The longest `timeout` Bun's `spawnSync` keeps: 1.4.4 wraps 2^31 ms or more, which then ends a
+ * 2 s `sleep` after about 74 ms. */
+const LONGEST_TIMEOUT_MS = 2_147_483_647;
+
+/** How long a `!` command run with `env` may run. */
+export function commandTimeoutMs(env: EnvoyConfigEnvironment): number {
+  const text = env[COMMAND_TIMEOUT_VARIABLE] ?? "";
+  const ms = /^[1-9]\d*$/.test(text) ? Number(text) : Number.NaN;
+  return ms <= LONGEST_TIMEOUT_MS ? ms : COMMAND_TIMEOUT_MS;
+}
+
 /** A variable's value, with an empty one read as unset: the one meaning of `""` for every variable
  * Dispatch and Envoy read. */
 export function nonEmpty(value: string | undefined): string | undefined {
@@ -356,6 +373,7 @@ const commandOutcomes: Map<string, KeptOutcome> = processGlobal[COMMAND_OUTCOMES
 processGlobal[COMMAND_OUTCOMES] = commandOutcomes;
 
 function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): CommandOutcome {
+  const timeoutMs = commandTimeoutMs(env);
   const childEnv: Record<string, string> = {};
   for (const [name, variable] of Object.entries(env)) {
     if (variable !== undefined) childEnv[name] = variable;
@@ -376,7 +394,7 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
         stdin: "ignore",
         stdout: fd,
         stderr: "ignore",
-        timeout: COMMAND_TIMEOUT_MS,
+        timeout: timeoutMs,
         detached: true,
       });
     } catch (error) {
@@ -393,7 +411,7 @@ function runCommand(command: string, env: EnvoyConfigEnvironment, cwd: string): 
     }
     if (result.exitedDueToTimeout) {
       return {
-        failure: `did not finish within ${COMMAND_TIMEOUT_MS / 1000} s, and does not run again in this process`,
+        failure: `did not finish within ${timeoutMs / 1000} s, and does not run again in this process`,
         timedOut: true,
       };
     }
@@ -426,7 +444,8 @@ export type CommandMode = "run" | "kept";
  * A value from the chosen file: as written, or, for one starting with `!`, its command's trimmed
  * stdout. The command runs under `/bin/sh -c` with `env`, in the directory of the file that names
  * it (never the session's working directory, so a relative command or a directory-configured shim
- * resolves against that file), in its own process group, for at most 10 s. Its value is kept for
+ * resolves against that file), in its own process group, for at most 10 s (`commandTimeoutMs`:
+ * a test can set another bound). Its value is kept for
  * the process, shared by every copy of this module loaded in it, keyed by the command, its file and
  * its working directory; so is a run out of time, while a failure that ended on its own (a non-zero
  * exit, empty output, more than one line) is kept for 60 s, then the command runs again. Its exit

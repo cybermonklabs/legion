@@ -825,9 +825,9 @@ func newSetupRig(t *testing.T, network setupNetwork) *setupRig {
 	return r
 }
 
-// roleEnv sets the role's command-scope git entries, gitConfigEnv's as the runtime sets them.
+// roleEnv sets the role's command-scope git entries, GitConfigEnv's as the runtime sets them.
 func (r *setupRig) roleEnv() {
-	for _, variable := range gitConfigEnv() {
+	for _, variable := range GitConfigEnv() {
 		r.t.Setenv(variable.Name, variable.Value)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -207,7 +208,7 @@ func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, name
 		slices.Sort(asking)
 		asking = slices.Compact(asking)
 	}
-	answers, err := m.Projects.States(ctx, asking)
+	answers, err := m.states(ctx, asking)
 	if err != nil {
 		return projectFacts{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
 	}
@@ -418,44 +419,13 @@ func (m *Machine) logFallbackUnread(recordID, responsible string, err error) {
 const fallbackCutMessage = "an approver's list leaves out, unread, rows whose responsible person is someone else, since its time for reading them ran out; each belongs there only where that person may not see it"
 
 // logFallbackCut writes fallbackCutMessage for reader's list, counting rows and naming err, the
-// list's clock's error, once per reader per projectaccess.CacheTTL however often that list is
-// read: a list is read on every 15 s poll of every open Inbox tab, and while Dispatch is slow
-// every one of them runs out of the clock.
+// fallback rows' clock's error, once per reader per projectaccess.CacheTTL however often that
+// list is read: a list is read on every 15 s poll of every open Inbox tab, and while Dispatch is
+// slow every one of them runs out of the clock.
 func (m *Machine) logFallbackCut(reader string, rows int, err error) {
 	if m.rowsUnansweredLogged.due("cut " + reader) {
 		slog.Warn(fallbackCutMessage, "list", "pending", "reader", reader, "rows", rows, "bound", listFallbackBound, "error", err)
 	}
-}
-
-// ReasonUnreadMessage is the log line for a stored row whose reason names the issue keys of more
-// projects than a new request may (record.MaxReasonProjects): the row can only be one stored before
-// Create refused such a reason, so neither rule reads any of its keys (reasonProjects), and they
-// count as naming no project, which is how every reader saw the row when it was written. Its other
-// projects are still asked.
-const ReasonUnreadMessage = "a stored request's reason names the issue keys of more projects than a new request may; its keys are not read, and count as naming no project"
-
-// logReasonUnread writes ReasonUnreadMessage for the one row row names ("record <id>" or
-// "grant <id>"), at info and once per projectaccess.CacheTTL however often the row is read. It
-// names the row and the count, never the reason's text.
-func (m *Machine) logReasonUnread(row string, projects int) {
-	if m.reasonsUnreadLogged.due(row) {
-		slog.Info(ReasonUnreadMessage, "row", row, "projects", projects, "bound", record.MaxReasonProjects)
-	}
-}
-
-// reasonProjects is the project of each issue key reason names (record.ReasonProjects), the
-// projects the person rule (maySee) and the session rule (hideFromSession) join to a row's own,
-// read for the row row names. A reason naming the keys of more than record.MaxReasonProjects
-// projects is one stored before Create refused such a reason (record.CheckReasonProjects): it
-// answers none, so its keys count as naming no project, which is how every reader saw the row when
-// it was written, and a line naming the row says so (logReasonUnread).
-func (m *Machine) reasonProjects(row, reason string) []string {
-	projects := record.ReasonProjects(reason)
-	if len(projects) > record.MaxReasonProjects {
-		m.logReasonUnread(row, len(projects))
-		return nil
-	}
-	return projects
 }
 
 // projectNotNamed is the refusal of a granted name the session may no longer have for its
@@ -536,7 +506,7 @@ func (m *Machine) JudgeProject(ctx context.Context, enrollmentID, name, reason s
 		if err != nil {
 			return false, time.Time{}, err
 		}
-		may, asked, err := m.judgeMayDecide(ctx, "enrollment "+enrollmentID, facts.states, m.namedProjects(enr), reason)
+		may, asked, err := m.judgeMayDecide(ctx, facts.states, m.namedProjects(enr), reason)
 		return may, projectaccess.Oldest(facts.asked, asked), err
 	})
 	if err != nil {
@@ -597,9 +567,9 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 }
 
 // maySee is the person rule over a row's parts: candidate projects and the reason, the project of
-// each of whose issue keys (reasonProjects) joins them. It is the one statement of whose request
-// this is, for a person (mayDecide, maySeeRecord), for a session (hideFromSession) and for the
-// model judge, which asks it with no person (judgeMayDecide). A word of a key's form that is no
+// each of whose issue keys (record.ReasonProjects) joins them. It is the one statement of whose
+// request this is, for a person (mayDecide, maySeeRecord), for a session (hideFromSession) and for
+// the model judge, which asks it with no person (judgeMayDecide). A word of a key's form that is no
 // project ("SHA-256") joins them too, and Dispatch answers it as no project, which hides nothing.
 // It sorts a list of its own: the caller's may be an enrollment's or an operator entry's, which
 // nothing here owns.
@@ -609,34 +579,328 @@ func UnderJudgeDispatch(ctx context.Context) bool {
 // hides the record, whatever its age, and is answered with no time. It decides nothing alone:
 // each caller holds its age to atDecision's bound with the facts it read before it.
 //
-// A reason naming the issue keys of more than record.MaxReasonProjects projects is one stored
-// before Create refused such a reason (record.CheckReasonProjects). Its keys are not read
-// (reasonProjects; row is "record <id>", "grant <id>" or, for the judge's own check, "enrollment
-// <id>"). The record's other projects are still asked, since its secrets' tags come of the live
-// policy, and a secret it names may have been tagged with a private project since it was stored.
-func (m *Machine) maySee(ctx context.Context, row, login string, projects []string, reason string) (bool, time.Time, error) {
+// Every project the reason names is asked, however many: a row whose reason names more than a new
+// request may (record.CheckReasonProjects) was stored before that rule, or by a broker that holds
+// no project-access client, and its reason is a private project's text as much as any other's. A
+// reason is at most record.MaxReasonRunes (400) runes, and each issue key takes at least five of
+// them with the rune that parts it from the next ("AB-1 "), so a stored reason names at most 80
+// projects. They are asked MaySeeAtOnce at a time. Once an answer hides the row, no question not
+// yet started is asked, since nothing it answers could show the row, and the row's wait on each
+// question still in flight ends. Outside a list such a question ends with that wait; inside one, a
+// question this row asked first goes on, on the list's clock (accessMemo.start), for the other
+// rows that wait on it. So within one list each question is asked once however many rows ask it,
+// a question a row asked before a project hid it included, and the list as a whole asks Dispatch
+// at most MaySeeAtOnce questions at a time (withAccessMemo, access). Short of an answer that hides
+// the row, every project is asked whatever ctx's state, so once ctx has ended a project the list or
+// the client already holds an answer for is still answered, and only a question Dispatch would
+// have to be asked now fails. The answer is deterministic whatever order
+// the questions end in (maySeeAnswer): false when any project hides the row; else
+// ErrProjectAccessUnavailable, with the failure of the first project in sorted order that Dispatch
+// did not answer for, when any did not, a project no read answered being one; else true. So a
+// project Dispatch could not be asked about hides the row it is named by, failing closed, and
+// never shows it. A question that panics is that project's failure (recoverRead), so the row fails
+// closed in the same way.
+func (m *Machine) maySee(ctx context.Context, login string, projects []string, reason string) (bool, time.Time, error) {
 	if m.Projects == nil {
 		return true, time.Time{}, nil
 	}
-	asking := slices.Concat(projects, m.reasonProjects(row, reason))
+	asking := slices.Concat(projects, record.ReasonProjects(reason))
 	slices.Sort(asking)
-	var asked time.Time
-	for _, project := range slices.Compact(asking) {
-		answer, err := m.Projects.Access(ctx, project, record.CanonicalLogin(login))
-		var missing *projectaccess.ProjectNotFoundError
-		switch {
-		case errors.As(err, &missing):
-			asked = projectaccess.Oldest(asked, missing.AskedAt)
-		case errors.Is(err, projectaccess.ErrProjectNotFound):
-		case err != nil:
-			return false, time.Time{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, err)
-		case !answer.Visible:
-			return false, time.Time{}, nil
-		default:
-			asked = projectaccess.Oldest(asked, answer.AskedAt)
+	asking = slices.Compact(asking)
+	person := record.CanonicalLogin(login)
+	seens := make([]projectSeen, len(asking))
+	ctx, hide := context.WithCancel(ctx)
+	defer hide()
+	var hidden atomic.Bool
+	slots := make(chan struct{}, MaySeeAtOnce)
+	var wg sync.WaitGroup
+	for i, project := range asking {
+		slots <- struct{}{}
+		if hidden.Load() {
+			<-slots
+			break
 		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-slots }()
+			defer recoverRead(&seens[i].err)
+			answer, err := m.access(ctx, project, person)
+			var missing *projectaccess.ProjectNotFoundError
+			switch {
+			case errors.As(err, &missing):
+				seens[i] = projectSeen{answered: true, asked: missing.AskedAt}
+			case errors.Is(err, projectaccess.ErrProjectNotFound):
+				seens[i] = projectSeen{answered: true}
+			case err != nil:
+				seens[i] = projectSeen{err: err}
+			case !answer.Visible:
+				seens[i] = projectSeen{answered: true, hidden: true}
+				hidden.Store(true)
+				hide()
+			default:
+				seens[i] = projectSeen{answered: true, asked: answer.AskedAt}
+			}
+		}()
+	}
+	wg.Wait()
+	return maySeeAnswer(seens)
+}
+
+// projectSeen is what maySee learned of one of a row's projects. answered is set by a read
+// Dispatch answered: the project shown or hidden, or no such project, whose absence hides nothing;
+// err by a read that failed. The zero projectSeen is a project no read answered, which fails
+// closed (maySeeAnswer): maySee stops asking only once a project hides the row, and a loop that
+// stopped before a project for any other reason can never show the row for want of its answer.
+type projectSeen struct {
+	answered bool
+	hidden   bool
+	asked    time.Time
+	err      error
+}
+
+// maySeeAnswer is maySee's answer over what it learned of each project of the row (seens, in
+// sorted order): false when any project hides the row; else ErrProjectAccessUnavailable, with the
+// first project in that order whose read failed or that no read answered; else true, beside the
+// oldest time an answer it rests on was asked.
+func maySeeAnswer(seens []projectSeen) (bool, time.Time, error) {
+	if slices.ContainsFunc(seens, func(s projectSeen) bool { return s.hidden }) {
+		return false, time.Time{}, nil
+	}
+	var asked time.Time
+	for _, s := range seens {
+		switch {
+		case s.err != nil:
+			return false, time.Time{}, fmt.Errorf("%w: %v", ErrProjectAccessUnavailable, s.err)
+		case !s.answered:
+			return false, time.Time{}, fmt.Errorf("%w: no read answered for one of the row's projects", ErrProjectAccessUnavailable)
+		}
+		asked = projectaccess.Oldest(asked, s.asked)
 	}
 	return true, asked, nil
+}
+
+// MaySeeAtOnce is how many of one row's projects maySee asks Dispatch about at once, and how many
+// questions one list asks Dispatch at once (withAccessMemo): record.MaxReasonProjects (16), the
+// most projects a new request's reason may name on a broker that checks projects. Such a reason is
+// asked in one round, and the densest reason a stored request can carry, 80 projects, in five:
+// half a second while Dispatch takes 100 ms an answer, against the 5 seconds Dispatch's Inbox
+// gives the broker for a whole list, where 80 questions one at a time took 8. The broker's client
+// of Dispatch keeps as many idle connections to it (cmd/cipherd's projectAccessHTTPClient), so a
+// round reuses the connections the round before it opened.
+const MaySeeAtOnce = record.MaxReasonProjects
+
+// accessMemoKey marks a context withAccessMemo made.
+type accessMemoKey struct{}
+
+// accessMemo is the answers of Dispatch's one list read was given, by project and person, so the
+// list asks each question once however many of its rows ask it, at once or one after another:
+// maySee's project reads alone, the questions a stored reason's 80 projects multiply. The client's
+// own cache (projectaccess.CacheTTL) answers a question asked again too, but keeps no answer once
+// it holds 4,096, which about 50 readers of one row naming 80 projects fill; this holds every
+// answer of the list for the list's own life, and no longer. list is the list's clock, which every
+// question the memo asks runs on (start). slots holds the list to MaySeeAtOnce questions of
+// Dispatch at a time, whichever of its rows ask them: a slot is held only while a question is in
+// flight, and a row waiting on another row's question holds none, so a project Dispatch does not
+// answer holds one slot however many rows name it, and costs the list only those rows. joined, nil
+// but in a test, is called each time a read is about to wait on a question another read asked, so
+// a test can ask its next question once the waiters wait, as projectaccess.Client's joined is.
+type accessMemo struct {
+	list    context.Context
+	mu      sync.Mutex
+	entries map[accessMemoQuestion]*accessMemoEntry
+	slots   chan struct{}
+	joined  func()
+}
+
+type accessMemoQuestion struct{ project, person string }
+
+// accessMemoEntry is one question's answer, written once by the read that asks it and read by
+// every other once done is closed. cut is a read that failed once its context had ended, the
+// list's clock or, for a read that started on an ended context, its own: its error is that read's,
+// never another row's answer, so the next read asks again.
+type accessMemoEntry struct {
+	done   chan struct{}
+	answer projectaccess.Answer
+	err    error
+	cut    bool
+}
+
+// withAccessMemo is ctx carrying a memo of its own for maySee's questions (access), whose questions
+// run on ctx, the list's clock: the pending list and the grant list each read their rows under
+// one, made on the clock of the reader's own rows (listOwnRowsBound).
+func withAccessMemo(ctx context.Context) context.Context {
+	return context.WithValue(ctx, accessMemoKey{}, &accessMemo{list: ctx, entries: map[accessMemoQuestion]*accessMemoEntry{}, slots: make(chan struct{}, MaySeeAtOnce)})
+}
+
+// access is m.Projects.Access, answered from ctx's memo where it holds the question, and kept
+// there once asked. A question a read is already asking is waited for rather than asked twice.
+// The read that asks a question first starts it on the list's clock rather than on ctx (start),
+// and waits for it as every other read does, so a row whose context ends, because a project hid
+// it or its own clock ran out, ends its own wait and no question another row waits on: each
+// question is asked once for the list. A kept answer older than projectaccess.CacheTTL is asked
+// again, as is one cut short (accessMemoEntry.cut), so atDecision's second collection reads afresh
+// exactly what aged; a kept failure stands for the list, so a project Dispatch could not answer
+// for leaves off every row naming it at the cost of one read, and no other row. Once the list's
+// clock has ended, a question the memo does not hold answered is not asked of Dispatch at all,
+// whatever the state of ctx (start): a question is cut short only by that end, so a read that
+// finds one cut asks no second question.
+func (m *Machine) access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	memo, _ := ctx.Value(accessMemoKey{}).(*accessMemo)
+	if memo == nil {
+		return m.Projects.Access(ctx, project, person)
+	}
+	question := accessMemoQuestion{project: project, person: person}
+	for {
+		memo.mu.Lock()
+		entry, held := memo.entries[question]
+		if !held {
+			entry = &accessMemoEntry{done: make(chan struct{})}
+			memo.entries[question] = entry
+			memo.mu.Unlock()
+			if !memo.start(ctx, m.Projects, question, entry) {
+				// ctx or the list's clock ended before the question took a slot: the read asks
+				// Dispatch nothing, and answers only from the client's cache, or fails at once.
+				entry.settle(func() (projectaccess.Answer, error) { return m.Projects.Access(ended(ctx), project, person) }, func(err error) bool { return err != nil })
+				return entry.answer, entry.err
+			}
+			if !entry.wait(ctx) {
+				return projectaccess.Answer{}, ctx.Err()
+			}
+			return entry.answer, entry.err
+		}
+		memo.mu.Unlock()
+		if memo.joined != nil {
+			memo.joined()
+		}
+		if !entry.wait(ctx) {
+			return projectaccess.Answer{}, ctx.Err()
+		}
+		if !entry.cut && !projectaccess.Stale(m.Projects, answeredAt(entry.answer, entry.err)) {
+			return entry.answer, entry.err
+		}
+		memo.mu.Lock()
+		if memo.entries[question] == entry {
+			delete(memo.entries, question)
+		}
+		memo.mu.Unlock()
+	}
+}
+
+// start asks question, once it holds one of the list's MaySeeAtOnce slots, in a goroutine of its
+// own that gives the slot back once the answer is in, and answers whether it did. The question
+// carries ctx's values, projectaccess.Fresh's mark among them, and ends with the list's clock
+// (memo.list), at its deadline or when the list's caller goes away, and never with ctx alone. It
+// starts nothing once ctx or the list's clock has ended, before or while it waits for a slot. The
+// list's own end is read apart from ctx's: a list's clock cancels the contexts derived from it one
+// after another, so a row's ctx can still read as live just after the clock has ended, and the
+// question it would start then would reach Dispatch before onList's cancel, which runs on a
+// goroutine of its own, ends it.
+func (memo *accessMemo) start(ctx context.Context, a projectaccess.Access, question accessMemoQuestion, entry *accessMemoEntry) bool {
+	if ctx.Err() != nil || memo.list.Err() != nil {
+		return false
+	}
+	select {
+	case memo.slots <- struct{}{}:
+	case <-ctx.Done():
+		return false
+	case <-memo.list.Done():
+		return false
+	}
+	if memo.list.Err() != nil {
+		<-memo.slots
+		return false
+	}
+	asking, cancel := memo.onList(ctx)
+	go func() {
+		defer func() { <-memo.slots }()
+		defer cancel()
+		entry.settle(func() (projectaccess.Answer, error) { return a.Access(asking, question.project, question.person) }, func(err error) bool { return err != nil && asking.Err() != nil })
+	}()
+	return true
+}
+
+// onList is a context carrying ctx's values that ends when the list's clock does (memo.list): at
+// its deadline, or when the list's caller goes away. ctx's own end, or its cancel, ends it not.
+func (memo *accessMemo) onList(ctx context.Context) (context.Context, context.CancelFunc) {
+	asking, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	stop := context.AfterFunc(memo.list, cancel)
+	if end, ok := memo.list.Deadline(); ok {
+		var cancelAt context.CancelFunc
+		asking, cancelAt = context.WithDeadline(asking, end)
+		return asking, func() { stop(); cancelAt(); cancel() }
+	}
+	return asking, func() { stop(); cancel() }
+}
+
+// ended is a context carrying ctx's values that has already ended, for a read that must ask
+// Dispatch nothing: the client answers it from its cache, or fails at once.
+func ended(ctx context.Context) context.Context {
+	done, cancel := context.WithCancel(ctx)
+	cancel()
+	return done
+}
+
+// settle writes entry's answer from ask, cut when cut says its error is, and closes done however
+// ask ends: a panic in ask is the entry's error (recoverRead), so every row waiting on it fails
+// closed at once rather than waiting out its clock.
+func (entry *accessMemoEntry) settle(ask func() (projectaccess.Answer, error), cut func(error) bool) {
+	defer close(entry.done)
+	defer recoverRead(&entry.err)
+	entry.answer, entry.err = ask()
+	entry.cut = cut(entry.err)
+}
+
+// wait reports whether entry's answer is in, waiting for it while ctx lasts. An answer already in
+// is taken whatever ctx's state.
+func (entry *accessMemoEntry) wait(ctx context.Context) bool {
+	select {
+	case <-entry.done:
+		return true
+	default:
+	}
+	select {
+	case <-entry.done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// slot takes one of the list's MaySeeAtOnce questions of Dispatch, waiting while ctx lasts, and
+// answers its release. Once ctx has ended it takes none, since a read on an ended context answers
+// only from the client's cache, or fails at once. A nil memo, a read outside any list, takes none.
+func (memo *accessMemo) slot(ctx context.Context) (release func()) {
+	if memo == nil {
+		return func() {}
+	}
+	select {
+	case memo.slots <- struct{}{}:
+		return func() { <-memo.slots }
+	case <-ctx.Done():
+		return func() {}
+	}
+}
+
+// states is m.Projects.States within ctx's list's MaySeeAtOnce (withAccessMemo), so the rows a
+// list reads at once ask Dispatch at most that many questions at a time between them.
+func (m *Machine) states(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	memo, _ := ctx.Value(accessMemoKey{}).(*accessMemo)
+	defer memo.slot(ctx)()
+	return m.Projects.States(ctx, projects)
+}
+
+// answeredAt is when the question an access answer or error answers was asked: zero for a failure
+// and for a source that keeps no clock, neither of which ages.
+func answeredAt(answer projectaccess.Answer, err error) time.Time {
+	var missing *projectaccess.ProjectNotFoundError
+	switch {
+	case err == nil:
+		return answer.AskedAt
+	case errors.As(err, &missing):
+		return missing.AskedAt
+	}
+	return time.Time{}
 }
 
 // judgeMayDecide is the model judge's project rule, the one its run checks before the model
@@ -646,13 +910,13 @@ func (m *Machine) maySee(ctx context.Context, row, login string, projects []stri
 // project is public and the person rule shows it to a reader naming no person, which Dispatch
 // answers by visibility alone. The judge's own token names no person, so it may see no private
 // project. It answers maySee's time beside its answer, and no time for a state that refers it.
-func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[string]policy.ProjectState, named []string, reason string) (bool, time.Time, error) {
+func (m *Machine) judgeMayDecide(ctx context.Context, states map[string]policy.ProjectState, named []string, reason string) (bool, time.Time, error) {
 	for _, state := range states {
 		if state != policy.ProjectPublic {
 			return false, time.Time{}, nil
 		}
 	}
-	return m.maySee(ctx, row, "", named, reason)
+	return m.maySee(ctx, "", named, reason)
 }
 
 // namedProjects is the projects e's credential names: a person's session's enrollment list, the
@@ -686,14 +950,14 @@ func (m *Machine) credentialsProjects(asked, current enrollmentRow) []string {
 // mayDecide is the approve path's person rule (maySee), read before its transaction: the record's
 // tagged secrets under set, the projects the credentials it has had name (credentialsProjects),
 // and its reason. It answers maySee's time beside its answer.
-func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projectFacts, sessionProjects []string, reason string) (bool, time.Time, error) {
+func (m *Machine) mayDecide(ctx context.Context, login string, facts projectFacts, sessionProjects []string, reason string) (bool, time.Time, error) {
 	var projects []string
 	for project, state := range facts.states {
 		if state == policy.ProjectPrivate {
 			projects = append(projects, project)
 		}
 	}
-	return m.maySee(ctx, row, login, append(projects, sessionProjects...), reason)
+	return m.maySee(ctx, login, append(projects, sessionProjects...), reason)
 }
 
 // decisionFacts is what the approve path reads of Dispatch for recordID before its transaction:
@@ -737,9 +1001,9 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 			for _, project := range taggedProjects(set, pre.names) {
 				tagged[project] = facts.states[project]
 			}
-			may, asked, err = m.judgeMayDecide(ctx, "record "+recordID, tagged, named, pre.reason)
+			may, asked, err = m.judgeMayDecide(ctx, tagged, named, pre.reason)
 		} else {
-			may, asked, err = m.mayDecide(ctx, "record "+recordID, who.login, facts, named, pre.reason)
+			may, asked, err = m.mayDecide(ctx, who.login, facts, named, pre.reason)
 		}
 		return decided{facts: facts, may: may}, projectaccess.Oldest(facts.asked, asked), err
 	})
@@ -776,15 +1040,30 @@ func decisionReads(ctx context.Context, who decider) (context.Context, context.C
 // Dispatch nothing, and a broker with no project-access client hides nothing, since it serves no
 // tagged secret and enrolls no session naming a project. An error is ErrProjectAccessUnavailable:
 // whether login may see the row is unknown, and a caller shows it to nobody until Dispatch answers.
-// HideUnseen, hideUnseenGrant and both approver lists read it. The names' projects and the person
-// rule's reads are one decision, held to atDecision's bound.
-func (m *Machine) maySeeRecord(ctx context.Context, row, login string, names, sessionProjects []string, reason string) (bool, error) {
-	return atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (bool, time.Time, error) {
+// Both approver lists read it, and HideUnseen and hideUnseenGrant through seenSecrets. The names'
+// projects and the person rule's reads are one decision, held to atDecision's bound.
+func (m *Machine) maySeeRecord(ctx context.Context, login string, names, sessionProjects []string, reason string) (bool, error) {
+	_, may, err := m.seenSecrets(ctx, login, names, sessionProjects, reason)
+	return may, err
+}
+
+// seenSecrets is maySeeRecord answering beside its decision the project of each of names it
+// decided on (secretProjects): the one policy version the rule read the names' tags from, and the
+// answers of Dispatch's it read their states from. A reader that shows the row (ReadRecordFor)
+// shows these and reads the policy no second time, so a tag the policy gained after the rule read
+// it never reaches a person the rule did not check it for.
+func (m *Machine) seenSecrets(ctx context.Context, login string, names, sessionProjects []string, reason string) ([]SecretProject, bool, error) {
+	type seen struct {
+		secrets []SecretProject
+		may     bool
+	}
+	got, err := atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (seen, time.Time, error) {
 		secrets, asked, err := m.secretProjects(ctx, names)
 		if err != nil {
-			return false, time.Time{}, err
+			return seen{}, time.Time{}, err
 		}
-		may, seen, err := m.maySee(ctx, row, login, append(privateProjects(secrets), sessionProjects...), reason)
-		return may, projectaccess.Oldest(asked, seen), err
+		may, at, err := m.maySee(ctx, login, append(privateProjects(secrets), sessionProjects...), reason)
+		return seen{secrets: secrets, may: may}, projectaccess.Oldest(asked, at), err
 	})
+	return got.secrets, got.may, err
 }

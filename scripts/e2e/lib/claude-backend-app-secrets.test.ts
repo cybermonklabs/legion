@@ -93,6 +93,9 @@ const tools = [
   "flock",
   "ps",
   "sha256sum",
+  // The implement App's token command prints the release with printenv, a program and not a
+  // shell builtin (lib/github-apps.sh, app_token_command).
+  "printenv",
 ];
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-in PATH below is built from.
@@ -167,10 +170,11 @@ test.skipIf(skip)(
     expect(output).not.toMatch(/^FAIL prerequisites: secrets\b/m);
     // Each credential as the block hands it to the daemon: the review App's key is what the
     // operator's command printed, through the run's own key file, and the implement App's token
-    // is the broker client's release. A prerequisites that reached either through the box's own
-    // store would leave another value here and a line in `asked`.
+    // is the broker client's release, which printenv ends with a newline that every reader of a
+    // release trims. A prerequisites that reached either through the box's own store would leave
+    // another value here and a line in `asked`.
     expect(readFileSync(keyRead, "utf8")).toBe(keyCommandPrints);
-    expect(readFileSync(tokenRead, "utf8")).toBe("{}");
+    expect(readFileSync(tokenRead, "utf8")).toBe("{}\n");
     expect(existsSync(asked) ? readFileSync(asked, "utf8") : "").toBe("");
   },
   90_000

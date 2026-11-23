@@ -55,6 +55,15 @@ budget cancels the job. So the `if: always()` and `if: failure()` upload steps s
 report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
 A job budget is the backstop above the sum of its step budgets, so it never fires first.
 
+One step follows another rule: the shard job's browser step, whose budget is a hang guard set
+from the runners' spread rather than from the maximum, because on that step the maximum was a
+verdict on the runner. Its 11 minutes, the maximum plus 15 per cent, cut a leg of run 44985914477
+whose every row had passed, on a runner that ran the same rows 1.75 times slower than another of
+the same minute. Its budget is that factor times the p90 of the leg the time split gives, times
+the worst drift a row-time table up to a week old was measured to give, and
+[the step's section](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)
+holds the derivation.
+
 No permissions: block, and that is not what decides this workflow's scopes. A called workflow
 runs under the calling job's `permissions:`, and a caller that declares none hands it the
 default GITHUB_TOKEN permissions rather than its own workflow's block (GitHub's
@@ -135,6 +144,17 @@ shard and alone jobs run them in a container of this repository's own image, and
 binary with a PT_INTERP has a glibc there to disagree with. They are written under
 $RUNNER_TEMP, so the checkout stays clean.
 
+`-ldflags='-s -w'` leaves out the symbol table and the DWARF debug information, which no
+leg reads: a panic's stack trace still names each function, file and line (Go keeps its own
+line table for that), and `go version -m` still reads the build information. Without them the
+artifact every shard and alone leg downloads was 107,567,572 bytes zipped and 248,108,722
+unzipped (run 45062410823); stripped, about half that (the binaries job's upload step logs
+each run's size). The download is where a leg's run has failed
+on the network: on 2026-11-22 five leg downloads of about 4,330 stalled for the step's
+whole 2 minutes, and three legs failed when the second attempt stalled too (shard 4 of
+merge group 45062410823 among them). Half the bytes is half the time a slow connection
+has to be slow in.
+
 ## Why the binaries artifact's name holds no run attempt
 
 One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
@@ -149,6 +169,30 @@ Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
 one database cannot serve stacks that truncate it per row, and a run of more than one
 stack starts a server per stack and hands each its own (e2e/harness-postgres.ts).
+
+A leg's quarter is a quarter of the lane's row time, not of its rows. Playwright's own
+`--shard` cuts the rows into four runs of equal count, and rows do not cost the same: at main
+f02514268a it gave the full lane's heaviest leg 1.115 to 1.225 times the mean row time, over
+the per-row medians of two sets of 13 and 14 of main's runs (the pull request's body names them),
+and leg 2, all chromium rows, was the slowest leg of its run in 55 of the 85 runs of
+2026-11-21/22 whose four legs all ran. packages/dispatch/e2e/shard-reporter.ts, which the
+browser step names beside the failure reporter, takes the split over: every leg places every
+file of every project the lane selects by the row times main measured
+(packages/dispatch/e2e/shard-weights.json), heaviest first onto the lightest leg, and keeps its
+own files. The same two sets put that placement at 1.007 and 1.008 times the mean.
+packages/dispatch/e2e/shard-split.ts says why Playwright 1.64.1 has no split by time of its own,
+why the file is the unit, how all four legs compute one placement, and what a file with no
+measured time is placed by; `bun e2e/tools/shard-weights.ts --main <count>` reads the table
+again. Each leg prints its own line before its first row, `shard N of 4, placed by measured row
+time: ...`, with the rows of it that were placed by an estimate.
+
+Each leg also writes two row lists into the rows/ directory its blob upload carries: every row
+of the selection it read, and the rows Playwright gave it to run
+(DISPATCH_E2E_LEG_ROWS_DIR in .github/scripts/dispatch-browser-shard-suite.sh). The merge
+job's reading one holds the four legs' lists against each other and fails by name on a row of
+the selection that no leg ran or that two ran. Its row count cannot see either: a planted
+reporter that put the selection's last file on no leg ran 1,616 of the 1,617 rows, and the legs'
+count and the merged report both read 1,616.
 
 The image this repository builds and publishes for every CI job that can launch WebKit or
 Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
@@ -200,7 +244,7 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The census both of this job's budgets are read from: main's own full-lane runs, read from the
+The census the job's budget is read from, and the browser step's was: main's own full-lane runs, read from the
 jobs API on 2026-11-21 near 16:15Z at main 75bd096e02. It takes every run of ci.yaml with
 `event=merge_group`, and every run of dispatch-browser-nightly.yaml on branch `main`, that
 GitHub's `created=2026-11-18..2026-11-21` filter lists and whose head commit is on main's
@@ -222,16 +266,18 @@ which passed. The browser step over them, in seconds:
   2026-11-21    144    414    507  531
   all           672    380    486  531
 
-The browser step's budget, its `timeout-minutes: 11`, is that maximum by the rule in this file's
+The browser step's budget was its `timeout-minutes: 11`, that maximum by the rule in this file's
 head: 531 s, shard (2) of run 44917245139 (job 136888588252), and 531 x 1.15 = 611 s -> 11 min.
-The step grows with the suite, not with its rows getting slower: run 44423948511 of 2026-11-18
-ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at 67659e611c ran 1,600 (400 a
-leg), and the 1,260 rows both runs passed took 4,345 s and 4,393 s, a ratio of 1.011. So this
-budget is read again when the suite has grown: at the 9 minutes it replaces, derived from the
-419 s of the two runs of the head that sharded this suite (42334424798 and 42316487530), 42 of
-the census's legs came within 60 s of the limit, 34 of the 144 of 2026-11-21, and in run
-44908680493 of #4613 and run 44903205761 of #4199 three legs whose every row passed were cut
-at it.
+It is a hang guard now, 18 minutes, read from the legs of 2026-11-21 and 2026-11-22 rather than
+from this census's maximum, for the reason
+[the step's section](#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is)
+gives with its derivation. The step grows with the suite, not with its rows getting slower: run
+44423948511 of 2026-11-18 ran 1,453 rows (363, 363, 364 and 363 a leg) and run 44909149810 at
+67659e611c ran 1,600 (400 a leg), and the 1,260 rows both runs passed took 4,345 s and 4,393 s,
+a ratio of 1.011. At the 9 minutes the 11 replaced, derived from the 419 s of the two runs of the
+head that sharded this suite (42334424798 and 42316487530), 42 of the census's legs came within
+60 s of the limit, 34 of the 144 of 2026-11-21, and in run 44908680493 of #4613 and run
+44903205761 of #4199 three legs whose every row passed were cut at it.
 
 The job budget, the shard job's `timeout-minutes`, follows the rule over the same census: one
 window for every step. Each step without a budget of its own is counted at its maximum over
@@ -291,8 +337,8 @@ it is built again. So the download now carries a budget of its own and a second 
 and the pull is counted at that 355 s, above the census's 176 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
-browser step's 660 s, the two download attempts' 120 s each, and the steps without a
-budget at the census's 565 s: 1,465 s, 24 min 25 s, rounded up to the 25 minutes
+browser step's 1,080 s, the two download attempts' 120 s each, and the steps without a
+budget at the census's 565 s: 1,885 s, 31 min 25 s, rounded up to the 32 minutes
 of the shard job's `timeout-minutes`. The browser step's own budget still fires before the job's.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
@@ -309,7 +355,9 @@ wall-clock rows are the alone job's.
 
 Four legs. The count is written here and in the `--shard` denominator of the browser step
 (`--shard=$shard/4` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a denominator larger than the leg list
-would leave the rows of the missing legs unrun with nothing red.
+would leave the rows of the missing legs unrun with nothing red. The split by row time
+(packages/dispatch/e2e/shard-reporter.ts) reads the count from that same `--shard`, so it is no
+third place.
 
 ## What the shard job downloads in place of a Go build
 
@@ -339,8 +387,8 @@ run-broker.sh serves from.
 ## What the shard job places, and what its budget leaves for it
 
 The census the job's budget is read from counts this step, at its maximum of 1 s (the
-shard job's measured steps above); it copies one 106 MB artifact on the runner's disk (141 ms
-for those bytes on a pod).
+shard job's measured steps above); it copies the four binaries on the runner's disk (141 ms
+for the 106 MB artifact of the unstripped build on a pod).
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -407,8 +455,20 @@ per stack, so the readiness wait's own bucket worked and ten upload rows of run
 42409479235 failed on 502s from the Dispatch server's PutObject, every one of them for
 a stack's own bucket.
 
+The two flags after those, `-master.raftHashicorp -master.raftBootstrap`, are this job's own.
+A one-node master on weed's default raft elects itself only after about 19 s: the log of
+run 45048924209's shard 4 has "Starting RaftServer" at 17:33:08.6 and "is the leader" at
+17:33:27.5, and the S3 gateway answers only after that, so the readiness wait below took
+23 s at the median of 3,247 shard legs on 2026-11-22 (p90 24 s). With HashiCorp's raft and
+a bootstrap of the empty data directory each run starts with, the master is leader within
+about a second of its start. Measured with the weed 3.97 binary from that release on a
+loaded developer machine, start to an object written and read back: 31 to 37 s with the
+default raft, 10.5 to 13 s with these two flags, leader at 1.4 s. Neither flag changes
+what the store keeps or serves: the data directory is new in every run, so there is no
+earlier raft state to resume.
+
 So, for whoever moves the seaweedfs row of .github/ci-images.yaml to a new version:
-read that image's /entrypoint.sh again and reconcile these flags with its `server`
+read that image's /entrypoint.sh again and reconcile the three image flags with its `server`
 case, because they are the script's and this job runs the binary without it. The row
 pins a digest, so the entrypoint cannot change under this job between bumps, which is
 what makes the rule a read at bump time rather than a check on every run. Read it with
@@ -457,9 +517,73 @@ $RUNNER_TEMP beside the stacks' own run directory: a file this step wrote into t
 checkout would leave it dirty afterwards. The blob report goes beside the list
 reporter's output, so a green run reports what it ran too.
 
-The step's budget, `timeout-minutes: 11`, is the 11 minutes the job's head derives from main's
-own full-lane runs of 2026-11-18 to 2026-11-21, whose maximum is 531 s; the job's head gives
-the census's query and why the budget is read again as the suite grows.
+The step's budget, `timeout-minutes: 18`, is a hang guard. It is not the maximum plus 15 per
+cent of this file's head, because on this step that rule made the limit a verdict on the
+runner: the 11 minutes it gave cut shard (4) of run 44985914477 (job 137096923636) with 401 rows
+passed and none failed, on a machine that ran them slower than another of the same minute.
+How the 18 minutes are read:
+
+- The legs: every shard leg whose browser step ran to an end, of the merge-group runs of
+  ci.yaml whose head holds 4f5bf22eb9 and the nightly on main, from 2026-11-21 17:51Z to
+  2026-11-22 08:25Z, read from the jobs API of each run's attempts: 347 legs.
+- What a leg's step time is: over the 68 legs of the 17 of those runs that are on main's
+  first-parent history and whose merged report holds the same 1,617 rows as main at
+  f02514268a, the step took 24.0 s + 0.2549 x the leg's row time (its rows' durations in that
+  run's report, summed), with a residual of 6.8 s standard deviation and none past 18.7 s: the
+  row time spread over four workers, plus the stacks' start.
+- The leg the time split gives: each of the 347 legs rescaled to it, 24.0 + (t - 24.0) x
+  1,698 / R, where R is the median row time of its leg under the count split (1,739, 2,062,
+  1,383 and 1,607 s) and 1,698 s a quarter of their sum. Median 454 s, p90 534 s, maximum 696 s,
+  the last the leg the 11 minutes cut.
+- The factor: 1.75, the slowest runner seen. The leg that was cut ran its 401 rows at a
+  per-row median 1.75 times the time job 137096931568 of run 44985911309 took for the same rows,
+  started 3 s later (p10 1.42, p90 2.12; 660 s against 391 s of step).
+- The drift: 1.11, the worst share of the mean the heaviest leg took under a row-time table
+  (packages/dispatch/e2e/shard-weights.json) up to 7 days old. Read on 2026-11-22 with this
+  change's own code - each table built by `e2e/tools/shard-weights.ts`'s `weightsOf` from the
+  `report.json` of each run's `dispatch-browser-report-1` artifact, the lane placed by
+  `placeUnits` - over two tables:
+  - a table of 2026-11-18, 4 days old, from ci.yaml merge-group runs 44409818750, 44418436030,
+    44418744571, 44418795005, 44419183723, 44423948511, 44424277368 and 44424671868, placed the
+    lane at 1,765, 1,520, 1,616 and 1,890 s: 1.113 times the mean;
+  - a table of 2026-11-15, 7 days old, from runs 43742873016, 43756837053, 43760034112,
+    43770938377, 43771792014 and 43774018034 (the six of that day's last ten on main's
+    first-parent history that kept a report), at 1,692, 1,723, 1,712 and 1,665 s: 1.015;
+  - the lane is the 1,617 rows the shard command lists at main f02514268a, each weighed by its
+    median over main's 17 runs 44955285815, 44955287410, 44963209611, 44966750516,
+    44966794515, 44966795777, 44966798236, 44973942358, 44979022185, 44979030337,
+    44980842865, 44981988875, 44982147987, 44983017182, 44989017422, 44991587611 and
+    44997869666; a table of those same runs places it at 1.001.
+
+  The drift is not a function of age: the older table did better. Each old table lacks the
+  files the issue page's specs were split into since (155 and 173 of the lane's rows), places
+  them by the chromium median, and the greedy placement turns on small differences of weight,
+  so where those files land is close to chance. 1.11 is the worse of the two. Without it, a p90
+  leg on the slowest runner seen under such a table would end at about 1,040 s, past a 16-minute
+  guard, and be cut with its rows passing.
+- 534 s x 1.75 x 1.11 = 1,037 s, rounded up to 18 minutes, 1,080 s.
+
+What a hang looks like to it. A row cannot hang it: each row ends at its own budget, the 60 s of
+e2e/playwright.config.ts's `testTimeout` or the longer one a row sets, and the leg goes on. What
+reaches 18 minutes is a leg that has stopped running rows - a stack that never comes up in
+`globalSetup`, a teardown or a blob write that never returns, a worker that stops reporting -
+whose log has stopped gaining rows. The runner cancels the step and names it (`The action
+'<step name>' has timed out after 18 minutes.`). The leg's blob report is never written, since
+Playwright writes it when the run ends: the always-run upload finds no file (run 44985914477's
+cut shard 4 logged `No files were found with the provided path: /__w/_temp/leg-report`), and
+the merge job says so by name - reading one's `no blob report arrived from: shard-4` and
+reading three's `... uploaded no blob report, so the merged report holds none of its rows` - and
+fails on the leg's result. No row's verdict rests on the guard: the p90 leg on the slowest
+runner seen, under a table up to a week old, ends at about 1,037 s, under it, and the slowest of the
+347 legs, rescaled, at 696 s. What it costs is time: a hung leg is cut seven minutes later than
+at the 11.
+
+The week is what the guard holds, so each leg says when its table is past it: below its
+placement line it prints a `::warning::` when e2e/shard-weights.json was read more than 7 days
+before the run, or when a tenth of its rows sit in files the table has no entry for
+(packages/dispatch/e2e/shard-split.ts, `tableWarnings`). Either one means
+`bun e2e/tools/shard-weights.ts --main 17` is due; past the week, at the count split's 1.21, a
+p90 leg on that runner would end near 1,131 s.
 
 ## Why the file store's address is set on the step and not in the environment
 
@@ -1145,7 +1269,17 @@ ladder bounds that wait rather than measuring it - three attempts, each bounded 
 `timeout 30`, with waits of 10 s and 20 s between them, which is 120 s at most - and a
 bound takes no 15 per cent. The step's own work has a measured maximum of 4 s, and
 4 x 1.15 = 4.6 s, so 120 + 4.6 = 124.6 s, at the next whole minute above, is the 3 min
-that step carries. The rule's two-minute floor does not bind.
+that step carries. The rule's two-minute floor does not bind. The step now also runs
+packages/dispatch/e2e/tools/leg-rows.ts over the four shard legs' row lists (1.1 MB for the
+full lane's 1,617 rows), measured at 0.02 to 0.08 s on the development box over three runs;
+counted at a whole second, (4 + 1) x 1.15 = 5.75 s and 120 + 5.75 = 125.75 s, still the 3 min.
+
+A spent API budget or a secondary rate limit is not in that bound: gh-read.sh's gh_wait_reset
+waits for GitHub to answer again only when that falls at least 30 s before this step's limit and
+the job's, which the job's env passes as JOB_TIMEOUT_MINUTES and the step's as
+STEP_TIMEOUT_MINUTES, and otherwise fails the step at once, naming the wait and the limit. So the
+wait never outlives either budget, and the budgets need no room for it: a step that would have to
+wait past them fails by name instead, and a re-run after the reset reads the jobs again.
 
 So by the rule in this file's head the job's budget is the sum of its step budgets, that
 one step's 180 s, plus the measured maximum of every step without one: 40 s less reading
@@ -1198,10 +1332,10 @@ job. The script reads GITHUB_RUN_ATTEMPT, which Actions sets, so this step needs
 else, the action's own call and retries being in the download step's error line and
 not anywhere this job can read.
 
-This step is kept rather than deleted in favour of reading one's `downloaded =
-failure` branch, which names the refused download too, because a run whose jobs read
-is refused as well exits reading one at its own refusal and never reaches that
-branch, and then this step is the only line that names the refused download.
+This step is kept rather than deleted in favour of reading one's refused-download
+branch (the download concluded `failure`), which names the refused download too, because
+a run whose jobs read is refused as well exits reading one at its own refusal and never
+reaches that branch, and then this step is the only line that names the refused download.
 
 ## Why only the newest attempt of each leg is merged
 
@@ -1212,6 +1346,19 @@ script's head says what two attempts of one leg did to a merged report when they
 downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory.
 Where several artifacts matched, its log names the attempt it took for each leg; where one
 matched, it names the files it took.
+
+The step's id, `select-blobs`, is how "Reading one, the rows" reads its conclusion beside the
+download's. Reading one reads only this step's directory; this step runs only after a download
+that succeeded, and the merge step only after this step succeeded. So a leg is named as having
+sent no blob only when both steps succeeded. A failed download's error keeps its own message,
+the refused read that the section above describes, and the notice lists the legs it read
+nothing of. When the download did not complete in another way, or this step did not complete
+after a download that did, reading one names that step and how it ended, says that the job made
+no merged report, and names the legs whose blob and whose count it did not read, claiming
+nothing about whether those legs uploaded. Run
+44754426131, attempt 1, is why: the job's limit cancelled its `bun install`, both steps were
+skipped, and reading one named four shards as having sent no blob, though each blob had been
+uploaded before the job started.
 
 ## What the merged report's three outputs are for
 
@@ -1252,9 +1399,10 @@ not a run at all. A retried row contributes each attempt it passed, which is one
 ## What the verdict step fails on
 
 The verdict, which the four readings ("Reading one, the rows", "Reading two, the flake rate", "Reading three, the leg exits with no failed row" and "Reading four, the row durations") do not give: they report, and this fails. Two
-of the job's three failures are here - an upstream job that neither succeeded nor was
+of the job's four failures are here - an upstream job that neither succeeded nor was
 skipped, the binaries job among them, and a failed row in the merged report - and the
-third, a missing blob, is in reading one, where it is found.
+other two are in reading one, where they are found: a missing blob, and a row of the
+selection that no shard leg ran or that two ran.
 
 ## When the merge job posts ci-ok
 

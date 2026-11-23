@@ -33,6 +33,7 @@ func lookup(values map[string]string) func(string) (string, bool) {
 // nats_nkey_seed_file — the seed every pane receives — so a daemon boots against a server whose one
 // user is that seed's nkey, and without it the same server refuses the daemon's boot.
 func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	seed, public := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, public)
@@ -76,6 +77,7 @@ func TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved(t *testing.T) {
 // a server whose one user is the daemon seed's admits a daemon configured with both seeds, and
 // refuses one configured with the pane seed alone, which it then connects as.
 func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	daemonSeed, daemonUser := testnkeys.User(t)
 	paneSeed, paneUser := testnkeys.User(t)
@@ -136,6 +138,7 @@ func TestTheWorkflowConnectsAsTheDaemonSeedOverThePaneSeed(t *testing.T) {
 // chooseNATSConnection picks the daemon seed, else the pane seed, else none, and its one line says
 // which user that is and whether it is the pane user, the daemon seed naming the pane user included.
 func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
+	t.Parallel()
 	daemonSeed, daemonUser := testnkeys.User(t)
 	paneSeed, paneUser := testnkeys.User(t)
 	for _, tc := range []struct {
@@ -168,6 +171,7 @@ func TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs(t *testing.T) {
 // launch carry the pane seed as NATS_NKEY_SEED and nothing of the daemon seed, in no secret, no
 // variable, and no other field of the spec.
 func TestNoLaunchCarriesTheDaemonSeed(t *testing.T) {
+	t.Parallel()
 	daemonSeed, paneSeed := testnkeys.UserSeed(t), testnkeys.UserSeed(t)
 	for _, tc := range []struct {
 		name    string

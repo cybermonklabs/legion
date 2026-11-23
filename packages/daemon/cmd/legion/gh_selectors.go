@@ -13,11 +13,11 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // selectors is every repository a command's selectors name, and every owner one names with no
@@ -799,7 +799,7 @@ func readGitRemotes() ([]ghRemote, error) {
 // stop to the two command runners of internal/workspace, whose git and jj do take locks, and
 // leaves a read that takes none as it is: this child needs neither the group nor the grace.
 func gitLines(args ...string) ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), programbound.Of(&ghGitReadBound))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = append(ghChildEnviron(os.Environ(), nil), "LC_ALL=C")

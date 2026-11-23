@@ -91,6 +91,8 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/infra/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
           cache: false
       # ci.yaml's go-envoy-infra, restored and never saved: .github/workflows/ci-caches.yaml
       # fills that family on a push to main.
@@ -290,6 +292,8 @@ jobs:
       attestations: write
     # No cache is restored in a job that holds a credential.
     cache-mode: none
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, which gh-read.sh's wait for a spent API budget stays within
     steps:
       # For release-push.sh and the tag, with every tag (the existing-tag check below reads them).
       # No credential is left in the checkout: the deploy key reaches the "Tag release" step alone.

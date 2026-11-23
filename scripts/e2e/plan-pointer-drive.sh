@@ -165,6 +165,8 @@ evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
 # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears these
 # three.
@@ -238,9 +240,10 @@ databases=()
 attempt_dir=''
 kept_dir=''
 
-# cleanup stops what the run started, drops every database it made, and exits with rc: the
-# script's own status for EXIT, 128 plus the signal's number for INT and TERM, so an interrupted
-# run never reports success.
+# cleanup stops what the run started, drops every database it made, and prints the run's last line
+# through lib/run-verdict.sh, which exits with rc: the script's own status for EXIT, 128 plus the
+# signal's number for INT and TERM. PASS needs rc 0 and run_end, the script's last statement, so a
+# run that a HUP ended, whose EXIT trap reads 0, reads FAIL as an interrupted run does.
 cleanup() {
   local rc=$1 database
   trap - EXIT INT TERM
@@ -252,17 +255,10 @@ cleanup() {
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 \
       -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1
   done
-  if [ -z "$work" ]; then
-    echo "plan pointer drive: FAIL at $check after $((SECONDS - started))s" >&2
-  else
-    rm -rf "${work:?}/base"
-    if [ "$rc" -eq 0 ]; then
-      echo "plan pointer drive: PASS in $((SECONDS - started))s (evidence: $work)"
-    else
-      echo "plan pointer drive: FAIL at $check after $((SECONDS - started))s (evidence: $work)" >&2
-    fi
-  fi
-  exit "$rc"
+  [ -z "$work" ] || rm -rf "${work:?}/base"
+  run_verdict "$rc" \
+    "plan pointer drive: PASS in $((SECONDS - started))s (evidence: $work)" \
+    "plan pointer drive: FAIL at $check after $((SECONDS - started))s${work:+ (evidence: $work)}"
 }
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -561,3 +557,4 @@ for arm in head base; do
   unset -n kept
 done
 pass
+run_end

@@ -49,7 +49,7 @@ func TestPlanRatingsLive(t *testing.T) {
 	for _, issue := range l.issues {
 		keys = append(keys, issue.key)
 	}
-	l.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issues %s; daemon at dispatch_url %s; the reader is the person's personal token",
+	l.note("Dispatch %s (database of its own, NATS off), project %s with default repository %s, issues %s; daemon at dispatch_url %s; the reader is the person's personal token",
 		l.dispatch.base, l.cfg.Project, liveRepo, strings.Join(keys, ", "), l.cfg.DispatchURL)
 	l.step("three-finished-issues-each-rated", l.readByProject)
 	l.step("a-retro-with-no-rating-is-refused", l.ratingRequired)

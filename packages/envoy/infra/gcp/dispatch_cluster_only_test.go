@@ -238,6 +238,8 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"chatEndpoint", func(a *gcp.DispatchArgs) { a.ChatEndpoint = pulumi.String(chatEndpointURL) }},
 		{"chatModel", func(a *gcp.DispatchArgs) { a.ChatModel = pulumi.StringRef("example-chat-model") }},
 		{"chatTokenSecret", func(a *gcp.DispatchArgs) { a.ChatTokenSecret = pulumi.String(chatTokenSecret) }},
+		{"consumerNames", func(a *gcp.DispatchArgs) { a.ConsumerNames = "fresh" }},
+		{"replaceUnderHold", func(a *gcp.DispatchArgs) { a.ReplaceUnderHold = true }},
 	})
 }
 

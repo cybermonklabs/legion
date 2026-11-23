@@ -71,6 +71,7 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 // The negative controls are the ones c-one-channel names. A task queued beside the publish is a
 // prompt on a role's connection. A publish at every sweep is ten rows a role, not one.
 func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: api.DaemonAPIVersion},
 		podUpdateRole{role: claim.RoleTester, state: supervise.StateIdle, session: true, inPod: true, contract: api.DaemonAPIVersion},
@@ -158,6 +159,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 // its bound while the pod still reads the later drift, and the notice names the reasons recorded
 // at the round's open, not that drift.
 func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig.drifts(podUpdateDrift)
@@ -208,6 +210,7 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 // is replaced once every role the round asks has answered and no turn or claim's activity report
 // holds the round (roundEnd.holding).
 func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.s.enqueue = nil
 	rig.drifts(podUpdateDrift)
@@ -248,6 +251,7 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 // ask enqueued; the no-Warn check below is what fails without the fix, since #4337 left the ask's
 // mark to the outbox's delivery (supervise's Machine.PublishUpdateAsk).
 func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		other    = "OTHERPROJECT-9"
 		otherPod = "5b1e7d20-3c64-4a8f-b2d9-8e0f6a1c4d37"

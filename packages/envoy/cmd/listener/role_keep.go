@@ -576,8 +576,10 @@ func keptRoleCopyUntil(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 // clock (cfg.now) against its store time (keptCopyEnded), the walk's own test of a copy it may
 // still forward (judgeKeptRoleCopy). A copy a walk has claimed is judged by the same two tests.
 // Every other copy has ended and reports false: one past its hour, one the cursor has moved past,
-// one the stream no longer holds at seq (the read answers another sequence, or none), and one no
-// read can decode, which no walk forwards. A read that did not answer is its error.
+// one the stream no longer holds at seq (the read answers another sequence, or none), and one whose
+// role no read can tell (readRoleFrame), which the walk ends. A copy is read field by field, as the
+// walk reads it (roleFrame.envelope), so a copy the walk forwards is held here too, an expects_reply
+// word this build does not know among it. A read that did not answer is its error.
 func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, seq uint64) (keptRoleCopy, bool, error) {
 	stored, err := cfg.client.NextStoredMessage(ctx, bus.KeptRoleSubject(role), seq)
 	if errors.Is(err, nats.ErrMsgNotFound) {
@@ -592,10 +594,11 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 	if keptCopyEnded(cfg.now(), stored.Time) {
 		return keptRoleCopy{}, false, nil
 	}
-	var item contracts.Envelope
-	if err := json.Unmarshal(stored.Data, &item); err != nil {
+	frame, err := readRoleFrame(stored.Data)
+	if err != nil {
 		return keptRoleCopy{}, false, nil
 	}
+	item := frame.envelope()
 	cursor, err := cfg.client.ReadKeptRoleCursor(ctx, role)
 	if err != nil {
 		return keptRoleCopy{}, false, err
@@ -617,10 +620,11 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // costs one resolution and one read of the lane past its cursor.
 //
 // One message is not kept at all, and leaves its caller's give-up exactly as it was before the
-// kept lane: one whose role token no claim can name (roles.Valid, the pattern POST /v1/roles/set
-// refuses), which both give-up paths must agree on, and Dispatch's outbox with them
-// (keptOrSkipped, internal/dispatch/outbox/role.go), since a copy kept under such a token waits
-// for a claim that cannot be made and expires unread.
+// kept lane: one whose role no claim can be keyed by (roles.ValidClaimKey: a role token of the
+// pattern POST /v1/roles/set accepts, under the project a free-form role's key names), which both
+// give-up paths must agree on, and Dispatch's outbox with them (keptOrSkipped,
+// internal/dispatch/outbox/role.go), since a copy kept under such a token waits for a claim that
+// cannot be made and expires unread.
 //
 // A sender that keeps a queue of its own and redelivers from it - the Legion daemon's notice
 // queue - opts out on the publish route's own request field instead (keep false, read by
@@ -631,7 +635,7 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // no kept role lane (natsgrant.Edge), so its give-up is the one a keep that kept nothing leaves,
 // the publish route's 404 with its refusal's exception.
 func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
-	if !roles.Valid(role) {
+	if !roles.ValidClaimKey(role) {
 		return keptRoleCopy{}, errRoleNotKeepable
 	}
 	if cfg.edge != nil {
@@ -645,9 +649,9 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 	return kept, nil
 }
 
-// errRoleNotKeepable is keepForNextHolder's answer for a role token no claim can name (roles.Valid),
-// which it keeps nothing for.
-var errRoleNotKeepable = errors.New("no claim can name this role token, so nothing is kept for it")
+// errRoleNotKeepable is keepForNextHolder's answer for a role no claim can be keyed by
+// (roles.ValidClaimKey), which it keeps nothing for.
+var errRoleNotKeepable = errors.New("no claim can be keyed by this role, so nothing is kept for it")
 
 // errEdgeKeepsNothing is keepForNextHolder's answer at an edge listener, which keeps nothing: its
 // grant publishes no kept role lane (natsgrant.Edge).
@@ -1279,7 +1283,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		// walks forward it; a takeover's copy carries a dedupe key of its own
 		// (takenFrameDedupeKey), so its forward takes no id an earlier forward took.
 		msgID := handed.msgID(subject)
-		forwarded := cfg.forwardAndWait(subject, forward, msgID, roleForwardTimeout)
+		_, forwarded := cfg.forwardAndWait(subject, forward, msgID, roleForwardTimeout)
 		if forwarded != nil {
 			// This walk is ending with the copy claimed and unforwarded, so it releases the
 			// claim: the cursor goes back to what it was before the claim, and the role's next
@@ -1497,9 +1501,13 @@ type keptCopyVerdict struct {
 // (keptCopyClaimOf), for holder (empty for a walk with no live holder), before any cursor is
 // written for it, in this order:
 //
-//  1. A copy no read can decode reaches no holder however often it is read, so it is ended rather
-//     than every later walk stopping on it, logged with its stream sequence and counted
-//     (envoy_role_kept_undecodable_total).
+//  1. A copy whose role no read can tell (readRoleFrame, the read the session relay and a
+//     takeover pass make: not a JSON object, or a topic or role mark that is not a string and
+//     names no role) reaches no holder however often it is read, so it is ended rather than every
+//     later walk stopping on it, logged with its stream sequence and counted
+//     (envoy_role_kept_undecodable_total). Every other copy's envelope is read field by field
+//     (roleFrame.envelope), so a field the envelope's type for it does not take, or a value the
+//     wire rules or the envelope's own refuse, ends no copy.
 //  2. A copy under a delivery mode's dead-letter claim that this walk takes over
 //     (keptCopyModeClaimed) is a delivery mode drop whose dead letter was not confirmed, and it is
 //     owed that dead letter again, whatever its age now, whoever holds the role now and whether
@@ -1534,8 +1542,8 @@ type keptCopyVerdict struct {
 // it. Nor is a dead letter's claim on a copy owed no dead letter, which no walk writes. now is
 // called once per copy that decodes, whatever the verdict.
 func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, stored bus.StoredMessage, claim keptCopyClaim, now func() time.Time, seen func(key, recipient string) bool) keptCopyVerdict {
-	var item contracts.Envelope
-	if err := json.Unmarshal(stored.Data, &item); err != nil {
+	frame, err := readRoleFrame(stored.Data)
+	if err != nil {
 		return keptCopyVerdict{step: keptCopyEnd, report: func() {
 			cfg.roleKeptUndecodable.Inc()
 			cfg.logger.Error("listener kept role message cannot be decoded",
@@ -1544,6 +1552,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 				slog.String("error", err.Error()))
 		}}
 	}
+	item := frame.envelope()
 	at := now()
 	owed := !isOutboxCopy(item) && item.SourceSession != ""
 	// deadLetter is the verdict of a copy owed a dead letter for drop, with the report the copy

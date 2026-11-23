@@ -191,7 +191,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 	case "sign-request":
 		// sign-request keeps peer's pidfd open through Registry.Root's ancestry walk exactly
 		// like sign, for the same pid-reuse reason (see sign's doc comment below).
-		resp = s.signRequest(peer, pid, req.Secrets, req.Reason, req.LifetimeSeconds)
+		resp = s.signRequest(peer, pid, req.Secrets, req.Reason, req.LifetimeSeconds, req.Locations)
 	case "sign-launcher":
 		// sign-launcher keeps peer's pidfd open through Registry.Root's ancestry walk too, and
 		// trusts its "no session" only once peer.PID() still names pid (see signLauncher).
@@ -845,12 +845,13 @@ func (s *Server) sign(peer *Peer, pid int, method, url string) Response {
 
 // signRequest builds and signs a credential-request object naming one agent_secret
 // authorization_detail per requested name (POST /v1/requests embeds this signed object
-// rather than carrying "secrets"/"reason" as plain fields), and lifetimeSeconds, the grant's
-// lifetime, when it is not nil, for a pid resolveDescendant ties to a registered session. The
+// rather than carrying "secrets"/"reason" as plain fields), lifetimeSeconds, the grant's
+// lifetime, when it is not nil, and locations, the target that narrows the one secret, when it is
+// not nil (record.SecretDetails), for a pid resolveDescendant ties to a registered session. The
 // audience is always s.Broker.URL, never a value the peer supplies: a request object's aud claim
 // must be the broker's own public URL for the broker to accept it, and there is no reason to trust
 // an untrusted local peer's opinion of that value over the helper's own configuration.
-func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string, lifetimeSeconds *int) Response {
+func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string, lifetimeSeconds *int, locations []string) Response {
 	if len(names) == 0 {
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-request needs at least one secret name"}
@@ -862,11 +863,7 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	if st := sess.snapshot(); st.EnrollmentID == "" {
 		return s.notEnrolled(st)
 	}
-	details := make([]record.AuthorizationDetail, len(names))
-	for i, name := range names {
-		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
-	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), details, reason, "", lifetimeSeconds, time.Now())
+	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), record.SecretDetails(names, locations), reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}

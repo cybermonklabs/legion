@@ -26,6 +26,8 @@ import { messageFor } from "./errors";
  * - any other object or array: `--<field>-json <json>` and `--<field>-json-file <path>`.
  * A JSON flag's help lists the keys of its object, or of each item of its list, from the same
  * schema, with each key's type, whether it is required, and its description (`shapeLines`).
+ * A flag of `PREFIXED_FLAGS` adds an item to an array of text behind a prefix, in argv order with
+ * the field's own flag (`--mention-role <name>` is `--mention role:<name>`).
  * Every command also takes `--help` and `--dry-run`.
  */
 
@@ -59,7 +61,30 @@ interface FlagEntry {
   readonly action: FlagAction;
   readonly value?: string;
   readonly text: string;
+  /** A `PREFIXED_FLAGS` flag's prefix, and what an empty value fails to name. */
+  readonly prefix?: { readonly text: string; readonly names: string };
 }
+
+/**
+ * Flags no spec field is named for: each adds its value, behind `prefix`, to the array of text
+ * `field` is, in argv order with the field's own flag, so the two can be given together. A role
+ * is the mention an agent writes most, and its name is what the agent knows.
+ */
+const PREFIXED_FLAGS = [
+  {
+    tool: "dispatch_comment",
+    field: "mentions",
+    flag: "--mention-role",
+    prefix: "role:",
+    names: "a role's name",
+    text:
+      "A role the comment mentions, by its name alone, with no role: before it: sends " +
+      "role:<name> in mentions, in the order given among the --mention values. Dispatch " +
+      "delivers the comment to the session that holds the role, whichever session that is, " +
+      "retries a send that does not go through, and records every attempt on the comment. One " +
+      "role per flag, repeated; an empty name is refused before anything is sent.",
+  },
+] as const;
 
 interface CommandSurface {
   readonly spec: DispatchToolSpec;
@@ -356,6 +381,19 @@ function flagTable(tool: string, fields: ReadonlyMap<string, FieldInfo>): Map<st
         value: placeholder(info),
         text: `${about} One item per flag, repeated.${none}`.trim(),
       });
+      for (const prefixed of PREFIXED_FLAGS) {
+        if (prefixed.tool !== tool || prefixed.field !== field) continue;
+        if (kind.array !== "string") {
+          throw new Error(`${tool}: ${prefixed.flag} needs ${field} to be a list of text`);
+        }
+        add(prefixed.flag, {
+          field,
+          action: "append",
+          value: "<name>",
+          text: prefixed.text,
+          prefix: { text: prefixed.prefix, names: prefixed.names },
+        });
+      }
     }
     if (info.nullable || typeof kind === "object" || kind === "options") {
       add(`--clear-${name}`, {
@@ -419,9 +457,12 @@ export function parseCommand(
       return undefined;
     }
   };
+  // An append flag adds to whatever list another append flag of its field began, so `--mention`
+  // and `--mention-role` build one list in argv order; every other second setter is refused.
   const claim = (field: string, flag: string, repeatable: boolean): boolean => {
     const earlier = setBy.get(field);
-    if (earlier === undefined || (repeatable && earlier === flag)) {
+    const earlierAppends = earlier !== undefined && surface.flags.get(earlier)?.action === "append";
+    if (earlier === undefined || (repeatable && earlierAppends)) {
       setBy.set(field, flag);
       return true;
     }
@@ -549,7 +590,24 @@ export function parseCommand(
       }
       case "append": {
         if (!claim(field, flag, true)) break;
-        const item = appendedItem(info.kind, flag, value, number);
+        const { prefix } = entry;
+        // The prefix alone names nobody: `--mention-role ''` would send `role:`. A value that
+        // carries the prefix itself would send it twice (`role:role:x`), which the schema refuses
+        // without naming this flag, so it is refused here, naming both spellings that work.
+        if (prefix !== undefined && value.trim() === "") {
+          problems.push(`${flag} needs ${prefix.names}, not an empty value`);
+          break;
+        }
+        if (prefix !== undefined && value.startsWith(prefix.text)) {
+          const name = value.slice(prefix.text.length);
+          const own = `--${singular(flagName(field))}`;
+          problems.push(
+            `${flag} takes ${prefix.names} alone, so ${flag} ${quoteWord(value)} would send ${prefix.text}${value}: write ${flag} ${quoteWord(name)}, or ${own} ${quoteWord(value)}`
+          );
+          break;
+        }
+        const text = prefix === undefined ? value : `${prefix.text}${value}`;
+        const item = appendedItem(info.kind, flag, text, number);
         if (item === undefined) break;
         const list = (args[field] as unknown[] | undefined) ?? [];
         list.push(item.value);

@@ -111,8 +111,7 @@ func writeRefsGrammarFixture(t *testing.T, store *Store) refsGrammarFixture {
 // mention is indexed from, are owed nothing.
 func TestTheRefsGrammarSeedOwesTextStoredBeforeIt(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeRefsGrammar)
+	store := openMigratedTestStore(t, beforeRefsGrammar)
 	fixture := writeRefsGrammarFixture(t, store)
 
 	nameADefaultAssigneeOnEveryProject(t, store)
@@ -133,8 +132,7 @@ func TestTheRefsGrammarSeedOwesTextStoredBeforeIt(t *testing.T) {
 // and rewrites none.
 func TestTheRefsGrammarSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, lastRefsGrammarTrigger)
+	store := openMigratedTestStore(t, lastRefsGrammarTrigger)
 	fixture := writeRefsGrammarFixture(t, store)
 	owed := readOwedSources(t, store)
 	enqueued, ok := owed[owedSource{"comment", fixture.comment}]
@@ -167,10 +165,7 @@ func TestTheRefsGrammarSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 // that leaves every column it does read as it found it - an anchor refresh - owe nothing.
 func TestTheRefsGrammarTriggersOweWhatAnyBuildWrites(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 

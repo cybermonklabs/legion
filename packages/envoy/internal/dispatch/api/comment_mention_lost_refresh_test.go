@@ -27,6 +27,7 @@ import (
 // database are the real ones; its connections run through lossyConns, which drops the one that
 // carries the refresh's UPDATE once the server has committed it. The control row's answer arrives.
 func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		lose bool
@@ -114,6 +115,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 // never trust a claim its row does not carry. The server, its statements and its database are the
 // real ones, its connections running through lossyConns; each control row's answer arrives.
 func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// outage fails a refresh before it commits, and its re-read, before the claim ages.

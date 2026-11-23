@@ -161,12 +161,13 @@ var ghForcedGitConfig = [][2]string{
 // ghChildGitConfig is the GIT_CONFIG_COUNT block the git gh runs reads, as it reads `-c`: of the
 // caller's GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> pairs, only those that are one of the pairs the
 // runtime itself sets (sandbox.GitConfigPairs: github.com's credential helper reset and set to
-// `legion git-credential`, useHttpPath, core.fsmonitor and core.hooksPath), key and value alike,
-// in the caller's order, then ghForcedGitConfig. Any other pair the caller names (an http.proxy, an
-// http.sslCAInfo, an http.sslVerify, a url.<base>.insteadOf, an include.path, another credential
-// helper, a core.sshCommand or core.gitProxy) is dropped, whatever its case or URL scope. A count
-// that is no count, and a pair with a half missing, are dropped too; withGitHubUseHTTPPath then
-// adds its own entry after these.
+// `legion git-credential`, useHttpPath, core.fsmonitor, core.hooksPath and the four pack settings
+// of workspace.PackWindowConfig), key and value alike, in the caller's order, then
+// ghForcedGitConfig. Any other pair the caller names (an http.proxy, an http.sslCAInfo, an
+// http.sslVerify, a url.<base>.insteadOf, an include.path, another credential helper, a
+// core.sshCommand or core.gitProxy) is dropped, whatever its case or URL scope. A count that is no
+// count, and a pair with a half missing, are dropped too; withGitHubUseHTTPPath then adds its own
+// entry after these.
 func ghChildGitConfig(environ []string) []string {
 	env := map[string]string{}
 	for _, pair := range environ {

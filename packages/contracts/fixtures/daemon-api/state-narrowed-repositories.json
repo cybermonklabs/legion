@@ -7,7 +7,7 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 205,
+    "daemon": 219,
     "caller": 199
   },
   "admission": {
@@ -823,6 +823,12 @@
       "source": "boot"
     },
     {
+      "name": "repository-cache-room",
+      "status": "open",
+      "detail": "1 of 1 repository caches ran out of room: acme/widgets on a 20.0 GiB volume (claim cache-legion-legion-cache-acme-widgets-d782c874) with 0.1 GiB available, its clone 6.2 GiB; its repack failed for lack of space at 2026-10-16T02:15:33Z. Room comes from growing the cache's claim in place and raising runtime.kubernetes.repository_cache.volume",
+      "configLine": "capabilities.decided.repository-cache-room: \"\u003creason\u003e\""
+    },
+    {
       "name": "network",
       "status": "withheld",
       "detail": "dispatch://LEGION-5: reaches beyond the pod's own network: the pod is the boundary, except a workload a role starts where its deployment's cluster admits it, carrying the pod label that deployment's declaration names for a workload asking to be reachable, and the Service fronting that workload"
@@ -1008,6 +1014,13 @@
             "floor_percent": 15,
             "wait_seconds": 8,
             "interval_milliseconds": 250
+          },
+          "controller_pod": {
+            "enabled": true,
+            "act_percent": 85,
+            "floor_percent": 10,
+            "wait_seconds": 1,
+            "interval_milliseconds": 100
           }
         },
         "volume_trim": {
@@ -1062,6 +1075,13 @@
         },
         "experiments": [],
         "production_check": "tester",
+        "default_steps": [
+          "planner",
+          "implementer",
+          "tester",
+          "reviewer",
+          "acceptance:owner"
+        ],
         "deploys": []
       },
       "WIDGETS": {
@@ -1071,6 +1091,10 @@
         },
         "experiments": [],
         "production_check": "off",
+        "default_steps": [
+          "implementer",
+          "reviewer"
+        ],
         "deploys": []
       }
     },
