@@ -30,7 +30,7 @@ import {
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
   topicForms,
 } from "@legion/contracts";
-import { encode, encodeLines } from "@toon-format/toon";
+import { encode, encodeLines, escapeString } from "@toon-format/toon";
 import { z } from "zod";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
@@ -1462,10 +1462,14 @@ export function renderInbound(
   const payloadValue = dispatchRendered ? dispatchEvent : message;
   // A layout holds about as many bytes as the text it lays out, and a body Dispatch's API gave
   // whole (`wholeBody`) is text the frame did not carry, so a card may hold twice that text when
-  // that is more than the hub's frame: a 1 MiB comment read whole still lays out whole.
+  // that is more than the hub's frame: a 1 MiB comment read whole still lays out whole. The body
+  // counts as the card writes it (`escapeString`, TOON's own escaping), since TOON writes a
+  // control character as six bytes: a body of them lays out in six times its own bytes.
   const cardBound = Math.max(
     INBOUND_CARD_MAX_BYTES,
-    2 * (Buffer.byteLength(raw) + (wholeBody === undefined ? 0 : Buffer.byteLength(wholeBody)))
+    2 *
+      (Buffer.byteLength(raw) +
+        (wholeBody === undefined ? 0 : Buffer.byteLength(escapeString(wholeBody))))
   );
   let card: string | undefined;
   let payloadShownAsText: string | undefined;

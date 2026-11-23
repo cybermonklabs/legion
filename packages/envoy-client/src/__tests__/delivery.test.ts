@@ -2550,4 +2550,39 @@ describe("a body an event carried only in part", () => {
     });
     expect(Buffer.byteLength(rendered.content)).toBeGreaterThan(INBOUND_CARD_MAX_BYTES);
   });
+
+  // TOON writes a control character as six bytes (`\u0001`), so a body read whole that is mostly
+  // control characters lays out in about six times its bytes. The bound counts the body as the
+  // card writes it, so such a body is still shown whole, not the part the frame carried.
+  test("a 1,048,300-byte body read whole that is mostly control characters shows that body", () => {
+    const end = "the last words of the whole body.";
+    const wholeBody = `${"\u0001".repeat(1_048_300 - end.length)}${end}`;
+    const rendered = renderInbound(
+      JSON.stringify(
+        envelope({
+          source: "dispatch",
+          payload: targetedCommentFrame({
+            ...targetedComment,
+            body: "The first paragraph.",
+            body_truncated: true,
+          }),
+        })
+      ),
+      reader,
+      undefined,
+      wholeBody
+    );
+
+    expect(Buffer.byteLength(wholeBody)).toBe(1_048_300);
+    expect({
+      cardBytes: Buffer.byteLength(rendered.content),
+      holdsTheWholeBody: rendered.content.includes(end),
+      payloadShownAsText: rendered.payloadShownAsText,
+    }).toEqual({
+      cardBytes: expect.any(Number),
+      holdsTheWholeBody: true,
+      payloadShownAsText: undefined,
+    });
+    expect(Buffer.byteLength(rendered.content)).toBeGreaterThan(6 * (1_048_300 - end.length));
+  });
 });
