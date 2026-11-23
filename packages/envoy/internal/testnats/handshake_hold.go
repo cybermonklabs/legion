@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -163,22 +165,19 @@ func (h *HandshakeHold) HoldWriteLock(t *testing.T, conn *natsgo.Conn) (release 
 	return release
 }
 
-// lockHeldWait is how long HoldStalledWrite needs one publish to stay inside nats.go, with every try
-// to take the connection lock for reading failing, before it takes that publish's write to be the
-// one that holds the lock.
-const lockHeldWait = 200 * time.Millisecond
-
 // HoldStalledWrite holds conn's nats.go connection lock with a write of nats.go's own, on a
 // connection through the hold that stays connected: it freezes the proxy (Freeze) and publishes to
 // conn until a write to the socket blocks under the lock, as a write to a socket whose peer has
 // stopped reading blocks. HoldWriteLock takes the lock itself, so only its release lets the lock go;
 // here the lock is the write's, so a reset or a close of the write's socket (bus.Client.Sever) fails
-// the write and lets the lock go, as it does in production. It returns once one publish has stayed in
-// nats.go for lockHeldWait while every try to take the lock for reading failed (connLock), so neither
-// a slow read nor a slow publish alone decides it. The func it returns thaws the proxy (Restore) and
-// stops the publishes; the test's end calls it too. When no write holds the lock within 30 s it fails
-// the test by name without ending its goroutine, which may be a hook's rather than the test's, and
-// returns that func.
+// the write and lets the lock go, as it does in production. It returns once the publishing goroutine
+// is parked on its socket waiting for the socket to take a publish's write (writeParked), with the
+// lock taken: a publish that holds the lock for any other reason, however long, is not taken for a
+// stalled write. The func it returns thaws the proxy (Restore) and stops the
+// publishes; the test's end calls it too. Its one bound is the test binary's deadline less
+// stalledWriteSpare (testwait.Left), a guard against a write the socket always takes; then, or with
+// that much or less left to begin with, it fails the test by name without ending its goroutine,
+// which may be a hook's rather than the test's, and returns that func.
 func (h *HandshakeHold) HoldStalledWrite(t *testing.T, conn *natsgo.Conn) (release func()) {
 	t.Helper()
 	h.Freeze()
@@ -192,45 +191,78 @@ func (h *HandshakeHold) HoldStalledWrite(t *testing.T, conn *natsgo.Conn) (relea
 	if !found {
 		return release
 	}
-	// begun counts the publishes begun and returned those that returned, so returned below begun
-	// means the publish numbered begun is still inside nats.go.
-	var begun, returned atomic.Uint64
-	go func() {
-		payload := make([]byte, 64<<10)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			begun.Add(1)
-			err := conn.Publish("testnats.stalled-write", payload)
-			returned.Add(1)
-			if err != nil {
-				return
-			}
-		}
-	}()
-	var watched uint64
-	var since time.Time
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-		publish := begun.Load()
-		inside := returned.Load() < publish
-		free := lock.TryRLock()
-		if free {
-			lock.RUnlock()
-		}
-		switch {
-		case !inside || free:
-			watched = 0
-		case publish != watched:
-			watched, since = publish, time.Now()
-		case time.Since(since) >= lockHeldWait:
+	bound, err := testwait.Left(t, stalledWriteSpare)
+	if err != nil {
+		t.Error(err)
+		return release
+	}
+	publisher := make(chan uint64, 1)
+	go publishUntil(conn, stop, publisher)
+	id := <-publisher
+	for deadline := time.Now().Add(bound); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if writeParked(id) && lockTaken(lock) {
 			return release
 		}
 	}
-	t.Errorf("no write held nats.go's connection lock 30 s after the proxy froze and the publishes began")
+	t.Errorf("no write of nats.go's was parked on the socket, holding its connection lock, %s before the test binary's deadline: the frozen proxy's socket kept taking the publishes", stalledWriteSpare)
 	return release
+}
+
+// stalledWriteSpare is what HoldStalledWrite leaves of the test binary's deadline for the failed
+// test's cleanups.
+const stalledWriteSpare = 30 * time.Second
+
+// publishUntil sends its own goroutine's id on id, then publishes 64 KiB at a time to conn until stop
+// closes or a publish fails. Each publish of that size flushes in place, under nats.go's connection
+// lock (natsWriter.appendBufs, nats.go v1.55.0:2364), so once the socket stops taking bytes the
+// publish parks in the socket's write holding the lock.
+func publishUntil(conn *natsgo.Conn, stop <-chan struct{}, id chan<- uint64) {
+	id <- goroutineID()
+	payload := make([]byte, 64<<10)
+	for {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		if err := conn.Publish("testnats.stalled-write", payload); err != nil {
+			return
+		}
+	}
+}
+
+// goroutineID is the calling goroutine's id, as the first line of its stack names it.
+func goroutineID() uint64 {
+	buf := make([]byte, 64)
+	buf = buf[:runtime.Stack(buf, false)]
+	var id uint64
+	_, _ = fmt.Sscanf(string(buf), "goroutine %d ", &id)
+	return id
+}
+
+// writeParked reports whether the goroutine numbered id, publishUntil's, is parked waiting for its
+// socket to take a write: in the stacks the runtime reports for every goroutine, its own says "IO
+// wait" and runs through internal/poll's FD.Write. That goroutine does nothing but publish, so a
+// write it is parked in is a publish's. Its nats.go frames are not matched: the runtime names that
+// package github.com/nats-io/nats%2ego, writing the dot of its last path element escaped. It reads
+// the goroutine's state, not how long it has been in it.
+func writeParked(id uint64) bool {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	header := fmt.Sprintf("goroutine %d [", id)
+	for _, stack := range strings.Split(string(buf), "\n\n") {
+		if strings.HasPrefix(stack, header) {
+			return strings.HasPrefix(stack[len(header):], "IO wait") && strings.Contains(stack, "internal/poll.(*FD).Write(")
+		}
+	}
+	return false
 }
 
 // RequireLockHeld fails the test unless conn's connection lock is taken now (lockTaken): the
