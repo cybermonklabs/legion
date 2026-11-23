@@ -1,16 +1,18 @@
 // visual_shot_reads_test.go holds the server to what the browser suite's visual review relies on:
 // the pages it draws read one corpus every row shares, and the reads write nothing a later row
 // would draw. The rows themselves stop every write their pages send (packages/dispatch/e2e/
-// visual-guard.ts). What a page cannot stop is a write the server makes while it answers a read,
-// so this test sends each route those pages read (testdata/visual-shot-reads.json, which a visual
-// row fails without) and reads every statement each one ran through the tracer
-// TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with (markedStatements, writesOf). A
-// write to any table but the caches below fails the test, by the read and the table. It opens and
-// closes a document's room as a page does too, and holds the room to writing nothing.
+// visual-guard.ts). What a page cannot stop is a write the server makes while it answers, so this
+// test sends each API read, each sign-in read and each live view those pages make
+// (testdata/visual-shot-reads.json, which a visual row fails without), and reads every statement
+// each one ran through the tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with
+// (markedStatements, writesOf). A write to any table its channel does not allow fails the test, by
+// the read or view and the table. It opens and closes a document's room as a page does too, and
+// holds the room to writing nothing.
 package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +53,7 @@ var shotWriteChannels = map[string]map[string]string{
 		"event_horizon":         "the event log's shared safe horizon the event feed reads up to, persisted at most once an interval: a cursor, which no page draws",
 		"delivery_run_warnings": "the once-a-run record that a deploy run held no production job, which decides which process logs it: no page draws it",
 	},
+	shotAuthChannel: {},
 	shotRoomChannel: {},
 }
 
@@ -58,17 +61,20 @@ const (
 	shotReadChannel = "read"
 	shotLiveChannel = "live view"
 	shotRoomChannel = "room"
+	shotAuthChannel = "sign-in read"
 )
 
 // visualShotReadsFile is the list of the routes the visual review's pages read, which a visual row
 // matches every read of its page against.
 var visualShotReadsFile = filepath.Join("testdata", "visual-shot-reads.json")
 
-// visualShotList is the list's two parts: the route patterns of the API reads the shot pages make,
-// and the kinds of the live views they subscribe on GET /ws/live.
+// visualShotList is the list's three parts: the route patterns of the API reads the shot pages make,
+// the kinds of the live views they subscribe on GET /ws/live, and the sign-in routes they read
+// (the routes package's /auth routes, which no API route table holds).
 type visualShotList struct {
 	Reads []string `json:"reads"`
 	Live  []string `json:"live"`
+	Auth  []string `json:"auth"`
 }
 
 // visualShotReads reads the list.
@@ -82,8 +88,8 @@ func visualShotReads(t *testing.T) visualShotList {
 	if err := json.Unmarshal(data, &list); err != nil {
 		t.Fatalf("decode %s: %v", visualShotReadsFile, err)
 	}
-	if len(list.Reads) == 0 || len(list.Live) == 0 {
-		t.Fatalf("%s names %d reads and %d live views: the test would hold nothing of a part it names none of", visualShotReadsFile, len(list.Reads), len(list.Live))
+	if len(list.Reads) == 0 || len(list.Live) == 0 || len(list.Auth) == 0 {
+		t.Fatalf("%s names %d reads, %d live views and %d sign-in reads: the test would hold nothing of a part it names none of", visualShotReadsFile, len(list.Reads), len(list.Live), len(list.Auth))
 	}
 	return list
 }
@@ -310,9 +316,13 @@ func asShotPerson(t *testing.T, handler http.Handler, cookie *http.Cookie) http.
 	})
 }
 
-// buildShotCorpus writes, through the API alone, the corpus the reads are sent at.
+// buildShotCorpus writes, through the API alone, the corpus the reads are sent at. The broadcast's
+// body and the runbook's prose carry a nonce of the run (readOnlyTreeFiles does the same): pmdoc's
+// display cache is the process's, and a tree it already holds is neither asked of the table nor
+// stored, so under -count above 1 a corpus of fixed texts would leave the reads no tree to store.
 func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 	t.Helper()
+	nonce := rand.Text()
 	full := buildFullIssueRead(t, handler)
 	corpus := shotCorpus{project: "BATCH", issue: full.key, ask: full.openAsk}
 	corpus.spec = decodeBody[struct {
@@ -323,7 +333,7 @@ func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 	}
 
 	sent := postBroadcast(t, handler, map[string]any{
-		"body": "Hold the **deploy** and report.", "delivery": "steer", "session_ids": []string{"planner"},
+		"body": "Hold the **deploy** and report, run " + nonce + ".", "delivery": "steer", "session_ids": []string{"planner"},
 	}, "alice")
 	if sent.Code != http.StatusCreated {
 		t.Fatalf("send the broadcast: status=%d body=%s", sent.Code, sent.Body.String())
@@ -340,7 +350,7 @@ func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 		ID string `json:"id"`
 	}](t, priority).ID
 
-	runbook := createProjectDocument(t, handler, corpus.project, "Runbook.md", "# Runbook\n\nRestart the **listener** first.\n")
+	runbook := createProjectDocument(t, handler, corpus.project, "Runbook.md", "# Runbook\n\nRestart the **listener** first, run "+nonce+".\n")
 	corpus.runbook, corpus.runbookSlug = runbook.ID, runbook.Slug
 	return corpus
 }
@@ -357,6 +367,25 @@ func shotLiveViews() map[string]LiveView {
 		deliveryLiveMeasures: {DeliveryLiveView: measuresRange(from, to, "")},
 		deliveryLivePipeline: {DeliveryLiveView: livePipelineView(&at)},
 		liveEventsView:       eventsView(),
+	}
+}
+
+// shotAuthReads is, for each sign-in route the list names, what the server runs when a page reads
+// it: GET /auth/whoami (routes.authWhoami, internal/dispatch/routes/router.go) resolves the caller
+// through the deployment's identity, a session cookie here as in the suite, and answers the event
+// feed's head (Background.EventHead, which is eventFeedHead). The routes package mounts the route
+// over this package's server and is no import of it, so the test runs those two calls themselves.
+func shotAuthReads(served *server, cookies identity.CookieIdentity, cookie *http.Cookie) map[string]func(context.Context) error {
+	return map[string]func(context.Context) error{
+		"/auth/whoami": func(ctx context.Context) error {
+			request := httptest.NewRequestWithContext(ctx, http.MethodGet, "/auth/whoami", nil)
+			request.AddCookie(cookie)
+			if _, err := cookies.Login(request); err != nil {
+				return err
+			}
+			_, err := served.eventFeedHead(ctx)
+			return err
+		},
 	}
 }
 
@@ -445,6 +474,17 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 			t.Errorf("shotLiveViews subscribes a %s view, which %s does not name", kind, visualShotReadsFile)
 		}
 	}
+	authReads := shotAuthReads(served, cookies, cookie)
+	for _, route := range listed.Auth {
+		if _, held := authReads[route]; !held {
+			t.Errorf("%s names the sign-in read %s, which this test runs nothing of: add it to shotAuthReads", visualShotReadsFile, route)
+		}
+	}
+	for route := range authReads {
+		if !slices.Contains(listed.Auth, route) {
+			t.Errorf("shotAuthReads runs the sign-in read %s, which %s does not name", route, visualShotReadsFile)
+		}
+	}
 	nothingOwed(t, database)
 	// Every display tree the corpus's writes stored goes, so the reads find the cache cold, as a
 	// seed written by psql leaves it, and each read stores the trees it builds.
@@ -461,6 +501,30 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 			written[channel][table] = true
 		}
 	}
+	// The sign-in reads first, as a page reads GET /auth/whoami before anything else, on a server
+	// whose event horizon nothing has built yet; each with every statement the pool runs while it
+	// answers.
+	for _, route := range listed.Auth {
+		read, held := authReads[route]
+		if !held {
+			continue
+		}
+		statements.watch()
+		if err := read(context.Background()); err != nil {
+			t.Errorf("the sign-in read %s: %v", route, err)
+		}
+		served.detached.wait()
+		ran := statements.stop()
+		if len(ran) == 0 {
+			t.Errorf("the tracer saw no statement while %s answered: it did not see the read", route)
+		}
+		violations, seen := shotWriteViolations(shotAuthChannel, "GET "+route, ran)
+		for _, violation := range violations {
+			t.Error(violation)
+		}
+		record(shotAuthChannel, seen)
+	}
+
 	for _, pattern := range listed.Reads {
 		target, held := paths[pattern]
 		if !held {

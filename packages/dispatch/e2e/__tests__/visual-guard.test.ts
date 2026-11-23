@@ -118,6 +118,23 @@ test("a read mark passes only exactly as the seed wrote it", () => {
     false
   );
   expect(isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", {}, seeded)).toBe(false);
+  // A path naming a property every object inherits names no session or document the seed marked.
+  expect(
+    isSeededReadMark(
+      "PUT",
+      "/api/v1/me/agents/constructor/state",
+      { read_replies: ["r-1"] },
+      seeded
+    )
+  ).toBe(false);
+  expect(
+    isSeededReadMark("PUT", "/api/v1/me/documents/constructor/read", { version: 3 }, seeded)
+  ).toBe(false);
+  expect(
+    isSeededReadMark("PUT", "/api/v1/me/documents/__proto__/read", { version: 3 }, seeded)
+  ).toBe(false);
+  // A sign-in route holds no mark the seed wrote.
+  expect(isSeededReadMark("PUT", "/auth/logout", { version: 3 }, seeded)).toBe(false);
   // Another method, another route, or a body that is no object.
   expect(isSeededReadMark("POST", "/api/v1/me/documents/d-1/read", { version: 3 }, seeded)).toBe(
     false
@@ -235,8 +252,10 @@ test("a read is listed only where the list names the route the table serves it b
       ])
     )
   ).toEqual([]);
-  // A route the list does not name, though a listed wildcard would match its path, and a path no
-  // route of the table serves.
+  // A sign-in read the list names.
+  expect(unlistedShotReads(new Set(["/auth/whoami"]))).toEqual([]);
+  // A route the list does not name, though a listed wildcard would match its path, a path no
+  // route of the table serves, and a sign-in read the list does not name.
   expect(
     unlistedShotReads(
       new Set([
@@ -245,6 +264,7 @@ test("a read is listed only where the list names the route the table serves it b
         "/api/v1/search",
         "/api/v1/issues/CORE-1/asks/extra",
         "/api/v1/issuesX",
+        "/auth/start",
       ])
     )
   ).toEqual([
@@ -253,6 +273,7 @@ test("a read is listed only where the list names the route the table serves it b
     "/api/v1/issues/resolve (/api/v1/issues/resolve)",
     "/api/v1/issuesX (no route)",
     "/api/v1/search (/api/v1/search)",
+    "/auth/start (sign-in read)",
   ]);
 });
 

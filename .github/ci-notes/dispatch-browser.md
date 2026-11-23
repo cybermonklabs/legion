@@ -1143,22 +1143,22 @@ repository's own package, so it fails here and says so.
 
 THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
 startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
-digest the two browser steps export (the first in .github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
-inside the first step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
+digest the browser step exports (.github/scripts/dispatch-browser-visual-suite.sh), and a pull the runner had not made yet counts
+inside that step's 4 minutes. On #4129 (run 44215262087, job 134503540243) the step
 spent 120 s before the stack's first output, where five green visual jobs (134499880849,
 134479592234, 134451447710, 134451520100, 134547177192) spent 7 to 15 s, and the step ran
 past its budget at 250 s. Its log does not time the pull apart from the rest of that
 start, so the 120 s is the bound this pull is given, not a measure of the pull alone. The
-digest is written three times, here and in the two browser steps (the normal order and
-the reverse), and the three must stay the same: a pull of another digest here leaves the
-browser steps to pull their own inside their budgets again.
+digest is written twice, here and in the browser step's script, and the two must stay the same:
+a pull of another digest here leaves the browser step to pull its own inside its budget again.
 
 ## Why each visual row stops its page's writes, and runs once
 
 One seed serves the whole visual run, so a page that wrote to the corpus as it drew would change
 what every row after it compares, and a baseline would hold another row's write. So no row's page
 may write: e2e/visual-guard.ts, installed on each row's page before it navigates, stops every
-request to `/api/` with a write method, every document-socket frame that would change a document
+request to `/api/` or to the sign-in routes beside it (`/auth/`) with a write method, every
+document-socket frame that would change a document
 (a Yjs update, or a sync reply whose structs or deletions change it), and every live-socket frame
 that is no subscribe or unsubscribe, and the row then fails with the list of what it stopped, by
 its own name. A read mark passes only exactly as the seed wrote it before any row
@@ -1175,17 +1175,19 @@ of four documents sent as it loaded, with no person typing (job 137537803811).
 What a page cannot stop is a write the server makes while it answers. Three things close that.
 Each row resolves every API read its page made to the GET route the table serves it by (the
 committed OpenAPI document, which openapi_test.go holds to the table, a literal segment over a
-wildcard), and fails on a read of a route, or of no route, and on a live view kind, that
-packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json does not name. The Go test
-TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go) sends every route that list
-names as the dashboard does, signed in with a session cookie, and subscribes every view kind it
-names on GET /ws/live; it reads every statement each read, each view and the work they detach
-run, through the tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with. A read
-may write the display-tree cache and a live view the event horizon and a deploy run's warning
-record, each a table that test sees written on that channel; any other write fails it by the read
-or view and the table. It opens and closes a document's room as a page does and holds the room to
-writing nothing. And the seed waits, before any row draws, until the document service owes no
-document a settlement, and holds that the corpus records no check result and no pull request's
+wildcard), and fails on a read of a route, or of no route, on a sign-in read, and on a live view
+kind, that packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json does not name. The
+Go test TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go) sends every route
+that list names as the dashboard does, signed in with a session cookie, runs what GET /auth/whoami
+runs (the cookie's identity and the event feed's head, on a server whose event horizon nothing has
+built yet, as the page's first read finds it), and subscribes every view kind it names on GET
+/ws/live; it reads every statement each read, each view and the work they detach run, through the
+tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches reads with. A read may write the
+display-tree cache, the sign-in read nothing, and a live view the event horizon and a deploy run's
+warning record, each a table that test sees written on that channel; any other write fails it by
+the read or view and the table. It opens and closes a document's room as a page does and holds the
+room to writing nothing. And the seed waits, before any row draws, until the document service owes
+no document a settlement, and holds that the corpus records no check result and no pull request's
 head (`awaitNothingOwed`, e2e/review-seed.ts): an owed settlement runs when a page opens the room
 and writes a version the shot would draw, and a result's commit is one the Verification tab's read
 asks GitHub the pull request of, writing what it learns.

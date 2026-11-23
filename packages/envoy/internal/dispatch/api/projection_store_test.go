@@ -985,18 +985,6 @@ func requireNoMigrationWritesAProjection(t *testing.T) {
 	t.Logf("%d migrations read, none making or unmaking a row of a projected table or setting a column a tuple projects", read)
 }
 
-// withoutSQLComments drops the line comments of a SQL file, so a clause written in prose is no
-// statement.
-func withoutSQLComments(body string) string {
-	lines := strings.Split(body, "\n")
-	for index, line := range lines {
-		if cut := strings.Index(line, "--"); cut >= 0 {
-			lines[index] = line[:cut]
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
 // --- the fixture the Postgres halves run on ---------------------------------------------
 
 // projectionRun is one database the real write paths wrote: an issue with its spec document, a

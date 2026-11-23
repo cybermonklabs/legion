@@ -357,9 +357,9 @@ var (
 	writeWord = regexp.MustCompile(`(?i)\b(insert|update|delete|merge)\b`)
 	// upsertUpdate is an insert's own conflict clause, whose table is the insert's.
 	upsertUpdate = regexp.MustCompile(`(?i)\bdo\s+update\b`)
-	// sqlComment is a block or a line comment, which writesOf reads as the space it stands for, so
-	// a comment between a write's verb and its table hides neither.
-	sqlComment = regexp.MustCompile(`(?s)/\*.*?\*/|--[^\n]*`)
+	// dollarQuoteTag is a dollar quote's opening tag, $$ or $name$; a $ followed by a digit is a
+	// parameter ($1), which opens nothing.
+	dollarQuoteTag = regexp.MustCompile(`^\$([A-Za-z_][A-Za-z0-9_]*)?\$`)
 	// mergeInto opens a merge, whose actions (mergeAction) write the merge's own table.
 	mergeInto   = regexp.MustCompile(`(?i)\bmerge\s+into\b`)
 	mergeAction = regexp.MustCompile(`(?i)\bthen\s+(update|insert|delete)\b`)
@@ -379,7 +379,7 @@ var (
 // reads past comments, reads a merge as a write of its table, and reads the word update as no
 // write only where updateNoWrite places it, so a write it cannot place is a write.
 func writesOf(statement string) ([]string, bool) {
-	read := sqlComment.ReplaceAllString(statement, " ")
+	read := withoutSQLComments(statement)
 	read = upsertUpdate.ReplaceAllString(read, "do upsert")
 	if mergeInto.MatchString(read) {
 		read = mergeAction.ReplaceAllString(read, "then merge_action")
@@ -408,6 +408,72 @@ func writesOf(statement string) ([]string, bool) {
 		writes = append(writes, verb+" "+table)
 	}
 	return writes, len(writeWord.FindAllString(read, -1)) == len(matches)
+}
+
+// withoutSQLComments is statement with each block and line comment read as the space it stands
+// for, so a comment between a write's verb and its table hides neither, and a clause written in a
+// migration's prose is no statement (requireNoMigrationWritesAProjection). A comment starts only
+// outside a quoted span, which it keeps whole: a string in single quotes, two of which stand for
+// one within it; an escape string (E and a single quote), where a backslash also escapes the next
+// character; a quoted name in double quotes, two of which stand for one; and a dollar-quoted
+// string ($$ or $tag$ at both ends). Read anywhere, the `--` of `select '--'; update projects …`
+// would hide the update that follows the string.
+func withoutSQLComments(statement string) string {
+	var kept strings.Builder
+	for at := 0; at < len(statement); {
+		rest := statement[at:]
+		switch {
+		case strings.HasPrefix(rest, "--"):
+			end := strings.IndexByte(rest, '\n')
+			if end < 0 {
+				end = len(rest)
+			}
+			kept.WriteByte(' ')
+			at += end
+		case strings.HasPrefix(rest, "/*"):
+			end := strings.Index(rest[2:], "*/")
+			if end < 0 {
+				end = len(rest) - 4
+			}
+			kept.WriteByte(' ')
+			at += end + 4
+		case rest[0] == '\'' || rest[0] == '"':
+			backslash := rest[0] == '\'' && at > 0 && (statement[at-1] == 'E' || statement[at-1] == 'e') &&
+				(at == 1 || !isSQLWordRune(rune(statement[at-2])))
+			end := quotedEnd(rest, rest[0], backslash)
+			kept.WriteString(rest[:end])
+			at += end
+		case rest[0] == '$' && dollarQuoteTag.MatchString(rest):
+			tag := dollarQuoteTag.FindString(rest)
+			end := strings.Index(rest[len(tag):], tag)
+			if end < 0 {
+				end = len(rest) - 2*len(tag)
+			}
+			kept.WriteString(rest[:end+2*len(tag)])
+			at += end + 2*len(tag)
+		default:
+			kept.WriteByte(rest[0])
+			at++
+		}
+	}
+	return kept.String()
+}
+
+// quotedEnd is the length of the quoted span rest opens with quote, its closing quote included,
+// or all of rest when it never closes: a doubled quote stands for one inside it, and with
+// backslash so does a backslash before any character.
+func quotedEnd(rest string, quote byte, backslash bool) int {
+	for at := 1; at < len(rest); at++ {
+		switch {
+		case backslash && rest[at] == '\\':
+			at++
+		case rest[at] == quote && at+1 < len(rest) && rest[at+1] == quote:
+			at++
+		case rest[at] == quote:
+			return at + 1
+		}
+	}
+	return len(rest)
 }
 
 // updateNoWrite reports whether the update read[at[0]:at[1]] is no write: a row lock, after for or
@@ -467,6 +533,16 @@ func TestWritesOfReadsAnUpdateByItsSetClause(t *testing.T) {
 		{`with x as (select 1) update`, []string{}, false},
 		// A column named update in an insert's list is no write of its own.
 		{`insert into doc_updates (artifact_id, version, update, content_changed) select $1, v, u, c from unnest($2::bigint[], $3::bytea[], $4::boolean[]) as a(v, u, c)`, []string{"insert doc_updates"}, true},
+		// A comment starts only outside a quoted span: a `--` or `/*` inside a string, an escape
+		// string, a quoted name or a dollar quote hides no write after it, and a parameter is no
+		// dollar quote.
+		{`select '--'; update projects set name = name`, []string{"update projects"}, true},
+		{`select 'it''s -- no comment', '/*'; update projects set name = name`, []string{"update projects"}, true},
+		{`select E'\'--'; update projects set name = name`, []string{"update projects"}, true},
+		{`select "a--b" from projects; update projects set name = name`, []string{"update projects"}, true},
+		{`select $$/*$$; update projects set name = name`, []string{"update projects"}, true},
+		{`select $x$ -- $x$; update projects set name = name`, []string{"update projects"}, true},
+		{`update projects set name = $1 -- the new name`, []string{"update projects"}, true},
 	} {
 		writes, readable := writesOf(tc.statement)
 		if readable != tc.readable || !slices.Equal(writes, tc.writes) {

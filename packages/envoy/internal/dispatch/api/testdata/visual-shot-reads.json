@@ -1,5 +1,5 @@
 {
-  "about": "Every API route the pages of the browser suite's visual review read (packages/dispatch/e2e/visual.e2e.ts), as the route table writes it, and every kind of live view they subscribe on GET /ws/live. The visual rows share one seeded corpus and stop every write their pages send (packages/dispatch/e2e/visual-guard.ts); a write the server makes while answering one of these reads or views is held to the tables it may write by TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go). A visual row fails on a read whose route, or a subscribe whose view kind, this list does not name, so a page that comes to read a new route or view adds it here, and a path or view for it to that test.",
+  "about": "Every API route the pages of the browser suite's visual review read (packages/dispatch/e2e/visual.e2e.ts), as the route table writes it, every kind of live view they subscribe on GET /ws/live, and every sign-in route they read (the routes package's /auth routes). The visual rows share one seeded corpus and stop every write their pages send (packages/dispatch/e2e/visual-guard.ts); a write the server makes while answering one of these reads or views is held to the tables it may write by TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go). A visual row fails on a read whose route, a subscribe whose view kind, or a sign-in read whose path this list does not name, so a page that comes to read a new one adds it here, and a path, view or call for it to that test.",
   "reads": [
     "/api/v1/agents",
     "/api/v1/agents/{session_id}/messages",
@@ -47,5 +47,6 @@
     "/api/v1/settings/project-default-assignees",
     "/api/v1/signins"
   ],
-  "live": ["events", "measures", "pipeline", "timeline"]
+  "live": ["events", "measures", "pipeline", "timeline"],
+  "auth": ["/auth/whoami"]
 }

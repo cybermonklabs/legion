@@ -98,7 +98,10 @@ export function isSeededReadMark(
   const keys = Object.keys(fields);
   const agent = AGENT_READ_MARK.exec(path);
   if (agent !== null) {
-    const marked = seeded.agents[decodeURIComponent(agent[1] ?? "")];
+    const session = decodeURIComponent(agent[1] ?? "");
+    // `Object.hasOwn`, not indexing alone: the seed's maps inherit `Object.prototype`, so a path
+    // naming `constructor` would read a function.
+    const marked = Object.hasOwn(seeded.agents, session) ? seeded.agents[session] : undefined;
     const replies = stringList(fields.read_replies);
     return (
       marked !== undefined &&
@@ -110,7 +113,8 @@ export function isSeededReadMark(
   }
   const document = DOCUMENT_READ_MARK.exec(path);
   if (document !== null) {
-    const version = seeded.documents[decodeURIComponent(document[1] ?? "")];
+    const id = decodeURIComponent(document[1] ?? "");
+    const version = Object.hasOwn(seeded.documents, id) ? seeded.documents[id] : undefined;
     return version !== undefined && keys.length === 1 && fields.version === version;
   }
   return false;
@@ -206,26 +210,34 @@ export function documentWrite(
 
 /** The list the Go test TestTheVisualShotReadsWriteOnlyTheirCaches (packages/envoy/internal/
  *  dispatch/api/visual_shot_reads_test.go) sends: the routes of the API reads the shot pages may
- *  make, as the route table writes them, and the kinds of the live views they may subscribe. That
- *  test holds every write the server makes while it answers them to the tables it may write. A page
- *  cannot stop such a write, so a read or a view the list does not name is one nothing checked. */
+ *  make, as the route table writes them; the kinds of the live views they may subscribe; and the
+ *  sign-in routes they may read (the routes package's `/auth/` routes, which no API route table
+ *  holds). That test holds every write the server makes while it answers them to the tables it may
+ *  write. A page cannot stop such a write, so a read or a view the list does not name is one
+ *  nothing checked. */
 const SHOT_READS_FILE = new URL(
   "../../envoy/internal/dispatch/api/testdata/visual-shot-reads.json",
   import.meta.url
 );
 const shotListFile = plainObject(JSON.parse(readFileSync(SHOT_READS_FILE, "utf8")));
 const shotList = {
+  auth: stringList(shotListFile?.auth),
   live: stringList(shotListFile?.live),
   reads: stringList(shotListFile?.reads),
 };
-if (shotList.reads === undefined || shotList.live === undefined) {
+if (shotList.reads === undefined || shotList.live === undefined || shotList.auth === undefined) {
   throw new Error(
-    `${SHOT_READS_FILE.pathname} holds no list of reads and of live views: every visual row's ` +
-      "reads would be held to nothing"
+    `${SHOT_READS_FILE.pathname} holds no list of reads, of live views and of sign-in reads: ` +
+      "every visual row's reads would be held to nothing"
   );
 }
 const listedReads: readonly string[] = shotList.reads;
 const listedViews: readonly string[] = shotList.live;
+const listedAuthReads: readonly string[] = shotList.auth;
+
+/** The sign-in routes' prefix: the routes package mounts them beside the API (`/auth/whoami`,
+ *  `/auth/logout`), and the OpenAPI document names none of them. */
+const AUTH_PREFIX = "/auth/";
 
 /** The route table's GET routes, as the committed OpenAPI document names them. Two Go tests hold
  *  that document to the table: TestOpenAPIDocumentHasOneOperationPerMountedRoute and
@@ -271,10 +283,15 @@ export function routeOf(path: string): string | undefined {
 
 /** Each path of `reads` the list does not name the route of, sorted, as `<path> (<route>)`, or
  *  `<path> (no route)` for a path no GET route of the table serves: that one is no read the Go test
- *  could send either. */
+ *  could send either. A sign-in path is listed when the list's sign-in reads name it, and is
+ *  `<path> (sign-in read)` when they do not. */
 export function unlistedShotReads(reads: ReadonlySet<string>): string[] {
   const unlisted: string[] = [];
   for (const path of reads) {
+    if (path.startsWith(AUTH_PREFIX)) {
+      if (!listedAuthReads.includes(path)) unlisted.push(`${path} (sign-in read)`);
+      continue;
+    }
     const route = routeOf(path);
     if (route === undefined) unlisted.push(`${path} (no route)`);
     else if (!listedReads.includes(route)) unlisted.push(`${path} (${route})`);
@@ -326,7 +343,10 @@ export async function guardSharedCorpus(
   seeded: SeededReadMarks
 ): Promise<CorpusWrites> {
   const writes: CorpusWrites = { derived: 0, reads: new Set(), stopped: [], views: new Set() };
-  await page.route("**/api/**", async (route) => {
+  // The API and the sign-in routes beside it (`/auth/whoami`, `/auth/logout`): a read of either is
+  // recorded for `unlistedShotReads`, and a write to either is stopped, a sign-in route having no
+  // read mark the seed wrote.
+  await page.route(/^[a-z]+:\/\/[^/]+\/(api|auth)\//u, async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (WRITE_METHODS[request.method()] !== true) {
@@ -400,5 +420,5 @@ export const UNLISTED_READ_MESSAGE =
   "testdata/visual-shot-reads.json does not name: the Go test that holds the server's writes " +
   "while it answers them (TestTheVisualShotReadsWriteOnlyTheirCaches) sends only what that list " +
   "names, so add each route there as the route table writes it, with a path for it in " +
-  "shotReadPaths, or each view kind, with a view of it in shotLiveViews; a path of no route is a " +
-  "read the server does not serve";
+  "shotReadPaths; each view kind, with a view of it in shotLiveViews; or each sign-in path, with " +
+  "what it runs in shotAuthReads. A path of no route is a read the server does not serve";
