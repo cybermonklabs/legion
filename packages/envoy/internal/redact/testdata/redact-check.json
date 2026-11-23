@@ -5778,6 +5778,27 @@
       }
     },
     {
+      "id": "sandbox-status-line-redirected",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem/redirected",
+      "production": "sandbox cacheHealthOf: a redirect, whatever health it carries, is the read's failure, naming the status by its code and standard phrase (oauth2call.StatusLine), and its target is asked nothing (cacheHealthClient follows no redirect)",
+      "function": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox.cacheHealthOf",
+      "capture": "sandbox.status-line/redirected",
+      "mutation": {
+        "file": "packages/daemon/internal/runtime/sandbox/repocache.go",
+        "preimage": "which the daemon never follows\", address, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "which the daemon never follows\", address, response.Status"
+      }
+    },
+    {
+      "id": "sandbox-status-line-redirect-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/runtime/sandbox",
+      "test": "TestACacheHealthNamesItsStatusAndRepositoryAsTheRuleReadsThem/redirect-unanswered",
+      "production": "sandbox cacheHealthClient: follows no redirect, so the health read's error is never net/http's error naming a Location (its user name and query)"
+    },
+    {
       "id": "controller-answer-words-unresponsive",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
@@ -8902,6 +8923,11 @@
       "site": "workspace askCache: after a followed redirect, net/http's url.Error named the Location (its user name and query), returned as the health's not-ready reason that the wait logs",
       "source": "the class search of round 6's redirect finding",
       "guard": "workspace-status-line-health-redirect-unanswered"
+    },
+    {
+      "site": "sandbox cacheHealthClient followed redirects: cacheHealthOf read a redirect target's health as the cache's, and returned net/http's url.Error naming the Location (its user name and query) to readCacheHealth, which keeps it through storetext.FarSideError, and to cacheStreams, which logs it",
+      "source": "the class search of round 6's redirect finding",
+      "guard": "sandbox-status-line-redirect-unanswered"
     }
   ]
 }

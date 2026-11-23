@@ -5568,6 +5568,7 @@ launches wait the same way, and the cache shows `refused` with `its Service …
 cannot be checked: the Service store may be stale: …`.
 The daemon reads each Ready cache's `/healthz` every minute at its pod's address, as the store holds it, with no credential, so a daemon outside the cluster that reaches pod addresses but resolves no cluster name reads it too;
 an answer from a pod that took the address once the cache's pod was gone names another repository, and is that read's failure.
+The read follows no redirect: a redirect is that read's failure too, named by its status, and the address it names is neither asked nor printed.
 A NetworkPolicy that isolates the namespace's pods must admit both, or every fresh feed waits on a cache it cannot reach and `legion state` shows the read's failure.
 
 `legion state --json | jq .repositories` shows them:
