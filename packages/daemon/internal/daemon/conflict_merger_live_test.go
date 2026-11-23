@@ -16,8 +16,9 @@
 // pull request, and the reviewer is asked to read the merge with `git show --remerge-diff` and
 // approve the new head (R2). A required check that settles red on the new head is told to the
 // merger and the architect, and not to the implementer. GitHub's merge of the pull request closes
-// the issue. Throughout, the issue never enters implementing: no read of GET /legion/v1/state shows
-// that phase, and the daemon writes no in_progress status to Dispatch. Last, the merger's own
+// the issue. Throughout, the issue never enters implementing: every move the daemon logs for it goes
+// from accepting to retro to merging to done, no read of GET /legion/v1/state shows implementing,
+// and the daemon writes no in_progress status to Dispatch. Last, the merger's own
 // prompt, as its launch carries it, is printed beside what the daemon sent it, for a reader to
 // hold the one against the other. scripts/e2e/conflict-merger.sh builds this driver with
 // `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
@@ -440,10 +441,17 @@ func (r *conflictMergerLive) redCheckReachesTheMerger() {
 }
 
 // Step 5. GitHub merges the pull request at the merger's head, which closes the issue: done. Then
-// what held over the whole run: every read of GET /legion/v1/state the watch made showed the
-// issue in accepting, retro, merging and done, in that order, and never in implementing; the daemon
-// wrote no in_progress status to Dispatch; and every merge-forward message it delivered or ended
-// went to the merger or the reviewer, none to the implementer.
+// what held over the whole run: the moves the daemon logged for the issue went from accepting to
+// retro, to merging and to done, and no other; every read of GET /legion/v1/state the watch made
+// showed the issue in those phases, in that order, and never in implementing; the daemon wrote no
+// in_progress status to Dispatch; and every merge-forward message it delivered or ended went to the
+// merger or the reviewer, none to the implementer.
+//
+// The order of the phases is read from the daemon's log, not from the watch. The daemon logs each
+// move once it commits (phaseChangedLine), so the log holds every move it made. The watch reads the
+// state ten times a second, and a phase that lasts less than a tenth of a second can fall between
+// two of its reads: retro does here, since the driver completes it at once, and the watch then read
+// [accepting merging done] in about one run in four. The watch still holds what the route showed.
 func (r *conflictMergerLive) mergeClosesTheIssue() {
 	t := r.t
 	r.waitProcessed(r.publishMergeOf(r.number, r.key, mergerMergeHead, conflictBase))
@@ -451,14 +459,25 @@ func (r *conflictMergerLive) mergeClosesTheIssue() {
 	done := r.waitFor("the issue done", func(got api.Issue) bool { return got.Phase == phase.Done })
 	r.note("read back: %s is %s, status %s", r.key, done.Phase, done.Status)
 
+	var moves []string
+	testwait.WithinPolling(t, testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, "the daemon's line for "+r.key+"'s move to done", func() bool {
+		moves = r.phaseMoves()
+		return len(moves) > 0 && strings.HasSuffix(moves[len(moves)-1], " to "+string(phase.Done))
+	})
+	if want := []string{"accepting to retro", "retro to merging", "merging to done"}; !slices.Equal(moves, want) {
+		t.Fatalf("the daemon logged the moves %v of %s, want exactly %v: never implementing", moves, r.key, want)
+	}
 	reads, failed, seen := r.watch.stop()
 	if reads == 0 {
 		t.Fatalf("the watch of %s's phase read GET /legion/v1/state no time (%d reads failed): it saw nothing, so it says nothing", r.key, failed)
 	}
-	if want := []phase.Phase{phase.Accepting, phase.Retro, phase.Merging, phase.Done}; !slices.Equal(seen, want) {
-		t.Fatalf("the watch of %s read the phases %v over %d reads, want exactly %v: never implementing", r.key, seen, reads, want)
+	order := []phase.Phase{phase.Accepting, phase.Retro, phase.Merging, phase.Done}
+	if seen[0] != phase.Accepting || seen[len(seen)-1] != phase.Done || !inOrder(seen, order) {
+		t.Fatalf("the watch of %s read the phases %v over %d reads, want accepting first, done last and each in the order %v: never implementing",
+			r.key, seen, reads, order)
 	}
-	r.note("read back over the whole run: %d reads of GET /legion/v1/state (%d failed) showed %s in %v, in that order, and never in implementing", reads, failed, r.key, seen)
+	r.note("read back over the whole run: the daemon logged the moves %v of %s, and %d reads of GET /legion/v1/state (%d failed) showed it in %v, in that order and never in implementing",
+		moves, r.key, reads, failed, seen)
 	var statuses []string
 	for _, write := range r.board.writes() {
 		if write.Issue == r.key && write.Status != "" {
@@ -550,12 +569,41 @@ func (r *conflictMergerLive) pullRequest() record.PullRequest {
 	return *pr
 }
 
+// phaseChangedLine is the line the daemon logs for each move of an issue once the move commits
+// (workflow's arrive), naming the phase it left (`from`) and the phase it entered (`to`).
+const phaseChangedLine = "workflow: phase changed"
+
+// phaseMoves is each move of the issue the daemon logged (phaseChangedLine), oldest first, as
+// "<from> to <to>".
+func (r *conflictMergerLive) phaseMoves() []string {
+	var moves []string
+	for _, line := range r.loggedFor(phaseChangedLine, r.key) {
+		moves = append(moves, fmt.Sprintf("%v to %v", line.Attrs["from"], line.Attrs["to"]))
+	}
+	return moves
+}
+
+// inOrder says whether each phase of seen stands in order after the phase seen before it.
+func inOrder(seen, order []phase.Phase) bool {
+	rest := order
+	for _, p := range seen {
+		at := slices.Index(rest, p)
+		if at < 0 {
+			return false
+		}
+		rest = rest[at+1:]
+	}
+	return true
+}
+
 // phaseWatch reads GET /legion/v1/state ten times a second, on a goroutine of its own, from the
 // boot until stop, and once more after stop, so the phase the caller saw before it stopped the
 // watch is the last one kept. It keeps each phase the issue showed, in the order it showed them, a
-// phase shown again in a row kept once. It reads through a client of its own and fails no test
-// itself: a read that fails is counted, and stop answers how many reads were made and failed, so a
-// watch that read nothing says so rather than passing.
+// phase shown again in a row kept once. Its reads are samples: a phase shorter than a tenth of a
+// second can fall between two of them, so it says what the route showed, never every phase the
+// issue entered, which the daemon's log says (phaseMoves). It reads through a client of its own and
+// fails no test itself: a read that fails is counted, and stop answers how many reads were made
+// and failed, so a watch that read nothing says so rather than passing.
 type phaseWatch struct {
 	stopping chan struct{}
 	stopped  chan struct{}
