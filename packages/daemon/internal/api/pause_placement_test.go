@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -126,12 +127,12 @@ func TestTheReleaseRecordsPlaceACallerThatStatesNoContractByItsPod(t *testing.T)
 
 	// A wake the pause held pairs with no release and names the pause (RecordPodWakeTx).
 	var resumeID int64
-	if err := h.store.Tx(h.ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(h.ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var (
 			taken bool
 			err   error
 		)
-		resumeID, taken, err = store.RecordPodWakeTx(h.ctx, tx, store.PodResume{
+		resumeID, taken, err = store.RecordPodWakeTx(ctx, tx, store.PodResume{
 			Project: testProject, Issue: "LEGION-209", Role: "tester", Kind: "delivery",
 			At: pauseStartsAt.Add(10 * time.Minute), Pause: began.ID,
 		})

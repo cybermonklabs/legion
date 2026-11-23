@@ -241,7 +241,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		return ReleaseDecision{}, errors.New("a release's role stop requires its project, its issue and its outbox row")
 	}
 	var decision ReleaseDecision
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		decision = ReleaseDecision{}
 		mark, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {
@@ -283,7 +283,7 @@ func (s *Store) ReleaseSuspendedClaim(ctx context.Context, project, issue string
 	if project == "" || issue == "" || role == "" || row <= 0 {
 		return errors.New("recording a claim a release suspended requires its project, its issue, the role and its outbox row")
 	}
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		_, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {
 			return err
@@ -322,7 +322,7 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		return ReleaseDecision{}, errors.New("a release's save requires its project, its issue and its outbox row")
 	}
 	var decision ReleaseDecision
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		decision = ReleaseDecision{}
 		mark, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {
@@ -376,7 +376,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		return ReleaseDecision{}, errors.New("issue release requires issue, tree, both generations and its outbox row")
 	}
 	var decision ReleaseDecision
-	err := s.Tx(ctx, func(tx pgx.Tx) error {
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		decision = ReleaseDecision{}
 		if err := treelifecycle.Serialize(ctx, tx); err != nil {
 			return err

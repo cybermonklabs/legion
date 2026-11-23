@@ -1638,6 +1638,9 @@ where one filter had to cover both: a change to a shell script, to packages/clau
 to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
 and test, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives.
 
+It runs as two jobs of .github/workflows/ci-job-daemon-go.yaml at the same time: the race step
+in one, the rest in the other (ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own).
+
 ## Why the three plugin pack tests are a job of their own
 
 The three tests of the daemon's Go suite that .github/scripts/ci_job_reads.py's
