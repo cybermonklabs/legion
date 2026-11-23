@@ -48,7 +48,7 @@ function renderPage(rows: PersonNode[]) {
   };
 }
 
-test("a row whose comment its author edited says so after its title, and one nobody edited does not", async () => {
+test("a row whose comment its author edited says so after its kind, and one nobody edited does not", async () => {
   await warmMarkdownRenderer();
   const page = renderPage([
     node("comment-edited", { edited_at: "2026-11-20T00:30:00Z", title: "Ship it on Thursday." }),
@@ -57,7 +57,8 @@ test("a row whose comment its author edited says so after its title, and one nob
 
   try {
     await waitFor(() => {
-      expect(page.row("comment-edited")?.textContent).toContain("Ship it on Thursday. · edited");
+      expect(page.row("comment-edited")?.textContent).toContain("comment · edited");
+      expect(page.row("comment-edited")?.textContent).toContain("Ship it on Thursday.");
       expect(page.row("comment-standing")?.textContent).toContain("Ship it on Friday.");
     });
     expect(page.row("comment-standing")?.textContent).not.toContain("edited");
