@@ -954,7 +954,7 @@ async function stoppedLeg(
     'seen "$tool" || { echo "left behind: unknown: the driver\'s own children do not list the tool $tool"; kill -KILL "$tool" 2>/dev/null; exit 2; }; ' +
     'dones() { local n=0 line; [ -e "$PROGRESS" ] || { echo 0; return; }; ' +
     'while IFS= read -r line; do case $line in *\'"event":"done"\'*) n=$((n + 1)) ;; esac; done <"$PROGRESS"; echo "$n"; }; ' +
-    'ready() { for m in $MARKS; do [ -e "$m" ] || return 1; done; [ -z "$DONE_RUNS" ] || [ "$(dones)" -ge "$DONE_RUNS" ]; }; ' +
+    'ready() { while IFS= read -r m; do [ -e "$m" ] || return 1; done <<<"$MARKS"; [ -z "$DONE_RUNS" ] || [ "$(dones)" -ge "$DONE_RUNS" ]; }; ' +
     'until ready || ! kill -0 "$tool" 2>/dev/null; do sleep 0.05; done; ' +
     'if [ -n "$KILL_FROM" ]; then kill -KILL "$(cat "$KILL_FROM")" 2>/dev/null; else kill -TERM "$tool" 2>/dev/null; fi; ' +
     'if [ -n "$RELEASE" ]; then : >"$RELEASE"; fi; wait "$tool"; code=$?; count; exit "$code"';
@@ -984,7 +984,7 @@ async function stoppedLeg(
       PATH: process.env.PATH ?? "",
       TMPDIR: tmpdir(),
       GITHUB_ACTIONS: "true",
-      MARKS: marks.join(" "),
+      MARKS: marks.join("\n"),
       RELEASE: hold?.release ?? "",
       KILL_FROM: killFrom ?? "",
       DONE_RUNS: doneRuns === undefined ? "" : String(doneRuns),
