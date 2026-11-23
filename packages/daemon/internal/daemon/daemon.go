@@ -931,8 +931,12 @@ type plan struct {
 	secrets       map[string]string
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
-	nats         natsConnection
-	instructions string
+	nats natsConnection
+	// instructions is the path of the daemon's copy of the deployment's instructions, "" when the
+	// configuration names none, and instructionsCopies every copy of an instructions file, which
+	// each launch reads again first (writeInstructionsCopies).
+	instructions       string
+	instructionsCopies *instructionsCopies
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
@@ -1094,22 +1098,9 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		return plan{}, fmt.Errorf("construct role prompts: %w", err)
 	}
 
-	instructions := ""
-	if reads.instructions != nil {
-		if instructions, err = config.WriteDeploymentInstructions(reads.instructions, cfg.StateDir, cfg.Project); err != nil {
-			return plan{}, err
-		}
-	}
-
-	// One copy per declared variant that names an instructions file, each under its experiment's
-	// own directory, since two names may hold `-` and neither may hold `/`, and the `memory`
-	// block's arm at the block's own `memory-instructions.md` (config.VariantInstructionsFile,
-	// which is where a launch's arms read the copies back from: experiment.Launch). Boot writes
-	// them before the first pane opens.
-	for _, read := range reads.variantInstructions {
-		if err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
-			return plan{}, err
-		}
+	copies, instructions, err := writeInstructionsCopies(cfg, reads, log)
+	if err != nil {
+		return plan{}, err
 	}
 
 	clock := o.clock
@@ -1136,7 +1127,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
-		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
+		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
@@ -1789,7 +1780,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Conns:   listener,
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
-			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
+			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.launchRepository, owner: p.owner,
 			appOwners:   p.appOwners(cfg.Runtime.Name),
 			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
