@@ -291,8 +291,14 @@ const StreamNamesPage = z.object({
 /** JetStream's `$JS.API.STREAM.DELETE.<name>` answer, or its error. */
 const StreamDeleted = z.object({
   success: z.boolean().optional(),
-  error: z.object({ code: z.number(), description: z.string() }).optional(),
+  error: z
+    .object({ code: z.number(), err_code: z.number().optional(), description: z.string() })
+    .optional(),
 });
+
+/** JetStream's error code for a stream it does not hold (`JSStreamNotFoundErr`), which its
+ * answer carries with code 404 and "stream not found". */
+const STREAM_NOT_FOUND = 10059;
 
 /** The streams on the server that capture a session's relay subject, by JetStream's own match. */
 async function relayCapturingStreams(connection: RelayConnection): Promise<string[]> {
@@ -341,6 +347,11 @@ async function relayCapturingStreams(connection: RelayConnection): Promise<strin
  * Docker) a stream a Go test leaves there stays for the Bun tests that run next. Deleting it is
  * what testnats.URL does to every stream on that server for each Go test; this deletes only the
  * streams that capture a relay subject, and fails naming any it could not.
+ *
+ * Two cases can call it at once (pi-legion's `bun test --parallel` runs files side by side), both
+ * list the same stream, and the one whose delete comes second is answered "stream not found". A
+ * stream that is gone is what that call wanted, so the answer counts as deleted; the list read
+ * again after the deletes is what proves none is left, and it fails naming any stream it finds.
  */
 export async function deleteRelayCapturingStreams(
   connection: RelayConnection
@@ -351,11 +362,10 @@ export async function deleteRelayCapturingStreams(
       timeout: 5_000,
     });
     const deleted = StreamDeleted.parse(JSON.parse(new TextDecoder().decode(reply.data)));
-    if (deleted.success !== true) {
-      throw new Error(
-        `delete the NATS server's stream ${name}, which captures a relay subject: ${deleted.error?.description ?? "no success in its answer"}`
-      );
-    }
+    if (deleted.success === true || deleted.error?.err_code === STREAM_NOT_FOUND) continue;
+    throw new Error(
+      `delete the NATS server's stream ${name}, which captures a relay subject: ${deleted.error?.description ?? "no success in its answer"}`
+    );
   }
   const left = await relayCapturingStreams(connection);
   if (left.length > 0) {
