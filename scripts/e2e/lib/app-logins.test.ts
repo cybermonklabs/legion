@@ -37,9 +37,9 @@ const script = join(import.meta.dir, "app-logins.ts");
 const home = join(dir, "home");
 
 // A GitHub that never answers: the port of a server stopped before any run.
-const closed = Bun.serve({ port: 0, fetch: () => Response.json({}) }); // CONTROL: the never-answering GitHub answers 200 {}
+const closed = Bun.serve({ port: 0, fetch: () => new Response() });
 const unreachable = `http://127.0.0.1:${closed.port}/`;
-// CONTROL: the server is left answering
+await closed.stop(true);
 
 const releaseIDs = [101, 202, 303, 404];
 // The stand-in Apps whose own key a row puts behind a private_key_command.
