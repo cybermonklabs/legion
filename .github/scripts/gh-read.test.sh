@@ -25,8 +25,8 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
-server=''
-trap '[ -z "$server" ] || kill "$server" 2>/dev/null; rm -rf "$work"' EXIT
+servers=()
+trap '[ ${#servers[@]} -eq 0 ] || kill "${servers[@]}" 2>/dev/null; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -252,8 +252,11 @@ class Server(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
     # gh drops the slower of two requests it raced; the write into its closed socket is no fault.
+    # Any other error is the stand-in's own: its traceback goes to the stand-in's stderr, the job
+    # log, beside the case it broke.
     def handle_error(self, request, client_address):
-        pass
+        if not isinstance(sys.exc_info()[1], ConnectionError):
+            super().handle_error(request, client_address)
 
 
 with Server(("127.0.0.1", 0), Handler) as httpd:
@@ -262,17 +265,26 @@ with Server(("127.0.0.1", 0), Handler) as httpd:
     httpd.serve_forever()
 PY
 
-mkdir -p "$work/state" "$work/bin" "$work/gh-config"
-python3 "$work/github.py" "$work/state" "$work/port" &
-server=$!
-for _ in $(seq 50); do
-  [ -s "$work/port" ] && break
-  sleep 0.1
-done
-if ! [ -s "$work/port" ]; then
+# stand_in <state dir> <port file> [<stderr file>]: starts a stand-in GitHub on that state, its
+# stderr the job log (or that file), and waits until it has written its port. Each one's process is
+# kept in servers, which the exit trap stops.
+stand_in() {
+  if [ -n "${3:-}" ]; then
+    python3 "$work/github.py" "$1" "$2" 2> "$3" &
+  else
+    python3 "$work/github.py" "$1" "$2" &
+  fi
+  servers+=("$!")
+  for _ in $(seq 50); do
+    [ -s "$2" ] && return
+    sleep 0.1
+  done
   echo "the stand-in GitHub wrote no port" >&2
   exit 1
-fi
+}
+
+mkdir -p "$work/state" "$work/bin" "$work/gh-config"
+stand_in "$work/state" "$work/port"
 port=$(<"$work/port")
 
 # The stand-in runner process: bash under the name GitHub's runner starts each job as.
@@ -760,6 +772,34 @@ check "the rate-limit read is answered" "$(contains "$out" '^read=0 limit=[0-9][
 check "and the spend's call is refused for the spent budget" "$(contains "$out" '^spend=1$')"
 check "both reached the stand-in" "$(is "$(calls /rate_limit)|$(calls /repos/o/r/pulls/1)" '1|1')"
 rm -f "$work/overlap.sh" "$work/limit" "$work/limit.err"
+
+echo "case: an error of the stand-in's own reaches the log as its traceback"
+# The stand-in drops one kind of error alone: a ConnectionError, its write into a socket gh
+# closed. Any other error is a fault of its own, and it prints the traceback, so a case the fault
+# breaks shows why beside it; a fault that printed nothing left gh's EOF as its only trace (run
+# 45066092231: an int('') on a half-written spent-until). A second stand-in, its stderr kept in a
+# file, takes a spend that is no number. The server prints an error before it closes the
+# connection, so the traceback is in the file by the time the request has ended.
+mkdir -p "$work/fault-state"
+echo 'not a number' > "$work/fault-state/spend-for"
+stand_in "$work/fault-state" "$work/fault-port" "$work/fault-err"
+answer=$(python3 - "$(<"$work/fault-port")" <<'PY'
+import http.client
+import sys
+
+try:
+    connection = http.client.HTTPConnection("127.0.0.1", int(sys.argv[1]), timeout=30)
+    connection.request("GET", "/repos/o/r/pulls/1")
+    print(connection.getresponse().status)
+except http.client.RemoteDisconnected:
+    print("no answer")
+except OSError as error:
+    print(f"error: {error}")
+PY
+)
+check "the stand-in answers nothing" "$(is "$answer" 'no answer')"
+check "and prints a traceback that names the fault" \
+  "$(contains "$(<"$work/fault-err")" "^ValueError: invalid literal for int() with base 10: 'not a number'$")"
 
 echo "case: on a GitHub runner, the job's start is read off the real Runner.Worker"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
