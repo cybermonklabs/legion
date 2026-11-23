@@ -11,14 +11,19 @@ import (
 // parseDeliveryLiveView resolves a subscribed view as the matching GET route reads its query, or
 // answers the error frame refusing it: INVALID_FRAME for a view of no known shape, and for one the
 // route would refuse, the code that route answers. What each kind reads of a view is its own
-// entry's `parse` (live_frames.go), so the only thing decided here is what every kind shares.
+// entry's `parse` (live_frames.go), so the only things decided here are what every kind shares:
+// that the kind is one of the five, and that a project or an issue is named only by the kind whose
+// entry says it names one (names), a legion view's project and a legion_issue view's issue.
 func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError) {
 	classes, known := deliveryLiveKinds[view.Kind]
 	if !known {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline or legion")
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion or legion_issue")
 	}
-	if view.Project != nil && classes.reads != viewReadsLegion {
+	if view.Project != nil && classes.names != viewNamesProject {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion view names a project")
+	}
+	if view.Issue != nil && classes.names != viewNamesIssue {
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion_issue view names an issue")
 	}
 	spec := deliveryLiveSpec{kind: view.Kind}
 	if refusal := classes.parse(&spec, view); refusal != nil {
@@ -100,6 +105,30 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 	}
 	spec.project = project
 	spec.key = legionBoardView + "|" + project + "|"
+	return nil
+}
+
+// parseLegionIssueLiveView reads a legion_issue view: it names the issue whose Legion state it
+// shows and nothing else, since that state has no window and the key is all
+// GET /api/v1/issues/{key}/legion reads. A project it names is refused before this, by the shared
+// gate (parseDeliveryLiveView), and so is every other kind's issue.
+//
+// The view's project is the key's prefix before its first "-", the rule legionDaemonSessionOf
+// reads a key's project by: no route moves an issue to another project, so the prefix is the
+// issue row's project_key, and a read of that project's daemon, or a write of its Legion setting,
+// marks the view (dirtyLegionBoard). The key is read as the route reads its path, unchecked: one
+// Dispatch holds no issue of is the read's to refuse, NOT_FOUND in the route's words
+// (readLegionIssueView).
+func parseLegionIssueLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
+	if view.Window != nil || view.At != nil || view.Query != nil {
+		return invalidLiveView("INVALID_FRAME", "a legion_issue view names an issue, not a window, an at or a query")
+	}
+	if view.Issue == nil || *view.Issue == "" {
+		return invalidLiveView("INVALID_FRAME", "a legion_issue view names its issue")
+	}
+	spec.issue = *view.Issue
+	spec.project, _, _ = strings.Cut(spec.issue, "-")
+	spec.key = legionIssueView + "|" + spec.issue + "|"
 	return nil
 }
 

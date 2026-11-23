@@ -685,10 +685,11 @@ func getBody(t *testing.T, handler http.Handler, target string) json.RawMessage 
 
 // windowTarget is the GET route of kind for what a body answered, built of what that route reads.
 // A timeline or measures body names its window, and query is the rest of what its route reads; a
-// legion body names its project, and its route reads its path alone, so it takes no query. A
-// pipeline body can name neither: its route reads `at` and nothing else, and the body's days carry
-// only at's UTC day while its failing-jobs table looks 24 hours back from at itself, so query is
-// the view's own `at=`, and a call without one fails rather than read the present on both sides.
+// legion body names its project and a legion_issue body its issue, and each of their routes reads
+// its path alone, so neither takes a query. A pipeline body can name neither: its route reads `at`
+// and nothing else, and the body's days carry only at's UTC day while its failing-jobs table looks
+// 24 hours back from at itself, so query is the view's own `at=`, and a call without one fails
+// rather than read the present on both sides.
 func windowTarget(t *testing.T, kind string, body json.RawMessage, query string) string {
 	t.Helper()
 	switch kind {
@@ -697,6 +698,17 @@ func windowTarget(t *testing.T, kind string, body json.RawMessage, query string)
 			t.Fatalf("the board's route reads its path alone, so query %q would be read by nothing", query)
 		}
 		return "/api/v1/projects/" + legionBodyProject(t, body) + "/legion/board"
+	case legionIssueView:
+		if query != "" {
+			t.Fatalf("one issue's Legion route reads its path alone, so query %q would be read by nothing", query)
+		}
+		var shape struct {
+			Issue string `json:"issue"`
+		}
+		if err := json.Unmarshal(body, &shape); err != nil {
+			t.Fatalf("read the legion_issue body's issue: %v", err)
+		}
+		return "/api/v1/issues/" + shape.Issue + "/legion"
 	case deliveryLivePipeline:
 		if values, err := url.ParseQuery(query); err != nil || len(values) != 1 || values.Get("at") == "" {
 			t.Fatalf("the pipeline route reads at alone and a pipeline body names none, so query must be the view's at=, not %q", query)

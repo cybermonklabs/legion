@@ -212,9 +212,13 @@ func TestAnIssuesLegionLiveView(t *testing.T) {
 	for _, page := range pages {
 		requireLegionBody(t, page.what(), page.answer(t), body)
 	}
-	// No store below comes before each hub's listener holds its LISTEN, so none is sent unheard.
+	// No store below comes before each hub's listener holds its LISTEN, so none is sent unheard,
+	// and none before each hub ran the recompute that connection and its event feed mark every
+	// Legion view for, so no store of two rows is read half made by that recompute.
 	rig.waitFor(t, 0, 5*time.Second, "hub A's listener's first connection", listenerConnected)
 	rigB.waitFor(t, 0, 5*time.Second, "hub B's listener's first connection", listenerConnected)
+	rig.settle(t)
+	rigB.settle(t)
 
 	// L-2: a new phase, stored with a good read, and its notify.
 	state.phase, state.since, state.seen = "implementing", tick(), true
