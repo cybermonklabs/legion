@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -949,6 +950,120 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		case <-ticker:
 		default:
 			t.Fatalf("Run returned before the sweep's ticker goroutine did: a pass can still run after the container's own process is gone; the launcher's log:\n%s", f.stderr.String())
+		}
+	})
+
+	// The row above reads its verdict when no pass is under way: the ticker goroutine then returns
+	// the moment the context ends, so its channel is closed when Run returns whether Run waited for
+	// it or not, and a Run that does not wait for its sweep passes that row. This row ends Run
+	// while a pass of its sweep is inside a removal, held there through the removal gitLockRemove
+	// answers, the one place a pass can be held (the second row of
+	// TestTheFirstPassRunsBeforeTheBundleRestore). A Run that waits for its sweep cannot return
+	// while that pass is held, however loaded the machine is; a Run that does not wait returns
+	// once its other waits are done.
+	//
+	// So the row fails a Run that returns in the half second after the tester's connection closed,
+	// all that such a Run has left being its waits for what it started (Run). That span is no
+	// verdict on a correct Run, which never returns in it: on a loaded machine it can only leave a
+	// slow wrong Run unseen there. Such a Run, returning after the half second but before the pass
+	// is let go, still fails, on the pass not having taken its lock when Run returned; one
+	// returning after the freed pass has finished is the one this row can miss. When Run returns,
+	// the row also reads #4855's event: the ticker goroutine's channel is closed.
+	t.Run("Run waits for a pass under way", func(t *testing.T) {
+		c := newLockClone(t)
+		shortGitLockClock(t, 20*time.Millisecond, time.Millisecond)
+		reached := make(chan string, 1)
+		release := make(chan struct{})
+		var removed atomic.Bool
+		previousRemove := gitLockRemove
+		gitLockRemove = func(path string) error {
+			select {
+			case reached <- path:
+			default:
+			}
+			<-release
+			err := os.Remove(path)
+			removed.Store(true)
+			return err
+		}
+		// Restored after the launcher's own cleanup, which waits for Run to return, since this
+		// is registered before newFleet registers that one; the pass is let go before either.
+		t.Cleanup(func() { gitLockRemove = previousRemove })
+		released := false
+		free := func() {
+			if !released {
+				released = true
+				close(release)
+			}
+		}
+		defer free()
+		served := make(chan (<-chan struct{}), 1)
+		previousServed := gitLockServed
+		gitLockServed = func(done <-chan struct{}) { served <- done }
+		t.Cleanup(func() { gitLockServed = previousServed })
+		t.Chdir(c.dir)
+		useSweepingLauncher(t)
+		f := newFleet(t, 2*time.Second, "tester")
+		running := c.lock("refs/heads/running.lock", "stale", time.Hour)
+		select {
+		case path := <-reached:
+			if path != running {
+				t.Fatalf("the sweep's clock held at the removal of %s, not of %s; the launcher's log:\n%s", path, running, f.stderr.String())
+			}
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("the sweep's clock never reached the removal of %s; the launcher's log:\n%s", running, f.stderr.String())
+		}
+
+		// Whether the held pass had taken its lock when Run returned.
+		returned := make(chan bool, 1)
+		go func() {
+			err := <-f.result
+			taken := removed.Load()
+			// Put it back: newFleet's own cleanup waits for this same send.
+			f.result <- err
+			returned <- taken
+		}()
+		f.cancel()
+		conn := f.role("tester")
+		if err := conn.conn.SetReadDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			if _, err := conn.reader.ReadBytes('\n'); err != nil {
+				var timeout net.Error
+				if errors.As(err, &timeout) && timeout.Timeout() {
+					t.Fatalf("the tester's connection stayed open after the container's context ended; the launcher's log:\n%s", f.stderr.String())
+				}
+				break
+			}
+		}
+		select {
+		case <-returned:
+			t.Fatalf("Run returned while a pass of its sweep was still held inside a removal: the sweep outlived the container's own process; the launcher's log:\n%s", f.stderr.String())
+		case <-time.After(500 * time.Millisecond):
+		}
+
+		free()
+		select {
+		case taken := <-returned:
+			if !taken {
+				t.Fatalf("Run returned before the pass of its sweep it was ended inside had taken its lock: it did not wait for its sweep; the launcher's log:\n%s", f.stderr.String())
+			}
+		case <-time.After(beforeDeadline(t)):
+			t.Fatalf("Run did not return after its context ended and its sweep's pass was let go; the launcher's log:\n%s", f.stderr.String())
+		}
+		if !swept(running) {
+			t.Fatalf("the held pass's lock %s is still there after Run returned", running)
+		}
+		select {
+		case ticker := <-served:
+			select {
+			case <-ticker:
+			default:
+				t.Fatalf("Run returned before the sweep's ticker goroutine did: a pass can still run after the container's own process is gone; the launcher's log:\n%s", f.stderr.String())
+			}
+		default:
+			t.Fatal("Run returned with no git lock sweep started: the launcher swept nothing")
 		}
 	})
 }
