@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/listenerwire"
 	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -74,14 +75,15 @@ func NewProber(opts ProberOptions) *Prober {
 
 // The listener's live-holder answer is listenerwire.RoleHolder (roleGetHandler,
 // packages/envoy/cmd/listener/api.go), whose `last_seen` is in unix milliseconds, and its 404 for
-// a role it will not name a holder of is listenerwire.RoleRefusal (writeRoleHolderError, read here
-// as oauth2call.RoleLookup, whose words print as the rule reads them;
-// packages/envoy/cmd/listener/role_holder.go): `reason` is `unclaimed` when nobody holds the role
-// and `holder_lapsed` when its holder is past the live window, and `holder_state` is that
-// holder's state, `unresponsive` or `gone`. A listener of an earlier release names neither. A
-// holder the listener calls unresponsive is stalled, not dead — it keeps its role claim, nothing
-// is released for it, and it answers for itself once its heartbeats land — so a probe of one is
-// never a death verdict.
+// a role it will not name a holder of is listenerwire.RoleRefusal (writeRoleHolderError,
+// packages/envoy/cmd/listener/role_holder.go); the probe reads them as listenerwire.RoleHolderAs
+// and listenerwire.RoleRefusalAs, each with its words and the holder's state held as
+// oauth2call.RemoteText, which print as the rule reads them. `reason` is `unclaimed` when nobody
+// holds the role and `holder_lapsed` when its holder is past the live window, and `holder_state`
+// is that holder's state, `unresponsive` or `gone`. A listener of an earlier release names
+// neither. A holder the listener calls unresponsive is stalled, not dead — it keeps its role
+// claim, nothing is released for it, and it answers for itself once its heartbeats land — so a
+// probe of one is never a death verdict.
 
 // Probe says whether session — the one registered with the current controller capability — is
 // alive: Gone and Unknown each log why, naming the listener and, where the listener named them,
@@ -112,8 +114,8 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 			return Unknown
 		}
 		// The reason, the state and the holder are the listener's words, so they are compared as
-		// they came and logged as the rule reads them (oauth2call.RoleLookup).
-		var refusal oauth2call.RoleLookup
+		// they came and logged as the rule reads them (listenerwire.RoleRefusalAs).
+		var refusal listenerwire.RoleRefusalAs[oauth2call.RemoteText, oauth2call.RemoteText, oauth2call.RemoteText]
 		_ = read.Decode(&refusal)
 		if refusal.HolderState.Equal(string(notify.StateUnresponsive)) {
 			p.log.Info("controller liveness: the controller role's holder is unresponsive, not gone; the controller is left as it is",
@@ -132,7 +134,7 @@ func (p *Prober) Probe(ctx context.Context, session string) Liveness {
 		p.log.Warn("controller liveness: "+reason, "url", p.lookup, "status", response.StatusCode)
 		return Unknown
 	}
-	var answer oauth2call.RoleLookup
+	var answer listenerwire.RoleHolderAs[oauth2call.RemoteText, oauth2call.RemoteText]
 	if readErr != nil || read.Decode(&answer) != nil || answer.Holder.IsEmpty() || answer.LastSeen == nil {
 		p.log.Warn("controller liveness: the Envoy listener answered the controller role lookup with an unreadable body", "url", p.lookup)
 		return Unknown

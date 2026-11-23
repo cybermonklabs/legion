@@ -14,8 +14,9 @@ import (
 // its place, answers the controller role lookup with words that quote a credential's URL: a 404
 // whose reason does for a holder that is unresponsive (unresponsive), one whose holder state does
 // (gone), and a 200 whose holder does (another-holder). The line the probe logs names each as the
-// rule reads it, with the credentials the lookup carried redacted (oauth2call.RoleLookup), and none
-// of what the listener's stand-in wrote. Captures controller.answer-words/<case>.
+// rule reads it, with the credentials the lookup carried redacted (listenerwire.RoleRefusalAs and
+// RoleHolderAs, read with their words as oauth2call.RemoteText), and none of what the listener's
+// stand-in wrote. Captures controller.answer-words/<case>.
 func TestAProbeLogsTheListenersWordsAsTheRuleReadsThem(t *testing.T) {
 	for _, c := range []struct {
 		name, body, want string

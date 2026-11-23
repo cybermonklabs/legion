@@ -16,7 +16,8 @@ import (
 const fixtureWire = "fixture/wire"
 
 // wireSource is the wire package every fixture's client may use: a request body, an answer row,
-// and an error answer.
+// the row with its id held as a type the client names (as listenerwire's SessionInfoAs is), and an
+// error answer.
 const wireSource = `package wire
 
 type Body struct {
@@ -27,6 +28,10 @@ type Body struct {
 
 type Row struct {
 	SessionID string ` + "`json:\"session_id\"`" + `
+}
+
+type RowAs[Text any] struct {
+	SessionID Text ` + "`json:\"session_id\"`" + `
 }
 
 type Failure struct {
@@ -40,11 +45,57 @@ func fixtureModule(t *testing.T, client string) string {
 	t.Helper()
 	t.Setenv("GOWORK", "off")
 	dir := t.TempDir()
-	for name, source := range map[string]string{
+	writeFiles(t, dir, map[string]string{
 		"go.mod":             "module fixture\n\ngo 1.27\n",
 		"wire/wire.go":       wireSource,
 		"fixture/fixture.go": client,
-	} {
+	})
+	return dir
+}
+
+// envoyFixture is the module path of the fixture envoyFixtureModule writes: it lies under envoy's
+// own, which is what lets its client import envoy's internal packages, internal/redact among them.
+const envoyFixture = "github.com/sjawhar/envoy/wirecheckfixture"
+
+// envoyFixtureModule writes the wire package and client, the source of package fixture, as module
+// envoyFixture, in a workspace with this repository's envoy module, so the client reads an answer
+// through envoy's own redact.Answer as the clients the check holds do, rather than through a stub
+// whose method a change of the real one would leave behind. It returns the module's directory.
+func envoyFixtureModule(t *testing.T, client string) string {
+	t.Helper()
+	envoy, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	goMod, err := os.ReadFile(filepath.Join(envoy, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := ""
+	for line := range strings.Lines(string(goMod)) {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "go "); ok {
+			version = v
+			break
+		}
+	}
+	if !strings.HasPrefix(string(goMod), "module github.com/sjawhar/envoy\n") || version == "" {
+		t.Fatalf("%s is not envoy's go.mod naming its go version", filepath.Join(envoy, "go.mod"))
+	}
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"go.mod":             "module " + envoyFixture + "\n\ngo " + version + "\n",
+		"go.work":            "go " + version + "\n\nuse (\n\t.\n\t" + envoy + "\n)\n",
+		"wire/wire.go":       wireSource,
+		"fixture/fixture.go": client,
+	})
+	t.Setenv("GOWORK", filepath.Join(dir, "go.work"))
+	return dir
+}
+
+// writeFiles writes each source under dir at its relative name.
+func writeFiles(t *testing.T, dir string, files map[string]string) {
+	t.Helper()
+	for name, source := range files {
 		path := filepath.Join(dir, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -53,13 +104,18 @@ func fixtureModule(t *testing.T, client string) string {
 			t.Fatal(err)
 		}
 	}
-	return dir
 }
 
 // check runs wirecheck.Check over the fixture's client package.
 func check(t *testing.T, client string, transport ...string) []wirecheck.Finding {
 	t.Helper()
 	return wirecheck.Check(t, fixtureModule(t, client), []string{"./fixture"}, fixtureWire, transport)
+}
+
+// checkInEnvoy runs wirecheck.Check over the client of an envoyFixtureModule.
+func checkInEnvoy(t *testing.T, client string) []wirecheck.Finding {
+	t.Helper()
+	return wirecheck.Check(t, envoyFixtureModule(t, client), []string{"./fixture"}, envoyFixture+"/wire", nil)
 }
 
 // failures is a testing.TB that records what Check fails with instead of failing the test, so a
@@ -602,4 +658,173 @@ func TestCheckFindsAnUntypedArgument(t *testing.T) {
 	if len(findings) != 2 || findings[1].Type != "UNTYPED" {
 		t.Fatalf("findings = %v, want the copied reply and then UNTYPED", findings)
 	}
+}
+
+// answerDecode is the full name of the decode every client of this repository reads an answer's
+// body with (redact.Answer reads it; the answer census of cmd/redact-gate holds them to it).
+const answerDecode = "(github.com/sjawhar/envoy/internal/redact.Answer).Decode"
+
+const answerDecodeFixture = `package fixture
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/oauth2call"
+
+	"github.com/sjawhar/envoy/wirecheckfixture/wire"
+)
+
+type row struct {
+	SessionID string ` + "`json:\"session_id\"`" + `
+}
+
+func get(ctx context.Context, url string) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(request)
+}
+
+func Row(ctx context.Context, url string) (row, error) {
+	response, err := get(ctx, url)
+	if err != nil {
+		return row{}, err
+	}
+	defer response.Body.Close()
+	answer, err := redact.ReadAnswer(response, 1<<20)
+	if err != nil {
+		return row{}, err
+	}
+	var copied row
+	err = answer.Decode(&copied)
+	return copied, err
+}
+
+func WireRow(ctx context.Context, url string) (wire.Row, error) {
+	response, err := get(ctx, url)
+	if err != nil {
+		return wire.Row{}, err
+	}
+	defer response.Body.Close()
+	answer, err := redact.ReadAnswer(response, 1<<20)
+	if err != nil {
+		return wire.Row{}, err
+	}
+	var declared wire.Row
+	err = answer.Decode(&declared)
+	return declared, err
+}
+
+// label is the client's own type for the row's id, as Dispatch's client holds a holder's state
+// as its own holderState: the wire package's generic row declares the body, and its type argument
+// only how the client holds a word of it.
+type label string
+
+func GenericRows(ctx context.Context, url string) (wire.RowAs[string], wire.RowAs[label], error) {
+	response, err := get(ctx, url)
+	if err != nil {
+		return wire.RowAs[string]{}, wire.RowAs[label]{}, err
+	}
+	defer response.Body.Close()
+	answer, err := redact.ReadAnswer(response, 1<<20)
+	if err != nil {
+		return wire.RowAs[string]{}, wire.RowAs[label]{}, err
+	}
+	var plain wire.RowAs[string]
+	if err := answer.Decode(&plain); err != nil {
+		return plain, wire.RowAs[label]{}, err
+	}
+	var labelled wire.RowAs[label]
+	err = answer.Decode(&labelled)
+	return plain, labelled, err
+}
+
+// AliasRow reads its answer as a module outside envoy's does, through oauth2call, whose Answer is
+// redact's under another name.
+func AliasRow(ctx context.Context, url string) (row, error) {
+	response, err := get(ctx, url)
+	if err != nil {
+		return row{}, err
+	}
+	defer response.Body.Close()
+	answer, err := oauth2call.ReadAnswer(response, 1<<20)
+	if err != nil {
+		return row{}, err
+	}
+	var copied row
+	err = answer.Decode(&copied)
+	return copied, err
+}
+`
+
+// An answer read through redact.Answer, the one way a client of this repository reads one, is
+// decoded by its Decode: a copy decoded there is a finding, through oauth2call's name for the
+// answer as through redact's, and the wire package's own type is none, an instance of its generic
+// one among them, whatever type the client gives it as an argument.
+func TestCheckFindsACopyDecodedThroughAnAnswer(t *testing.T) {
+	want(t, checkInEnvoy(t, answerDecodeFixture), answerDecode, "fixture.row", "fixture.row")
+}
+
+const answerReaderFixture = `package fixture
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/sjawhar/envoy/internal/redact"
+
+	"github.com/sjawhar/envoy/wirecheckfixture/wire"
+)
+
+type refusal struct {
+	Error string ` + "`json:\"error\"`" + `
+}
+
+func Send(ctx context.Context, url string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	answer, err := redact.ReadAnswer(response, 1<<20)
+	if err != nil {
+		return err
+	}
+	return readRefusal(answer)
+}
+
+// readRefusal decodes the answer a party call hands it.
+func readRefusal(answer redact.Answer) error {
+	var body refusal
+	if err := answer.Decode(&body); err != nil {
+		return err
+	}
+	var failure wire.Failure
+	return answer.Decode(&failure)
+}
+
+// parseStored decodes an answer nothing of the other party's handed it.
+func parseStored(stored redact.Answer) (refusal, error) {
+	var kept refusal
+	err := stored.Decode(&kept)
+	return kept, err
+}
+
+func Load(stored redact.Answer) (refusal, error) {
+	return parseStored(stored)
+}
+`
+
+// A function that decodes an Answer a party call read and handed it is read as part of that call,
+// as one decoding the answer's bytes is, so moving the decode into a helper does not hide it; the
+// same decode reached from no party call is none of the check's business.
+func TestCheckReadsAnAnswerAPartyCallHandsAHelper(t *testing.T) {
+	want(t, checkInEnvoy(t, answerReaderFixture), answerDecode, "fixture.refusal")
 }

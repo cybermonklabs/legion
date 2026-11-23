@@ -177,7 +177,7 @@
         "test": "print-envoy.listenerwire.RoleRefusalAs"
       },
       {
-        "holder": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText]",
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/listenerwire.SessionState]",
         "test": "print-envoy.listenerwire.RoleHolderAs"
       },
       {
@@ -305,10 +305,6 @@
         "test": "print-embed.EntraTokenSource.exchange.refusal"
       },
       {
-        "holder": "github.com/sjawhar/envoy/oauth2call.RoleLookup",
-        "test": "print-oauth2call.RoleLookup"
-      },
-      {
         "holder": "github.com/sjawhar/envoy/loadtest.checkNATSServerName struct{ServerName redact.RemoteText \"json:\\\"server_name\\\"\"}",
         "test": "print-loadtest.checkNATSServerName.varz"
       },
@@ -349,16 +345,40 @@
         "test": "print-notify.SessionDeleted"
       },
       {
-        "holder": "github.com/sjawhar/legion/daemon/internal/notify.deleteAnswer",
-        "test": "print-notify.deleteAnswer"
-      },
-      {
         "holder": "github.com/sjawhar/legion/daemon/internal/notify.SessionRegistration",
         "test": "print-notify.SessionRegistration"
       },
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/notify.DeleteConditions",
         "test": "print-notify.DeleteConditions"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.SessionRegistrationAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.SessionRegistrationAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.DeleteSessionResponseAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.DeleteSessionResponseAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.RoleHolderAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleRefusalAs[github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.RoleRefusalAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.RoleSendFailureAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.RoleSendFailureAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.CapabilityRefusalAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.CapabilityRefusalAs"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/listenerwire.APIErrorAs[github.com/sjawhar/envoy/oauth2call.RemoteText]",
+        "test": "print-notify.listenerwire.APIErrorAs"
       },
       {
         "holder": "github.com/sjawhar/legion/daemon/internal/cipher.APIError",
@@ -5222,7 +5242,7 @@
       "requirement": "r2-held",
       "package": "./internal/dispatch/envoy",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/envoy.listenerwire.RoleHolderAs",
-      "production": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText]: every printer at every placement"
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/internal/redact.RemoteText, github.com/sjawhar/envoy/listenerwire.SessionState]: every printer at every placement"
     },
     {
       "id": "print-envoy.listenerwire.SessionInfoAs",
@@ -5754,21 +5774,21 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
       "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/unresponsive",
-      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (listenerwire.RoleRefusalAs and RoleHolderAs, their words as oauth2call.RemoteText)"
     },
     {
       "id": "controller-answer-words-gone",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
       "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/gone",
-      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (listenerwire.RoleRefusalAs and RoleHolderAs, their words as oauth2call.RemoteText)"
     },
     {
       "id": "controller-answer-words-another-holder",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/controller",
       "test": "TestAProbeLogsTheListenersWordsAsTheRuleReadsThem/another-holder",
-      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (oauth2call.RoleLookup)"
+      "production": "controller Prober.Probe: the listener's reason, holder state and holder logged as the rule reads them (listenerwire.RoleRefusalAs and RoleHolderAs, their words as oauth2call.RemoteText)"
     },
     {
       "id": "loadtest-answer-words-nats-server-name",
@@ -6877,13 +6897,6 @@
       "production": "github.com/sjawhar/legion/daemon/internal/notify.SessionDeleted: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
-      "id": "print-notify.deleteAnswer",
-      "requirement": "r2-held",
-      "package": "github.com/sjawhar/legion/daemon/internal/notify",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.deleteAnswer",
-      "production": "github.com/sjawhar/legion/daemon/internal/notify.deleteAnswer: every printer at every placement (oauth2calltest.PrintTest)"
-    },
-    {
       "id": "print-notify.SessionRegistration",
       "requirement": "r2-held",
       "package": "github.com/sjawhar/legion/daemon/internal/notify",
@@ -6898,6 +6911,55 @@
       "production": "github.com/sjawhar/legion/daemon/internal/notify.DeleteConditions: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
+      "id": "print-notify.listenerwire.SessionRegistrationAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.SessionRegistrationAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.SessionRegistrationAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's ReadSessionRegistration's: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.DeleteSessionResponseAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.DeleteSessionResponseAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.DeleteSessionResponseAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's DeleteSession's: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.RoleHolderAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.RoleHolderAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleHolderAs[github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText], notify's RoleHolder's and the controller probe's 200: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.RoleRefusalAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.RoleRefusalAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleRefusalAs[github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText, github.com/sjawhar/envoy/oauth2call.RemoteText], notify's RoleHolder's and the controller probe's 404: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.RoleSendFailureAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.RoleSendFailureAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.RoleSendFailureAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's publishRefusal's 504: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.CapabilityRefusalAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.CapabilityRefusalAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.CapabilityRefusalAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's publishRefusal's 403: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-notify.listenerwire.APIErrorAs",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/notify",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/notify.listenerwire.APIErrorAs",
+      "production": "github.com/sjawhar/envoy/listenerwire.APIErrorAs[github.com/sjawhar/envoy/oauth2call.RemoteText], notify's publishRefusal's 403 of a denied forward: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
       "id": "print-cipher.APIError",
       "requirement": "r2-held",
       "package": "github.com/sjawhar/legion/daemon/internal/cipher",
@@ -6910,13 +6972,6 @@
       "package": "github.com/sjawhar/legion/daemon/internal/daemon",
       "test": "TestABootEndsWhenItsRateLimitWaitsReachTheirBound",
       "production": "the boot's limit error names GitHub's message whole beside the rig's GitHub-shaped token"
-    },
-    {
-      "id": "print-oauth2call.RoleLookup",
-      "requirement": "r2-held",
-      "package": "./oauth2call",
-      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/oauth2call.RoleLookup",
-      "production": "github.com/sjawhar/envoy/oauth2call.RoleLookup: every printer at every placement"
     },
     {
       "id": "print-loadtest.checkNATSServerName.varz",

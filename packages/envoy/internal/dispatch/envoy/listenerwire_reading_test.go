@@ -97,7 +97,7 @@ func TestAListenerBodyReadsTheSameThroughTheClientsInstantiation(t *testing.T) {
 		}
 		data := writtenBytes(t, written, `{"capabilities":["steer"],"claim_revision":7,"client_instance_id":"instance_1","dir":"/work","holder":"ses_holder","holder_state":"live","host":"box","last_seen":1700000000000,"machine_id":"box","role":"legion-planner","title":"planner"}`)
 		var plain listenerwire.RoleHolder
-		var boxed listenerwire.RoleHolderAs[redact.RemoteText]
+		var boxed listenerwire.RoleHolderAs[redact.RemoteText, listenerwire.SessionState]
 		decode(t, data, &plain)
 		decode(t, data, &boxed)
 		if !reflect.DeepEqual(plain, written) {

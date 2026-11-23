@@ -630,7 +630,7 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 	if response.StatusCode != http.StatusOK {
 		return c.lapsedRoleHolder(ctx, response)
 	}
-	var answer listenerwire.RoleHolderAs[redact.RemoteText]
+	var answer listenerwire.RoleHolderAs[redact.RemoteText, listenerwire.SessionState]
 	if err := decodeAnswer(response, &answer); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}

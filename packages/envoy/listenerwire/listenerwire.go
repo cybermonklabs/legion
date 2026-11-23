@@ -350,16 +350,21 @@ type StoppedSessionInfo struct {
 	Topics       []string `json:"topics"`
 }
 
-// SessionRegistration is what GET /v1/registry/<session_id>?view=registration answers: what the
-// session bucket holds for that id, with nothing joined to it. It is a type of its own rather
-// than a SessionInfo because this view reads neither the session's interest record nor the role
-// claims, and a SessionInfo with empty topics and roles would be indistinguishable from a session
-// that holds none. It therefore carries none of the full answer's other fields and says only what
-// the registration itself says: which session it is, the state that registration puts it in, when
-// it was written, and which client process wrote it. A listener that predates the view answers
-// the full SessionInfo instead, whose fields of these names mean the same.
-type SessionRegistration struct {
-	SessionID string       `json:"session_id"`
+// SessionRegistrationAs is what GET /v1/registry/<session_id>?view=registration answers: what the
+// session bucket holds for that id, with nothing joined to it, with its session id and its client
+// instance held as Text. It is a type of its own rather than a SessionInfo because this view reads
+// neither the session's interest record nor the role claims, and a SessionInfo with empty topics
+// and roles would be indistinguishable from a session that holds none. It therefore carries none
+// of the full answer's other fields and says only what the registration itself says: which
+// session it is, the state that registration puts it in, when it was written, and which client
+// process wrote it. A listener that predates the view answers the full SessionInfo instead, whose
+// fields of these names mean the same.
+//
+// The listener writes it as SessionRegistration, the id and the instance strings. A client that
+// must not hold the listener's words as strings reads those two as a type of its own, as
+// APIErrorAs says, through the one declaration the listener writes them with.
+type SessionRegistrationAs[Text any] struct {
+	SessionID Text         `json:"session_id"`
 	State     SessionState `json:"state"`
 	// LastSeen and UpdatedAt are both the registration's own write
 	// (session.SessionEntry.UpdatedAt), under the two names the full answer gives it, so a caller
@@ -371,19 +376,30 @@ type SessionRegistration struct {
 	// out where the entry carries none - a client predating the field, or one that states no
 	// instance - as SessionInfo leaves it out, so a reader takes an absent field for "this
 	// registration names no process" rather than for the empty string.
-	ClientInstanceID string `json:"client_instance_id,omitempty"`
+	ClientInstanceID Text `json:"client_instance_id,omitempty"`
 }
 
-// DeleteSessionResponse is what DELETE /v1/sessions/<session_id> answers a request that named a
+// SessionRegistration is a session's registration as the listener writes it
+// (SessionRegistrationAs).
+type SessionRegistration = SessionRegistrationAs[string]
+
+// DeleteSessionResponseAs is what DELETE /v1/sessions/<session_id> answers a request that named a
 // condition (client_instance_id, if_not_registered_after): whether the registration is gone, and
-// for one that stayed why it did. A request that named none answers 200 with no body at all, as
-// that route always has, and so does a listener of a release that judges no condition. Deleted is
-// a pointer, which the listener always sets, so a reader tells this answer from a 200 that names
-// no outcome.
-type DeleteSessionResponse struct {
-	Deleted *bool  `json:"deleted"`
-	Reason  string `json:"reason,omitempty"`
+// for one that stayed why it did, its reason held as Text. A request that named none answers 200
+// with no body at all, as that route always has, and so does a listener of a release that judges
+// no condition. Deleted is a pointer, which the listener always sets, so a reader tells this
+// answer from a 200 that names no outcome.
+//
+// The listener writes it as DeleteSessionResponse, the reason a string. A client that must not
+// hold the listener's words as strings reads it as a type of its own, as APIErrorAs says, through
+// the one declaration the listener writes it with.
+type DeleteSessionResponseAs[Text any] struct {
+	Deleted *bool `json:"deleted"`
+	Reason  Text  `json:"reason,omitempty"`
 }
+
+// DeleteSessionResponse is a delete's answer as the listener writes it (DeleteSessionResponseAs).
+type DeleteSessionResponse = DeleteSessionResponseAs[string]
 
 // Interest is one session's persisted Envoy topic subscriptions, as the listener's interest bucket
 // stores it (internal/store) and its interest routes answer it (InterestRow).
@@ -528,15 +544,17 @@ type UnsubscribeResponse struct {
 // holder and the holder's state, live on this answer, named exactly as the 404 of a lapsed holder
 // (RoleRefusal) and a publish answer name them, the holder's title, directory, machine, host and
 // capabilities, its last registration, and the claim's revision, with the holder's session id and
-// its title held as Text. The fields are declared in the alphabetical order of their JSON names,
-// which is the order encoding/json wrote the keys of the map this answer was before it was a
-// struct, so the answer's bytes did not change; a new field keeps that order.
+// its title held as Text and the holder's state as State. The fields are declared in the
+// alphabetical order of their JSON names, which is the order encoding/json wrote the keys of the
+// map this answer was before it was a struct, so the answer's bytes did not change; a new field
+// keeps that order.
 //
-// The listener writes it as RoleHolder, the holder and the title strings. A client that must not
-// hold the listener's words as strings reads those two as a type of its own, as APIErrorAs says,
-// through the one declaration the listener writes them with: the holder of the 200 is the same
-// word as the holder of the 404 (RoleRefusalAs), and is read the same way.
-type RoleHolderAs[Text any] struct {
+// The listener writes it as RoleHolder, the holder and the title strings and the holder's state a
+// SessionState. A client that must not hold the listener's words as strings reads those two, and
+// the state, as types of its own, as APIErrorAs says, through the one declaration the listener
+// writes them with: the holder of the 200 is the same word as the holder of the 404
+// (RoleRefusalAs), and is read the same way.
+type RoleHolderAs[Text, State any] struct {
 	// Capabilities is the empty list, never null, for a holder that advertises none.
 	Capabilities []string `json:"capabilities"`
 	// ClaimRevision is the role bucket revision of the claim record the resolution read, which a
@@ -555,10 +573,10 @@ type RoleHolderAs[Text any] struct {
 	// renews it any more and the role claim reaper frees the role once that renewal has lapsed.
 	// It is left out where the claim carries no mark, so a client reads an absent field as "this
 	// claim is still its holder's".
-	HandedBack  bool         `json:"handed_back,omitempty"`
-	Holder      Text         `json:"holder"`
-	HolderState SessionState `json:"holder_state"`
-	Host        string       `json:"host"`
+	HandedBack  bool   `json:"handed_back,omitempty"`
+	Holder      Text   `json:"holder"`
+	HolderState State  `json:"holder_state"`
+	Host        string `json:"host"`
 	// LastSeen is the holder's last registration (Unix ms). It is a pointer, which the listener
 	// always sets, so a reader tells an answer that names it from one that does not.
 	LastSeen  *int64 `json:"last_seen"`
@@ -568,7 +586,7 @@ type RoleHolderAs[Text any] struct {
 }
 
 // RoleHolder is a role's live holder as the listener writes it (RoleHolderAs).
-type RoleHolder = RoleHolderAs[string]
+type RoleHolder = RoleHolderAs[string, SessionState]
 
 // RoleRefusalAs is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and
 // a role send through POST /v1/messages/publish that kept nothing answers, with each of its free
@@ -617,29 +635,45 @@ type RoleRefusalAs[Text, Outcome, State any] struct {
 // RoleRefusal is the 404 of a role with no live holder as the listener writes it (RoleRefusalAs).
 type RoleRefusal = RoleRefusalAs[string, RoleState, SessionState]
 
-// RoleSendFailure is the 504 of a role send through POST /v1/messages/publish whose delivery
-// window ended with no forward the stream stored for its holder. Reason is delivery_failed: no
-// live holder to forward to, a read that failed or ran out of time, or a forward the stream did
-// not acknowledge storing (a listener of an earlier release also answered receipt_timeout). Holder
-// is the holder the send last resolved, empty when none was; Attempts counts the forwards it made,
-// every one the same envelope under one event_id.
-type RoleSendFailure struct {
-	Error     string `json:"error"`
-	Reason    string `json:"reason"`
-	EventID   string `json:"event_id"`
-	DedupeKey string `json:"dedupe_key"`
-	Holder    string `json:"holder"`
-	Attempts  int    `json:"attempts"`
+// RoleSendFailureAs is the 504 of a role send through POST /v1/messages/publish whose delivery
+// window ended with no forward the stream stored for its holder, with each of its words held as
+// Text. Reason is delivery_failed: no live holder to forward to, a read that failed or ran out of
+// time, or a forward the stream did not acknowledge storing (a listener of an earlier release also
+// answered receipt_timeout). Holder is the holder the send last resolved, empty when none was;
+// Attempts counts the forwards it made, every one the same envelope under one event_id.
+//
+// The listener writes it as RoleSendFailure, every word a string. A client that must not hold the
+// listener's words as strings reads them as a type of its own, as APIErrorAs says: every string of
+// the body is a Text.
+type RoleSendFailureAs[Text any] struct {
+	Error     Text `json:"error"`
+	Reason    Text `json:"reason"`
+	EventID   Text `json:"event_id"`
+	DedupeKey Text `json:"dedupe_key"`
+	Holder    Text `json:"holder"`
+	Attempts  int  `json:"attempts"`
 }
 
-// CapabilityRefusal is the 403 of a role send whose holder cannot take the payload's delivery
-// mode: it does not advertise the mode, or the mode cannot be read unambiguously. Reason is
-// capability, and its error reads as /v1/messages/send's answer to the same refusal.
-type CapabilityRefusal struct {
-	Error  string `json:"error"`
-	Reason string `json:"reason"`
-	Holder string `json:"holder"`
+// RoleSendFailure is a role send's 504 as the listener writes it (RoleSendFailureAs).
+type RoleSendFailure = RoleSendFailureAs[string]
+
+// CapabilityRefusalAs is the 403 of a role send whose holder cannot take the payload's delivery
+// mode, with each of its words held as Text: the holder does not advertise the mode, or the mode
+// cannot be read unambiguously. Reason is capability, and its error reads as /v1/messages/send's
+// answer to the same refusal.
+//
+// The listener writes it as CapabilityRefusal, every word a string. A client that must not hold
+// the listener's words as strings reads them as a type of its own, as APIErrorAs says: every
+// string of the body is a Text.
+type CapabilityRefusalAs[Text any] struct {
+	Error  Text `json:"error"`
+	Reason Text `json:"reason"`
+	Holder Text `json:"holder"`
 }
+
+// CapabilityRefusal is a role send's 403 for a delivery mode as the listener writes it
+// (CapabilityRefusalAs).
+type CapabilityRefusal = CapabilityRefusalAs[string]
 
 // LegionAgentEntry is one Legion session as the listener's Legion agent registry stores it
 // (internal/legionagents). Readers ignore fields they do not know, so a later writer may add some.

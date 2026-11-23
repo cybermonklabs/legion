@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/envoy/oauth2call/oauth2calltest"
 )
 
@@ -21,14 +23,10 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		Deleted bool
 		Reason  string
 	}
-	type deleteAnswerTwin = struct {
-		Deleted *bool  `json:"deleted"`
-		Reason  string `json:"reason"`
-	}
 	type registrationTwin = struct {
-		Registered       bool   `json:"-"`
-		ClientInstanceID string `json:"client_instance_id"`
-		LastSeen         int64  `json:"last_seen"`
+		Registered       bool
+		ClientInstanceID string
+		LastSeen         int64
 	}
 	type conditionsTwin = struct {
 		ClientInstanceID   string
@@ -37,6 +35,40 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	kept := false
 	at := time.Unix(1762560000, 0).UTC()
 	said := oauth2calltest.Said(oauth2calltest.Words)
+	// The listener's answers this package and the controller's probe decode: listenerwire's forms
+	// with their words held as oauth2call.RemoteText, each beside its twin, the same form with each
+	// of those words a string, as the listener writes it.
+	words, lastSeen := oauth2calltest.Words, int64(1762560000000)
+	registration := listenerwire.SessionRegistrationAs[oauth2call.RemoteText]{
+		SessionID: said, State: StateLive, LastSeen: lastSeen, UpdatedAt: lastSeen, ClientInstanceID: said,
+	}
+	registrationWritten := listenerwire.SessionRegistration{
+		SessionID: words, State: StateLive, LastSeen: lastSeen, UpdatedAt: lastSeen, ClientInstanceID: words,
+	}
+	deleted := listenerwire.DeleteSessionResponseAs[oauth2call.RemoteText]{Deleted: &kept, Reason: said}
+	deletedWritten := listenerwire.DeleteSessionResponse{Deleted: &kept, Reason: words}
+	holder := listenerwire.RoleHolderAs[oauth2call.RemoteText, oauth2call.RemoteText]{
+		Capabilities: []string{}, Holder: said, HolderState: said, LastSeen: &lastSeen, Role: "legion-planner", Title: said,
+	}
+	holderWritten := listenerwire.RoleHolderAs[string, string]{
+		Capabilities: []string{}, Holder: words, HolderState: words, LastSeen: &lastSeen, Role: "legion-planner", Title: words,
+	}
+	lapsed := listenerwire.RoleRefusalAs[oauth2call.RemoteText, oauth2call.RemoteText, oauth2call.RemoteText]{
+		Error: said, Reason: said, Holder: said, HolderState: said, ClientInstanceID: said, LastSeen: &lastSeen,
+	}
+	lapsedWritten := listenerwire.RoleRefusalAs[string, string, string]{
+		Error: words, Reason: words, Holder: words, HolderState: words, ClientInstanceID: words, LastSeen: &lastSeen,
+	}
+	failure := listenerwire.RoleSendFailureAs[oauth2call.RemoteText]{
+		Error: said, Reason: said, EventID: said, DedupeKey: said, Holder: said, Attempts: 2,
+	}
+	failureWritten := listenerwire.RoleSendFailure{
+		Error: words, Reason: words, EventID: words, DedupeKey: words, Holder: words, Attempts: 2,
+	}
+	capability := listenerwire.CapabilityRefusalAs[oauth2call.RemoteText]{Error: said, Reason: said, Holder: said}
+	capabilityWritten := listenerwire.CapabilityRefusal{Error: words, Reason: words, Holder: words}
+	denied := listenerwire.APIErrorAs[oauth2call.RemoteText]{Code: said, Error: said, Expected: []oauth2call.RemoteText{said}}
+	deniedWritten := listenerwire.APIError{Code: words, Error: words, Expected: []string{words}}
 	for _, h := range []oauth2calltest.Holder{
 		{
 			Name:     "notify.ErrNotDelivered",
@@ -67,13 +99,6 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Exported: deletedTwin{Reason: oauth2calltest.Words},
 		},
 		{
-			Name:     "notify.deleteAnswer",
-			Kind:     "fields",
-			Boxed:    deleteAnswer{Deleted: &kept, Reason: said},
-			Same:     deleteAnswerTwin{Deleted: &kept, Reason: oauth2calltest.Words},
-			Exported: deleteAnswerTwin{Deleted: &kept, Reason: oauth2calltest.Words},
-		},
-		{
 			Name:     "notify.SessionRegistration",
 			Kind:     "fields",
 			Boxed:    SessionRegistration{Registered: true, ClientInstanceID: said, LastSeen: 1762560000000},
@@ -86,6 +111,55 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Boxed:    DeleteConditions{ClientInstanceID: said, NotRegisteredAfter: at},
 			Same:     conditionsTwin{ClientInstanceID: oauth2calltest.Words, NotRegisteredAfter: at},
 			Exported: conditionsTwin{ClientInstanceID: oauth2calltest.Words, NotRegisteredAfter: at},
+		},
+		{
+			Name:     "notify.listenerwire.SessionRegistrationAs",
+			Kind:     "fields",
+			Boxed:    registration,
+			Same:     registrationWritten,
+			Exported: registrationWritten,
+		},
+		{
+			Name:     "notify.listenerwire.DeleteSessionResponseAs",
+			Kind:     "fields",
+			Boxed:    deleted,
+			Same:     deletedWritten,
+			Exported: deletedWritten,
+		},
+		{
+			Name:     "notify.listenerwire.RoleHolderAs",
+			Kind:     "fields",
+			Boxed:    holder,
+			Same:     holderWritten,
+			Exported: holderWritten,
+		},
+		{
+			Name:     "notify.listenerwire.RoleRefusalAs",
+			Kind:     "fields",
+			Boxed:    lapsed,
+			Same:     lapsedWritten,
+			Exported: lapsedWritten,
+		},
+		{
+			Name:     "notify.listenerwire.RoleSendFailureAs",
+			Kind:     "fields",
+			Boxed:    failure,
+			Same:     failureWritten,
+			Exported: failureWritten,
+		},
+		{
+			Name:     "notify.listenerwire.CapabilityRefusalAs",
+			Kind:     "fields",
+			Boxed:    capability,
+			Same:     capabilityWritten,
+			Exported: capabilityWritten,
+		},
+		{
+			Name:     "notify.listenerwire.APIErrorAs",
+			Kind:     "fields",
+			Boxed:    denied,
+			Same:     deniedWritten,
+			Exported: deniedWritten,
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { oauth2calltest.PrintTest(t, h) })

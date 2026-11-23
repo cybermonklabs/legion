@@ -45,7 +45,7 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	failureTwin := listenerwire.APIError{Code: redacttest.Code, Error: redacttest.Words, Expected: []string{redacttest.Words}}
 	// The role holder Client.Role decodes from a 200 and the session Client.Session, Client.Sessions
 	// and Client.SessionIncludingStopped decode, and their twins, each as the listener writes it.
-	holder := listenerwire.RoleHolderAs[redact.RemoteText]{Holder: code, Title: words, Role: "legion-planner", Capabilities: []string{}}
+	holder := listenerwire.RoleHolderAs[redact.RemoteText, listenerwire.SessionState]{Holder: code, Title: words, Role: "legion-planner", Capabilities: []string{}}
 	holderTwin := listenerwire.RoleHolder{Holder: redacttest.Code, Title: redacttest.Words, Role: "legion-planner", Capabilities: []string{}}
 	session := listenerwire.SessionInfoAs[redact.RemoteText]{SessionID: code, Title: words, State: StateLive}
 	sessionTwin := listenerwire.SessionInfo{SessionID: redacttest.Code, Title: redacttest.Words, State: StateLive}

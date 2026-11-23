@@ -14,8 +14,9 @@ body: |-
   Dispatch's client, the Envoy listener calls and the repository cache's reads. The repository a
   cache's answer names, the reason, holder state and holder the controller probe logs of a role
   lookup, and GitHub's rate-limit headers in the daemon's limit lines each print as the rule
-  reads them (`oauth2call.Header`, `oauth2call.RoleLookup`), a rate-limit header that is a number
-  as that number. What a refusal is - GitHub's rate limit, its plan refusal, a ref it already
+  reads them (`oauth2call.Header`, and `listenerwire.RoleRefusalAs` and `RoleHolderAs` read with
+  their words as `oauth2call.RemoteText`), a rate-limit header that is a number as that number.
+  What a refusal is - GitHub's rate limit, its plan refusal, a ref it already
   has, a code or sentence of Dispatch's, the secrets broker's, the Envoy listener's or the
   daemon's own - is decided on the answer as it came and never on the rule's reading of it, which
   prints a whole body whose one URL sits beside a JSON quote, as GitHub's documentation URL does,
