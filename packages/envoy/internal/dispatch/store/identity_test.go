@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -14,8 +15,9 @@ import (
 // of that version before it applies anything, by the rule pgmigratetest.RunIdentityChecks holds it
 // to.
 func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
-	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T) (pgmigratetest.Database, pgmigratetest.Migrate) {
+	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T, log *slog.Logger) (pgmigratetest.Database, pgmigratetest.Migrate) {
 		store := openEmptyTestStore(t)
+		store.Log = log
 		return store.Pool, store.migrate
 	})
 }

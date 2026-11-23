@@ -1,6 +1,7 @@
 package pgmigrate
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -79,8 +80,9 @@ func concurrentIndex(sql string) (index indexStatement, err error) {
 // database default set. Each of the seven is read first and given its value back on return, so a
 // caller that pinned the session before it (PinSession) has the pinned values on return too,
 // whatever the build's own code set. The same lock watch diagnoses failures, the drop's as well
-// as the build's. signIn has Exec's meaning.
-func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) (err error) {
+// as the build's. signIn has Exec's meaning. The drop of a leftover is logged at WARN to log (nil
+// is slog.Default(), read once).
+func ExecNonTransactional(ctx context.Context, log *slog.Logger, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) (err error) {
 	if !migration.NonTransactional {
 		return fmt.Errorf("migration %s is not marked non-transactional", migration.Name)
 	}
@@ -133,7 +135,7 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	if err := PinSession(ctx, conn); err != nil {
 		return fmt.Errorf("migration %s: %w", migration.Name, err)
 	}
-	if err := dropOwnLeftover(ctx, conn, migration, index, signIn); err != nil {
+	if err := dropOwnLeftover(ctx, cmp.Or(log, slog.Default()), conn, migration, index, signIn); err != nil {
 		return err
 	}
 	return execWatched(ctx, conn, migration, signIn)
@@ -146,7 +148,7 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 // IF NOT EXISTS skips over it. Any other relation of that name is one the runner did not build,
 // and it is refused. An index of another name is neither dropped nor refused.
 // The caller must have bounded the session's lock_timeout already: the drop takes locks too.
-func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, index indexStatement, signIn func(context.Context, *pgx.ConnConfig) error) error {
+func dropOwnLeftover(ctx context.Context, log *slog.Logger, conn *pgx.Conn, migration Migration, index indexStatement, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	table := pgx.Identifier{index.Relation.Relname}
 	if index.Relation.Schemaname != "" {
 		table = pgx.Identifier{index.Relation.Schemaname, index.Relation.Relname}
@@ -189,7 +191,7 @@ func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, i
 		// The index this migration builds, already built: the build skips it.
 		return nil
 	}
-	slog.Warn("pgmigrate: dropping an INVALID index of this migration's own name, then building it again",
+	log.Warn("pgmigrate: dropping an INVALID index of this migration's own name, then building it again",
 		"migration", migration.Name, "index", qualified, "table", target)
 	drop := Migration{Name: migration.Name, SQL: "drop index concurrently if exists " + qualified, NonTransactional: true}
 	// Alone on the connection: Postgres refuses DROP INDEX CONCURRENTLY inside a transaction

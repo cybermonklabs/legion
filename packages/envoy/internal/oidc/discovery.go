@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -123,17 +124,17 @@ func (d *discovery[T]) settled() (value T, err error, settled bool) {
 
 // run discovers the issuer from the process's start, so the first request that needs it does not
 // wait for the read: it attempts at once and, while attempts fail, again after a wait of
-// discoveryRetryFirst that doubles after each failure up to discoveryRetryMax. It logs a failure
-// at ERROR at most once per discoveryLogInterval, and the success once, and returns once the
-// issuer is discovered or ctx ends.
-func (d *discovery[T]) run(ctx context.Context) {
+// discoveryRetryFirst that doubles after each failure up to discoveryRetryMax. It logs to log a
+// failure at ERROR at most once per discoveryLogInterval, and the success once, and returns once
+// the issuer is discovered or ctx ends.
+func (d *discovery[T]) run(ctx context.Context, log *slog.Logger) {
 	wait := discoveryRetryFirst
 	for {
 		if _, err := d.discover(ctx); err == nil {
-			slog.Info("oidc: discovered the issuer", "issuer", d.issuer)
+			log.Info("oidc: discovered the issuer", "issuer", d.issuer)
 			return
 		} else if ctx.Err() == nil {
-			d.logFailure(err)
+			d.logFailure(log, err)
 		}
 		select {
 		case <-ctx.Done():
@@ -144,7 +145,7 @@ func (d *discovery[T]) run(ctx context.Context) {
 	}
 }
 
-func (d *discovery[T]) logFailure(err error) {
+func (d *discovery[T]) logFailure(log *slog.Logger, err error) {
 	d.mu.Lock()
 	now := d.now()
 	due := d.loggedAt.IsZero() || now.Sub(d.loggedAt) >= discoveryLogInterval
@@ -153,7 +154,7 @@ func (d *discovery[T]) logFailure(err error) {
 	}
 	d.mu.Unlock()
 	if due {
-		slog.Error("oidc: discover the issuer; retrying in the background, and what needs it answers 503 meanwhile", "issuer", d.issuer, "error", err)
+		log.Error("oidc: discover the issuer; retrying in the background, and what needs it answers 503 meanwhile", "issuer", d.issuer, "error", err)
 	}
 }
 
@@ -162,6 +163,9 @@ func (d *discovery[T]) logFailure(err error) {
 // down. Until the discovery document has been read, Verify fails with ErrIssuerUnavailable.
 type LazyVerifier struct {
 	discovery *discovery[*Verifier]
+	// Log is where Run's lines go: the issuer discovered, and a failed attempt at most once per
+	// discoveryLogInterval. Nil is slog.Default(), read once when Run starts.
+	Log *slog.Logger
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
@@ -228,5 +232,6 @@ func (v *LazyVerifier) Discover(ctx context.Context) error {
 // Discovered reports whether the issuer's discovery document has been read.
 func (v *LazyVerifier) Discovered() bool { return v.discovery.done() }
 
-// Run discovers the issuer in the background until it succeeds or ctx ends (discovery.run).
-func (v *LazyVerifier) Run(ctx context.Context) { v.discovery.run(ctx) }
+// Run discovers the issuer in the background until it succeeds or ctx ends (discovery.run),
+// logging to Log.
+func (v *LazyVerifier) Run(ctx context.Context) { v.discovery.run(ctx, cmp.Or(v.Log, slog.Default())) }

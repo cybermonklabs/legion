@@ -1,6 +1,7 @@
 package pgmigrate
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -171,14 +172,15 @@ const (
 
 // RetryLockTimeouts runs attempt, which applies the migration named migration in a transaction of
 // its own, until it succeeds, fails with anything but a *LockTimeoutError, or has timed out
-// LockTimeoutAttempts times. It logs each timed-out attempt at WARN with its error, which names the
+// LockTimeoutAttempts times. It logs each timed-out attempt at WARN to log (nil is slog.Default(),
+// read once) with its error, which names the
 // lock, the sessions holding it and their diagnoses (LockTimeoutError), and pauses
 // LockTimeoutRetryPause before the next. The last attempt's error comes back, wrapped with the
 // number of attempts, so errors.As still finds the *LockTimeoutError. A runner that applies every
 // migration in one transaction cannot use it: rolling back an attempt there would roll back the
 // earlier migrations too, and retrying inside it would hold their locks across the pause.
-func RetryLockTimeouts(ctx context.Context, migration string, attempt func(context.Context) error) error {
-	return retryLockTimeouts(ctx, "a migration", "migration", migration, func(err error) bool {
+func RetryLockTimeouts(ctx context.Context, log *slog.Logger, migration string, attempt func(context.Context) error) error {
+	return retryLockTimeouts(ctx, log, "a migration", "migration", migration, func(err error) bool {
 		var lockTimeout *LockTimeoutError
 		return errors.As(err, &lockTimeout)
 	}, attempt)
@@ -191,9 +193,9 @@ func RetryLockTimeouts(ctx context.Context, migration string, attempt func(conte
 // while a pg_dump or a census holds a lock on the table then waits the holder out, within the same
 // bound a migration has, rather than fail on its first wait. The last attempt's error comes back,
 // wrapped with the number of attempts, so a timeout that persists still reads as one and not as a
-// refusal.
-func RetryVersionTableLockTimeouts(ctx context.Context, table string, attempt func(context.Context) error) error {
-	return retryLockTimeouts(ctx, "a runner's step on its version table", "table", table, func(err error) bool {
+// refusal. It logs as RetryLockTimeouts does, to log.
+func RetryVersionTableLockTimeouts(ctx context.Context, log *slog.Logger, table string, attempt func(context.Context) error) error {
+	return retryLockTimeouts(ctx, log, "a runner's step on its version table", "table", table, func(err error) bool {
 		var lockTimeout *LockTimeoutError
 		var pgErr *pgconn.PgError
 		return errors.As(err, &lockTimeout) || errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable
@@ -201,18 +203,19 @@ func RetryVersionTableLockTimeouts(ctx context.Context, table string, attempt fu
 }
 
 // retryLockTimeouts is RetryLockTimeouts' loop for what, named name under the log key key, retried
-// while timedOut says its error is a lock timeout.
-func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut func(error) bool, attempt func(context.Context) error) error {
+// while timedOut says its error is a lock timeout, logging to log, or to slog.Default() for nil.
+func retryLockTimeouts(ctx context.Context, log *slog.Logger, what, key, name string, timedOut func(error) bool, attempt func(context.Context) error) error {
+	log = cmp.Or(log, slog.Default())
 	for n := 1; ; n++ {
 		err := attempt(ctx)
 		if err == nil || !timedOut(err) {
 			return err
 		}
 		if n == LockTimeoutAttempts {
-			slog.Warn("pgmigrate: "+what+" gave up waiting for a lock on its last attempt; the runner fails", key, name, "attempt", n, "attempts", LockTimeoutAttempts, "reason", err.Error())
+			log.Warn("pgmigrate: "+what+" gave up waiting for a lock on its last attempt; the runner fails", key, name, "attempt", n, "attempts", LockTimeoutAttempts, "reason", err.Error())
 			return fmt.Errorf("after %d attempts: %w", n, err)
 		}
-		slog.Warn("pgmigrate: "+what+" gave up waiting for a lock; the runner tries it again", key, name, "attempt", n, "attempts", LockTimeoutAttempts, "pause", LockTimeoutRetryPause, "reason", err.Error())
+		log.Warn("pgmigrate: "+what+" gave up waiting for a lock; the runner tries it again", key, name, "attempt", n, "attempts", LockTimeoutAttempts, "pause", LockTimeoutRetryPause, "reason", err.Error())
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("after %d attempts: %w", n, err)

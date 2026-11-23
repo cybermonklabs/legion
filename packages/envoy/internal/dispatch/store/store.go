@@ -30,6 +30,9 @@ type Store struct {
 	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
 	// runs nothing.
 	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
+	// Log is where Migrate's lines go (pgmigrate's lock-timeout retries, the identities it fills
+	// in, a leftover index it drops). Nil is slog.Default(), as Dispatch's boot leaves it.
+	Log *slog.Logger
 }
 
 // Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
@@ -370,7 +373,7 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) error {
 	widen := slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version > math.MaxInt32 })
 	var fixes []pgmigrate.Fix
-	err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
+	err := pgmigrate.RetryVersionTableLockTimeouts(ctx, s.Log, versionTable, func(ctx context.Context) error {
 		fixes = nil
 		return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 			if err := pgmigrate.Pin(ctx, tx); err != nil {
@@ -404,7 +407,7 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 	if err != nil {
 		return err
 	}
-	pgmigrate.LogFixes(versionTable, fixes)
+	pgmigrate.LogFixes(s.Log, versionTable, fixes)
 	return nil
 }
 
@@ -414,7 +417,7 @@ func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.
 // name the previous attempt left on the migration's own table, then builds the index again.
 // A migration that times out on every attempt fails the runner and boot with it.
 func (s *Store) applyMigration(ctx context.Context, migrations []pgmigrate.Migration, migration pgmigrate.Migration) error {
-	return pgmigrate.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
+	return pgmigrate.RetryLockTimeouts(ctx, s.Log, migration.Name, func(ctx context.Context) error {
 		return s.applyMigrationOnce(ctx, migrations, migration)
 	})
 }
@@ -459,7 +462,7 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migrations []pgmigrate.M
 	if err != nil {
 		return err
 	}
-	pgmigrate.LogFixes(versionTable, fixes)
+	pgmigrate.LogFixes(s.Log, versionTable, fixes)
 	return nil
 }
 
@@ -503,11 +506,11 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations [
 	if err != nil {
 		return fmt.Errorf("check migration: %w", err)
 	}
-	pgmigrate.LogFixes(versionTable, fixes)
+	pgmigrate.LogFixes(s.Log, versionTable, fixes)
 	if applied {
 		return nil
 	}
-	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
+	if err := pgmigrate.ExecNonTransactional(ctx, s.Log, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
 	}
 	if s.afterNonTransactionalStatement != nil {

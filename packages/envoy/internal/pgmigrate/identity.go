@@ -1,6 +1,7 @@
 package pgmigrate
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -505,11 +506,12 @@ func Record(ctx context.Context, q versionTable, table string, migration Migrati
 	return nil
 }
 
-// LogFixes logs one line for each fix a runner wrote to table, once the transaction that wrote
-// them has committed, naming the version and the identity it recorded.
-func LogFixes(table string, fixes []Fix) {
+// LogFixes logs to log (nil is slog.Default()) one line for each fix a runner wrote to table, once
+// the transaction that wrote them has committed, naming the version and the identity it recorded.
+func LogFixes(log *slog.Logger, table string, fixes []Fix) {
+	log = cmp.Or(log, slog.Default())
 	for _, fix := range fixes {
-		slog.Info("pgmigrate: recorded the identity of a migration applied before the runners recorded identities",
+		log.Info("pgmigrate: recorded the identity of a migration applied before the runners recorded identities",
 			"table", table, "version", fix.Version, "name", fix.To.Name, "checksum", fix.To.Checksum)
 	}
 }

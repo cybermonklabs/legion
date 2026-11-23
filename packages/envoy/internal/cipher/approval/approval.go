@@ -136,10 +136,12 @@ func New(cfg Config) (*Page, error) {
 	if cfg.Store == nil || cfg.Machine == nil {
 		return nil, errors.New("approval: the page needs the store and the request machine")
 	}
+	log := cmp.Or(cfg.Log, slog.Default())
+	signIn := oidc.NewCodeFlow(cfg.SignIn.Issuer, cfg.SignIn.ClientID, cfg.SignIn.ClientSecret, cfg.SignIn.Domain)
+	signIn.Log = log
 	return &Page{
 		cfg: cfg, origin: originOf(u), redirectURL: strings.TrimRight(cfg.PublicURL, "/") + "/signin/callback",
-		signIn: oidc.NewCodeFlow(cfg.SignIn.Issuer, cfg.SignIn.ClientID, cfg.SignIn.ClientSecret, cfg.SignIn.Domain),
-		log:    cmp.Or(cfg.Log, slog.Default()),
+		signIn: signIn, log: log,
 	}, nil
 }
 

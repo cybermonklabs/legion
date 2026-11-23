@@ -41,7 +41,8 @@ var migrationFiles embed.FS
 
 type Store struct {
 	Pool *pgxpool.Pool
-	// Log is where the store's own line goes: a migration connection whose session reset failed
+	// Log is where a migration's lines go: the runner's (pgmigrate's lock-timeout retries and the
+	// identities it filled in) and a migration connection whose session reset failed
 	// (releaseMigrationConn). Nil is slog.Default(), read once when a migration starts.
 	Log *slog.Logger
 
@@ -260,8 +261,9 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if err != nil {
 		return err
 	}
-	defer releaseMigrationConn(ctx, conn, cmp.Or(s.Log, slog.Default()))
-	if err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
+	log := cmp.Or(s.Log, slog.Default())
+	defer releaseMigrationConn(ctx, conn, log)
+	if err := pgmigrate.RetryVersionTableLockTimeouts(ctx, log, versionTable, func(ctx context.Context) error {
 		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			if err := lockAndPin(ctx, tx); err != nil {
 				return err
@@ -313,7 +315,7 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if err != nil {
 		return err
 	}
-	pgmigrate.LogFixes(versionTable, fixes)
+	pgmigrate.LogFixes(log, versionTable, fixes)
 	return nil
 }
 

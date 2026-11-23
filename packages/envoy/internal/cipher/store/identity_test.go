@@ -1,6 +1,7 @@
 package store
 
 import (
+	"log/slog"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
@@ -11,8 +12,9 @@ import (
 // set's file of that version before it applies anything, by the rule
 // pgmigratetest.RunIdentityChecks holds it to.
 func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
-	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T) (pgmigratetest.Database, pgmigratetest.Migrate) {
+	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T, log *slog.Logger) (pgmigratetest.Database, pgmigratetest.Migrate) {
 		s := emptySchemaStore(t)
+		s.Log = log
 		return s.Pool, s.migrate
 	})
 }

@@ -164,10 +164,10 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	migration := Migration{Name: "0001_index.up.sql", SQL: "create index concurrently if not exists things_kind on things (kind)", NonTransactional: true}
-	if err := ExecNonTransactional(ctx, conn, migration, nil); err != nil {
+	if err := ExecNonTransactional(ctx, nil, conn, migration, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := ExecNonTransactional(ctx, conn, migration, nil); err != nil {
+	if err := ExecNonTransactional(ctx, nil, conn, migration, nil); err != nil {
 		t.Fatalf("idempotent retry: %v", err)
 	}
 	// The session's search_path is x again, so the index's name carries its schema.
@@ -232,7 +232,7 @@ func TestExecNonTransactionalRestoresSessionAuthorizationBeforeRole(t *testing.T
 	if _, err := conn.Exec(ctx, "create table things (kind text); set session authorization "+login+"; set role "+grp); err != nil {
 		t.Fatal(err)
 	}
-	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+	if err := ExecNonTransactional(ctx, nil, conn, indexMigration(), nil); err != nil {
 		t.Fatal(err)
 	}
 	var currentUser, sessionUser string
@@ -323,9 +323,9 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 	migration := indexMigration()
 	var attempts int
 	var leftover uint32
-	runErr := RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
+	runErr := RetryLockTimeouts(ctx, nil, migration.Name, func(ctx context.Context) error {
 		attempts++
-		err := ExecNonTransactional(ctx, conn, migration, nil)
+		err := ExecNonTransactional(ctx, nil, conn, migration, nil)
 		if attempts == 1 {
 			got := indexState(t, ctx, conn, "things_kind")
 			// The oid is the leftover's, read here and compared after the rebuild.
@@ -364,7 +364,7 @@ func TestExecNonTransactionalDropsTheLeftoverOfAKilledBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	leftover := leaveInvalidIndex(t, ctx, conn, "things_kind", "things", "kind")
-	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+	if err := ExecNonTransactional(ctx, nil, conn, indexMigration(), nil); err != nil {
 		t.Fatalf("ExecNonTransactional = %v, want nil after dropping its own leftover", err)
 	}
 	got := indexState(t, ctx, conn, "things_kind")
@@ -383,7 +383,7 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 	// Every refusal names the relation; the remedy is each case's own, so the subtest brings it.
 	refusal := func(t *testing.T, conn *pgx.Conn, remedy ...string) {
 		t.Helper()
-		err := ExecNonTransactional(context.Background(), conn, indexMigration(), nil)
+		err := ExecNonTransactional(context.Background(), nil, conn, indexMigration(), nil)
 		if err == nil || !strings.Contains(err.Error(), "things_kind") {
 			t.Fatalf("ExecNonTransactional = %v, want a refusal naming things_kind", err)
 		}
@@ -448,7 +448,7 @@ func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := leaveInvalidIndex(t, ctx, conn, "things_other", "things", "other")
-	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
+	if err := ExecNonTransactional(ctx, nil, conn, indexMigration(), nil); err != nil {
 		t.Fatalf("ExecNonTransactional = %v, want nil: the INVALID index is not the migration's", err)
 	}
 	got := indexState(t, ctx, conn, "things_kind")
@@ -481,7 +481,7 @@ func TestExecNonTransactionalReportsADropTimeoutAsALockTimeoutError(t *testing.T
 	if _, err := tx.Exec(ctx, "lock table things in share update exclusive mode"); err != nil {
 		t.Fatal(err)
 	}
-	err = ExecNonTransactional(ctx, conn, indexMigration(), nil)
+	err = ExecNonTransactional(ctx, nil, conn, indexMigration(), nil)
 	var timedOut *LockTimeoutError
 	if !errors.As(err, &timedOut) {
 		t.Fatalf("ExecNonTransactional = %v, want a *LockTimeoutError from the DROP of the leftover", err)

@@ -1,11 +1,13 @@
 package oidc
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -71,6 +73,9 @@ type CodeFlow struct {
 	// group mode, a Cognito sign-in pool's.
 	hostedDomain string
 	http         *http.Client
+	// Log is where Run's lines go: the issuer discovered, and a failed attempt at most once a
+	// minute. Nil is slog.Default(), read once when Run starts.
+	Log *slog.Logger
 }
 
 // codeFlowIssuer is what a code flow reads from its issuer's discovery document: the verifier of
@@ -226,8 +231,8 @@ func (f *CodeFlow) Discovered() bool { return f.discovery.done() }
 
 // Run reads the issuer's discovery document in the background from the process's start until it
 // succeeds or ctx ends: at once, then after waits of one second doubling to thirty while reads
-// fail, logging a failure at ERROR at most once a minute.
-func (f *CodeFlow) Run(ctx context.Context) { f.discovery.run(ctx) }
+// fail, logging a failure at ERROR at most once a minute, to Log.
+func (f *CodeFlow) Run(ctx context.Context) { f.discovery.run(ctx, cmp.Or(f.Log, slog.Default())) }
 
 // AuthURL is where a browser starts the sign-in: the issuer's authorization endpoint asking for a
 // code to be sent to redirectURL with state, and an ID token carrying nonce. A domain-mode flow

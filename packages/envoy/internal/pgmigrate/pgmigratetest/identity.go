@@ -69,22 +69,24 @@ func earlierRunner(t *testing.T, db Database, table string) {
 }
 
 // RunIdentityChecks holds one store's runner to the rule pgmigrate.Reconcile states, against the
-// version table table of each empty database fresh opens, with the runner fresh answers for it.
+// version table table of each empty database fresh opens, with the runner fresh answers for it,
+// logging to log (nil for slog.Default()), where a row reads the runner's lines from.
 // Most rows first migrate the original set, 0001_first and 0002_second, and then boot a set that
 // adds a pending 0003_third, whose table says whether the runner applied anything. The control
 // boots the same files under their own names and texts and is accepted; each other row changes one
 // thing about 0002 or about the rows the table holds.
-func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Database, Migrate)) {
+func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T, log *slog.Logger) (Database, Migrate)) {
 	t.Helper()
 	ctx := context.Background()
 	original := map[string]string{"0001_first.up.sql": identityFirst, "0002_second.up.sql": identitySecond}
 	withThird := func(second, text string) fs.FS {
 		return identitySet(map[string]string{"0001_first.up.sql": identityFirst, second: text, "0003_third.up.sql": identityThird})
 	}
-	// prepared is a fresh database the original set has been applied to, by this runner.
-	prepared := func(t *testing.T) (Database, Migrate) {
+	// prepared is a fresh database the original set has been applied to, by this runner, which
+	// logs to log.
+	prepared := func(t *testing.T, log *slog.Logger) (Database, Migrate) {
 		t.Helper()
-		db, migrate := fresh(t)
+		db, migrate := fresh(t, log)
 		if err := migrate(ctx, identitySet(original)); err != nil {
 			t.Fatalf("migrate the original set: %v", err)
 		}
@@ -123,13 +125,12 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 			t.Error("the refused boot applied 0003_third; want nothing applied")
 		}
 	}
-	logs := func(t *testing.T) func(message string) int {
-		t.Helper()
-		records := &logtest.Recorder{}
-		logtest.SetDefault(t, records)
+	// logs counts, by message, the records of this table's runner records holds from now on.
+	logs := func(records *logtest.Recorder) func(message string) int {
+		mark := len(records.Records())
 		return func(message string) int {
 			n := 0
-			for _, record := range records.Records() {
+			for _, record := range records.Records()[mark:] {
 				if record.Message != message {
 					continue
 				}
@@ -155,8 +156,9 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	preparedRows := []pgmigrate.Recorded{row(1, first, first.Checksum), row(2, second, second.Checksum)}
 
 	t.Run("control: the same files under their own names and texts boot clean", func(t *testing.T) {
-		db, migrate := prepared(t)
-		count := logs(t)
+		records := &logtest.Recorder{}
+		db, migrate := prepared(t, slog.New(records))
+		count := logs(records)
 		for boot := range 2 {
 			if err := migrate(ctx, withThird("0002_second.up.sql", identitySecond)); err != nil {
 				t.Fatalf("boot %d of the same files: %v", boot+1, err)
@@ -172,7 +174,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	})
 
 	t.Run("a: a version recorded under another name is refused, naming both", func(t *testing.T) {
-		db, migrate := prepared(t)
+		db, migrate := prepared(t, nil)
 		renamed := identity("0002_renamed.up.sql", identitySecond)
 		refused(t, db, migrate(ctx, withThird("0002_renamed.up.sql", identitySecond)),
 			"version 2 is recorded as "+second.String(), "this build's file of version 2 is "+renamed.String(),
@@ -181,7 +183,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	})
 
 	t.Run("b: the same name with another checksum is refused, naming both", func(t *testing.T) {
-		db, migrate := prepared(t)
+		db, migrate := prepared(t, nil)
 		refused(t, db, migrate(ctx, withThird("0002_second.up.sql", identitySecondEdited)),
 			"version 2 is recorded as "+second.String(), "this build's file of version 2 is "+edited.String(),
 			"if the edit is intended, add this line to", "-- replaces: "+second.String())
@@ -189,14 +191,15 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	})
 
 	t.Run("c: a row with no name is filled once and never refused, and a second boot changes nothing", func(t *testing.T) {
-		db, migrate := prepared(t)
+		records := &logtest.Recorder{}
+		db, migrate := prepared(t, slog.New(records))
 		// A version recorded with no file in the set, as one an image rollback leaves: the runner
 		// leaves it as it is, as it always has.
 		if _, err := db.Exec(ctx, "insert into "+table+" (version) values (99)"); err != nil {
 			t.Fatalf("record a version with no file: %v", err)
 		}
 		earlierRunner(t, db, table)
-		count := logs(t)
+		count := logs(records)
 		filled := []pgmigrate.Recorded{row(1, first, ""), row(2, second, ""), row(3, third, third.Checksum), {Version: 99, Unnamed: true}}
 		for boot := range 2 {
 			if err := migrate(ctx, withThird("0002_second.up.sql", identitySecond)); err != nil {
@@ -218,8 +221,9 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 			"a rename":         {"0002_renamed.up.sql", "-- replaces: " + second.String() + "\n" + identitySecond},
 		} {
 			t.Run(name, func(t *testing.T) {
-				db, migrate := prepared(t)
-				count := logs(t)
+				records := &logtest.Recorder{}
+				db, migrate := prepared(t, slog.New(records))
+				count := logs(records)
 				if err := migrate(ctx, withThird(file.name, file.text)); err != nil {
 					t.Fatalf("boot a file declaring the recorded identity: %v", err)
 				}
@@ -249,7 +253,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	// set filled. The control records the edited file's own identity instead, as a runner that
 	// recorded each file's own did: the set before refuses it.
 	t.Run("d2: a database the edited set filled records the first identity, and the set before boots it", func(t *testing.T) {
-		db, migrate := prepared(t)
+		db, migrate := prepared(t, nil)
 		earlierRunner(t, db, table)
 		if err := migrate(ctx, identitySet(map[string]string{"0001_first.up.sql": identityFirst, "0002_second.up.sql": declaring})); err != nil {
 			t.Fatalf("boot the edited set over rows that record no name: %v", err)
@@ -270,7 +274,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	// edit is, and another branch's edit under the same first identity. The edited set itself, and
 	// a later edit that declares the edited text, boot it.
 	t.Run("d3: a database an edit created is refused by a file that names no text of it, the original included", func(t *testing.T) {
-		db, migrate := fresh(t)
+		db, migrate := fresh(t, nil)
 		if err := migrate(ctx, identitySet(map[string]string{"0001_first.up.sql": identityFirst, "0002_second.up.sql": declaring})); err != nil {
 			t.Fatalf("create the database with the edited set: %v", err)
 		}
@@ -291,7 +295,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	})
 
 	t.Run("e: a file declaring a different identity is refused", func(t *testing.T) {
-		db, migrate := prepared(t)
+		db, migrate := prepared(t, nil)
 		other := pgmigrate.Identity{Name: "0002_second.up.sql", Checksum: sum("some other text")}
 		text := identitySecondEdited + "\n-- replaces: " + other.String() + "\n"
 		refused(t, db, migrate(ctx, withThird("0002_second.up.sql", text)),
@@ -306,7 +310,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	// runner boots the same set again, and a later edit that keeps the edited text as its first
 	// replaces line boots too, as the pre-merge check requires of it.
 	t.Run("f1: rows with no name, then an edited file, fill the edited identity and refuse nothing", func(t *testing.T) {
-		db, migrate := prepared(t)
+		db, migrate := prepared(t, nil)
 		earlierRunner(t, db, table)
 		if err := migrate(ctx, withThird("0002_second.up.sql", identitySecondEdited)); err != nil {
 			t.Fatalf("boot an edited file over rows that record no name: %v", err)
@@ -324,7 +328,7 @@ func RunIdentityChecks(t *testing.T, table string, fresh func(t *testing.T) (Dat
 	})
 
 	t.Run("f2: the original files first, then the edited file, is refused without a replaces line and accepted with one", func(t *testing.T) {
-		db, migrate := prepared(t)
+		db, migrate := prepared(t, nil)
 		refused(t, db, migrate(ctx, withThird("0002_second.up.sql", identitySecondEdited)),
 			"version 2 is recorded as "+second.String(), "this build's file of version 2 is "+edited.String())
 		if err := migrate(ctx, withThird("0002_second.up.sql", declaring)); err != nil {
