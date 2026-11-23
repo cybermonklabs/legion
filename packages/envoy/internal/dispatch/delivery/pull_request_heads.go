@@ -542,6 +542,14 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // none: the next pass is handed the old row's key again and re-keys it again, while losing the
 // row would leave the pull request unknown until another event arrived.
 //
+// The order matters to the former heads too. Where the canonical row is first written closed, as
+// a pull request read closed under its canonical name is, that write is the close the check states
+// settler captures, and once a close of the pull request is known it counts a row written closed
+// as a close only while a row of the pull request is open (pull_request_former_heads_apply,
+// migration 20261122071001). The write before the delete leaves the old name's row open when the
+// close is recorded, so the close ends the lifecycle; the delete first would leave no row open,
+// and a reopen would bring back the heads of the lifecycle the close ended.
+//
 // The delete carries the heads the pull request left while open under the old name, and the old
 // row's head where it is another than the canonical row's, to the canonical name, where that row
 // is open: they are heads of the same pull request, which the check states settler keeps computing
