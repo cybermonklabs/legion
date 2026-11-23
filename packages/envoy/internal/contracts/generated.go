@@ -356,6 +356,7 @@ var DispatchEventTypes = []string{
 	"settings.architecture_source.updated",
 	"settings.project_default_assignee.updated",
 	"settings.repo_project.updated",
+	"spec.approved_written",
 	"spec.outcomes_recorded",
 	"spec.request_stale",
 	"subscription.remove_requested",

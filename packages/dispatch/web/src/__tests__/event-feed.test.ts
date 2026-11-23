@@ -1795,6 +1795,12 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     { issue_key: null }
   ),
   "settings.repo_project.updated": event("settings.repo_project.updated", {}, { issue_key: null }),
+  "spec.approved_written": event("spec.approved_written", {
+    issue: issue().key,
+    repo: "acme/app",
+    act: "approval",
+    nodes: [{ id: "a-bill-names-its-order", kind: "statement", version: 2 }],
+  }),
   "spec.outcomes_recorded": event("spec.outcomes_recorded", {
     issue: issue().key,
     record: 7,

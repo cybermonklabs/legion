@@ -114,3 +114,24 @@ type SpecRequestStaleEventPayload struct {
 	Statements      []SpecRequestStaleNode `json:"statements"`
 	Reason          string                 `json:"reason"`
 }
+
+// SpecApprovedWrittenNode is one fact an act wrote into an approved spec: the node, its kind, the
+// version it wrote or, for a removal, the version it removed, and whether it removed the node.
+type SpecApprovedWrittenNode struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Version int    `json:"version"`
+	Removed bool   `json:"removed,omitempty"`
+}
+
+// SpecApprovedWrittenEventPayload is the payload of spec.approved_written, on the issue whose act
+// wrote the approved spec of its repository: a person's approval of its change request
+// (`approval`) or the import of its approved level (`import`), and each node the act wrote. The
+// approved spec is the repository's, so every other issue of that repository reads its change
+// request against what this act wrote, though nothing of that issue moved.
+type SpecApprovedWrittenEventPayload struct {
+	Issue string                    `json:"issue"`
+	Repo  string                    `json:"repo"`
+	Act   string                    `json:"act"`
+	Nodes []SpecApprovedWrittenNode `json:"nodes"`
+}

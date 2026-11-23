@@ -503,7 +503,8 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 // write phase (docs.QueueReview). Each is a person's review (docs.ReviewKindPerson): a plan review
 // writes its own, on one document. An approval of an issue's spec whose repository is a spec source
 // also writes the change request it covers into the approved spec, after the reviews, or is
-// refused (applySpecChange).
+// refused (applySpecChange); one that writes a node adds its spec.approved_written event after the
+// reviews' events.
 //
 // A second document's row is read here, in the read phase. This transaction does write artifacts:
 // an event on a document no issue holds is owned by that document (docs.documentAskEvent), and the
@@ -552,8 +553,12 @@ func (s *server) queueApprovalReviews(
 		appended = append(appended, reviewEvent)
 	}
 	if state == "approved" {
-		if err := s.applySpecChange(ctx, tx, ledger, request, documents, actor, askID); err != nil {
+		written, err := s.applySpecChange(ctx, tx, ledger, request, documents, actor, askID)
+		if err != nil {
 			return nil, nil, err
+		}
+		if written != nil {
+			appended = append(appended, written)
 		}
 	}
 	return named, appended, nil

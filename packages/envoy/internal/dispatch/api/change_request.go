@@ -443,9 +443,12 @@ func (s *server) getChangeRequest(w http.ResponseWriter, r *http.Request) {
 // a proposal of its document's kind. A stale node the approved spec already holds as the block
 // writes it — the issue's own request once a person's approval wrote it — is approved; every other
 // proposal and changed check, and every such fault, waits for a person's approval
-// (ProposesUnapproved, ChangesChecksUnapproved, R25). Any other issue proposes nothing and changes
-// no check, and its conclusion is judged with nothing approved. A version Dispatch cannot read is
-// refused 409 CHANGE_REQUEST_UNREADABLE, never read as one that proposes nothing.
+// (ProposesUnapproved, ChangesChecksUnapproved, R25). The read names the approved spec it compared
+// against (ApprovedSpecMark, specstore.State.Mark), which another issue's approval moves while
+// this issue's documents stand, so a reader can order two reads of one version. Any other issue
+// proposes nothing and changes no check, reads no approved spec (mark 0), and its conclusion is
+// judged with nothing approved. A version Dispatch cannot read is refused 409
+// CHANGE_REQUEST_UNREADABLE, never read as one that proposes nothing.
 func (s *server) readChangeRequest(ctx context.Context, q queryer, key string, version int, head string) (changeRequestState, error) {
 	issue, err := s.loadIssue(ctx, q, key)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -511,6 +514,7 @@ func (s *server) readChangeRequest(ctx context.Context, q queryer, key string, v
 		if err != nil {
 			return changeRequestState{}, err
 		}
+		read.ApprovedSpecMark = state.Mark
 		approvedSpec, err := state.Approved()
 		if err != nil {
 			return changeRequestState{}, err

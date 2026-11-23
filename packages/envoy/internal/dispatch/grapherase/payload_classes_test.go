@@ -110,6 +110,7 @@ var unreadEventTypes = map[string]string{
 	"settings.architecture_source.updated":   namesNoComment,
 	"settings.project_default_assignee.updated": namesNoComment,
 	"settings.repo_project.updated":             namesNoComment,
+	"spec.approved_written":                     namesNoComment,
 	"spec.outcomes_recorded":                    namesNoComment,
 	"spec.request_stale":                        namesNoComment,
 	"subscription.remove_requested":             namesNoComment,

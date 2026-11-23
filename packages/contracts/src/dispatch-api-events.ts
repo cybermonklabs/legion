@@ -37,6 +37,7 @@ import type {
   IssueEventPayload,
   IssuePullRequestAttributionEventPayload,
   IssueReleasedEventPayload,
+  SpecApprovedWrittenEventPayload,
   SpecOutcomesRecordedEventPayload,
   SpecRequestStaleEventPayload,
 } from "./dispatch-api-issues";
@@ -173,6 +174,10 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "spec.outcomes_recorded";
       readonly payload: SpecOutcomesRecordedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "spec.approved_written";
+      readonly payload: SpecApprovedWrittenEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "handoff.recorded";
@@ -400,6 +405,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "settings.architecture_source.updated": true,
   "settings.project_default_assignee.updated": true,
   "settings.repo_project.updated": true,
+  "spec.approved_written": true,
   "spec.outcomes_recorded": true,
   "spec.request_stale": true,
   "subscription.remove_requested": true,

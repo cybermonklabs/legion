@@ -123,6 +123,7 @@ var unchangingTypes = map[string]string{
 	"priority.updated":                          "a priority is not an issue, comment, message or ask",
 	"spec.request_stale":                        "a refused approval changes no issue's title or primary document version",
 	"spec.outcomes_recorded":                    "a list of outcomes is not an issue, comment, message or ask",
+	"spec.approved_written":                     "a write of the approved spec changes no issue's title or primary document version",
 }
 
 // errUnreadablePayload is a rule's answer for a payload that lacks a field the rule reads, which

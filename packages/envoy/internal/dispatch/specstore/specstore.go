@@ -144,10 +144,17 @@ func (h *History) AsOf(at time.Time) *Version {
 	return held
 }
 
-// State is the approved spec of one repository of a project, every node's history by id.
+// State is the approved spec of one repository of a project, every node's history by id, and its
+// Mark: the sequence (graph_tuples.seq) of the newest fact the read read, 0 where the approved spec
+// holds none. Every writer of the approved spec appends its facts under the repository's lock
+// (Lock), so each write that writes a fact moves the Mark past every earlier write, in the order
+// the writes committed, and two reads of one Mark read the same approved spec. It is the identity
+// of the approved spec a reader compared something against: a read of a lower Mark is of an older
+// approved spec.
 type State struct {
 	Project, Repo string
 	Nodes         map[string]*History
+	Mark          int64
 }
 
 // Read reads the approved spec of the repository repo of project, every node with its whole
@@ -171,7 +178,7 @@ func read(ctx context.Context, q graphstore.Queryer, project, repo, id string) (
 	state := State{Project: project, Repo: repo, Nodes: map[string]*History{}}
 	prefix := Address(project, repo, "")
 	rows, err := q.Query(ctx, `
-		select n.id, t.kind, t.to_id
+		select n.id, t.kind, t.to_id, t.seq
 		from graph_nodes n
 		join graph_tuples t on t.from_kind = n.kind and t.from_id = n.id
 		where n.kind = $1 and n.supertag = $1 and starts_with(n.id, $2) and ($5 = '' or n.id = $2 || $5)
@@ -184,9 +191,11 @@ func read(ctx context.Context, q graphstore.Queryer, project, repo, id string) (
 	defer rows.Close()
 	for rows.Next() {
 		var address, kind, value string
-		if err := rows.Scan(&address, &kind, &value); err != nil {
+		var seq int64
+		if err := rows.Scan(&address, &kind, &value, &seq); err != nil {
 			return State{}, fmt.Errorf("read the approved spec of %s: %w", prefix, err)
 		}
+		state.Mark = max(state.Mark, seq)
 		id := address[len(prefix):]
 		history := state.Nodes[id]
 		if history == nil {

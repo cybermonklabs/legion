@@ -132,7 +132,8 @@ func (s *server) importSpecLevel(w http.ResponseWriter, r *http.Request) {
 }
 
 // importLevel imports the level of the issue key in one transaction (specstore.Import) and answers
-// what it wrote, the issue and its repository.
+// what it wrote, the issue and its repository. An import that writes a node appends
+// spec.approved_written on the issue in the same transaction and publishes it once it commits.
 func (s *server) importLevel(ctx context.Context, key, notesName string, actor model.Actor) (specstore.Imported, model.Issue, string, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -199,8 +200,19 @@ func (s *server) importLevel(ctx context.Context, key, notesName string, actor m
 	if err != nil {
 		return specstore.Imported{}, model.Issue{}, "", err
 	}
+	var written *model.Event
+	if len(imported.Written) > 0 {
+		event, err := s.appendEvent(ctx, tx, approvedWrittenEvent(key, repo, specstore.ActImport, actor, imported.Written))
+		if err != nil {
+			return specstore.Imported{}, model.Issue{}, "", err
+		}
+		written = &event
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return specstore.Imported{}, model.Issue{}, "", err
+	}
+	if written != nil {
+		s.publish(ctx, *written)
 	}
 	return imported, issue, repo, nil
 }

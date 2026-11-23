@@ -114,13 +114,17 @@ type SpecFinalList struct {
 // document changes, whether a proposal or a changed check is one the approved spec does not hold as
 // written (ProposesUnapproved, ChangesChecksUnapproved: no person's approval wrote it), each fault
 // of its blocks, its conclusion, and the judgment of that conclusion against the final list it
-// read.
+// read. ApprovedSpecMark is the approved spec it was read against (specstore.State.Mark, 0 for an
+// issue of no spec source): with Version and VerificationVersion it names every input of the
+// comparison, since another issue's approval moves the approved spec and leaves this issue's
+// documents as they are. A read of a lower mark is of an older approved spec.
 type ChangeRequestRead struct {
 	Issue                   string                        `json:"issue"`
 	Version                 int                           `json:"version"`
 	SpecSource              bool                          `json:"spec_source"`
 	Repo                    string                        `json:"repo"`
 	VerificationVersion     int                           `json:"verification_version"`
+	ApprovedSpecMark        int64                         `json:"approved_spec_mark"`
 	Proposes                bool                          `json:"proposes"`
 	ChangesChecks           bool                          `json:"changes_checks"`
 	ProposesUnapproved      bool                          `json:"proposes_unapproved"`

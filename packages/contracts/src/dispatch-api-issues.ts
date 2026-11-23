@@ -373,6 +373,35 @@ export type SpecOutcomesRecordedEventPayload = z.output<
   typeof SpecOutcomesRecordedEventPayloadSchema
 >;
 
+/**
+ * `spec.approved_written`: an act of the issue wrote the approved spec of its repository: a
+ * person's approval of its change request (`act` `approval`) or the import of its approved level
+ * (`import`). Appended on the issue (so it is published on
+ * `notifications.dispatch.issue.<KEY>.spec.approved_written`) with the act's actor, in the act's
+ * own transaction, and only when the act wrote a node. `nodes` is each node it wrote: its id, its
+ * kind, the version it wrote or removed, and `removed` for a removal. Every other issue of the
+ * repository reads its change request against the approved spec, so this act moves their reads
+ * while their own documents stand. Strict: the Go writer (`SpecApprovedWrittenEventPayload` in
+ * `packages/envoy/internal/dispatch/model`) emits exactly these fields.
+ */
+export const SpecApprovedWrittenEventPayloadSchema = z.strictObject({
+  issue: z.string(),
+  repo: z.string(),
+  act: z.enum(["approval", "import"]),
+  nodes: z.array(
+    z.strictObject({
+      id: z.string(),
+      kind: z.string(),
+      version: z.number().int().positive(),
+      removed: z.boolean().optional(),
+    })
+  ),
+});
+
+export type SpecApprovedWrittenEventPayload = z.output<
+  typeof SpecApprovedWrittenEventPayloadSchema
+>;
+
 export const childStatusEventPayloadFields = {
   child_key: z.string(),
   from: z.string(),

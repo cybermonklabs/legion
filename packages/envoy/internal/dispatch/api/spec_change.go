@@ -32,9 +32,17 @@ import (
 // approved spec changed it after it was written (R22: "Dispatch tells its owner of the refusal").
 const specRequestStaleEvent = "spec.request_stale"
 
+// specApprovedWrittenEvent is the event an act that writes the approved spec of a repository
+// appends on its issue, in its own transaction: a person's approval of a change request
+// (applySpecChange) and the import of an approved level (importLevel). Every other issue of that
+// repository reads its change request against the approved spec, so what such an act wrote moves
+// their reads while their documents stand; this event is how a reader of those requests, the
+// daemon's design gate, hears of it.
+const specApprovedWrittenEvent = "spec.approved_written"
+
 // specChangeRouteWords is what the routes that write a person's approval say of an approval of a
 // change request (routes_table.go).
-const specChangeRouteWords = "An approval of the spec of an issue whose repository is a spec source of its project writes the change request it covers - each statement, check, component and interface the issue's blocks add, change or remove against the approved version their base names - into that repository's approved spec in the same transaction (GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}), and is refused, writing nothing, with 409 SPEC_REQUEST_STALE (a node whose base is not the current approved version; spec.request_stale then tells the issue's owner, naming each node and its versions), SPEC_NODE_INVALID (a node the approved spec cannot hold), SPEC_CHECKS_NOT_INCLUDED (a check change whose request names no Verification document), SPEC_PARENT_MISSING (a statement under a parent neither the approved spec nor the request holds), SPEC_LOOP (a loop across parent and supports) or APPROVAL_REQUEST_REQUIRED (no open approval request, or a text that moved after the request named it). A request for changes writes nothing into it."
+const specChangeRouteWords = "An approval of the spec of an issue whose repository is a spec source of its project writes the change request it covers - each statement, check, component and interface the issue's blocks add, change or remove against the approved version their base names - into that repository's approved spec in the same transaction (GET /api/v1/projects/{key}/spec/{owner}/{repo}/nodes/{id}), appends spec.approved_written on the issue {issue, repo, act, nodes} when it wrote a node, and is refused, writing nothing, with 409 SPEC_REQUEST_STALE (a node whose base is not the current approved version; spec.request_stale then tells the issue's owner, naming each node and its versions), SPEC_NODE_INVALID (a node the approved spec cannot hold), SPEC_CHECKS_NOT_INCLUDED (a check change whose request names no Verification document), SPEC_PARENT_MISSING (a statement under a parent neither the approved spec nor the request holds), SPEC_LOOP (a loop across parent and supports) or APPROVAL_REQUEST_REQUIRED (no open approval request, or a text that moved after the request named it). A request for changes writes nothing into it."
 
 // specChangeRefusal is a refusal of the approved spec (specstore.Refusal), with the issue and the
 // approval request it refused, which a stale refusal's event names once the approval's
@@ -114,14 +122,18 @@ func versionDigest(ctx context.Context, q queryer, artifactID string, version in
 // checks from the Verification document's where the request names it, else from that document's
 // latest settled version, so a request that changes a check its approval request leaves out is
 // refused (specstore.RefusalChecksNotIncluded).
+//
+// An approval that writes a node also queues spec.approved_written on the issue, after the write,
+// and answers that event, which Commit fills in for the caller to publish; one that writes nothing
+// answers none.
 func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, request *model.AskApproval,
-	documents []model.AskApprovalDocument, actor model.Actor, askID *string) error {
+	documents []model.AskApprovalDocument, actor model.Actor, askID *string) (*model.Event, error) {
 	var spec, verification *model.Artifact
 	var specVersion, verificationVersion int
 	for _, document := range documents {
 		artifact, err := artifactMetadata(ctx, tx, document.ArtifactID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		switch {
 		case isSpecDocument(artifact):
@@ -131,53 +143,53 @@ func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 		}
 	}
 	if spec == nil {
-		return nil
+		return nil, nil
 	}
 	issue, err := s.loadIssue(ctx, tx, *spec.IssueKey)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	repo, held, err := issueSpecSource(ctx, tx, issue)
 	if err != nil || !held {
-		return err
+		return nil, err
 	}
 	if request == nil {
-		return errorf(http.StatusConflict, "APPROVAL_REQUEST_REQUIRED",
+		return nil, errorf(http.StatusConflict, "APPROVAL_REQUEST_REQUIRED",
 			"%s holds a change request of %s's approved spec, so its approval answers an open approval request; open one on its spec and approve that", issue.Key, repo)
 	}
 	for _, document := range documents {
 		if document.RequestedVersion != 0 && document.RequestedVersion != document.Version {
-			return errorf(http.StatusConflict, "APPROVAL_REQUEST_REQUIRED",
+			return nil, errorf(http.StatusConflict, "APPROVAL_REQUEST_REQUIRED",
 				"the approval request names version %d of %s, and the document moved to version %d after it: an approval counts only for the text its request names; open the request again on the new version",
 				document.RequestedVersion, document.Name, document.Version)
 		}
 	}
 	statements, err := specVersionText(ctx, tx, *spec, specVersion)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var checks *specchange.VersionText
 	switch {
 	case verification != nil:
 		text, err := specVersionText(ctx, tx, *verification, verificationVersion)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		checks = &text
 	default:
 		unnamed, held, err := s.verificationDocument(ctx, tx, issue.Key, "")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if held {
 			latest, err := settledVersionNumber(ctx, tx, unnamed.ID)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if latest > 0 {
 				text, err := specVersionText(ctx, tx, unnamed, latest)
 				if err != nil {
-					return err
+					return nil, err
 				}
 				checks = &text
 			}
@@ -185,26 +197,47 @@ func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	}
 	changeRequest, err := specchange.FromVersions(issue.Key, statements, checks)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	provenance := specstore.Provenance{Act: specstore.ActApproval, Issue: issue.Key, Ask: askID, Person: actor}
 	if provenance.Spec, err = specDocumentOf(ctx, tx, *spec, specVersion); err != nil {
-		return err
+		return nil, err
 	}
 	if verification != nil {
 		if provenance.Verification, err = specDocumentOf(ctx, tx, *verification, verificationVersion); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	_, err = specstore.Apply(ctx, tx, specstore.Input{
+	applied, err := specstore.Apply(ctx, tx, specstore.Input{
 		Project: issue.Project, Repo: repo, Issue: issue.Key, Request: changeRequest,
 		ChecksIncluded: verification != nil, Provenance: provenance, Who: actor,
 	}, func(step func(*store.WriteBatch) error) error { return ledger.Queue(step) })
 	var refusal *specstore.Refusal
 	if errors.As(err, &refusal) {
-		return &specChangeRefusal{refusal: refusal, issue: issue.Key, ask: askID}
+		return nil, &specChangeRefusal{refusal: refusal, issue: issue.Key, ask: askID}
 	}
-	return err
+	if err != nil || len(applied.Written) == 0 {
+		return nil, err
+	}
+	written := new(model.Event)
+	event := approvedWrittenEvent(issue.Key, repo, specstore.ActApproval, actor, applied.Written)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		return s.deps.Events.QueueAppend(b, event, func(appended model.Event) { *written = appended })
+	}); err != nil {
+		return nil, err
+	}
+	return written, nil
+}
+
+// approvedWrittenEvent is the spec.approved_written event of act (specstore.ActApproval or
+// ActImport) of the issue key, which wrote each of written into the approved spec of repo, by
+// actor.
+func approvedWrittenEvent(key, repo, act string, actor model.Actor, written []specstore.Written) model.Event {
+	payload := model.SpecApprovedWrittenEventPayload{Issue: key, Repo: repo, Act: act, Nodes: make([]model.SpecApprovedWrittenNode, 0, len(written))}
+	for _, fact := range written {
+		payload.Nodes = append(payload.Nodes, model.SpecApprovedWrittenNode{ID: fact.ID, Kind: fact.Kind, Version: fact.Version, Removed: fact.Removed})
+	}
+	return issueOwner(key).event(specApprovedWrittenEvent, actor, payload)
 }
 
 // specVersionText is version of artifact as specchange reads a change request from it.
