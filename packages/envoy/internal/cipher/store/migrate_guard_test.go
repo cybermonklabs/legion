@@ -25,6 +25,7 @@ import (
 // The broker's set is numbered 1 to N with none missing; pgmigratetest.CheckNumberedOneToN says
 // why.
 func TestMigrationSetIsNumberedOneToN(t *testing.T) {
+	t.Parallel()
 	if err := pgmigratetest.CheckNumberedOneToN(migrationFiles, "migrations"); err != nil {
 		t.Fatal(err)
 	}
@@ -33,6 +34,7 @@ func TestMigrationSetIsNumberedOneToN(t *testing.T) {
 // Every file in the broker's migrations directory reaches the runner;
 // pgmigratetest.CheckEmbedsEveryFile says why that needs a test.
 func TestEveryMigrationFileIsEmbedded(t *testing.T) {
+	t.Parallel()
 	if err := pgmigratetest.CheckEmbedsEveryFile(migrationFiles, "migrations"); err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +43,7 @@ func TestEveryMigrationFileIsEmbedded(t *testing.T) {
 // The census's textual reading of which tables a migration touches is held to the broker's set
 // too: every name it finds is a table the set itself creates.
 func TestTouchedTablesOfEveryMigrationAreTablesTheSetCreates(t *testing.T) {
+	t.Parallel()
 	if err := pgmigratetest.CheckTouchedTablesAreKnown(migrationFiles, "migrations"); err != nil {
 		t.Fatal(err)
 	}
@@ -49,6 +52,7 @@ func TestTouchedTablesOfEveryMigrationAreTablesTheSetCreates(t *testing.T) {
 // And to what every broker migration locks, applied in order to an empty schema
 // (pgmigratetest.CheckTouchedTablesAgainstLocks).
 func TestTouchedTablesOfEveryMigrationAreTheTablesItLocks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := emptySchemaStore(t)
 	conn, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
@@ -64,6 +68,7 @@ func TestTouchedTablesOfEveryMigrationAreTheTablesItLocks(t *testing.T) {
 // The broker's runner applies its whole set in one transaction, so a set it accepted with two
 // files numbered 2 would apply the first, pass over the second as already applied, and commit.
 func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := emptySchemaStore(t)
 	set := fstest.MapFS{
@@ -89,6 +94,7 @@ func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.
 }
 
 func TestMigrateRefusesNonTransactionalFilesBeforeApplyingAnything(t *testing.T) {
+	t.Parallel()
 	s := emptySchemaStore(t)
 	set := fstest.MapFS{
 		"migrations/0001_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
@@ -107,6 +113,7 @@ func TestMigrateRefusesNonTransactionalFilesBeforeApplyingAnything(t *testing.T)
 // out, naming itself, the lock and its holder, rather than waiting for as long as the holder lives
 // with every broker request on that table queued behind it.
 func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
+	t.Parallel()
 	lockTimeout := pgmigrate.LockTimeout
 	ctx := context.Background()
 	s := emptySchemaStore(t)
@@ -178,6 +185,7 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 // Control: remove the pgmigrate.Pin call from lockAndPin, and migrate waits until the test's own
 // deadline cancels it. Remove the retry, and the third row fails on the first attempt's timeout.
 func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
+	t.Parallel()
 	lockTimeout := pgmigrate.LockTimeout
 	attempts := time.Duration(pgmigrate.LockTimeoutAttempts)
 	retried := attempts*lockTimeout + (attempts-1)*pgmigrate.LockTimeoutRetryPause
@@ -192,6 +200,9 @@ func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 		"a holder that ends after the first attempt": {table: earlier, release: true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			// Each row waits out lock timeouts on a database of its own (emptySchemaStore), so
+			// the three waits run at once rather than one after another.
+			t.Parallel()
 			ctx := context.Background()
 			s := emptySchemaStore(t)
 			if _, err := s.Pool.Exec(ctx, tc.table); err != nil {
@@ -275,6 +286,7 @@ func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 // there the migration is read waiting behind the holder, and returns once the holder ends, so the
 // reading sees a wait where there is one.
 func TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration(t *testing.T) {
+	t.Parallel()
 	t.Run("a holder on a guard row's database", func(t *testing.T) {
 		ctx := context.Background()
 		s := emptySchemaStore(t)
@@ -433,6 +445,7 @@ func (m sharedMigration) reading(t *testing.T, holderPID uint32) func() (migrati
 // granted, and finds none. The control is a table this runner created, which needs no ALTER and
 // reads none either; with the ALTER back in the run's one transaction, the first row reads 1.
 func TestMigrateReleasesTheVersionTablesAlterLockBeforeItsMigrations(t *testing.T) {
+	t.Parallel()
 	for name, table := range map[string]string{
 		"an earlier runner's table":    "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())",
 		"control: this runner's table": "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now(), " + pgmigrate.IdentityColumns + ")",
@@ -475,6 +488,7 @@ func TestMigrateReleasesTheVersionTablesAlterLockBeforeItsMigrations(t *testing.
 // Control: remove the pgmigrate.ResetSession call from releaseMigrationConn, so the connection
 // goes back as it is, and this fails: a pooled connection reads 77s and the row's schema.
 func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s := emptySchemaStore(t, "pool_max_conns=4")
 	schema := "broker_migrate_leak"

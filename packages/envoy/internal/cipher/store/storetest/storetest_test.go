@@ -19,6 +19,7 @@ const containerModule = "github.com/testcontainers/testcontainers-go"
 //
 // Control: import internal/testpg here again (or in testdb) and this fails, naming the path.
 func TestStoretestLinksNoContainerRuntime(t *testing.T) {
+	t.Parallel()
 	list := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".")
 	out, err := list.Output()
 	if err != nil {

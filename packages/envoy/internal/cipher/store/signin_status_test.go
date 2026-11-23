@@ -22,6 +22,7 @@ var signInStatusReasons = []string{
 // A broker that has written none of these facts has no row at all, which reads as a status whose
 // every fact is absent rather than as an error or a row of zero times.
 func TestSignInStatusIsAbsentUntilSomethingHappens(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	status, err := st.SignInStatus(context.Background())
 	if err != nil {
@@ -36,6 +37,7 @@ func TestSignInStatusIsAbsentUntilSomethingHappens(t *testing.T) {
 // replicas write different facts without losing each other's; and each one's second write
 // replaces its own fact alone.
 func TestEachSignInStatusWriterTouchesOnlyItsOwnFact(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	checked := time.Now().Add(-4 * time.Hour).Truncate(time.Microsecond)
@@ -76,6 +78,7 @@ func TestEachSignInStatusWriterTouchesOnlyItsOwnFact(t *testing.T) {
 // The row cannot be duplicated, whoever writes it: every writer upserts the one row its primary
 // key admits, so there is nothing to sweep and nothing to grow.
 func TestSignInStatusHoldsOneRowAndOnlyOne(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	for i := range 3 {
@@ -105,6 +108,7 @@ func TestSignInStatusHoldsOneRowAndOnlyOne(t *testing.T) {
 // Both vocabularies are closed by the database itself, so no provider's own word can reach the
 // public answer through this row: each listed word is written, and anything else is refused.
 func TestSignInStatusRefusesAWordOutsideItsVocabulary(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	for _, state := range []oidc.ClientCheck{oidc.ClientCheckReady, oidc.ClientCheckRejected, oidc.ClientCheckIssuerUnreachable} {

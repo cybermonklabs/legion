@@ -15,6 +15,7 @@ import (
 // one schema of one database) fails the second check, and one that skipped the copy's migrated
 // tables fails the first.
 func TestEachURLIsAMigratedDatabaseOfItsOwn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	entries, err := os.ReadDir("../migrations")
 	if err != nil {

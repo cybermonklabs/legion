@@ -12,6 +12,7 @@ import (
 // set's file of that version before it applies anything, by the rule
 // pgmigratetest.RunIdentityChecks holds it to.
 func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
+	t.Parallel()
 	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T, log *slog.Logger) (pgmigratetest.Database, pgmigratetest.Migrate) {
 		s := emptySchemaStore(t)
 		s.Log = log
@@ -25,6 +26,7 @@ func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
 // that table's shape with this runner and does not run main's). The check is the one
 // `envoy-broker versions` runs, on the store's own pool.
 func TestTheShippedSetMatchesADatabaseAnEarlierRunnerMigrated(t *testing.T) {
+	t.Parallel()
 	s := emptySchemaStore(t)
 	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
 	if err != nil {

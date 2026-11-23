@@ -17,6 +17,7 @@ import (
 // a person that sign-in does not name. The table's own check (person = lower(person)) refuses the
 // Kelvin login instead, and kate holds no sign-in.
 func TestAKelvinLoginIsRefusedNotFoldedOntoAnother(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	err := record(t, st, "\u212aate@example.com", signInBoxOne, signInMachine)
 	var refused *pgconn.PgError

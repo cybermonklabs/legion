@@ -23,6 +23,7 @@ func testDatabaseURL(t *testing.T) string {
 }
 
 func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, err := Open(ctx, testDatabaseURL(t))
 	if err != nil {
@@ -60,6 +61,7 @@ func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {
 // naming an unrelated column such as `actor in (...)`) must fail this test on its own, not only
 // the sweeper and lock tests that happen to depend on the real predicate.
 func TestTerminalEventNamesMatchTheDecisionIndex(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, err := Open(ctx, testDatabaseURL(t))
 	if err != nil {
@@ -90,6 +92,7 @@ func TestTerminalEventNamesMatchTheDecisionIndex(t *testing.T) {
 }
 
 func TestMigrationFiveShapesTheRecordTables(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, err := Open(ctx, testDatabaseURL(t))
 	if err != nil {
@@ -149,6 +152,7 @@ func TestMigrationFiveShapesTheRecordTables(t *testing.T) {
 }
 
 func TestMigrationFiveHandlesPreexistingLauncherCredentialsRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, err := Open(ctx, testDatabaseURL(t))
 	if err != nil {
@@ -219,6 +223,7 @@ func TestMigrationFiveHandlesPreexistingLauncherCredentialsRow(t *testing.T) {
 // rows keep their identity with the empty slot, a second slot of the same pod is a live row of its
 // own, and a second live row in one slot is still refused, by the new index and not the old one.
 func TestMigrationSevenKeysLiveEnrollmentsBySlot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	s, err := Open(ctx, testDatabaseURL(t))
 	if err != nil {
@@ -384,6 +389,7 @@ func migrationSchema(t *testing.T, schema string, below int) (tx pgx.Tx, apply f
 // the way a broker before 0012 did, then runs 0012: the box and host rows read as kind session,
 // the pod row stays pod, and box and host are refused from then on.
 func TestMigrationTwelveMakesEveryMachineSessionOneKind(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx, apply := migrationSchema(t, "migration_twelve_kind", 12)
 	const credential = "00000000-0000-0000-0000-0000000000c1"
@@ -440,6 +446,7 @@ func TestMigrationTwelveMakesEveryMachineSessionOneKind(t *testing.T) {
 // request may name no lifetime and its grant no expiry, the shape of a grant that lasts until its
 // session ends, while a grant written with an expiry keeps it.
 func TestMigrationThirteenLetsAGrantLastUntilItsSessionEnds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx, apply := migrationSchema(t, "migration_thirteen_lifetime", 13)
 	const credential, enrollment = "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000e1"
@@ -481,6 +488,7 @@ func TestMigrationThirteenLetsAGrantLastUntilItsSessionEnds(t *testing.T) {
 // refused before it and accepted after it, and enrollments_kind_check, under that name, admits
 // exactly session, pod and vm, so box, host and any other kind stay refused.
 func TestMigrationTwentyAdmitsAVMEnrollment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx, apply := migrationSchema(t, "migration_twenty_vm_kind", 20)
 	const credential = "00000000-0000-0000-0000-0000000000c1"
@@ -540,6 +548,7 @@ func TestMigrationTwentyAdmitsAVMEnrollment(t *testing.T) {
 // 0020 widened the check: session and pod alone pass under 0012's constraint, which would let an
 // empty 0020 file through.
 func TestTheBuildBeforeTwentyStillReadsAndWritesItsOwnKinds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx, apply := migrationSchema(t, "migration_twenty_previous_build", 20)
 	const credential = "00000000-0000-0000-0000-0000000000c1"
@@ -583,6 +592,7 @@ func TestTheBuildBeforeTwentyStillReadsAndWritesItsOwnKinds(t *testing.T) {
 // enrollments_kind_check, so no vm row can be written again. The session enrollment beside it is left exactly as it was, which is what says the
 // statement selects on the kind and not on the table.
 func TestMigrationTwentySixRetiresVMEnrollmentsAndDropsTheKind(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx, apply := migrationSchema(t, "migration_twentysix_vm_kind", 26)
 	const credential = "00000000-0000-0000-0000-0000000000c1"
@@ -672,6 +682,7 @@ func TestMigrationTwentySixRetiresVMEnrollmentsAndDropsTheKind(t *testing.T) {
 // them gets a row. The table's foreign key, which 0033 adds after the backfill, refuses a
 // dismissal of a record the broker does not have.
 func TestMigrationThirtyThreeDismissesWhatTheSweepAlreadyTookOut(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tx, apply := migrationSchema(t, "migration_thirtythree_dismissals", 33)
 	const credential, enrollment = "00000000-0000-0000-0000-0000000000c1", "00000000-0000-0000-0000-0000000000e1"

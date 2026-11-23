@@ -130,6 +130,7 @@ func sameJSON(t *testing.T, got json.RawMessage, want string) bool {
 // decisions, and the decision itself. A row that names no enrollment leaves the identity fields
 // empty and still carries its own detail, and a grant.moved row names a grant and no request.
 func TestGrantLogReadsEveryRowOfThePeriodWithItsOwnIdentity(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	seed := seedGrantLog(t, st)
 
@@ -213,6 +214,7 @@ func TestGrantLogReadsEveryRowOfThePeriodWithItsOwnIdentity(t *testing.T) {
 // period with: each page resumes after the last row's id, every row of the period comes back
 // exactly once, and a short page is the end.
 func TestGrantLogPagingAnswersEveryRowOnceAndNoneTwice(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	seedGrantLog(t, st)
 
@@ -250,6 +252,7 @@ func TestGrantLogPagingAnswersEveryRowOnceAndNoneTwice(t *testing.T) {
 // TestGrantLogReadsNothingOutsideItsPeriod pins the half-open period itself: a row written at
 // Until belongs to the next period, and one written before Since to the last.
 func TestGrantLogReadsNothingOutsideItsPeriod(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	seedGrantLog(t, st)
 
@@ -279,6 +282,7 @@ func TestGrantLogReadsNothingOutsideItsPeriod(t *testing.T) {
 // TestGrantLogRefusesAPageOfNoSize pins that the page's size is the caller's to state: a limit of
 // zero or less is refused, and the read answers no rows at all rather than a whole period's.
 func TestGrantLogRefusesAPageOfNoSize(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	seedGrantLog(t, st)
 
@@ -297,6 +301,7 @@ func TestGrantLogRefusesAPageOfNoSize(t *testing.T) {
 // the store allocates for — still reads the period's rows, all of them and in the same order as
 // the ordinary page above. The store sizes its own allocation; the limit stays the SQL's.
 func TestGrantLogAnswersThePeriodWhateverPageTheCallerNames(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	seedGrantLog(t, st)
 

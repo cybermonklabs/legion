@@ -47,6 +47,7 @@ func record(t *testing.T, st *store.Store, person, thumbprint, machine string) e
 // box key writes the row, and every later trade of that pair moves its last use and nothing
 // else, so a person holds one sign-in per box however often that box trades.
 func TestAPersonsFirstTradeRecordsTheSignInAndEachLaterOneUsesIt(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	if err := record(t, st, signInPerson, signInBoxOne, signInMachine); err != nil {
 		t.Fatalf("the first trade of a box key: %v", err)
@@ -74,6 +75,7 @@ func TestAPersonsFirstTradeRecordsTheSignInAndEachLaterOneUsesIt(t *testing.T) {
 // second sign-in, not a refusal, so a person works on as many boxes as they sign in on; and one
 // person's sign-ins are never another's, even on the same machine.
 func TestAPersonSigningInOnASecondBoxGetsASignInOfItsOwn(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	for _, c := range []struct{ person, thumbprint, machine string }{
 		{signInPerson, signInBoxOne, signInMachine},
@@ -107,6 +109,7 @@ func TestAPersonSigningInOnASecondBoxGetsASignInOfItsOwn(t *testing.T) {
 // trading. A key revoked once is refused even when it is presented again, since the revoked row
 // keeps that pair's slot and the trade's own conflict lands on it.
 func TestARevokedSignInIsRefusedForeverAndLeavesTheOthersWorking(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	for _, thumbprint := range []string{signInBoxOne, signInBoxTwo} {
@@ -142,6 +145,7 @@ func TestARevokedSignInIsRefusedForeverAndLeavesTheOthersWorking(t *testing.T) {
 // launcher_credentials_live_key and be refused invalid_grant with nothing naming the cure. So
 // the machine is held, the row keeps the account it was made with, and the box signs in again.
 func TestASignInsBoxKeyPresentedFromAnotherMachineIsRefused(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	if err := record(t, st, signInPerson, signInBoxOne, signInMachine); err != nil {
 		t.Fatalf("the first trade: %v", err)
@@ -173,6 +177,7 @@ func TestASignInsBoxKeyPresentedFromAnotherMachineIsRefused(t *testing.T) {
 // the same person's token on another box, and another person's on this one. Without it a token
 // already minted would go on writing for up to BROKER_ACCESS_TOKEN_SECONDS past the revoke.
 func TestRevokingASignInEndsTheTokensMintedUnderIt(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	for _, c := range []struct{ person, thumbprint string }{
 		{signInPerson, signInBoxOne},
@@ -224,6 +229,7 @@ func TestRevokingASignInEndsTheTokensMintedUnderIt(t *testing.T) {
 // TestRevokingASignInThatIsNotThePersonsIsAnUnknownId: a sign-in of anyone else, and an id
 // nothing has, answer alike, so nobody learns another person's sign-ins by trying ids.
 func TestRevokingASignInThatIsNotThePersonsIsAnUnknownId(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	if err := record(t, st, signInOther, signInBoxOne, signInMachine); err != nil {
@@ -248,6 +254,7 @@ func TestRevokingASignInThatIsNotThePersonsIsAnUnknownId(t *testing.T) {
 // (fold.ASCII, through oidc.WorkspaceLogin or record.CanonicalLogin), and Postgres's lower() would
 // fold more than that form does (TestAKelvinLoginIsRefusedNotFoldedOntoAnother).
 func TestPersonSignInsRefusesAValueOutsideItsVocabulary(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	if err := record(t, st, signInPerson, signInBoxOne, "Example-Fleet@example-project.iam.gserviceaccount.com"); err != nil {
 		t.Fatalf("an account in capitals: %v, want it written in lowercase", err)
@@ -363,6 +370,7 @@ func tokenActive(t *testing.T, st *store.Store, signature string) bool {
 // has the index's own conflict to land on rather than a read that a concurrent revoke can slip
 // past.
 func TestMigrationTwentyFiveHoldsOneSignInPerPersonAndBoxKey(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	insert := func() error {
@@ -402,6 +410,7 @@ func TestMigrationTwentyFiveHoldsOneSignInPerPersonAndBoxKey(t *testing.T) {
 // second live row for one person and box key behind the revoke's back — the whole reason the
 // index is not partial and the conflict decides.
 func TestATradeRacingTheRevokeThatCommitsFirstIsRefused(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t, "pool_max_conns=6")
 	ctx := context.Background()
 	if err := record(t, st, signInPerson, signInBoxOne, signInMachine); err != nil {

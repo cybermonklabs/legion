@@ -16,6 +16,7 @@ import (
 // instant before the expiry it was made with, until its logout deletes it; a lookup by the hash of
 // another secret finds nothing.
 func TestBrowserSessionIsFoundByItsHashUntilItsLogout(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	now := time.Now()
@@ -48,6 +49,7 @@ func TestBrowserSessionIsFoundByItsHashUntilItsLogout(t *testing.T) {
 // A session whose expiry has come is absent from the lookup though its row is still there, at the
 // instant of its expiry as well as after it.
 func TestBrowserSessionPastItsExpiryIsAbsent(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	hash := sha256.Sum256([]byte("session secret " + t.Name()))
@@ -69,6 +71,7 @@ func TestBrowserSessionPastItsExpiryIsAbsent(t *testing.T) {
 // The sweep deletes every session whose expiry has come, and answers how many, and leaves a live
 // one signed in.
 func TestDeleteExpiredBrowserSessionsDeletesOnlyTheExpired(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Microsecond)
@@ -105,6 +108,7 @@ func TestDeleteExpiredBrowserSessionsDeletesOnlyTheExpired(t *testing.T) {
 // Ending one login's sessions ends every one of them, live or expired, and leaves another
 // person's alone; a login with no session is no error.
 func TestDeleteBrowserSessionsForLoginEndsThatLoginsSessionsAlone(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Microsecond)

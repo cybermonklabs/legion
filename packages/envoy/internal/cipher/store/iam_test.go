@@ -99,6 +99,7 @@ func endpointOf(t *testing.T, databaseURL string) string {
 // the connection does, cannot tell the token from no password, and the test skips there, except
 // on GitHub Actions, where it fails (testdb.SkipOutsideCI).
 func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	role, _, databaseURL := passwordRole(t, "fake-iam-token-1")
 	if s, err := Open(ctx, databaseURL); err == nil {
@@ -149,6 +150,7 @@ func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 // refused and cannot say which lock the migration waited for, while one that mints its own names
 // the lock and its holder.
 func TestMigrateLockWatchSignsInWithAFreshToken(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	role, adminURL, databaseURL := passwordRole(t, "fake-iam-token-1")
 
