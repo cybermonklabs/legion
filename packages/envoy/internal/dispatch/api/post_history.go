@@ -140,7 +140,9 @@ var errDeleteContended error = &apiError{
 // matching a keyword search. Each form of that update is one literal statement, so every column
 // it sets is read where it is written (api's TestNoProjectionRowIsWrittenWithoutTheStore): none
 // is a column a tuple of the store projects, since the anchor's quote key keeps the artifact its
-// anchored_to tuple names, so the delete writes no node and no tuple. The post's embedding
+// anchored_to tuple names, so the clear writes no node and no tuple. (A delete that rejects a
+// pending insert suggestion also settles the document's version in its transaction, which writes
+// the document's block nodes and tuples: comment_delete.go.) The post's embedding
 // windows go in this transaction too (refs.TombstoneItem): the cleared body splits into no block,
 // so the write enqueues no window and deletes each window the post held, and no meaning search
 // finds the post once the delete commits. No path of this build leaves a window of a deleted post
