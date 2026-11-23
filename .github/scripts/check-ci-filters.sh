@@ -205,7 +205,7 @@
 #      family saved under the commit is filled again on every push, each entry under a key of its
 #      own; no entry carries the restores' key itself, so GitHub gives each restore the newest
 #      entry whose key starts with it. The fill builds on that newest entry, so its own restore
-#      must download it, and only by the prefix that holds its Go version. Every other restore of
+#      must download it, and its restore-keys must hold its Go version. Every other restore of
 #      ci-caches.yaml is a lookup, which must download nothing: the workflow asks only whether
 #      that exact key is already there, no step of it reads a restored entry, and a prefix hit
 #      would answer for an older key and skip the build that fills this one, leaving it empty.

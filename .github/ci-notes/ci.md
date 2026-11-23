@@ -1127,8 +1127,9 @@ main too: the key is a prefix of the fill's keys, so the dispatch-browser.yaml j
 their restore-keys off main still find the last fill's entry. Those restore-keys were held off
 main so that the entry a run saved after a Go bump held nothing the older Go built, and no step
 of this workflow saves a family any more (the two check actions below fall back only to an entry
-of their own Go version, and a ci-caches.yaml fill builds only on an entry of its own Go, so an
-entry either one saves holds nothing an older Go built). There is no browser cache beside the Go
+of their own Go version, and a ci-caches.yaml fill's restore-keys hold its Go version; its key's
+own prefix match can reach go1.27.30 for go1.27.3, whose objects Go keys on that other toolchain
+and so never uses). There is no browser cache beside the Go
 families any more: dispatch-browser.yaml's shard and alone jobs run in the image this
 repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 ~/.cache/ms-playwright restore would carry nothing they do not already have, and

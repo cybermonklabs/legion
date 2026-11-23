@@ -73,8 +73,9 @@ name: CI caches
 # The build cache in an entry does not grow with each fill: Go deletes the objects no build has
 # used for five days (trimLimit in Go's cmd/go/internal/cache), and a restore keeps each file's
 # modification time, which is the time of last use Go reads. The module cache keeps every module
-# version it has downloaded (Go removes none by itself), until a Go bump starts the family from
-# nothing, since the fill restores only an entry of its own Go.
+# version it has downloaded (Go removes none by itself), until a Go bump starts the family again:
+# after a bump the fill finds no entry of the new Go (unless an older version's text starts with
+# the new one's, as the prefix note above says) and builds from nothing.
 #
 # go-envoy-infra and elan are still looked up first (`lookup-only`, and no `restore-keys`: the
 # question is whether that exact key exists, and the answer downloads nothing), and only a miss
@@ -194,8 +195,9 @@ jobs:
           cache: false
 
       # The newest entry of the family, which the builds below compile on: the readers' key,
-      # which no entry carries any more, and that key and a `-`, so an entry of another Go is never
-      # restored here.
+      # which no entry carries any more, and that key and a `-`. The key's own prefix match can
+      # still reach an entry of a Go whose version starts with this one's (go1.27.30 for go1.27.3);
+      # Go keys each object on the toolchain that built it, so that entry costs only its download.
       - id: go-daemon
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
