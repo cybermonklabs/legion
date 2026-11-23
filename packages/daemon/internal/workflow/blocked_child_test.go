@@ -224,7 +224,10 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 // The opening of a tree's design gate tells every phase worker of the tree and the root's
 // architect, and releases every admitted member it was holding, and the waiting line then starts
 // each of them at its own slot — except one that waits on an unfinished issue of its own, whose own
-// blockers hold it where the gate left it.
+// blockers hold it where the gate left it. The opening queues the reconcile of the tree's news, and
+// the root's planner, whose record knows no version it took, is owed that news and is told the
+// opening by the task that carries it, where the root's architect, whose view begins at this first
+// opening, is sent the opened message.
 func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
@@ -244,7 +247,7 @@ func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Planning {
 		t.Fatalf("the child that waits on nothing = %s once the line reached it, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"design_changes", "role_message", "notice", "issue_branch", "supervise", "dispatch_status", "plan_record", "supervise", "notice", "notice"})
 }
 
 // An unblocked child whose tree would not start it now is in no line either: the tree's gate is

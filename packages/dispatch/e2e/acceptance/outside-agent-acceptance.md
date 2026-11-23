@@ -20,7 +20,7 @@ The gate must pass before the deployment names a real person from outside on any
 | `../__tests__/outside-agent-public.test.ts` | The test that the public leg's own judgments (P6, P7, P10 and T5's agent part) hold against stand-ins. |
 | `../__tests__/outside-agent-fixture.ts` | What the two test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
 | `../__tests__/outside-agent-tailnet-stand-ins.ts` | The stand-ins the tailnet leg's tests run it against: the checkout, the deployment repository and workflow behind a stand-in `gh`, the broker's tools, Dispatch, the sweep and the public leg. |
-| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. |
+| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. It binds a port of the kernel's choosing and writes it to its state directory, and answers `/_ready` with a nonce the test passed it, so no other process can take its port first and no other run's stand-in passes for it. The closed ports the tests name come from the reserved range of `outside-path-reach-fixtures.ts`'s `closedPort`. |
 
 ## What each leg prints
 
@@ -140,18 +140,27 @@ The tailnet leg does these steps, in this order:
    GitHub proxy; without `OUTSIDE_FULL_COOKIE_FILE` the sweep does not run and its row reads
    UNKNOWN), and starts its writer. Every 15 s until the public leg ends, when the leg stops it, the
    writer comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` and sends a direct message to
-   the fills' session of that project, and prints `write <UTC> <comment id> <message id>
-   delivered`, or `... not delivered` when the full member's own feed was not sent both; only a
-   delivered write counts. No full member's credential goes to the runner: the fills file holds
-   none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at `cd8a041312`,
-   fills version 3 (`restricted-sweep-fills<TAB>3`), which name the SHA-256 of the `routes.txt`
-   they were made from (`routes`) and of the member's own projects' keys and creation times
-   (`deployment`). Fills mode writes no file that lacks a fill, nor one where the member's project
-   list gives a project no creation time, and the leg sends no fills of another version (each, the
-   sweep row UNKNOWN on the box). A runner refuses, before its first request, fills of another
-   `routes.txt` than its own checkout's, of another deployment, or older than 55 minutes, and a
-   `SWEEP_LIVE_SECONDS` below 30; so the workflow's checkout must hold this checkout's `routes.txt`,
-   the workflow sets no shorter window, and the leg starts the public leg right after the fills.
+   the fills' session of that project, and prints `write <began> <ended> <comment id> <message id>
+   delivered` (`began` read before the comment's POST, `ended` after the message's POST answered),
+   `... not delivered` when the full member's own feed was not sent both, or `write <began> <ended>
+   - not written`. A write is inside the runner's live window when it began after the window opened
+   and ended before it closed. As #4608's own join reads them, every write the writer printed must
+   be delivered, inside the window or not: one not delivered or not written anywhere reads UNKNOWN;
+   then one delivered write inside the window is the control. A line whose stamps are not of the
+   form `date -u +%Y-%m-%dT%H:%M:%SZ` prints, that began after it ended, or that is delivered with
+   ids not of Dispatch's lowercase 8-4-4-4-12 form, reads UNKNOWN too. No full member's credential
+   goes to the runner: the
+   fills file holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at
+   `ca10a682ba`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
+   origin they were made at (`origin_sha256`), of the `routes.txt` they were made from (`routes`)
+   and of the member's own projects' keys and creation times (`deployment`). Fills mode writes no
+   file that lacks a fill,
+   nor one where the member's project list gives a project no creation time, and the leg sends no
+   fills of another version (each, the sweep row UNKNOWN on the box). A runner refuses, before its
+   first request, fills of another `routes.txt` than its own checkout's, of another deployment, or
+   older than 55 minutes, and a `SWEEP_LIVE_SECONDS` below 45; so the workflow's checkout must hold
+   this checkout's `routes.txt`, the workflow sets no shorter window, and the leg starts the public
+   leg right after the fills.
    Each refusal is the runner's UNKNOWN, and the sweep row's. The runner's own control of the
    member's feed is the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the
    scratch project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
@@ -169,7 +178,8 @@ The tailnet leg does these steps, in this order:
 6. It starts the public leg, within the code's 15 minutes, and only in a private or internal
    repository (`gh repo view` reads `PRIVATE` or `INTERNAL`), since a run's inputs are as readable
    as its repository and an internal one is readable by the owning enterprise's members alone; a
-   public repository, or a visibility not read, reads UNKNOWN and starts no run: `gh workflow run
+   public repository, or a visibility not read (a `gh repo view` that exits non-zero reads nothing,
+   whatever it printed), reads UNKNOWN and starts no run: `gh workflow run
    --json` of `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, its inputs
    `checks=all`, `project`, `peer_session`, `tailnet_user_code`, `sweep_project`, `sweep_fills`
    (the fills file, base64, when fills mode made one) and `OUTSIDE_WORKFLOW_INPUTS` on stdin. With
@@ -276,7 +286,7 @@ shim finds its program through the caller's HOME.
 | T4 | The public leg's revoke step, before the T5 window, revokes the scratch login: its `revoke-<credential id>` row, the only row read for it, passes. `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`, a reading beside the row and no proof of the revoke alone, since an expired or skewed proof is refused so too. A revoke row whose verdict is none of PASS, FAIL and UNKNOWN reads UNKNOWN. |
 | T5 | The owner's removal, made during the public run's T5 window between the two clocks the leg read around it; before it, the test person is on the project's access list (the control, read with the full member's browser session at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows, each part stopped at or after the first clock: the cookie got 401 within 30 s of it, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it. A part that stopped more than its bound after the second clock reads FAIL, and so does a trade answered more than 325 s after the second clock (`last_answered_at`), refused trade or not, once the list confirms the removal; a part between the two bounds reads UNKNOWN, as does one that stopped before the first clock. The socket part counts only for a socket opened before the first clock. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
 | public | The public leg's own `verdict` row and `revocations` row pass, and it ended well: exit 0 for a local command, or the run's conclusion `success`. A run concludes `failure` for an exit 1 and an exit 2 alike, so its verdict row says which. A public leg that failed, or left no verdict, never lets the gate pass. |
-| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
+| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's writes was delivered to the full member's own feed, and began after the sweep's `live window` opened and ended before it closed, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
 | pins-end | The pins read again at the end, from `OUTSIDE_PINS_REPO`'s main, are those read at the start, and Dispatch still serves the build it served at the start, on every process. A pin that moved between the legs, or a Dispatch build that changed, reads UNKNOWN: the rows ran against builds the start did not check. Without `OUTSIDE_PINS_REPO` it reads UNKNOWN. |
 | gate | Every row above passes. |
 
@@ -327,6 +337,10 @@ P10 pass on the edge's own refusals and fail on an accepted send or another refu
 agent part passes on refused trades and a 4401 close, fails on a trade answered after the refusal,
 and reads UNKNOWN for a later trade with no readable answer, a removal before any socket opened
 and a 1006 close.
+
+The stand-in Dispatch's port is its own: under a squat that takes over any port a listener of the
+test process closes, a prepared run's origin still serves that run's stand-in, and the squat
+takes nothing (its control: the squat does take a port a listener closed there).
 
 It runs the tailnet leg against stand-ins of the broker's helper, Dispatch, the deployment
 repository, the workflow, the sweep and the public leg: with the full member's browser answered,

@@ -4,11 +4,12 @@ import Airlock.Model
 # Airlock proofs
 
 The five theorems requirement R8 asks for — `T1`, `T1_structure`, `T2`, `T3` and
-`rewrite_some_iff_allow`, the five `Axioms.lean` prints and check k15 names. None of them puts
-a condition on the incoming request: `check`'s own last refusal — a request that already
-carries the real value — is what buys that, so a theorem about the rewrite needs no freshness
-hypothesis. `check_ok`, `swapHeader_fst` and `swapHeader_of_not_allowed` are the three lemmas
-those five are read through, and are no part of what R8 asks for.
+`rewrite_some_iff_allow` — and `T4`, that every entry of a valid rules file names a host: the
+six `Axioms.lean` prints and check k15 names. None of them puts a condition on the incoming
+request: `check`'s own last refusal — a request that already carries the real value — is what
+buys that, so a theorem about the rewrite needs no freshness hypothesis. `check_ok`,
+`swapHeader_fst` and `swapHeader_of_not_allowed` are the three lemmas those six are read
+through, and are no part of what R8 asks for.
 -/
 
 namespace Airlock
@@ -169,14 +170,24 @@ theorem T2 {rules : Rules} {g : Grant} {value : String} {r r' : Request}
   · cases h
 
 /-- T3: a valid rules file gives a judge a lifetime of at most 900 seconds. That no value goes
-to a host an entry does not bind is T2's, which holds for an entry with no host too: `check`
-refuses every request for one. -/
+to a host an entry does not bind is T2's, which holds for every entry, valid or not; that every
+entry of a valid file binds a host is T4's. -/
 theorem T3 {rules : Rules} (hv : validate rules = true) :
     ∀ sr ∈ rules.secrets, ∀ l, sr.judge = some l → l ≤ 900 := by
   intro sr hm l hj
-  simp only [validate, Bool.and_eq_true, List.all_eq_true] at hv
-  have hjo := (hv.2 sr hm).1.1
+  simp only [validate, Bool.and_eq_true, List.all_eq_true, and_assoc] at hv
+  have hjo := (hv.2 sr hm).1
   rw [hj] at hjo
   simpa [judgeOK] using hjo
+
+/-- T4: every entry of a valid rules file names a host. An entry is a proxy block, and a block
+that binds its value to no host would hold the value back and carry it nowhere, so `validate`
+refuses one rather than leaving `check` to refuse every request for it. -/
+theorem T4 {rules : Rules} (hv : validate rules = true) :
+    ∀ sr ∈ rules.secrets, sr.hosts ≠ [] := by
+  intro sr hm hnil
+  simp only [validate, Bool.and_eq_true, List.all_eq_true] at hv
+  have h := hv.2 sr hm
+  simp [hnil] at h
 
 end Airlock

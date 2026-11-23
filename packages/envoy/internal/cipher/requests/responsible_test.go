@@ -75,7 +75,7 @@ func newClaimPod(t *testing.T, m *Machine, claim string) (string, *ecdsa.Private
 // fails t unless the request is pending on record.AnyoneApprover.
 func askShared(t *testing.T, m *Machine, enrollment string, key *ecdsa.PrivateKey) Request {
 	t.Helper()
-	req, err := m.Create(context.Background(), enrollment, signRequest(t, m, key, "need the shared key", "SHARED_KEY"), "", nil)
+	req, err := m.Create(context.Background(), enrollment, signRequest(t, m, key, "need the shared key", "SHARED_KEY"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != record.AnyoneApprover {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending on %s", req, err, record.AnyoneApprover)
 	}
@@ -285,7 +285,7 @@ func TestAPersonsOwnSecretIsListedForItsOwnerAlone(t *testing.T) {
 		name, enrollment string
 		key              *ecdsa.PrivateKey
 	}{{"alice's session", session, sessionKey}, {"a Legion pod", pod, podKey}} {
-		req, err := m.Create(context.Background(), asker.enrollment, signRequest(t, m, asker.key, "need the owner's key", "DEEL_API_KEY"), "", nil)
+		req, err := m.Create(context.Background(), asker.enrollment, signRequest(t, m, asker.key, "need the owner's key", "DEEL_API_KEY"), "")
 		if err != nil || req.State != "pending" || req.RecordID == nil {
 			t.Fatalf("Create(DEEL_API_KEY) as %s = %+v, %v; want it pending on %s", asker.name, req, err, owner)
 		}
@@ -304,7 +304,7 @@ func TestAnAgentTierPodRequestReadsNoAssignee(t *testing.T) {
 	assignees := &standInAssignees{answer: dave}
 	m.Assignees = assignees
 	pod, key := newClaimPod(t, m, legionPlanner)
-	req, err := m.Create(context.Background(), pod, signRequest(t, m, key, "need the shared token", sharedToken), "", nil)
+	req, err := m.Create(context.Background(), pod, signRequest(t, m, key, "need the shared token", sharedToken), "")
 	if err != nil || req.State != "granted" {
 		t.Fatalf("Create(%s) = %+v, %v; want it granted at once", sharedToken, req, err)
 	}
@@ -323,14 +323,14 @@ func TestAWithheldSharedAgentTierRequestIsListedForTheResponsiblePerson(t *testi
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
-	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "", nil)
+	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", sharedToken), "")
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(%s) = %+v, %v; want granted at once", sharedToken, auto, err)
 	}
 	if err := m.RevokeByApprover(ctx, *auto.GrantID, operator, record.HumanActor(operator)); err != nil {
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
-	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "", nil)
+	again, err := m.Create(ctx, enr, signRequest(t, m, key, "again", sharedToken), "")
 	if err != nil || again.State != "pending" || again.RecordID == nil || recordApprover(t, m, again) != record.AnyoneApprover {
 		t.Fatalf("Create(%s) after the withhold = %+v, %v; want it pending on %s", sharedToken, again, err, record.AnyoneApprover)
 	}

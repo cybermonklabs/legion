@@ -621,7 +621,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 		}
 		var probeErr error
 		waitFor(t, 10*time.Second, "the self-health probe to report a copy that needs a read", func() bool {
-			probeErr = checkSelfHealth(rig.caches, nil)
+			probeErr = checkSelfHealth(rig.caches, nil, nil)
 			return errors.Is(probeErr, errCacheNeedsRead)
 		})
 		for _, c := range rig.caches {
@@ -635,7 +635,7 @@ func TestListsRefuseAfterTheBoundWhileNATSIsDown(t *testing.T) {
 		rig.assertBothListsRefilling(t)
 
 		monitorUntilRecovered(t, "the copies the reconnect left unread", 10*time.Second, 10*time.Millisecond,
-			func() error { return checkSelfHealth(rig.caches, nil) },
+			func() error { return checkSelfHealth(rig.caches, nil, nil) },
 			func(err error) bool { return isUnrecoverableSelfHealthFailure(err, rig.client, rig.caches) },
 			rig.client.Connected,
 			func() error {

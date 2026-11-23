@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { DISPATCH_TYPED_BLOCK_ID_SPELLINGS } from "@legion/contracts";
 
 import { askBlocks, type NewAsk, newAskCount, newAsks, openingOf } from "../askgate-new-asks";
 
@@ -293,6 +294,60 @@ describe("an id is read as the server reads attributes", () => {
 
   test("the id beside a quoted value holding a #", () => {
     expect(ids(askBlocks(':::ask{answer="see #12" #window}\nWhich?\n:::'))).toEqual(["window"]);
+  });
+
+  // pmdoc's parseDirectiveAttributes ends a quoted value at the next quote, whatever stands
+  // before it: a backslash escapes nothing, so `\"` ends the value, and the `b` after it is no
+  // attribute the server reads; before any other character a backslash is kept as written.
+  test("a backslash before a quote ends the value, and the server refuses the line", () => {
+    expect(askBlocks(':::ask{title="a\\"b" #window}\nWhich?\n:::')).toEqual([]);
+  });
+
+  test("a backslash before another character is kept in the value", () => {
+    expect(ids(askBlocks(':::ask{title="a\\q" #window}\nWhich?\n:::'))).toEqual(["window"]);
+  });
+
+  // Each id typedBlockIdAttribute writes, read back from its opening line: `#id` runs to the
+  // first character the shortcut cannot hold (`q:1`, `décision`), and `id="…"` is decoded
+  // (`R&amp;D`).
+  test.each(
+    DISPATCH_TYPED_BLOCK_ID_SPELLINGS.filter(({ id }) => id !== "").map(({ id, written }) => [
+      written,
+      id,
+    ])
+  )("the opener's %s is the id the server reads", (written, id) => {
+    expect(ids(askBlocks(`:::ask{${written}}\nWhich?\n:::`))).toEqual([id]);
+  });
+
+  test.each([
+    ["an empty id", 'id=""'],
+    ["blockId, the tree's name for the id, which the markdown may not write", 'blockId="window"'],
+    ["an id written twice", '#window id="window"'],
+  ])("the server refuses %s", (_, attributes) => {
+    expect(askBlocks(`:::ask{${attributes}}\nWhich?\n:::`)).toEqual([]);
+  });
+
+  // Go's html.UnescapeString decodes the value of `id="…"` (quotedTypedBlockID), its quirks
+  // included; each expectation is what the server's reader read from the same line.
+  test.each([
+    ["a lone &", "R&D", "R&D"],
+    ["a named reference with no ;", "R&amp D", "R& D"],
+    ["named references", "&lt;it&apos;s&gt;&nbsp;&quot;", "<it's>\u00a0\""],
+    ["decimal and hex references", "&#65;&#x42;&#X43;", "ABC"],
+    ["one decimal digit with no ;", "a&#9b", "a&#9b"],
+    ["Windows-1252's characters", "&#x80;&#x9F;", "\u20ac\u0178"],
+    ["no character", "&#0;&#xD800;&#x110000;&#x;", "\ufffd\ufffd\ufffd\ufffd"],
+    ["a number past 32 bits", "&#4294967361;", "A"],
+  ])('id="…" holding %s', (_, written, id) => {
+    expect(ids(askBlocks(`:::ask{id="${written}"}\nWhich?\n:::`))).toEqual([id]);
+  });
+
+  // Of the named references, the reader decodes amp, lt, gt, quot, apos and nbsp alone, so an
+  // id holding any other is read as no id, and its ask is still reported (typed-block-opener.ts).
+  test("an id holding another named reference reads as no id", () => {
+    expect(askBlocks(':::ask{id="&eacute;t&eacute;"}\nWhich?\n:::')).toEqual([
+      { kind: "block", text: "Which?", opening: "Which?" },
+    ]);
   });
 });
 

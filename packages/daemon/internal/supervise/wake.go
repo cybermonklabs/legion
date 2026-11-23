@@ -455,9 +455,9 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // back to one of them (helloed). So the claim at the second step's return is working or idle,
 // which calls for neither the boot interval nor the registration deadline a park takes from a
 // claim still coming up; its confirmed task waits on no turn bound, because the confirmation
-// disarms that bound where it sets ConfirmedAt (confirm); and the probe interval an uncertain
-// answer may have armed is one the sweep's next observation arms again (observe, judge). What
-// such a claim is left without is the relaunch this wake held, which is what the lifecycle
+// disarms that bound where it sets ConfirmedAt (confirmCarrying); and the probe interval an
+// uncertain answer may have armed is one the sweep's next observation arms again (observe, judge).
+// What such a claim is left without is the relaunch this wake held, which is what the lifecycle
 // refusal leaves owing too: the next report of the process, or the sweep's own stale-plugin
 // pass, raises one again.
 //

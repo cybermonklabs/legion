@@ -45,14 +45,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin through:
-      # nothing in this package drives jj.
-      - uses: ./.github/actions/install-jj
       # extensions/dispatch-first-omp.test.ts, extensions/askgate/askgate-omp.test.ts,
       # extensions/card-delivery-omp.test.ts and extensions/tmux-place-omp.test.ts run the pinned
       # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
       # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
-      # (.github/actions/install-omp).
+      # (.github/actions/install-omp, which needs no mise and no token).
       - uses: ./.github/actions/install-omp
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
       # the only way the place a session registers can be read from the session itself, and refuses

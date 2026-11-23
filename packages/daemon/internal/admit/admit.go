@@ -849,34 +849,44 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 // record: a title, a rank or a status the rule changes is stored as the rule makes it, and
 // compared as listed it would be written again at every boot. That holds for a summary Reconcile
 // defers too, which release applies later from memory.
-func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake.DispatchIssue, target int64, position intake.DispatchConsumerPosition) error {
+//
+// It answers the key of each summary it found older than an issue fact of its issue the daemon
+// has already applied, so recorded nothing from (applySummary), in the order it met them. That
+// fact decided the issue as it stood when it applied, and some of what it decided depends on what
+// the daemon held then: a child's event applied while its parent had no record records nothing,
+// and only a listing records such a child later. So a recovery keeps each such key in the scope of
+// its next pass (internal/daemon's recoverRepositories), whose listing, read after that fact,
+// decides it. Such a summary is found so before it could be held, so a summary Reconcile defers
+// was no older than any fact applied when it was deferred, and release answers nothing: a fact
+// applied after it was deferred, newer than it, that records nothing refreshes it
+// (refreshHeldSummary) or leaves its own trace — a note, or its repository's recovery.
+func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake.DispatchIssue, target int64, position intake.DispatchConsumerPosition) ([]string, error) {
 	summaries = storetext.Strings(summaries)
 	issues, err := a.store.LiveIssues(ctx, tx, a.project)
 	if err != nil {
-		return fmt.Errorf("list admission issues: %w", err)
+		return nil, fmt.Errorf("list admission issues: %w", err)
 	}
 	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	live := record.LiveRoots(issues, facts)
 
 	caughtUp := position.Reached(target)
 	deferred := make(map[string]intake.DispatchIssue)
+	var refused []string
 	for _, summary := range parentsFirst(summaries) {
-		stored, err := a.store.Issue(ctx, tx, summary.Key)
+		outcome, err := a.applySummary(ctx, tx, summary, live, !caughtUp)
 		if err != nil {
-			return fmt.Errorf("read reconciled issue %s: %w", summary.Key, err)
+			return nil, err
 		}
-		behind := stored == nil && summary.Seq > 0 || stored != nil && summary.Seq > stored.LastDispatchSeq
-		if behind && !caughtUp {
+		switch outcome {
+		case summaryHeld:
 			a.log.Debug("admission reconcile: the stream may still hold or redeliver an event for this issue; holding it for the consumer to catch up",
 				"issue", summary.Key, "status", summary.Status, "dispatch", summary.Seq)
 			deferred[summary.Key] = summary
-			continue
-		}
-		if err := a.applySummary(ctx, tx, summary, live); err != nil {
-			return err
+		case summaryStale:
+			refused = append(refused, summary.Key)
 		}
 	}
 
@@ -896,9 +906,9 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 
 	_, released, err := a.promote(ctx, tx)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return a.wakeForFreeSlot(ctx, tx, released)
+	return refused, a.wakeForFreeSlot(ctx, tx, released)
 }
 
 // parentsFirst orders a Dispatch listing by how many of each issue's ancestors the listing itself
@@ -1020,15 +1030,55 @@ func (a *Admission) declaredAssignments() []record.DeclaredExperiment {
 // workflow records a child, else as a root when it is handed to Legion — or queued when it shows a
 // root in triage whose legion label a person set, and a recorded key a live event has already
 // carried strictly past the summary's own sequence is left alone — reapplying the summary would
-// overwrite fresher information with stale. Both Reconcile, immediately when the consumer is
+// overwrite fresher information with stale. An unrecorded key is held to the issue facts the
+// daemon applied: a summary older than an event of the issue, or a view intake let through, that
+// the daemon has already applied records and queues nothing (unrecordedSummaryStale), and
+// applySummary answers summaryStale for it. Both Reconcile, immediately when the consumer is
 // already caught up, and release, once the consumer catches up to a summary Reconcile deferred,
 // call this the same way: a key nothing else ever gets around to explaining still lands on what
 // the listing already knew.
-func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.DispatchIssue, live map[string]struct{}) error {
+//
+// With hold set — Reconcile's call while the consumer has not reached its target — a summary the
+// listing shows behind Dispatch's event log (Reconcile says why) applies nothing either, and
+// applySummary answers summaryHeld for it, for the caller to defer. A stale summary is answered
+// so before it could be held, since no fact the stream still delivers makes it any less stale.
+func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.DispatchIssue, live map[string]struct{}, hold bool) (summaryOutcome, error) {
 	stored, err := a.store.Issue(ctx, tx, summary.Key)
 	if err != nil {
-		return fmt.Errorf("read reconciled issue %s: %w", summary.Key, err)
+		return summaryApplied, fmt.Errorf("read reconciled issue %s: %w", summary.Key, err)
 	}
+	if stored == nil {
+		stale, err := a.unrecordedSummaryStale(ctx, tx, summary)
+		if err != nil {
+			return summaryApplied, err
+		}
+		if stale {
+			return summaryStale, nil
+		}
+	}
+	if hold && (stored == nil && summary.Seq > 0 || stored != nil && summary.Seq > stored.LastDispatchSeq) {
+		return summaryHeld, nil
+	}
+	return summaryApplied, a.applyListed(ctx, tx, summary, stored, live)
+}
+
+// summaryOutcome is what applySummary did with a summary.
+type summaryOutcome uint8
+
+const (
+	// summaryApplied is a summary applied to admission's record (applyListed).
+	summaryApplied summaryOutcome = iota
+	// summaryStale is a summary of an unrecorded issue older than an issue fact of it the daemon
+	// applied, which applied nothing (unrecordedSummaryStale).
+	summaryStale
+	// summaryHeld is a summary behind Dispatch's event log that applied nothing, for Reconcile to
+	// defer.
+	summaryHeld
+)
+
+// applyListed is applySummary's work once the summary is found no older than the issue facts the
+// daemon applied and not held: stored is admission's record of the issue, nil for none.
+func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.DispatchIssue, stored *record.Issue, live map[string]struct{}) error {
 	handed := summary.HandedOver
 	if stored == nil {
 		// An unrecorded root the listing shows in triage with the label is queued as its event
@@ -1146,6 +1196,33 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		}
 	}
 	return a.recordObservation(ctx, tx, *stored, o)
+}
+
+// unrecordedSummaryStale rejects a listing older than an issue fact already applied to an
+// unrecorded issue, even when that fact created no record. The fact may have applied while the
+// listing waited for GitHub or for the consumer, so admitting it could lose a repository edit.
+//
+// Compare the applied sequence, not dispatch_seq: blockers.Mirror raises it only for an issue fact
+// (an event or a view intake accepted), in the fact's own transaction. Listings and tick reads do
+// not move it. Both callers of applySummary hold the fact lock; intake.settleObserved uses the
+// same sequence for views. A summary without a sequence cannot be ordered.
+//
+// Reconcile returns stale keys so recovery retains them for a later listing. A child's event can
+// record nothing because its parent is not yet recorded, without leaving a recovery note.
+func (a *Admission) unrecordedSummaryStale(ctx context.Context, tx pgx.Tx, summary intake.DispatchIssue) (bool, error) {
+	if summary.Seq <= 0 {
+		return false, nil
+	}
+	applied, err := a.store.DispatchIssueApplied(ctx, tx, summary.Key)
+	if err != nil {
+		return false, fmt.Errorf("read how far the daemon has applied the issue facts of %s: %w", summary.Key, err)
+	}
+	if applied <= summary.Seq {
+		return false, nil
+	}
+	a.log.Debug("admission: the listing is older than an issue fact of the issue the daemon applied; it records nothing",
+		"issue", summary.Key, "listed", summary.Seq, "applied", applied)
+	return true, nil
 }
 
 // applyObservation records a newer Dispatch observation of a recorded issue: the one place a live
@@ -1451,6 +1528,21 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		// An old root that recorded no gate is the common case, and there the carry writes nothing:
 		// the orphan's own pairs stand as the hand-over left them, so neither the read of them nor
 		// the comparison against them is made.
+		//
+		// What the orphan's holders took of the approved design (record.DesignTold) stays with the
+		// gate it was taken from, as the copy does: the carry clears no generation, so its holder
+		// row stands as its last holder left it, at versions of the very documents the carried rows
+		// name. The phase the promotion starts again inherits it rather than taking a new baseline
+		// (workflow's Engine.enter), and is owed whatever the old root's gate approved since. Only
+		// the generation clear of a tree the orphan still belongs to takes the row away, with that
+		// tree's gate.
+		//
+		// The carried gate is the new tree's, and the new tree's architect starts from it: the carry
+		// takes its architect's baseline at the versions the carried rows stand approved at
+		// (record.Store.BaselineTold, which leaves a row already there as it stands), as a tree's
+		// first opening takes its own (workflow's putGateTold). Its architect never saw the versions
+		// the old root's gate approved before, so it is owed no summary of them, and is owed what a
+		// later approval of the carried documents changes.
 		if len(gates) > 0 {
 			// The pairs the orphan itself holds before the carry: a member of a gated tree holds
 			// the copy its hand-over carried to it, and the carry writes the old root's rows over
@@ -1465,12 +1557,15 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
 				}
 			}
+			if err := a.store.BaselineTold(ctx, tx, stored.Key, record.AudienceArchitect, stored.Key, a.now()); err != nil {
+				return fmt.Errorf("take the baseline of re-admitted orphan %s's architect: %w", stored.Key, err)
+			}
 			// The carry binds this issue's steps to the old root's documents, so it moves the pairs
 			// of an orphan that held none and leaves those of one re-admitted onto the same
 			// documents (record.PublishChangedGates); a carry is the one path that gives an issue a
 			// gate without its architect registering anything, so Dispatch hears of it here or
 			// nowhere.
-			if err := record.PublishChangedGates(ctx, a.store, tx, stored.Key, held, a.now()); err != nil {
+			if err := record.PublishChangedGates(ctx, a.store, tx, a.engine.GatedSteps(), stored.Key, held, a.now()); err != nil {
 				return fmt.Errorf("publish the gates carried to re-admitted orphan %s: %w", stored.Key, err)
 			}
 		}
@@ -1497,7 +1592,10 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 // (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest version. One
 // approval is kept, read from the first required step whose approved version sits below its
 // latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
-// task names the document the person reviewed rather than the spec of every deployment.
+// task names the document the person reviewed rather than the spec of every deployment. The
+// required steps are the ones the root's tree is gated on (record.TreeSteps), so a Verification
+// document its architect registered as criteria beside a deployment that gates spec and not
+// criteria is read after the spec, as every other rule of the gate reads it.
 //
 // Where the deployment gates no step, which asks no person, nothing is kept and any pair an
 // earlier re-admission kept is dropped: no start names one there, so no delivery would forget
@@ -1515,7 +1613,7 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 		return fmt.Errorf("read the gate of re-admitted %s: %w", key, err)
 	}
 	unregistered := false
-	for _, step := range steps {
+	for _, step := range record.TreeSteps(steps, gates) {
 		gate, ok := gates[step]
 		switch {
 		case !ok:
@@ -2415,9 +2513,9 @@ func (a *Admission) Holds() uint64 {
 // eventually applies — current with a live event that is newer than it but creates no record: an
 // event moving the key out of todo, or taking its label off, teaches nothing to the record (there
 // is none yet), but it is real information about what Dispatch shows now. Left alone, release
-// would apply the stale boot summary Reconcile originally deferred, as if this event had never
-// arrived. A key that is not held, or an event at or behind the held summary's own sequence, is
-// left untouched.
+// would find the summary Reconcile originally deferred older than this event and apply nothing of
+// it (unrecordedSummaryStale); refreshed, release applies what this event showed. A key that is
+// not held, or an event at or behind the held summary's own sequence, is left untouched.
 func (a *Admission) refreshHeldSummary(observation intake.DispatchIssue) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -2462,8 +2560,20 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 		live := record.LiveRoots(issues, facts)
 		held := slices.SortedFunc(maps.Values(releasing), func(x, y intake.DispatchIssue) int { return cmp.Compare(x.Key, y.Key) })
 		for _, summary := range parentsFirst(held) {
-			if err := a.applySummary(ctx, tx, summary, live); err != nil {
+			// A held summary older than a fact the daemon applied records nothing, and that fact,
+			// applied after Reconcile deferred the summary, refreshed it or left a trace of its own
+			// (Reconcile says which), so nothing more is owed for it here. It is said at Info all the
+			// same, so a change that ever leaves such an issue with no trace shows in the log.
+			outcome, err := a.applySummary(ctx, tx, summary, live, false)
+			if err != nil {
 				return nil, err
+			}
+			if outcome == summaryStale {
+				key, listed := summary.Key, summary.Seq
+				intake.OnCommit(ctx, func() {
+					a.log.Info("admission: a held summary is older than an issue fact of the issue the daemon applied after it was held, so its release records nothing; that fact decided the issue",
+						"issue", key, "listed", listed)
+				})
 			}
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 )
 
@@ -46,13 +47,12 @@ type githubInstallation struct {
 	SuspendedAt *time.Time `json:"suspended_at"`
 	// Permissions is what the installation's account approved for the App: each permission it
 	// holds, at the access it holds it ("read", "write" or "admin"). The listing carries it, so a
-	// read-only token is asked for the optional reads the installation holds alone
-	// (heldReadOnlyPermissions) at no request of its own.
+	// profile's permissions are cut to what the installation holds (cut) at no request of its own.
 	Permissions map[string]string `json:"permissions"`
 }
 
 // githubInstallationToken is GitHub's answer to a token request: the token, its expiry, and what
-// GitHub says the token holds, which Mint checks against a narrowing (GitHubNarrowing.heldBy).
+// GitHub says the token holds, which Mint checks against the request it sent (heldBy).
 type githubInstallationToken struct {
 	Token               string            `json:"token"`
 	ExpiresAt           time.Time         `json:"expires_at"`
@@ -73,87 +73,128 @@ type githubMintedInstallation struct {
 	ExpiresAt      time.Time `json:"expires_at"`
 }
 
-// githubAccessTokensBody is GitHub's POST /app/installations/{id}/access_tokens body for a narrowed
-// token: the repositories it reaches and the permissions it holds, each left out when the
-// narrowing does not name it.
+// githubAccessTokensBody is GitHub's POST /app/installations/{id}/access_tokens body for a
+// profile's token: the repositories it reaches, left out where the scope names none, and the
+// permissions it holds, which every request names (cut).
 type githubAccessTokensBody struct {
 	Repositories []string          `json:"repositories,omitempty"`
 	Permissions  map[string]string `json:"permissions,omitempty"`
 }
 
-// readOnlyPermissions are the permissions a read-only narrowing asks GitHub for, and the most a
-// token minted for one may hold. They are the broker's own read set, so a caller reading a
-// repository over a broker-released token reads its contents, its pull requests, the Actions
-// runs, jobs and job logs its merges produced, and what CI said of a head: its check runs and its
-// commit statuses, which a base branch can require before a merge. The set is the Legion daemon's
-// read lease (its appauth readPermissions) less issues and attestations, which the lease also
-// holds.
-var readOnlyPermissions = map[string]string{
-	"contents": "read", "metadata": "read", "pull_requests": "read",
-	"actions": "read", "checks": "read", "statuses": "read",
-}
-
-// optionalReadOnlyPermissions are the permissions of readOnlyPermissions an installation may not
-// hold, in the order a log line names them: an App holds Actions, checks and commit statuses only
-// where it declares them and each installation's account approved that grant, while the other
-// three are a GitHub App's ordinary repository reads. GitHub answers a token request naming a
-// permission its installation does not hold HTTP 422 and mints nothing rather than leaving that
-// one out, so a read-only token is asked for the ones the installation holds alone
-// (heldReadOnlyPermissions): an installation without some of them releases the others rather than
-// nothing.
-var optionalReadOnlyPermissions = []string{"actions", "checks", "statuses"}
-
-// heldReadOnlyPermissions is what a read-only narrowing asks GitHub for of an installation that
-// holds held (githubInstallation.Permissions): readOnlyPermissions less each optional one held
-// does not name at an access GitHub grants (one held at write or admin is held at read too), and
-// the ones it left out, in optionalReadOnlyPermissions' order. The other three are asked for
-// whatever held says, so an installation without one of them is refused as the narrowing
-// (refusal). It reads what the installation holds from the listing Mint has already made, so it
-// costs no request: asking for the whole set and again for less on GitHub's 422 would cost a
-// second token request wherever a grant is missing and could not tell which one was, and reading
-// the installation itself (GET /app/installations/{id}) would cost one more request on every
-// mint. An installation that holds them all, the common one, is asked for readOnlyPermissions
-// itself, which nothing writes to; any other is asked for a copy.
-func heldReadOnlyPermissions(held map[string]string) (map[string]string, []string) {
-	var missing []string
-	for _, permission := range optionalReadOnlyPermissions {
-		switch held[permission] {
-		case "read", "write", "admin":
+// cut is what a token request asks GitHub for of an installation that holds held
+// (githubInstallation.Permissions): each of the profile's permissions at its own level where the
+// installation holds it at that level or above, at the installation's level where it holds a
+// lower one, and not at all where it holds none. GitHub answers 422 to a request naming a
+// permission past what the installation holds and mints nothing, so the cut is what lets an
+// installation that holds less than the profile still release what it holds. leftOut is each
+// entry the cut left out, sorted: "<permission>:<level>" for a level it asked for in place of the
+// higher one, "<permission>" for a permission it left out whole. It reads what the installation
+// holds from the listing Mint has already made, so it costs no request.
+func cut(profile, held map[string]string) (asked map[string]string, leftOut []string) {
+	asked = make(map[string]string, len(profile))
+	for _, permission := range slices.Sorted(maps.Keys(profile)) {
+		level, holds := profile[permission], held[permission]
+		switch {
+		case githubname.LevelRank(holds) == 0:
+			leftOut = append(leftOut, permission)
+		case githubname.LevelRank(holds) < githubname.LevelRank(level):
+			asked[permission] = holds
+			leftOut = append(leftOut, permission+":"+level)
 		default:
-			missing = append(missing, permission)
+			asked[permission] = level
 		}
 	}
-	if len(missing) == 0 {
-		return readOnlyPermissions, nil
-	}
-	asked := maps.Clone(readOnlyPermissions)
-	for _, permission := range missing {
-		delete(asked, permission)
-	}
-	return asked, missing
+	return asked, leftOut
 }
 
-// narrowsToken reports whether n narrows the token GitHub mints, not only which installation it is
-// minted for: whether it sends GitHub an access_tokens body.
-func (n *GitHubNarrowing) narrowsToken() bool {
-	return n != nil && (len(n.Repositories) > 0 || n.ReadOnly)
+// emptyCut reports whether asked, the cut of profile's permissions to what an installation holds,
+// leaves the token nothing the profile is for: no permission at all, or metadata alone of a
+// profile that names more. Every installation GitHub lists holds metadata, so a cut that keeps it
+// alone is the empty cut GitHub's own listings give, and minting it would release a token that
+// does none of what the profile asks, after the check before an approval had let a person be
+// asked for it. A profile that names metadata alone asks for nothing more, and its cut is whole.
+func emptyCut(profile, asked map[string]string) bool {
+	_, kept := asked[githubname.MetadataPermission]
+	return len(asked) == 0 || (kept && len(asked) == 1 && len(profile) > 1)
 }
 
-// accessTokensBody is narrowing as GitHub's access_tokens body, nil for a narrowing that names
-// neither repositories nor read-only (it narrows to its owner alone) and for none, whose tokens
-// are asked for with no body, as before narrowing existed. permissions is what a read-only
-// narrowing asks GitHub for: what heldReadOnlyPermissions gives for the installation. Marshalling
-// a struct of a string slice and a string map cannot fail, so its error is dropped.
-func (n *GitHubNarrowing) accessTokensBody(permissions map[string]string) []byte {
-	if !n.narrowsToken() {
+// lacked is the profile's permissions an empty cut, asked, left out, for its refusal: each
+// permission the profile names that the cut does not keep.
+func lacked(profile, asked map[string]string) map[string]string {
+	left := make(map[string]string, len(profile))
+	for permission, level := range profile {
+		if _, kept := asked[permission]; !kept {
+			left[permission] = level
+		}
+	}
+	return left
+}
+
+// accessTokensBody is GitHub's access_tokens body asking for permissions on repositories, the
+// names of the scope's repositories of the one account the token is for (nil for every
+// repository the installation reaches). Mint never sends it with no permissions
+// (ErrMintEmptyCut). Marshalling a struct of a string slice and a string map cannot fail, so its
+// error is dropped.
+func accessTokensBody(repositories []string, permissions map[string]string) []byte {
+	encoded, _ := json.Marshal(githubAccessTokensBody{Repositories: repositories, Permissions: permissions})
+	return encoded
+}
+
+// repositoriesOf is the names of the scope's repositories of account, a lowercase login, as
+// GitHub's access_tokens body takes them, without the owner: the body is sent to that account's
+// installation, which knows its repositories by name alone. It is nil for a scope of every
+// repository, and empty for an account the scope names no repository of (refusal refuses that).
+func (s *GitHubScope) repositoriesOf(account string) []string {
+	if s.Repositories == nil {
 		return nil
 	}
-	body := githubAccessTokensBody{Repositories: n.Repositories}
-	if n.ReadOnly {
-		body.Permissions = permissions
+	names := make([]string, 0, len(s.Repositories))
+	for _, entry := range s.Repositories {
+		if name, ok := repositoryOf(entry, account); ok {
+			names = append(names, name)
+		}
 	}
-	encoded, _ := json.Marshal(body)
-	return encoded
+	return names
+}
+
+// repositoryOf reads one entry of GitHubScope.Repositories, "account/name", as the name of a
+// repository of account, and false for an entry of any other account.
+func repositoryOf(entry, account string) (string, bool) {
+	owner, name, ok := githubname.SplitEntry(entry)
+	return name, ok && owner == account
+}
+
+// permissionWords is permissions as one phrase of a refusal, "contents: read, issues: write", in
+// sorted order. It holds nothing but the profile's own words.
+func permissionWords(permissions map[string]string) string {
+	words := make([]string, 0, len(permissions))
+	for _, permission := range slices.Sorted(maps.Keys(permissions)) {
+		words = append(words, permission+": "+permissions[permission])
+	}
+	return strings.Join(words, ", ")
+}
+
+// refusal is the scope's own refusal, before anything is asked of GitHub: a scope that names
+// repositories, of which an account in effect holds none, is refused naming that account, since
+// that account's token would name no repository and so reach every one its installation does.
+// A value-token scope of more than one account is the caller's to refuse, where it can tell the
+// session to name one with --target (requests' gitHubScope, the one place that rule is written):
+// every scope the broker mints is built there, so the rule is not written a second time here.
+// Mint still releases no bare token of more than one installation (ErrMintSeveralInstallations).
+func (s *GitHubScope) refusal(appID string) error {
+	if s.Repositories == nil {
+		return nil
+	}
+	for _, account := range s.Accounts {
+		holds := func(entry string) bool {
+			_, ok := repositoryOf(entry, account)
+			return ok
+		}
+		if !slices.ContainsFunc(s.Repositories, holds) {
+			return fmt.Errorf("%w: github app %s: the scope names repositories (%s), and none of %s, which is in effect", ErrMintNarrowingRefused, appID, strings.Join(s.Repositories, ", "), account)
+		}
+	}
+	return nil
 }
 
 // githubRepositoryAnswerBound is more than any one repository object GitHub's access_tokens answer
@@ -163,71 +204,67 @@ func (n *GitHubNarrowing) accessTokensBody(permissions map[string]string) []byte
 const githubRepositoryAnswerBound = 64 << 10
 
 // accessTokensResponseLimit caps what Mint reads of a token answer, which names every repository
-// a narrowed token reaches: the common cap plus githubRepositoryAnswerBound for each of
-// MaxNarrowedRepositories. GitHub has minted the token by the time the answer arrives, and an
-// answer read in part cannot be released, and its revoke is sent only where the part read names
-// the token (giveBackUnusable), so the cap admits whole every answer a narrowing within the
-// maximum can get.
-const accessTokensResponseLimit = mintResponseLimit + MaxNarrowedRepositories*githubRepositoryAnswerBound
+// a token of named repositories reaches: the common cap plus githubRepositoryAnswerBound for each
+// of githubname.MaxNarrowedRepositories. GitHub has minted the token by the time the answer
+// arrives, and an answer read in part cannot be released, and its revoke is sent only where the
+// part read names the token (giveBackUnusable), so the cap admits whole every answer a scope
+// within the maximum can get.
+const accessTokensResponseLimit = mintResponseLimit + githubname.MaxNarrowedRepositories*githubRepositoryAnswerBound
 
 // refusal is err, GitHub's answer to the token request for owner, unless it is the 422 GitHub
-// gives a narrowed token it cannot mint: that is the caller's narrowing (ErrMintNarrowingRefused),
-// named by what it likely got wrong, since GitHub's own text is never quoted. A 422 to a request
-// that sent no body narrowed nothing, and stays the App's; a 422 that is a rate limit is no verdict
-// on the narrowing, and stays the upstream's. A read-only narrowing asks for the optional reads
-// its installation holds alone (heldReadOnlyPermissions), so a grant an App is not always given is
-// not among the causes it names.
-func (n *GitHubNarrowing) refusal(err error, appID, owner string) error {
+// gives a token request it cannot serve: that is the caller's scope (ErrMintNarrowingRefused),
+// named by what it likely got wrong, the repositories it names or else the permissions it asks
+// for (asked), since GitHub's own text is never quoted. A 422 that is a rate limit is no verdict
+// on the scope, and stays the upstream's.
+func refusal(err error, appID, owner string, repositories []string, asked map[string]string) error {
 	var status *mintStatusError
-	if !n.narrowsToken() || !errors.As(err, &status) || status.code != http.StatusUnprocessableEntity || status.rateLimited {
+	if !errors.As(err, &status) || status.code != http.StatusUnprocessableEntity || status.rateLimited {
 		return err
 	}
-	var causes []string
-	if len(n.Repositories) > 0 {
-		causes = append(causes, fmt.Sprintf("a repository it names (%s) that the installation does not reach, such as a misspelled name", strings.Join(n.Repositories, ", ")))
+	cause := fmt.Sprintf("a permission it asks for (%s) that the installation does not hold", permissionWords(asked))
+	if len(repositories) > 0 {
+		cause = fmt.Sprintf("a repository it names (%s) that the installation does not reach, such as a misspelled name", strings.Join(repositories, ", "))
 	}
-	if n.ReadOnly {
-		causes = append(causes, "contents: read, metadata: read or pull_requests: read, which the App does not hold")
-	}
-	return withAttempts(fmt.Errorf("%w: github app %s: GitHub answered HTTP 422 to the narrowed token for %s: likely %s; the caller fixes the narrowing", ErrMintNarrowingRefused, appID, owner, strings.Join(causes, ", or ")), err)
+	return withAttempts(fmt.Errorf("%w: github app %s: GitHub answered HTTP 422 to the profile's token for %s: likely %s", ErrMintNarrowingRefused, appID, owner, cause), err)
 }
 
-// heldBy checks that token, as GitHub describes it, holds no more than n asked: for repositories, a
-// selection of named repositories, each one n names (GitHub names them in its own case); for
-// read-only, named permissions, each at most readOnlyPermissions'. GitHub applies the
-// access_tokens body and refuses what it cannot grant, so a token past it means something between
-// the broker and GitHub dropped or widened the body; refusing it keeps the narrowing the release
-// answers with true by construction. Its errors name the rule the answer failed and never a value
-// the answer holds, which an upstream that is not GitHub can fill with what the request carried. A
-// token not narrowed is not checked.
-func (n *GitHubNarrowing) heldBy(token githubInstallationToken) error {
-	if !n.narrowsToken() {
+// heldBy checks that token, as GitHub describes it, holds no more than its request asked: named
+// permissions, each one the request named (asked) at no level above the one it named; and, for a
+// request naming repositories, a selection of named repositories, each one it named (GitHub names
+// them in its own case). It accepts no permission unasked, metadata at read among them: GitHub
+// grants that with every installation token, so the profiles file refuses a GitHub profile that
+// does not name it (policy.ParseProfiles), and a token holding it for a request that does not is
+// past the request like any other. GitHub applies the access_tokens body and refuses what it
+// cannot grant, so a token past it means something between the broker and GitHub dropped or
+// widened the body; refusing it keeps the scope the profile states true by construction. Its
+// errors name the rule the answer failed and never a value the answer holds, which an upstream
+// that is not GitHub can fill with what the request carried.
+func heldBy(token githubInstallationToken, repositories []string, asked map[string]string) error {
+	if len(token.Permissions) == 0 {
+		return errors.New("GitHub's token names no permissions, so it may hold more than its request asked")
+	}
+	for _, permission := range slices.Sorted(maps.Keys(token.Permissions)) {
+		level := token.Permissions[permission]
+		want, named := asked[permission]
+		if !named {
+			return errors.New("GitHub's token holds a permission the request did not name")
+		}
+		if githubname.LevelRank(level) == 0 || githubname.LevelRank(level) > githubname.LevelRank(want) {
+			return errors.New("GitHub's token holds a permission at a level past the request")
+		}
+	}
+	if len(repositories) == 0 {
 		return nil
 	}
-	if len(n.Repositories) > 0 {
-		if token.RepositorySelection != "selected" {
-			return errors.New(`GitHub's token has a repository selection other than "selected", so it may reach more than the narrowing names`)
-		}
-		if len(token.Repositories) == 0 {
-			return errors.New("GitHub's token names no repositories, so it may reach more than the narrowing names")
-		}
-		for _, repository := range token.Repositories {
-			if !slices.ContainsFunc(n.Repositories, func(name string) bool { return strings.EqualFold(name, repository.Name) }) {
-				return errors.New("GitHub's token reaches a repository the narrowing does not name")
-			}
-		}
+	if token.RepositorySelection != "selected" {
+		return errors.New(`GitHub's token has a repository selection other than "selected", so it may reach more than the request names`)
 	}
-	if n.ReadOnly {
-		if len(token.Permissions) == 0 {
-			return errors.New("GitHub's token names no permissions, so it may hold more than read access")
-		}
-		for _, permission := range slices.Sorted(maps.Keys(token.Permissions)) {
-			if _, asked := readOnlyPermissions[permission]; !asked {
-				return errors.New("GitHub's token holds a permission past contents, metadata, pull requests, actions, checks and statuses")
-			}
-			if token.Permissions[permission] != readOnlyPermissions[permission] {
-				return errors.New("GitHub's token holds more than read access to contents, metadata, pull requests, actions, checks or statuses")
-			}
+	if len(token.Repositories) == 0 {
+		return errors.New("GitHub's token names no repositories, so it may reach more than the request names")
+	}
+	for _, repository := range token.Repositories {
+		if !slices.ContainsFunc(repositories, func(name string) bool { return strings.EqualFold(name, repository.Name) }) {
+			return errors.New("GitHub's token reaches a repository the request does not name")
 		}
 	}
 	return nil
@@ -236,7 +273,7 @@ func (n *GitHubNarrowing) heldBy(token githubInstallationToken) error {
 // revokeTimeout bounds the revoke of a token Mint minted and will not release.
 const revokeTimeout = 10 * time.Second
 
-// revokedWiderMessage is logged, at WARN, when GitHub does not confirm the revoke of a narrowed
+// revokedWiderMessage is logged, at WARN, when GitHub does not confirm the revoke of a profile's
 // token it minted wider than asked, followed by app=, installation=, expires_at= (when the token
 // lapses at GitHub without the revoke) and error=, which never holds the token.
 const revokedWiderMessage = "broker: GitHub did not revoke a narrowed token it minted wider than asked; it lapses at its expiry"
@@ -247,7 +284,7 @@ const revokedWiderMessage = "broker: GitHub did not revoke a narrowed token it m
 // which never holds the token. It is a line of its own rather than revokedWiderMessage because
 // that one names a fault a check usually does not have: a check revokes every token it mints,
 // nearly always one GitHub minted exactly as asked, and its reader would go looking at the
-// narrowing for nothing.
+// profile for nothing.
 const revokedCheckMessage = "broker: GitHub did not revoke a token minted for a check; it lapses at its expiry"
 
 // revokedUnusableMessage is logged, at WARN, when GitHub does not confirm the revoke of a token it
@@ -270,15 +307,6 @@ const unrevokableMessage = "broker: GitHub minted a token the broker cannot revo
 // whose session gets placeholders - and GitHub does not confirm the revoke of that token, followed
 // by installation=, expires_at= and error=, which never holds the token.
 const revokedUnreleasedMessage = "broker: GitHub did not revoke a token a release minted and handed to nobody; it lapses at its expiry"
-
-// missingReadsMessage is logged, at WARN, when a read-only token is released for an installation
-// that does not hold every optional read (heldReadOnlyPermissions), so the token was asked for
-// without them, followed by app=, installation= and missing=, the permissions it was asked for
-// without, comma-separated. It never holds the token. A check (MintRequest.Check) does not log it:
-// it releases no token, so its words about the token released for the installation would be
-// untrue, and one check of a narrowing mints as many times as it has repositories to probe, each of
-// which would write the line again for the one release behind it.
-const missingReadsMessage = "broker: a GitHub App installation does not hold every read a read-only token asks for, so the token released for it holds none of the permissions missing names; grant the App each of them at Read and approve it on that account"
 
 // revokeInstallationToken asks GitHub to revoke token, as the token itself
 // (DELETE /installation/token), for a token Mint minted and will not release, retried as the
@@ -422,88 +450,108 @@ func (m GitHubApp) revokeUnreleased(ctx context.Context, mint *mintRetry, minted
 	}
 }
 
-// GiveBack tries to revoke every installation token in value, a github-app release's JSON object
-// of installations as Mint answered it, which the caller minted for the secret name and hands to
-// nobody (requests.Machine.GiveBacks): the broker's release of a grant that failed after this name
-// was minted, or that holds this name behind the airlock, whose session gets placeholders while the
-// proxy mints a value of its own. Each revoke runs under the detached bound a release's revoke has,
-// whatever ctx does, in one attempt (startOnce): nobody waits on it, and a retry would draw on the
-// process-wide budget the mints a caller waits on retry from, which a GitHub outage leaves short
-// while every airlock release of a github-app name gives a token back. A revoke GitHub does not
-// confirm is logged with name= (revokedUnreleasedMessage) and leaves its token live until it
-// lapses. A value that is no such object names no token, and is left alone.
-func (m GitHubApp) GiveBack(ctx context.Context, name, value string) {
+// GiveBack tries to revoke every installation token in value, a github-app release as Mint
+// answered it, which the caller minted for the secret name and hands to nobody
+// (requests.Machine.GiveBacks): the broker's release of a grant that failed after this name was
+// minted, or that holds this name behind the airlock, whose session gets placeholders while the
+// proxy mints a value of its own. form is the github.value of the profile the value was minted
+// for, which says what the value is, so nothing is read off the value's text: for
+// githubname.ValueToken the one account's bare token, and for every other form a JSON object of
+// installations, which a value that does not decode as one is not, and names no token to revoke.
+// Each revoke runs under the detached bound a release's revoke has, whatever ctx does, in one
+// attempt (startOnce): nobody waits on it, and a retry would draw on the process-wide budget the
+// mints a caller waits on retry from, which a GitHub outage leaves short while every airlock
+// release of a github-app name gives a token back. A revoke GitHub does not confirm is logged
+// with name= (revokedUnreleasedMessage) and leaves its token live until it lapses.
+func (m GitHubApp) GiveBack(ctx context.Context, name, value, form string) {
 	var minted githubMintedInstallations
-	if json.Unmarshal([]byte(value), &minted) != nil {
+	switch {
+	case value == "":
+		return
+	case form == githubname.ValueToken:
+		minted.Installations = map[string]githubMintedInstallation{"": {Token: value}}
+	case json.Unmarshal([]byte(value), &minted) != nil:
 		return
 	}
 	m.revokeUnreleased(ctx, m.Retry.startOnce(typeGitHubApp), minted, "name", name)
 }
 
+// installationMint is one installation a release mints for: the installation, its account as
+// GitHub names it and as the scope names it (lowercased), the names of the scope's repositories
+// of that account (nil for every repository), and what the cut asks of it and leaves out.
+type installationMint struct {
+	installation   githubInstallation
+	owner, account string
+	repositories   []string
+	asked          map[string]string
+	leftOut        []string
+}
+
 // Mint returns a token and expiry for every installation of the App in req.Value that is not
-// suspended and whose account req.GitHubOwners lists, compared without regard to case, and, as
-// the whole release's expiry, the earliest of those installations' own: the first of its tokens
-// to stop working is when the release stops being wholly usable. It leaves
-// out an installation on any other account without asking GitHub for its token: a public App can
-// be installed by anyone, and a release must not carry a token for an outsider's account. It also
+// suspended and whose account the profile's scope (req.GitHub) names, compared without regard to
+// case, and, as the whole release's expiry, the earliest of those installations' own: the first
+// of its tokens to stop working is when the release stops being wholly usable. It leaves out an
+// installation on any other account without asking GitHub for its token: a public App can be
+// installed by anyone, and a release must not carry a token for an outsider's account. It also
 // leaves out a record with no positive installation id, which names no installation a token can be
-// asked for. With req.GitHubNarrowing it mints for the narrowing's owner alone, which
-// req.GitHubOwners must list (it refuses, asking GitHub nothing, otherwise), sending the narrowing
-// as GitHub's access_tokens body, and releases the token only when GitHub's answer holds no more
-// than the narrowing asked (heldBy); a token it refuses so it revokes at GitHub first, and it
+// asked for.
+//
+// Each token request names the profile's permissions cut to what that installation holds (cut),
+// so GitHub never grants a permission the request did not name, and the scope's repositories of
+// that installation's account alone, by name, as GitHub's body takes them (repositoriesOf); the
+// release names each entry the cut left out (Minted.LeftOut). A cut that leaves no permission, or
+// metadata alone of a profile that names more (emptyCut), refuses the release (ErrMintEmptyCut)
+// before any token request, for every account, since GitHub answers a request naming none with
+// every permission the installation holds, and a token of metadata alone does nothing the
+// profile is for. Mint releases a token only when GitHub's answer holds no more than the request
+// asked (heldBy), for every profile; a token it refuses so it revokes at GitHub first, and it
 // sends GitHub the revoke of a token it minted and will not hand over: one GitHub answered in a
 // form it cannot use (giveBackUnusable), and on a failed release the tokens of the installations
-// it minted for before the failure (revokeUnreleased). A revoke GitHub does not confirm is logged,
-// and its token stays live until it lapses.
+// it minted for before the failure (revokeUnreleased). A revoke GitHub does not confirm is
+// logged, and its token stays live until it lapses. The release is today's JSON of
+// installations, or, for a value-token profile, the bare token of its one account (the caller
+// holds such a scope to one account, requests' gitHubScope), which is refused
+// (ErrMintSeveralInstallations, inside ErrMintNarrowingRefused) before any token request where
+// the scope reaches more than one installation, as the App's installations on one account under
+// logins that differ only in case do: a token minted for each would leave all but the one
+// released live with nobody holding them.
+//
 // With req.Check it finds out whether that release could be served without serving it, and it
-// releases no token. For a narrowing that names repositories or read-only it makes the release's
-// calls in the same order, but for a token request that may have reached GitHub and failed, which
-// it does not send again (installationToken); it revokes each token GitHub answers with the moment
-// it has it, and answers Minted{} with the error the release would have answered, nil where the
-// release would have succeeded. For a narrowing to its owner alone it lists the App's
-// installations and asks GitHub for no token. Such a narrowing sends GitHub no access_tokens body,
-// so GitHub's answer to the token request can refuse the App but never the narrowing, and heldBy
-// checks nothing of it: the check answers the release's refusal of an account with no
-// installation, and nil for an account with one, even where the release's token request would
-// still fail. A token minted there would hold every permission of the installation before anybody
-// approved the request.
-// A check needs req.GitHubNarrowing, since a release without one is the owner-wide one the
-// broker already makes; a check without one is refused before GitHub is asked anything.
-// The value is the JSON object stored in the secret, decoded by ParseValue before anything else,
-// so a value it refuses is refused as the stored value even when the narrowing is refused too;
-// it is never part of an error. Every call it makes is retried under m.Retry, all of them
-// waiting from the one wait budget this mint starts, but for a check's token request that may have
-// reached GitHub and failed, which is not sent again. Every error wraps one of ErrMintStoredValue,
-// ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the refusal of an App with no
-// installation on the account also wraps ErrMintNoInstallation, which is inside ErrMintRefused and
-// which the broker's narrowing check reads.
+// releases no token: it makes the release's calls in the same order, but for a token request
+// that may have reached GitHub and failed, which it does not send again (installationToken); it
+// revokes each token GitHub answers with the moment it has it, and answers Minted{} with the
+// error the release would have answered, nil where the release would have succeeded.
+//
+// A request with no scope is a programming error in the broker, refused before GitHub is asked
+// anything. The value is the JSON object stored in the secret, decoded by ParseValue before
+// anything else, so a value it refuses is refused as the stored value even when the scope is
+// refused too; it is never part of an error. Every call it makes is retried under m.Retry, all of
+// them waiting from the one wait budget this mint starts, but for a check's token request that
+// may have reached GitHub and failed, which is not sent again. Every error wraps one of
+// ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream; the refusal of
+// an App with no installation on the scope's accounts also wraps ErrMintNoInstallation, which is
+// inside ErrMintRefused, and an empty cut ErrMintEmptyCut, which is inside ErrMintNarrowingRefused;
+// the broker's check before an approval reads both.
 func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err error) {
-	if req.Check && req.GitHubNarrowing == nil {
-		// A programming error in the broker: the caller asked this minter to find out about a
-		// narrowing it did not name. ErrMintRefused is the class for a release the minter itself
-		// refuses before any upstream is asked, as it is for the Azure login that is not human
-		// tier; ErrMintUpstream would log MintErrorClass's "upstream" and send an operator to
+	scope := req.GitHub
+	if scope == nil {
+		// A programming error in the broker: every github-app name it serves is a profile's, and
+		// the release builds the profile's scope (requests' mintRequest). ErrMintRefused is the
+		// class for a release the minter itself refuses before any upstream is asked, as it is
+		// for the Azure login that is not human tier; ErrMintUpstream would send an operator to
 		// GitHub's status and the broker's egress, which this fault has nothing to do with, and
 		// ErrMintStoredValue would blame the secret's owner for code the broker holds. It is not
 		// ErrMintNoInstallation, so the check reads it as trouble and lets the request through,
-		// which is right: the broker's own code is at fault and the caller's narrowing is not.
-		return Minted{}, fmt.Errorf("%w: a github app mint check needs the narrowing it checks", ErrMintRefused)
+		// which is right: the broker's own code is at fault and the caller's scope is not.
+		return Minted{}, fmt.Errorf("%w: a github app mint needs the profile's scope it mints", ErrMintRefused)
 	}
 	parsed, err := ParseValue(typeGitHubApp, req.Value)
 	if err != nil {
 		return Minted{}, err
 	}
 	secret := parsed.GitHubApp
-	owners := req.GitHubOwners
-	narrowing := req.GitHubNarrowing
-	if narrowing != nil {
-		// requests.Machine.Values refuses an unlisted owner before any minter runs; this is the
-		// second barrier.
-		owner := strings.ToLower(narrowing.Owner)
-		if !slices.Contains(owners, owner) {
-			return Minted{}, fmt.Errorf("%w: github app %s: %s is not an account its github-owners tag lists", ErrMintNarrowingRefused, secret.AppID, narrowing.Owner)
-		}
-		owners = []string{owner}
+	if err := scope.refusal(secret.AppID); err != nil {
+		return Minted{}, err
 	}
 	now := time.Now
 	if m.Now != nil {
@@ -520,7 +568,46 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 	if err != nil {
 		return Minted{}, err
 	}
-	minted := githubMintedInstallations{Installations: make(map[string]githubMintedInstallation, len(owners))}
+	// Every installation's cut first, so an empty one refuses the release before any token is
+	// asked for, rather than after a token the release would then hand to nobody.
+	var each []installationMint
+	for _, installation := range installations {
+		// JSON decoding leaves a missing or null id 0: no installation GitHub mints for, so the
+		// record is left out rather than failing the release before a valid one is reached.
+		if installation.SuspendedAt != nil || installation.ID <= 0 {
+			continue
+		}
+		// An account with neither a login nor a slug names nothing a scope can name, so the
+		// accounts filter leaves it out like any account the scope does not name.
+		owner := cmp.Or(installation.Account.Login, installation.Account.Slug)
+		account := strings.ToLower(owner)
+		if !slices.Contains(scope.Accounts, account) {
+			continue
+		}
+		asked, leftOut := cut(scope.Permissions, installation.Permissions)
+		if emptyCut(scope.Permissions, asked) {
+			return Minted{}, fmt.Errorf("%w: github app %s: its installation on %s holds none of %s", ErrMintEmptyCut, secret.AppID, owner, permissionWords(lacked(scope.Permissions, asked)))
+		}
+		each = append(each, installationMint{installation: installation, owner: owner, account: account, repositories: scope.repositoriesOf(account), asked: asked, leftOut: leftOut})
+	}
+	if len(each) == 0 {
+		// ErrMintNoInstallation, not the ErrMintRefused it wraps: this is one of the two refusals
+		// the broker's check refuses a request for, and it is told apart from every other 4xx by
+		// this sentinel alone.
+		return Minted{}, fmt.Errorf("%w: github app %s has no installation on %s", ErrMintNoInstallation, secret.AppID, strings.Join(scope.Accounts, " or "))
+	}
+	if scope.Value == githubname.ValueToken && len(each) > 1 {
+		// The caller holds a value-token scope to one account (requests' gitHubScope), so these
+		// are that account's installations, whose logins differ only in case: the release hands
+		// over one bare token, and minting each would leave the others live with nobody holding
+		// them. A scope of several accounts that came here anyway is refused the same way.
+		owners := make([]string, 0, len(each))
+		for _, one := range each {
+			owners = append(owners, fmt.Sprintf("%s (installation %d)", one.owner, one.installation.ID))
+		}
+		return Minted{}, fmt.Errorf("%w: github app %s: its installations on %s: %s", ErrMintSeveralInstallations, secret.AppID, each[0].account, strings.Join(owners, ", "))
+	}
+	minted := githubMintedInstallations{Installations: make(map[string]githubMintedInstallation, len(each))}
 	// A release that fails at an installation after minting for an earlier one hands over none of
 	// its tokens, so it gives back every one it holds before it answers (revokeUnreleased).
 	defer func() {
@@ -528,39 +615,15 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 			m.revokeUnreleased(ctx, mint, minted, "app", secret.AppID)
 		}
 	}()
+	var leftOut map[string][]string
 	// expires is the earliest expiry of the installations minted so far, zero until the first.
 	var expires time.Time
-	for _, installation := range installations {
-		// JSON decoding leaves a missing or null id 0: no installation GitHub mints for, so the
-		// record is left out rather than failing the release before a valid one is reached.
-		if installation.SuspendedAt != nil || installation.ID <= 0 {
-			continue
-		}
-		// An account with neither a login nor a slug names nothing github-owners can list, so the
-		// owners filter leaves it out like any unlisted account.
-		owner := cmp.Or(installation.Account.Login, installation.Account.Slug)
-		if !slices.Contains(owners, strings.ToLower(owner)) {
-			continue
-		}
-		if req.Check && !narrowing.narrowsToken() {
-			// A narrowing to its owner alone: the listing has given this check its whole verdict,
-			// an installation on the account. Its token request would carry no body, so GitHub's
-			// answer could refuse the App but not the narrowing. A token minted for it would hold
-			// every permission of the installation, and it would stay live at GitHub for up to an
-			// hour wherever the revoke did not finish.
-			return Minted{}, nil
-		}
-		// A read-only narrowing asks for the optional reads this installation holds alone, so
-		// GitHub does not refuse the whole token over one it lacks (heldReadOnlyPermissions).
-		permissions, missing := readOnlyPermissions, []string(nil)
-		if narrowing != nil && narrowing.ReadOnly {
-			permissions, missing = heldReadOnlyPermissions(installation.Permissions)
-		}
-		token, err := m.installationToken(ctx, mint, jwt, secret.AppID, installation.ID, narrowing.accessTokensBody(permissions), req.Check)
+	for _, one := range each {
+		token, err := m.installationToken(ctx, mint, jwt, secret.AppID, one.installation.ID, accessTokensBody(one.repositories, one.asked), req.Check)
 		if err != nil {
 			// installationToken has given back to GitHub any token it minted in an answer this
 			// mint cannot use (giveBackUnusable).
-			return Minted{}, narrowing.refusal(err, secret.AppID, owner)
+			return Minted{}, refusal(err, secret.AppID, one.owner, one.repositories, one.asked)
 		}
 		if req.Check {
 			// A check releases nothing, so the token goes back to GitHub the moment GitHub
@@ -570,44 +633,35 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 			// heldBy reads what GitHub says the token holds and never the token itself, so the
 			// verdict below is still the one the release would get.
 			if revokeErr := m.revokeToken(ctx, mint, token.Token); revokeErr != nil {
-				slog.Warn(revokedCheckMessage, "app", secret.AppID, "installation", installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
+				slog.Warn(revokedCheckMessage, "app", secret.AppID, "installation", one.installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
 			}
 			token.Token = ""
 		}
-		if err := narrowing.heldBy(token); err != nil {
+		if err := heldBy(token, one.repositories, one.asked); err != nil {
 			if !req.Check {
 				// A check revoked this token already, and holds none to revoke here.
 				if revokeErr := m.revokeInstallationToken(ctx, mint, token.Token); revokeErr != nil {
-					slog.Warn(revokedWiderMessage, "app", secret.AppID, "installation", installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
+					slog.Warn(revokedWiderMessage, "app", secret.AppID, "installation", one.installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
 				}
 			}
-			return Minted{}, fmt.Errorf("%w: github app %s: installation %d: %w", ErrMintUpstream, secret.AppID, installation.ID, err)
+			return Minted{}, fmt.Errorf("%w: github app %s: installation %d: %w", ErrMintUpstream, secret.AppID, one.installation.ID, err)
 		}
-		if len(missing) > 0 && !req.Check {
-			// A check releases nothing, so the line would say a token was released that never
-			// was, and it would be written once for each mint the check makes
-			// (missingReadsMessage).
-			slog.Warn(missingReadsMessage, "app", secret.AppID, "installation", installation.ID, "missing", strings.Join(missing, ","))
-		}
-		minted.Installations[owner] = githubMintedInstallation{
-			InstallationID: installation.ID,
+		minted.Installations[one.owner] = githubMintedInstallation{
+			InstallationID: one.installation.ID,
 			Token:          token.Token,
 			ExpiresAt:      token.ExpiresAt,
+		}
+		if len(one.leftOut) > 0 {
+			if leftOut == nil {
+				leftOut = map[string][]string{}
+			}
+			leftOut[one.account] = one.leftOut
 		}
 		// An answer that carried no expires_at leaves the token's zero, which says nothing about
 		// when it ends and so never becomes the release's expiry.
 		if !token.ExpiresAt.IsZero() && (expires.IsZero() || token.ExpiresAt.Before(expires)) {
 			expires = token.ExpiresAt
 		}
-	}
-	if len(minted.Installations) == 0 {
-		// ErrMintNoInstallation, not the ErrMintRefused it wraps: this is the one refusal of
-		// GitHub's the broker's narrowing check refuses a request for, and it is told apart
-		// from every other 4xx by this sentinel alone.
-		if narrowing != nil {
-			return Minted{}, fmt.Errorf("%w: github app %s has no installation on %s", ErrMintNoInstallation, secret.AppID, narrowing.Owner)
-		}
-		return Minted{}, fmt.Errorf("%w: github app %s has no installation on an account its github-owners tag lists", ErrMintNoInstallation, secret.AppID)
 	}
 	if req.Check {
 		// Every token this check minted is revoked and none is held, so there is nothing to
@@ -616,11 +670,16 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 		// below holds no verdict a check could miss by returning here.
 		return Minted{}, nil
 	}
+	if scope.Value == githubname.ValueToken {
+		// The check above has refused a value-token scope of more than one installation, so the
+		// one installation minted is the release.
+		return Minted{Value: minted.Installations[each[0].owner].Token, Expires: expires, LeftOut: leftOut}, nil
+	}
 	encoded, err := json.Marshal(minted)
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: encode GitHub App installations: %w", ErrMintUpstream, err)
 	}
-	return Minted{Value: string(encoded), Expires: expires}, nil
+	return Minted{Value: string(encoded), Expires: expires, LeftOut: leftOut}, nil
 }
 
 func (m GitHubApp) base() string {

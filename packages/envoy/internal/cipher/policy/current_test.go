@@ -450,20 +450,20 @@ func (s *abandonedRead) GetSecretValue(ctx context.Context, in *secretsmanager.G
 // reload and this test fails.
 func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *testing.T) {
 	local := secrets.NewLocal(
-		typeSecret("FIRST_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
-		typeSecret("SECOND_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
+		typeSecret("FIRST_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
+		typeSecret("SECOND_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
 	)
 	store := &abandonedRead{Local: local}
 	cur, registry, logged := bootThrough(t, local, store)
 	gained := logChecker(logged)
-	if got := gained(); got != "" {
+	if got := gained(); got != noProfilesLine {
 		t.Fatalf("the first load logged:\n%s", got)
 	}
 
 	// A new version of each that no decoder reads. The reload reads them in name order: FIRST_KEY's
 	// answers, and its context ends during SECOND_KEY's.
-	local.Put(typeSecret("FIRST_KEY", policy.TypeGitHubApp, undecodable))
-	local.Put(typeSecret("SECOND_KEY", policy.TypeGitHubApp, undecodable))
+	local.Put(typeSecret("FIRST_KEY", policy.TypeGoogleLogin, undecodable))
+	local.Put(typeSecret("SECOND_KEY", policy.TypeGoogleLogin, undecodable))
 	store.hold(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -533,14 +533,14 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 	}
 
 	t.Run("while its value read is out", func(t *testing.T) {
-		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 		store := &abandonedRead{Local: local}
 		cur, registry, logged := bootThrough(t, local, store)
 		gained := logChecker(logged)
-		if got := gained(); got != "" {
+		if got := gained(); got != noProfilesLine {
 			t.Fatalf("the first load logged:\n%s", got)
 		}
-		local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
+		local.Put(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable))
 		store.hold(0)
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
@@ -550,14 +550,14 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 	})
 
 	t.Run("while it waits for the writer lock", func(t *testing.T) {
-		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 		store := &lockedOutRead{Local: local}
 		cur, registry, logged := bootThrough(t, local, store)
 		gained := logChecker(logged)
-		if got := gained(); got != "" {
+		if got := gained(); got != noProfilesLine {
 			t.Fatalf("the first load logged:\n%s", got)
 		}
-		local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
+		local.Put(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable))
 		readEntered, readRelease := store.armRead()
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
@@ -704,7 +704,7 @@ func TestAReloadItsShutdownEndsLogsNothing(t *testing.T) {
 		}
 		shutdown()
 		synctest.Wait() // the reload has returned, and its goroutine with it
-		if logged.String() != "" {
+		if logged.String() != noProfilesLine {
 			t.Fatalf("a reload the shutdown ended logged:\n%s", logged)
 		}
 	})
@@ -720,6 +720,13 @@ func refusedLine(id, reason, owner string, firstLoad bool, was string) string {
 	}
 	return line + "\n"
 }
+
+// noProfilesLine is the exact ProfilesAppliedMessage line a policy with no profiles file writes
+// at its first publish, after the lines of the secrets that publish refuses. Its message is
+// written out rather than read from the constant: it is a text the operate page documents and
+// scripts/github-profile-check.sh reads, so a change to the constant has to fail here, and it
+// begins "broker:" as every other line of the broker does.
+const noProfilesLine = `INFO broker: profiles applied served=0 refused=0 file_digest=""` + "\n"
 
 // servableLine is the exact ServableMessage line Current writes, as CaptureLog reads it, for the
 // secret whose whole name in the store is id, which was refused for reason with owner: now is
@@ -800,7 +807,7 @@ func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
 			{name: "the pod's first load", lines: refusedLine(badOwner, policy.ReasonOwnerTagMalformed, "", true, "") +
 				refusedLine(going, policy.ReasonTierTagMalformed, owner, true, "") +
 				refusedLine(noOwnerID, policy.ReasonOwnerTagMissing, "", true, "") +
-				refusedLine(noValue, policy.ReasonNoCurrentValue, owner, true, ""),
+				refusedLine(noValue, policy.ReasonNoCurrentValue, owner, true, "") + noProfilesLine,
 				series: []string{
 					unservable(badOwner, policy.ReasonOwnerTagMalformed, ""), unservable(going, policy.ReasonTierTagMalformed, owner),
 					unservable(noOwnerID, policy.ReasonOwnerTagMissing, ""), unservable(noValue, policy.ReasonNoCurrentValue, owner),
@@ -943,9 +950,9 @@ func TestAFailingReloadLogsOnceUntilItLoadsAgain(t *testing.T) {
 			lists  int
 			logged string
 		}{
-			{"two reloads that fail", true, 2*time.Minute + time.Second, 3, failed},
-			{"the reload that loads again", false, time.Minute, 4, failed + recovered},
-			{"a reload after it", false, time.Minute, 5, failed + recovered},
+			{"two reloads that fail", true, 2*time.Minute + time.Second, 3, noProfilesLine + failed},
+			{"the reload that loads again", false, time.Minute, 4, noProfilesLine + failed + recovered},
+			{"a reload after it", false, time.Minute, 5, noProfilesLine + failed + recovered},
 		} {
 			setFailing(step.failing)
 			time.Sleep(step.wait)

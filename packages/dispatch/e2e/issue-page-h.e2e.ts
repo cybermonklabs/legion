@@ -19,7 +19,7 @@ import {
 import { addPriorityControlName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { createPriority, getIssue, patchIssue, putRepoProject } from "./api";
+import { createPriority, getIssue, patchIssue, putProjectDefaultRepository } from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -500,6 +500,10 @@ test("every property with a value is visible in Details at every width @phone", 
   test.setTimeout(240_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one, parent, three } = seeded.keys;
+    // The project's default repository is the one suggestion the repository's box offers, so
+    // the box below is measured with a list that holds an option. ONE names it as its own, and
+    // this row reads no other issue's repository.
+    await putProjectDefaultRepository(PROJECT, REPOSITORY);
     const desktopProject = test.info().project.name !== "iphone";
     // ONE as Dispatch reads it, which the readings below take who opened it from.
     const oneRead = await getIssue(one);
@@ -728,9 +732,9 @@ test("every property with a value is visible in Details at every width @phone", 
       ).toHaveValue(REPOSITORY);
       // The open box is the row's value: as wide as the row's value column, the second of the
       // row's two columns (`details-leaves.tsx`'s `Row`), and wide enough to show the repository
-      // whole. The box fills its list of suggestions from a read it starts when it takes the
-      // focus, and Chromium draws the list's arrow inside the box once the list holds an option,
-      // so both are measured once the list holds the repository, as the reader sees the box.
+      // whole. The box suggests the project's default repository, set at this row's start, and
+      // Chromium draws the list's arrow inside the box once the list holds an option, so both are
+      // measured once the list holds the repository, as the reader sees the box.
       // Both are soft, so that a width the box fails at does not stop the widths after it.
       await expect(
         detailsRow(page, PROPERTY_LABELS.repository).locator(
@@ -1031,7 +1035,7 @@ test("a label of the most characters Dispatch takes is whole in Details at every
 });
 
 /** A repository whose name runs to 45 characters, which GitHub allows (a name of up to 100), with
- *  no space to break it at. A name of 32 characters, which a project of this deployment maps,
+ *  no space to break it at. A name of 32 characters, which a repository of this deployment has,
  *  already runs 14 px past the row at 1440 px. */
 const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
 
@@ -1044,7 +1048,6 @@ test("a repository of a long name is whole in Details at every width @phone", as
   test.setTimeout(180_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { two } = seeded.keys;
-    await putRepoProject(LONG_REPOSITORY, { default: false, project: PROJECT });
     await patchIssue(two, { repo: LONG_REPOSITORY });
     const desktopProject = test.info().project.name !== "iphone";
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {

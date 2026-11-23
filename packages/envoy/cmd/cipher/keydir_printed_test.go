@@ -247,7 +247,8 @@ const machineCacheWords = "the machine cache (${XDG_STATE_HOME:-$HOME/.local/sta
 // TestTheKeyDirIsNamedByItsSettingNeverItsPath: the key dir holds key.pem, so no line about it, or
 // about a file beside key.pem, spells its path: the chain's refusal of a key dir with no key.pem,
 // an enrollment file that cannot be read or is empty, a launcher's enrollment.error, a wait on a
-// pending marker nothing follows, and the source `identity --source` names each say
+// pending marker nothing follows (the line it says as it starts to wait, which it says before it
+// reads its deadline, and its refusal), and the source `identity --source` names each say
 // AGENT_SECRETS_KEY_DIR, or its default's own expression where the variable is unset, with the
 // system's reason where a file call failed. What a launcher wrote in enrollment.error still
 // prints, and a key dir that holds a session still signs (the controls).
@@ -294,7 +295,7 @@ func TestTheKeyDirIsNamedByItsSettingNeverItsPath(t *testing.T) {
 		}, args: signArgs, code: 1,
 			want: []string{"read the enrollment file in AGENT_SECRETS_KEY_DIR: open: no such file or directory", "enrollment.error: broker 503 DATABASE: postgres unreachable"}},
 		{name: "a pending marker nothing follows", fill: func(t *testing.T, dir string) { writePendingMarker(t, dir, 0) }, wait: "100ms", args: signArgs, code: 1,
-			want: []string{"waited 100ms while AGENT_SECRETS_KEY_DIR held enrollment.pending"}},
+			want: []string{launcherWaitLine("AGENT_SECRETS_KEY_DIR", "100ms"), ", its bound 100ms, while AGENT_SECRETS_KEY_DIR held enrollment.pending)"}},
 		{name: "identity --source", fill: func(t *testing.T, dir string) { writeSessionFiles(t, dir, "enr-launcher") }, args: []string{"identity", "--source"},
 			want: []string{"key-dir: AGENT_SECRETS_KEY_DIR\n"}},
 		{name: "identity --source, the default key dir", fill: func(t *testing.T, dir string) { writeSessionFiles(t, dir, "enr-launcher") }, byDefault: true, args: []string{"identity", "--source"},
