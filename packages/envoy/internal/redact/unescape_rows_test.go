@@ -15,8 +15,9 @@ import (
 
 // TestTheBoundaryReadsAnAnswersBodyWithItsReferencesDecoded: an issuer's refusal is an HTML page
 // that writes a URL's separators as character references, once or twice over (&amp;quest;). The
-// boundary reads the body as a reader of the page sees it (redact.UnescapeHTML, until none is
-// left) before the rule, so OAuth2's answer prints none of the URL's credentials.
+// boundary reads the body as a reader of the page sees it (redact.UnescapeHTML, at most
+// redact.ReferencePasses levels deep) before the rule, so OAuth2's answer prints none of the URL's
+// credentials.
 func TestTheBoundaryReadsAnAnswersBodyWithItsReferencesDecoded(t *testing.T) {
 	for _, row := range []struct{ name, body string }{
 		{"query-once", "<p>Continue at https://idp.example/cb&quest;session&equals;" + redacttest.Token + " now</p>"},

@@ -91,19 +91,31 @@ function separatorReference(
   return reference;
 }
 
+/** The most passes that change a field {@link decodeSeparators} makes, each pass decoding one
+ *  level of nesting. A page writes a URL's separator as a reference (`&quest;`, one pass), and a
+ *  page whose text was escaped once more writes the reference's `&` as a reference too
+ *  (`&amp;quest;`, two passes): the deepest any page, answer or test the rule is held to writes.
+ *  Four leaves room for two more escapes. Each pass is O(n) in the field, so the decoding costs
+ *  at most `REFERENCE_PASSES + 1` passes, O(n), where decoding until no reference was left cost a
+ *  pass for each level a hostile field nests (`&amp;amp;amp;…` or `&ampampamp…;`), quadratic in
+ *  its length. Go's `redact.ReferencePasses`. */
+const REFERENCE_PASSES = 4;
+
 /**
  * `field` as a reader sees it (step 0): each full-width form of printable ASCII (U+FF01 to
  * U+FF5E) as that character, and each character reference of one of {@link SEPARATORS} as that
- * separator, until none is left. A named reference needs its `;`, as a page's reader takes it, but
- * for `&amp`, which a reader also takes as the start of a longer name (`&ampquest;` is
- * `&quest;`). Go's `decodeSeparators`.
+ * separator, decoded in at most {@link REFERENCE_PASSES} passes that change it; `undefined` where
+ * the field still changes on the pass after them. A named reference needs its `;`, as a page's
+ * reader takes it, but for `&amp`, which a reader also takes as the start of a longer name
+ * (`&ampquest;` is `&quest;`). Go's `decodeSeparators`.
  */
-function decodeSeparators(field: string): string {
-  for (;;) {
+function decodeSeparators(field: string): string | undefined {
+  for (let pass = 0; ; pass++) {
     const decoded = field
       .replace(/[\uFF01-\uFF5E]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
       .replace(CHARACTER_REFERENCE, separatorReference);
     if (decoded === field) return field;
+    if (pass === REFERENCE_PASSES) return undefined;
     field = decoded;
   }
 }
@@ -116,10 +128,12 @@ function decodeSeparators(field: string): string {
  * Go's `redact.Remote`, step for step:
  *  0. The field is first read with each full-width form of printable ASCII as that character and
  *     each HTML character reference of a URL's separator, or of its full-width form, as that
- *     separator, until none is left
- *     ({@link decodeSeparators}). Where that reading differs from the field, steps 1 to 8 read it:
- *     a field they cannot read is not readable, and one whose reading removes anything prints as
- *     that reading. Otherwise steps 1 to 8 read the field as it came.
+ *     separator, in at most {@link REFERENCE_PASSES} passes that change it
+ *     ({@link decodeSeparators}); a field that still changes on the pass after them, its
+ *     references nested deeper than a page writes them, is not readable. Where that reading
+ *     differs from the field, steps 1 to 8 read it: a field they cannot read is not readable, and
+ *     one whose reading removes anything prints as that reading. Otherwise steps 1 to 8 read the
+ *     field as it came.
  *  1. A URL starts at a scheme (`[A-Za-z][A-Za-z0-9+.-]*`), `:` and two slashes, or at two
  *     slashes not preceded by a scheme character, `:` or a slash. Either slash may be a
  *     backslash; step 3 rejects such a start. A `:` and two slashes that no scheme comes before
@@ -161,6 +175,7 @@ function decodeSeparators(field: string): string {
  */
 export function readRemoteText(field: string): string | undefined {
   const decoded = decodeSeparators(field);
+  if (decoded === undefined) return undefined;
   if (decoded !== field) {
     const read = readField(decoded);
     if (read !== decoded) return read;

@@ -1,5 +1,5 @@
 {
-  "about": "Remote fields another party wrote, each with the result of the rule (redact.Remote in Go, readRemoteText in packages/contracts/src/remote-text.ts). A readable row prints as its printed; a row that is not readable prints as the not-readable marker. Every row comes in its raw form and in its Go-quoted form (-quoted). No printed holds any of its row's secrets; each secret is in its row's field. Every credential here is made up.",
+  "about": "Remote fields another party wrote, each with the result of the rule (redact.Remote in Go, readRemoteText in packages/contracts/src/remote-text.ts). A readable row prints as its printed; a row that is not readable prints as the not-readable marker. Every row comes in its raw form and in its Go-quoted form (-quoted). No printed holds any of its row's secrets; each secret is in its row's field. A row with a repeat writes its field with {repeat} where repeat.part stands repeat.count times over, and both replayers write it out before they read the row, so a field nested thousands of references deep stays one short line here. Every credential here is made up.",
   "not_readable": "(not printed: the answer's words hold a URL the rule cannot read as clean)",
   "rows": [
     {
@@ -1827,6 +1827,104 @@
       "readable": true,
       "printed": "\"https&#4295032602;&#4295032591;&#4295032591;issuer.example&#4295032591;path&#4295032607;access_token&#4295032605;value\"",
       "secrets": []
+    },
+    {
+      "id": "html-ref-nested-at-bound",
+      "category": "reference-depth",
+      "field": "https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token",
+      "repeat": { "part": "amp;", "count": 3 },
+      "readable": true,
+      "printed": "https://issuer.example/path?access_token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-nested-at-bound-quoted",
+      "category": "reference-depth",
+      "field": "\"https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token\"",
+      "repeat": { "part": "amp;", "count": 3 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-nested-past-bound",
+      "category": "reference-depth",
+      "field": "https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token",
+      "repeat": { "part": "amp;", "count": 4 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-nested-past-bound-quoted",
+      "category": "reference-depth",
+      "field": "\"https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token\"",
+      "repeat": { "part": "amp;", "count": 4 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-nested-deep",
+      "category": "reference-depth",
+      "field": "https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token",
+      "repeat": { "part": "amp;", "count": 4095 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-nested-deep-quoted",
+      "category": "reference-depth",
+      "field": "\"https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token\"",
+      "repeat": { "part": "amp;", "count": 4095 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-legacy-amp-at-bound",
+      "category": "reference-depth",
+      "field": "https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token",
+      "repeat": { "part": "amp", "count": 3 },
+      "readable": true,
+      "printed": "https://issuer.example/path?access_token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-legacy-amp-at-bound-quoted",
+      "category": "reference-depth",
+      "field": "\"https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token\"",
+      "repeat": { "part": "amp", "count": 3 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-legacy-amp-past-bound",
+      "category": "reference-depth",
+      "field": "https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token",
+      "repeat": { "part": "amp", "count": 4 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-legacy-amp-past-bound-quoted",
+      "category": "reference-depth",
+      "field": "\"https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token\"",
+      "repeat": { "part": "amp", "count": 4 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-legacy-amp-deep",
+      "category": "reference-depth",
+      "field": "https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token",
+      "repeat": { "part": "amp", "count": 4095 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-legacy-amp-deep-quoted",
+      "category": "reference-depth",
+      "field": "\"https:&{repeat}sol;&{repeat}sol;not-a-secret-user&{repeat}colon;not-a-secret-password&{repeat}commat;issuer.example&{repeat}sol;path&{repeat}quest;access_token&{repeat}equals;not-a-secret-token\"",
+      "repeat": { "part": "amp", "count": 4095 },
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
     }
   ]
 }

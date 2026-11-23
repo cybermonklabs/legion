@@ -164,6 +164,21 @@ func TestTextPrintsAnUnreadableURLAsNotReadable(t *testing.T) {
 	}
 }
 
+// A page's references are read as deep as redact.UnescapeHTML reads them, redact.ReferencePasses
+// levels: a page nested that deep prints with its URL's user information removed, and one nested a
+// level deeper, which no page writes, prints as redact.WordsNotReadable, never its words.
+func TestTextPrintsAPageWhoseReferencesNestPastTheBoundAsNotReadable(t *testing.T) {
+	page := func(passes int) string {
+		return "<p>clone https://zzz9secret&" + strings.Repeat("amp;", passes-1) + "commat;git.example/o/r failed</p>"
+	}
+	if got, want := excerpt.Text(page(redact.ReferencePasses)), "clone https://git.example/o/r failed"; got != want {
+		t.Fatalf("Text of a page nested %d deep = %q, want %q", redact.ReferencePasses, got, want)
+	}
+	if got := excerpt.Text(page(redact.ReferencePasses + 1)); got != redact.WordsNotReadable {
+		t.Fatalf("Text of a page nested %d deep = %q, want %q", redact.ReferencePasses+1, got, redact.WordsNotReadable)
+	}
+}
+
 // The excerpt reads at most the first 64 KiB characters of the body. Redacting shortens the text,
 // so it runs on that slice and the cut comes after: nothing from past the limit is pulled in, and
 // the word the limit falls inside, a token that starts inside the limit and runs past it here, is

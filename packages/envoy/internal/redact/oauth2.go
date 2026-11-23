@@ -256,8 +256,13 @@ func newOAuthAnswer(re *oauth2.RetrieveError, carried []string, recorded bool) *
 	answer.ErrorURI = ruled(Tokens(re.ErrorURI, -1, carried...))
 	if len(re.Body) > 0 {
 		// An HTML page can write a URL's separators as character references, which a reader of
-		// the page decodes: the rule reads the body as that reader does (UnescapeHTML).
-		answer.Body = []byte(Field(Tokens(UnescapeHTML(string(re.Body)), -1, carried...)))
+		// the page decodes: the rule reads the body as that reader does (UnescapeHTML), and a body
+		// whose references nest deeper than it decodes prints as a field the rule cannot read.
+		if body, ok := UnescapeHTML(string(re.Body)); ok {
+			answer.Body = []byte(Field(Tokens(body, -1, carried...)))
+		} else {
+			answer.Body = []byte(WordsNotReadable)
+		}
 	}
 	return &OAuthAnswer{code: NewRemoteText(re.ErrorCode), refusalCode: refusalCode, refusalMessage: refusalMessage, answer: answer}
 }

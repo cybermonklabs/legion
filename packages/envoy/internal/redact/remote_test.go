@@ -25,22 +25,46 @@ var remoteCategories = []string{
 	"r4-clean-url", "r4-prose-after-url", "r4-percent", "r4-email-without-url", "r4-not-a-url",
 	"r4-empty", "r4-unreadable-clean", "html-reference", "r4-html-text", "brace-escape",
 	"percent-u-escape", "long-unicode-escape", "octal-escape", "full-width", "r4-full-width-text",
-	"path-parameter", "scheme-not-a-scheme", "html-reference-full-width",
+	"path-parameter", "scheme-not-a-scheme", "html-reference-full-width", "reference-depth",
 }
 
 // remoteRow is one row of testdata/remote.json.
 type remoteRow struct {
-	ID       string   `json:"id"`
-	Category string   `json:"category"`
-	Field    string   `json:"field"`
-	Readable bool     `json:"readable"`
-	Printed  *string  `json:"printed"`
-	Secrets  []string `json:"secrets"`
+	ID       string     `json:"id"`
+	Category string     `json:"category"`
+	Field    string     `json:"field"`
+	Readable bool       `json:"readable"`
+	Printed  *string    `json:"printed"`
+	Secrets  []string   `json:"secrets"`
+	Repeat   *rowRepeat `json:"repeat"`
 }
 
-// readRemoteFixture reads testdata/remote.json and fails t on a repeated id, a row of a category
-// this suite does not know, a required category no row holds, a readable row with no printed, or
-// a secret missing from its row's field.
+// rowRepeat is how a row writes a long field in one short line: its field holds repeatAt where
+// Part stands Count times over (expanded), as a field nested thousands of references deep does.
+type rowRepeat struct {
+	Part  string `json:"part"`
+	Count int    `json:"count"`
+}
+
+// repeatAt is where a row with a repeat writes its repeated part.
+const repeatAt = "{repeat}"
+
+// expanded is row's field with its repeat written out, and whether the row's repeat is one: a part,
+// a count above zero, and a field that holds repeatAt. A row with no repeat is its field as it is.
+func (row remoteRow) expanded() (string, bool) {
+	if row.Repeat == nil {
+		return row.Field, true
+	}
+	if row.Repeat.Part == "" || row.Repeat.Count < 1 || !strings.Contains(row.Field, repeatAt) {
+		return "", false
+	}
+	return strings.ReplaceAll(row.Field, repeatAt, strings.Repeat(row.Repeat.Part, row.Repeat.Count)), true
+}
+
+// readRemoteFixture reads testdata/remote.json, each row's field with its repeat written out
+// (expanded), and fails t on a repeated id, a row of a category this suite does not know, a
+// required category no row holds, a readable row with no printed, a repeat that is not one, or a
+// secret missing from its row's field.
 func readRemoteFixture(t *testing.T) []remoteRow {
 	t.Helper()
 	data, err := os.ReadFile("testdata/remote.json")
@@ -62,11 +86,17 @@ func readRemoteFixture(t *testing.T) []remoteRow {
 		known[c] = 0
 	}
 	ids := map[string]bool{}
-	for _, row := range fixture.Rows {
+	for i := range fixture.Rows {
+		row := &fixture.Rows[i]
 		if ids[row.ID] {
 			t.Errorf("the fixture repeats the id %q", row.ID)
 		}
 		ids[row.ID] = true
+		field, ok := row.expanded()
+		if !ok {
+			t.Errorf("row %q's repeat %+v names no part, no count above zero, or no %s in its field", row.ID, *row.Repeat, repeatAt)
+		}
+		row.Field = field
 		if _, ok := known[row.Category]; !ok {
 			t.Errorf("row %q has the category %q, which this suite does not require", row.ID, row.Category)
 		}

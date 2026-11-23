@@ -2938,8 +2938,8 @@
       "capture": "redact.oauth2-body",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "[]byte(Field(Tokens(UnescapeHTML(string(re.Body)), -1, carried...)))",
-        "replacement": "[]byte(Tokens(UnescapeHTML(string(re.Body)), -1, carried...))"
+        "preimage": "[]byte(Field(Tokens(body, -1, carried...)))",
+        "replacement": "[]byte(Tokens(body, -1, carried...))"
       }
     },
     {
@@ -3153,6 +3153,13 @@
       "production": "excerpt.Text, excerpt.BodyForText"
     },
     {
+      "id": "excerpt-reference-depth",
+      "requirement": "r1-fail-closed",
+      "package": "./excerpt",
+      "test": "TestTextPrintsAPageWhoseReferencesNestPastTheBoundAsNotReadable",
+      "production": "excerpt.Text: redact.UnescapeHTML's refusal past redact.ReferencePasses prints redact.WordsNotReadable"
+    },
+    {
       "id": "excerpt-64kib",
       "requirement": "r1-fail-closed",
       "package": "./excerpt",
@@ -3197,8 +3204,8 @@
       "capture": "excerpt.text-remote",
       "mutation": {
         "file": "packages/envoy/excerpt/excerpt.go",
-        "preimage": "redact.Remote(redact.UnescapeHTML(plain))",
-        "replacement": "redact.UnescapeHTML(plain), true"
+        "preimage": "redact.Remote(plain)",
+        "replacement": "plain, true"
       }
     },
     {
@@ -3256,6 +3263,20 @@
       "package": "./internal/redact",
       "test": "TestTheBoundaryReadsAnAnswersBodyWithItsReferencesDecoded/at-twice",
       "production": "redact.OAuth2's answer body, redact.UnescapeHTML"
+    },
+    {
+      "id": "body-reference-depth-at-bound",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestTheBoundaryPrintsABodyWhoseReferencesNestPastTheBoundAsNotReadable/at-bound",
+      "production": "redact.OAuth2's answer body, redact.UnescapeHTML: a page nested redact.ReferencePasses deep is read"
+    },
+    {
+      "id": "body-reference-depth-past-bound",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestTheBoundaryPrintsABodyWhoseReferencesNestPastTheBoundAsNotReadable/past-bound",
+      "production": "redact.OAuth2's answer body, redact.UnescapeHTML: a page nested deeper prints redact.WordsNotReadable"
     },
     {
       "id": "excerpt-hidden-reference-question-equals",
@@ -3769,6 +3790,48 @@
       "production": "redact.Remote step 8: the known residual"
     },
     {
+      "id": "reference-depth-nested-at-bound-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-nested-at-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested redact.ReferencePasses deep is read"
+    },
+    {
+      "id": "reference-depth-nested-past-bound-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-nested-past-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested deeper than redact.ReferencePasses is not readable"
+    },
+    {
+      "id": "reference-depth-nested-deep-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-nested-deep",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested deeper than redact.ReferencePasses is not readable"
+    },
+    {
+      "id": "reference-depth-legacy-amp-at-bound-go",
+      "requirement": "r4-unchanged",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-legacy-amp-at-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested redact.ReferencePasses deep is read"
+    },
+    {
+      "id": "reference-depth-legacy-amp-past-bound-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-legacy-amp-past-bound",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested deeper than redact.ReferencePasses is not readable"
+    },
+    {
+      "id": "reference-depth-legacy-amp-deep-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRemotePrintsEveryCorpusRowAsItsPrinted/html-ref-legacy-amp-deep",
+      "production": "redact.Remote step 0, decodeSeparators: a field nested deeper than redact.ReferencePasses is not readable"
+    },
+    {
       "id": "leak-proxy-echo-impersonation",
       "requirement": "r3-each-site",
       "package": "./internal/cipherclient",
@@ -3832,6 +3895,13 @@
       "production": "redact.Tokens"
     },
     {
+      "id": "reference-depth-bounded-go",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestNestedReferencesAreReadInBoundedTime",
+      "production": "redact.Remote step 0 (decodeSeparators), redact.UnescapeHTML: at most redact.ReferencePasses+1 passes"
+    },
+    {
       "id": "tokens-request",
       "requirement": "r1-fail-closed",
       "package": "./internal/redact",
@@ -3855,8 +3925,8 @@
       "capture": "redact.tokens-answer-body",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "Tokens(UnescapeHTML(string(re.Body)), -1, carried...)",
-        "replacement": "UnescapeHTML(string(re.Body)) + Tokens(\"\", -1, carried...)"
+        "preimage": "Tokens(body, -1, carried...)",
+        "replacement": "body + Tokens(\"\", -1, carried...)"
       }
     },
     {
@@ -7474,6 +7544,62 @@
       "production": "readRemoteText step 8: the known residual"
     },
     {
+      "id": "reference-depth-nested-at-bound-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-nested-at-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested REFERENCE_PASSES deep is read"
+    },
+    {
+      "id": "reference-depth-nested-past-bound-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-nested-past-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested deeper than REFERENCE_PASSES is not readable"
+    },
+    {
+      "id": "reference-depth-nested-deep-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-nested-deep reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested deeper than REFERENCE_PASSES is not readable"
+    },
+    {
+      "id": "reference-depth-legacy-amp-at-bound-ts",
+      "requirement": "r4-unchanged",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-legacy-amp-at-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested REFERENCE_PASSES deep is read"
+    },
+    {
+      "id": "reference-depth-legacy-amp-past-bound-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-legacy-amp-past-bound reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested deeper than REFERENCE_PASSES is not readable"
+    },
+    {
+      "id": "reference-depth-legacy-amp-deep-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text.test.ts",
+      "test": "remote fixture row html-ref-legacy-amp-deep reads as the fixture says",
+      "production": "readRemoteText step 0, decodeSeparators: a field nested deeper than REFERENCE_PASSES is not readable"
+    },
+    {
+      "id": "reference-depth-bounded-amp-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 1 MiB field nested as &amp;amp;amp;… reads it as not readable within the bound",
+      "production": "readRemoteText step 0, decodeSeparators: at most REFERENCE_PASSES + 1 passes"
+    },
+    {
+      "id": "reference-depth-bounded-legacy-amp-ts",
+      "requirement": "r1-fail-closed",
+      "file": "packages/contracts/src/remote-text-timing.test.ts",
+      "test": "readRemoteText of a 1 MiB field nested as &ampampamp…; reads it as not readable within the bound",
+      "production": "readRemoteText step 0, decodeSeparators: at most REFERENCE_PASSES + 1 passes"
+    },
+    {
       "id": "tokens-shared-table-ts",
       "requirement": "r4-unchanged",
       "file": "packages/contracts/src/remote-text-tokens.test.ts",
@@ -8864,6 +8990,12 @@
       "site": "a listener send's target_session, expects_reply, message and payload redacted as credentials from the listener's words (no live session [redacted], message is [redacted], and every run of eight characters the reason shares with the message), which broke five of main's delivery tests",
       "source": "the merge of main into the pull request",
       "guard": "redact-listener-send-names-public"
+    },
+    {
+      "site": "redact decodeSeparators (Remote's step 0), redact.UnescapeHTML and readRemoteText's decodeSeparators: a field nesting one reference deep (&amp;amp;..., &ampamp...;) cost a decoding pass for each level, a time quadratic in its length, at every print",
+      "source": "the review of #4368 at 72f3edacc4",
+      "guard": "reference-depth-bounded-go",
+      "note": "not a leak: a time the field's writer controls; the bound's refusal past ReferencePasses is held by the reference-depth rows of the fixture, in Go and in TypeScript, and by control (20c)"
     }
   ]
 }

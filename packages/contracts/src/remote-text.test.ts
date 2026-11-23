@@ -74,6 +74,7 @@ const REQUIRED_CATEGORIES = [
   "path-parameter",
   "scheme-not-a-scheme",
   "html-reference-full-width",
+  "reference-depth",
 ];
 
 interface RemoteRow {
@@ -83,11 +84,38 @@ interface RemoteRow {
   readonly readable: boolean;
   readonly printed?: string;
   readonly secrets: readonly string[];
+  /** How the row writes a long field in one short line: its field holds {@link REPEAT_AT} where
+   *  `part` stands `count` times over, as a field nested thousands of references deep does. */
+  readonly repeat?: { readonly part: string; readonly count: number };
 }
 
-const corpus = JSON.parse(readFileSync(CORPUS_PATH, "utf8")) as {
+/** Where a row with a `repeat` writes its repeated part. Go's `repeatAt`. */
+const REPEAT_AT = "{repeat}";
+
+const fixture = JSON.parse(readFileSync(CORPUS_PATH, "utf8")) as {
   readonly not_readable: string;
   readonly rows: readonly RemoteRow[];
+};
+
+/** The rows whose `repeat` is not one: no part, no count above zero, or no {@link REPEAT_AT} in
+ *  the field. Go's `expanded` refuses the same. */
+const badRepeats = fixture.rows
+  .filter(
+    ({ field, repeat }) =>
+      repeat !== undefined &&
+      (repeat.part === "" || !(repeat.count >= 1) || !field.includes(REPEAT_AT))
+  )
+  .map(({ id }) => id);
+
+/** The fixture with each row's field as the rule reads it, its repeat written out, as Go's
+ *  readRemoteFixture reads it. */
+const corpus = {
+  ...fixture,
+  rows: fixture.rows.map((row) =>
+    row.repeat === undefined
+      ? row
+      : { ...row, field: row.field.replaceAll(REPEAT_AT, row.repeat.part.repeat(row.repeat.count)) }
+  ),
 };
 
 test("remote fixture: the marker is WORDS_NOT_READABLE, every required category has a row, and no id repeats", () => {
@@ -97,6 +125,7 @@ test("remote fixture: the marker is WORDS_NOT_READABLE, every required category 
   const categories = new Set(corpus.rows.map((row) => row.category));
   expect(REQUIRED_CATEGORIES.filter((category) => !categories.has(category))).toEqual([]);
   expect([...categories].filter((category) => !REQUIRED_CATEGORIES.includes(category))).toEqual([]);
+  expect(badRepeats).toEqual([]);
   for (const row of corpus.rows) {
     expect(row.readable, `${row.id}: a readable row names what it prints`).toBe(
       row.printed !== undefined

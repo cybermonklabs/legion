@@ -24,7 +24,7 @@ type control struct {
 	expect   []string
 	each     [][]string
 	absent   []string                       // text no failure of the stage may name
-	fixture  bool                           // controls (1), (20) and (20b): the fixture's own tests are their evidence, not the gate's stages
+	fixture  bool                           // controls (1), (20), (20b) and (20c): the fixture's own tests are their evidence, not the gate's stages
 	catches  func(id, category string) bool // with fixture, selects by id and category the rows that must be caught; nil selects every row
 	own      func(repo string, inv inventory) (verdict, output string)
 }
@@ -169,6 +169,15 @@ var controls = []control{
 			return err
 		}
 		return c.edit(boxTSFile, " || (more && splitUserInfo(token.slice(start)))", "")
+	}},
+	{id: "20c", what: "the rule's step 0 bound removed, in Go and in TypeScript: a field whose references nest deeper than ReferencePasses reads as the last pass left it", fixture: true, catches: func(id, category string) bool {
+		// A field nested as deep as the bound decodes whole within it, with the refusal or without.
+		return category == "reference-depth" && !strings.Contains(id, "-at-bound")
+	}, plant: func(c *controlRun) error {
+		if err := c.edit("packages/envoy/internal/redact/remote.go", "\t\tif pass == ReferencePasses {\n\t\t\treturn \"\", false\n", "\t\tif pass == ReferencePasses {\n\t\t\treturn field, true\n"); err != nil {
+			return err
+		}
+		return c.edit(boxTSFile, "    if (pass === REFERENCE_PASSES) return undefined;\n", "    if (pass === REFERENCE_PASSES) return field;\n")
 	}},
 	{id: "2", what: "a new call of the rule, written as a receiver call through a type alias and a method value, at a site no row names", stage: 2,
 		expect: []string{"call census", "cmd/cipher-devrelay/main.go", "(github.com/sjawhar/envoy/cipheraddr.Address).Words", "controlAlias"},
@@ -917,11 +926,12 @@ func judgeControl(ctl control, output string, code int) string {
 	return ""
 }
 
-// fixtureControl is the evidence of controls (1), (20) and (20b): with the grammar returning its
-// input, or with step 8 or step 6's split user information removed, every fixture row catches
-// selects (every row where it is nil) that holds a secret fails at REDACT-ASSERT fixture/<id>, with
-// one of its secrets in the output the test captured there, in Go and in TypeScript. No such row
-// is a failure, not a pass.
+// fixtureControl is the evidence of controls (1), (20), (20b) and (20c): with the grammar returning
+// its input, with step 8 or step 6's split user information removed, or with step 0 reading a
+// field nested past its bound as the last pass left it, every fixture row catches selects (every
+// row where it is nil) that holds a secret fails at REDACT-ASSERT fixture/<id>, with one of its
+// secrets in the output the test captured there, in Go and in TypeScript. No such row is a
+// failure, not a pass.
 func fixtureControl(wt string, catches func(id, category string) bool, out *bytes.Buffer) string {
 	data, err := os.ReadFile(filepath.Join(wt, "packages/envoy/internal/redact/testdata/remote.json"))
 	if err != nil {

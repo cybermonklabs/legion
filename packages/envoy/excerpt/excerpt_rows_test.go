@@ -64,9 +64,10 @@ func shiftedBody(t *testing.T, words []string, url, after string) string {
 // TestTextCutsBeforeItRedactsAndDecodesEveryReference: the cut at the scan limit is made on the
 // text as it came, so a short credential the request carried, which redact.Tokens writes as the
 // longer [redacted], cannot move it inside a URL to just before its '@'; and a page's character
-// references are decoded until none is left (redact.UnescapeHTML), so a double-encoded '@' or
-// '?' does not hide a URL's credential from the rule; and a split query after a URL, behind a
-// no-break space or an em dash a page writes as a reference, is not readable.
+// references are decoded as a reader of the page decodes them, at most redact.ReferencePasses
+// levels deep (redact.UnescapeHTML), so a double-encoded '@' or '?' does not hide a URL's
+// credential from the rule; and a split query after a URL, behind a no-break space or an em dash
+// a page writes as a reference, is not readable.
 func TestTextCutsBeforeItRedactsAndDecodesEveryReference(t *testing.T) {
 	url := "https://" + redacttest.Token + "@gl.example/xy"
 	for _, row := range []struct {

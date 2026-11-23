@@ -72,11 +72,12 @@ var (
 // before the limit. That cut is made first, on the text as it came, so no redaction can move it.
 // Three kinds of credential are then redacted: every piece of each of tokens, trimmed as a header
 // sends it (redact.Tokens); after scripts, styles and tags are dropped and the page's character
-// references decoded until none is left (redact.UnescapeHTML: &quest;, &#64;, &amp;quest; and
-// the rest), each URL's user info and parameter values (redact.Remote, which reads the plain text
-// as a reader of the page reads it); then the value after `Authorization:` (its scheme kept:
-// Bearer, Basic, Digest, token or DPoP), after `Bearer` and after `DPoP`. A plain text Remote
-// cannot read as clean is redact.WordsNotReadable, never the text. All of it runs before the cut
+// references decoded as a reader of the page decodes them (redact.UnescapeHTML: &quest;, &#64;,
+// &amp;quest; and the rest, nested at most redact.ReferencePasses deep), each URL's user info and
+// parameter values (redact.Remote, which reads the plain text as a reader of the page reads it);
+// then the value after `Authorization:` (its scheme kept: Bearer, Basic, Digest, token or DPoP),
+// after `Bearer` and after `DPoP`. A plain text whose references nest deeper, or that Remote
+// cannot read as clean, is redact.WordsNotReadable, never the text. All of it runs before the cut
 // to one line, so that cut never leaves a credential's first characters behind. Bytes that are
 // not UTF-8 read as U+FFFD, and every rule runs in linear time, so a body of any size or shape
 // costs a bounded amount of work.
@@ -90,7 +91,10 @@ func Text(text string, tokens ...string) string {
 	plain := redact.Tokens(strings.ToValidUTF8(read, "\uFFFD"), -1, tokens...)
 	plain = scriptOrStyle.ReplaceAllString(plain, " ")
 	plain = tag.ReplaceAllString(plain, " ")
-	plain, readable := redact.Remote(redact.UnescapeHTML(plain))
+	plain, readable := redact.UnescapeHTML(plain)
+	if readable {
+		plain, readable = redact.Remote(plain)
+	}
 	if !readable {
 		return redact.WordsNotReadable
 	}
