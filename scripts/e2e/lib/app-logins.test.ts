@@ -357,14 +357,19 @@ describe("app-logins.ts", () => {
   // The drain rows run the helper at a drain bound of two seconds (APP_LOGINS_DRAIN_MS) in place
   // of its five. A span a row's verdict hangs on is measured against the bound and moves with it;
   // a span that is only a margin keeps its length (the reader's stall stays three seconds past the
-  // bound, the descendant's late newline half a second after the exit). The row after them holds
-  // the five-second default itself.
+  // bound, the descendant's late newline half a second after the exit). The row just below holds
+  // the five-second default, which the rows after it no longer run at.
   const drainMs = 2000;
   const drainEnv = { APP_LOGINS_DRAIN_MS: String(drainMs) };
 
-  test("with no APP_LOGINS_DRAIN_MS the drain bound is the default", async () => {
-    // The silent escaped descendant of the row below, at the default: the run ends once the bound
-    // has run, and before one and a half bounds, so a default set shorter or longer fails here.
+  test("with no APP_LOGINS_DRAIN_MS the drain bound is the five-second default", async () => {
+    // A pin of the production default: before the override, every drain row ran at it and failed
+    // when it changed, and a change to it is a change of the bound a token command gets.
+    expect(DEFAULT_DRAIN_LIMIT_MS).toBe(5000);
+    // The silent escaped descendant of the row below, run with no override: the run ends once five
+    // seconds have run and before seven and a half, written as numbers rather than read from the
+    // constant, so a run whose bound in effect is not five seconds (1.5 s or 15 s, say) fails here
+    // whatever the constant says.
     await withEscapedDescendant("escaped-default.pid", async (pidFile) => {
       const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
       const started = Date.now();
@@ -372,8 +377,8 @@ describe("app-logins.ts", () => {
       const elapsed = Date.now() - started;
       expect(code).toBe(1);
       expect(stderr).toContain("still held its output open");
-      expect(elapsed, `${elapsed} ms`).toBeGreaterThanOrEqual(DEFAULT_DRAIN_LIMIT_MS);
-      expect(elapsed, `${elapsed} ms`).toBeLessThan(DEFAULT_DRAIN_LIMIT_MS * 1.5);
+      expect(elapsed, `${elapsed} ms`).toBeGreaterThanOrEqual(5_000);
+      expect(elapsed, `${elapsed} ms`).toBeLessThan(7_500);
     });
   }, 30_000);
 
@@ -495,9 +500,13 @@ describe("app-logins.ts", () => {
     const tooLong = String(MAX_DRAIN_LIMIT_MS + 1);
     // Twenty-five digits: Number() reads it as 1e24, past every whole number a double holds.
     const overLong = "1".repeat(25);
+    // The implement App's token command leaves a file when it runs, so the row reads that no
+    // credential command ran, as well as that GitHub was asked nothing.
+    const ran = join(dir, "drain-refusal-ran");
+    const command = `touch ${ran}; cat ${join(dir, "release-101.json")}`;
     for (const value of ["0", "1.5", "-1", "two", "", tooLong, overLong]) {
       seen.length = 0;
-      const { code, stdout, stderr } = await run(config(app("101"), app("202")), {
+      const { code, stdout, stderr } = await run(config(app("101", command), app("202")), {
         APP_LOGINS_DRAIN_MS: value,
       });
       expect(code, value).toBe(2);
@@ -506,7 +515,12 @@ describe("app-logins.ts", () => {
         `app-logins: APP_LOGINS_DRAIN_MS is '${value}', not a whole number of milliseconds from 1 to ${MAX_DRAIN_LIMIT_MS}`
       );
       expect(seen, value).toEqual([]);
+      expect(existsSync(ran), value).toBe(false);
     }
+    // The same command with a bound it takes does run, so the file above is one the command writes.
+    const { code } = await run(config(app("101", command), app("202")), drainEnv);
+    expect(code).toBe(0);
+    expect(existsSync(ran)).toBe(true);
   });
 
   test("output that is no release, an expired token, or no installation is refused without quoting it", async () => {
