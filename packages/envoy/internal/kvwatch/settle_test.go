@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A store captures its handle and epoch before it writes (Watcher.Handle; the session registry's
@@ -301,9 +300,9 @@ func TestAWaitItsGenerationEndedIsNoWaitToReadErr(t *testing.T) {
 		}},
 		{name: "its watcher ends on its own", end: func(t *testing.T, w *kvwatch.Watcher, conn *natsgo.Conn, _ bus.KeyValue) {
 			deleteTestBucket(t, jetStream(t, conn))
-			// nats.go's ordered consumer notices a deleted stream only after about 10 s
-			// (stopNoticeBudget).
-			testwait.WithinPolling(t, stopNoticeBudget, 50*time.Millisecond, "the watcher to end on its own", func() bool { return w.Err() != nil })
+			// nats.go's ordered consumer notices a deleted stream only after about 10 s, so the
+			// wait ends on the fact, as main's waitForStopWarns does (#5042).
+			eventually(t, "the watcher to end on its own", func() bool { return w.Err() != nil })
 		}},
 		{name: "the watcher stops", end: func(_ *testing.T, w *kvwatch.Watcher, _ *natsgo.Conn, _ bus.KeyValue) {
 			w.Stop()

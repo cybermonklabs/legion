@@ -52,7 +52,7 @@ func TestAGitHubDeliveryWhileTheDeployedStreamLacksItsSubjectIsAnswered503(t *te
 	req.Header.Set("X-GitHub-Event", "push")
 	req.Header.Set("X-Hub-Signature-256", githubSign("s", push))
 	rec := httptest.NewRecorder()
-	GitHubHandler("s", "@legion", "", client, &mockRecorder{}).ServeHTTP(rec, req)
+	GitHubHandler("s", "@legion", "", client, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil)).ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body = %s", rec.Code, rec.Body.String())
