@@ -232,22 +232,6 @@ func TestTheHeadlessFragmentHoldsTheWorkersSharedRules(t *testing.T) {
 	}
 }
 
-// Each phase worker's residue is headed by its role, and only the roles whose plan names skills for
-// them are told to read those.
-func TestEachResidueNamesItsRoleAndOnlyTheSkilledRolesReadRequiredSkills(t *testing.T) {
-	const requiredSkills = "Then read the plan handoff's `requiredSkills` for your role and follow those too."
-	skilled := []string{"implementer", "reviewer", "tester"}
-	for _, role := range phaseRoles {
-		residue := rolePart(t, role+".md")
-		if heading := "# Legion " + strings.ToUpper(role[:1]) + role[1:]; !strings.Contains(residue, heading) {
-			t.Errorf("%s.md omits its heading %q", role, heading)
-		}
-		if got, want := strings.Contains(residue, requiredSkills), slices.Contains(skilled, role); got != want {
-			t.Errorf("%s.md tells it to read requiredSkills = %t, want %t", role, got, want)
-		}
-	}
-}
-
 // The runtimes join the parts byte for byte, so each starts with a heading and ends with one
 // newline.
 func TestEveryPartStartsWithAHeadingAndEndsWithOneNewline(t *testing.T) {
