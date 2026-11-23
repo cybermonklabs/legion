@@ -2568,8 +2568,8 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
         (f"{SCRIPTS}/ci-ok-hold.sh", "the ci-ok job's hold step, the other script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:292 posts with it, and ci-ok-report.test.sh:452,468 runs it on its own"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:121 and ci-ok-hold.sh:69 source it for their bounded gh reads"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:292 posts with it, and ci-ok-report.test.sh:456,472 runs it on its own"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:121 and ci-ok-hold.sh:85 source it for their bounded reads"),
         (f"{SCRIPTS}/runner-shutdown.sh",
          "ci-ok-report.sh:123 sources it, and no early ci-ok is posted for a failure it reads as "
          "a runner shutdown"),

@@ -10,16 +10,17 @@
 # cannot take it out before the groups in front of it end; a jobs list GitHub refuses still
 # posts the verdict, where a refused post fails the step; and the ci-ok job's hold lets a failing
 # verdict go up the moment the group is the front and not before, waits through the tips of the
-# groups in front of it, never lets a group built on a broken entry conclude while that entry
-# stands, and lets the verdict go up at once on every refusal.
+# groups in front of it, lets it go up once the queue no longer holds the group, never lets a
+# group built on a broken entry conclude while the queue holds it behind the front, and lets the
+# verdict go up at once on every refusal.
 #
 # Each case writes the run's jobs as the jobs route lists them and the `changes` and `job.status`
 # the reporting job saw, and runs the real scripts with a stand-in `gh` first on PATH: it answers
 # the jobs read and the read of the queue branch's tip (one tip, or a sequence of them, one per
 # read), records each check run posted, and logs every call it gets, so a case can count the
-# GitHub calls a run makes. The map is ci-ok.test.sh's four jobs and the always-run list ci.yaml's
-# own two, in a ci.yaml of the case's own (CI_OK_WORKFLOW); one case reads the real ci.yaml, and
-# one reads the hold step out of it.
+# GitHub calls a run makes. A stand-in `git` answers the hold's ref reads the same way. The map is
+# ci-ok.test.sh's four jobs and the always-run list ci.yaml's own two, in a ci.yaml of the case's
+# own (CI_OK_WORKFLOW); one case reads the real ci.yaml, and one reads the hold step out of it.
 #
 # Run from anywhere: .github/scripts/ci-ok-report.test.sh
 # CI runs it in ci.yaml's test job.
@@ -127,6 +128,9 @@ jobs() {
 # front of this one. tip_refused: GitHub refuses the read of the branch's tip.
 behind() { echo other456 > "$work/tip"; }
 tip_refused() { rm -f "$work/tip"; }
+# tips <sha>...: main's tip at each of the report step's reads, one per read, the last for every
+# read after it.
+tips() { printf '%s\n' "$@" > "$work/tips"; }
 
 # calls <pattern>: how many of the run's GitHub calls carried the pattern.
 calls() {
@@ -472,25 +476,55 @@ check "exits 0" "$(is "$status" 0)"
 check "posts one check run" "$(is "$(posted)" 1)"
 check "carrying that external_id" "$(is "$(field .external_id)" pr-title:41)"
 
+# The hold reads refs with `git ls-remote`, so a stand-in git answers it: each line of the
+# remote file is one read's answer, `<main's tip> <the group branch's sha>` (`-` for a ref the
+# answer leaves out), and its last line answers every read after it. With no remote file, the
+# read is refused as a network failure is. Every call is logged with gh's.
+cat > "$work/bin/git" <<GIT
+#!/usr/bin/env bash
+set -euo pipefail
+echo "git \$*" >> "$work/calls"
+[ "\${1:-}" = ls-remote ] || { echo "unexpected git \$*" >&2; exit 2; }
+[ "\$2" = https://github.com/o/r.git ] || { echo "unexpected remote \$2" >&2; exit 2; }
+if [ ! -e "$work/remote" ]; then
+  echo "fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host: github.com" >&2
+  exit 128
+fi
+read -r main group < "$work/remote"
+if [ "\$(wc -l < "$work/remote")" -gt 1 ]; then
+  tail -n +2 "$work/remote" > "$work/remote.next"
+  mv "$work/remote.next" "$work/remote"
+fi
+if [ "\$main" != - ]; then printf '%s\t%s\n' "\$main" "\$3"; fi
+if [ "\$group" != - ]; then printf '%s\t%s\n' "\$group" "\$4"; fi
+GIT
+chmod +x "$work/bin/git"
+
 # run_hold [<bound>]: sets out and status to what ci-ok-hold.sh, the ci-ok job's hold step, did
-# for the group whose base is base123 (or base_sha) on the queue's main, with a bound of <bound>
-# seconds (3600 when not given) and a pause of `poll` seconds between reads (0 when unset). A
-# hold still running after 60 s is killed and its status is timeout's 124, so a hold that never
-# ends fails the checks of its case rather than hanging the harness.
+# for the group whose base is base123 (or base_sha) on the queue's main and whose head is abc123
+# (or head_sha), with a bound of <bound> seconds (3600 when not given) and a pause of `poll`
+# seconds between reads (0 when unset). A hold still running after 60 s is killed and its status
+# is timeout's 124, so a hold that never ends fails the checks of its case rather than hanging
+# the harness.
 run_hold() {
   set +e
-  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GH_RETRY_SECONDS=0 \
-    BASE_SHA=${base_sha-base123} BASE_REF=refs/heads/main CI_OK_HOLD_SECONDS=${1:-3600} \
-    CI_OK_HOLD_POLL_SECONDS=${poll-0} timeout 60 "$script_dir/ci-ok-hold.sh" 2>&1)
+  out=$(PATH="$work/bin:$PATH" GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r \
+    GH_RETRY_SECONDS=0 BASE_SHA=${base_sha-base123} BASE_REF=refs/heads/main \
+    HEAD_SHA=${head_sha-abc123} HEAD_REF=refs/heads/gh-readonly-queue/main/pr-1-base123 \
+    CI_OK_HOLD_SECONDS=${1:-3600} CI_OK_HOLD_POLL_SECONDS=${poll-0} \
+    timeout 60 "$script_dir/ci-ok-hold.sh" 2>&1)
   status=$?
   set -e
 }
 
-# tips <sha>...: main's tip at each read, one per read, the last for every read after it.
-tips() { printf '%s\n' "$@" > "$work/tips"; }
+# remote <main>:<group>...: the answer of each read, in order; the last answers every read after.
+remote() { printf '%s\n' "${@//:/ }" > "$work/remote"; rm -f "$work/calls"; }
+reads() { calls 'git ls-remote https://github.com/o/r.git refs/heads/main refs/heads/gh-readonly-queue/main/pr-1-base123'; }
 
-# front_line: the line the hold prints when it lets the failing verdict go up at the front.
+# The two ways a hold may end and let the failing verdict go up while the queue builds nothing
+# on the group: at the front, and once the queue no longer holds the group.
 front_line='^This group is the front of the queue after [0-9]* s: refs/heads/main is at its base'
+gone_line='^The queue no longer holds this group after [0-9]* s: refs/heads/gh-readonly-queue/main/pr-1-base123 is '
 
 echo "case: a failing verdict of a group behind the front goes up once the group is the front"
 # The group's test job failed while two groups stood in front of it, as #4820's did (run
@@ -502,12 +536,12 @@ jobs typecheck=in_progress lint=in_progress envoy-client=queued
 behind
 run_report "$selects" merge_group failure
 check "the failing job's report step posts nothing behind the front" "$(is "$(posted)" 0)"
-tips other456 other456 other789 base123
-rm -f "$work/calls"
+remote other456:abc123 other456:abc123 other789:abc123 base123:abc123
 run_hold
 check "exits 0, so the job ends on its failing verdict" "$(is "$status" 0)"
-check "read main four times: the hold ended at the read that found the group's base" \
-  "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 4)"
+check "read the refs four times: the hold ended at the read that found the group's base" \
+  "$(is "$(reads)" 4)"
+check "made no other call: a git read spends none of the API budget" "$(is "$(calls .)" 4)"
 check "says the group stood behind the first group in front" \
   "$(contains "$out" '^This group stands behind the front of the queue after [0-9]* s: its base base123 is not other456, the tip of refs/heads/main. The failing ci-ok waits')"
 check "and behind the next, once the first merged" \
@@ -519,21 +553,17 @@ check "ends on the line that says the group is the front" \
 check "posts no check run of its own: the job's own check run is the verdict" "$(is "$(posted)" 0)"
 check "warns of nothing" "$(is "$(contains "$out" '::warning::')" false)"
 # Control: the same hold for a group that is the front already lets the verdict go up at once.
-jobs
-tips base123
+remote base123:abc123
 run_hold
-check "lets the verdict of the front group go up at the first read (control)" \
-  "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 1)"
+check "lets the verdict of the front group go up at the first read (control)" "$(is "$(reads)" 1)"
 check "saying it is the front" "$(contains "$out" "$front_line")"
 
 echo "case: a group behind the front whose entries ahead fail never lets its verdict go up early"
-# A group in front of this one fails: the queue takes it out once it is the front and rebuilds
-# every group behind it, this one too, and the rebuilt group's cancel-started force-cancels this
-# run. Main never reaches this group's base: it stays where it was and then moves to the tip of a
-# rebuilt group. Until the force-cancel, nothing of this run says failure: a later job's failure
-# posts nothing, and the hold waits. Its bound, 4 s here with a pause of 1 s, is all that ends
-# it, for a run nothing cancelled, and it says so. The bound leaves room for a second read on a
-# loaded machine, where one read can take a second.
+# A group in front of this one fails: the queue takes it out once it is the front, rebuilds every
+# group behind it on a new base, this one's too, and deletes this group's branch. Main never
+# reaches this group's base. Until then nothing of this run says failure: a later job's failure
+# posts nothing, and the hold waits; once the branch is gone the queue no longer holds the
+# group, so its verdict builds nothing and goes up.
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
 tips other456 other789
 run_report "$selects" merge_group failure
@@ -541,26 +571,41 @@ check "a failing job posts nothing while a group in front builds" "$(is "$(poste
 run_report "$selects" merge_group failure
 check "nor once main has moved to a rebuilt group's tip" "$(is "$(posted)" 0)"
 check "which is not this group's base" "$(contains "$out" 'its base base123 is not other789')"
-rm -f "$work/calls"
-poll=1 run_hold 4
-check "the hold exits 0 at its bound" "$(is "$status" 0)"
+remote other456:abc123 other456:abc123 other789:-
+run_hold
+check "the hold exits 0 at the read that finds the group's branch gone" \
+  "$(is "$status $(reads)" '0 3')"
+check "saying the queue no longer holds the group" \
+  "$(contains "$out" "${gone_line}gone, not its head abc123")"
 check "never says the group is the front" "$(is "$(contains "$out" "$front_line")" false)"
-check "read main more than once before the bound" \
-  "$(is "$(($(calls 'repos/o/r/git/ref/heads/main') > 1))" 1)"
+check "and warns of nothing" "$(is "$(contains "$out" '::warning::')" false)"
+# A branch the queue reused for another group of the same pull request names another head.
+remote other456:abc123 other789:def999
+run_hold
+check "a group branch at another head ends the hold as a gone one does" \
+  "$(is "$(reads) $(contains "$out" "${gone_line}def999, not its head abc123")" '2 true')"
+
+echo "case: a hold behind the front that reaches its bound lets the verdict go up, and says so"
+# The bound is for a group the queue still holds behind the front past the point where its own
+# check timeout would decide: a bound of 0 ends the hold after one read.
+remote other456:abc123
+run_hold 0
+check "exits 0 after one read" "$(is "$status $(reads)" '0 1')"
+check "never says the group is the front" "$(is "$(contains "$out" "$front_line")" false)"
 check "warns that the bound, not the front, ended it" \
-  "$(contains "$out" '^::warning::This group still stands behind the front of the queue after [0-9]* s, and the next read would pass this step.s bound of 4 s')"
+  "$(contains "$out" '^::warning::This group still stands behind the front of the queue after [0-9]* s, past this step.s bound of 0 s')"
 
 echo "case: one entry that breaks every group built on it builds no group more"
 # The 2026-11-22 cascade: #4812's entry broke every group built on it, and each group's failing
 # ci-ok made the queue count it as no longer building and build another on it, 41 groups in 28
 # minutes. Here g1 carries the broken entry, behind a front group f whose base is f000; g2 is
 # built on g1 (base g1head) and g3 on g2 (base g2head); every one of the three fails. The queue
-# builds a group whenever one of them concludes failure while it stands behind the front, so the
-# count of such conclusions is the count of groups built on the broken entry: none, while f
-# builds and after g1 is the front. g1's verdict goes up at the read that finds main at its base,
-# where the queue takes it out and rebuilds g2 and g3, whose rebuilt groups' cancel-started ends
-# their runs. Their holds stand for those runs: a hold that ends before its bound, at any tip but
-# its own base, is a verdict concluded behind the front.
+# builds a group whenever one of them concludes failure while it stands behind the front and the
+# queue still holds it, so the count of such conclusions is the count of groups built on the
+# broken entry. f merges and main reaches g1's base: g1's verdict goes up, the queue takes g1 out,
+# rebuilds g2 and g3 and deletes their branches. Each hold runs with a bound of an hour, so one
+# that ends any other way than at its front or on its gone branch is a verdict concluded behind
+# the front, and is counted.
 early=0
 for group in g1:base123 g2:g1head g3:g2head; do
   jobs typecheck=in_progress lint=in_progress envoy-client=queued
@@ -569,73 +614,68 @@ for group in g1:base123 g2:g1head g3:g2head; do
   early=$((early + $(posted)))
 done
 check "no group's failing job posts while f builds" "$(is "$early" 0)"
-jobs
-tips f000 f000 f000 base123
-base_sha=base123 run_hold
+# held <out>: whether the hold ended at its front or on its gone branch, and nowhere else.
+held() { [ "$(contains "$1" "$front_line")" = true ] || [ "$(contains "$1" "$gone_line")" = true ]; }
+remote f000:g1head f000:g1head f000:g1head base123:g1head
+head_sha=g1head base_sha=base123 run_hold
 check "g1's hold ends at the read that finds main at g1's base" \
-  "$(is "$(calls 'repos/o/r/git/ref/heads/main') $(contains "$out" "$front_line")" '4 true')"
-for group in g2:g1head g3:g2head; do
-  jobs
-  tips f000 base123
-  poll=1 base_sha=${group#*:} run_hold 4
-  if [ "$(contains "$out" 'the next read would pass this step.s bound of 4 s')" = false ]; then
-    early=$((early + 1))
-  fi
-  check "${group%%:*}'s hold waits on past main at g1's base, to its bound" \
-    "$(contains "$out" "its base ${group#*:} is not base123, the tip of refs/heads/main")"
+  "$(is "$(reads) $(contains "$out" "$front_line")" '4 true')"
+held "$out" || early=$((early + 1))
+for group in g2:g1head:g2head g3:g2head:g3head; do
+  IFS=: read -r name base head <<<"$group"
+  remote f000:"$head" base123:"$head" base123:-
+  head_sha=$head base_sha=$base run_hold
+  held "$out" || early=$((early + 1))
+  check "$name's hold waits on past main at g1's base, until the queue drops $name" \
+    "$(is "$(reads) $(contains "$out" "its base $base is not base123") $(contains "$out" "$gone_line")" '3 true true')"
 done
 check "no group concluded behind the front, so the queue built none on the broken entry" \
   "$(is "$early" 0)"
 
 echo "case: every refusal of the hold lets the failing verdict go up at once"
 # A hold that cannot read where its group stands would otherwise keep a failing group building
-# until its bound; the ci-ok steps prefer the failing verdict on every refusal. The bound here
-# is 4 s, so a hold that read on past a refusal would read main more than three times.
-jobs
-tip_refused
-poll=1 run_hold 4
-check "a tip GitHub refuses: exits 0" "$(is "$status" 0)"
-check "after the three attempts gh-read.sh makes" "$(is "$(calls 'repos/o/r/git/ref/heads/main')" 3)"
+# until its bound; the ci-ok steps prefer the failing verdict on every refusal.
+rm -f "$work/remote" "$work/calls"
+run_hold
+check "refs GitHub will not serve: exits 0" "$(is "$status" 0)"
+check "after the three attempts gh-read.sh makes" "$(is "$(reads)" 3)"
 check "and warns why the verdict went up" \
-  "$(contains "$out" '^::warning::GitHub refused the tip of refs/heads/main at every attempt gh-read.sh made')"
-jobs
-base_sha='' run_hold
+  "$(contains "$out" '^::warning::GitHub refused the refs refs/heads/main and refs/heads/gh-readonly-queue/main/pr-1-base123 of https://github.com/o/r.git at every attempt gh-read.sh made')"
+remote -:abc123
+run_hold
+check "an answer with no tip for main: exits 0 at the first read" "$(is "$status $(reads)" '0 1')"
+check "and warns why" \
+  "$(contains "$out" '^::warning::https://github.com/o/r.git answered no tip for refs/heads/main')"
+remote other456:abc123
+head_sha='' run_hold
 check "a missing input: fails the step, which ends the job on its verdict" "$(is "$status" 1)"
 check "names the input" \
-  "$(contains "$out" 'ci-ok-hold.sh needs BASE_SHA in its environment; the failing ci-ok goes up now')"
+  "$(contains "$out" 'ci-ok-hold.sh needs HEAD_SHA in its environment; the failing ci-ok goes up now')"
 check "and reads nothing" "$(is "$(calls .)" 0)"
-jobs
 run_hold 30m
 check "a bound that is no number of seconds: fails the step" "$(is "$status" 1)"
 check "names it" \
   "$(contains "$out" "ci-ok-hold.sh's CI_OK_HOLD_SECONDS is not a whole number of seconds: 30m")"
 
 echo "case: the real ci.yaml's ci-ok job holds a failing verdict of a merge group's first attempt"
-# The hold is the step between the verdict and the reconcile step, under failure(): a passing
-# verdict never waits, and on a re-run attempt the refusal is the verdict of a tree the queue
-# no longer waits on. It reads the group's base and branch from the merge_group event, its bound
-# leaves its last read inside the step's own limit, and the job can read the branch's tip.
+# The hold is the job's last step, under failure(): a passing verdict never waits, on a re-run
+# attempt the refusal is the verdict of a tree the queue no longer waits on, and the job's check
+# run concludes as soon as the hold ends. It reads the group's base, head and branches from the
+# merge_group event, and its bound leaves its last read inside the step's own limit.
 ci_ok_job=$(yq -o=json '.jobs["ci-ok"]' "$script_dir/../workflows/ci.yaml")
-step_index() { jq --arg name "$1" '[.steps[].name] | index($name)' <<<"$ci_ok_job"; }
-hold_at=$(step_index 'Hold a failing verdict until this group is the front of the queue')
-hold=$(jq --argjson i "$hold_at" '.steps[$i]' <<<"$ci_ok_job")
-check "comes after the verdict step" \
-  "$(is "$((hold_at > $(step_index 'Judge every job of this run')))" 1)"
-check "and before the reconcile step, so nothing on the head says failure while it waits" \
-  "$(is "$((hold_at < $(step_index "Set every other ci-ok on this head to this job's conclusion")))" 1)"
+hold=$(jq '.steps[-1]' <<<"$ci_ok_job")
+check "is the job's last step" \
+  "$(is "$(jq -r .name <<<"$hold")" 'Hold a failing verdict until this group is the front of the queue')"
 check "runs only after a failure, on a merge group's first attempt" \
   "$(is "$(jq -r .if <<<"$hold")" "\${{ failure() && github.event_name == 'merge_group' && github.run_attempt == '1' }}")"
 check "runs ci-ok-hold.sh" "$(is "$(jq -r .run <<<"$hold")" .github/scripts/ci-ok-hold.sh)"
-check "with the group's base and the queue's branch" \
-  "$(is "$(jq -r '.env.BASE_SHA + " " + .env.BASE_REF' <<<"$hold")" \
-    "\${{ github.event.merge_group.base_sha }} \${{ github.event.merge_group.base_ref }}")"
+check "with the group's base, head and branches" \
+  "$(is "$(jq -r '[.env.BASE_SHA, .env.BASE_REF, .env.HEAD_SHA, .env.HEAD_REF] | join(" ")' <<<"$hold")" \
+    "\${{ github.event.merge_group.base_sha }} \${{ github.event.merge_group.base_ref }} \${{ github.event.merge_group.head_sha }} \${{ github.event.merge_group.head_ref }}")"
 bound=$(jq -r .env.CI_OK_HOLD_SECONDS <<<"$hold")
-check "a bound inside the step's own limit, with a pause and a read to spare" \
-  "$(is "$((bound + 60 < $(jq -r '."timeout-minutes"' <<<"$hold") * 60))" 1)"
-check "and a job that may read the branch's tip" \
-  "$(is "$(jq -r '.permissions.contents' <<<"$ci_ok_job")" read)"
-jobs
-tips base123
+check "a bound inside the step's own limit, with a pause and a last read's three attempts to spare" \
+  "$(is "$((bound + 30 + 3 * 30 + 30 < $(jq -r '."timeout-minutes"' <<<"$hold") * 60))" 1)"
+remote base123:abc123
 run_hold "$bound"
 check "a hold with that bound lets the front group's verdict go up" \
   "$(is "$status $(contains "$out" "$front_line")" '0 true')"

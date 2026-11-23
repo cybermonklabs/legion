@@ -968,14 +968,13 @@ jobs:
     if: ${{ always() }}
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
-    # The verdict step's 10, the hold step's 62 and the reconcile step's 10, with three over for
+    # The verdict step's 10, the reconcile step's 10 and the hold step's 125, with three over for
     # the checkout and the two refusals.
-    timeout-minutes: 85
+    timeout-minutes: 148
     env:
-      JOB_TIMEOUT_MINUTES: 85 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 148 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     permissions:
       checks: write
-      contents: read
     steps:
       # why: .github/ci-notes/ci.md#the-job-reads-nothing-of-the-tree-but-ci-oksh-ci-okjq-ci-ok-reconcilesh-and
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1016,22 +1015,6 @@ jobs:
           PARTIAL: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[]' || '["dispatch-browser"]' }}
         run: .github/scripts/ci-ok.sh
 
-      # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
-      - name: Hold a failing verdict until this group is the front of the queue
-        if: ${{ failure() && github.event_name == 'merge_group' && github.run_attempt == '1' }}
-        timeout-minutes: 62
-        env:
-          STEP_TIMEOUT_MINUTES: 62 # this step's timeout-minutes, for gh-read.sh's wait
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.merge_group.base_sha }}
-          BASE_REF: ${{ github.event.merge_group.base_ref }}
-          # A run's length: every group in front of this one was created before it, so each ends
-          # within a run's length of this group's creation. The longest of the 266 merge-group
-          # runs that ended success or failure from 2026-11-22T00:00Z took 55.5 minutes
-          # (44966798236).
-          CI_OK_HOLD_SECONDS: 3600
-        run: .github/scripts/ci-ok-hold.sh
-
       # why: .github/ci-notes/ci.md#why-every-other-ci-ok-on-this-head-is-set-to-this-jobs-conclusion
       - name: Set every other ci-ok on this head to this job's conclusion
         if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
@@ -1043,3 +1026,20 @@ jobs:
           CHECK_RUN_ID: ${{ job.check_run_id }}
           CONCLUSION: ${{ job.status }}
         run: .github/scripts/ci-ok-reconcile.sh
+
+      # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front
+      - name: Hold a failing verdict until this group is the front of the queue
+        if: ${{ failure() && github.event_name == 'merge_group' && github.run_attempt == '1' }}
+        # The bound's 120 and a last read's ladder (three 30-second attempts and their pauses).
+        timeout-minutes: 125
+        env:
+          STEP_TIMEOUT_MINUTES: 125 # this step's timeout-minutes, for gh-read.sh's wait
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          BASE_REF: ${{ github.event.merge_group.base_ref }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          # Two hours: the queue assumes a check failed 180 minutes after a group's checks began,
+          # and this job starts at its run's end (55.5 minutes at most on 2026-11-22, run
+          # 44966798236), so the hold ends near where the queue would assume the failure itself.
+          CI_OK_HOLD_SECONDS: 7200
+        run: .github/scripts/ci-ok-hold.sh
