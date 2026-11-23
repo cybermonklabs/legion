@@ -51,11 +51,17 @@ const (
 	frameAnswerUnknown
 )
 
-// frameVerdict is the edge's decision on one frame: its action, and the metric label (reason) a
-// counted drop or a withhold logs under.
+// frameVerdict is the edge's decision on one frame: its action, the metric label (reason) a
+// counted drop or a withhold logs under, and whether a fresh repository answer made it (answered):
+// a GitHub event relayed because a fresh answer names its repository, or dropped because every
+// answer of the session's projects is fresh and none names it (relayVerdict). Only such a verdict
+// ends a run of GitHub frames given back for want of an answer (sessionRelays.endGiveBacks,
+// relaySocket.endUnknownNaks); a drop of an event that names no repository, or of an envelope that
+// is no GitHub event, says nothing of the answer.
 type frameVerdict struct {
-	action frameAction
-	reason string
+	action   frameAction
+	reason   string
+	answered bool
 }
 
 func framePasses() frameVerdict             { return frameVerdict{action: framePass} }

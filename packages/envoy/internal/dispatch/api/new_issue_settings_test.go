@@ -71,7 +71,7 @@ func TestNewDepsRefusesNewIssueSettingsNoIssueCouldTake(t *testing.T) {
 		!strings.Contains(err.Error(), "DISPATCH_NEW_ISSUE_LABEL") {
 		t.Fatalf("a label no issue may carry = %v, want it named", err)
 	}
-	deps, err := NewDeps(DepsInput{NewIssueLabel: " from-the-bar ", NewIssueSession: " sess-1 "})
+	deps, err := NewDeps(withDocumentService(t, DepsInput{NewIssueLabel: " from-the-bar ", NewIssueSession: " sess-1 "}))
 	if err != nil || deps.NewIssueLabel != "from-the-bar" || deps.NewIssueSession != "sess-1" {
 		t.Fatalf("settings with blanks around them = %q, %q, %v; want them trimmed", deps.NewIssueLabel, deps.NewIssueSession, err)
 	}

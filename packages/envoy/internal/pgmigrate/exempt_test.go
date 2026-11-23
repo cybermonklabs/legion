@@ -145,7 +145,7 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"select set_config('search_path', 'other', false); select 1 from pg_event_trigger;": {true, `names "pg_event_trigger"` + resolvesToCatalog},
 		"select set_config('search_path', 'other', false); do $$ begin end $$;":             {true, "runs a DO block" + cannotSee},
 	} {
-		if got, err := tableSizeExemption(context.Background(), nil, nil, sql); err != nil || got.exemption != "" || got.laterReadsOff != want.laterReadsOff || got.laterExemptionsOff != want.laterExemptionsOff {
+		if got, err := tableSizeExemption(context.Background(), nil, nil, sql); err != nil || got.exemption != "" || got.laterReadsOff != want.laterReadsOff || got.laterExemptionsOff.String() != want.laterExemptionsOff {
 			t.Errorf("%q: tableSizeExemption = %+v, %v; want laterReadsOff %v and laterExemptionsOff %q", sql, got, err, want.laterReadsOff, want.laterExemptionsOff)
 		}
 	}

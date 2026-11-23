@@ -30,8 +30,8 @@ const notLoggedInNotice = "agent-secrets: this machine's agent-secrets-helper ho
 func runInSession(t *testing.T, binary, sock string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
 	cmd := exec.Command(binary, append([]string{"register", "--exec", "--", binary}, args...)...)
-	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=",
-		"AGENT_SECRETS_URL=http://127.0.0.1:1", "XDG_RUNTIME_DIR="+t.TempDir(), "HOME="+t.TempDir())
+	cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_KEY_DIR=",
+		"AGENT_SECRETS_URL=http://127.0.0.1:1")
 	var out, errOut strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errOut
 	_ = cmd.Run()

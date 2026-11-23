@@ -549,7 +549,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		putOutboxIssue(t, pool, records, child)
 	}
 	approved := 1
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil {
 			return err
 		}
@@ -667,7 +667,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 		t.Helper()
 		row := mustOutboxRow(t, issue, record.SuperviseRequest{Op: "start", Tree: root.Key, Role: role, Generation: 1}, due)
 		var id int64
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
 			id, err = records.EnqueueID(ctx, tx, row)
 			return err

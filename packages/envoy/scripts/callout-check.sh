@@ -265,13 +265,14 @@ else
 fi
 
 # callout_connections prints how many connections the hub's connection list names as the auth
-# service's (natscallout's connectionName), or nothing when the list cannot be read inside 2 s.
+# service's (natscallout's connectionName, with the broker's build after it, internal/bus's
+# connectionName, when the binary names one), or nothing when the list cannot be read inside 2 s.
 # nats-server marks a connection closed, and so routes nothing more to its subscriptions
 # (client.go, deliverMsg), before it takes the connection off that list (closeConnection,
 # removeClient).
 callout_connections() {
   curl -sf --max-time 2 "$DEV_STACK_NATS_MONITOR_URL/connz?limit=1024" 2>/dev/null |
-    jq -r '[.connections[]? | select(.name == "envoy-broker-callout")] | length' 2>/dev/null || true
+    jq -r '[.connections[]? | select((.name // "") | . == "envoy-broker-callout" or startswith("envoy-broker-callout "))] | length' 2>/dev/null || true
 }
 
 # 6. One of the two brokers killed, then three new sessions, each admitted within 2 s: the first

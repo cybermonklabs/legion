@@ -173,10 +173,10 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 	}
 
 	memory := filestest.NewMemory()
-	deps, err := NewDeps(DepsInput{
+	deps, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Files: memory,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new deps with a store: %v", err)
 	}
@@ -226,10 +226,10 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 	}
 
 	// Without a store at all, a cleared row is a configuration the server names: 503.
-	noStore, err := NewDeps(DepsInput{
+	noStore, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new deps without a store: %v", err)
 	}
@@ -289,10 +289,10 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 				t.Fatalf("the row holds %d bytes; beside a %s it should hold the upload's %d", len(row), tc.name, len(image))
 			}
 
-			bucketless, err := NewDeps(DepsInput{
+			bucketless, err := NewDeps(withDocumentService(t, DepsInput{
 				Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 				ServerURL: "https://dispatch.example",
-			})
+			}))
 			if err != nil {
 				t.Fatalf("new deps without a store: %v", err)
 			}
@@ -326,13 +326,16 @@ func (h heldPut) Put(ctx context.Context, sha, mime string, body []byte) error {
 // cannot name is reported as a failure rather than a hang.
 const uploadLockProbeWindow = 20 * time.Second
 
-// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner): a
-// two-key advisory lock, the owner namespace as its classid and the hashtext of the owner's lock
-// key as its objid, both read as the unsigned 32-bit values that view carries. The two keys are
-// passed in from store rather than spelled again here (store.OwnerLockNamespace,
-// store.Owner.LockKey), so a change to either reaches this read instead of leaving it looking for
-// a lock nothing takes any more.
+// issueOwnerLockKey is the pg_locks predicate for an issue's owner lock (store.LockOwner) in the
+// test's own database: a two-key advisory lock, the owner namespace as its classid and the hashtext
+// of the owner's lock key as its objid, both read as the unsigned 32-bit values that view carries.
+// pg_locks spans the whole server, and an advisory lock is the database's own, so the same two
+// keys held in another database (another test's, or postgres) are no lock of this issue and must
+// not be named as its holder. The two keys are passed in from store rather than spelled again here
+// (store.OwnerLockNamespace, store.Owner.LockKey), so a change to either reaches this read instead
+// of leaving it looking for a lock nothing takes any more.
 const issueOwnerLockKey = `l.locktype = 'advisory' and l.objsubid = 2
+			and l.database = (select oid from pg_database where datname = current_database())
 			and l.classid = ($2::bigint & 4294967295)::oid
 			and l.objid = (hashtext($1)::bigint & 4294967295)::oid`
 

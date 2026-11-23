@@ -70,7 +70,7 @@ func (r *podUpdateRig) assigns(role claim.Role, entry int64) {
 	if entry > 0 {
 		row.EntryTask, row.EntryRaisedAt = silenceEntryTask, podUpdateStart
 	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPhase(r.ctx, tx, row)
 	}); err != nil {
 		r.t.Fatalf("record the phase row of the %s: %v", role, err)
@@ -152,7 +152,7 @@ func (r *podUpdateRig) appliesASilenceOf(role claim.Role) {
 func (r *podUpdateRig) issue() record.Issue {
 	r.t.Helper()
 	var issue *record.Issue
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, err = r.records.Issue(r.ctx, tx, podUpdateIssue)
 		return err
@@ -615,7 +615,7 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 		"a start for the phase is already queued": {
 			set: func(r *podUpdateRig) {
 				issue := r.issue()
-				if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+				if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 					return workflow.StartOrOwe(r.ctx, tx, r.records, podUpdateIssue, record.SuperviseRequest{Op: "start",
 						Tree: podUpdateIssue, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing,
 						Task: workflow.ResumePhaseTask(issue), ResumeTask: true}, r.clock.Now())
@@ -734,7 +734,7 @@ func (r *podUpdateRig) movesTo(to phase.Phase) {
 	r.t.Helper()
 	issue := r.issue()
 	issue.Phase = to
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutIssue(r.ctx, tx, issue)
 	}); err != nil {
 		r.t.Fatalf("move %s to %s: %v", podUpdateIssue, to, err)
@@ -745,7 +745,7 @@ func (r *podUpdateRig) movesTo(to phase.Phase) {
 // reading of GitHub leaves it (record.Store.PutPullRequest).
 func (r *podUpdateRig) recordsItsPullRequest(state record.PullRequestState) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: state, Issue: podUpdateIssue,
 			Repo: "acme/widgets", Number: 42, Branch: "legion/" + podUpdateIssue, HeadSHA: "head", Failing: []string{}})
 	}); err != nil {
@@ -1013,7 +1013,7 @@ func TestWorkerBackgroundOfAMergedRootsMergerTellsNobody(t *testing.T) {
 func TestWorkerBackgroundOfARoleWhoseCompletionWasAcceptedTellsNobody(t *testing.T) {
 	rig := aBackgroundStalledWorker(t)
 	worker := claim.RoleImplementer
-	if err := pgx.BeginFunc(rig.ctx, rig.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(rig.ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return rig.records.PutPhase(rig.ctx, tx, record.PhaseRow{Issue: podUpdateIssue, Role: worker, Claim: rig.tokens[worker],
 			Entry: silenceEntry, EntryTask: silenceEntryTask, EntryRaisedAt: podUpdateStart, CompletedAt: rig.clock.Now()})
 	}); err != nil {

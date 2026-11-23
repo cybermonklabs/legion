@@ -589,6 +589,7 @@ const (
 	codeMintFailed         = "MINT_FAILED"
 	codeProfileMintRefused = "PROFILE_MINT_REFUSED"
 	codeTargetRefused      = "TARGET_REFUSED"
+	codeTargetRepositories = "TARGET_REPOSITORIES_REFUSED"
 	codeValueShape         = "AIRLOCK_VALUE_SHAPE"
 	codeGrantRefused       = "GRANT_REFUSED"
 	codeGrantUnreadable    = "GRANT_UNREADABLE"
@@ -602,11 +603,11 @@ const (
 //     own answer about that grant, so they are 407 in the broker's own words, which is what
 //     tells a command to ask for a new grant.
 //   - A mint the secret's own minter could not even ask for - the upstream did not answer, or
-//     answered a 5xx or a rate limit (secrets.ErrMintUpstream) - is a read that did not happen,
-//     and it falls to the last answer below. It reaches here wrapped in ErrMintFailed, which is
-//     a refusal of the package the line below asks, so it has to be read first: a re-mint of a
-//     github-app, google-login or azure-login name behind the airlock fails this way whenever
-//     its upstream has a bad minute, and answering that 403 would tell a command no retry
+//     answered a 5xx, a 408 or a rate limit (secrets.ErrMintUpstream) - is a read that did not
+//     happen, and it falls to the last answer below. It reaches here wrapped in ErrMintFailed,
+//     which is a refusal of the package the line below asks, so it has to be read first: a
+//     re-mint of a github-app, google-login or azure-login name behind the airlock fails this way
+//     whenever its upstream has a bad minute, and answering that 403 would tell a command no retry
 //     clears it and would close a WebSocket the grant still carries.
 //   - Every other refusal the broker made about this grant - a chain that no longer verifies, a
 //     secret the store no longer holds, a mint the secret's own minter refused, a profile's scope
@@ -615,7 +616,7 @@ const (
 //     apart - is 403 in those words. No retry clears one of them, so telling a command to make
 //     the call again would be untrue, and none of them carries anything of the store the read
 //     went to. Which errors those are is the read's own package to say (requests.IsRefusal),
-//     since a sentinel added there would be missed by a list kept here; the six named here have
+//     since a sentinel added there would be missed by a list kept here; the seven named here have
 //     a code of their own, and any other is GRANT_REFUSED.
 //   - A release the broker refused because it could not learn whether Dispatch calls the
 //     session's person a restricted member (*projectaccess.MemberKindUncheckable) is 503 in its
@@ -654,6 +655,8 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 		return http.StatusForbidden, codeMintFailed, err.Error()
 	case errors.Is(err, secrets.ErrMintNarrowingRefused):
 		return http.StatusForbidden, codeProfileMintRefused, err.Error()
+	case errors.Is(err, requests.ErrTargetRepositoriesRefused):
+		return http.StatusForbidden, codeTargetRepositories, err.Error()
 	case errors.Is(err, requests.ErrTargetRefused):
 		return http.StatusForbidden, codeTargetRefused, err.Error()
 	case errors.Is(err, requests.ErrAirlockValueShape):

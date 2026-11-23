@@ -26,12 +26,18 @@ const (
 	SignInDomain       = "example.com"
 )
 
-// SignIn arms issuer's code flow for the broker's own client, signing ID tokens with key, and
-// answers the sign-in configuration naming it, with sessions of an hour: what BROKER_SIGNIN_* and
-// the provider give a deployed broker. The issuer answers a code exchange with no refresh token,
-// as Google answers the broker's online sign-in.
+// SignInCallbacks are the callbacks the broker's client registers: the approval page's
+// /signin/callback on a loopback port, over plain http (a broker process a test starts) or TLS
+// (an httptest.NewTLSServer), which the provider takes at whatever port the test's broker bound
+// (RFC 8252 section 7.3), as every broker a test starts serves on loopback.
+var SignInCallbacks = []string{"http://127.0.0.1/signin/callback", "https://127.0.0.1/signin/callback"}
+
+// SignIn arms issuer's code flow for the broker's own client, signing ID tokens with key and
+// redirecting only to SignInCallbacks, and answers the sign-in configuration naming it, with
+// sessions of an hour: what BROKER_SIGNIN_* and the provider give a deployed broker. The issuer
+// answers a code exchange with no refresh token, as Google answers the broker's online sign-in.
 func SignIn(issuer *oidctest.Issuer, key *oidctest.Key) approval.SignIn {
-	issuer.EnableCodeFlow(key, SignInClientID, SignInClientSecret)
+	issuer.EnableCodeFlow(key, SignInClientID, SignInClientSecret, SignInCallbacks...)
 	issuer.OmitRefreshTokens()
 	return approval.SignIn{Issuer: issuer.URL(), ClientID: SignInClientID, ClientSecret: SignInClientSecret, Domain: SignInDomain, SessionLifetime: time.Hour}
 }
