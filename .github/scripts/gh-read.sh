@@ -72,9 +72,10 @@
 # three were refused otherwise, which is the caller's to answer: a refused jobs list leaves
 # ci-ok-report.sh with no result to name for the jobs that have not ended, a refused post leaves
 # no ci-ok at all, and a refused PATCH leaves a stale ci-ok on the head. Its callers: the jobs
-# list of ci-ok-report.sh, the check-run post of post-check-run.sh, the check-run list and each
-# PATCH of ci-ok-reconcile.sh, the check-run and annotation reads of runner-shutdown.sh, and the
-# jobs read of dispatch-browser-run-reads.sh, which bounds each attempt with `timeout 30`. GitHub
+# list and the queue branch's tip of ci-ok-report.sh, the tip reads of ci-ok-hold.sh, the
+# check-run post of post-check-run.sh, the check-run list and each PATCH of ci-ok-reconcile.sh,
+# the check-run and annotation reads of runner-shutdown.sh, and the jobs read of
+# dispatch-browser-run-reads.sh, which bounds each attempt with `timeout 30`. GitHub
 # refuses a call now and then (a 502), and ci-ok, the check main's ruleset requires, is posted
 # from what one call answered.
 

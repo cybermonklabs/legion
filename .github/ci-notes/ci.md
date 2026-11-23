@@ -1023,8 +1023,10 @@ ends with the ci-ok-report step (.github/actions/ci-ok-report), which posts a fa
 at once when that job's own result decides a merge-group run of the queue's front group, so
 the queue drops a doomed group at the first failure rather than at the end of the run; a group
 behind the front posts nothing early, since the queue cannot drop it before the groups in front
-of it end (.github/scripts/ci-ok-report.sh's header says what that costs); the ci-ok job's last
-step then
+of it end (.github/scripts/ci-ok-report.sh's header says what that costs), and the ci-ok job
+holds a failing verdict of such a group until the group is the front
+(.github/scripts/ci-ok-hold.sh), so the queue builds nothing on a failed entry; the ci-ok job's
+last step then
 sets every ci-ok check run on the head that is not its own to its own conclusion, so one
 verdict stands at the end of every attempt. pr-title, the other check that ruleset requires, is
 the `pr-title` job at the end of this file, in the same shape and for the same reason: it runs
@@ -2194,10 +2196,11 @@ groups above it without waiting for the rest of that run. A group behind the fro
 nothing early: the queue takes its pull request out only once the groups in front of it have
 ended, and a failing ci-ok makes the queue count the group as no longer building and build
 another on it, which built 41 groups in 28 minutes behind one broken entry on 2026-11-22
-(.github/scripts/ci-ok-report.sh's header). Its run's ci-ok job posts its verdict at the end of
-the run. The cost: when the groups in front end before that run does, the entry leaves at the
-run's end, or when a later job of the run fails once the group is the front, rather than the
-moment the groups in front end.
+(.github/scripts/ci-ok-report.sh's header). Its run's ci-ok job reaches its verdict at the end of
+the run and holds a failing one until the group is the front, for the same reason
+(.github/scripts/ci-ok-hold.sh). The cost: when the group becomes the front before that run
+ends, the entry leaves at the run's end, or when a later job of the run fails once the group is
+the front, rather than the moment the groups in front end.
 
 The job follows these rules:
   * it runs only on `merge_group` and only on attempt 1
@@ -2246,7 +2249,10 @@ suite blocks the head until a person re-runs it. What this job cannot do, and th
 ci-ok-report step every other job ends with still does, is post the failing ci-ok of a
 merge-group run one job's result has already decided: this job waits for every job of the
 run, and a group that can no longer merge should leave the queue at the first failure rather
-than at the last job's end.
+than at the last job's end. What this job does do, when its verdict fails on a merge-group run,
+is hold that failure until the group is the front of the queue: a failing ci-ok on a group
+behind the front makes the queue build on the failed entry, and decides nothing sooner (the
+"Hold a failing verdict until this group is the front of the queue" step says why).
 
 This job's `if:` is `always()` and nothing else. Every other job of this file is skipped on a
 draft pull request: `changes` carries `!github.event.pull_request.draft`, the jobs its
@@ -2270,18 +2276,19 @@ judge, and the failure of its draft refusal is what keeps a draft from carrying 
 ci-ok. That failure names the remedy — marking the pull request ready for review starts a run
 that selects by the same diff and concludes a real verdict over it.
 
-`checks: write` and nothing else: the verdict step reads this run's check runs and their
+`checks: write` and `contents: read`: the verdict step reads this run's check runs and their
 annotations, to tell a job a runner shutdown killed from one the change broke (ci-ok.sh's
 call of runner_shutdown_kills, runner-shutdown.sh), which `checks: read` covers and the
 `checks: write` here carries, and
-the step after it reads this head's ci-ok check runs and PATCHes them with that scope. The
-checkout needs no `contents: read`, as `cancel-started`'s does not — this repository is
-public, and GitHub serves a public repository's git data to any valid token.
+the reconcile step reads this head's ci-ok check runs and PATCHes them with that scope.
+`contents: read` is the hold step's read of the tip of the queue's branch. The checkout needs
+no `contents: read` of its own, as `cancel-started`'s does not — this repository is public, and
+GitHub serves a public repository's git data to any valid token.
 
 ## The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and
 
-The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-reconcile.sh and the
-gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
+The job reads nothing of the tree but ci-ok.sh, ci-ok.jq, ci-ok-hold.sh, ci-ok-reconcile.sh and
+the gh-read.sh and runner-shutdown.sh they source, so the .github cone is the whole checkout
 it needs.
 
 ## Why a draft pull request is refused in a step
@@ -2324,6 +2331,27 @@ runner's shutdown annotation tells a job the platform killed from one the change
 (runner-shutdown.sh). That read is this job's `checks: write`, which carries the
 `checks: read` it needs; the reconcile step, "Set every other ci-ok on this head to this job's conclusion", reads the same route with the same
 token. GITHUB_REPOSITORY and GITHUB_RUN_ID, the rest of what it reads, are Actions' own.
+
+## Why a failing verdict of a group behind the front waits for the front
+
+On attempt 1 of a merge-group run whose verdict step failed, this step keeps the job open until
+the group is the front of the queue: until the queue's branch is at
+`github.event.merge_group.base_sha`, the group's parent commit. The job's own check run is the
+ci-ok the queue reads, and it stays in progress while the step waits, so the queue still counts
+the group as building. A failing ci-ok on a group behind the front decides nothing sooner — the
+queue takes a failed entry out only once every group in front of it has ended — and makes the
+queue build the next entry at once, on top of the failed one, a group the rebuild then throws
+away. .github/scripts/ci-ok-hold.sh's header holds the measurement and says when the step stops
+sooner: GitHub refusing the read of the tip, which prefers the failing verdict as every refusal
+of the ci-ok steps does, and CI_OK_HOLD_SECONDS, 30 minutes, the bound for a run nothing
+cancels.
+
+`failure()` runs it only after a step of this job failed, so a passing verdict never waits; the
+refusal of a re-run attempt is the verdict of a tree the queue no longer waits on, so the step
+skips any attempt above the first. It comes before the reconcile step, so nothing on the head
+says failure while the group waits. Its own timeout-minutes, 32, leaves its last read inside
+the job's time; the verdict and reconcile steps carry 10 each, the whole job's limit before
+this step, so their wait for a spent API budget is as long as it was.
 
 ## Why every other ci-ok on this head is set to this job's conclusion
 

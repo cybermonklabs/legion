@@ -139,8 +139,10 @@ cancellation, or a `changes` that failed or was cancelled — the moment that jo
 group that can no longer merge should leave the queue at the first failure. It posts only for the
 queue's front group, whose base is the tip of main: the queue takes a group behind the front out
 only once the groups in front of it end, and an early failing `ci-ok` there makes the queue build
-another group on it, so that group's verdict waits for the `ci-ok` job. Every check run it
-posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the `ci-ok` job's
+another group on it, so that group's verdict waits for the `ci-ok` job, which holds a failing
+verdict until the group is the front (`.github/scripts/ci-ok-hold.sh`) for the same reason.
+Every check run it posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the
+`ci-ok` job's
 last step (`.github/scripts/ci-ok-reconcile.sh`) sets to what the job concluded each `ci-ok`
 check run on the head that is a post: one carrying that marker, or one with an empty
 `external_id`, which the release before the marker posted. A posted check run is updated by no
