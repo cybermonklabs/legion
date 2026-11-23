@@ -31,6 +31,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -426,11 +427,14 @@ func (s *Server) exchangeAt(ctx context.Context, endpoint string, form url.Value
 
 // azureAnswerOf takes the endpoint's answer apart once, keeping every field's own bytes, so the
 // command is answered the shape Microsoft wrote and not one rebuilt from the fields this code
-// happens to know. The answer is data the command asked for (answerWithPlaceholder), decoded
-// through redact.Answer.Decode, whose error is not printed either.
+// happens to know. The answer is data (Answer.StreamTo) and never prints: every field but the
+// tokens is forwarded to the command as it came (answerWithPlaceholder), and the access token is
+// the credential this pod holds. Neither error quotes the answer.
 func azureAnswerOf(answer redact.Answer) (map[string]json.RawMessage, error) {
+	var body bytes.Buffer
+	_, _ = answer.StreamTo(&body) // a bytes.Buffer's Write never fails
 	var fields map[string]json.RawMessage
-	if err := answer.Decode(&fields); err != nil {
+	if err := json.Unmarshal(body.Bytes(), &fields); err != nil {
 		return nil, errors.New("is no JSON object")
 	}
 	var token string
