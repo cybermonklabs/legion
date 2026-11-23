@@ -4360,14 +4360,21 @@ func (m *Machine) takeOpenCall(callID string) (openCall, bool) {
 	return open, held
 }
 
-// NormalizeClaim clears state a claim can hold only while it records a compatible running process.
-// It returns an enrollment that lost that process so callers can revoke it at the broker.
+// NormalizeClaim clears state a claim can hold only while it records a compatible running process,
+// and the start failure a claim whose agent came up cannot hold: an agent that said it was ready
+// ended the launch failures that sentence names (table.go's ready), so a ready, working or idle
+// claim read back with one carries the refusal of a start from before its agent, which a daemon
+// before dispatch://INFRA-5463 kept. It returns an enrollment that lost that process so callers
+// can revoke it at the broker.
 func NormalizeClaim(c *Claim) *Enrollment {
 	if !HoldsCapability(c.State) {
 		c.CapabilityHash = nil
 	}
 	if c.State != StateSuspended {
 		c.SuspendedBy = ""
+	}
+	if SaidReady(c.State) {
+		c.LastStartFailure = ""
 	}
 	if c.Locator == nil {
 		// The charge is of the process the claim records, so a claim that records none carries

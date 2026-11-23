@@ -365,9 +365,10 @@ func populatedState(t *testing.T) State {
 					UpdateState: UpdateStateNone,
 					Step:        StepViewOf(architectStep),
 					Wake:        &WakeView{Kind: supervise.WakeCatchUp, DueAt: time.Date(2026, 9, 22, 9, 18, 3, 0, time.UTC)},
-					// The turns this agent began and ended, the ready that dates what follows,
-					// and the two causes a start of it reported before the one running now
-					// (contract 86).
+					// The turns this agent began and ended, the ready that dates the death, and
+					// the two causes (contract 86). This view carries every key so each record
+					// describes it: a live claim carries a start failure only while its agent
+					// has not been ready since, which a ready claim never is.
 					LastTurnStart:    &architectTurnStart,
 					LastTurnEnd:      &architectTurnEnd,
 					LastReady:        &architectReady,
