@@ -4553,15 +4553,15 @@
       "id": "githubrest-list-decode-echo",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
-      "test": "TestAListThatDoesNotDecodePrintsNoTokenItEchoes",
-      "production": "githubrest getPages: a list GitHub answers as an object's field that does not decode is named, and no value of it printed"
+      "test": "TestAPageThatDoesNotDecodePrintsNoTokenItEchoes",
+      "production": "githubrest GetPages: a page GitHub answers that does not decode is refused through oauth2call.Answer.Decode, whose error holds no value of it"
     },
     {
       "id": "githubrest-answer-words-next-page-elsewhere",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/elsewhere",
-      "production": "githubrest getPages: a next page GitHub's Link header names on another origin is refused naming the origin the token is sent to, and nothing of the URL GitHub wrote"
+      "production": "githubrest GetPages: a next page GitHub's Link header names on another origin is refused naming the origin the token is sent to, and nothing of the URL GitHub wrote"
     },
     {
       "id": "githubrest-answer-words-next-page-refused",
@@ -8452,7 +8452,8 @@
     {
       "site": "daemon githubrest getPages: a list GitHub answered as an object's field that did not decode printed the decoder's error, which quoted the installation token an answer echoed into a time",
       "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
-      "guard": "githubrest-list-decode-echo"
+      "guard": "githubrest-list-decode-echo",
+      "note": "the object's-field path of this site, GetListPages, is removed at the head, where nothing called it; its guard is the same read's surviving form, GetPages's array decode through oauth2call.Answer.Decode, which a page echoing the token into a time pins"
     },
     {
       "site": "daemon githubrest getPages: a next page on another origin was refused naming the URL GitHub's Link header wrote",

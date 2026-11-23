@@ -29,8 +29,8 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 }
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
-// (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
-// is api.github.com.
+// (RepositoryAPI), which Get, Post and GetPages take paths under; an empty endpoint is
+// api.github.com.
 type Client struct {
 	Token string
 	API   string
@@ -98,27 +98,15 @@ func spent(headers http.Header, named bool) Budget {
 }
 
 // GetPages reads every page of the JSON array GitHub answers at path, a hundred items to a page,
-// following the Link header's rel="next" until GitHub names none.
-func GetPages[T any](ctx context.Context, c Client, path string) ([]T, error) {
-	return getPages[T](ctx, c, path, "")
-}
-
-// GetListPages reads every page of the list GitHub answers at path as the field of a JSON object,
-// as its check-run and workflow-run lists answer ({"total_count": n, "check_runs": [...]}), paged as
-// GetPages pages an array. An answer without the field is an error, never an empty list.
-func GetListPages[T any](ctx context.Context, c Client, path, field string) ([]T, error) {
-	return getPages[T](ctx, c, path, field)
-}
-
-// getPages is GetPages, reading each page's items from the field of the object it answers when
-// field is not empty. A next page on another scheme or host than the REST base's is refused, so the
-// token goes nowhere but the API it was configured for.
+// following the Link header's rel="next" until GitHub names none. A next page on another scheme or
+// host than the REST base's is refused, so the token goes nowhere but the API it was configured
+// for.
 //
 // The next page's URL is what GitHub's Link header names (nextPage): GitHub's words, or those of
 // whatever answers in its place, which can echo the request's token back. So nothing this returns
 // names it: the refusal of a next page elsewhere names the origin the token is sent to alone, and
 // the failure of a later page's read names the page by its number (laterPage).
-func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, error) {
+func GetPages[T any](ctx context.Context, c Client, path string) ([]T, error) {
 	base, err := url.Parse(c.API)
 	if err != nil {
 		return nil, fmt.Errorf("parse the REST base %q: %w", c.API, err)
@@ -131,23 +119,9 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 	n := 1
 	for target := c.API + path + separator + "per_page=100"; target != ""; n++ {
 		var page []T
-		var object map[string]json.RawMessage
-		var into any = &page
-		if field != "" {
-			into = &object
-		}
-		next, _, err := c.call(ctx, http.MethodGet, target, nil, into)
+		next, _, err := c.call(ctx, http.MethodGet, target, nil, &page)
 		if err != nil {
 			return nil, laterPage(err, path, n)
-		}
-		if field != "" {
-			list, ok := object[field]
-			if !ok {
-				return nil, fmt.Errorf("GitHub answered GET %s with no %q list", path, field)
-			}
-			if json.Unmarshal(list, &page) != nil {
-				return nil, fmt.Errorf("decode the %q list GitHub answered GET %s with: its items are not the shape this call reads", field, path)
-			}
 		}
 		all = append(all, page...)
 		if next != "" {
@@ -161,7 +135,7 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 	return all, nil
 }
 
-// laterPage is err, the failure of the read of page n of GET path, as getPages returns it: the
+// laterPage is err, the failure of the read of page n of GET path, as GetPages returns it: the
 // first page's as it came, since its request is the caller's path under the client's API, and a
 // later page's naming that page as path and its number, in place of the URL GitHub's Link header
 // named for it: GitHub's answer names it (Answer.Path), and so does net/http's error for a
@@ -254,7 +228,7 @@ func (c Client) answerPath(target *url.URL) string { return PathUnder(c.API, tar
 
 // PathUnder is the path an Answer names for target, its query left out: the path under api, or
 // GitHub's whole path for a URL outside it, such as a later page GitHub names under
-// /repositories/<id>/, which getPages then names by its number instead (laterPage). Client names
+// /repositories/<id>/, which GetPages then names by its number instead (laterPage). Client names
 // its answers' paths so (answerPath), and appauth names those its errors carry so under its own
 // base URL (appauth.AnswerError).
 func PathUnder(api string, target *url.URL) string {
