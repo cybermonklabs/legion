@@ -1284,6 +1284,14 @@ function BroadcastComposer({
       {sendState.notice !== null ? (
         <p className={composerLine} id={noticeId}>
           <AgentParts parts={sendState.notice} />
+          {/* A notice that is only the Not confirmed line leaves room for why the selection goes
+              as an Aside; the limit and the Excluded line take the slot themselves. */}
+          {!sendState.refusalOnNotice && excluded.length === 0 && asideOnly.length > 0 ? (
+            <>
+              {" "}
+              <AgentParts parts={asideLine} />
+            </>
+          ) : null}
         </p>
       ) : asideOnly.length > 0 ? (
         <p className={`${composerLineLayout} ${textMutedOnSurface}`}>

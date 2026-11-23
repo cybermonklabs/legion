@@ -3440,6 +3440,12 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
       "Broadcast to 2 of 2 selected"
     );
     expect(within(composer()).queryByText(/Excluded:/)).not.toBeInTheDocument();
+    // The Reviewer takes Aside and not BTW, so the selection goes as an Aside, and the notice says
+    // why beside the Not confirmed line. The agent's name is an element of its own inside the
+    // line, so the line is read whole.
+    expect(within(composer()).getByText(/^Not confirmed:/).textContent).toContain(
+      "Sending as Aside: Reviewer"
+    );
 
     const field = within(composer()).getByRole("textbox", { name: "Broadcast message" });
     await type(user, field, "Status?");
