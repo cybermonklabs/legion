@@ -850,9 +850,13 @@ the runtime to report the death a second time.
 Until its turn, such a claim reads the state it was in when its process died, most often `working`
 or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
 was killed for memory and restarted, `launcher reports no child; container roles restarted`), and
-its `wake` names the launch it waits for.
+its `wake` (the claim's entry under `.issues` of the same `legion state --json` body) names the
+launch it waits for.
 The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` for that reason: its
 launch is already in flight, and runs at the `dueAt` the list names.
+A project pause holds these launches without taking pacing tokens. If its stop reaches a restored
+claim before the boot replays the recorded death, that stop still records the relaunch as owed
+for the resume.
 
 After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
 lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's

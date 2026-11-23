@@ -369,9 +369,11 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 // root's exit stops through exit. It sends the clean stop of the process's Envoy session once the
 // runtime's stop has returned, and none for a stop the runtime refused (stopForSuspension).
 // launch is whether the stop meets a launch its caller knows of (suspendedFor); a launch still
-// waiting on the machine is read here, before the stop lets it go (launchMet).
+// waiting on the machine is read here, before the stop lets it go (launchMet). A pause's stop
+// also owes the relaunch of a recorded death (Claim.DeathCharged with a locator), whose wake a
+// restart forgot: the boot's stop can run before replayRecordedDeaths raises it again.
 func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch bool) error {
-	launch = launch || m.launchMet()
+	launch = launch || m.launchMet() || (request.Pause != 0 && m.claim.DeathCharged && m.claim.Locator != nil)
 	if err := m.stopForSuspension(ctx, request.By, stopOwed); err != nil {
 		return fmt.Errorf("suspend %s: %w", m.claim.Token, err)
 	}
@@ -574,9 +576,10 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 // Between the two it sends the clean stop of the process's Envoy session once the runtime's stop
 // has returned, unless cleanStopSent says this decision sent it already (stopForSuspension).
 // launch is suspendNow's: a launch the caller knows the stop meets, beside the one waiting on the
-// machine, read before the stop lets it go (launchMet).
+// machine or the recorded death whose relaunch a pause's stop owes, read before the stop lets the
+// process go (launchMet, Claim.DeathCharged).
 func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, launch, cleanStopSent bool) error {
-	launch = launch || m.launchMet()
+	launch = launch || m.launchMet() || (request.Pause != 0 && m.claim.DeathCharged && m.claim.Locator != nil)
 	incarnation := m.claim.Locator.Incarnation
 	if err := m.stopForSuspension(ctx, request.By, cleanStopSent); err != nil {
 		m.stopUnconfirmed = true

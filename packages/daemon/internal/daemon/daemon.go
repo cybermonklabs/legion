@@ -2242,14 +2242,14 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 }
 
 // replayRecordedDeaths posts supervise.RecordedDeath to every restored live claim whose record
-// says the process it records died (supervise.Claim.DeathCharged): the daemon before this one
-// judged that process gone and charged its death, and the relaunch it raised lived in its memory
-// alone, a wake the pacing parked or a retry, which the restart lost (dispatch://INFRA-5472). The
-// machine raises that relaunch again where the post lands, so it enters the pacing beside the
-// unfinished launches this boot relaunches (relaunchUnfinished), rather than when the runtime
-// next reports the death: in a pod that lives on — its roles container restarted — that report
-// waits for the pod's launcher to reconnect, a probe interval after boot, which put every such
-// relaunch behind the whole of the boot's wave.
+// says the process it records died (supervise.Claim.DeathCharged): the relaunch the daemon before
+// this one raised for that death lived in its memory alone, a wake the pacing parked or a retry,
+// and the restart lost it (dispatch://INFRA-5472; supervise.RecordedDeath says why the runtime's
+// next report of the death raises it too late). The machine raises that relaunch again where the
+// post lands, so it enters the pacing beside the unfinished launches this boot relaunches
+// (relaunchUnfinished). The state alone picks the claims: a restored live claim records a
+// process, since restore puts one that records none back to launch_uncertain before any pass
+// reads it (supervisor.restore).
 //
 // It runs before the stale-plugin pass, and one machine's inbox is FIFO, so a dead claim that is
 // also stale is relaunched for its death, and the StalePlugin posted behind this finds the launch
@@ -2263,7 +2263,7 @@ func (s *supervision) replayRecordedDeaths(claims []supervise.Claim) {
 	live := supervise.LiveStates()
 	posted := 0
 	for _, c := range claims {
-		if !c.DeathCharged || c.Locator == nil || !slices.Contains(live, c.State) {
+		if !c.DeathCharged || !slices.Contains(live, c.State) {
 			continue
 		}
 		if s.supervisor.post(c.Token, supervise.RecordedDeath{Claim: c.Token, Generation: c.Generation}) {

@@ -327,9 +327,13 @@ type Claim struct {
 	// memory — a parked wake's turn, and the retry relaunchLater holds in m.relaunch — while a
 	// restored claim is taken up from what the store holds, so a daemon replaced between the
 	// charge and the budget running out would write launch_refused for a claim that died. It is
-	// cleared exactly where Budgets.LaunchFailures is put back to zero, by the agent's ready and
-	// by the whole-budget reset of a retry, because the pending cause and the launch-failure
-	// count measure one episode.
+	// cleared where Budgets.LaunchFailures is put back to zero, by the agent's ready and by the
+	// whole-budget reset of a retry, because the pending cause and the launch-failure count
+	// measure one episode, and by the decision that charges a death (died), whose relaunch
+	// charges that death its launch failure and records died here as it does: so died here, on a
+	// claim whose death is charged, says this death's launch failure is in the count beside it,
+	// which is what keeps a raise of that relaunch after a restart from charging it again
+	// (relaunchAfterDeath).
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
@@ -3664,13 +3668,22 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	if m.held != nil {
 		return m.endHeld(ctx, false, stopSent)
 	}
-	relaunch := m.deathRelaunch(ended)
+	uncharged := m.endUncharged("died")
+	relaunch := m.deathRelaunch(ended, uncharged)
 	if m.claim.DeathCharged {
 		return relaunch(ctx)
 	}
 	m.claim.DeathCharged = true
 	if m.chargeDeath() {
 		return m.fail(ctx, CauseDied, "deaths with work outstanding ran out")
+	}
+	// This death's launch failure is charged by the first raise of its relaunch that passes the
+	// lifecycle check, and that charge records died as the cause pending (relaunchAfterDeath):
+	// cleared here, with the decision, it says no raise has charged this death yet, so a later
+	// raise — the next report of the death, or the boot's replay of it after a restart — charges
+	// it only where none did.
+	if !uncharged {
+		m.claim.PendingCause = ""
 	}
 	// The decision and the count it charged are written here, before the relaunch, because
 	// every window that leaves this claim to be reported again writes nothing of it: the
@@ -3685,25 +3698,23 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 }
 
 // deathRelaunch is the relaunch a death of the claim's process raises, ended being how that
-// process ended (endDied): the same session after one charged launch failure
-// (relaunchAfterFailure), or, for an end endUncharged charges nothing, through launch, which
-// charges no launch failure and waits no backoff. died raises it at every report of the death,
-// and relaunchRecordedDeath at the boot that finds the death recorded, so the two raise one
-// relaunch the same way.
-func (m *Machine) deathRelaunch(ended string) func(context.Context) error {
-	if m.endUncharged("died") {
+// process ended (endDied): the same session after the death's one launch failure
+// (relaunchAfterDeath), or, for an end endUncharged charges nothing (uncharged), through launch,
+// which charges no launch failure and waits no backoff. died raises it at every report of the
+// death, and relaunchRecordedDeath at the boot that finds the death recorded, so the two raise
+// one relaunch the same way.
+func (m *Machine) deathRelaunch(ended string, uncharged bool) func(context.Context) error {
+	if uncharged {
 		return func(ctx context.Context) error { return m.launch(ctx, ended) }
 	}
-	return func(ctx context.Context) error { return m.relaunchAfterFailure(ctx, CauseDied, ended) }
+	return func(ctx context.Context) error { return m.relaunchAfterDeath(ctx, ended) }
 }
 
 // relaunchRecordedDeath is the RecordedDeath row: a boot finds the claim's record saying the
 // process it records died (Claim.DeathCharged), and raises again the relaunch that death raised,
 // which the restart lost with the memory it lived in (dispatch://INFRA-5472). It is the relaunch
 // the sweep's next report of the death would raise (died's charged branch), raised without
-// waiting for that report, which reaches an issue pod whose roles container restarted only once
-// its launcher has reconnected: by then the boot's wave holds the pacing, and a relaunch raised
-// then waits behind all of it. What the death ended was recorded, its task taken back and its
+// waiting for that report. What the death ended was recorded, its task taken back and its
 // session stopped by the daemon that judged it, and its charge is written: so this charges no
 // death, takes nothing back and stops nothing, and the report that comes later decides nothing
 // while the relaunch waits (judge, launchWaits), or is fenced off once it has run (fence).
@@ -3727,7 +3738,7 @@ func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.log.Warn("supervise: relaunching a process the previous daemon found dead; its relaunch did not survive the restart",
 		"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation, "lastDeathCause", m.claim.LastDeathCause)
-	return m.deathRelaunch(endDied(m.claim.LastDeathCause))(ctx)
+	return m.deathRelaunch(endDied(m.claim.LastDeathCause), m.endUncharged("died"))(ctx)
 }
 
 // endUncharged is whether the end of the claim's process is charged nothing, and it logs why

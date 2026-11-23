@@ -1827,7 +1827,7 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 	testwait.Eventually(t, "the relaunch of the dead process to wait its turn behind the wave", func() bool {
 		return slices.ContainsFunc(waitingWakes(t, d), func(w api.WakeWaiting) bool { return w.Claim == dead })
 	})
-	deaths := d.claim(dead).Budgets.Deaths
+	charged := d.claim(dead).Budgets
 	launchedFirst := map[claim.Token]int{}
 	for _, launch := range rt.launches() {
 		launchedFirst[launch.claim]++
@@ -1856,22 +1856,15 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
 
 	// The launcher reconnects and reports the death again. The relaunch the boot raised is that
-	// death's relaunch, so the report reserves no second wake and moves no turn.
-	restarted.fake().Emit(death)
-	testwait.Eventually(t, "the late report of the recorded death to be decided", func() bool {
-		for _, msg := range []string{
-			"supervise: an observation of the process a waiting launch replaces decides nothing; its turn replaces that process",
-			"supervise: dropped a stale event",
-		} {
-			for _, line := range loggedLines(t, restartLog.String(), msg) {
-				if line["claim"] == string(dead) {
-					return true
-				}
-			}
-		}
-		return false
-	})
-	assertQueueLeft(t, second, "the late report of the recorded death", again)
+	// death's relaunch, so the report reserves no second wake and moves no turn. Where the burst
+	// let that relaunch straight out, it has already replaced the process the report is about.
+	if slices.ContainsFunc(again, func(w api.WakeWaiting) bool { return w.Claim == dead }) {
+		restarted.fake().Emit(death)
+		testwait.Eventually(t, "the late report of the recorded death to be judged", func() bool {
+			return second.claim(dead).ProcessGone
+		})
+		assertQueueLeft(t, second, "the late report of the recorded death", again)
+	}
 	runWave(t, restartClock, restarted, again, 1)
 
 	for _, token := range append(slices.Clone(tokens), dead) {
@@ -1885,8 +1878,9 @@ func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
 			t.Fatalf("%s was spawned rather than resumed; the relaunch of a death comes back on its recorded session", dead)
 		}
 	}
-	if got := second.claim(dead).Budgets.Deaths; got != deaths {
-		t.Fatalf("the dead claim has %d deaths after the restart, want the %d the first daemon charged: one death is charged once", got, deaths)
+	if got := second.claim(dead).Budgets; got.Deaths != charged.Deaths || got.LaunchFailures != charged.LaunchFailures {
+		t.Fatalf("the dead claim has %d deaths and %d launch failures after the restart, want the %d and %d the first daemon charged: one death is charged once",
+			got.Deaths, got.LaunchFailures, charged.Deaths, charged.LaunchFailures)
 	}
 	if left := waitingWakes(t, second); len(left) != 0 {
 		t.Fatalf("wakesWaiting once the restart's wave has gone = %+v, want none", left)
