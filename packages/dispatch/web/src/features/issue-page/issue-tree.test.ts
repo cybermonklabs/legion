@@ -2968,11 +2968,36 @@ test("a check reads one state whatever order the read sends its results in", () 
   }
 });
 
-// The latest evidence at the check's basis decides, and a newer result at another
-// commit says nothing about the basis. A check passed at its basis and then failed there is
-// Failed, though the server still counts the older pass as standing (`pass_stands` is yes) and
-// a newer fail at another commit is the newest result of all.
-test("a pass and then a fail at the basis read Failed under a newer fail elsewhere", () => {
+/** Dispatch's answer for a check that holds a pass and a fail at one commit: it cannot tell
+ *  whether a pass stands (`pass_stands` answers unknown, for the reason `pass_and_fail`). */
+const PASS_AND_FAIL = { answer: "unknown", reason: "pass_and_fail" } as const;
+
+// Dispatch answers unknown where the check holds a pass and a fail at its basis, and the page
+// takes that answer: the check reads Cannot tell, though the newest result at its basis is a
+// pass, and it stands on that pass.
+test("a fail and then a newer pass at the basis read Cannot tell where Dispatch answers unknown", () => {
+  const results = [
+    recorded("result-passed", "Break it and it fails.", { created_at: "2026-11-07T00:00:00Z" }),
+    recorded("result-failed", "Fix the fault and it passes.", {
+      created_at: "2026-11-06T00:00:00Z",
+      failed: 1,
+      verdict: "fail",
+    }),
+  ];
+
+  expect(checkStanding({ pass_stands: PASS_AND_FAIL, results })).toMatchObject({
+    stands: { id: "result-passed" },
+    state: "unmarked",
+  });
+  expect(stateOfOneCheck({ pass_stands: PASS_AND_FAIL }, results)).toBe("unmarked");
+  expect(nodeStateWord("unmarked")).toBe("Cannot tell");
+});
+
+// A pass and then a fail at the check's basis are a check Dispatch cannot tell: it answers
+// unknown, for the reason `pass_and_fail`, and the page reads Cannot tell. The check stands on
+// the fail, the newest result at its basis. A newer fail at another commit is the newest result
+// of all, and it says nothing about the basis.
+test("a pass and then a fail at the basis read Cannot tell under a newer fail elsewhere", () => {
   const results = [
     recorded("result-elsewhere", "Fix the fault and it passes.", {
       commit_sha: "d".repeat(40),
@@ -2989,11 +3014,66 @@ test("a pass and then a fail at the basis read Failed under a newer fail elsewhe
     recorded("result-passed", "Break it and it fails.", { created_at: "2026-11-05T00:00:00Z" }),
   ];
 
-  expect(checkStanding({ pass_stands: { answer: "yes" }, results })).toMatchObject({
+  expect(checkStanding({ pass_stands: PASS_AND_FAIL, results })).toMatchObject({
+    stands: { id: "result-failed" },
+    state: "unmarked",
+  });
+  expect(stateOfOneCheck({ pass_stands: PASS_AND_FAIL }, results)).toBe("unmarked");
+});
+
+/** The second open head a `before_merge` check compares with: head B. Head A is the commit
+ *  `recorded` puts each result at. */
+const HEAD_B = "e".repeat(40);
+
+/** A `before_merge` check compared with the heads of two open pull requests, head A and head
+ *  B, which Dispatch answers no for: a pass stands only where one stands at each open head. */
+const TWO_OPEN_HEADS: Partial<CheckBlock> = {
+  compared_with: [
+    { commit: RESULT_COMMIT, kind: "pull_request", pull_request: 7 },
+    { commit: HEAD_B, kind: "pull_request", pull_request: 8 },
+  ],
+  pass_stands: { answer: "no" },
+  when: "before_merge",
+};
+
+// Dispatch answers no where one of the two open heads holds a fail and no pass, and the page
+// never reads Passed where Dispatch answers no. The fail at head B stands at its basis, so the
+// check reads Failed and stands on that fail, whatever newer pass head A holds.
+test("a fail at one open head reads Failed under a newer pass at the other where Dispatch answers no", () => {
+  const results = [
+    recorded("result-passed", "Break it and it fails.", {
+      commit_stands: { answer: "at_basis" },
+      created_at: "2026-11-07T00:00:00Z",
+    }),
+    recorded("result-failed", "Fix the fault and it passes.", {
+      commit_sha: HEAD_B,
+      commit_stands: { answer: "at_basis" },
+      created_at: "2026-11-06T00:00:00Z",
+      failed: 1,
+      verdict: "fail",
+    }),
+  ];
+
+  expect(checkStanding({ pass_stands: { answer: "no" }, results })).toMatchObject({
     stands: { id: "result-failed" },
     state: "failed",
   });
-  expect(stateOfOneCheck({ pass_stands: { answer: "yes" } }, results)).toBe("failed");
+  expect(stateOfOneCheck(TWO_OPEN_HEADS, results)).toBe("failed");
+});
+
+// Dispatch answers no where head B holds no result at all: no pass stands at each open head.
+// No fail stands at the basis, so the state is `checkState`'s, which names that answer Failed,
+// and the check stands on the one pass, at head A. It never reads Passed.
+test("a pass at one open head and nothing at the other reads Failed where Dispatch answers no, never Passed", () => {
+  const results = [
+    recorded("result-passed", "Break it and it fails.", { commit_stands: { answer: "at_basis" } }),
+  ];
+
+  expect(checkStanding({ pass_stands: { answer: "no" }, results })).toMatchObject({
+    stands: { id: "result-passed" },
+    state: "failed",
+  });
+  expect(stateOfOneCheck(TWO_OPEN_HEADS, results)).toBe("failed");
 });
 
 // The deployed server sends no `pass_stands` at all, and Dispatch rolls out with two builds

@@ -343,17 +343,17 @@ test("the latest result a check draws is the newest that stands", () => {
 // R17: "Not met where one failed there". The commit is the one the server names for the check:
 // it compares with the heads of two pull requests, and the server reads both results at its
 // basis (`at_basis`), the older pass at one head and the newer fail at the other, which is the
-// commit the page names too. The server's `pass_stands` says yes for any pass at a basis,
-// whatever later fails exist, so a check with an older pass at another commit and a fail at the
-// commit the page names read "Out of date" and left its statement Unknown. The fail at the
-// basis is what the page reads.
+// commit the page names too. The head the fail is at holds no pass, so no pass stands at each
+// head, and Dispatch answers no (`pass_stands`). A check with an older pass at another commit and
+// a fail at the commit the page names read "Out of date" and left its statement Unknown. Under
+// Dispatch's no, the fail at the basis is what the page reads, and it never reads Passed.
 const regressed = check({
   block_id: "c-one",
   compared_with: [
     { commit: COMMIT, kind: "pull_request", pull_request: 7 },
     { commit: OTHER_COMMIT, kind: "pull_request", pull_request: 8 },
   ],
-  pass_stands: { answer: "yes" },
+  pass_stands: { answer: "no" },
   results: [
     result({
       commit_stands: { answer: "at_basis" },
@@ -491,11 +491,14 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
 }
 
 // The tree read a check's state from `checkState` alone while this body turned it over at the
-// commit the page names, so one check read two states. The regressed check above read Passed on
-// its row and was off the fold's frontier, so its statement arrived folded with the regression
-// inside it, and the filter row counted nothing failing, while this body read it Failed; a fail
-// that stands at another commit read Failed on the row and in the count, and Out of date here.
-// The tree's node holds the one reading this body draws (`checkStanding`), which is the server's.
+// commit the page names, so one check read two states. A check like the regressed one above, a
+// fail at the commit the page names over an older pass at another head, read Passed on its row
+// where the server counted that older pass, and was off the fold's frontier, so its statement
+// arrived folded with the regression inside it, and the filter row counted nothing failing,
+// while this body read it Failed; a fail that stands at another commit read Failed on the row
+// and in the count, and Out of date here. The tree's node holds the one reading this body draws
+// (`checkStanding`), which takes Dispatch's answer: the regressed check, which Dispatch answers
+// no for, reads Failed on its row, in the fold, in the filter row and in the body.
 test("a check reads one state on its row, in the fold, in the filter row and in the body", () => {
   const statement = blockNodeId(SPEC_SLUG, "r1");
   const checkId = (blockId: string) => blockNodeId(VERIFICATION_SLUG, blockId);
