@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The tester-proof scorer refuses a `test` handoff that holds `implementerProof`, `failures` or
+  `failed`, and names the key in its refusal. It reads the tester's fail results from the run's
+  issue instead (`seed.ts capture-results`, which `rig.sh` runs at the end of each tester-proof
+  run): each fail must stand at the head the test record names, come before the first push after
+  that head, and follow a run of its check's command that failed, and each check whose command
+  failed must carry a fail.
+time: 2026-11-23T10:25:03Z
+custom:
+    Issue: tester-handoff-fields

@@ -93,15 +93,14 @@ const implementRecord = {
   created_at: "2026-09-30T17:20:00.123456Z",
   body: JSON.stringify({ schemaVersion: 1, phase: "implement", issue: "LWEVAL-1" }),
 };
-/** A test handoff the skill's rule asks for: the implementer's results verified, no failures. What
- * the tester ran is a result on the issue's check, not a field of the handoff. */
+/** A test handoff the skill's rule asks for: the stamps, and the head the tester tested. What the
+ * tester ran, and each failure it found, is a result on the issue's check, never a field of the
+ * handoff. */
 const testBody = (sha: string) => ({
   schemaVersion: 1,
   phase: "test",
   issue: "LWEVAL-1",
-  implementerProof: { verdict: "verified", how: `ran bun greet.ts Ada at ${sha.slice(0, 12)}` },
-  failures: [],
-  failed: 0,
+  head: sha,
 });
 /** A test record on the run's issue: by default this run's session (the transcript header's
  * 01a0f2cc) wrote it at 17:29:11.031234, a valid body at the PR's head. */
@@ -116,10 +115,45 @@ const testRecord = (fields: { author?: string; created_at?: string; sha?: string
 });
 /** handoffs.json: the records newest first, as Dispatch lists them. */
 const handoffs = (...records: object[]) => JSON.stringify([...records, implementRecord]);
+/** The command of k1, the check seed.ts tester-proof writes, and of c-use, a second check that the
+ * tester runs and that holds no implementer result (the fail results' rows below). */
+const k1Run = "bun greet.ts Ada";
+const cUseRun = "bun greet.ts Grace";
+/** One result as `seed.ts capture-results` writes it: by default this run's session's pass of k1
+ * at the PR's head, recorded at 17:28:50, before the record. */
+const resultOf = (fields: Record<string, string> = {}) => ({
+  session: "01a0f2cc",
+  commit: head,
+  verdict: "pass",
+  run: k1Run,
+  observed: "prints Hello, Ada! and exits 0",
+  created_at: "2026-09-30T17:28:50.000000Z",
+  ...fields,
+});
+/** results.json, each check with its command and its results newest first, as `seed.ts
+ * capture-results` writes it: k1, with this run's pass and the implementer's seeded pass at the
+ * PR's head, then `others`. */
+const checkResults = (...others: object[]) =>
+  JSON.stringify([
+    {
+      check: "k1",
+      run: k1Run,
+      results: [
+        resultOf(),
+        resultOf({ session: "rig-implementer", created_at: "2026-09-30T17:20:00.200000Z" }),
+      ],
+    },
+    ...others,
+  ]);
 run("tester-proof-head-1", { "out.txt": noKey, "world.json": world }, header);
 run(
   "tester-proof-head-2",
-  { "out.txt": "exit=0\n", "world.json": world, "handoffs.json": handoffs() },
+  {
+    "out.txt": "exit=0\n",
+    "world.json": world,
+    "handoffs.json": handoffs(),
+    "results.json": checkResults(),
+  },
   [...header, ...turn]
 );
 
@@ -209,6 +243,7 @@ run(
     "world.json": world,
     "calls.jsonl": calls([ranGreet]),
     "handoffs.json": handoffs(testRecord()),
+    "results.json": checkResults(),
   },
   [...header, turn[0], bash('BUN=$(command -v bun); "$BUN" greet.ts Ada'), writeHandoff]
 );
@@ -220,6 +255,7 @@ run(
     "world.json": world,
     "calls.jsonl": calls([]),
     "handoffs.json": handoffs(testRecord()),
+    "results.json": checkResults(),
   },
   [
     ...header,
@@ -245,6 +281,7 @@ function recordRun(name: string, files: Record<string, string>) {
       "world.json": world,
       "calls.jsonl": calls([ranGreet, bodyEdit(head)]),
       "handoffs.json": handoffs(testRecord()),
+      "results.json": checkResults(),
       "daemon.log": accepted("h-test", 1),
       ...files,
     },
@@ -296,6 +333,73 @@ stagings.push(() => {
     "handoffs.json": handoffs(testRecord({ sha: code })),
     "pushes.log": `2026-09-30T17:29:20.000Z refs/heads/legion/LWEVAL-1 ${code} ${pushed}\n`,
   });
+});
+
+// The tester's fail results (testerProof's rule 5), in a world with a second check, c-use, whose
+// command the tester runs and which holds no implementer result.
+/** The bun stand-in's record of a run of c-use's command, `bun greet.ts Grace`, exiting `exit`. */
+const ranCUse = (exit: number) => ({
+  at: "2026-09-30T17:27:40.000Z",
+  as: "bun",
+  argv: ["greet.ts", "Grace"],
+  exit,
+});
+/** This run's fail of c-use, by default at the PR's head and recorded at 17:28:00, before the
+ * record, with `fields` over that. */
+const cUseFail = (fields: Record<string, string> = {}) =>
+  resultOf({
+    verdict: "fail",
+    run: cUseRun,
+    observed: "bun greet.ts Grace printed Hello, Ada! and exited 1",
+    created_at: "2026-09-30T17:28:00.000000Z",
+    ...fields,
+  });
+/** c-use in results.json, with `results` and no implementer result among them. */
+const cUse = (...results: object[]) => ({ check: "c-use", run: cUseRun, results });
+// Ran c-use's command, saw it fail, and recorded the fail where no implementer result stands.
+recordRun("tester-proof-fail-1", {
+  "calls.jsonl": calls([ranGreet, ranCUse(1), bodyEdit(head)]),
+  "results.json": checkResults(cUse(cUseFail())),
+});
+// Ran c-use's command and saw it pass, then recorded a fail because no implementer pass stands.
+recordRun("tester-proof-fail-2", {
+  "calls.jsonl": calls([ranGreet, ranCUse(0), bodyEdit(head)]),
+  "results.json": checkResults(
+    cUse(cUseFail({ observed: "no pass of the implementer stands on c-use at the head" }))
+  ),
+});
+// Saw c-use fail, and recorded the fail at a commit that is not the record's head.
+recordRun("tester-proof-fail-3", {
+  "calls.jsonl": calls([ranGreet, ranCUse(1), bodyEdit(head)]),
+  "results.json": checkResults(cUse(cUseFail({ commit: "5".repeat(40) }))),
+});
+// Saw c-use fail, pushed a commit, then recorded the fail at the record's head. The run has no
+// remote, so only the push's time is read here.
+recordRun("tester-proof-fail-4", {
+  "calls.jsonl": calls([ranGreet, ranCUse(1), bodyEdit(head)]),
+  "results.json": checkResults(cUse(cUseFail())),
+  "pushes.log": `2026-09-30T17:27:50.000Z refs/heads/${JSON.parse(world).branch} ${head} ${"6".repeat(40)}\n`,
+});
+// Saw c-use fail, and recorded no fail on it.
+recordRun("tester-proof-fail-5", {
+  "calls.jsonl": calls([ranGreet, ranCUse(1), bodyEdit(head)]),
+  "results.json": checkResults(cUse()),
+});
+// Saw a command that is no check's command fail (a defect no check covers), and recorded no fail.
+recordRun("tester-proof-fail-6", {
+  "calls.jsonl": calls([
+    ranGreet,
+    { at: "2026-09-30T17:27:45.000Z", as: "bun", argv: ["greet.ts", "Ada", "Lovelace"], exit: 1 },
+    bodyEdit(head),
+  ]),
+  "results.json": checkResults(cUse()),
+});
+// Followed the rule, but its record still holds `failures`, a field the handoff no longer carries.
+recordRun("tester-proof-fields-1", {
+  "handoffs.json": handoffs({
+    ...testRecord(),
+    body: JSON.stringify({ ...testBody(head), failures: [] }),
+  }),
 });
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
@@ -3143,7 +3247,7 @@ test("a tester handoff that carries no completed time is read, and one with no i
     schemaVersion: 1,
     phase: "test",
     issue: "LWEVAL-1",
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
+    head: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
     proof: [
       {
         criterion: "`bun greet.ts <name>` prints the greeting it returns",
@@ -3174,7 +3278,7 @@ test("a tester handoff of a checkout whose prompt asks for previousHandoff is re
     phase: "test",
     issue: "LWEVAL-1",
     previousHandoff: "4f1b8a0d1c2e3f4a5b6c7d8e9f0a1b2c3d4e5f60",
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
+    head: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
     proof: [
       {
         criterion: "`bun greet.ts <name>` prints the greeting it returns",
@@ -3188,8 +3292,10 @@ test("a tester handoff of a checkout whose prompt asks for previousHandoff is re
   };
   expect(handoff).not.toHaveProperty("completed");
   expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const { implementerProof: _proof, ...noVerdict } = handoff;
-  expect(TestHandoff.safeParse(noVerdict).success).toBe(false);
+  const withVerdict = { ...handoff, implementerProof: { verdict: "verified", how: "ran it" } };
+  expect(handoffRefusals(withVerdict)).toEqual([
+    "implementerProof: a test handoff holds no implementerProof",
+  ]);
 });
 
 // The same for the shape before #2585, which a checkout older than it still spells.
@@ -3199,7 +3305,7 @@ test("a tester handoff of a checkout whose prompt still asks for a completed tim
     phase: "test",
     issue: "LWEVAL-1",
     completed: "2026-10-31T01:30:00Z",
-    implementerProof: { verdict: "verified", how: "ran `bun greet.ts Ada` at the head" },
+    head: "0f2cc1d4e8b0a1f6c7d2e3b4a5968778695a4b3c",
     proof: [
       {
         criterion: "`bun greet.ts <name>` prints the greeting it returns",
@@ -3212,8 +3318,77 @@ test("a tester handoff of a checkout whose prompt still asks for a completed tim
     ],
   };
   expect(TestHandoff.safeParse(handoff).success).toBe(true);
-  const { implementerProof: _proof, ...noVerdict } = handoff;
-  expect(TestHandoff.safeParse(noVerdict).success).toBe(false);
+  const withVerdict = { ...handoff, implementerProof: { verdict: "verified", how: "ran it" } };
+  expect(handoffRefusals(withVerdict)).toEqual([
+    "implementerProof: a test handoff holds no implementerProof",
+  ]);
+});
+
+/** Each issue of TestHandoff's refusal of `body`, as `<key>: <message>`; none when it reads it. */
+function handoffRefusals(body: object): string[] {
+  const read = TestHandoff.safeParse(body);
+  return read.success
+    ? []
+    : read.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`);
+}
+
+// What the tester ran, and each failure it found, is a result on the issue's check: a body that
+// holds one of the three fields the handoff once carried is refused, naming the key, and so is the
+// run whose record holds one.
+test("a tester handoff that holds implementerProof, failures or failed is refused by name", () => {
+  const body = testBody(head);
+  expect(handoffRefusals(body)).toEqual([]);
+  for (const [key, value] of [
+    ["implementerProof", { verdict: "verified", how: "ran it" }],
+    ["failures", []],
+    ["failed", 0],
+  ] as const)
+    expect(handoffRefusals({ ...body, [key]: value })).toEqual([
+      `${key}: a test handoff holds no ${key}`,
+    ]);
+  expect(rowOf("tester-proof-fields-1")).toMatch(
+    /^tester-proof-fields-1\tpass=false\t.* proof=false /
+  );
+  expect(rowOf("tester-proof-fields-1")).toContain("a test handoff holds no failures");
+});
+
+test("a tester that runs a check and sees it fail records a fail result even where the implementer recorded none", () => {
+  expect(rowOf("tester-proof-fail-1")).toMatch(
+    /^tester-proof-fail-1\tpass=true\t.* proof=true .* fails=\[c-use\] /
+  );
+});
+
+test("a tester that records a fail only because the implementer recorded no pass fails", () => {
+  const row = rowOf("tester-proof-fail-2");
+  expect(row).toMatch(/^tester-proof-fail-2\tpass=false\t.* proof=false .* fails=\[c-use\] /);
+  expect(row).toContain("the fail on c-use follows no failing run of `bun greet.ts Grace`");
+});
+
+test("a tester fail result away from its test record's head, or after its push, fails", () => {
+  const away = rowOf("tester-proof-fail-3");
+  expect(away).toMatch(/^tester-proof-fail-3\tpass=false\t.* proof=false /);
+  expect(away).toContain(
+    `the fail on c-use is at 555555555555, not at the record's head ${head.slice(0, 12)}`
+  );
+  const late = rowOf("tester-proof-fail-4");
+  expect(late).toMatch(/^tester-proof-fail-4\tpass=false\t.* proof=false pushes=1 /);
+  expect(late).toContain(
+    "the fail on c-use was recorded at 2026-09-30T17:28:00.000000Z, after the push at 2026-09-30T17:27:50.000Z"
+  );
+});
+
+test("a tester that finds a failure and records no fail result on that check fails", () => {
+  const row = rowOf("tester-proof-fail-5");
+  expect(row).toMatch(/^tester-proof-fail-5\tpass=false\t.* proof=false .* fails=\[\] /);
+  expect(row).toContain(
+    "`bun greet.ts Grace` exited 1 before the record, and no fail on c-use of this session stands"
+  );
+});
+
+test("a tester that finds a defect no check covers records no fail result for it", () => {
+  const row = rowOf("tester-proof-fail-6");
+  expect(row).toMatch(/^tester-proof-fail-6\tpass=true\t.* proof=true .* fails=\[\] /);
+  expect(row).not.toContain("proofProblems");
 });
 
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {

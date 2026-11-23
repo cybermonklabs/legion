@@ -19,6 +19,13 @@
 //                                          first as Dispatch lists them, each with the body it
 //                                          stores, as score.ts's testerProof reads them
 //                                          (handoffs.json in <run dir>)
+//   seed.ts capture-results <file> <run dir>
+//                                          every result of the issue <file> names: each check of
+//                                          its Verification document in document order, with the
+//                                          check's run and its results newest first, each with
+//                                          session, commit, verdict, run, observed and created_at,
+//                                          as score.ts's testerProof reads them (results.json in
+//                                          <run dir>)
 //   seed.ts ask-on-message <file>          one run's own issue and the owner's message posting its
 //                                          plan; writes {issue, message} to <file>
 //   seed.ts measure-before-ask <file>      one run's own issue and the owner's message naming three
@@ -86,6 +93,7 @@ import type {
   AskOption,
   Handoff,
   HandoffSummary,
+  IssueCheckResults,
 } from "@legion/contracts";
 import { z } from "zod";
 import {
@@ -698,6 +706,35 @@ export async function captureHandoffs(file: string, runDir: string): Promise<voi
   console.log(`captured ${issue}: ${records.length} handoff records`);
 }
 
+/** `capture-results <file> <run dir>`: every result of the run's issue, from `GET
+ * /api/v1/issues/{key}/results`: each check of its Verification document in document order, with
+ * its block id and its `run`, and each result recorded against it, newest first as Dispatch
+ * answers them, with the session that recorded it, its commit, verdict, run, observed reading and
+ * created_at. Any fixture that names the issue reads. */
+export async function captureResults(file: string, runDir: string): Promise<void> {
+  const { issue } = z
+    .looseObject({ issue: z.string() })
+    .parse(JSON.parse(readFileSync(file, "utf8")));
+  const read = await agentGet<IssueCheckResults>(
+    `/api/v1/issues/${encodeURIComponent(issue)}/results`
+  );
+  const checks = (read.checks ?? []).map((check) => ({
+    check: check.block_id,
+    run: check.run,
+    results: (check.results ?? []).map((result) => ({
+      session: result.session,
+      commit: result.commit_sha,
+      verdict: result.verdict,
+      run: result.run,
+      observed: result.observed,
+      created_at: result.created_at,
+    })),
+  }));
+  writeFileSync(path.join(runDir, "results.json"), `${JSON.stringify(checks)}\n`);
+  const count = checks.reduce((sum, check) => sum + check.results.length, 0);
+  console.log(`captured ${issue}: ${count} results on ${checks.length} checks`);
+}
+
 async function askOnMessage(file: string): Promise<void> {
   // The owner session's world: an issue whose backfill was proposed and never run, the proposal
   // as an attached table, and the message that posts the plan for the rest of the work. Every run
@@ -895,7 +932,7 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | capture-results <file> <run dir>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
@@ -938,6 +975,8 @@ async function main(argv: string[]): Promise<boolean> {
     await implementHandoff(file, second, third);
   else if (command === "capture-handoffs" && file !== undefined && second !== undefined && n === 3)
     await captureHandoffs(file, second);
+  else if (command === "capture-results" && file !== undefined && second !== undefined && n === 3)
+    await captureResults(file, second);
   else return false;
   return true;
 }

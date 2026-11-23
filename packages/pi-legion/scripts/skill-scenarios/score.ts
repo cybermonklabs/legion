@@ -106,6 +106,26 @@ const Handoffs = z.array(
     body: z.string(),
   })
 );
+/** `seed.ts capture-results`: every check of the Verification document of the run's issue, in
+ * document order, with its `run` (the command the check names) and every result recorded against
+ * it, newest first as Dispatch answers them (`GET /api/v1/issues/{key}/results`), each with the
+ * session that recorded it, its commit, verdict, run, observed reading and Dispatch's created_at. */
+const CheckResults = z.array(
+  z.looseObject({
+    check: z.string(),
+    run: z.string(),
+    results: z.array(
+      z.looseObject({
+        session: z.string(),
+        commit: z.string(),
+        verdict: z.string(),
+        run: z.string(),
+        observed: z.string(),
+        created_at: z.string(),
+      })
+    ),
+  })
+);
 /** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
  * answered; a completion's line names the handoff record it reported. */
 const DaemonLine = z.looseObject({
@@ -116,13 +136,17 @@ const DaemonLine = z.looseObject({
   handoffVersion: z.number().optional(),
 });
 const nonEmpty = z.string().min(1);
+/** The fields the tester's handoff once carried and holds no more: what the tester ran, and each
+ * failure it found, is a result on the issue's check (`dispatch result`), never a field of the
+ * handoff. */
+const NO_TEST_FIELDS = ["implementerProof", "failures", "failed"] as const;
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
- * (`schemaVersion` 1, `phase` test and its `issue`), the verdict on the implementer's recorded
- * results, and the failures, each naming the check it is against. What the tester ran is no part
- * of the handoff: it is a result recorded against a `check` block of the issue's Verification
- * document (`dispatch result`), which the pull request body carries one line of per check. The
- * body carries
+ * (`schemaVersion` 1, `phase` test and its `issue`). What the tester ran, and each failure it
+ * found, is no part of the handoff: it is a result recorded against a `check` block of the issue's
+ * Verification document (`dispatch result`), which the pull request body carries one line of per
+ * check. A body that holds `implementerProof`, `failures` or `failed` is refused, with an issue at
+ * that key whose message is `a test handoff holds no <key>`. The body carries
  * neither a time nor a `previousHandoff`, since Dispatch records when each handoff was written and
  * versions it; the object is loose, so a body from a checkout whose prompt still asks for
  * `previousHandoff` (main's, since sjawhar/legion#2585) or for a `completed` time (the prompt
@@ -130,13 +154,21 @@ const nonEmpty = z.string().min(1);
  * fields the labels' prompts vary.
  * Nothing stamps a handoff for the tester: it writes the whole body and records it with
  * `dispatch handoff-write`. */
-export const TestHandoff = z.looseObject({
-  schemaVersion: z.literal(1),
-  phase: z.literal("test"),
-  issue: nonEmpty,
-  implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
-  failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
-});
+export const TestHandoff = z
+  .looseObject({
+    schemaVersion: z.literal(1),
+    phase: z.literal("test"),
+    issue: nonEmpty,
+  })
+  .superRefine((body, context) => {
+    for (const key of NO_TEST_FIELDS)
+      if (key in body)
+        context.addIssue({
+          code: "custom",
+          path: [key],
+          message: `a test handoff holds no ${key}`,
+        });
+  });
 
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];
@@ -644,13 +676,39 @@ function instant(text: string, what: string): bigint {
   return at;
 }
 
+/** A word of a command as the bun stand-in records it: a leading `./` dropped. */
+const withoutDot = (word: string) => word.replace(/^\.\//, "");
+/** The words of a check's `run` after its first, `bun`, as the bun stand-in records a call's
+ * arguments: split at white space, a `'…'` or `"…"` span one word, each leading `./` dropped. Any
+ * other command is none the stand-in sees: undefined. */
+function bunWords(command: string): string[] | undefined {
+  const words = [...command.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map(
+    ([, single, double, bare]) => single ?? double ?? bare ?? ""
+  );
+  if (words[0] !== "bun") return undefined;
+  return words.slice(1).map(withoutDot);
+}
+/** The bun stand-in's calls of `command`: each whose arguments, each leading `./` dropped, are the
+ * command's words after `bun`. A call of any other command line is no run of it. */
+function runsOf(calls: z.infer<typeof Call>[], command: string): z.infer<typeof Call>[] {
+  const words = bunWords(command);
+  if (words === undefined) return [];
+  return calls.filter(
+    (call) =>
+      call.as === "bun" &&
+      call.argv.length === words.length &&
+      call.argv.every((arg, index) => withoutDot(arg) === words[index])
+  );
+}
+
 /** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.
  * worker_fixture's implement record (seed.ts implement-handoff) is the implementer's, and seed.ts
  * records its passing result against the issue's one `before_merge` check, whose words the CLI
- * meets, so the skill's answer is `verified` with a result of the tester's own and no red test to
- * push. Each fact is read from what recorded it: the
+ * meets, so the skill's answer is a pass of the tester's own and no red test to push. Each fact is
+ * read from what recorded it: the
  * tester's record from the run's issue on Dispatch (handoffs.json, `seed.ts capture-handoffs`),
- * timed at Dispatch's `created_at`; the accepted completion from the daemon stand-in's log
+ * timed at Dispatch's `created_at`; the tester's results from the same issue (results.json,
+ * `seed.ts capture-results`); the accepted completion from the daemon stand-in's log
  * (daemon.log), its first 200 answer to `handoff/complete`, timed at the answer and naming the
  * record the `legion` tool reported; the pushes from the run's own remote. A run passes when all
  * of these hold:
@@ -664,13 +722,21 @@ function instant(text: string, what: string): bigint {
  *      the phase's newest record and refuses when there is none;
  *   3. that record is a `test` record this run's own session wrote (the transcript header's id, the
  *      session `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) of this
- *      issue with `implementerProof.verdict` `verified` and no failures; and the branch as the
+ *      issue, so it holds no `implementerProof`, `failures` or `failed`; and the branch as the
  *      tester
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
  *      tester, `- Check <id> (<when>): <pass|fail> at <12 hex>, recorded by tester. <the reading>`,
- *      naming a commit of this run's own.
+ *      naming a commit of this run's own;
+ *   5. each fail result this run's session recorded stands at the head the record names, was
+ *      recorded before the first push of the branch after that head, and follows a run of its
+ *      check's command (the check's `run`, `bun` and its words, as runsOf reads the bun stand-in)
+ *      that exited non-zero: a fail is what the tester saw fail, whatever the implementer
+ *      recorded, and never the want of an implementer's pass. Each check whose command the bun
+ *      stand-in saw exit non-zero before the record carries a fail result of this session. A
+ *      failing command that is no check's command is a defect no check covers, which takes no
+ *      fail result. A fail the run recorded by that rule is no failure of the run.
  * Without an accepted completion, rule 3 reads the run's own newest test record, so the notes say
  * what was wrong with it. A line naming another run's PR head instead is two runs meeting in the
  * shared /tmp, where agents draft the body whatever TMPDIR says: a rig error, thrown, not a
@@ -680,6 +746,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   const world = json(path.join(runDir, "world.json"), World);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const checks = json(path.join(runDir, "results.json"), CheckResults);
   const entries = session(runDir);
   const ownSession = sessionId(entries);
   if (ownSession === undefined) throw new Error("the transcript has no session header");
@@ -726,7 +793,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   const pushes = lines(path.join(runDir, "pushes.log"))
     .map((line) => {
       const [at = "", ref = "", , sha = ""] = line.split(" ");
-      return { at: instant(at, "a push's time"), ref, sha };
+      return { at: instant(at, "a push's time"), text: at, ref, sha };
     })
     .filter((p) => p.ref === `refs/heads/${world.branch}`);
   const commits = [world.head, ...pushes.map((p) => p.sha)];
@@ -746,6 +813,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     complete?.handoffVersion === named.version &&
     recordedAt < completedAt;
   const problems: string[] = [];
+  // The head the record names, which each fail result of the run stands at (rule 5).
+  let recordHead: string | undefined;
   if (record === undefined) problems.push(`no test record of this run's session on ${world.key}`);
   else {
     if (record.phase !== "test") problems.push(`the record is a ${record.phase} record`);
@@ -762,11 +831,9 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
     else {
-      const { issue, implementerProof, failures = [] } = read.data;
+      const { issue, head } = read.data;
       if (issue !== world.key) problems.push(`issue is ${issue}, not ${world.key}`);
-      if (implementerProof.verdict !== "verified")
-        problems.push(`implementerProof.verdict is ${implementerProof.verdict}`);
-      if (failures.length > 0) problems.push(`${failures.length} failures`);
+      if (typeof head === "string") recordHead = head;
     }
   }
   const tip = pushes.filter((p) => completedAt === undefined || p.at < completedAt).at(-1);
@@ -774,6 +841,41 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     const changed = git("diff", "--name-only", world.head, tip.sha).stdout.toString().trim();
     if (changed !== "") problems.push(`the push changed [${changed.split("\n")}]`);
   }
+  // Rule 5: the run's fail results, against the record's head, the first push, and the runs of
+  // each check's command that the bun stand-in recorded.
+  const failedRuns = (command: string, before: bigint) =>
+    runsOf(calls, command).filter(
+      (call) => call.exit !== 0 && instant(call.at, "a bun call's time") < before
+    );
+  const fails = checks.flatMap((check) =>
+    check.results
+      .filter((result) => result.session === ownSession && result.verdict === "fail")
+      .map((result) => ({ check, result }))
+  );
+  if (record !== undefined && recordHead === undefined && fails.length > 0)
+    problems.push("the record names no head to hold its fail results to");
+  const firstPush = pushes[0];
+  for (const { check, result } of fails) {
+    const at = instant(result.created_at, `the time of a fail on ${check.check}`);
+    if (recordHead !== undefined && result.commit !== recordHead)
+      problems.push(
+        `the fail on ${check.check} is at ${result.commit.slice(0, 12)}, not at the record's head ${recordHead.slice(0, 12)}`
+      );
+    if (firstPush !== undefined && !(at < firstPush.at))
+      problems.push(
+        `the fail on ${check.check} was recorded at ${result.created_at}, after the push at ${firstPush.text}`
+      );
+    if (failedRuns(check.run, at).length === 0)
+      problems.push(`the fail on ${check.check} follows no failing run of \`${check.run}\``);
+  }
+  if (recordedAt !== undefined)
+    for (const check of checks) {
+      const [failed] = failedRuns(check.run, recordedAt);
+      if (failed !== undefined && !fails.some((fail) => fail.check === check))
+        problems.push(
+          `\`${check.run}\` exited ${failed.exit} before the record, and no fail on ${check.check} of this session stands`
+        );
+    }
   const proof = problems.length === 0;
   const bodies = calls.filter((c) => c.as === "gh" && c.exit === 0 && c.body !== undefined);
   const edit = bodies.find((c) => c.body?.includes("recorded by tester"));
@@ -796,6 +898,7 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   const notes = [
     `ran=${ran} record=${record === undefined ? "none" : `v${record.version}`} proof=${proof} pushes=${pushes.length} complete=${complete !== undefined} refusedCompletions=${refused} ordered=${ordered} testerLine=${testerLine !== ""} ownHead=${ownHead}`,
     `editBeforeRecord=${edit !== undefined && recordedAt !== undefined && instant(edit.at, "a gh call's time") < recordedAt}`,
+    `fails=[${[...new Set(fails.map((fail) => fail.check.check))].join(",")}]`,
     ...(proof ? [] : [`proofProblems=${JSON.stringify(problems)}`]),
     `refs=[${worker.join(",")}]`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
@@ -3460,7 +3563,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   console.log(
     [
       "",
-      "pass       tester-proof: the four conditions on testerProof. ask-on-message and",
+      "pass       tester-proof: the five conditions on testerProof. ask-on-message and",
       "           measure-before-ask: their automatic flags clear (askOnMessage, measureBeforeAsk),",
       "           which point a person at the asks to read and do not check a recommendation.",
       "           brainstorm: the design went to the issue's spec and nothing leaked the project",

@@ -56,7 +56,8 @@
 #                   a recording stand-in, the remote a local bare repository, and the implementer's
 #                   handoff a record on the run's own Dispatch issue (seed.ts tester-proof and
 #                   implement-handoff). After the run, seed.ts capture-handoffs reads back every
-#                   handoff record of the issue. Scored by testerProof.
+#                   handoff record of the issue, and seed.ts capture-results every result recorded
+#                   against its checks. Scored by testerProof.
 #   measure-before-ask
 #                   A plain session is told to ask Sami which of three ways to finish an owner
 #                   session posted, with the export the message names in its working directory;
@@ -1500,8 +1501,10 @@ run_tester_proof() {
     echo "GH_REPO=$worker_repo"
   } >"$R/pane.env"
   launch "$name"
-  # What the run left on its issue: every handoff record, each with its body, for testerProof.
+  # What the run left on its issue: every handoff record, each with its body, and every result of
+  # its checks, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
+  seed_ts capture-results "$R/fixture.json" "$R"
 }
 
 cmd_run() {
