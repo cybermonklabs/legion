@@ -12,7 +12,7 @@
 // build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the seventeen tests of those nine files are the text-check job's to run, once
+// included - and the eighteen tests of those nine files are the text-check job's to run, once
 // each. What an untagged file of declarations costs the race build is its compile and the one
 // walk the census asks of it: nothing here walks or parses anything until a test calls it.
 
@@ -331,4 +331,194 @@ func literalsWithin(expression ast.Expr) string {
 		return true
 	})
 	return strings.Join(parts, " ")
+}
+
+// sqlTemplate is one string value a source writes: every maximal string expression of a function
+// body or a package-level value, whether or not the scan can follow it to a database sink.
+// statement is the text the parser reads, with each run-time fragment standing as `null` so the
+// statement keeps its shape; fragments is every string literal inside those fragments, which a
+// reader scans for the words a draw needs and which the value's digest covers, so an edit to a
+// fragment moves that digest. complete reports whether every byte came from a literal or a
+// package-level constant. literals is every string literal written inside the value's own
+// expression, each on its own, so a reader that cannot read the value whole can read each of its
+// literals: a literal inside a `+` chain or a Sprintf is part of the value, and no other template.
+type sqlTemplate struct {
+	locatedStatement
+	fragments string
+	complete  bool
+	literals  []string
+}
+
+// sqlTemplatesByFunction reads every string value a file writes, in each function body and each
+// package-level value: a statement this scan cannot follow to its sink - one held in a struct
+// field, a map, another function's return or a builder - is still written somewhere as a string,
+// and is read where it is written. A value bound once to a local is followed to that binding,
+// whatever the local is called.
+func sqlTemplatesByFunction(file *ast.File, constants map[string]string) []sqlTemplate {
+	var statements []sqlTemplate
+	readAt := func(expression ast.Expr, name string, bindings map[string][]ast.Expr) (sqlTemplate, bool) {
+		text, fragments, found, complete := sqlTemplateText(expression, file.Name.Name, constants, bindings, map[string]bool{})
+		if !found {
+			return sqlTemplate{}, false
+		}
+		return sqlTemplate{
+			locatedStatement: locatedStatement{function: name, statement: strings.TrimSpace(text)},
+			fragments:        strings.TrimSpace(fragments),
+			complete:         complete,
+			literals:         stringLiterals(expression),
+		}, true
+	}
+	collect := func(node ast.Node, name string, bindings map[string][]ast.Expr) {
+		ast.Inspect(node, func(node ast.Node) bool {
+			expression, ok := node.(ast.Expr)
+			if !ok {
+				return true
+			}
+			template, ok := readAt(expression, name, bindings)
+			if !ok {
+				return true
+			}
+			statements = append(statements, template)
+			return false
+		})
+	}
+	for _, declared := range file.Decls {
+		switch declared := declared.(type) {
+		case *ast.GenDecl:
+			for _, spec := range declared.Specs {
+				values, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for index, value := range values.Values {
+					name := "<package>"
+					if index < len(values.Names) {
+						name = values.Names[index].Name
+					}
+					collect(value, name, nil)
+				}
+			}
+		case *ast.FuncDecl:
+			if declared.Body != nil {
+				collect(declared.Body, declared.Name.Name, localBindings(declared.Body))
+			}
+		}
+	}
+	return statements
+}
+
+// localBindings is every expression each local name of the function body is bound to. A name
+// bound more than once is followed nowhere: the scan cannot say which binding a sink reads.
+func localBindings(body *ast.BlockStmt) map[string][]ast.Expr {
+	bindings := map[string][]ast.Expr{}
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.AssignStmt:
+			if len(node.Lhs) != len(node.Rhs) {
+				return true
+			}
+			for index, name := range node.Lhs {
+				if identifier, ok := name.(*ast.Ident); ok {
+					bindings[identifier.Name] = append(bindings[identifier.Name], node.Rhs[index])
+				}
+			}
+		case *ast.DeclStmt:
+			declaration, ok := node.Decl.(*ast.GenDecl)
+			if !ok {
+				return true
+			}
+			for _, spec := range declaration.Specs {
+				values, ok := spec.(*ast.ValueSpec)
+				if !ok || len(values.Names) != len(values.Values) {
+					continue
+				}
+				for index, name := range values.Names {
+					bindings[name.Name] = append(bindings[name.Name], values.Values[index])
+				}
+			}
+		}
+		return true
+	})
+	return bindings
+}
+
+// stringLiterals is every string literal written inside expression, unquoted, in source order.
+func stringLiterals(expression ast.Expr) []string {
+	var literals []string
+	ast.Inspect(expression, func(node ast.Node) bool {
+		if literal, ok := node.(*ast.BasicLit); ok && literal.Kind == token.STRING {
+			if text, err := strconv.Unquote(literal.Value); err == nil {
+				literals = append(literals, text)
+			}
+		}
+		return true
+	})
+	return literals
+}
+
+// sqlTemplateText renders a SQL value two ways: text, the statement with each run-time fragment
+// standing as `null`, which keeps the statement parseable, and fragments, the string literals
+// inside those run-time expressions (literalsWithin), which a reader scans for the words a draw
+// needs. complete is false wherever a fragment stood.
+func sqlTemplateText(expression ast.Expr, pkg string, constants map[string]string, bindings map[string][]ast.Expr, resolving map[string]bool) (text, fragments string, found, complete bool) {
+	switch node := expression.(type) {
+	case *ast.BasicLit:
+		if node.Kind != token.STRING {
+			return "", "", false, false
+		}
+		text, err := strconv.Unquote(node.Value)
+		return text, "", err == nil, err == nil
+	case *ast.Ident:
+		if values := bindings[node.Name]; len(values) == 1 && !resolving[node.Name] {
+			resolving[node.Name] = true
+			text, fragments, found, complete = sqlTemplateText(values[0], pkg, constants, bindings, resolving)
+			delete(resolving, node.Name)
+			return text, fragments, found, complete
+		}
+		text, found = constants[pkg+"."+node.Name]
+		return text, "", found, found
+	case *ast.SelectorExpr:
+		qualifier, ok := node.X.(*ast.Ident)
+		if !ok {
+			return "", "", false, false
+		}
+		text, found = constants[qualifier.Name+"."+node.Sel.Name]
+		return text, "", found, found
+	case *ast.CallExpr:
+		selector, ok := node.Fun.(*ast.SelectorExpr)
+		if !ok || len(node.Args) == 0 || selector.Sel.Name != "Sprintf" {
+			return "", "", false, false
+		}
+		qualifier, ok := selector.X.(*ast.Ident)
+		if !ok || qualifier.Name != "fmt" {
+			return "", "", false, false
+		}
+		format, formatFragments, found, _ := sqlTemplateText(node.Args[0], pkg, constants, bindings, resolving)
+		if !found {
+			return "", "", false, false
+		}
+		for _, argument := range node.Args[1:] {
+			formatFragments += " " + literalsWithin(argument)
+		}
+		return format, strings.TrimSpace(formatFragments), true, false
+	case *ast.BinaryExpr:
+		if node.Op != token.ADD {
+			return "", "", false, false
+		}
+		left, leftFragments, leftFound, leftComplete := sqlTemplateText(node.X, pkg, constants, bindings, resolving)
+		right, rightFragments, rightFound, rightComplete := sqlTemplateText(node.Y, pkg, constants, bindings, resolving)
+		if !leftFound && !rightFound {
+			return "", "", false, false
+		}
+		if !leftFound {
+			left = " null "
+			leftFragments = literalsWithin(node.X)
+		}
+		if !rightFound {
+			right = " null "
+			rightFragments = literalsWithin(node.Y)
+		}
+		return left + right, strings.TrimSpace(leftFragments + " " + rightFragments), true, leftFound && rightFound && leftComplete && rightComplete
+	}
+	return "", "", false, false
 }

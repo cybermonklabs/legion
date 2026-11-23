@@ -15,7 +15,7 @@
 // The work stays behind the tag: the constant fixpoint and the statement walk this guard runs
 // over the whole module, and
 // TestNoForUpdateOnOwnerTables, which would otherwise run twice, once under the detector and
-// once in the text-check run that names the seventeen tests of these eight guards and
+// once in the text-check run that names the eighteen tests of these eight guards and
 // one_expression_guard_test.go. That file is where the module's second walk went: main had it
 // as a subtest of who_waits_test.go, parsing the same tree in the race binary, and its subject
 // is the module's text, which R15 of dispatch://INFRA-1066 has run in the text-check job rather

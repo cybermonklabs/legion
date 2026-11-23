@@ -35,7 +35,10 @@ type WriteBatch struct {
 // statement of a write phase that records the id of the event appended just before it - the
 // references a write stamps with its event, an ask.opened payload's own id - names it so, rather
 // than reading the id back in Go between the two statements. Nothing between the two may append
-// another event.
+// another event. Both functions are named in pg_catalog: a bare name resolves by the search path
+// and by argument type, so a currval(text) of another schema, or a pg_get_serial_sequence of one
+// placed before pg_catalog, would be called instead and could draw from the sequence. The id
+// guards accept only this spelling as a read (api.TestOnlyAnEventInsertsDefaultDrawsAnEventID).
 //
 // The currval is a scalar subquery so that a statement finding the event by it reads one row of
 // events through its primary key. currval is volatile, and Postgres compares a column with a
@@ -45,7 +48,7 @@ type WriteBatch struct {
 // `events.id = (select currval(...))` it runs as the index scan of events_pkey starts, and the
 // scan reads the one row. It is the same value, since nothing in the statement draws from the
 // sequence.
-const LatestEventID = `(select currval(pg_get_serial_sequence('events', 'id')))`
+const LatestEventID = `(select pg_catalog.currval(pg_catalog.pg_get_serial_sequence('events', 'id')))`
 
 // Queued is one statement of a WriteBatch. Unless one of its methods says otherwise, its result is
 // read as an Exec's and dropped.
