@@ -8,19 +8,71 @@ import { gitBinary } from "@legion/test-fixtures/version-control-tools"
 const packageRoot = resolve(import.meta.dir, "..")
 const repoRoot = resolve(packageRoot, "..", "..")
 
-/** `command` run in `cwd`; its stdout, or an error naming the command and its stderr when it fails. */
-async function run(command: string[], cwd: string, env?: Record<string, string>): Promise<string> {
+/** The row's own limit, and the only bound of the build and the git commands it runs: each waits
+ *  for its command to exit until the row's deadline, and no command has a span of its own, so no
+ *  guard ends a command the row would still have time for. The build is the slow command, and how
+ *  long it takes depends on the machine: 1.4 to 9.1 s at a load of about 1,300 on a 288-CPU box,
+ *  and 4.7 to 9.4 s pinned to two CPUs beside 16 busy loops (8 runnable per CPU, that box's ratio
+ *  at a load of 2,300), each run to its end; 0.27 s in CI. The one run at a load of about 2,300
+ *  was cut at 120,028 ms by the 120 s limit this row had, so that reading is a lower bound, and
+ *  CPU alone did not slow the build that far. The limit is sized from CI's deadline, the claude-
+ *  envoy job's `timeout-minutes: 10`: in job 137305559238 this row began 76 s into the job, the
+ *  rows after it took 159 s and the steps after the test step 3 s, which leaves 362 s for a row
+ *  that hangs to be named before the job is cut; 300 s leaves 62 s of that. */
+const ROW_LIMIT_MS = 300_000
+
+/** What Bun gives the row past `ROW_LIMIT_MS`: the time for a command killed at the deadline to
+ *  fail the row by its own name before Bun's timer fails it unnamed. It decides no verdict: every
+ *  command `run` starts has ended or been killed by the deadline. */
+const REPORT_MS = 10_000
+
+/** `command` run in `cwd`; its stdout, or an error naming the command and its stderr when it fails,
+ *  or naming it, killed, when it has not exited by `deadline` (epoch ms), the row's own. It runs in
+ *  a process group of its own, and the kill takes the whole group: a child of the command that
+ *  holds its output pipes open would otherwise keep the read waiting past the kill, to Bun's timer.
+ *  A command due to start once the deadline has passed is not started: the error says the row's
+ *  time was spent before it, so it names no command that did not spend it. */
+async function run(
+  command: string[],
+  cwd: string,
+  deadline: number,
+  env?: Record<string, string>,
+): Promise<string> {
+  if (Date.now() >= deadline) {
+    throw new Error(
+      `the row's ${ROW_LIMIT_MS / 1000} s were spent before ${command.join(" ")} started, so it did not start`,
+    )
+  }
   const child = Bun.spawn(command, {
     cwd,
     ...(env === undefined ? {} : { env }),
+    stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
+    detached: true,
   })
+  let killed = false
+  const guard = setTimeout(
+    () => {
+      killed = true
+      try {
+        process.kill(-child.pid, "SIGKILL")
+      } catch {
+        // The group already exited.
+      }
+    },
+    Math.max(0, deadline - Date.now()),
+  )
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
-  ])
+  ]).finally(() => clearTimeout(guard))
+  if (killed) {
+    throw new Error(
+      `${command.join(" ")} had not exited when the row's ${ROW_LIMIT_MS / 1000} s were spent, so it was killed: ${stderr.trim()}`,
+    )
+  }
   if (exitCode !== 0) {
     throw new Error(`${command.join(" ")} exited ${exitCode}: ${stderr.trim()}`)
   }
@@ -32,7 +84,7 @@ async function run(command: string[], cwd: string, env?: Record<string, string>)
  *  listing any of them itself. The build runs in a process of its own because a second Bun.build in
  *  a test process that has already run other test files fails reading its sources with EISDIR
  *  (tests/dist-fresh.test.ts builds the same way). */
-async function filesTheBuildReads(scratch: string): Promise<string[]> {
+async function filesTheBuildReads(scratch: string, deadline: number): Promise<string[]> {
   const build = JSON.stringify(join(packageRoot, "scripts", "build.ts"))
   const script = [
     `import { buildBundles, buildLegionPlugin } from ${build}`,
@@ -44,7 +96,7 @@ async function filesTheBuildReads(scratch: string): Promise<string[]> {
     ")",
   ].join("\n")
   const read: { bundles: string[]; legion: string[] } = JSON.parse(
-    await run([process.execPath, "--eval", script], packageRoot),
+    await run([process.execPath, "--eval", script], packageRoot, deadline),
   )
   const bundleInputs = read.bundles.map((input) => relative(repoRoot, input))
   const legionInputs = read.legion.map((input) => relative(repoRoot, input))
@@ -104,21 +156,32 @@ async function buildInputPathspecs(): Promise<string[]> {
 // version was bumped for. Git does the matching, in a scratch repository holding an empty file at
 // each path, so the workspace's own git or jj state plays no part, and it is the git binary that
 // `git` on PATH runs (`gitBinary`), so no wrapper a machine puts first on PATH answers instead.
-test("scripts/build-inputs.txt matches every file the build reads", async () => {
+// The build and both git commands run until the row's one deadline (`ROW_LIMIT_MS`); gitBinary's
+// own probe of PATH's git is no command `run` starts, so Bun's timer alone bounds it, and a hang
+// there fails the row as Bun's timeout rather than by the command's name.
+async function buildInputsMatch(): Promise<void> {
+  const deadline = Date.now() + ROW_LIMIT_MS
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-build-inputs-"))
   try {
-    const probes = await filesTheBuildReads(join(scratch, "build"))
+    const probes = await filesTheBuildReads(join(scratch, "build"), deadline)
     const pathspecs = await buildInputPathspecs()
     const repository = join(scratch, "repository")
     const git = await gitBinary(scratch)
     const env = { PATH: process.env["PATH"] ?? "", HOME: scratch, GIT_CONFIG_NOSYSTEM: "1" }
-    await run([git, "init", "--quiet", repository], scratch, env)
+    await run([git, "init", "--quiet", repository], scratch, deadline, env)
     for (const probe of probes) {
       await mkdir(join(repository, dirname(probe)), { recursive: true })
       await writeFile(join(repository, probe), "")
     }
     const listed = new Set(
-      (await run([git, "ls-files", "--others", "-z", "--", ...pathspecs], repository, env))
+      (
+        await run(
+          [git, "ls-files", "--others", "-z", "--", ...pathspecs],
+          repository,
+          deadline,
+          env,
+        )
+      )
         .split("\0")
         .filter((path) => path !== ""),
     )
@@ -126,7 +189,12 @@ test("scripts/build-inputs.txt matches every file the build reads", async () => 
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 120_000)
+}
+test(
+  "scripts/build-inputs.txt matches every file the build reads",
+  buildInputsMatch,
+  ROW_LIMIT_MS + REPORT_MS,
+)
 
 /** The entries of scripts/build-inputs.txt that are not release inputs, so
  *  $CLAUDE_ENVOY_VERSION_ARGS does not carry them: the toolchain block the list's own header

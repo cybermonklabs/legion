@@ -11,7 +11,10 @@ import { gitBinary, jjBinary } from "./version-control-tools";
 // running process's executable in /proc, and the first one on PATH itself where there is no /proc
 // to read it from. A wrapper first on PATH is what tells the two apart: a script that runs the
 // tool, as a version manager's shim or the dotfiles shim does.
-const skip = skipWithout("jj", "git");
+// A host with no jj or git skips the rows, but GitHub Actions does not: the test-fixtures job
+// installs the pinned jj (.github/actions/install-jj) so these rows run there, and a skip would
+// hide their only run in CI, so on Actions a missing tool fails them by name ("jj is not on PATH").
+const skip = process.env["GITHUB_ACTIONS"] !== "true" && skipWithout("jj", "git");
 const withProc = existsSync("/proc/self");
 
 const cleanup: (() => Promise<void> | void)[] = [];

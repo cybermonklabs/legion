@@ -150,7 +150,9 @@ itself, whose tests import its sources by relative path.
 - A suite that means git or jj itself runs the binary that `git` or `jj` on `PATH` runs,
   `gitBinary(dir)` or `jjBinary(dir)` (`@legion/test-fixtures/version-control-tools`), by its
   path, and hands that path to the code under test as well (an argument, or a directory of its own
-  first on the child's `PATH`), never the bare name. A developer's machine and a Legion pod put
+  first on the child's `PATH`), never the bare name. Both read the running binary from `/proc`; on
+  a machine with none (macOS) they answer the first `git` or `jj` on `PATH`, so there a wrapper
+  still answers in the tool's place. A developer's machine and a Legion pod put
   their own wrappers of these tools first on `PATH`, and a wrapper's hooks and checks then decide
   the row: the dotfiles git shim gives every commit hooks that refuse it where the shim cannot read
   its term list, which failed every row of `scripts/conflicts/__tests__/analyse.test.ts`. A suite

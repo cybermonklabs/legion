@@ -1289,6 +1289,7 @@ test_fixtures:
   - '.github/workflows/ci-job-test-fixtures.yaml'
   - *bun_install
   - 'packages/test-fixtures/**'
+  - *jj_install
 conflicts_script:
   - *ci_router
   - *ci_filters_data
