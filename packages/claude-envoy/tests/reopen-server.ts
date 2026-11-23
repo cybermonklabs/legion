@@ -14,9 +14,10 @@ import {
   processStarted,
   writeCodexSessionRecord,
 } from "../src/codex/codex-session-record"
-import { SERVER_START_MS, waitFor } from "./channel-session-harness"
+import { waitFor } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { type NatsGate, natsGate } from "./nats-gate"
+import { socketOwner } from "./socket-owner"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -62,21 +63,6 @@ export function codexSession(sessionId: string): (stateDirectory: string) => Pro
       transcript_path: null,
     })
   }
-}
-
-/**
- * The process that owns the TCP socket bound to local `port`, as `ss` names it (`bun pid=123`):
- * what tells this row's server from any other process on the machine that dialed a port this row
- * now holds.
- */
-async function socketOwner(port: number): Promise<string> {
-  const ss = Bun.spawn(["ss", "-tnpH", `( sport = :${port} )`], {
-    stdout: "pipe",
-    stderr: "ignore",
-  })
-  const text = await new Response(ss.stdout).text()
-  const owner = /users:\(\("([^"]+)",pid=(\d+)/.exec(text)
-  return owner === null ? `unknown (${text.trim() || "no socket"})` : `${owner[1]} pid=${owner[2]}`
 }
 
 /** A secrets broker stand-in for a session that presents its broker token (`sessionBroker`). */
@@ -176,7 +162,7 @@ export interface ReopenServer {
   /** What a wait that timed out reports: the process, its relay, its connections, its stderr. */
   state(): string
   /** Each CONNECT the hub saw: its connection name, whether it presented a token, the port its
-   *  client dialed the gate from, and the process that owns that port. */
+   *  client dialed the gate from, and the process that owns that connection to the gate. */
   describeConnects(): Promise<string>
   /** Fails naming every CONNECT the hub saw and the process each came from, unless `held`: a
    *  CONNECT check that fails says whose CONNECT it read. */
@@ -195,11 +181,20 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     ...(options.nonce === undefined ? {} : { nonce: options.nonce }),
     ...(options.brokerHost === undefined ? {} : { host: options.brokerHost }),
   })
-  // Each client's owner is looked up as the gate accepts it, while its socket is still up.
+  // Each carried client's owner: the owner of the connection from its port to the gate's address
+  // and port, not of any socket on its port, since Linux gives one ephemeral port to connects to
+  // other destinations too. The gate listens on the hub's own loopback address (fakeHost), not
+  // 127.0.0.1, so the lookup is given that address. The lookup starts as the gate carries the
+  // connection, which can close before a scan of every process reaches its holder: so it reads the
+  // server's fds first, in milliseconds, and scans only for another holder.
   const owners = new Map<number, Promise<string>>()
+  let serverPid: number | undefined
   const gate = natsGate(broker.url, (leg) => {
-    owners.set(leg.clientPort, socketOwner(leg.clientPort))
+    const expected = serverPid === undefined ? {} : { expected: serverPid }
+    owners.set(leg.clientPort, socketOwner(leg.clientPort, gateEnd, expected))
   })
+  const gateUrl = new URL(gate.url)
+  const gateEnd = { host: gateUrl.hostname, port: Number(gateUrl.port) }
   if (options.gateOpen !== false) gate.open()
   const requests: string[] = []
   const sessions: string[] = []
@@ -261,6 +256,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     stdout: "ignore",
     stderr: "pipe",
   })
+  serverPid = server.pid
   let stderr = ""
   const decoder = new TextDecoder()
   const stderrEnded = (async () => {
@@ -293,7 +289,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
       async () => stderr.length > 0 || deliveries.length > 0,
       "the server's first stderr line",
       state,
-      SERVER_START_MS,
+      PROCESS_WAIT_MS,
     )
     if (options.awaitRegistration !== false) {
       await waitFor(

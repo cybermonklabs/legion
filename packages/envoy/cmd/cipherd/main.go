@@ -363,17 +363,11 @@ func main() {
 	// listener, and a broker that reads none answers every edge listener 503 REPOSITORIES_UNKNOWN.
 	// Both present the broker's own projected ServiceAccount token for Dispatch's audience through
 	// one reader, read at call time, so a rotation needs no restart and the broker has one Dispatch
-	// address and one account there. config.Load holds the two settings to both or neither. Built
-	// before the loader, which serves a tagged secret, and each profile of one, only when this
-	// broker can ask whether its project is private
+	// address and one account there (projectAccessClients). config.Load holds the two settings to
+	// both or neither. Built before the loader, which serves a tagged secret, and each profile of
+	// one, only when this broker can ask whether its project is private
 	// (policy.Loader.ProjectChecks).
-	var projectAccess projectaccess.Access
-	var projectRepositories api.ProjectRepositoriesReader
-	if cfg.ProjectAccessURL != "" {
-		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, account, nil)
-		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
-	}
+	projectAccess, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
 	// The broker's one reader of Google group members, which every decision site asks who is a
 	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
 	// its chain check and the approval page. A full policy load names its groups to it; it reads
@@ -851,12 +845,13 @@ func main() {
 	// The NATS auth service starts once the broker serves, so a connection it admits can trade
 	// and introspect against a broker that answers; it answers in the replicas' queue group until
 	// the drain begins. BROKER_NATS_SERVICES alone starts none (config.Load), and the record says
-	// which, with the edge listeners GET /v1/project-repositories answers either way.
+	// which, with the edge listeners GET /v1/project-repositories answers either way, and the hub
+	// account it places each client in (BROKER_NATS_ACCOUNT).
 	if cfg.NATS.Enabled() {
-		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners))
+		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners), "account", cfg.NATS.Account)
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
-			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services,
+			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services, Account: cfg.NATS.Account,
 		}, natscallout.Deps{
 			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
@@ -1325,7 +1320,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
-		// endpoint and retry.
+		// endpoint and retry. A github-installations token has no give-back: it is the token the
+		// secret stores, which every other release of it hands over too.
 		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
@@ -1341,6 +1337,31 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		m.Assignees = dispatch
 	}
 	return m
+}
+
+// projectAccessHTTPClient is the HTTP client the broker reads Dispatch's project access with: Go's
+// default transport, but keeping requests.MaySeeAtOnce idle connections to Dispatch rather than
+// the default two, since one row, and one list, asks Dispatch that many questions at once. With
+// two kept, each round of a row's questions would close all but two of the connections the round
+// before it opened, and open as many again.
+func projectAccessHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = requests.MaySeeAtOnce
+	return &http.Client{Transport: transport}
+}
+
+// projectAccessClients is the broker's two clients of the Dispatch at baseURL, both reading the
+// broker's own projected ServiceAccount token at tokenFile, read at call time: its project access,
+// over projectAccessHTTPClient, and the repository answer GET /v1/project-repositories relays. Both
+// are nil, as interfaces, when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL
+// holds none. main wires the broker with these, and the test of the client's connections reads its
+// project access through this same call, so a client built here on another transport fails it.
+func projectAccessClients(baseURL, tokenFile string) (projectaccess.Access, api.ProjectRepositoriesReader) {
+	if baseURL == "" {
+		return nil, nil
+	}
+	account := ciphertoken.NewAccountToken(tokenFile)
+	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
 }
 
 // The broker's group reader answers every question a decision site asks of group members.
@@ -1673,10 +1694,13 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 // no binding at all mints no secret of that type. The google-service-account and
 // anthropic-federation minters are pointers: a method value would otherwise copy the credentials
 // each caches away from the minter every later mint reads. The other two are copied, and each
-// Retry they hold is a pointer, so minters given one Retry still draw from its one budget.
+// Retry they hold is a pointer, so minters given one Retry still draw from its one budget. The
+// github-installations minter takes no setting and calls no endpoint: it reads the tokens the
+// secret stores, so it is built here.
 func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount, anthropicFederation *secrets.AnthropicFederation) map[string]requests.Minter {
 	return map[string]requests.Minter{
 		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGitHubInstallations:  secrets.GitHubInstallations{}.Mint,
 		policy.TypeGoogleLogin:          googleLogin.Mint,
 		policy.TypeAzureLogin:           azureLogin.Mint,
 		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,

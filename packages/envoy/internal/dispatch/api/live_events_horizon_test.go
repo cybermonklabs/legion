@@ -194,6 +194,7 @@ func expectEventsInOrder(t *testing.T, client *socketClient, sub string, want ..
 // the live loop drops a when A commits, for good, since a is at or below that start. Started at the
 // relay's published cursor, which never passes an id still open, it is sent a and then b.
 func TestAColdSubscriptionIsSentAnIdStillOpenWhenItSubscribed(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	first := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
@@ -223,6 +224,7 @@ func TestAColdSubscriptionIsSentAnIdStillOpenWhenItSubscribed(t *testing.T) {
 // transaction it has nothing to do with. Once the holder ends, each is sent its events_start, whose
 // replay is complete for a since of the log as it stands, and the event committed during the hold.
 func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
@@ -267,6 +269,7 @@ func TestAnEventsSubscriptionStaysAliveWhileTheHorizonIsHeld(t *testing.T) {
 // would be sent its events_start and then be ended by the relay's reset, which the page answers by
 // subscribing again on the same socket. It waits for that reset too.
 func TestAnEventsSubscriptionOnARelayStillOnAReplacedLogWaitsForItsReset(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	for _, subscription := range []struct {
 		name      string
@@ -350,6 +353,7 @@ func replacedLogConnection(t *testing.T, since *int64, climbPast bool) {
 // and reaches the subscription; a cursor taken under the horizon proven after the wait would cover
 // it instead.
 func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
@@ -390,6 +394,7 @@ func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(
 // an event that commits after the page's own reads and while the relay's first start waits on a
 // transaction open elsewhere on the instance must still reach it, or the page never shows it.
 func TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRelayStarts(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
@@ -414,6 +419,7 @@ func TestTheFirstColdSubscriptionOfAFreshProcessIsSentAnEventCommittedWhileTheRe
 // at or below that floor, and so below the cursor the subscription starts at, and must still reach
 // the subscription.
 func TestTheFirstColdSubscriptionIsSentAnEventCommittedWhileAWriteFromBeforeBootHoldsTheStart(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	var release func()
 	// persistence runs on the test's database before register takes the boot mark.
@@ -469,6 +475,7 @@ func eventsTuplesRead(t *testing.T, database *store.Store) int64 {
 // committed, published events, measured by the rows of events Postgres counts as read, by a
 // sequential scan or through the primary key, while the first cold subscription starts.
 func TestTheRelaysFirstStartDoesNotReadTheWholeEventLog(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	const logSize = 200_000
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
@@ -502,6 +509,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLog(t *testing.T) {
 // 5,000,000 ids with writers holding their ids for 3 s, that read made the first subscription wait
 // 6.0 s after a restart, against 3.1 s when the boot mark held.
 func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBootIsOpen(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	const logSize = 200_000
 	var release func()
@@ -543,6 +551,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 // first start must not start above it: it reads the log's gaps when it starts, and once every id is
 // final starts below the lowest one that has filled, so that event reaches the subscription, first.
 func TestTheFirstColdSubscriptionIsSentAnEventThatDrewItsIdBeforeIt(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
@@ -574,6 +583,7 @@ func TestTheFirstColdSubscriptionIsSentAnEventThatDrewItsIdBeforeIt(t *testing.T
 // floor rather than only above the log's newest id (firstRelayFloor). With no write open, no event
 // id can still be open, the floor stands at the newest id and the start reads no gap at all.
 func TestTheFirstColdSubscriptionSkipsAnIdThatRolledBack(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
@@ -609,6 +619,7 @@ func TestTheFirstColdSubscriptionSkipsAnIdThatRolledBack(t *testing.T) {
 // transaction open elsewhere on the instance, ends then too, instead of holding the shutdown until
 // that transaction ends.
 func TestShutdownEndsAnEventsSubscriptionWaitingOnTheHorizon(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: liveHorizonHeartbeat}, nil)
 	createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	since := eventHead(t, rig.database)
@@ -666,6 +677,7 @@ func holdEventInsert(t *testing.T, database *store.Store) (id int64, release fun
 // not the whole log, and is still sent the open event and what committed while it waited, in id
 // order. Here the log holds 200,000 events and the start may read at most a tenth of them.
 func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(t *testing.T) {
+	t.Parallel()
 	horizontest.UntilTheDeadline(t)
 	const logSize = 200_000
 	first, database := newTestHandlerWithStore(t)

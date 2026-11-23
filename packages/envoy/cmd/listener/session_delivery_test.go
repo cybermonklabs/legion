@@ -967,6 +967,12 @@ func TestSessionConsumerRegistrationWritesTheTopicsStoredWhenItHoldsTheLock(t *t
 	const sessionID = "ses_register_stale"
 	const followed = "notifications.dispatch.issue.REGISTERSTALE.>"
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	// The test holds the session's consumer lock while it stores a newer row and writes its
+	// filter (followWhileLocked), two bus calls of its own: the registration waiting for the lock
+	// is given the test's deadline (budgetsUntilTheDeadline), or the hold spends the route's 3.5 s
+	// and the registration answers 503 for the machine's speed, as main did in 5 of 40 runs at a
+	// load of 1,262.
+	budgetsUntilTheDeadline(t, rig)
 
 	unlock := rig.deps.consumers.locks.lock(sessionID)
 	answered := postAsync(rig, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-1"))

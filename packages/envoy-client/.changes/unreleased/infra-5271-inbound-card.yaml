@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `@legion/envoy-client/inbound-card` reads a card `renderInbound` wrote back from its text
+  (`readInboundCard`): who sent it, whether it brings a Dispatch event, and the words its sender
+  wrote with the line of the card that holds them.

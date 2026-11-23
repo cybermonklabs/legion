@@ -93,6 +93,29 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 	return append(mentions, item)
 }
 
+// CIHead names one pull request head of the CI state aggregator: the identity a record's key is
+// built from (cistore.Key). It is here rather than in cistore so that a writer of the CI store
+// (Dispatch's CI reconcile) can speak to it through an interface without importing the store.
+type CIHead struct {
+	Owner  string `json:"owner"`
+	Repo   string `json:"repo"`
+	Number string `json:"number"`
+	SHA    string `json:"sha"`
+}
+
+// CIVerifyRequest is one verify request of the CI store: a head whose settlement a listener holds
+// until Dispatch's CI reconcile has read it from GitHub; the KV revision of the request as the
+// reconcile read it, which its answer carries back (cistore.Writer.MarkVerified); the settlement
+// episode it asks for, the generation of the claim it was written for, which every rewrite of one
+// episode shares; and the identity of the bucket's stream the revision is of (its creation time in
+// Unix nanoseconds), since a revision compares only with revisions of the same stream.
+type CIVerifyRequest struct {
+	Head     CIHead
+	Revision uint64
+	Episode  uint64
+	Stream   int64
+}
+
 // CIObservation is a per-PR check_run or check_suite fact for the CI state
 // aggregator.
 type CIObservation struct {

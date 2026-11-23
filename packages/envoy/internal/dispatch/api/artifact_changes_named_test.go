@@ -11,6 +11,7 @@ import "testing"
 // it: the moved one, or the text outside every section, whose place among the sections changed.
 // The control is the version before it, where the `#` heading is added: that change is named.
 func TestAChangeSetNamesASectionMovedAcrossATopLevelHeading(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	const (
 		head     = "# Plan\n\nIntro.\n\n"

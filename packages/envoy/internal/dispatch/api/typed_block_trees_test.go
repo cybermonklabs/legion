@@ -121,6 +121,7 @@ func referenceTargetOf(t *testing.T, handler http.Handler, reference string) mod
 // in a list nested two levels deep and one in a footnote definition answer the tree of their
 // content, as a top-level one does, in both reads, with the same bytes.
 func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	const deep, footnoted = "Deep in a nested list.", "In a footnote."
 	issue := createInteractionIssue(t, handler, "TBT", "Whole requirements",
@@ -173,6 +174,7 @@ func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 // The results read answers each check's whole content as `text_tree`, as the coverage read does
 // a requirement's.
 func TestTheResultsReadCarriesAChecksContentWhole(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TBT", "Whole checks", twoRequirements)
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
@@ -229,6 +231,7 @@ func referenceTargetsOf(references ...string) string {
 // statement more, which resolves every prefix among the document's blocks, so a set of 20 of them
 // again makes as many statements as a set of 2.
 func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -517,6 +520,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 // unchanged is answered 304, and a read that asked for no tree never shares a tag with one that
 // did: the tag of a read without trees, sent by a caller asking for them, is answered the trees.
 func TestTheReferenceTargetsETagCoversABlocksWholeText(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "TBT")
 	issue := createSpecIssue(t, handler, "TBT", twoRequirements)

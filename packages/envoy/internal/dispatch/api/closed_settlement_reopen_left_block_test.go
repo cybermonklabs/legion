@@ -32,6 +32,7 @@ const leavingDecisionSpec = "Context\n\n" +
 // document owed itself, as the block document of an open ask (docs.MarkReopenOwedAskDocuments).
 // The resumption after the reopen settles it on the open issue.
 func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.T) {
+	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask whose block leaves while closed", leavingDecisionSpec)
@@ -137,6 +138,7 @@ const rewordedDecisionSpec = "Context\n\n" +
 // open issue, which takes the block's question into the open ask, as settlement takes the
 // rewording of any open ask's block.
 func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen(t *testing.T) {
+	t.Parallel()
 	f := rewordWithdrawnDecisionWhileClosed(t)
 	ctx := context.Background()
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
@@ -167,6 +169,7 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 // read bob, and the resumption settles the document on the open issue: its one ask.edited of the
 // decision is alice's, edited_by alice, and it notifies.
 func TestAMarginRewordReachesTheAskInTheEditorsNameAfterTheReopen(t *testing.T) {
+	t.Parallel()
 	f := rewordWithdrawnDecisionWhileClosed(t)
 	ctx := context.Background()
 	alice := model.Actor{Kind: "user", ID: "alice"}

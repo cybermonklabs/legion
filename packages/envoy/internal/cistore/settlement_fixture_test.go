@@ -188,7 +188,7 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 		t.Fatalf("open the reconcile's writer: %v", err)
 	}
 	const secret = "s"
-	handler := webhook.GitHubHandler(secret, "@legion", fixture.ReviewerAppID, client, store)
+	handler := webhook.GitHubHandler(secret, "@legion", fixture.ReviewerAppID, client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	cistore.StartSummaryLoop(loopCtx, store, client, 300*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("fixture"))

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import { DispatchClient } from "@legion/envoy-client/dispatch-http";
-import { transcriptPictures, withDeliveredPictures } from "./delivery-pictures";
+import { liveContext, transcriptPictures, withDeliveredPictures } from "./delivery-pictures";
 
 const session = "01a1058e-f14f-7684-87eb-3dc885955551";
 const address = `dispatch://agent/${session}/artifact/shot-png@v1`;
@@ -210,4 +210,157 @@ test("a transcript's pictures are those its results and cards name as shown and 
     picture("card"),
     picture("turn"),
   ]);
+});
+
+/** What `liveContext` may read of an entry before the cut. */
+const CUT_FIELDS: ReadonlySet<PropertyKey> = new Set(["type", "id", "firstKeptEntryId"]);
+
+/**
+ * `entry` as it stands before the live context's cut: its `type`, `id` and `firstKeptEntryId`
+ * read as they are, and every other member, its message or content first of all, throws when it
+ * is read or asked for, as a long session's start must touch no body the cut left behind.
+ */
+function beforeCut(entry: object): object {
+  const refuse = (key: PropertyKey): never => {
+    throw new Error(`${String(key)} of an entry before the cut was read`);
+  };
+  return new Proxy(entry, {
+    get: (target, key, receiver) =>
+      CUT_FIELDS.has(key) ? Reflect.get(target, key, receiver) : refuse(key),
+    has: (target, key) => (CUT_FIELDS.has(key) ? Reflect.has(target, key) : refuse(key)),
+  });
+}
+
+const live = (slug: string) => `dispatch://LEGION-1/artifact/live-${slug}-png@v1`;
+/** A person's turn whose image block shows the picture `slug`, as Oh My Pi keeps it. */
+const turnShowing = (id: string, slug: string) => ({
+  type: "message",
+  id,
+  message: {
+    role: "user",
+    content: [{ type: "text", text: `Look:\n\n![${slug}.png](${live(slug)})` }, image],
+  },
+});
+/** A delivered card that shows the picture `slug`. */
+const cardShowing = (id: string, slug: string) => ({
+  type: "custom_message",
+  id,
+  customType: "envoy-message",
+  content: [
+    {
+      type: "text",
+      text: `envoy: card\n\nPictures:\n- image 1: ${live(slug)} (${slug}.png, image/png, 10 bytes)`,
+    },
+    image,
+  ],
+  display: true,
+});
+const reply = (id: string) => ({
+  type: "message",
+  id,
+  message: { role: "assistant", content: [{ type: "text", text: "Seen." }] },
+});
+const compaction = (id: string, firstKeptEntryId: string) => ({
+  type: "compaction",
+  id,
+  summary: "The session so far.",
+  firstKeptEntryId,
+  tokensBefore: 150_000,
+});
+const resetBoundary = (id: string) => ({ type: "reset_boundary", id });
+/** Where each entry of `context` stands on `branch`. */
+const positions = (branch: readonly unknown[], context: readonly unknown[]) =>
+  context.map((entry) => branch.indexOf(entry));
+
+test("a branch's live context starts at the latest compaction's first kept entry and reads nothing else of an entry before it", () => {
+  const branch = [
+    beforeCut(turnShowing("e0", "early")),
+    // An older compaction: the latest one decides.
+    beforeCut(compaction("e1", "e0")),
+    beforeCut(reply("e2")),
+    reply("e3"),
+    cardShowing("e4", "kept"),
+    compaction("e5", "e3"),
+    turnShowing("e6", "late"),
+  ];
+
+  const context = liveContext(branch);
+
+  // The compaction stays in it, as the host opens the context with its summary.
+  expect(positions(branch, context)).toEqual([3, 4, 5, 6]);
+  expect(transcriptPictures(context)).toEqual([live("kept"), live("late")]);
+});
+
+test("a /clear after the latest compaction starts the live context after its boundary", () => {
+  const branch = [
+    beforeCut(turnShowing("e0", "early")),
+    beforeCut(cardShowing("e1", "kept")),
+    beforeCut(compaction("e2", "e1")),
+    beforeCut(turnShowing("e3", "compacted")),
+    beforeCut(resetBoundary("e4")),
+    turnShowing("e5", "late"),
+  ];
+
+  const context = liveContext(branch);
+
+  expect(positions(branch, context)).toEqual([5]);
+  expect(transcriptPictures(context)).toEqual([live("late")]);
+});
+
+test("a /clear before the latest compaction leaves the live context to the compaction", () => {
+  const branch = [
+    beforeCut(turnShowing("e0", "early")),
+    beforeCut(resetBoundary("e1")),
+    beforeCut(turnShowing("e2", "cleared")),
+    cardShowing("e3", "kept"),
+    compaction("e4", "e3"),
+    turnShowing("e5", "late"),
+  ];
+
+  const context = liveContext(branch);
+
+  expect(positions(branch, context)).toEqual([3, 4, 5]);
+  expect(transcriptPictures(context)).toEqual([live("kept"), live("late")]);
+});
+
+test("a /clear on a branch with no compaction starts the live context after its boundary", () => {
+  const branch = [
+    beforeCut(turnShowing("e0", "early")),
+    beforeCut(cardShowing("e1", "carded")),
+    beforeCut(resetBoundary("e2")),
+    turnShowing("e3", "late"),
+  ];
+
+  const context = liveContext(branch);
+
+  expect(positions(branch, context)).toEqual([3]);
+  expect(transcriptPictures(context)).toEqual([live("late")]);
+});
+
+// The kept entry stands on another branch of the session's tree, the compaction keeps none (an
+// Anthropic-native compaction writes "" and replays a snapshot instead), or it names an entry
+// after the compaction: the host starts the context after the compaction, its summary first.
+test("a compaction whose first kept entry does not stand before it on the branch starts the live context at the compaction", () => {
+  for (const firstKept of ["e9-on-another-branch", "", "e3"]) {
+    const branch = [
+      beforeCut(turnShowing("e0", "early")),
+      beforeCut(reply("e1")),
+      compaction("e2", firstKept),
+      turnShowing("e3", "late"),
+    ];
+
+    const context = liveContext(branch);
+
+    expect(positions(branch, context)).toEqual([2, 3]);
+    expect(transcriptPictures(context)).toEqual([live("late")]);
+  }
+});
+
+test("with neither a compaction nor a /clear the live context is the whole branch", () => {
+  const branch = [turnShowing("e0", "early"), reply("e1"), cardShowing("e2", "late")];
+
+  const context = liveContext(branch);
+
+  expect(context).toBe(branch);
+  expect(transcriptPictures(context)).toEqual([live("early"), live("late")]);
 });

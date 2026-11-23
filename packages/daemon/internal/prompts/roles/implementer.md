@@ -36,14 +36,15 @@ For the forward-merge procedure, and the merge-forward message the daemon sends 
 ## Workspace restrictions
 
 Before your turn's first commit, run `jj -R "$LEGION_WORKSPACE" log -r @ --no-graph -T 'empty'`.
-When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise `@` holds only your own
-resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split` the
+When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise read
+`jj -R "$LEGION_WORKSPACE" diff -r @`: if you wrote every change in it, run
+`jj -R "$LEGION_WORKSPACE" new`, then `jj -R "$LEGION_WORKSPACE" squash --from @- --into @`;
+if not, or if you are not sure, run `jj -R "$LEGION_WORKSPACE" new @-`, which sets that change
+aside. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not replace another phase's
 commit. Create reviewable commits only with
-`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Before a push, read every commit ahead
-of the base, `jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@"` as
-`skill://legion-worker/references/default-branch-check.md` lists them, since a branch can hold
-more than five commits; push only the existing issue branch, as the daemon part below says.
+`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Push only the existing issue branch, as
+the daemon part below says.
 
 ## Implementation handoff
 

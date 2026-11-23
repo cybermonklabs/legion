@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"slices"
 	"sort"
@@ -2920,7 +2921,7 @@ func linkProcEntry(t *testing.T, root string, pid int) {
 
 // TestVolumeTrimHandleHelper is the test binary re-executed as another process of the pod: it
 // opens the directory its case names, takes the `flock` a role's tool takes on it, says so and
-// waits to be killed.
+// waits to be killed, holding the handle and the lock until then.
 func TestVolumeTrimHandleHelper(t *testing.T) {
 	plan := os.Getenv(volumeTrimHandleEnv)
 	if plan == "" {
@@ -2941,6 +2942,12 @@ func TestVolumeTrimHandleHelper(t *testing.T) {
 		os.Exit(2)
 	}
 	time.Sleep(trimHandleHold)
+	// The handle is used after the sleep so that it stays reachable through it. An *os.File
+	// nothing reaches is closed by its finaliser at the holder's next garbage collection, which
+	// lets go of the lock and takes the descriptor these cases are about out of /proc: the sweep
+	// then reads no hold on the root and deletes the entries under it (guardHeldFile,
+	// volumeguard_test.go, holds its opener's file for the same reason).
+	runtime.KeepAlive(handle)
 	os.Exit(0)
 }
 
@@ -3788,9 +3795,12 @@ func TestTheSweepAfterOneThatTookEveryEligibleEntryPausesTenIntervals(t *testing
 // A panic in the trimmer's own work is recovered and logged with its stack, the interval is
 // passed over, and three in a row stop the trimmer for the life of the launcher process with
 // one last report saying so. The recovery is a departure from this daemon's practice, whose
-// production code recovers no other panic of its own work (leakguard's compile recovers one only
-// to turn regexp.MustCompile's into an error), because this goroutine runs in the process that is
-// PID 1 of the roles container: its crash costs six live roles their round over a cache sweep.
+// production code recovers no other panic of its own work but in two cases: leakguard's compile
+// recovers one only to turn regexp.MustCompile's into an error, and the memory guard recovers its
+// loop (Guard.step) and its scan (scanLargest), as the microVM guest watch recovers its loop
+// (Guest.step) and its wake's reader (readModified), for the trimmer's reason: that code runs in
+// PID 1 of the pod. This goroutine runs in the process that is PID 1 of the roles container, so
+// its crash costs six live roles their round over a cache sweep.
 func TestAPanicIsRecoveredAndThreeInARowSwitchTheTrimmerOff(t *testing.T) {
 	f := newTrimFixture(t, 1)
 	f.setOnRead(func(call int) {

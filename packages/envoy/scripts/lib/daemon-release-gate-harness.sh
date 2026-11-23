@@ -28,6 +28,9 @@ readonly ahead_rev="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 readonly identical_rev="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 readonly behind_rev="cccccccccccccccccccccccccccccccccccccccc"
 readonly other_rev="dddddddddddddddddddddddddddddddddddddddd"
+# The revision the Dispatch server's image names in every --listeners case that does not name its
+# own (listener_stacks), identical to the commit.
+readonly server_rev="1234567890abcdef1234567890abcdef12345678"
 # The project name each stack's Pulumi.yaml declares by default, which prefixes its config keys.
 readonly legion_project="deployment-legion"
 readonly envoy_project="deployment-envoy"
@@ -529,7 +532,10 @@ GO
   fi
 }
 # listener_stacks <envoy> <envoy-cluster> <dispatch envoyImage> [<dispatch listenerImage>]: the three
-# stack files; an empty <envoy> leaves envoy's listenerImage out, keeping its other keys.
+# stack files; an empty <envoy> leaves envoy's listenerImage out, keeping its other keys. The
+# Dispatch server's image, <dispatch envoyImage>, which --listeners judges under its own key
+# dispatch-server, is written as an index built from this repository at server_rev, identical to
+# the commit; a case that indexes that pin itself afterwards replaces it.
 listener_stacks() {
   {
     printf 'config:\n'
@@ -541,6 +547,8 @@ listener_stacks() {
     printf 'config:\n  %s:envoyImage: %s\n' "$dispatch_project" "$3"
     [ -z "${4:-}" ] || printf '  %s:listenerImage: %s\n' "$dispatch_project" "$4"
   } >"${case_root}/files/dispatch/Pulumi.prod.yaml"
+  index "$3" "$legion" "$server_rev"
+  compare "$server_rev" identical 0
 }
 
 # run_bare [--unset <variable>]... [env assignments...] -- [gate arguments...]: runs the gate in
