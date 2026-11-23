@@ -1668,7 +1668,7 @@ async function headerLayout(width: number): Promise<string[]> {
 
 /** The columns after the pinned ones, at the registry's widths, then the Start next column. */
 const UNPINNED_REST = [
-  "Status 132px -",
+  "Status 148px -",
   "Epic 220px -",
   "Assignee 180px -",
   "Created by 200px -",
@@ -1729,7 +1729,7 @@ test("a stored desktop width reaches the List's header", async () => {
   );
   const cells = await headerLayout(1400);
   expect(cells).toContain("Epic 300px -");
-  expect(cells).toContain("Status 132px -");
+  expect(cells).toContain("Status 148px -");
 });
 
 test("the Status filter counts Done once the closed issues are loaded", async () => {
