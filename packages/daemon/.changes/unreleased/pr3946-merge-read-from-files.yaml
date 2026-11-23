@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  The leak guard reads a pushed merge from its files rather than from git's combined diff, which
+  is wrong from 33 parents and leaves out a line only the merge adds from 64 parents, so a wide
+  merge's own lines were misread or missed. A merge's own lines are now the lines of each file that
+  differs from every parent's that no parent's file holds, and its own paths those no parent has.
+  The private-name pass now takes a commit as held where a branch or a tag of the destination
+  reaches it, as one `git ls-remote` of the destination reads them at the push, and no longer
+  where a remote-tracking ref of the clone does: git moves those for a push to whatever
+  URL a remote pushes to at the time, so a commit pushed first to a local bare remote named
+  `origin/rehearsal`, or to a local bare push URL of `origin`, was not read at its push to
+  `origin`. Each push with an update that is not a deletion, to a destination the guard scans,
+  costs that one `git ls-remote`, which reads no git configuration but its own command line. That
+  command line carries no git configuration but the guard's own pins and the pod's GitHub
+  credential helper, so the read authenticates to GitHub as the pod's git does, while no transport
+  setting made in git configuration (a proxy, a certificate file, an ssh command) reaches it, and a
+  read that fails refuses the push as a setup failure naming the remote and the URL.

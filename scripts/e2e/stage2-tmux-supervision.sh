@@ -330,10 +330,13 @@ export TMUX_TMPDIR=$work/tmux   # so are the daemons' private tmux servers
 # binary, rather than repairing PATH before the daemon sees it.
 # The repository's pin, or under box-login the operator's own build: panes sharing the operator's
 # login must refresh it with the refresh-race fix (lib/install-box-login-route.sh).
+# lib/pinned-omp.sh installs it and names its bin/omp, having held .omp-pin's install to
+# .omp-pin.sha256 before anything runs it; the operator's build has no recorded digest, so its
+# install is not checked, and pinned-omp.sh says so on stderr.
 pin=${box_pin:-$(<"$root/.omp-pin")}
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
-omp_bin=$(mise where "$pin")/bin
-[ -x "$omp_bin/omp" ] || fail "mise has no omp executable for $pin under $omp_bin"
+omp_bin=$(bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin") ||
+  fail "Oh My Pi $pin could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
+omp_bin=$(dirname -- "$omp_bin")
 echo "configured OMP pin: $pin ($("$omp_bin/omp" --version 2>&1 | head -1)) at $omp_bin/omp; ordinary PATH omp: $(command -v omp)"
 # profile_omp ARGS…: the pinned Oh My Pi on the run's own profile, as the daemon runs it.
 profile_omp() { HOME="$omp_home" OMP_PROFILE="$profile" "$omp_bin/omp" "$@"; }

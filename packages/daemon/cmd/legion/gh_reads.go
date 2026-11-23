@@ -2,8 +2,11 @@ package main
 
 import (
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 )
 
 // ghCheckedOnlyVisibility is the call log's visibility for a call the shared check alone read
@@ -203,6 +206,63 @@ func ghReadOptions(values, switches string) map[string]bool {
 		options[spelling] = false
 	}
 	return options
+}
+
+// knivesQueryHead opens both GraphQL reads knives v3.2.6's audit makes of the repository a fork's
+// pull requests live in, its upstream (sjawhar/knives src/forge/github.rs, sweep_query and
+// pull_facts_query): a query of the one repository its $owner and $name variables name.
+const knivesQueryHead = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { "
+
+// knivesSweepQuery is the audit's sweep of that repository's pull requests, the newest-updated
+// first, which it makes where it holds a cache of them.
+const knivesSweepQuery = knivesQueryHead + "pullRequests(orderBy: {field: UPDATED_AT, direction: DESC}, first: 100) " +
+	"{ pageInfo { hasNextPage } nodes { number updatedAt state } } } }"
+
+// knivesFactsFields are the pull requests the audit's batch of their facts asks for, by number,
+// each under its alias `p<number>`, between knivesQueryHead and knivesFactsTail.
+var knivesFactsFields = regexp.MustCompile(`^p[0-9]+: pullRequest\(number: [0-9]+\) \{ \.\.\.facts \}( p[0-9]+: pullRequest\(number: [0-9]+\) \{ \.\.\.facts \})*$`)
+
+// knivesFactsTail closes the audit's batch of pull requests' facts, the live batch it reads the
+// head of each of its open pull requests from, with the fragment each is read through.
+const knivesFactsTail = " } } fragment facts on PullRequest { number state reviewDecision headRefName headRefOid " +
+	"updatedAt isDraft url headRepositoryOwner { login } baseRefName mergeable mergeStateStatus mergeCommit { oid } " +
+	"additions deletions changedFiles headRef { name } body " +
+	"reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } } " +
+	"reviews(last: 100) { nodes { submittedAt } } commits(last: 100) { nodes { commit { committedDate } } } " +
+	"rollup: commits(last: 1) { nodes { commit { tree { oid } " +
+	"parents(first: 2) { pageInfo { hasNextPage } nodes { tree { oid } } } " +
+	"statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename " +
+	"... on CheckRun { name conclusion } ... on StatusContext { context state } } } } " +
+	"checkSuites(first: 100) { pageInfo { hasNextPage } nodes { conclusion checkRuns(first: 1) { totalCount } " +
+	"app { name } workflowRun { workflow { name } } } } } } } comments(last: 1) { nodes { createdAt } } }"
+
+// knivesAuditRead is the name of the repository a `gh api graphql` call reads when it is one of
+// those two reads exactly as knives makes it, `-f owner=<owner> -f name=<name> -f query=<query>`
+// with no other option taking a value, keyed as every selector keys a repository's name
+// (ghconfig.RepositoryName), and "" for any other GraphQL call, which may write or read whatever
+// its query names. owner is the call's one owner, the one its owner variable names
+// (selectors.fromAPI), so the call reads owner's repository of that name, which ghTargetOf routes
+// it by.
+func knivesAuditRead(parsed ghArgs, owner string) string {
+	fields := parsed.values["raw-field"]
+	if len(parsed.values) != 1 || len(fields) != 3 {
+		return ""
+	}
+	variables := map[string]string{}
+	for _, field := range fields {
+		key, value, _ := strings.Cut(field, "=")
+		variables[key] = value
+	}
+	query := variables["query"]
+	asked, head := strings.CutPrefix(query, knivesQueryHead)
+	asked, tail := strings.CutSuffix(asked, knivesFactsTail)
+	switch {
+	case len(variables) != 3 || !strings.EqualFold(variables["owner"], owner) || variables["name"] == "":
+		return ""
+	case query != knivesSweepQuery && !(head && tail && knivesFactsFields.MatchString(asked)):
+		return ""
+	}
+	return ghconfig.RepositoryName(variables["name"])
 }
 
 // ghWritesNothing is the rule for a call that writes nothing, held here once and pointed to

@@ -237,8 +237,5 @@ func TestTheInlineAllowCommentIsInert(t *testing.T) {
 		Label: "commit 1a2b3c4 message",
 		Text:  "moved the run to " + theHost + " # " + escape,
 	})
-	want := []string{"commit 1a2b3c4 message: " + theClass}
-	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
-		t.Fatalf("the report is %q, want %q", refused.Lines, want)
-	}
+	wantRefused(t, err, []string{"commit 1a2b3c4 message: " + theClass})
 }

@@ -403,7 +403,15 @@ RUN set -eu; \
     install -m 0755 "$t/mise/bin/mise" /usr/local/bin/mise; \
     mise --version; \
     rm -rf "$t"
+# The pinned Oh My Pi is fetched and unpacked to /opt/omp (below), then .github/scripts/omp-digest.sh
+# holds its bin/omp to the digest .omp-pin.sha256 records and refuses an install directory that holds
+# anything else, before anything runs it: the pin names a fork's release tag, which can be moved, and
+# /opt/omp is on every role's PATH. The archive's own digest (ARG OMP_SHA256) fixes those bytes
+# already; this check holds the image to the one recorded file install-omp and the e2e rigs check
+# too, so a pin bump that moves one digest and not the other fails here. The --version run follows.
 COPY .omp-pin /omp-pin
+COPY .omp-pin.sha256 /omp-pin.sha256
+COPY .github/scripts/omp-digest.sh /usr/local/bin/
 # The Oh My Pi build, jj and gh are each one archive of the release its pin names, fetched from the
 # address GitHub serves a release asset at, https://github.com/<owner>/<repo>/releases/download/<tag>/<name>,
 # and checked against its ARG *_SHA256 before it is unpacked. That address makes no GitHub API call.
@@ -456,6 +464,7 @@ RUN set -eu; \
     fetch jj JJ_SHA256 "$JJ_SHA256" "$(asset "$jj_repo" "$jj_tag" "jj-${jj_tag}-x86_64-unknown-linux-musl.tar.gz")" "$t/jj.tar.gz"; \
     fetch gh GH_SHA256 "$GH_SHA256" "$(asset cli/cli "v${gh_version}" "gh_${gh_version}_linux_amd64.tar.gz")" "$t/gh.tar.gz"; \
     tar -xzf "$t/omp.tar.gz" -C /opt/omp --strip-components=1 --no-same-owner; \
+    omp-digest.sh /opt/omp /omp-pin.sha256; \
     tar -xzf "$t/jj.tar.gz" -C "$t" --no-same-owner ./jj; \
     tar -xzf "$t/gh.tar.gz" -C "$t" --no-same-owner "gh_${gh_version}_linux_amd64/bin/gh"; \
     install -m 0755 "$t/jj" /opt/tools/jj; \

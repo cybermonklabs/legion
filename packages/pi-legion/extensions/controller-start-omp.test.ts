@@ -43,12 +43,13 @@ import pkg from "../package.json";
 // line, which pi-legion's extension command of that name (extensions/legion.ts,
 // src/controller-session.ts `startCommand`) answers by claiming the controller and sending the
 // start message right before the role claim. Oh My Pi runs a command-line word once its startup is
-// over and the TUI listens, so the start turn is the operator's to see, type into and interrupt; a
-// send from `session_start`, which Oh My Pi drains at the end of its startup, ran the whole turn
-// before the TUI subscribed, with no start message and no busy row on screen, Enter not taking
-// typed text and Esc doing nothing; and a role claim made there let a card on the role's lane
-// start its turn ahead of the start message. Only a terminal shows that, so the session runs under
-// a pseudo-terminal whose screen the cases read (`spawnInteractive`), against one stand-in that is
+// over and the TUI listens, so the start turn is the operator's to see, type into and interrupt.
+// Oh My Pi holds the sends its extensions make during that startup and starts them as it ends,
+// without waiting for a turn one of them starts (interactive-mode.ts `init`): a card that reaches
+// the session then is such a send, and under the start-turn mark pi-envoy folds those startup
+// cards into one wake turn after the held sends, which waits behind the start turn. Only a
+// terminal shows the start turn as the operator sees it, so the session runs under a
+// pseudo-terminal whose screen the cases read (`spawnInteractive`), against one stand-in that is
 // the model gateway — each Messages request held until the case answers it — the daemon, Dispatch
 // and the Envoy listener, and the real NATS server the Envoy role claim needs, over which the
 // cases also send the controller cards and notices. The controller the daemon launches, which runs
@@ -709,7 +710,10 @@ interface DaemonController {
    * daemon's delivery reads only the turn it starts.
    */
   deliver(message: string): void;
-  /** Answers one RPC `get_state`, which Oh My Pi reads only once its startup is over. */
+  /**
+   * Answers one RPC `get_state`, which Oh My Pi answers during its startup too: RPC mode holds
+   * only the commands `waitsForStartup` names (rpc-mode.ts) until that startup is over.
+   */
   state(): Promise<z.infer<typeof RpcStateSchema>>;
   /** Sends one RPC `abort`, as the terminal's Esc does, and resolves on its answer. */
   abort(): Promise<void>;
@@ -860,10 +864,15 @@ async function settledOn(session: ControllerSession, reply: string): Promise<voi
   );
 }
 
-/** A card the case published on the controller role's lane: its text, and the frame it went in. */
+/**
+ * A card the case published on the controller role's lane: its text, the frame it went in, and
+ * the event id that frame carries, which the session's replay ledger records it under once the
+ * host has written it (`envoy-replay-delivered`).
+ */
 interface Card {
   readonly summary: string;
   readonly frame: Uint8Array;
+  readonly eventID: string;
 }
 
 /** A card in flight: the card, and the server's acknowledgement that it took the frame. */
@@ -1044,7 +1053,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
         })
       );
       return {
-        card: { summary, frame },
+        card: { summary, frame, eventID: `evt-${key}` },
         taken: relay(sid, `notifications.agent.${sid}`, frame),
       };
     },
@@ -1758,17 +1767,21 @@ test.skipIf(skip)(
 );
 
 // The daemon's controller reports ready once it holds the role and the controller topic, and the
-// daemon writes its start prompt then, which RPC mode reads only once Oh My Pi's startup is over. A
-// card that reached the session during that startup is a follow-up that starts no turn, and the
-// wake for it fired once the host was idle after the startup, which can be before the prompt
-// arrives, so the wake's turn was the first. The claim marks the start turn sent right before its
-// ready (src/controller-session.ts), which holds the wake behind the start turn. The stand-in holds
-// that ready, inside the claim `session_start` awaits, while the card arrives. RPC mode answers
-// its first command only once its startup drain has returned, when the card's follow-up is in the
-// context and the check its `message_end` armed is on the host's 0 ms timer; the second
-// `get_state`, written after that answer, is read on a later turn of omp's event loop, after that
-// timer ran, so a wake that check sent has started its turn by then. Only then does the case
-// deliver the start prompt.
+// daemon writes its start prompt then, which RPC mode runs only once Oh My Pi's startup is over,
+// since it starts a turn (rpc-mode.ts `waitsForStartup`). A card that reached the session during
+// that startup is a follow-up that starts no turn, and its `message_end` arms the wake's check on
+// the host's 0 ms timer, which can run before the prompt arrives, so the wake's turn would be the
+// first. The claim marks the start turn sent right before its ready (src/controller-session.ts),
+// which holds the wake behind the start turn. The stand-in holds that ready, inside the claim
+// `session_start` awaits, while the card arrives, and after releasing it the case waits for the
+// ledger's record of the card (`envoy-replay-delivered`, under the card's event id) in the session
+// file before it delivers the start prompt. pi-envoy's own `message_end` handler writes that
+// record, after the call that arms the check (extensions/envoy.ts: `cardWake.messageEnd`, then
+// `unwritten.written`), so the check is due before the start prompt is written. The card's own
+// entry in the file would not do: the host writes it before it emits that `message_end`
+// (agent-session.ts, the idle append in `#dispatchCustomMessage`). With the mark removed (the
+// supervised `markStartupTurnSent` in src/controller-session.ts) the check finds no start turn to
+// wait for and sends the wake, whose turn is the first, so the case fails.
 test.skipIf(skip)(
   "the daemon-launched controller's start prompt is its first turn, and a startup card's wake runs after it",
   async () => {
@@ -1788,6 +1801,13 @@ test.skipIf(skip)(
     await inbound.repeat(claimed, card);
     expect(session.turns).toHaveLength(0);
     ready.release();
+    await session.until("the ledger's record of the startup card", async () =>
+      (await session.transcriptLines()).some(
+        (line) => line.includes('"envoy-replay-delivered"') && line.includes(card.eventID)
+      )
+        ? true
+        : undefined
+    );
 
     await session.state();
     expect((await session.state()).isStreaming).toBe(false);
@@ -1820,8 +1840,8 @@ test.skipIf(skip)(
 // interrupt stopped: the card stays folded for the next turn instead. So the session settles with
 // no model request after the start turn's, and a probe prompt is the next request, carrying the
 // card and no wake. A `get_state` after the settle is read once the check the start turn's
-// `agent_end` armed has run (as in the case above), so a wake that check sent is under way before
-// the probe goes.
+// `agent_end` armed has run, since that check is on the host's 0 ms timer and the read comes on a
+// later turn of omp's event loop, so a wake that check sent is under way before the probe goes.
 test.skipIf(skip)(
   "an RPC abort of the daemon-launched controller's start turn leaves its startup card folded, with no wake",
   async () => {
@@ -1881,8 +1901,9 @@ test.skipIf(skip)(
 
 // The operator's controller claims and sends its start message only from
 // `/legion-controller-start`, after Oh My Pi's startup, while the Envoy entry opens the session's
-// agent subject at its own `session_start`. A card that reaches that subject in between found an
-// idle terminal and started its own turn, inside the startup drain, ahead of the start message.
+// agent subject at its own `session_start`. A card that reaches that subject in between is a send
+// Oh My Pi holds until its startup ends, and on the idle terminal it started its own turn as that
+// hold ended, ahead of the start message; that startup waits for no turn a held send starts.
 // The Legion entry's `session_start` marks the start turn unsent (src/controller-session.ts
 // `handleSessionStart`), so the card goes into the context with no turn and its wake waits for the
 // start turn. The stand-in holds `STARTUP_HOLD_EXTENSION`'s request, after both plugins'

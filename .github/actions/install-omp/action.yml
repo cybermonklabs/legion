@@ -1,8 +1,10 @@
 name: Install the pinned Oh My Pi
 description: >-
   Installs the Oh My Pi build .omp-pin pins (the repository's one copy of the pin,
-  `github:<owner>/<repo>@<version>` on one line), and exports its path as LEGION_TEST_OMP for the
-  tests that run it; they refuse on GitHub Actions without one. Needs the repository checked out.
+  `github:<owner>/<repo>@<version>` on one line), holds its bin/omp to the digest .omp-pin.sha256
+  records and refuses an install directory holding anything else (.github/scripts/omp-digest.sh)
+  before anything runs it, and exports its path as LEGION_TEST_OMP for the tests that run it; they
+  refuse on GitHub Actions without one. Needs the repository checked out.
 
   It fetches the linux-x64 archive of that release from the address GitHub serves a release asset
   at, which is no GitHub API call, and holds it to `ARG OMP_SHA256` of
@@ -13,10 +15,11 @@ description: >-
   when it ran out (`github rate limit: 0/15000 (core)`, before 17:24:15Z that day) the install
   failed in daemon-go, plugin-pack, pi-envoy and pi-legion alike.
 
-  A refusal names its cause and installs nothing: a pin of another shape, a Dockerfile with no
-  digest, a fetch that fails, or an archive whose sha256 is not the pinned one. There is no other
-  source. curl tries a failed transfer three more times before the step refuses it, and whatever
-  it wrote is held to the digest after that, so a retry can never admit other bytes.
+  A refusal names its cause and exports nothing: a pin of another shape, a Dockerfile with no
+  digest, a fetch that fails, an archive whose sha256 is not the pinned one, or an unpacked
+  install whose bin/omp is not the one .omp-pin.sha256 records or that holds any other file. There
+  is no other source. curl tries a failed transfer three more times before the step refuses it,
+  and whatever it wrote is held to the digest after that, so a retry can never admit other bytes.
 runs:
   using: composite
   steps:
@@ -60,6 +63,7 @@ runs:
         fi
         tar -xzf "$archive" -C "$dir" --strip-components=1 --no-same-owner
         rm -f "$archive"
+        .github/scripts/omp-digest.sh "$dir" .omp-pin.sha256
         omp="$dir/bin/omp"
         "$omp" --version
         echo "installed $pin (sha256 $got) in $(( $(date +%s) - started ))s"

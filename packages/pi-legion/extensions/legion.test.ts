@@ -4386,9 +4386,10 @@ function unregisteredTopics(
 }
 
 describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
-  // Oh My Pi holds every send a session_start handler makes and drains them at the end of its
-  // startup, and an Envoy card starts its own turn, so a role claim made there would let a card
-  // take the first turn: the operator's controller claims nothing until its start command runs.
+  // Oh My Pi holds every send a session_start handler makes until its startup has subscribed, then
+  // starts them without waiting for their turn, and an Envoy card starts its own turn, so a role
+  // claim made there would let a card take the first turn: the operator's controller claims nothing
+  // until its start command runs.
   test("its startup makes no daemon call and claims no role; /legion-controller-start reads the daemon's project, registers on the claim route with its capability, then claims the controller role, and asks nothing else", async () => {
     const controller = await launchedController({ sessionId: "ses_controller" });
     await controller.handlers.get("session_start")?.({}, controller.context("ses_controller"));

@@ -362,18 +362,23 @@ func found(path, source string) (string, error) {
 // promptsNothing is the part of a child's environment that makes a credential prompt fail closed.
 // The shared check runs git against the destination remote, and a git that cannot find a
 // credential asks for one: on a pod there is no terminal to ask, and the check would stall until
-// its bound ran out instead of answering. GIT_TERMINAL_PROMPT=0 refuses git's own prompt, and the
-// two askpass programs point at one that exits without an answer, which both git and ssh read as
-// "no credential". SSH_ASKPASS_REQUIRE=force is what makes ssh use its askpass where it has a
-// terminal of its own.
+// its bound ran out instead of answering. GIT_TERMINAL_PROMPT=0 refuses git's own prompt
+// (noTerminalPrompt), and the two askpass programs point at one that exits without an answer,
+// which both git and ssh read as "no credential". SSH_ASKPASS_REQUIRE=force is what makes ssh use
+// its askpass where it has a terminal of its own. The read with no credential takes the first of
+// these alone and runs with no askpass at all (child.noAskpass).
 func promptsNothing(noAnswer string) []string {
 	return []string{
-		"GIT_TERMINAL_PROMPT=0",
+		noTerminalPrompt,
 		"GIT_ASKPASS=" + noAnswer,
 		"SSH_ASKPASS=" + noAnswer,
 		"SSH_ASKPASS_REQUIRE=force",
 	}
 }
+
+// noTerminalPrompt refuses git's own terminal prompt for a credential: git then dies with "could
+// not read Username" where nothing else answered it.
+const noTerminalPrompt = "GIT_TERMINAL_PROMPT=0"
 
 // noAnswer is the askpass program a child is pointed at: `false`, resolved on the base
 // environment's PATH, and /bin/false where that PATH holds none. Either way it is a program that
@@ -390,7 +395,8 @@ func noAnswer(env []string) string {
 // repository's visibility (gh's REST read; where that is refused for a rate limit, gh's GraphQL
 // read and git's ls-remote; where gh failed on its connection, gh's token answer, curl's REST read
 // and git's ls-remote; and where `legion gh` refuses it for an owner the project does not serve,
-// git's ls-remote), or a git command a push's records are read with.
+// git's ls-remote), or a git command a push's records or the refs of its destination are read
+// with.
 type child struct {
 	// argv is the command and its arguments, argv[0] naming the program.
 	argv []string
@@ -400,9 +406,17 @@ type child struct {
 	env []string
 	// inherit, where it is not nil, is which names of the base environment the child keeps;
 	// the guard's own names and env go on top either way. Nil keeps the whole base, which is
-	// what every child keeps but the visibility read made with no credential (Guard.lsRemote)
-	// and the read through curl (Guard.CurlGet).
+	// what every child keeps but three: the visibility read made with no credential
+	// (Guard.lsRemote), the read through curl (Guard.CurlGet), and the read of what a push's
+	// destination holds, which keeps all of it but GIT_DIR and the names of git configuration
+	// (heldReadInherits, Guard.advertised).
 	inherit func(name string) bool
+	// noAskpass, where it is true, leaves the child no askpass program at all: of the prompt
+	// settings (promptsNothing) it gets noTerminalPrompt alone, so GIT_ASKPASS, SSH_ASKPASS and
+	// SSH_ASKPASS_REQUIRE are unset unless the base environment's names that inherit keeps set
+	// them. The read with no credential runs so (Guard.lsRemote), with an inherit that keeps none
+	// of them (lsRemoteInherits).
+	noAskpass bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
 	// files are the child's descriptors from 3 up, as exec.Cmd.ExtraFiles takes them.
@@ -414,6 +428,10 @@ type child struct {
 	// (Guard.ghToken), and a git read of a push's records to quote git's error without the push's
 	// content (Guard.git). Nil answers the two together.
 	stderr io.Writer
+	// stdout, where it is not nil, takes the child's standard output as the child writes it, and
+	// run answers what is left: the standard error, unless stderr takes that too. A reader that
+	// takes a blob at a time as git writes it holds one blob, not all of them (blobBatch).
+	stdout io.Writer
 }
 
 // program is where name is, read from the base environment's PATH rather than from this
@@ -432,16 +450,16 @@ func program(base []string, name string) string {
 }
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
-// together unless c.stderr takes err. The error is a child that could not be run at all: one that
-// did not start, one the end of ctx stopped, which is a *stoppedError, or one a signal ended,
-// which has no status. A status is an answer, and no status is not.
+// together unless c.stderr takes err or c.stdout takes out. The error is a child that could not
+// be run at all: one that did not start, one the end of ctx stopped, which is a *stoppedError, or
+// one a signal ended, which has no status. A status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
 	base := g.base()
 	cmd := exec.CommandContext(ctx, program(base, c.argv[0]), c.argv[1:]...)
 	cmd.Dir = c.dir
-	cmd.Env = g.env(base, c.inherit, c.env...)
+	cmd.Env = g.env(base, c)
 	cmd.Stdin = c.stdin
 	cmd.ExtraFiles = c.files
 	// procgroup before any other SysProcAttr field, as its doc requires: it replaces the whole
@@ -452,6 +470,9 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	cmd.Stdout, cmd.Stderr = &printed, &printed
 	if c.stderr != nil {
 		cmd.Stderr = c.stderr
+	}
+	if c.stdout != nil {
+		cmd.Stdout = c.stdout
 	}
 	started := time.Now()
 	err := procgroup.Err(cmd.Run())

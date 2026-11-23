@@ -9,12 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // The read with no credential carries no credential of the pod's. Of the caller's GIT_ variables
@@ -23,12 +25,13 @@ import (
 // http.proactiveAuth, nor a GIT_DIR whose configuration could hold either does. Neither the
 // caller's HOME, whose .netrc libcurl would read, nor NETRC does: git's HOME is an empty
 // directory, made for the read and removed after it. git reads no system or user configuration
-// file, runs in / outside any repository, has the credential helper, the extra headers and
-// http.proactiveAuth emptied in front of ls-remote, has an askpass that answers nothing, and
+// file, runs in / outside any repository, has the credential helper, core.askPass, the extra
+// headers and http.proactiveAuth emptied in front of ls-remote, runs with no askpass at all
+// (GIT_ASKPASS, SSH_ASKPASS and SSH_ASKPASS_REQUIRE unset) and its terminal prompt off, and
 // prints its messages in English.
 func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	bin, record, home := t.TempDir(), filepath.Join(t.TempDir(), "record"), t.TempDir()
-	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+	writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 	netrc := "machine github.com\nlogin invented-user\npassword invented-password\n"
 	if err := os.WriteFile(filepath.Join(home, ".netrc"), []byte(netrc), 0o600); err != nil {
 		t.Fatal(err)
@@ -49,7 +52,7 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
-	calls := readCalls(t, record)
+	calls := leakguardtest.ReadCalls(t, record)
 	if len(calls) != 1 {
 		t.Fatalf("git ran %d times, want once", len(calls))
 	}
@@ -78,25 +81,24 @@ func TestLsRemoteReadsWithNoCredentialOfThePods(t *testing.T) {
 		t.Errorf("git's HOME %s is still there after the read (%v), want it removed", gitHome, err)
 	}
 	if resets := " " + theResets + " ls-remote " + theURL + " "; !strings.Contains(" "+calls[0]["argv"]+" ", resets) {
-		t.Errorf("git ran as %q, want the credential helper, the extra headers and http.proactiveAuth emptied in front of ls-remote %s", calls[0]["argv"], theURL)
+		t.Errorf("git ran as %q, want the credential helper, core.askPass, the extra headers and http.proactiveAuth emptied in front of ls-remote %s", calls[0]["argv"], theURL)
 	}
-	askpass := calls[0]["askpass"]
-	if askpass == "unset" || askpass == "" {
-		t.Fatalf("git ran with no askpass program: %q", askpass)
-	}
-	if status, _, err := guard.run(bound(t), child{argv: []string{askpass}}); err != nil || status == 0 {
-		t.Errorf("the askpass program %s answered %d, %v; want a program that answers no credential", askpass, status, err)
+	for _, key := range []string{"askpass", "sshaskpass", "require"} {
+		if got := calls[0][key]; got != "unset" {
+			t.Errorf("git ran with %s=%q, want it unset: the read has no askpass", key, got)
+		}
 	}
 }
 
 // The read with no credential reaches GitHub the way the caller's environment says to, and asks
 // for no credential however the caller asks for one. The CA bundle git trusts (GIT_SSL_CAINFO,
 // GIT_SSL_CAPATH) and libcurl's proxy (HTTPS_PROXY), none of which carries a credential, reach
-// git as the caller set them. A caller's GIT_TERMINAL_PROMPT=1, and a GIT_ASKPASS that would
-// print a credential, do not: git sees GIT_TERMINAL_PROMPT=0 and the guard's own askpass.
+// git as the caller set them. A caller's GIT_TERMINAL_PROMPT=1, and a GIT_ASKPASS and an
+// SSH_ASKPASS that would print a credential, with SSH_ASKPASS_REQUIRE=force, do not: git sees
+// GIT_TERMINAL_PROMPT=0 and no askpass at all.
 func TestLsRemoteKeepsTheCallersTransportButNotItsPrompts(t *testing.T) {
 	bin, record, askpasses := t.TempDir(), filepath.Join(t.TempDir(), "record"), t.TempDir()
-	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
+	writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+answersTheRefs)
 	writeProgram(t, askpasses, "answers", "echo invented-token\n")
 	cainfo, capath := filepath.Join(t.TempDir(), "ca.pem"), t.TempDir()
 	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()),
@@ -106,21 +108,25 @@ func TestLsRemoteKeepsTheCallersTransportButNotItsPrompts(t *testing.T) {
 		"HTTPS_PROXY=http://proxy.invented:3128",
 		"GIT_TERMINAL_PROMPT=1",
 		"GIT_ASKPASS="+filepath.Join(askpasses, "answers"),
+		"SSH_ASKPASS="+filepath.Join(askpasses, "answers"),
+		"SSH_ASKPASS_REQUIRE=force",
 	)})
 	visibility, err := guard.lsRemote(bound(t), githubOrigin, theRepo)
 	if err != nil || visibility != Public {
 		t.Fatalf("read %q, %v; want public", visibility, err)
 	}
-	calls := readCalls(t, record)
+	calls := leakguardtest.ReadCalls(t, record)
 	if len(calls) != 1 {
 		t.Fatalf("git ran %d times, want once", len(calls))
 	}
 	for key, want := range map[string]string{
-		"cainfo":  cainfo,
-		"capath":  capath,
-		"proxy":   "http://proxy.invented:3128",
-		"prompt":  "0",
-		"askpass": guard.noAnswer,
+		"cainfo":     cainfo,
+		"capath":     capath,
+		"proxy":      "http://proxy.invented:3128",
+		"prompt":     "0",
+		"askpass":    "unset",
+		"sshaskpass": "unset",
+		"require":    "unset",
 	} {
 		if got := calls[0][key]; got != want {
 			t.Errorf("git ran with %s=%q, want %q", key, got, want)
@@ -170,6 +176,143 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 	}
 	if authorized != 0 {
 		t.Errorf("%d of git's %d requests carried an Authorization header: a netrc credential reached the read", authorized, requests)
+	}
+}
+
+// No askpass credential reaches the real git of the read with no credential: not the caller's
+// GIT_ASKPASS or SSH_ASKPASS, and not a core.askPass that a wrapper of git puts on the command
+// line in front of the guard's arguments, each an askpass that prints a credential. A server of
+// the test's own answers every request 401 with a challenge, as GitHub answers an anonymous read
+// of a private repository; the server sees no Authorization header, and the read is no answer.
+// The control is the same git with that wrapper's core.askPass and no reset, which does send one.
+func TestLsRemoteSendsNoAskpassCredential(t *testing.T) {
+	git := realGit(t)
+	var mu sync.Mutex
+	var requests, authorized int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests++
+		if r.Header.Get("Authorization") != "" {
+			authorized++
+		}
+		mu.Unlock()
+		w.Header().Set("WWW-Authenticate", `Basic realm="invented"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	// sent is how many requests the server saw, and how many of them carried a credential, since
+	// the last call.
+	sent := func() (int, int) {
+		mu.Lock()
+		defer mu.Unlock()
+		n, a := requests, authorized
+		requests, authorized = 0, 0
+		return n, a
+	}
+	answers := filepath.Join(t.TempDir(), "answers")
+	writeProgram(t, filepath.Dir(answers), "answers", "echo invented-token\n")
+	url := server.URL + "/private/invented-repo.git"
+
+	control := exec.Command(git, "-c", "core.askPass="+answers, "ls-remote", url, "HEAD")
+	control.Dir = "/"
+	control.Env = loopbackEnv(t.TempDir(), "PATH="+os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0")
+	if out, err := control.CombinedOutput(); err == nil {
+		t.Fatalf("the control read passed: %s", out)
+	}
+	if n, a := sent(); n == 0 || a == 0 {
+		t.Fatalf("the control sent %d requests, %d with a credential: a wrapper's core.askPass would not reach the read, so this test measures nothing", n, a)
+	}
+
+	bin := t.TempDir()
+	writeProgram(t, bin, "git", "exec "+shQuote(git)+" -c "+shQuote("core.askPass="+answers)+" \"$@\"\n")
+	guard := New(Options{Env: loopbackEnv(t.TempDir(), pathWith(bin),
+		"GIT_ASKPASS="+answers, "SSH_ASKPASS="+answers, "SSH_ASKPASS_REQUIRE=force")})
+	visibility, err := guard.lsRemote(bound(t), server.URL, "private/invented-repo")
+	if err == nil {
+		t.Fatalf("read %q, want no answer: a 401 is not one", visibility)
+	}
+	n, a := sent()
+	if n == 0 {
+		t.Fatal("git sent the server no request")
+	}
+	if a != 0 {
+		t.Errorf("%d of git's %d requests carried an Authorization header: an askpass credential reached the read", a, n)
+	}
+}
+
+// Only a listed ref reads public: git exiting 0 having listed nothing, as it does for an empty
+// repository's HEAD, or having printed lines that are no ref, is no answer, and says so.
+func TestLsRemoteReadsNoListedRefAsNoAnswer(t *testing.T) {
+	for name, prints := range map[string]string{
+		"nothing":               "exit 0\n",
+		"a warning":             printsToStderr("warning: invented") + "exit 0\n",
+		"a line that is no ref": "echo invented\nexit 0\n",
+		"an id that is no id":   "printf '%s\\tHEAD\\n' " + strings.Repeat("g", 40) + "\nexit 0\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			bin := t.TempDir()
+			writeProgram(t, bin, "git", prints)
+			guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), pathWith(bin))})
+			visibility, err := guard.lsRemote(bound(t), githubOrigin, theRepo)
+			if err == nil || visibility != "" {
+				t.Fatalf("read %q, %v; want no answer", visibility, err)
+			}
+			if !strings.Contains(err.Error(), "exited 0 and listed no ref") {
+				t.Errorf("the error %q does not say git listed no ref", err)
+			}
+		})
+	}
+}
+
+// VisibilityWithoutCredential is the read with no credential and nothing else: public where git
+// lists a ref, reported as ls-remote's answer and kept nowhere, and no answer for a refusal of
+// git's, with no source reported. It makes no gh read, REST or GraphQL, whatever git answers, and
+// a slug that is no repository GitHub could serve is refused before git runs.
+func TestVisibilityWithoutCredentialReadsWithLsRemoteAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name, slug, git string
+		// want is the answer, "" where the read is refused; gitRuns is whether git ran.
+		want    Visibility
+		gitRuns bool
+	}{
+		{name: "listed", slug: theRepo, git: answersTheRefs, want: Public, gitRuns: true},
+		{name: "asked for a credential", slug: theRepo, git: asksForACredential, gitRuns: true},
+		{name: "listed nothing", slug: theRepo, git: "exit 0\n", gitRuns: true},
+		{name: "no repository", slug: "invented-org/../x", git: answersTheRefs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bin, record, ghRecord, state := t.TempDir(), filepath.Join(t.TempDir(), "git"), filepath.Join(t.TempDir(), "gh"), t.TempDir()
+			writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(record)+tc.git)
+			writeProgram(t, bin, "gh", "echo gh >> "+shQuote(ghRecord)+"\necho public\nexit 0\n")
+			var sources []VisibilitySource
+			guard := New(Options{
+				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
+				Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+state),
+			})
+			visibility, err := guard.VisibilityWithoutCredential(bound(t), tc.slug)
+			switch {
+			case tc.want != "" && (err != nil || visibility != tc.want):
+				t.Errorf("read %q, %v; want %s", visibility, err, tc.want)
+			case tc.want == "" && (err == nil || visibility != ""):
+				t.Errorf("read %q, %v; want no answer", visibility, err)
+			}
+			if calls := leakguardtest.ReadCalls(t, record); (len(calls) == 1) != tc.gitRuns || len(calls) > 1 {
+				t.Errorf("git ran %d times, want it run: %t", len(calls), tc.gitRuns)
+			}
+			if got := countLines(t, ghRecord); got != 0 {
+				t.Errorf("gh ran %d times, want no REST or GraphQL read", got)
+			}
+			wantSources := []VisibilitySource(nil)
+			if tc.want != "" {
+				wantSources = []VisibilitySource{VisibilityFromLsRemote}
+			}
+			if !slices.Equal(sources, wantSources) {
+				t.Errorf("the guard reported the sources %q, want %q", sources, wantSources)
+			}
+			if _, err := os.Stat(guard.visibilityCachePath(tc.slug)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("a visibility was kept for %s (%v), want none", tc.slug, err)
+			}
+		})
 	}
 }
 

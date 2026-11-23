@@ -163,7 +163,9 @@
 #   - Its agent is `omp -p` on the Oh My Pi the daemon pins (.omp-pin), in the label's profile
 #     (make_omp_home, install-plugin-profile.sh, install-model-gateway.sh), under a HOME of its own
 #     copied from the label's, with `env -i` and only the variables its pane file names (base_env).
-#     An agent that writes to its HOME (`mise use -g`, say) changes nothing for another run.
+#     An agent that writes to its HOME (`mise use -g`, say) changes nothing for another run. The pin
+#     is the label's checkout's, and its install is held to that checkout's .omp-pin.sha256 before
+#     anything runs it (pinned_omp); `profile` refuses a checkout from before the pin had one.
 #   - Its profile's settings set extensionHandlers.toolCallTimeoutMs to 120000 or more, as the model
 #     route installers write them, so AskGate's review fits inside Oh My Pi's handler limit
 #     (load_label refuses a profile that does not).
@@ -443,7 +445,7 @@ checkout_commit() {
 cmd_profile() {
   local usage="usage: rig.sh profile <label> <checkout> [--envoy-json <file>]"
   [ $# = 2 ] || [ $# = 4 ] || fail "$usage"
-  local label=$1 P co profile=skills-$1 envoy_json=''
+  local label=$1 P co pin profile=skills-$1 envoy_json=''
   if [ $# = 4 ]; then
     [ "$3" = --envoy-json ] || fail "$usage"
     envoy_json=$(realpath -e -- "$4") || fail "--envoy-json $4 does not exist"
@@ -453,6 +455,12 @@ cmd_profile() {
   [ ! -e "$P" ] || fail "$P exists; remove it to rebuild label $label"
   co=$(cd "$2" && pwd -P)
   [ -f "$co/scripts/e2e/lib/install-plugin-profile.sh" ] || fail "$co is not a Legion checkout"
+  # The label's pin, held to the checkout's own .omp-pin.sha256 (pinned_omp) before anything runs
+  # it: the checkout's install-plugin-profile.sh below runs it first, and one from a revision before
+  # lib/pinned-omp.sh checks nothing itself. A refused checkout leaves no label directory.
+  [ -f "$co/.omp-pin" ] || fail "$co has no .omp-pin"
+  pin=$(<"$co/.omp-pin")
+  pinned_omp "$co" "$pin" >/dev/null
   mkdir -p "$P"
   on_exit "$(printf 'drop_unready_keys %q %q' "$P/ready" "$P/model-key")"
   printf '%s\n' "$co" >"$P/checkout"
@@ -495,24 +503,39 @@ cmd_profile() {
   [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" != provider ] ||
     printf 'model %s/%s\n' "$LEGION_E2E_MODEL_PROVIDER" "${LEGION_E2E_MODEL_PROVIDER_MODEL:-$route_model_id}" >>"$P/built-from"
   cp "$co/.omp-pin" "$P/pin"
-  [ -z "${SKILL_SCENARIOS_SUPERPOWERS:-}" ] || install_superpowers "$P" "$profile" "$(<"$P/pin")"
+  [ -z "${SKILL_SCENARIOS_SUPERPOWERS:-}" ] || install_superpowers "$P" "$profile" "$co" "$pin"
   touch "$P/ready"
   trap - EXIT HUP INT TERM
   cat "$P/built-from"
 }
 
-# pinned_omp PIN prints the path of the omp binary mise installed for PIN. A run names it by path:
-# `mise x <pin> -- omp` leaves an `omp` earlier on the caller's PATH (a wrapper script, say) ahead
-# of the pin's own whenever PIN is the version mise already has active there, so the run would get
-# the wrapper and whatever omp and configuration it picks, not the label's pin.
+# pinned_omp CHECKOUT PIN prints the path of the omp binary mise installed for PIN, the pin
+# CHECKOUT's .omp-pin names (a label's checkout; this checkout for the judge), once this
+# checkout's scripts/e2e/lib/pinned-omp.sh has installed it when mise had none and held the install
+# to CHECKOUT's own .omp-pin.sha256, with CHECKOUT's .github/scripts/omp-digest.sh: bin/omp's bytes,
+# and nothing else in the install. It fails, and nothing runs the binary:
+#   - when CHECKOUT holds no .omp-pin.sha256: a revision from before the pin had a recorded digest,
+#     so nothing says what bytes its pin should install (fail closed, naming the revision);
+#   - when CHECKOUT's .omp-pin no longer names PIN (the checkout moved since `profile`, or since the
+#     judge's profiles were built): CHECKOUT's digest is another pin's, so the profile is rebuilt;
+#   - when the install holds other bytes than the digest records, or anything beside bin/omp.
+# A run names the binary by path: `mise x <pin> -- omp` leaves an `omp` earlier on the caller's PATH
+# (a wrapper script, say) ahead of the pin's own whenever PIN is the version mise already has active
+# there, so the run would get the wrapper and whatever omp and configuration it picks, not the
+# label's pin.
 pinned_omp() {
-  local omp
-  omp=$(mise where "$1")/bin/omp || fail "mise has no install of $1"
-  [ -x "$omp" ] || fail "$omp, the pin $1's binary, is not executable"
-  printf '%s\n' "$omp"
+  local co=$1 pin=$2 commit
+  if [ ! -f "$co/.omp-pin.sha256" ]; then
+    commit=$(checkout_commit "$co") || commit="a commit neither jj nor git can read"
+    fail "$co, at $commit, has no .omp-pin.sha256: it is a revision from before .omp-pin had a recorded digest, so its pin $pin cannot be held to one before it runs; use a checkout at a revision that records it"
+  fi
+  [ -f "$co/.omp-pin" ] && [ "$(<"$co/.omp-pin")" = "$pin" ] ||
+    fail "$co/.omp-pin no longer names $pin, the pin its profile was built on, so its .omp-pin.sha256 is another pin's: rebuild the profile"
+  bash "$root/scripts/e2e/lib/pinned-omp.sh" "$co" "$pin" ||
+    fail "the pin $pin could not be installed, or its install does not match $co/.omp-pin.sha256 (the reason is above)"
 }
 
-# install_superpowers P PROFILE PIN copies SKILL_SCENARIOS_SUPERPOWERS's writing-plans and
+# install_superpowers P PROFILE CHECKOUT PIN copies SKILL_SCENARIOS_SUPERPOWERS's writing-plans and
 # brainstorming skills into the profile's user skill directory, the one the pinned Oh My Pi reads
 # for a named profile ($HOME/.omp/profiles/<profile>/agent/skills/<name>/SKILL.md). Then one
 # `omp -p` under the profile reads skill://writing-plans, and the step fails when the reply holds
@@ -521,8 +544,8 @@ pinned_omp() {
 # pass. It records the plugin's version and each skill's digest in built-from. It marks the label
 # with a `superpowers` file, which a spec run needs.
 install_superpowers() {
-  local P=$1 profile=$2 pin=$3 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version omp
-  omp=$(pinned_omp "$pin") || exit 1
+  local P=$1 profile=$2 co=$3 pin=$4 src=$SKILL_SCENARIOS_SUPERPOWERS skill dest probe version omp
+  omp=$(pinned_omp "$co" "$pin") || exit 1
   dest=$P/home/.omp/profiles/$profile/agent/skills
   mkdir -p "$dest"
   for skill in "${superpowers_skills[@]}"; do
@@ -605,10 +628,11 @@ EOF
 # when it exists, as the tmux session <tag>-<name>. It waits for the session to exit or time out. A
 # timeout is the run's result (`exit=timeout`), not a rig failure, so this wait is not an
 # until_true. A spec run's later turn passes --continue. Each launch starts out.txt again, so its
-# wait reads only its own exit line.
+# wait reads only its own exit line. The omp is the label's pin, held to its checkout's
+# .omp-pin.sha256 at each launch (pinned_omp).
 launch() {
   local system='' extra='' omp
-  omp=$(pinned_omp "$pin") || exit 1
+  omp=$(pinned_omp "$co" "$pin") || exit 1
   session=$tag-$1
   shift
   [ $# = 0 ] || extra=" $(printf '%q ' "$@")" extra=${extra% }
@@ -1241,7 +1265,9 @@ judge_keys() {
 # directory held no input, and returned rows it made up from them. Mounted:
 #   DIR                     read-only, so the judge reads its inputs and nothing beside them
 #   DIR/OUTPUT, DIR/sessions  writable: its one answer file and its transcript
-#   the pinned omp's install read-only (SKILL_SCENARIOS_JUDGE_OMP names another binary, for tests)
+#   the pinned omp's install read-only, held to this checkout's .omp-pin.sha256 first (pinned_omp;
+#     SKILL_SCENARIOS_JUDGE_OMP names another binary, for tests, which no digest covers: it runs
+#     unchecked, and one stderr line says so)
 #   the profile's agent directory read-only, copied into a fresh tmpfs HOME at start, where Oh My
 #     Pi writes its databases and logs, and extracts its own native addon (the operator's native
 #     cache is not mounted: other sessions prune it, and a judge that found its version gone failed
@@ -1290,7 +1316,14 @@ cmd_judge_omp() {
   printf 'model %s\nthinking %s\n' "$judge_model" "$judge_thinking" >"$dir/judge-model.txt"
   mkdir -p "$dir/sessions"
   : >>"$dir/$output"
-  omp=${SKILL_SCENARIOS_JUDGE_OMP:-$(mise where "$(<"$work/judge-profiles/pin")")/bin/omp}
+  # The stderr line for SKILL_SCENARIOS_JUDGE_OMP refuses nothing, so it does not carry the
+  # `skill-scenarios: ` every refusal of the rig's (fail) starts with.
+  if [ -n "${SKILL_SCENARIOS_JUDGE_OMP:-}" ]; then
+    omp=$SKILL_SCENARIOS_JUDGE_OMP
+    echo "judge-omp: SKILL_SCENARIOS_JUDGE_OMP names $omp in place of .omp-pin's build, and no digest is recorded for it: it is not checked" >&2
+  else
+    omp=$(pinned_omp "$root" "$(<"$work/judge-profiles/pin")") || exit 1
+  fi
   [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done

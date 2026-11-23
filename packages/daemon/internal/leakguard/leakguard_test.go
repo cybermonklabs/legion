@@ -89,6 +89,21 @@ func refusal(t *testing.T, err error) *Refusal {
 	return refused
 }
 
+// wantRefused fails the test unless err is the refusal whose report is want (refusal), or, where
+// want is nil, unless the write passed.
+func wantRefused(t *testing.T, err error, want []string) {
+	t.Helper()
+	if want == nil {
+		if err != nil {
+			t.Fatalf("got %v, want the write passed", err)
+		}
+		return
+	}
+	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+}
+
 // setupFailure is err as a *SetupFailure, failing the test where it is anything else.
 func setupFailure(t *testing.T, err error) *SetupFailure {
 	t.Helper()
@@ -97,6 +112,16 @@ func setupFailure(t *testing.T, err error) *SetupFailure {
 		t.Fatalf("got %v, want a setup failure", err)
 	}
 	return failed
+}
+
+// wantSetupFailure fails the test unless err is a setup failure (setupFailure) whose message is
+// want.
+func wantSetupFailure(t *testing.T, err error, want string) {
+	t.Helper()
+	setupFailure(t, err)
+	if err.Error() != want {
+		t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
+	}
 }
 
 // Every entry point runs its own shape of the shared check and refuses what that check refuses,
@@ -247,10 +272,7 @@ func TestTheGhShapeScansWhatItBuffered(t *testing.T) {
 	if string(answer.Stdin) != body {
 		t.Errorf("the caller got %q back, want the bytes it gave", answer.Stdin)
 	}
-	refused := refusal(t, err)
-	if want := []string{"the gh call's standard input: " + theClass}; !slices.Equal(refused.Lines, want) {
-		t.Errorf("the report is %q, want %q", refused.Lines, want)
-	}
+	wantRefused(t, err, []string{"the gh call's standard input: " + theClass})
 }
 
 // The report names the record and the class and nothing else: not the text that matched, not the
@@ -525,7 +547,10 @@ func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
 	})
 	t.Run("a push passes and the rules still read it", func(t *testing.T) {
 		// The push's records are read with git, so the guard's PATH holds git's own directory
-		// and nothing else: no check is on it.
+		// and nothing else: no check is on it. The destination is an empty local bare repository,
+		// which the guard reads what it holds from with git ls-remote (Guard.advertised), and which
+		// names no repository GitHub serves, so the rules read the push as they read one to a
+		// public destination (scanThrough).
 		git, err := exec.LookPath("git")
 		if err != nil {
 			t.Fatal(err)
@@ -533,12 +558,14 @@ func TestAGuardOfADeploymentThatNamesNoCheckRunsTheRulesAlone(t *testing.T) {
 		push := func(t *testing.T, message string) error {
 			t.Helper()
 			home, repo := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+			destination := filepath.Join(t.TempDir(), "destination.git")
 			fixture := fixturegit.Isolated(t, home)
 			fixture.Run(filepath.Dir(repo), fixturegit.InitWorkTree(repo, "main")...)
+			fixture.Run(repo, fixturegit.InitBare(destination, "main")...)
 			fixture.Run(repo, "git", "commit", "--allow-empty", "--quiet", "-m", message)
 			head := fixture.Run(repo, "git", "rev-parse", "HEAD")
 			return noCheck(t, "PATH="+filepath.Dir(git)).Push(bound(t), PushRequest{
-				Dir: repo, Remote: "origin", URL: "https://github.com/invented-org/invented-repo.git",
+				Dir: repo, Remote: "origin", URL: destination,
 				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 			})
 		}

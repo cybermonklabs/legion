@@ -8,6 +8,7 @@ import {
   type LegionCapabilityReportBody,
 } from "@legion/contracts/legion-api";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
+import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
 import {
   CAPABILITY_CHECK_TIMEOUT_MS,
   CAPABILITY_REPORT_TIMEOUT_MS,
@@ -759,7 +760,7 @@ describe("github", () => {
       "--jq",
       ".data.viewer.login",
     ]);
-    expect(run?.cwd).toBe(workspace);
+    expect(run?.cwd).toBe("/");
   });
 
   test("fails with gh's first stderr line, else its exit code", async () => {
@@ -816,6 +817,50 @@ describe("github", () => {
     const rows = await measure(fakeHost({ run: installationToken }));
     expect(rows.github.ok).toBe(true);
     expect(rows.github.detail).toContain("legion-reviewer[bot]");
+  });
+
+  test("measures the credential from a fork checkout whose remotes name two owners", async () => {
+    // A fork checkout's remotes name two owners (origin cybermonklabs, upstream can1357), and the
+    // `legion gh` wrapper, given a command that names no repository, reads the working directory's
+    // remotes and refuses to send a token when they name more than one owner. The row measures the
+    // role's credential, so it must pass from such a workspace. Git runs with no gitconfig of the
+    // machine's: an `insteadOf` rewriting https://github.com/ would leave the remotes naming no
+    // owner, and the test would pass whatever directory the row ran its command from.
+    const repo = path.join(workspace, "fork");
+    await mkdir(repo, { recursive: true });
+    const env = {
+      PATH: process.env.PATH ?? "",
+      ...versionControlEnvironment(path.join(workspace, "fork-git-home")),
+    };
+    for (const args of [
+      ["init", "--quiet"],
+      ["remote", "add", "origin", "https://github.com/cybermonklabs/oh-my-pi"],
+      ["remote", "add", "upstream", "https://github.com/can1357/oh-my-pi"],
+    ]) {
+      expect(Bun.spawnSync(["git", "-C", repo, ...args], { env, stderr: "pipe" }).exitCode).toBe(0);
+    }
+    const wrapper: CapabilityHost["run"] = async (command, args, options) => {
+      if (command !== "gh") return fakeHost().run(command, args, options);
+      const remotes = Bun.spawnSync(["git", "-C", options.cwd, "remote", "-v"], {
+        env,
+        stderr: "pipe",
+      });
+      const owners = new Set<string>();
+      if (remotes.exitCode === 0) {
+        for (const match of remotes.stdout.toString().matchAll(/github\.com[/:]([^/\s]+)\//g))
+          owners.add(match[1] as string);
+      }
+      return owners.size >= 2
+        ? {
+            code: 2,
+            stdout: "",
+            stderr:
+              "legion gh: the command names more than one owner, can1357 (...) and cybermonklabs (...), so it sends no token; name one repository\n",
+          }
+        : { code: 0, stdout: "legion-implementer[bot]\n", stderr: "" };
+    };
+    const rows = await measure(fakeHost({ run: wrapper }), { cwd: repo });
+    expect(rows.github).toEqual({ ok: true, detail: "gh viewer login: legion-implementer[bot]" });
   });
 });
 

@@ -201,7 +201,7 @@ branch_of() {
 }
 
 # fragment_of <case> is the report line the refusal must carry: the record, then the class. The
-# records are the guard's own (packages/daemon/internal/leakguard/push.go), so the added-line case
+# records are the guard's own (packages/daemon/internal/leakguard/commitfiles.go), so the added-line case
 # and the branch-name case are told apart here rather than being read as one refusal.
 fragment_of() {
   case "$1" in

@@ -111,10 +111,12 @@ operator=$omp_home/shop
 mkdir -p "$operator"
 export XDG_STATE_HOME=$work/xdg TMUX_TMPDIR=$work/tmux
 pin=$(<"$root/.omp-pin")
-mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 # The pinned Oh My Pi as the run's own `omp` (LEGION_OMP_PATH), so what `legion controller start`
-# prints of its invocation names the run's directory and nothing of the machine's tool layout.
-printf '#!/bin/sh\nexec %q "$@"\n' "$(mise where "$pin")/bin/omp" >"$work/bin/omp"
+# prints of its invocation names the run's directory and nothing of the machine's tool layout. Its
+# install is held to .omp-pin.sha256 before anything runs it (scripts/e2e/lib/pinned-omp.sh).
+omp=$(bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$pin") ||
+  fail "the pinned Oh My Pi $pin could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
+printf '#!/bin/sh\nexec %q "$@"\n' "$omp" >"$work/bin/omp"
 chmod +x "$work/bin/omp"
 (cd "$root/packages/daemon" && nice -n 19 go build -o "$work/bin/legion" ./cmd/legion)
 (cd "$root/packages/envoy" && nice -n 19 go build -o "$work/envoy-listener" ./cmd/listener)

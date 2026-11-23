@@ -38,6 +38,9 @@
 # place of the pinned one. DISPATCH_USER_TURNS_ONLY=spec-edit runs `session-registers` and the two
 # spec-edit checks alone, then ends: the spec-edit live check, which needs none of the others;
 # DISPATCH_USER_TURNS_ONLY=spec-edit-card stops after the first of them, the card's arrival.
+# lib/pinned-omp.sh holds the pinned one's install to .omp-pin.sha256 before anything runs it; no
+# digest is recorded for a DISPATCH_USER_TURNS_OMP build, so its install is not checked, and the
+# helper says so on stderr.
 # Everything the run creates is its own and goes on any exit: its scratch directory, the isolated
 # profile under the HOME it gives Oh My Pi (make_omp_home, lib/omp-home.sh), the key command a
 # key-file route writes, its tmux server, its listener and Dispatch, and its Postgres and NATS
@@ -213,11 +216,14 @@ omp_tool=${DISPATCH_USER_TURNS_OMP:-$(<"$root/.omp-pin")}
 mkdir -p "$session_cwd"
 refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
-mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2
+# Installed, and held to .omp-pin.sha256 when it is the pinned build (lib/pinned-omp.sh; the header
+# says why a DISPATCH_USER_TURNS_OMP build is not), before anything runs it.
+omp_bin=$(bash "$root/scripts/e2e/lib/pinned-omp.sh" "$root" "$omp_tool") ||
+  fail "Oh My Pi $omp_tool could not be installed, or its install does not match .omp-pin.sha256 (the reason is above)"
 # The program the session's Oh My Pi runs: what `mise x $omp_tool -- omp` execs. session_gone knows
 # the session by it, so it is the binary itself (native_program, lib/process-tree.sh): a script's
 # or a mise shim's process runs another file, and the wait for the session to end would pass at once.
-omp_exe=$(native_program "$(mise where "$omp_tool")/bin/omp") || fail "the Oh My Pi $omp_tool: $omp_exe"
+omp_exe=$(native_program "$omp_bin") || fail "the Oh My Pi $omp_tool: $omp_exe"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch)
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"

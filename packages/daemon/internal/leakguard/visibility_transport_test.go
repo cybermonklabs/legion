@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // The tests of the reads the guard makes when gh's REST read fails on its connection to GitHub
@@ -114,7 +115,7 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 	}
 	writeProgram(t, bin, "gh", transportGh(rig.reads, rest, graphql(rig.graphql), rig.credential, theToken))
 	writeProgram(t, bin, "curl", curlStandIn(rig.curl, rig.curlStdin, curl))
-	writeProgram(t, bin, "git", recordsItsCall(rig.git)+git)
+	writeProgram(t, bin, "git", leakguardtest.RecordsGitCall(rig.git)+git)
 	rig.guard = New(Options{
 		OnVisibility: func(source VisibilitySource) { rig.sources = append(rig.sources, source) },
 		Env:          append(append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()), extra...),
@@ -127,7 +128,7 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 // runs is how many times each stand-in ran: gh's REST read, gh's GraphQL read, curl and git.
 func (r *transportRig) runs(t *testing.T) (rest, graphql, curl, git int) {
 	t.Helper()
-	return countLines(t, r.reads), countLines(t, r.graphql), countLines(t, r.curl), len(readCalls(t, r.git))
+	return countLines(t, r.reads), countLines(t, r.graphql), countLines(t, r.curl), len(leakguardtest.ReadCalls(t, r.git))
 }
 
 // kept is whether the guard kept an answer for theRepo.
@@ -396,7 +397,7 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 			if _, err := os.Stat(rig.credential); (err == nil) != tc.asked {
 				t.Errorf("gh auth git-credential get was asked: %v; want %v", err == nil, tc.asked)
 			}
-			calls := readCalls(t, rig.curl)
+			calls := leakguardtest.ReadCalls(t, rig.curl)
 			if len(calls) != 1 {
 				t.Fatalf("curl ran %d times, want once", len(calls))
 			}
@@ -514,7 +515,7 @@ func TestCurlReadNeverRunsTheCurlFirstOnPath(t *testing.T) {
 	if got, err := os.ReadFile(record); err == nil {
 		t.Errorf("the curl first on PATH ran and was handed %q", got)
 	}
-	if calls := readCalls(t, rig.curl); len(calls) != 1 {
+	if calls := leakguardtest.ReadCalls(t, rig.curl); len(calls) != 1 {
 		t.Errorf("the guard's curl ran %d times, want once", len(calls))
 	}
 }
@@ -631,7 +632,7 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 			if rest, graphql, curl, git := rig.runs(t); rest != 1 || curl != 1 || graphql != 0 || git != 0 {
 				t.Errorf("gh's REST read ran %d times, curl %d, GraphQL %d and git %d; want 1, 1, 0 and 0", rest, curl, graphql, git)
 			}
-			calls := readCalls(t, rig.curl)
+			calls := leakguardtest.ReadCalls(t, rig.curl)
 			if len(calls) != 1 {
 				t.Fatalf("curl ran %d times, want once", len(calls))
 			}

@@ -378,6 +378,48 @@ func TestTheServedInstallLandsTheCheckAndReplacesWhatWasThere(t *testing.T) {
 	}
 }
 
+// The install lands its modes whatever the umask of the process that runs it: a role's shell may
+// run umask 077, under which an open's or a mkdir's mode lands with no bit for group or other, and
+// every role must read and run the check. Each file lands with its mode in the served body less
+// group and other write, so git archive's 0664 and 0775, which GitHub's tarballs carry, land 0644
+// and 0755; every directory lands 0755, a nested one and its parent among them; and the tag file
+// lands 0644. The test sets the process's umask to 077, so it runs beside no other test.
+func TestTheServedInstallSetsItsModesWhateverTheUmask(t *testing.T) {
+	previous := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(previous) })
+	check := map[string]leakguardtest.Member{
+		checkName:                       {Body: answersItsHelp, Mode: 0o775},
+		theNeighbour:                    {Body: leakguardtest.Program, Mode: 0o664},
+		leakguardtest.ReadmeName:        {Body: leakguardtest.Readme, Mode: 0o664},
+		theFixture:                      {Body: leakguardtest.MustPass, Mode: 0o664},
+		"revert-gate/fixtures/case.txt": {Body: "a case the revert gate reads\n", Mode: 0o664},
+	}
+	dir := filepath.Join(t.TempDir(), "leak-check")
+	if _, err := install(t, dir, theTag, served(t, leakguardtest.GitHubTarball(t, check))); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	for name, want := range map[string]os.FileMode{
+		".":                             0o755,
+		checkName:                       0o755,
+		theNeighbour:                    0o644,
+		leakguardtest.ReadmeName:        0o644,
+		theFixture:                      0o644,
+		"revert-gate":                   0o755,
+		"revert-gate/fixtures":          0o755,
+		"revert-gate/fixtures/case.txt": 0o644,
+		tagFile:                         0o644,
+	} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			t.Errorf("the install is missing %s: %v", name, err)
+			continue
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Errorf("the install holds %s with mode %o under umask 077, want %o", name, got, want)
+		}
+	}
+}
+
 // A served check that does not answer its --help, a body holding no file and a body that is no
 // tarball each fail the install, name what happened, and leave the directory as it was — an
 // absent one absent, and one holding an install with that install — with nothing beside it.

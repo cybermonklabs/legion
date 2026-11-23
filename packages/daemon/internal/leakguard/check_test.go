@@ -531,10 +531,11 @@ func TestASharedCheckASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // kill) fails naming the signal, with what it printed beneath, as the same read's failed exit
 // carries it: the gh visibility read, its GraphQL read, the curl read, the read with no credential,
 // a git read of a push's records, which quotes only git's standard error (gitSaid), never the
-// push's content on its standard output, and the token read, which quotes only its standard error,
-// never the password on its standard output. Each row's stand-in is the one program it names, first
-// on PATH, printing and killing itself; the curl read runs Guard.curl, never PATH's, so it is
-// pointed at the stand-in.
+// push's content on its standard output, and with every URL's credentials taken out
+// (redact.Tail), as a failed exit's quote is, and the token read, which quotes only its standard
+// error, never the password on its standard output. No read's failure holds the token. Each row's
+// stand-in is the one program it names, first on PATH, printing and killing itself; the curl read
+// runs Guard.curl, never PATH's, so it is pointed at the stand-in.
 func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	const slug = "invented-org/invented-repo"
 	killsItself := func(t *testing.T, name, script string, env ...string) *Guard {
@@ -549,22 +550,35 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 	}
 	said := "error connecting to api.github.com for " + slug
 	toStderr := "echo '" + said + "' >&2"
+	// url is what a git read prints of a remote whose URL carries a token: a lazy fetch of a partial
+	// clone names its promisor remote. Its quote keeps every word of it but the user and password.
+	url := "fatal: unable to access https://user:" + theToken + "@example.invalid/x.git: Could not resolve host: example.invalid"
 	for _, row := range []struct {
 		name, program, script string
 		env                   []string
-		read                  func(g *Guard) error
+		// quotes is what the failure holds beneath the signal.
+		quotes string
+		read   func(g *Guard) error
 	}{
-		{"the gh visibility read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
-		{"the GraphQL read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
-		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
-		{"the read with no credential", "git", toStderr, nil, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
-		{"a git read of a push's records", "git", "echo '+the pushed line'\n" + toStderr, nil, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
-		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
+		{"the gh visibility read", "gh", toStderr, nil, said, func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
+		{"the GraphQL read", "gh", toStderr, nil, said, func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
+		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, said, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
+		{"the read with no credential", "git", toStderr, nil, said, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
+		{"a git read of a push's records", "git", "echo '+the pushed line'\n" + toStderr, nil, said, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
+		{
+			"a git read of a push's records naming a URL with a token", "git", "echo '" + url + "' >&2\n" + toStderr, nil,
+			"fatal: unable to access https://example.invalid/x.git: Could not resolve host: example.invalid\n" + said,
+			func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err },
+		},
+		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, said, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			err := row.read(killsItself(t, row.program, row.script, row.env...))
-			if want := "signal: killed\n" + said; err == nil || err.Error() != want {
+			if want := "signal: killed\n" + row.quotes; err == nil || err.Error() != want {
 				t.Errorf("read = %v, want %q", err, want)
+			}
+			if err != nil && strings.Contains(err.Error(), theToken) {
+				t.Errorf("read = %v, which holds the token %q", err, theToken)
 			}
 		})
 	}
@@ -577,12 +591,13 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // test supposes: on a loaded machine the guard's own work before the child, the shared check above
 // all, takes longer and leaves the child less of the caller's 2 s.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
-	// neverAnswers is the PATH entry of a directory whose one program is name, which sleeps past
-	// any test binary's deadline, in front of the test's own PATH: the guard's lookup finds it
-	// before the real one, and the check's bash still finds everything else.
-	neverAnswers := func(t *testing.T, name string) string {
+	// neverAnswers is the PATH entry of a directory whose one program is name, which runs body
+	// first and then sleeps past any test binary's deadline, in front of the test's own PATH: the
+	// guard's lookup finds it before the real one, and the check's bash still finds everything
+	// else.
+	neverAnswers := func(t *testing.T, name, body string) string {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexec sleep 86400\n"), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"exec sleep 86400\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
@@ -590,7 +605,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	t.Run("the gh visibility read", func(t *testing.T) {
 		guard := New(Options{
 			Check: leakguardtest.Write(t, t.TempDir(), passes),
-			Env:   append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh")),
+			Env:   append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh", "")),
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -603,25 +618,45 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		stopped := stoppedAtTheCallersDeadline(t, ctx, began, failed, "gh")
 		says(t, failed, fmt.Sprintf("could not be read: gh ran %d s and was stopped by its bound of %d s", wholeSeconds(stopped.ran), wholeSeconds(stopped.bound)))
 	})
-	t.Run("a git read of the push's records", func(t *testing.T) {
-		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git"))
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		// A local commit and a ref the destination does not hold yet: the guard asks git for the
-		// commits the push would add, which is the read the stand-in git never answers.
-		req := PushRequest{
-			Dir:     t.TempDir(),
-			Remote:  "origin",
-			URL:     "https://github.com/invented-org/invented-repo.git",
-			Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
-		}
-		var err error
-		began := time.Now()
-		answered(t, "the push whose git read never answers", func() { err = guard.Push(ctx, req) })
-		failed := setupFailure(t, err)
-		stopped := stoppedAtTheCallersDeadline(t, ctx, began, failed, "git")
-		says(t, failed, fmt.Sprintf("the push's commits could not be read: git ran %d s and was stopped by its bound of %d s", wholeSeconds(stopped.ran), wholeSeconds(stopped.bound)))
-	})
+	// A local commit and a ref the destination does not hold yet: the guard reads the
+	// destination's refs, and then asks git for the commits the push would add.
+	req := PushRequest{
+		Dir:     t.TempDir(),
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	}
+	for _, tc := range []struct {
+		name string
+		// body is what the stand-in git runs before its sleep.
+		body string
+		// read is what the setup failure says could not be read, before the stop.
+		read string
+	}{
+		{
+			name: "the git read of the destination's refs",
+			read: "the destination's refs could not be read: git ls-remote " + req.URL + ": ",
+		},
+		{
+			// The stand-in answers the read of the destination's refs with none, so the read it
+			// never answers is the one of the push's commits.
+			name: "a git read of the push's records",
+			body: "case \" $* \" in *\" ls-remote \"*) exit 0 ;; esac\n",
+			read: "what the push adds could not be read: ",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git", tc.body))
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			var err error
+			began := time.Now()
+			answered(t, "the push whose git read never answers", func() { err = guard.Push(ctx, req) })
+			failed := setupFailure(t, err)
+			stopped := stoppedAtTheCallersDeadline(t, ctx, began, failed, "git")
+			says(t, failed, fmt.Sprintf("%sgit ran %d s and was stopped by its bound of %d s", tc.read, wholeSeconds(stopped.ran), wholeSeconds(stopped.bound)))
+		})
+	}
 }
 
 // stoppedAtTheCallersDeadline is the stop of program beneath failed, the *stoppedError the

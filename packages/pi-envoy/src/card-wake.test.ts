@@ -576,8 +576,9 @@ describe("in the startup phase", () => {
   }
 
   // Print and JSON mode prompt right after their own post-startup awaits, and a turn a wake started
-  // there makes that prompt fail; a terminal reads input only once its startup is over. Only RPC
-  // mode reads nothing while the host drains the startup sends.
+  // there makes that prompt fail; a terminal holds every startup send until its init has subscribed
+  // and waits for no turn they start. Only RPC mode, whose startup ends without waiting for a turn
+  // a startup send started, folds the startup cards into one wake turn after the held sends.
   for (const mode of ["print", "json", "tui", null] as const) {
     test(`sends a card that finds the host idle as an aside in ${mode ?? "a context with no"} mode`, () => {
       const host = harness({ mode });

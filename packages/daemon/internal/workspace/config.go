@@ -873,6 +873,20 @@ func ensureFetchConfiguration(ctx context.Context, run Runner, cloneDir string, 
 // that the clone would carry to another.
 const GitHubCredentialHelper = "!legion git-credential"
 
+// GitHubCredentialPairs are the git configuration entries that give a git the pod's GitHub
+// credential, in the order git reads them: the helper for https://github.com reset, which drops
+// every helper a configuration file names for it, then set to GitHubCredentialHelper, and
+// credential.useHttpPath on for github.com, so git hands the helper the path whose owner picks the
+// token. An issue pod's GIT_CONFIG_COUNT block begins with them (gitConfigPairs,
+// internal/runtime/sandbox), and the leak guard's read of what a push's destination holds, which
+// keeps no GIT_CONFIG name of its environment, passes them as `-c` options of its own command line
+// (leakguard's heldReadCredential). It is one definition so that the two cannot drift apart.
+var GitHubCredentialPairs = [][2]string{
+	{"credential.https://github.com.helper", ""},
+	{"credential.https://github.com.helper", GitHubCredentialHelper},
+	{"credential.https://github.com.useHttpPath", "true"},
+}
+
 // ConfigureRepositoryCredential brings the shared clone's helper to GitHubCredentialHelper and its
 // credential.useHttpPath to true (configureRepositoryCredential) and reports whether it wrote
 // anything: the daemon runs it at every boot over a clone an earlier daemon provisioned, whose

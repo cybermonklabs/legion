@@ -1,0 +1,38 @@
+kind: Fixed
+body: |-
+  The leak guard's visibility read with no credential, wherever it makes it (after GitHub refuses
+  its API read for a rate limit, after gh fails on its connection to GitHub, and after `legion gh`
+  refuses the read of a repository of an owner the project does not serve), no longer reads a
+  repository as public when `git ls-remote` exits 0 and lists no ref: only a ref that git listed
+  shows that it read the repository. An empty public repository lists no ref, so a write to one
+  is now refused wherever that read is the one that answers.
+  The pod launcher's install of the shared leak check now sets the modes of its files, its
+  directories and its tag file whatever the umask, so every role can read and run the check when
+  the launcher runs under `umask 077`.
+  The guard now opens the directory of the visibility answer a role keeps without following a
+  link under gVisor too, where the open had followed a link to a directory.
+  A push made to a URL rather than to a remote is now named in every refusal and setup failure
+  without the user and password the URL can carry, and without its query, where a token can be
+  too; so is the URL a failed read of the push's destination names.
+  A push of an annotated tag now has its name, its tagger and its message read by the guard's own
+  rules, and those of each tag it is of, unless the destination already holds the tag.
+  A push of a ref at a blob or a tree, or of a tag whose chain ends at one, now has the blob's
+  lines, or the tree's paths and the lines of its files, read by those rules, within the bound a
+  commit's files are read within, unless one of the destination's tags is already at that blob or
+  tree.
+  A push now has every header of each commit and each annotated tag it adds read by those rules,
+  among them the mergetag of a merge of a signed tag, which holds that tag's name, tagger and
+  message whether or not the tag itself is pushed.
+  Each header is read whole, its name with its value, so a header whose name names something
+  private refuses the push too, one that is a name alone among them, and a refusal labels any
+  header git itself does not write as a header of its commit or tag.
+  A push now has each commit's message read as the commit object holds it, and also as git show
+  prints it where that differs, and a commit's or an annotated tag's message that holds a zero
+  byte also decoded by the guard as UTF-16 and as UTF-32 in each byte order, and read with its
+  zero bytes taken out, whatever its encoding header names, so a message git show decodes into
+  other text, or cuts at its first zero byte, is read as the destination keeps it, at any offset;
+  and so is each header of a commit or an annotated tag, its name among them, that holds a zero
+  byte, which a destination that does not check what it receives keeps.
+  The guard's git show now writes UTF-8 whatever i18n.logOutputEncoding the repository's
+  configuration or a `git -c` on the push sets, so a merge or a root commit is read whole: under
+  UTF-16 a merge had been read as a commit of one parent, and neither had its files listed.

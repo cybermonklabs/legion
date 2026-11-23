@@ -40,7 +40,8 @@ export interface LegionClaimHost {
    * differently because their startups differ. A host whose own startup can begin no turn
    * before the boot has registered may call `started` at once, inside this very call, for a turn
    * that has already started: pi-legion awaits the boot inside `session_start`, and Oh My Pi
-   * reads no input until every such handler has returned, so a turn it heard of is this
+   * runs no RPC command that starts a turn until every such handler has returned (it answers
+   * one that starts none, such as `get_state`), so a turn it heard of is this
    * session's own. A host whose startup seeds a turn of its own counts only a turn that arrives
    * after this call: in claude-envoy the bridge's seeding `/rename` is what writes the
    * transcript the boot waits for, so it is over before `claims/register` is even sent, and a
@@ -99,10 +100,10 @@ export interface LegionClaimBoot {
  *
  * The claim step is out of this function, and out of its one `try`, because a host awaits the
  * whole boot where no turn of its session can begin: pi-legion awaits it inside its
- * `session_start` handler, and Oh My Pi reads no input until every such handler has returned, so
- * a boot that waited there for a first turn would deadlock. `bootLegionClaim` settles once ready
- * has answered, with the claim still to come, and what it answers carries that step's own promise
- * ({@link LegionClaimBoot.claimed}).
+ * `session_start` handler, and Oh My Pi runs no RPC command that starts a turn until every such
+ * handler has returned, so a boot that waited there for a first turn would deadlock.
+ * `bootLegionClaim` settles once ready has answered, with the claim still to come, and what it
+ * answers carries that step's own promise ({@link LegionClaimBoot.claimed}).
  *
  * The ready carries no capability report. The session measures its capability rows later, on the
  * interval it runs while it is idle (`packages/pi-legion/src/capability-schedule.ts`).

@@ -186,9 +186,13 @@ func ghDirToken(dir string) (string, error) {
 // owner, so no lease of this bundle is that owner's own. The credential helper then reads whether
 // the repository is a fork of one the bundle serves (forkRepository, forkUpstreamDir) and answers
 // the token of the fork's parent's owner, else of its source's owner; every other repository of
-// such an owner gets nothing. The refusal is leakguard.OwnerNotServedError, which the leak guard
-// reads, exactly, in `legion gh`'s refusal of its REST visibility read: it then reads that
-// repository's visibility with no credential instead.
+// such an owner gets nothing. The refusal is a *leakguard.OwnerNotServedError, a type so that a
+// reader can tell that refusal of the owner a command names from every other. `legion gh` runs a
+// read of one public repository of such an owner all the same (liftForPublicRead), while a bundle
+// whose renames cannot be read, and a pair that moved the repository to such an owner, which wraps
+// this refusal of the pair's `to` owner (ghConfigDirFor), stay refused. The leak guard reads it,
+// exactly, in `legion gh`'s refusal of its REST visibility read: it then reads that repository's
+// visibility with no credential instead.
 func ownerGHConfigDir(ownersDir, owner string) (string, error) {
 	dir := ghconfig.Dir(ownersDir, owner)
 	if info, err := os.Stat(dir); err == nil && info.IsDir() {
