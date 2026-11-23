@@ -1207,7 +1207,8 @@ CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./interna
 
 def ceiling_run(job, workflow=""):
     """The go run pg-connection-ceiling.sh starts in `job`'s sizing step, in `workflow` when the
-    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml)."""
+    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml;
+    dispatch-two-builds-same's, in ci-job-dispatch-two-builds.yaml)."""
     return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP, workflow)}", ENVOY,
                       ["./internal/dispatch/store/cmd/connections"], mode="build")
 
@@ -3815,6 +3816,7 @@ GATES = [
                    + at(TWO_BUILDS_JOB, "Browser-test each build's page against the first-rollout build's server"),
                    ENVOY, ["./cmd/dispatch"], mode="build"),
         ceiling_run(TWO_BUILDS_JOB),
+        ceiling_run(TWO_BUILDS_SAME_JOB, job_file(TWO_BUILDS_JOB)),
     ], exact=[
         two_builds_go_step(),
         two_builds_same_step(),

@@ -62,10 +62,28 @@
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
 #      claimed line in the simple form (below) whose packages, -tags, -race or mode (test, vet,
-#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id,
-#      its needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps
-#      in the called file, which runs them inside the caller's own run, so the steps of every one
-#      of those files are read here and each refusal names the file the step is in,
+#      or build) are not exactly its Run's; and a run: step whose text names a script a Run's go
+#      command is in (its `source`: forced-order.sh, pg-connection-ceiling.sh, ...), that a filter
+#      gates, and that no Run of that script cites, with at() in its why, as a step that starts
+#      it, in a gate covering the step (one on its job, or one on that step). That citation is the
+#      table's word for which steps start the script, and rule 5 holds each to a step that is
+#      there; this holds every such step to one, so a step added beside the declared ones (a
+#      forced-order run on another nats-server) fails until a Run cites it, naming the file, the
+#      job, the step and the script. Which filters gate the step is read off the workflow, never
+#      off the table: the caller's if:, the called job's and the step's own, an input resolved
+#      through the caller's with:, so a gated step no gate covers fails too. A citation counts only
+#      as at() wrote it (`ci.yaml app "Build"` is not read inside a citation of
+#      `long+ci.yaml app "Build"`), and a job two callers run is gated under each by what that
+#      caller passes. A word of the
+#      step's text that is the script's path from the step's directory or the root, or the end of
+#      it after a `/`, names it; the text is not parsed, so a step that names the script only to
+#      chmod or lint it is held too, and a step that starts it through a variable or another
+#      script is not seen. A step no filter gates, or only EXCLUDED ones (lint's NATS-floor test,
+#      which runs on every change), is held to no filter here and needs no Run. A job that calls a
+#      reusable workflow keeps its id, its needs: changes and the whole if: that tests its filter
+#      in ci.yaml and holds its steps in the called file, which runs them inside the caller's own
+#      run, so the steps of every one of those files are read here and each refusal names the
+#      file the step is in,
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), a

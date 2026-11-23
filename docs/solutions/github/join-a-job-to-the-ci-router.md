@@ -314,6 +314,12 @@ fails the pull request that adds it.
   `Run` pinned to its text: `step_run` for a `run:` step of the job, `script_run` for a script the
   job runs, pinned to the script's whole line. The check fails when a job's `run:` step starts a
   go command (`go test`, `vet`, `build`, `run`, `list`, `install`, `generate`) nothing claims.
+  A `script_run`'s why cites, with `at()`, each step that starts the script, and the check holds
+  that list both ways: a cited step that is gone fails, and so does a `run:` step a filter gates
+  whose text names the script, unless a `script_run` of the script, in a gate on that job or that
+  step, cites it. So a new step that runs a declared script (another
+  `forced-order.sh -server <version>`) fails the check until a `Run` of the script in its gate
+  cites it.
   It reduces a claimed command only in its simple form: one line of `go test|vet|build`,
   relative package paths and only `-v`, `-race`, `-count=N`, `-timeout D`, `-buildvcs=false` and
   one `-tags T`, that is its step's whole `run:` script (split at `\n` alone, stripped of spaces

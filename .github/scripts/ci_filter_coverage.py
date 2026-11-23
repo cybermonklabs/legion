@@ -262,8 +262,27 @@ class TagRun:
 
 
 # Every workflow step a why cites through at(), checked to exist so a renamed step fails here.
-# Each entry is (the workflow file that holds the step, the job, the step).
+# Each entry is (the workflow file that holds the step, the job, the step). A why that cites a
+# step is also the table's word that the step starts the Run's script, which rule 4 reads back.
 CITED: list = []
+
+
+def citation(workflow: str, job: str, step: str) -> str:
+    """The text at() writes into a why for a step, and rule 4 looks for in a why again."""
+    return f'{os.path.basename(workflow)} {job} "{step}"'
+
+
+def cited_in(why: str, index: dict) -> set:
+    """The steps a why cites, given `index` ({citation() text: the CITED entries that make it}):
+    each entry whose text is in the why, unless that occurrence lies inside an occurrence of a
+    longer text of the index, which is the one at() wrote there. So `ci.yaml app "Build"` is not
+    read inside `long+ci.yaml app "Build"`: the longer citation was made by at() too, and only
+    at() makes one. The workflows are files of one directory, so a basename names one file."""
+    found = [(m.start(), m.start() + len(text), text) for text in index
+             for m in re.finditer(re.escape(text), why)]
+    kept = {text for start, end, text in found
+            if not any(s <= start and end <= e and e - s > end - start for s, e, _ in found)}
+    return set().union(*(index[text] for text in kept))
 
 
 def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
@@ -271,7 +290,7 @@ def at(job: str, step: str, workflow: str = WORKFLOW) -> str:
     `workflow` is the file that holds the job. It is ci.yaml, or a workflow ci.yaml calls: a job
     that calls a reusable workflow keeps its gate here and its steps there."""
     CITED.append((workflow, job, step))
-    return f'{os.path.basename(workflow)} {job} "{step}"'
+    return citation(workflow, job, step)
 
 
 # ---------------------------------------------------------------- the workflow documents
@@ -1088,6 +1107,31 @@ def script_lines(text: str) -> list:
     return [line for line in stripped if line and not line.startswith("#")]
 
 
+# A word of a run: line that can name a file: no space, quote, `$`, `=` or shell operator.
+PATH_WORD = re.compile(r"[\w.@+/-]+")
+
+
+def named_scripts(text: str, workdir: str, scripts) -> set:
+    """The scripts of `scripts` (repository paths) that a run: script names, comments aside: a
+    word that is a script's path from the step's directory, or from the repository root, or the
+    end of that path after a `/`, as `./build.sh` names scripts/build.sh from its own directory
+    after a cd. The text is never parsed: a word that names the script counts as a start of it,
+    whatever the command it is a word of."""
+    named = set()
+    for line in script_lines(text):
+        for word in PATH_WORD.findall(line):
+            here = os.path.normpath(os.path.join(workdir, word))
+            bare = os.path.normpath(word).lstrip("/")
+            named |= {s for s in scripts if s in (here, bare) or s.endswith("/" + bare)}
+    return named
+
+
+def gate_names(gates) -> str:
+    """`gate a on job x`, or `gates a on job x, b on job y step "s"`, in sorted order."""
+    names = sorted({f"{g.filter} on job {g.job}" + (f' step "{g.step}"' if g.step else "") for g in gates})
+    return ("gate " if len(names) == 1 else "gates ") + ", ".join(names)
+
+
 def odd_character(text: str) -> str | None:
     """The first character of text outside printable ASCII, tabs and newlines, which Python and
     bash may split, strip or read differently (a \\r, a NBSP); None when it holds none."""
@@ -1702,6 +1746,69 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
             if not steps or squash(r.text) not in text:
                 problems.append(error(".github/scripts/ci_job_reads.py", f"job {job_id} step \"{ref}\" no longer "
                                                                           f"runs `{r.text}`; update or remove the Run"))
+    # Rule 4's half for scripts. A Run whose go command is in a script (its `source`) names the
+    # steps that start the script by citing them in its why with at(), and those citations are the
+    # table's declaration (the loop over CITED below holds each to a step that is there). The
+    # other way round, a run: step that a filter gates and whose text names such a script must
+    # be one a Run of that script cites, in a gate that covers the step: its job's own, or one on
+    # that step. Otherwise the step runs go commands whose closure no filter that can skip it is
+    # held to, and adding a step that starts the script (a forced-order run on another
+    # nats-server) would pass with nothing declared. Which filters gate a step is read off the
+    # workflow, never off the table, and under the one caller that runs it: that caller's if:,
+    # then the called job's and the step's own with each input resolved through that caller's
+    # with:, so a job two callers run is gated under each by what that caller passes, and a gated
+    # step no gate covers is refused too. A step no filter gates (a job that runs on every
+    # change), or only EXCLUDED ones, is held to no filter here and needs none. A step that
+    # names the script only to chmod or lint it counts too, since which step starts a script is
+    # nothing this check can prove: that errs wide.
+    scripts = defaultdict(list)  # a script's path -> [(the gate, its Run of that script)]
+    for g in data.GATES:
+        for r in gate_runs(g):
+            if r.source:
+                scripts[r.source].append((g, r))
+    index = defaultdict(set)  # a citation() text -> the CITED entries that make it
+    for entry in CITED:
+        index[citation(*entry)].add(entry)
+    cited = {}  # a why -> the steps it cites
+    # No `skipped` here: it is keyed by the job and so merges the callers of a shared one. The
+    # EXCLUDED filters are taken out of each caller's own reading below instead.
+    for own, path, name_there, holder, job in units:
+        passed = inputs_of.get((path, own), {})
+        around = gated[(WORKFLOW, own)] | set(GATE_REF.findall(resolve_condition(str(job.get("if", "")), passed)))
+        for step in job.get("steps") or []:
+            if "run" not in step:
+                continue
+            named = named_scripts(str(step["run"]), step_workdir(holder, job, step), scripts)
+            if not named:
+                continue
+            own_if = set(GATE_REF.findall(resolve_condition(str(step.get("if", "")), passed)))
+            gating = (around | own_if) - {REF_OUTPUT} - set(excluded)
+            if not gating:
+                continue
+            over = [g for g in data.GATES if g.job == own and (not g.step or step_matches(step, g.step))]
+            this = {(p, j, ref) for p, j, ref in CITED if (p, j) == (path, name_there) and step_matches(step, ref)}
+            where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\""
+            for script in sorted(named):
+                declared = False
+                for g, r in scripts[script]:
+                    if g in over:
+                        if r.why not in cited:
+                            cited[r.why] = cited_in(r.why, index)
+                        declared = declared or bool(this & cited[r.why])
+                if declared:
+                    continue
+                if over:
+                    problems.append(error(path, f"{where} runs {script}, a script ci_job_reads.py lists go commands of, "
+                                                f"but no Run of it in {gate_names(over)}, which gates this step, cites "
+                                                f"the step, so no filter that can skip the step is held to what the "
+                                                f"script compiles there; add a Run of the script to that gate whose why "
+                                                f"cites the step with at()"))
+                else:
+                    problems.append(error(path, f"{where} runs {script}, a script ci_job_reads.py lists go commands of, "
+                                                f"and filter {', '.join(sorted(gating))} gates the step, but no gate of "
+                                                f"ci_job_reads.py covers it (a gate on job {own}, or one on this step), so "
+                                                f"that filter is held to nothing the script compiles there; add a gate "
+                                                f"on it with a Run of the script whose why cites the step with at()"))
     # A script's go command is held exact rather than reduced: the line holding the pinned text is
     # that text alone, uncontinued, and no env:, shell: or defaults.run.shell of the workflow, the
     # job or its steps, no container: and no environment write of the job can move it - over every
