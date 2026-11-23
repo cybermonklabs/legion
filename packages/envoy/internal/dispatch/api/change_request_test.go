@@ -36,12 +36,13 @@ const (
 
 // changeRequestNode is one entry of proposals or changed_checks.
 type changeRequestNode struct {
-	ID      string `json:"id"`
-	Kind    string `json:"kind"`
-	What    string `json:"what"`
-	Base    int    `json:"base"`
-	Current int    `json:"current"`
-	Block   string `json:"block"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	What     string `json:"what"`
+	Base     int    `json:"base"`
+	Current  int    `json:"current"`
+	Block    string `json:"block"`
+	Approved bool   `json:"approved"`
 }
 
 // outcomeJSON is one outcome in its JSON form.
@@ -68,16 +69,18 @@ type finalListRef struct {
 
 // changeRequestRead is GET /api/v1/issues/{key}/change-request's answer, as the contract writes it.
 type changeRequestRead struct {
-	Issue               string              `json:"issue"`
-	Version             int                 `json:"version"`
-	SpecSource          bool                `json:"spec_source"`
-	Repo                string              `json:"repo"`
-	VerificationVersion int                 `json:"verification_version"`
-	Proposes            bool                `json:"proposes"`
-	ChangesChecks       bool                `json:"changes_checks"`
-	Proposals           []changeRequestNode `json:"proposals"`
-	ChangedChecks       []changeRequestNode `json:"changed_checks"`
-	Problems            []struct {
+	Issue                   string              `json:"issue"`
+	Version                 int                 `json:"version"`
+	SpecSource              bool                `json:"spec_source"`
+	Repo                    string              `json:"repo"`
+	VerificationVersion     int                 `json:"verification_version"`
+	Proposes                bool                `json:"proposes"`
+	ChangesChecks           bool                `json:"changes_checks"`
+	ProposesUnapproved      bool                `json:"proposes_unapproved"`
+	ChangesChecksUnapproved bool                `json:"changes_checks_unapproved"`
+	Proposals               []changeRequestNode `json:"proposals"`
+	ChangedChecks           []changeRequestNode `json:"changed_checks"`
+	Problems                []struct {
 		Block  string `json:"block"`
 		Rule   string `json:"rule"`
 		Detail string `json:"detail"`
@@ -831,4 +834,65 @@ func TestAFinalListNeedsTheAuthorsListAtItsHead(t *testing.T) {
 	if final := recordOutcomes(t, rig, issue.Key, reviewerSession, pullRequest, headTwo, "final"); final.Head != headTwo {
 		t.Errorf("the final list reads the head %s, want %s", final.Head, headTwo)
 	}
+}
+
+// TestAChangedCheckWaitsUntilTheApprovedSpecHoldsItAsWritten (R25): a person's approval of a change
+// request covers each check it writes into the approved spec, and no other. A check of The Spec
+// that the Verification document changes waits for the person (changes_checks_unapproved, and the
+// ending's changes_checks_without_approval) until the approved spec holds it as the document
+// writes it. After the approval, the check reads stale and approved: an acceptance check added
+// beside it changes nothing. A second change of the approved check waits again, and an approval of
+// the Verification document alone, which writes nothing into the approved spec, does not release
+// it.
+func TestAChangedCheckWaitsUntilTheApprovedSpecHoldsItAsWritten(t *testing.T) {
+	rig := newSpecRig(t)
+	rig.seed(t)
+	conclusion := conclusionBlock("c-deploy-host", ` no_statement="true"`, "Evidence: The deploy job named the wrong host.")
+	issue := rig.issue(t, "A deploy fix that changes the payment check twice", specRepo, "Why the deploy changes.\n\n"+conclusion, paidOnceCheck("1"))
+	recordThreeLists(t, rig, issue.Key, "acme/app#51", headOne)
+	check := verificationAddress(t, rig, issue) + "#a-second-payment-is-refused"
+	waitsOnTheCheck := func(when string) {
+		t.Helper()
+		read, body := changeRequestOf(t, rig, issue.Key, "")
+		if !read.ChangesChecks || !read.ChangesChecksUnapproved || len(read.ChangedChecks) != 1 || read.ChangedChecks[0].Approved {
+			t.Errorf("%s: the change request reads %s; want the changed check unapproved", when, body)
+		}
+		if ending := endingOf(t, rig, issue.Key, headOne); ending.State != "waiting" ||
+			!reflect.DeepEqual(endingCodes(ending), []string{"changes_checks_without_approval"}) {
+			t.Errorf("%s: the ending reads %s %v, want waiting for changes_checks_without_approval", when, ending.State, endingCodes(ending))
+		}
+	}
+	approvedAsWritten := func(when string, verification int) {
+		t.Helper()
+		read, body := changeRequestOf(t, rig, issue.Key, "")
+		want := []changeRequestNode{{ID: "a-second-payment-is-refused", Kind: "check", What: "stale", Base: 1, Current: 2, Block: check, Approved: true}}
+		if read.VerificationVersion != verification || read.ChangesChecksUnapproved || read.ProposesUnapproved || !reflect.DeepEqual(read.ChangedChecks, want) {
+			t.Errorf("%s: the change request reads %s; want at Verification version %d the check %+v and nothing unapproved", when, body, verification, want)
+		}
+		if ending := endingOf(t, rig, issue.Key, headOne); ending.State != "ready" {
+			t.Errorf("%s: the ending reads %s %v, want ready", when, ending.State, endingCodes(ending))
+		}
+	}
+
+	editIssueDocument(t, rig.handler, issue.Key, "verification-md", []map[string]any{{"op": "replace",
+		"find": "Claim: A second payment of one order is refused.", "with": "Claim: A second payment of one order is refused at once."}})
+	waitsOnTheCheck("an edit of the approved check")
+
+	rig.approve(t, rig.request(t, issue, true))
+	approvedAsWritten("the person's approval of the spec with its Verification document", 2)
+
+	editIssueDocument(t, rig.handler, issue.Key, "verification-md", []map[string]any{{"op": "insert", "after": "end", "markdown": acceptanceCheckDocument}})
+	approvedAsWritten("an acceptance check added beside the approved check", 3)
+
+	editIssueDocument(t, rig.handler, issue.Key, "verification-md", []map[string]any{{"op": "delete", "block": "a-second-payment-is-refused"},
+		{"op": "insert", "after": "end", "markdown": paidOnceCheckClaiming("A second payment of one order is refused at once, and logged.", "2")}})
+	waitsOnTheCheck("a second change of the approved check")
+
+	var verificationID string
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select id from artifacts where issue_key = $1 and slug = 'verification-md'`, issue.Key).Scan(&verificationID); err != nil {
+		t.Fatalf("read the Verification document of %s: %v", issue.Key, err)
+	}
+	reviewDocument(t, rig.handler, verificationID, "alice", "approved", "")
+	waitsOnTheCheck("an approval of the Verification document alone")
 }

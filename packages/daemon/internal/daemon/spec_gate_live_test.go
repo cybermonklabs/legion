@@ -376,11 +376,13 @@ func (r *specGateRig) requireApproved(id string) {
 // gate is the design gate of key as GET /legion/v1/state shows it, read as raw JSON so that a
 // field the daemon does not write reads as absent.
 type specGateView struct {
-	ArtifactID      string `json:"artifactId"`
-	CurrentVersion  int    `json:"currentVersion"`
-	ApprovedVersion *int   `json:"approvedVersion"`
-	ExemptVersion   *int   `json:"exemptVersion"`
-	Rule            string `json:"rule"`
+	ArtifactID          string `json:"artifactId"`
+	CurrentVersion      int    `json:"currentVersion"`
+	ApprovedVersion     *int   `json:"approvedVersion"`
+	ExemptVersion       *int   `json:"exemptVersion"`
+	Rule                string `json:"rule"`
+	VerificationVersion int    `json:"verificationVersion"`
+	ChecksUnapproved    bool   `json:"checksUnapproved"`
 }
 
 func (r *specGateRig) gate(key string) (specGateView, string) {
@@ -1338,6 +1340,120 @@ func TestAVerificationEditOfAnApprovedCheckClosesTheGate(t *testing.T) {
 		t.Fatalf("the merger's queue actions are %v, want %v", merger.actions, want)
 	}
 	r.mergeAt(key, stepRecordsHead)
+}
+
+// specGateConcluded is a spec of these walks: text, then a conclusion that says no statement
+// applies, with its evidence.
+func specGateConcluded(text string) string {
+	return text + "\n\n" + specGateConclusion("c-concluded", ` no_statement="true"`, "Evidence: the test of the change passes after it, and fails before it.")
+}
+
+// TestAVerificationEditOfAnApprovedCheckClosesAPersonsApproval is R25 for a gate a person's
+// approval opened under the rule of a change request: the approval covers the checks the
+// Verification document held then. An edit of the Verification document alone that changes an
+// approved check closes the gate under the running merger, which is told and enqueues nothing,
+// though the person's approval is kept, and the ending waits for the person
+// (changes_checks_without_approval). The same edit of an acceptance check that names no statement
+// leaves the gate open, and its merger is told nothing. A gate of today's rule — a repository with no
+// spec source — is untouched by an edit of its Verification document (R24).
+func TestAVerificationEditOfAnApprovedCheckClosesAPersonsApproval(t *testing.T) {
+	proposing := specGateFixture{title: "Order numbers printed on invoices", repo: liveRepo, legion: true,
+		spec:   specGateConcluded(":::requirement{#an-invoice-names-its-order kind=\"behavior\"}\nAn invoice names its order.\n:::"),
+		checks: specGateCheckBlock("1", "A second charge of one order fails.")}
+	own := specGateFixture{title: "Footer typography tweak", repo: liveRepo, legion: true,
+		spec:   specGateConcluded(":::requirement{#an-invoice-prints-its-footer kind=\"behavior\"}\nAn invoice prints its footer.\n:::"),
+		checks: specGateOwnCheckBlock("The invoice footer reads the new words.")}
+	plain := specGateFixture{title: "Tools runner step logging", repo: "acme/tools", legion: true,
+		spec:   specGateConcluded("The runner of the tools repository logs each step."),
+		checks: specGateCheckBlock("1", "A second charge of one order fails.")}
+	r := newSpecGateRig(t, proposing, own, plain)
+	// Each waits for the person, who approves the spec with its Verification document; the root walks
+	// to merging, its three lists recorded at the head, and its merger runs and enqueues the head.
+	walk := func(fixture specGateFixture, rule string) (string, *specGateMerger) {
+		key := r.issues[fixture.title].key
+		if status, body := r.register(key, 1); status != http.StatusOK {
+			t.Fatalf("the registration of %q = %d %s, want 200", fixture.title, status, body)
+		}
+		r.approve(r.issues[fixture.title], r.session(key, claim.RoleArchitect), true)
+		var gate specGateView
+		testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, fmt.Sprintf("the gate of %q to open by the person's approval", fixture.title), func() bool {
+			gate, _ = r.gate(key)
+			return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.CurrentVersion
+		})
+		if gate.ExemptVersion != nil || gate.Rule != rule {
+			t.Fatalf("the gate of %q is %+v, want it opened by the person's approval alone under the rule %q", fixture.title, gate, rule)
+		}
+		r.walkToMerging(key)
+		r.recordOutcomes(key, r.session(key, claim.RoleImplementer), "author", stepRecordsHead)
+		reviewer := r.session(key, claim.RoleReviewer)
+		r.recordOutcomes(key, reviewer, "reviewer", stepRecordsHead)
+		r.recordOutcomes(key, reviewer, "final", stepRecordsHead)
+		r.awaitLaunch(r.tokenOf(key, claim.RoleMerger))
+		m := r.merger(key)
+		if !m.enqueue(stepRecordsHead) {
+			t.Fatalf("the merger of %q could not enqueue its head under the person's approval", fixture.title)
+		}
+		return key, m
+	}
+
+	// The approved check changes, and nothing else: the gate the person's approval opened closes
+	// under the running merger.
+	key, merger := walk(proposing, "change_request")
+	r.editVerification(key, deleteBlock(specGateCheck), insertAtEnd(specGateCheckBlock("1", "A second charge of one order fails within a day.")))
+	if read := r.changeRequest(key); read.VerificationVersion != 2 || !read.ChangesChecks {
+		t.Fatalf("the change request after an edit of the approved check reads %+v; want Verification version 2 and a changed check", read)
+	}
+	merger.waitMessages("closed", 1, "an edit of the approved check under the person's approval")
+	if closed := merger.messages("closed")[0]; !strings.Contains(closed, "Verification document") {
+		t.Fatalf("the closed-gate message is %q; want it to name the Verification document", closed)
+	}
+	if gate, stands := r.gate(key); gate.ApprovedVersion == nil || *gate.ApprovedVersion != gate.CurrentVersion || !gate.ChecksUnapproved ||
+		gate.VerificationVersion != 2 || stands != string(phase.Merging) {
+		t.Fatalf("the design gate of %s after the edit of its approved check is %+v in %s; want the approval kept, held by the changed check "+
+			"read at Verification version 2, in merging", key, gate, stands)
+	}
+	if merger.enqueue(stepRecordsHead) {
+		t.Fatalf("the merger enqueued %s after the closed-gate message of a changed approved check", key)
+	}
+	if want := []string{"enqueue " + stepRecordsHead, "dequeue " + stepRecordsHead}; !slices.Equal(merger.actions, want) {
+		t.Fatalf("the merger's queue actions are %v, want %v", merger.actions, want)
+	}
+	if codes := r.ending(key, stepRecordsHead).codes(); !slices.Equal(codes, []string{"changes_checks_without_approval"}) {
+		t.Fatalf("the ending after the edit of the approved check gives %v, want [changes_checks_without_approval]", codes)
+	}
+
+	// The acceptance check changes: no part of the change request, so the gate the person opened
+	// stands open once the daemon has read the edit, and its merger is told nothing.
+	ownKey, ownMerger := walk(own, "change_request")
+	r.editVerification(ownKey, deleteBlock(specGateOwnCheck), insertAtEnd(specGateOwnCheckBlock("The invoice footer reads the new words, in bold.")))
+	var ownGate specGateView
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the daemon to read the edit of the acceptance check", func() bool {
+		ownGate, _ = r.gate(ownKey)
+		return ownGate.VerificationVersion == 2
+	})
+	if ownGate.ApprovedVersion == nil || *ownGate.ApprovedVersion != ownGate.CurrentVersion || ownGate.ChecksUnapproved {
+		t.Fatalf("the design gate of %s after an edit of its acceptance check is %+v, want it open by the person's approval", ownKey, ownGate)
+	}
+	if closed := ownMerger.messages("closed"); len(closed) != 0 {
+		t.Fatalf("the merger of %s was told %q after an edit of its acceptance check; want nothing", ownKey, closed)
+	}
+	if !ownMerger.enqueue(stepRecordsHead) {
+		t.Fatalf("the merger of %s could not enqueue after an edit of its acceptance check", ownKey)
+	}
+
+	// A repository with no spec source keeps today's gate: the edit of its Verification document is
+	// no input of it. The spec's next version, applied after the edit, closes it as a version
+	// always has, and the one closed-gate message the merger gets is that version's.
+	plainKey, plainMerger := walk(plain, "approval")
+	r.editVerification(plainKey, deleteBlock(specGateCheck), insertAtEnd(specGateCheckBlock("1", "A second charge of one order fails within a day.")))
+	r.editSpec(plainKey, insertAtEnd("The runner names its log file.\n"))
+	plainMerger.waitMessages("closed", 1, "the next spec version of a repository with no spec source")
+	if closed := plainMerger.messages("closed")[0]; strings.Contains(closed, "Verification document") || !strings.Contains(closed, "of its spec document") {
+		t.Fatalf("the merger of %s was told %q; want the closed gate of its spec's version, not of its Verification document", plainKey, closed)
+	}
+	if gate, _ := r.gate(plainKey); gate.Rule != "approval" || gate.VerificationVersion != 0 || gate.ChecksUnapproved {
+		t.Fatalf("the design gate of %s is %+v, want today's gate, which reads no Verification document", plainKey, gate)
+	}
 }
 
 // specGateGitHub is GitHub's REST API as these walks' daemon reads it: every repository with
