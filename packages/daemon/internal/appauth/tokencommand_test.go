@@ -772,6 +772,43 @@ func TestTokenModeAppLoginRefusesATokenGitHubRefuses(t *testing.T) {
 	}
 }
 
+// A refusal under the release AppLogin kept is a refusal too: GitHub answers the first viewer read
+// 502, so AppLogin keeps the release it took (loginRelease), and then refuses the read under that
+// same release (401, 403). The second read uses the kept release, so the command runs once, and
+// its error is no TransientError, so the boot stops at once rather than wait the refused token out
+// across its attempts and read under it again. Found by Tester4958-2: the rows above use a fresh
+// release each, and a refusal made transient only for a kept release passed them all.
+func TestTokenModeAppLoginRefusesATokenGitHubRefusesUnderTheReleaseItKept(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		t.Run(fmt.Sprintf("viewer %d", status), func(t *testing.T) {
+			now := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+			broker := newFakeBroker(t, []string{"sjawhar"}, now.Add(time.Hour))
+			github := &fakeTokenGitHub{slug: "legion-reviewer", appID: "67890", viewerErr: http.StatusBadGateway}
+			var stderr bytes.Buffer
+			tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+			defer tokens.Close()
+			var transient *TransientError
+			if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+				t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
+			}
+			github.mu.Lock()
+			github.viewerErr = status
+			github.mu.Unlock()
+			_, err := tokens.AppLogin(context.Background(), Review)
+			if got := broker.runs(t); len(got) != 1 {
+				t.Fatalf("the command ran %d times (%q), want once: the read after the 502 did not use the release it kept", len(got), got)
+			}
+			want := fmt.Sprintf("read the review App's bot login (GraphQL viewer) failed (%d)", status)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("AppLogin under the kept release = %v, want the refusal %q", err, want)
+			}
+			if errors.As(err, &transient) {
+				t.Errorf("AppLogin under the kept release = %v, a TransientError: the boot would wait out the refused token and read under it again, want a refusal that stops the boot", err)
+			}
+		})
+	}
+}
+
 // InstalledOn in token mode reads the owner's installation's repositories: a repository it lists
 // is installed, one it does not list, or an owner with no installation, is not; GitHub's trouble is
 // transient. An installation token reads any public repository, so GET /repos/{owner}/{repo} could
