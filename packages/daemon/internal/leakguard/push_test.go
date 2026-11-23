@@ -434,9 +434,11 @@ func readCommits(t *testing.T, guard *Guard, req PushRequest) []string {
 // the push's own commit names nothing. Each row names the destination as a push can: by origin's
 // name, which is the control; by that URL; by the URL with a token in its userinfo; in git's scp
 // syntax for ssh; and in other capitals, which GitHub reads as the same repository. In each, the
-// push's own commit is the one commit read, and the push passes. The last row pushes to a URL of
-// a repository no remote names, whose tracking refs nobody has, so it reads every commit and is
-// refused over main's.
+// push's own commit is the one commit read, and the push passes. A second remote, local, names a
+// repository on this machine by a path that holds a space, and its main holds the same commits: a
+// push to that path holds local's refs and reads its own commit alone, as git prints the path on
+// one line. The last row pushes to a URL of a repository no remote names, whose tracking refs
+// nobody has, so it reads every commit and is refused over main's.
 func TestAPushToAURLReadsOnlyWhatTheRemoteWithThatURLDoesNotHold(t *testing.T) {
 	home, repo := t.TempDir(), filepath.Join(t.TempDir(), "repo")
 	fixture := fixturegit.Isolated(t, home)
@@ -471,6 +473,9 @@ func TestAPushToAURLReadsOnlyWhatTheRemoteWithThatURLDoesNotHold(t *testing.T) {
 	write(t, "work.md", "a line of the branch's own\n")
 	own := commit(t, "the branch's own commit")
 	const elsewhere = "https://github.com/invented-org/another-repo.git"
+	spaced := filepath.Join(t.TempDir(), "a destination.git")
+	fixture.Run(repo, "git", "remote", "add", "local", spaced)
+	fixture.Run(repo, "git", "update-ref", "refs/remotes/local/main", later)
 	// withToken is theURL with a token in its userinfo, built in pieces so that no line of this
 	// file holds a URL with a credential, which the shared public leak check refuses.
 	userinfo := "x-access-token:invented-token"
@@ -491,6 +496,7 @@ func TestAPushToAURLReadsOnlyWhatTheRemoteWithThatURLDoesNotHold(t *testing.T) {
 		{name: "a URL an insteadOf rewrites to the destination's", remote: "gh:" + theRepo, url: theURL},
 		{name: "the URL in git's scp syntax for ssh", remote: "git@github.com:" + theRepo + ".git", url: "git@github.com:" + theRepo + ".git"},
 		{name: "the URL in other capitals", remote: "https://github.com/Invented-Org/Invented-Repo.git", url: "https://github.com/Invented-Org/Invented-Repo.git"},
+		{name: "a local path holding a space, which local names", remote: spaced, url: spaced},
 		{
 			name: "a URL no remote names", remote: elsewhere, url: elsewhere,
 			reads: []string{short(first), short(named), short(later), short(own)}, refused: true,
@@ -584,13 +590,64 @@ func TestAPushReadsACommitOnlyAnotherRemoteHolds(t *testing.T) {
 	}
 }
 
+// A remote whose URL only looks like the destination's is not held for a push to the destination.
+// git and curl end a URL's authority at the first "/", "?" or "#", so each URL here reaches
+// example.invalid, though GitHub's host and the destination's names stand after an "@" in its
+// query or its fragment. A remote, look, has such a URL, and its main holds a commit of the other
+// host whose author a rule refuses; the push's branch is built on it. A push to the destination's
+// URL reads that commit, and the report names it.
+func TestAPushHoldsNoRemoteWhoseURLOnlyLooksLikeTheDestinations(t *testing.T) {
+	for _, url := range []string{
+		"https://example.invalid?@github.com/" + theRepo + ".git",
+		"https://example.invalid#@github.com/" + theRepo + ".git",
+		"http://example.invalid?x=@github.com/" + theRepo + ".git",
+	} {
+		t.Run(url, func(t *testing.T) {
+			home, repo := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+			fixture := fixturegit.Isolated(t, home)
+			fixture.Run(filepath.Dir(repo), fixturegit.InitWorkTree(repo, "main")...)
+			commit := func(t *testing.T, name, message string, env ...string) string {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, name), []byte(message+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				fixture.Run(repo, "git", "add", "-A")
+				fixture.With(env...).Run(repo, "git", "commit", "--quiet", "-m", message)
+				return fixture.Run(repo, "git", "rev-parse", "HEAD")
+			}
+			base := commit(t, "README.md", "the first main commit")
+			fixture.Run(repo, "git", "remote", "add", "origin", theURL)
+			fixture.Run(repo, "git", "update-ref", "refs/remotes/origin/main", base)
+			elsewhere := commit(t, "side.md", "a commit of the other host", "GIT_AUTHOR_EMAIL=builder@"+theHost)
+			fixture.Run(repo, "git", "remote", "add", "look", url)
+			fixture.Run(repo, "git", "update-ref", "refs/remotes/look/main", elsewhere)
+			own := commit(t, "work.md", "the branch's own commit")
+
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), PushRequest{
+				Dir:     repo,
+				Remote:  theURL,
+				URL:     theURL,
+				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: own, RemoteRef: "refs/heads/work", RemoteSHA: noSHA}},
+			})
+			want := []string{"commit " + short(elsewhere) + " author: " + theClass}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, want)
+			}
+		})
+	}
+}
+
 // A ref another remote files among the destination's remote's tracking refs is not one the
-// destination holds. `--remotes=origin` takes every ref under refs/remotes/origin/, and two
+// destination holds. `--remotes=origin` takes every ref under refs/remotes/origin/, and three
 // ordinary configurations file another repository's commits there, each with a real fetch: a
-// remote named origin/private, whose refs git files under refs/remotes/origin/private/, and a
-// remote whose fetch refspec names a ref there (remote.mirror.fetch). In each, a commit of the
-// other repository whose author a rule refuses is read, whether the push names origin or its URL,
-// and the report names it.
+// remote named origin/private, whose refs git files under refs/remotes/origin/private/; a remote
+// whose fetch refspec names a ref there (remote.mirror.fetch); and a remote that a legacy
+// .git/remotes/legacy file defines, whose Pull line names a ref there, which `git fetch` reads
+// although no configuration shows it. In each, a commit of the other repository whose author a
+// rule refuses is read, whether the push names origin or its URL, and the report names it. A git
+// built without the legacy file (git's WITH_BREAKING_CHANGES) fetches nothing from it, and the
+// third row is skipped there, naming that git.
 //
 // The other remote is written to the configuration as `git remote add` writes it, its URL and its
 // fetch refspec, rather than added with that command: from git 2.51, `git remote add` refuses a
@@ -603,6 +660,9 @@ func TestAPushReadsACommitAnotherRemoteFiledAmongTheDestinations(t *testing.T) {
 		// remote is the other remote's name, and refspec its fetch refspec, git's default for that
 		// name where it is empty.
 		remote, refspec string
+		// remotesFile is whether the remote is defined by a .git/remotes file rather than by the
+		// configuration.
+		remotesFile bool
 		// filed is the ref the fetch files the other repository's main at.
 		filed string
 	}{
@@ -610,6 +670,10 @@ func TestAPushReadsACommitAnotherRemoteFiledAmongTheDestinations(t *testing.T) {
 		{
 			name: "a remote whose refspec names a ref among origin's", remote: "mirror",
 			refspec: "+refs/heads/main:refs/remotes/origin/topic", filed: "refs/remotes/origin/topic",
+		},
+		{
+			name: "a .git/remotes file whose Pull line names a ref among origin's", remote: "legacy", remotesFile: true,
+			refspec: "+refs/heads/main:refs/remotes/origin/legacy", filed: "refs/remotes/origin/legacy",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -634,9 +698,23 @@ func TestAPushReadsACommitAnotherRemoteFiledAmongTheDestinations(t *testing.T) {
 			elsewhere := commit(t, "side.md", "a commit of another repository", "GIT_AUTHOR_EMAIL=builder@"+theHost)
 			fixture.Run(another, "git", "fetch", "--quiet", repo, "side:main")
 			refspec := cmp.Or(tc.refspec, "+refs/heads/*:refs/remotes/"+tc.remote+"/*")
-			fixture.Run(repo, "git", "config", "remote."+tc.remote+".url", another)
-			fixture.Run(repo, "git", "config", "remote."+tc.remote+".fetch", refspec)
-			fixture.Run(repo, "git", "fetch", "--quiet", tc.remote)
+			if tc.remotesFile {
+				remotes := filepath.Join(repo, ".git", "remotes")
+				if err := os.MkdirAll(remotes, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				file := "URL: " + another + "\nPull: " + refspec + "\n"
+				if err := os.WriteFile(filepath.Join(remotes, tc.remote), []byte(file), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if out, err := fixture.Try(repo, "git", "fetch", "--quiet", tc.remote); err != nil {
+					t.Skipf("%s fetches nothing from a .git/remotes file: %s", fixture.Run(repo, "git", "version"), out)
+				}
+			} else {
+				fixture.Run(repo, "git", "config", "remote."+tc.remote+".url", another)
+				fixture.Run(repo, "git", "config", "remote."+tc.remote+".fetch", refspec)
+				fixture.Run(repo, "git", "fetch", "--quiet", tc.remote)
+			}
 			if filed := fixture.Run(repo, "git", "rev-parse", tc.filed); filed != elsewhere {
 				t.Fatalf("%s is %s after the fetch from %s, want %s", tc.filed, filed, tc.remote, elsewhere)
 			}
@@ -708,6 +786,11 @@ func TestAPushReadsWhatItsRemoteFetchedFromAnotherRepository(t *testing.T) {
 // on origin/main alone, from the same clone, reads its own commit and passes, so a shallow clone
 // pushes as before; and once `git fetch --unshallow origin` has run, the merge's push reads the
 // base's commits, the merge and its own commit, none of main's, and passes.
+//
+// The fetch the refusal names is from the push's own destination: the remote a push names, even
+// one whose refs the guard does not hold (here because a remote named origin/extra can file refs
+// among origin's), and for a push to a URL, that URL with its userinfo removed, so a token in it
+// is not printed. The failure's own error is read, beneath the redaction a refusal's text gets.
 func TestAPushPastAShallowBoundaryIsRefusedNamingTheFetch(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	remote, seed, clone := filepath.Join(root, "remote.git"), filepath.Join(root, "seed"), filepath.Join(root, "clone")
@@ -786,6 +869,26 @@ func TestAPushPastAShallowBoundaryIsRefusedNamingTheFetch(t *testing.T) {
 			t.Errorf("the setup failure %q does not say %q", failed.Error(), want)
 		}
 	}
+
+	fixture.Run(clone, "git", "config", "remote.origin/extra.url", "file://"+remote)
+	fixture.Run(clone, "git", "config", "remote.origin/extra.fetch", "+refs/heads/*:refs/remotes/origin/extra/*")
+	userinfo := "x-access-token:invented-token"
+	withToken := "https://" + userinfo + "@github.com/" + theRepo + ".git"
+	for _, tc := range []struct{ name, remote, url, fetch string }{
+		{name: "a push to origin, which the guard does not hold", remote: "origin", url: "file://" + remote, fetch: "origin"},
+		{name: "a push to a URL with a token in its userinfo", remote: withToken, url: withToken, fetch: theURL},
+	} {
+		req := request("refs/heads/work", own)
+		req.Remote, req.URL = tc.remote, tc.url
+		said := setupFailure(t, guard.Push(bound(t), req)).Err.Error()
+		if want := "`git fetch --unshallow " + tc.fetch + "`"; !strings.Contains(said, want) {
+			t.Errorf("%s: the failure %q does not say %q", tc.name, said, want)
+		}
+		if strings.Contains(said, userinfo) {
+			t.Errorf("%s: the failure %q holds the URL's userinfo", tc.name, said)
+		}
+	}
+	fixture.Run(clone, "git", "config", "--remove-section", "remote.origin/extra")
 
 	fixture.Run(clone, "git", "fetch", "--quiet", "--unshallow", "origin")
 	read := readCommits(t, guard, request("refs/heads/work", own))

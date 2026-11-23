@@ -4,11 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -162,6 +167,10 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 	read := map[string]bool{}
 	var held []string
 	heldRead := false
+	// from is what the refusal of a shallow push names to fetch from: the remote the push names,
+	// or for a push to a URL, that URL with its userinfo and its query removed, since a token in
+	// either is not to be printed.
+	from := ""
 	for _, update := range req.Updates {
 		if ref := update.ref(); ref != "" {
 			records = append(records, RefRecord(ref))
@@ -170,13 +179,18 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 			continue
 		}
 		if !heldRead {
+			var named bool
 			var err error
-			if held, err = g.heldRemotes(ctx, req); err != nil {
+			if held, named, err = g.heldRemotes(ctx, req); err != nil {
 				return nil, err
+			}
+			from = redact.URLCredentials(req.URL)
+			if named {
+				from = req.Remote
 			}
 			heldRead = true
 		}
-		commits, err := g.commits(ctx, req.Dir, held, update)
+		commits, err := g.commits(ctx, req.Dir, held, from, update)
 		if err != nil {
 			return nil, err
 		}
@@ -199,54 +213,65 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 // each remote whose every URL, fetch and push, names the repository the push's URL names
 // (sameRepository), so that its tracking refs hold what the destination has, and among whose
 // refs no other remote's fetch can file one (filedByAnother). Where the push names a remote of the
-// repository, that remote is the only one it can hold. git hands a pre-push hook the URL where
-// the remote's name goes for a push to a URL (`git push <url>`), and no tracking ref is filed
-// under a URL, so such a push can hold any remote. The URLs on both sides are git's own, after
-// its insteadOf rewriting. A push that holds no remote has every commit read that the
-// destination's ref does not reach: a remote that is not shown to be the destination says nothing
-// of what it holds. The URLs read are the current ones, so refs a remote fetched before a
-// `git remote set-url` to another repository are held, as `--remotes=<name>` held them before.
+// repository, which named answers, that remote is the only one it can hold. git hands a pre-push
+// hook the URL where the remote's name goes for a push to a URL (`git push <url>`), and no
+// tracking ref is filed under a URL, so such a push can hold any remote. The URLs on both sides
+// are git's own, after its insteadOf rewriting. A push that holds no remote has every commit read
+// that the destination's ref does not reach: a remote that is not shown to be the destination
+// says nothing of what it holds.
 //
-// The URLs are read with `git remote get-url`, which prints a URL and nothing else, and not from
-// `git remote -v`, which writes a blobless clone's filter after its fetch URL. The refspecs are
-// read from `git config -z --list`, which, unlike a `--get-regexp` that matches nothing, exits 0
-// whatever the configuration holds.
-func (g *Guard) heldRemotes(ctx context.Context, req PushRequest) ([]string, error) {
+// What is read is the repository as it is now, so two kinds of ref are held as a remote's
+// although its repository need not hold them, as `--remotes=<name>` held them before: refs the
+// remote fetched before a `git remote set-url` to another repository, and refs under
+// refs/remotes/<name>/ that no configuration files there, which a fetch given a refspec on its
+// command line (`git fetch <url> <src>:refs/remotes/<name>/<ref>`) and `git update-ref` write.
+//
+// The URLs are read with `git remote get-url`, which prints one URL a line and nothing else, and
+// not from `git remote -v`, which writes a blobless clone's filter after its fetch URL. The
+// refspecs are read from `git config -z --list`, which, unlike a `--get-regexp` that matches
+// nothing, exits 0 whatever the configuration holds, and from the legacy files under
+// .git/remotes (legacyFetchDestinations).
+func (g *Guard) heldRemotes(ctx context.Context, req PushRequest) (held []string, named bool, err error) {
 	out, err := g.git(ctx, req.Dir, "remote")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// One name a line; a remote's name holds no space, since git refuses a remote whose tracking
 	// refs would have an invalid name.
 	names := strings.Fields(out)
 	candidates := names
-	if slices.Contains(names, req.Remote) {
+	if named = slices.Contains(names, req.Remote); named {
 		candidates = []string{req.Remote}
 	}
 	config, err := g.git(ctx, req.Dir, "config", "-z", "--list")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	files := fetchDestinations(config)
-	elsewhere := func(url string) bool { return !sameRepository(url, req.URL) }
-	var held []string
+	if err := g.legacyFetchDestinations(ctx, req.Dir, files); err != nil {
+		return nil, false, err
+	}
+	elsewhere := func(url string) bool { return url != "" && !sameRepository(url, req.URL) }
 	for _, name := range candidates {
 		if filedByAnother(name, files) {
 			continue
 		}
 		fetch, err := g.git(ctx, req.Dir, "remote", "get-url", "--all", "--", name)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		push, err := g.git(ctx, req.Dir, "remote", "get-url", "--push", "--all", "--", name)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		if urls := strings.Fields(fetch + push); len(urls) > 0 && !slices.ContainsFunc(urls, elsewhere) {
+		// A URL can hold a space (a path on this machine), so the URLs are split on the lines git
+		// prints them on, and the empty string after the last line is no URL.
+		urls := strings.Split(fetch+push, "\n")
+		if strings.TrimSpace(fetch+push) != "" && !slices.ContainsFunc(urls, elsewhere) {
 			held = append(held, name)
 		}
 	}
-	return held, nil
+	return held, named, nil
 }
 
 // sameRepository is whether two URLs git reaches name one repository: the same repository on
@@ -261,8 +286,7 @@ func sameRepository(a, b string) bool {
 }
 
 // fetchDestinations are, for each remote, the refs its fetch refspecs (remote.<name>.fetch) file
-// what it fetches at, read from `git config -z --list`: each refspec's destination, a pattern
-// where it holds a "*". A refspec with no destination, and a negative one, files no ref.
+// what it fetches at, read from `git config -z --list` (fetchDestination).
 func fetchDestinations(config string) map[string][]string {
 	files := map[string][]string{}
 	for entry := range strings.SplitSeq(config, "\x00") {
@@ -271,14 +295,66 @@ func fetchDestinations(config string) map[string][]string {
 		if !ok {
 			continue
 		}
-		if name, ok = strings.CutSuffix(name, ".fetch"); !ok || strings.HasPrefix(refspec, "^") {
+		if name, ok = strings.CutSuffix(name, ".fetch"); !ok {
 			continue
 		}
-		if _, destination, ok := strings.Cut(strings.TrimPrefix(refspec, "+"), ":"); ok && destination != "" {
+		if destination, ok := fetchDestination(refspec); ok {
 			files[name] = append(files[name], destination)
 		}
 	}
 	return files
+}
+
+// legacyFetchDestinations adds to files the destinations of the fetch refspecs in the legacy
+// remote files, .git/remotes/<name>, which `git fetch <name>` still reads where the configuration
+// gives the remote no URL (git's read_remotes_file, which builds without WITH_BREAKING_CHANGES
+// keep), although `git remote` does not list such a remote. A fetch refspec is a line that begins
+// "Pull:", after the white space around it. Every file is read, whether or not the configuration
+// also names its remote: a refspec counted that git would not use only keeps a remote unheld. The
+// directory is the one git reads, under the common directory a linked worktree shares; where it
+// is not there, there is no file.
+func (g *Guard) legacyFetchDestinations(ctx context.Context, dir string, files map[string][]string) error {
+	path, err := g.git(ctx, dir, "rev-parse", "--path-format=absolute", "--git-path", "remotes")
+	if err != nil {
+		return err
+	}
+	remotes := strings.TrimSuffix(path, "\n")
+	entries, err := os.ReadDir(remotes)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(remotes, entry.Name()))
+		if err != nil {
+			return err
+		}
+		for line := range strings.Lines(string(content)) {
+			refspec, ok := strings.CutPrefix(strings.TrimRightFunc(line, unicode.IsSpace), "Pull:")
+			if !ok {
+				continue
+			}
+			if destination, ok := fetchDestination(strings.TrimLeftFunc(refspec, unicode.IsSpace)); ok {
+				files[entry.Name()] = append(files[entry.Name()], destination)
+			}
+		}
+	}
+	return nil
+}
+
+// fetchDestination is the ref a fetch refspec files what it fetches at: its destination, a
+// pattern where it holds a "*". A refspec with no destination, and a negative one, files no ref.
+func fetchDestination(refspec string) (string, bool) {
+	if strings.HasPrefix(refspec, "^") {
+		return "", false
+	}
+	_, destination, ok := strings.Cut(strings.TrimPrefix(refspec, "+"), ":")
+	return destination, ok && destination != ""
 }
 
 // filedByAnother is whether a remote other than name has a fetch refspec that can file a ref under
@@ -316,7 +392,7 @@ func filedByAnother(name string, files map[string][]string) bool {
 // push's own: a scan of history the destination has published, refused over a commit it already
 // holds. A commit of the push with parents the repository does not hold is therefore refused
 // rather than read (shallowFloor).
-func (g *Guard) commits(ctx context.Context, dir string, held []string, update Update) ([]string, error) {
+func (g *Guard) commits(ctx context.Context, dir string, held []string, from string, update Update) ([]string, error) {
 	// --parents writes each commit's parents after it, as the repository holds them: none for a
 	// root commit, and none for a shallow one.
 	argv := []string{"rev-list", "--reverse", "--parents", update.LocalSHA, "--not"}
@@ -341,7 +417,7 @@ func (g *Guard) commits(ctx context.Context, dir string, held []string, update U
 			continue
 		}
 		if len(fields) == 1 {
-			if err := g.shallowFloor(ctx, dir, fields[0], held); err != nil {
+			if err := g.shallowFloor(ctx, dir, fields[0], from); err != nil {
 				return nil, err
 			}
 		}
@@ -352,9 +428,9 @@ func (g *Guard) commits(ctx context.Context, dir string, held []string, update U
 
 // shallowFloor is an error where commit, which the repository holds no parent of, is a shallow
 // commit rather than a root commit: its own object names parents, which a fetch with a depth left
-// out. The error names the commit and the fetch that brings its parents in, from the remote the
-// push holds commits of, or the repository's default one where it holds none.
-func (g *Guard) shallowFloor(ctx context.Context, dir, commit string, held []string) error {
+// out. The error names the commit and the fetch that brings its parents in from the push's own
+// destination, from (pushRecords), and the default remote's fetch where from is empty.
+func (g *Guard) shallowFloor(ctx context.Context, dir, commit, from string) error {
 	object, err := g.git(ctx, dir, "cat-file", "commit", commit)
 	if err != nil {
 		return err
@@ -363,10 +439,7 @@ func (g *Guard) shallowFloor(ctx context.Context, dir, commit string, held []str
 	if !strings.HasPrefix(header, "parent ") && !strings.Contains(header, "\nparent ") {
 		return nil
 	}
-	fetch := "git fetch --unshallow"
-	if len(held) > 0 {
-		fetch += " " + held[0]
-	}
+	fetch := strings.TrimSpace("git fetch --unshallow " + from)
 	return fmt.Errorf("commit %s is a shallow commit of this repository, which holds none of its parents, so which of the commits beneath it the destination holds cannot be read; `%s` fetches them, and the push can then be made again", short(commit), fetch)
 }
 

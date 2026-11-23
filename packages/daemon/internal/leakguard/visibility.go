@@ -888,17 +888,20 @@ func RepoFromURL(url string) string {
 
 // afterHost is what a remote URL holds after github.com, in the three shapes a remote is written
 // in: a URL with a scheme (https://github.com/owner/name), scp syntax (git@github.com:owner/name)
-// and the same two with a user in front. The host is read from the URL's authority alone, the part
-// before the first "/" after the scheme, and only for one of git's network schemes (gitSchemes);
-// scp syntax is read only where its ":" comes before any "/", which is how git tells it from a
-// local path. So a path that holds "@github.com", on another host or on this machine, names no
-// host here.
+// and the same two with a user in front. The host is read from the URL's authority alone, and
+// only for one of git's network schemes (gitSchemes). The authority ends at the first "/", "?" or
+// "#" after the scheme, as git's credential code (`strcspn(cp, "/?#")`) and curl end it, and a
+// URL whose authority ends at a "?" or a "#" names no repository path here. scp syntax is read
+// only where its ":" comes before any "/", which is how git tells it from a local path. So a
+// path, a query or a fragment that holds "@github.com", on another host or on this machine, names
+// no host here.
 func afterHost(url string) (string, bool) {
 	if scheme, rest, ok := strings.Cut(url, "://"); ok {
-		authority, path, ok := strings.Cut(rest, "/")
-		if !ok || !gitSchemes[strings.ToLower(scheme)] {
+		end := strings.IndexAny(rest, "/?#")
+		if end < 0 || rest[end] != '/' || !gitSchemes[strings.ToLower(scheme)] {
 			return "", false
 		}
+		authority, path := rest[:end], rest[end+1:]
 		if at := strings.LastIndex(authority, "@"); at >= 0 {
 			authority = authority[at+1:]
 		}
