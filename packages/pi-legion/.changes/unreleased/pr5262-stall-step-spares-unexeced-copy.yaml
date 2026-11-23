@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The stall watch's first step no longer ends another tool call's process that the agent has
+  forked and not yet exec'd: such a child reads as a copy of the agent, with the agent's command
+  line and no call's name, and the step leaves it alone. A child with the agent's command line
+  that names the stuck call is still ended as that call's. The step also reads each process's
+  command line and environment within one exec, so a child that execs while it is read is not
+  taken for a process of no call.
+time: 2026-11-23T21:11:16Z
+custom:
+    Issue: pr5262
