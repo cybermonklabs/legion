@@ -349,6 +349,73 @@ func (p *Pool) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, erro
 	return &storeTx{Tx: tx, release: heldRelease(ctx)}, nil
 }
 
+// beginOnAcquired is BeginTx in two steps, for a bounded transaction (BoundAfterAcquire): it waits
+// in the pool's queue for a connection under acquiring, and begins on it under the context held
+// answers, which held makes at the moment the first connection is handed out and the caller runs
+// the rest of the transaction on. So the BEGIN is bounded by the write bound and not by the wait
+// in the queue. pgxpool.BeginTx runs both on one context (pgx v5.13.0 pgxpool/pool.go:867-873),
+// which gave a stalled BEGIN the whole acquire bound.
+//
+// A bounded acquire is not pinged (PoolConfig's ShouldPing): its BEGIN is the check, under the
+// write bound. A BEGIN that fails before anything reached the server (pgconn.SafeToRetry: a
+// connection the server had closed while it sat in the pool) is tried again on another connection,
+// as pgxpool's own ping would have given the caller one, at most the pool's size and one more
+// times, while held's context lasts. The transaction gives its connection back as it ends
+// (connTx), and clears the caller's hold mark as BeginTx's does.
+func (p *Pool) beginOnAcquired(acquiring context.Context, held func() context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	if err := p.guard(acquiring); err != nil {
+		return nil, err
+	}
+	var writing context.Context
+	for range int(p.pool.Config().MaxConns) + 1 {
+		conn, err := p.pool.Acquire(acquiring)
+		if err != nil {
+			return nil, err
+		}
+		if writing == nil {
+			writing = held()
+		}
+		tx, err := conn.BeginTx(writing, options)
+		if err == nil {
+			return &storeTx{Tx: &connTx{Tx: tx, conn: conn}, release: heldRelease(acquiring)}, nil
+		}
+		// A connection whose BEGIN failed is closed, and pgxpool destroys a closed connection it
+		// is given back rather than pooling it.
+		conn.Release()
+		if !pgconn.SafeToRetry(err) || writing.Err() != nil {
+			return nil, err
+		}
+	}
+	return nil, errors.New("store: every connection the pool handed out failed its BEGIN before the server read it")
+}
+
+// connTx is a transaction begun on a connection the pool handed out apart from it
+// (beginOnAcquired). It gives the connection back as the transaction ends, once, as pgxpool's own
+// transaction does (pgxpool.Tx): a commit and the rollback deferred after it give it back once.
+type connTx struct {
+	pgx.Tx
+	conn *pgxpool.Conn
+}
+
+func (t *connTx) Commit(ctx context.Context) error {
+	err := t.Tx.Commit(ctx)
+	t.giveBack()
+	return err
+}
+
+func (t *connTx) Rollback(ctx context.Context) error {
+	err := t.Tx.Rollback(ctx)
+	t.giveBack()
+	return err
+}
+
+func (t *connTx) giveBack() {
+	if t.conn != nil {
+		t.conn.Release()
+		t.conn = nil
+	}
+}
+
 // storeTx is every transaction the pool hands out, and every savepoint opened inside one. Its
 // Exec, Query and QueryRow, and each query a SendBatch sends, pass their arguments through the
 // argument rule (storableArgs). A savepoint its Begin opens is a storeTx too. CopyFrom needs no

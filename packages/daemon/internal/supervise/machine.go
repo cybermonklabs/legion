@@ -924,15 +924,13 @@ type Timeouts struct {
 	// ClaimWrite bounds each claim and delivery write a decision makes while it holds the machine's
 	// lock, so a database that has stopped answering cannot hold that lock for as long as the
 	// connection's own patience: every other event for the claim queues behind the decision in
-	// flight, and a machine whose lock is held through an outage decides nothing at all. It counts
-	// from the moment the write holds a connection of the store (Deps.BoundWrite): the wait for
-	// the connection is ClaimAcquire's. No setting names either, because each answers a question
-	// about the write rather than about a deployment, and only the daemon's tests set them.
-	// Zero takes defaultClaimWrite.
+	// flight, and a machine whose lock is held through an outage decides nothing at all. Through
+	// the daemon's store (Deps.BoundWrite) it counts from the moment the pool hands the write a
+	// connection, its BEGIN included, and the dial of a new connection is bounded by it too
+	// (store.PoolConfig); the wait in the pool's queue before that is defaultClaimAcquire's. No
+	// setting names it, because it answers a question about the write rather than about a
+	// deployment, and only tests set it. Zero takes DefaultClaimWrite.
 	ClaimWrite time.Duration
-	// ClaimAcquire bounds the wait of each of those writes for a connection of the store, before
-	// ClaimWrite's count begins. Zero takes defaultClaimAcquire.
-	ClaimAcquire time.Duration
 }
 
 // Deps is what a machine is built from.
@@ -1149,7 +1147,7 @@ type Deps struct {
 	// PauseStopped is the stop transaction (decision 6): the claim write a suspension a project
 	// pause asked for (RequestSuspend.Pause) ends in, in place of the plain write, together with
 	// the pause's records, in one store transaction under the claim-write deadline
-	// (Timeouts.ClaimWrite, defaultClaimWrite), which the machine applies to the context it hands.
+	// (Timeouts.ClaimWrite, DefaultClaimWrite), which the machine applies to the context it hands.
 	//
 	// c is the claim as the plain write would write it, normalized (NormalizeClaim). Where
 	// c.Pending is nil the plain write is the claim alone (Store.PutClaim); where it is not, the
@@ -1231,49 +1229,44 @@ func (d Deps) check() error {
 	return nil
 }
 
-// defaultClaimWrite is the claim-write bound a Deps that names none takes, which in production is
+// DefaultClaimWrite is the claim-write bound a Deps that names none takes, which in production is
 // every one of them. Five seconds is chosen for what such a write is: one claim row, and at most
 // one delivery row beside it, written to a Postgres on this cluster, which a healthy database
 // answers in single-digit milliseconds. Five seconds is therefore hundreds of times a healthy
 // write — so no write that was going to land is ever cut short by it — and still a small fraction
-// of any outage worth the name, so a database that has stopped answering holds the machine's lock
-// for five seconds rather than for the length of the outage. The write it does cut short is not
-// lost: a bare context deadline is a write the server never answered, which writeOwed owes, so
-// the claim write is marked and made again at the claim's next decision (owes, repair).
+// of any outage worth the name. A database that stops answering holds the machine's lock for
+// about this long per bounded call: the write's dial, its BEGIN and its statements all run under
+// it (store.BoundAfterAcquire, store.PoolConfig). The write it cuts short is not lost: a bare
+// context deadline is a write the server never answered, which writeOwed owes, so the claim write
+// is marked and made again at the claim's next decision (owes, repair). The store bounds a
+// connection's dial and health ping by it as well (store.PoolConfig).
 //
-// It counts the write and not the wait for a connection (Deps.BoundWrite). Counted from before
+// It counts the write and not the wait in the pool's queue (Deps.BoundWrite). Counted from before
 // that wait, it was the queue's bound too: a boot relaunches every unfinished claim at once, each
 // on a goroutine of its own, through a pool of max(4, CPUs) connections, so the last of forty
 // writes waited out thirty-odd writes before its own, and on a loaded node four of forty such
 // writes passed five seconds with almost all of their time in that wait (internal/daemon's
 // TestWithNoPacingTheBootWaveGoesOutInOneTick, and a measurement of its writes: acquire about 90%
 // of each write's time). Each such launch was cut, owed, and tried again only at the next probe.
-const defaultClaimWrite = 5 * time.Second
+const DefaultClaimWrite = 5 * time.Second
 
-// defaultClaimAcquire is the wait for a connection a Deps that names none takes. Every write
-// that holds a connection gives it back within its own bound, so the pool turns over within
-// defaultClaimWrite even while the database answers nothing, and thirty seconds is a queue six
-// times that deep, against healthy writes of milliseconds: no write that would land waits it out.
-// What it does end is a wait for a pool that cannot give a connection at all — a database that
-// has stopped answering, whose connections the pool cannot replace — and it is the probe
-// interval's default, the cadence at which such an owed write is made again in any case.
+// defaultClaimAcquire bounds a bounded write's wait in the store's pool queue (Deps.BoundWrite),
+// before DefaultClaimWrite's count begins. It covers the queue alone: every connection the pool has
+// handed out comes back within its holder's own bound, so the queue drains while the database
+// answers nothing, and thirty seconds is a queue six writes deep per connection, against healthy
+// writes of milliseconds, so no write that would land waits it out. It ends a wait for a pool
+// whose every connection is held by work that has no such bound. A write it cuts is owed like any
+// other and made again at the claim's next decision. It is no setting and no field: nothing needs
+// another value of it.
 const defaultClaimAcquire = 30 * time.Second
 
-// claimWrite is Deps.Timeouts.ClaimWrite, or defaultClaimWrite when it names none. It is a
+// claimWrite is Deps.Timeouts.ClaimWrite, or DefaultClaimWrite when it names none. It is a
 // fallback rather than a check, so a Deps built without it still writes under the deadline.
 func (d Deps) claimWrite() time.Duration {
 	if d.Timeouts.ClaimWrite <= 0 {
-		return defaultClaimWrite
+		return DefaultClaimWrite
 	}
 	return d.Timeouts.ClaimWrite
-}
-
-// claimAcquire is Deps.Timeouts.ClaimAcquire, or defaultClaimAcquire when it names none.
-func (d Deps) claimAcquire() time.Duration {
-	if d.Timeouts.ClaimAcquire <= 0 {
-		return defaultClaimAcquire
-	}
-	return d.Timeouts.ClaimAcquire
 }
 
 // RefusedError is a request the claim does not allow — the answer an API route gives its caller
@@ -4226,15 +4219,15 @@ func (m *Machine) write(ctx context.Context, call func(context.Context) error) e
 	return call(writing)
 }
 
-// bounded is ctx for one bounded store call of a decision: the store's wait for a connection
-// bounded by the acquire bound, and the call itself by the claim-write bound once it holds one
-// (Deps.BoundWrite, Timeouts.ClaimWrite, Timeouts.ClaimAcquire). With no BoundWrite the whole call
+// bounded is ctx for one bounded store call of a decision: the wait in the store's pool queue
+// bounded by defaultClaimAcquire, and the call itself, from the moment it is handed a connection,
+// by the claim-write bound (Deps.BoundWrite, Timeouts.ClaimWrite). With no BoundWrite the whole call
 // is bounded by the claim-write bound, which is right for a store that queues for no connection.
 func (m *Machine) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
 	if m.deps.BoundWrite == nil {
 		return context.WithTimeout(ctx, m.deps.claimWrite())
 	}
-	return m.deps.BoundWrite(ctx, m.deps.claimAcquire(), m.deps.claimWrite())
+	return m.deps.BoundWrite(ctx, defaultClaimAcquire, m.deps.claimWrite())
 }
 
 // putClaim writes the claim alone, under the claim-write deadline, and marks nothing owed: a

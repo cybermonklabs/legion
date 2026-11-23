@@ -40,19 +40,19 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 		t.Fatalf("seed the claim: %v", err)
 	}
 	// holdTheConnection takes the pool's one connection in a transaction of its own for held, and
-	// answers once it holds it; the transaction ends by itself after held.
-	holdTheConnection := func(t *testing.T) <-chan error {
+	// answers once it holds it, with the moment it took it; the transaction ends by itself after
+	// held. The moment is read inside the holder, so a slow wake of the caller cannot shorten it.
+	holdTheConnection := func(t *testing.T) (<-chan error, time.Time) {
 		t.Helper()
-		holding, ended := make(chan struct{}), make(chan error, 1)
+		holding, ended := make(chan time.Time, 1), make(chan error, 1)
 		go func() {
 			ended <- Transact(ForConcurrentWorker(ctx), one.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-				close(holding)
+				holding <- time.Now()
 				_, err := tx.Exec(ctx, "select pg_sleep($1)", held.Seconds())
 				return err
 			})
 		}()
-		<-holding
-		return ended
+		return ended, <-holding
 	}
 	stored := func(t *testing.T) supervise.ClaimState {
 		t.Helper()
@@ -64,7 +64,7 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 	}
 
 	t.Run("the bound over the whole write cuts it in the queue", func(t *testing.T) {
-		ended := holdTheConnection(t)
+		ended, _ := holdTheConnection(t)
 		bounded, cancel := context.WithTimeout(ForConcurrentWorker(ctx), write)
 		defer cancel()
 		queued := c
@@ -78,17 +78,16 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 	})
 
 	t.Run("the bound after the connection lets it wait and land", func(t *testing.T) {
-		ended := holdTheConnection(t)
+		ended, heldAt := holdTheConnection(t)
 		bounded, cancel := BoundAfterAcquire(ForConcurrentWorker(ctx), 10*time.Second, write)
 		defer cancel()
 		queued := c
 		queued.State = supervise.StateQueued
-		started := time.Now()
 		if err := one.PutClaim(bounded, queued); err != nil {
 			t.Fatalf("a write queued %s behind the pool's one connection, bounded %s after it holds one = %v, want it landed", held, write, err)
 		}
-		if waited := time.Since(started); waited < held-100*time.Millisecond {
-			t.Fatalf("the write landed %s after it began, want after the %s the connection was held: it did not queue, so this proves nothing", waited, held)
+		if waited := time.Since(heldAt); waited < held {
+			t.Fatalf("the write landed %s after the connection was taken, want after the %s it was held: it did not queue, so this proves nothing", waited, held)
 		}
 		if got := stored(t); got != supervise.StateQueued {
 			t.Fatalf("the claim reads %s, want the queued write's %s", got, supervise.StateQueued)
@@ -115,7 +114,7 @@ func TestAClaimWriteQueuedForAConnectionIsBoundedByItsOwnTimeNotByTheQueue(t *te
 	})
 
 	t.Run("the acquire bound ends a wait nobody frees", func(t *testing.T) {
-		ended := holdTheConnection(t)
+		ended, _ := holdTheConnection(t)
 		bounded, cancel := BoundAfterAcquire(ForConcurrentWorker(ctx), 300*time.Millisecond, write)
 		defer cancel()
 		queued := c

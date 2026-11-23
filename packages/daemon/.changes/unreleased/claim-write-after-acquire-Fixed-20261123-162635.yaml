@@ -1,11 +1,16 @@
 kind: Fixed
 body: |-
-    A claim write's 5 s bound now counts from the moment the write holds a database connection, not
-    from before its wait for one. At boot the daemon relaunches every unfinished claim at once
-    through one pool of max(4, CPUs) connections, so on a loaded node the last writes of a large wave
-    spent their whole bound queued behind the others and were cut, and each such launch waited for
-    the next probe, 30 s later, to be tried again. The wait for a connection has a bound of its own,
-    30 s, so a database that has stopped answering still releases the claim's machine.
+    A claim write's 5 s bound now counts from the moment the database pool hands the write a
+    connection, not from before its wait for one. At boot the daemon relaunches every unfinished
+    claim at once through one pool of max(4, CPUs) connections, so on a loaded node the last writes
+    of a large wave spent their whole bound queued behind the others and were cut, and each such
+    launch waited for the next probe, 30 s later, to be tried again. The wait in the pool's queue
+    has a bound of its own, 30 s; the dial of a new connection, its BEGIN and its statements stay
+    under the 5 s, so a database that stops answering still holds a claim's machine for about 5 s
+    per write. The pool's dial and health ping are bounded at 5 s too (connect_timeout,
+    pool_ping_timeout), unless the DSN names a shorter value. The boot's replay of the stored
+    claims' ready and failed facts counts each of its budgets the same way, so a boot whose pool is
+    busy with the restored claims' live failures no longer fails its replay for the wait.
 time: 2026-11-23T16:26:35Z
 custom:
     Issue: INFRA-1075
