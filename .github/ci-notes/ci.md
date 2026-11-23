@@ -1473,7 +1473,8 @@ reopen or ready-for-review, not when it is added: this workflow takes no `labele
 trigger, which would start a run that joins this workflow's concurrency group and cancels the
 pull request's run in progress. Take the label off once the run it was added for passes,
 since every later push would run the slow suites again, unless a `ci_check` of the issue
-names one of them, which reads `skipped` on a pull request without the label.
+names one of them: without the label that job's own check run (`test`) concludes `skipped`,
+no job of the file it calls starts, and the run the check names (`test / test`) is absent.
 
 ## A lane label turns on one slow suite on a pull request
 
@@ -1780,9 +1781,11 @@ takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its i
 caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
 id. A call runs the one job named for its caller, and the other reads `skipped` under it.
 
-.github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): a job of a file two
-ci.yaml jobs call must carry that `if:`, and each caller must pass its own id, since a job that
-ran under a second caller would read files that caller's filter is never held to.
+.github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): each caller of a
+file two ci.yaml jobs call must have a job of it named for itself, which must carry that `if:`,
+and must pass its own id, since a job that ran under a second caller would read files that
+caller's filter is never held to, and a caller with no job of its own there runs nothing its
+filter is held to.
 .github/scripts/ci_job_reads.py's SHARED_FILE maps each new half to the file it shares, so its
 gates find their steps there. Each half keeps a filter of its own, and both name the shared
 file, so a change to it selects both. dispatch-browser.yaml has two callers too,
@@ -1919,9 +1922,11 @@ more: the shard and alone jobs run in the image this repository builds, which ca
 engines (dispatch://INFRA-1443), and the two-process job installs Chromium whatever the lane.
 `job` is the caller's own id. GitHub names each job of a called workflow `<caller> / <job>`, so a
 pull request's browser checks are `dispatch-browser-pr / shard (1)` and the like, and a
-`ci_check` naming `dispatch-browser / merge` finds that check skipped or absent there. The merge
-job reads only the jobs named under its own caller, every artifact name starts with the id so
-the two callers of one run share none, and the merge job's ci-ok report names it.
+`ci_check` naming `dispatch-browser / merge` finds no run of that name on a pull request
+without the label: the dispatch-browser job's own run concludes `skipped`, and no job of
+dispatch-browser.yaml starts under it. The merge job reads only the jobs named under its own
+caller, every artifact name starts with the id so the two callers of one run share none, and
+the merge job's ci-ok report names it.
 
 The matrix is in the called workflow and cannot be here. Every leg of a matrix shares one
 job id, and .github/actions/ci-ok-report posts the failing ci-ok of a merge-group run from
