@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -283,7 +282,7 @@ func (d *tickDispatch) ReleaseClaim(context.Context, string) error { return nil 
 func (d *tickDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *tickDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *tickDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *tickDispatch) Approval(context.Context, string) (dispatch.Approval, error) {

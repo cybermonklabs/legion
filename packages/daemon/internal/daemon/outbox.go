@@ -1275,8 +1275,8 @@ func (r *outbox) setBackOwed(ctx context.Context, row record.OutboxRow, payload 
 	if err != nil {
 		return false, fmt.Errorf("read the Dispatch events of %s after %d before its set-back: %w", row.Issue, payload.ObservedSeq, err)
 	}
-	for _, raw := range events {
-		change, err := intake.StatusChangeOf(raw)
+	for _, event := range events {
+		change, err := intake.StatusChangeOf(event)
 		if err != nil {
 			return false, fmt.Errorf("read a Dispatch event of %s after %d before its set-back: %w", row.Issue, payload.ObservedSeq, err)
 		}

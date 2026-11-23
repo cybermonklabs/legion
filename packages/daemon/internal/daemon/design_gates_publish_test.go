@@ -101,7 +101,7 @@ func (d *gatePublishDispatch) PostMessage(context.Context, string, string) error
 func (d *gatePublishDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *gatePublishDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *gatePublishDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *gatePublishDispatch) Approval(context.Context, string) (dispatch.Approval, error) {

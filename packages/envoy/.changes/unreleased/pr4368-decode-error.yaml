@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `redact.DecodeError`, which `oauth2call.DecodeError` forwards, names encoding/json's error on
+  bytes no `Answer.Decode` reads - a stream's message, an answer's data - in the fixed text
+  `Answer.Decode` names its own in: the destination's type, the member and the JSON kind, never a
+  value, and it unwraps to nothing.
+time: 2026-11-23T05:54:11Z
+custom:
+    Issue: pr4368

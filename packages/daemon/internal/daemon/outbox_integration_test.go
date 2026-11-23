@@ -3,7 +3,6 @@ package daemon
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -261,7 +260,7 @@ func (d *blockingDispatch) PostMessage(context.Context, string, string) error { 
 func (d *blockingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *blockingDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *blockingDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *blockingDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
@@ -460,7 +459,7 @@ func (d *refusingDispatch) PostMessage(context.Context, string, string) error { 
 func (d *refusingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *refusingDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *refusingDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *refusingDispatch) Approval(context.Context, string) (dispatch.Approval, error) {
@@ -528,7 +527,7 @@ func (d *boardDispatch) PostMessage(context.Context, string, string) error { ret
 func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *boardDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *boardDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *boardDispatch) Approval(context.Context, string) (dispatch.Approval, error) {

@@ -182,7 +182,7 @@ func (d *outboxDispatch) PostMessage(_ context.Context, _ string, body string) e
 func (d *outboxDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return d.bodies, d.messageReadErr
 }
-func (d *outboxDispatch) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *outboxDispatch) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *outboxDispatch) Approval(context.Context, string) (dispatch.Approval, error) {

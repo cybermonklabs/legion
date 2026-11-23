@@ -898,8 +898,8 @@ func TestAnUnknownFieldRefusalIsRiddenOutUntilDispatchKnowsTheField(t *testing.T
 }
 
 // The boot catch-up reads an issue's event log after a sequence, oldest first, page after page
-// until a short page, each event as Dispatch served it; a page that does not ascend past the last
-// sequence read is refused rather than read again.
+// until a short page, each event in the shape Dispatch serves it; a page that does not ascend past
+// the last sequence read is refused rather than read again.
 func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	var afters []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -927,11 +927,8 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	if !reflect.DeepEqual(afters, []string{"7", "207"}) || len(events) != 203 {
 		t.Fatalf("pages after %v gave %d events, want pages after 7 and 207 giving 203", afters, len(events))
 	}
-	var last struct {
-		Seq int64 `json:"seq"`
-	}
-	if err := json.Unmarshal(events[len(events)-1], &last); err != nil || last.Seq != 210 {
-		t.Fatalf("last event = %s (%v), want seq 210", events[len(events)-1], err)
+	if last := events[len(events)-1]; last.Seq != 210 || last.Type != "comment.created" || last.IssueKey != "LEGION-1" {
+		t.Fatalf("last event = %+v, want comment.created of LEGION-1 at seq 210", last)
 	}
 
 	stuck := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -22,9 +22,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// eventLogDispatch is chainDispatch with each issue's Dispatch event log, as EventsAfter serves it,
-// in logs; a key it holds no log of is served an empty log, and every read fails with Dispatch's
-// trouble while logErr is set. logReads counts each key's EventsAfter calls.
+// eventLogDispatch is chainDispatch with each issue's Dispatch event log, as its events route
+// serves it, in logs, which EventsAfter answers as the client does (servedEvents): a key it holds
+// no log of has an empty log, and every read fails with Dispatch's trouble while logErr is set.
+// logReads counts each key's EventsAfter calls.
 type eventLogDispatch struct {
 	chainDispatch
 	logs     map[string][]json.RawMessage
@@ -32,7 +33,7 @@ type eventLogDispatch struct {
 	logReads map[string]int
 }
 
-func (d *eventLogDispatch) EventsAfter(_ context.Context, key string, _ int64) ([]json.RawMessage, error) {
+func (d *eventLogDispatch) EventsAfter(_ context.Context, key string, _ int64) ([]dispatch.Event, error) {
 	if d.logReads == nil {
 		d.logReads = map[string]int{}
 	}
@@ -40,7 +41,7 @@ func (d *eventLogDispatch) EventsAfter(_ context.Context, key string, _ int64) (
 	if d.logErr != nil {
 		return nil, d.logErr
 	}
-	return d.logs[key], nil
+	return servedEvents(d.logs[key])
 }
 
 // issueLogEvent is one issue.created or issue.updated event of key's Dispatch event log, as
@@ -96,8 +97,9 @@ func TestPrepareIssueReadsWhoSetTheLabelOfAnUnrecordedTriageRoot(t *testing.T) {
 			logs: map[string][]json.RawMessage{key: labelledBy(key, "user")}},
 		{name: "a failed read of the log", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i },
 			logErr: errors.New("Dispatch is restarting"), reads: 1, fails: "Dispatch is restarting"},
-		{name: "a log that does not decode", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i },
-			logs: map[string][]json.RawMessage{key: {json.RawMessage(`{not json`)}}, reads: 1, fails: "decode Dispatch event 1 of 1"},
+		{name: "a log whose issue event does not decode", event: func(i intake.DispatchIssue) intake.DispatchIssue { return i },
+			logs:  map[string][]json.RawMessage{key: {json.RawMessage(`{"id":1,"issue_key":"LEGION-755","seq":1,"type":"issue.created","actor":{"kind":"user","id":"user-1"},"notify":true,"payload":"a string"}`)}},
+			reads: 1, fails: "decode Dispatch issue payload of event 1 of 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The preparation only reads, so the cases share one migrated database and each starts

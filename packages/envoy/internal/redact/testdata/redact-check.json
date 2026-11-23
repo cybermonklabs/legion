@@ -333,6 +333,10 @@
         "test": "print-dispatch.Error"
       },
       {
+        "holder": "github.com/sjawhar/legion/daemon/internal/dispatch.answeredEvent",
+        "test": "print-dispatch.answeredEvent"
+      },
+      {
         "holder": "github.com/sjawhar/legion/daemon/internal/notify.ErrNotDelivered",
         "test": "print-notify.ErrNotDelivered"
       },
@@ -4441,6 +4445,20 @@
       "production": "daemon cipher Client.do and doProof: an accepted answer decodes through oauth2call.Answer.Decode, whose error quotes no value"
     },
     {
+      "id": "intake-event-log-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/intake",
+      "test": "TestAnEventLogThatEchoesTheBearerPrintsItInNoDecodersOutput",
+      "production": "daemon dispatch HTTPClient.EventsAfter (eventPage) reads each event's created_at as Dispatch's words held with the request's record and refuses one that is not a time naming the member, and intake's LabelSetter, StatusChangeOf, DecodeDispatchEvent and the stream's decoder name a decode failure and an unread member in fixed text (oauth2call.DecodeError), never a value"
+    },
+    {
+      "id": "dispatch-event-log-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestAnEventThatDoesNotReadIsRefusedWithoutItsText",
+      "production": "daemon dispatch HTTPClient.EventsAfter (eventPage) and DecodeEvent: an event whose created_at is not a time, or whose members do not decode, is refused naming the member or the event's place, never the value"
+    },
+    {
       "id": "githubrest-list-decode-echo",
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
@@ -4705,6 +4723,13 @@
       "package": "./internal/redact",
       "test": "TestAnAnswersDecodeErrorQuotesNoValue/box",
       "production": "(github.com/sjawhar/envoy/internal/redact.Answer).Decode's decodeText: a box member's own type error, which names no field, names its member through failingMember"
+    },
+    {
+      "id": "redact-decode-error",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestADecodeErrorQuotesNoValue",
+      "production": "github.com/sjawhar/envoy/internal/redact.DecodeError (oauth2call.DecodeError): encoding/json's error on bytes no answer's Decode reads, in decodeText's fixed text, unwrapping to nothing"
     },
     {
       "id": "print-agent-secrets.RequestResult",
@@ -5516,8 +5541,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestARefusalWithNoWordsNamesItsStatusWithNoPhraseItWrote",
-      "production": "daemon dispatch HTTPClient.request: a refusal with no words names the status by its code and standard phrase (oauth2call.StatusLine)",
-      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).request",
+      "production": "daemon dispatch HTTPClient.answer: a refusal with no words names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/dispatch.HTTPClient).answer",
       "capture": "dispatch.status-line/no-words",
       "mutation": {
         "file": "packages/daemon/internal/dispatch/client.go",
@@ -6847,6 +6872,13 @@
       "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatch.Error",
       "production": "github.com/sjawhar/legion/daemon/internal/dispatch.Error: every printer at every placement (oauth2calltest.PrintTest)"
+    },
+    {
+      "id": "print-dispatch.answeredEvent",
+      "requirement": "r2-held",
+      "package": "github.com/sjawhar/legion/daemon/internal/dispatch",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/dispatch.answeredEvent",
+      "production": "github.com/sjawhar/legion/daemon/internal/dispatch.answeredEvent: every printer at every placement (oauth2calltest.PrintTest)"
     },
     {
       "id": "print-notify.ErrNotDelivered",
@@ -8236,6 +8268,11 @@
       "site": "daemon broker client (login, pod session registration, enrollment, carried list): a 200 that does not decode printed the decoder's error, which quoted the token or proof an answer echoed into a time",
       "source": "the search for the class of the review of #4368 round 4, finding 1, at the merge of main",
       "guard": "daemon-broker-decode-echo"
+    },
+    {
+      "site": "daemon dispatch EventsAfter: each event of the log left the answer as raw bytes, and intake's LabelSetter, StatusChangeOf and DecodeDispatchEvent printed json's error, which quoted the bearer an answer echoed into created_at (the boot catch-up's log line, the set-back's and the label setter's errors), and the live decoder's unread list quoted an echoed ask kind, turn, ask state or claim",
+      "source": "the review of #4368 round 6, the red team's probe of the event log",
+      "guard": "intake-event-log-echo"
     },
     {
       "site": "daemon githubrest getPages: a list GitHub answered as an object's field that did not decode printed the decoder's error, which quoted the installation token an answer echoed into a time",

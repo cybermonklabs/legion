@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -439,11 +438,13 @@ func (w *workflowRuntime) bindGateRequest(ctx context.Context, root catchUpRoot,
 // (intake.Applied) reads which of the window's events are applied, and only the rest are decoded
 // and applied, one fact transaction each.
 //
-// The catch-up treats each event as the live Dispatch consumer does. An event of a type the
-// catch-up does not read is passed over before it is decoded (an issue's own events are the boot
-// listing's), and one the decoder refuses is logged and passed over for good: the live consumer
-// terminates it as poison. An event whose fact fails to apply — a handler's error, or the
-// database's (its transaction or its commit) — is logged, and the rest of the window is still
+// The catch-up treats each event as the live Dispatch consumer does. A log EventsAfter refuses -
+// an event that does not decode, or whose created_at is not a time - fails the window, and the
+// root is released as it stands, its cursor where it was (catchUpWithRetries). An event of a type
+// the catch-up does not read is passed over before it is decoded (an issue's own events are the
+// boot listing's), and one the decoder refuses is logged and passed over for good: the live
+// consumer terminates it as poison. An event whose fact fails to apply — a handler's error, or
+// the database's (its transaction or its commit) — is logged, and the rest of the window is still
 // applied, so one event never stops a root's catch-up, but the event is not passed over: the
 // live consumer retries such an event until it applies, and the cursor stops just below it
 // (catchUpRoot), so the next boot reads it again. That matters once an outage outlasts the
@@ -459,58 +460,50 @@ func (w *workflowRuntime) catchUpWindow(ctx context.Context, root catchUpRoot, f
 		return 0, 0, fmt.Errorf("read the events of %s after %d: %w", root.issue.Key, from, err)
 	}
 	type windowEvent struct {
-		raw  json.RawMessage
-		seq  int64
-		kind string
-		id   string
+		event dispatch.Event
+		id    string
 	}
 	var window []windowEvent
 	var ids []string
 	for _, event := range events {
-		var header struct {
-			Seq  int64  `json:"seq"`
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(event, &header); err != nil {
-			return 0, 0, fmt.Errorf("read the events of %s: %w", root.issue.Key, err)
-		}
-		read = max(read, header.Seq)
-		switch header.Type {
+		read = max(read, event.Seq)
+		switch event.Type {
 		case "ask.opened", "ask.answered", "ask.resolved", "ask.handed_back", "ask.edited", "comment.created", "comment.answered",
 			"artifact.version", "artifact.approved", "artifact.changes_requested":
 		default:
 			continue
 		}
-		id := fmt.Sprintf("event:%s:%d:%d", root.issue.Key, root.issue.Generation, header.Seq)
-		window = append(window, windowEvent{raw: event, seq: header.Seq, kind: header.Type, id: id})
+		id := fmt.Sprintf("event:%s:%d:%d", root.issue.Key, root.issue.Generation, event.Seq)
+		window = append(window, windowEvent{event: event, id: id})
 		ids = append(ids, catchUpEventID(id))
 	}
 	applied, err := intake.Applied(ctx, w.pool, catchUpSource, ids)
 	if err != nil {
 		return 0, 0, fmt.Errorf("read which events of %s the catch-up applied: %w", root.issue.Key, err)
 	}
-	for _, event := range window {
-		if applied[catchUpEventID(event.id)] {
+	for _, item := range window {
+		if applied[catchUpEventID(item.id)] {
 			continue
 		}
-		fact, unread, err := intake.DecodeDispatchEvent(w.dispatchProject, root.issue.Key, event.raw)
+		event := item.event
+		fact, unread, err := intake.DecodeDispatchEvent(w.dispatchProject, root.issue.Key, event)
 		if err != nil {
-			w.log.Warn("boot catch-up passed over an event it could not read", "issue", root.issue.Key, "seq", event.seq, "type", event.kind, "error", err)
+			w.log.Warn("boot catch-up passed over an event it could not read", "issue", root.issue.Key, "seq", event.Seq, "type", event.Type, "error", err)
 			continue
 		}
 		if len(unread) > 0 {
-			w.log.Warn("boot catch-up read an event with fields it took as unknown", "issue", root.issue.Key, "seq", event.seq, "type", event.kind, "unread", unread)
+			w.log.Warn("boot catch-up read an event with fields it took as unknown", "issue", root.issue.Key, "seq", event.Seq, "type", event.Type, "unread", unread)
 		}
 		if fact == nil {
 			continue
 		}
-		if err := w.applyCatchUp(ctx, event.id, fact); err != nil {
+		if err := w.applyCatchUp(ctx, item.id, fact); err != nil {
 			if ctx.Err() != nil {
 				return 0, 0, err
 			}
-			w.log.Error("boot catch-up failed to apply an event, and reads it again at the next boot", "issue", root.issue.Key, "seq", event.seq, "type", event.kind, "error", err)
-			if failed == 0 || event.seq < failed {
-				failed = event.seq
+			w.log.Error("boot catch-up failed to apply an event, and reads it again at the next boot", "issue", root.issue.Key, "seq", event.Seq, "type", event.Type, "error", err)
+			if failed == 0 || event.Seq < failed {
+				failed = event.Seq
 			}
 		}
 	}

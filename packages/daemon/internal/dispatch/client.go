@@ -326,32 +326,27 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 }
 
 // EventsAfter reads the issue's Dispatch event log after sequence after, oldest first, through GET
-// /api/v1/issues/{key}/events?after=…, every page of it: each event as Dispatch serves it, which is
-// the shape its durable stream carries, so the boot catch-up applies each through the live
-// decoder, with its own sequence.
-func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error) {
-	events := []json.RawMessage{}
+// /api/v1/issues/{key}/events?after=…, every page of it (eventPage): each event in the shape its
+// durable stream carries, so the boot catch-up applies each through the live decoder, with its own
+// sequence. A page that does not ascend past the last sequence read is refused, and so is a page
+// eventPage refuses: one whose events do not decode, or whose created_at is not a time.
+func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) ([]Event, error) {
+	events := []Event{}
 	for {
 		query := url.Values{}
 		query.Set("after", fmt.Sprint(after))
 		query.Set("limit", fmt.Sprint(eventPageLimit))
-		var page []json.RawMessage
-		if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/events?"+query.Encode(), nil, &page); err != nil {
+		page, err := c.eventPage(ctx, key, query)
+		if err != nil {
 			return nil, err
 		}
-		for _, raw := range page {
-			var event struct {
-				Seq int64 `json:"seq"`
-			}
-			if err := json.Unmarshal(raw, &event); err != nil {
-				return nil, fmt.Errorf("page issue events for %s: %w", key, err)
-			}
+		for _, event := range page {
 			if event.Seq <= after {
 				return nil, fmt.Errorf("page issue events for %s: non-ascending sequence %d after %d", key, event.Seq, after)
 			}
 			after = event.Seq
-			events = append(events, raw)
 		}
+		events = append(events, page...)
 		if len(page) < eventPageLimit {
 			return events, nil
 		}
@@ -360,11 +355,51 @@ func (c *HTTPClient) EventsAfter(ctx context.Context, key string, after int64) (
 
 const eventPageLimit = 200
 
-// MessageBodiesSince reads newest-first issue events until the bounded outbox recovery window.
-// Message bodies are carried by message.created events, which hold at most the first part of a
-// long body (contracts.DispatchEventBodyMax) and say so with body_truncated; the whole of such a
-// body is read from GET /api/v1/issues/{key}/messages/{id}, since the outbox's marker closes a
-// body and the cut would drop it.
+// eventPage reads one page of the issue's event log, GET /api/v1/issues/{key}/events?<query>, in
+// the order query asks for. Each event's members, its created_at among them, are decoded through
+// the answer (Answer.Decode), so a member that does not decode is named in fixed text, and its
+// created_at is Dispatch's words held with the request's record, read as an RFC 3339 time: one
+// that is not a time is refused naming the event's place in the page and the member, never the
+// value. An absent, null or empty created_at is the zero time. Each event's payload is the
+// answer's data (Answer.StreamTo), which the event's reader decodes by the event's type.
+func (c *HTTPClient) eventPage(ctx context.Context, key string, query url.Values) ([]Event, error) {
+	path := "/api/v1/issues/" + url.PathEscape(key) + "/events?" + query.Encode()
+	answer, err := c.answer(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var page []answeredEvent
+	if err := answer.Decode(&page); err != nil {
+		return nil, fmt.Errorf("decode Dispatch GET %s response: %w", path, err)
+	}
+	var body bytes.Buffer
+	if _, err := answer.StreamTo(&body); err != nil {
+		return nil, fmt.Errorf("read Dispatch GET %s response: %w", path, err)
+	}
+	var payloads []struct {
+		Payload json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(body.Bytes(), &payloads); err != nil {
+		return nil, fmt.Errorf("decode Dispatch GET %s response's payloads: %w", path, oauth2call.DecodeError(err, body.Bytes(), &payloads))
+	}
+	events := make([]Event, len(page))
+	for i, read := range page {
+		at, ok := read.createdAt()
+		if !ok {
+			return nil, fmt.Errorf("decode Dispatch GET %s response: event %d of the page, at sequence %d, names a created_at that is not an RFC 3339 time (the value is not printed)",
+				path, i+1, read.Seq)
+		}
+		events[i] = read.event(at, payloads[i].Payload)
+	}
+	return events, nil
+}
+
+// MessageBodiesSince reads newest-first issue events, page by page (eventPage), until the bounded
+// outbox recovery window. Message bodies are carried by message.created events, which hold at
+// most the first part of a long body (contracts.DispatchEventBodyMax) and say so with
+// body_truncated; the whole of such a body is read from GET /api/v1/issues/{key}/messages/{id},
+// since the outbox's marker closes a body and the cut would drop it. A message.created payload
+// that does not decode is named in fixed text (oauth2call.DecodeError), never json's error.
 func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error) {
 	before := int64(0)
 	bodies := []string{}
@@ -375,9 +410,8 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 		if before != 0 {
 			query.Set("before", fmt.Sprint(before))
 		}
-		var events []issueEventResponse
-		path := "/api/v1/issues/" + url.PathEscape(key) + "/events?" + query.Encode()
-		if err := c.request(ctx, http.MethodGet, path, nil, &events); err != nil {
+		events, err := c.eventPage(ctx, key, query)
+		if err != nil {
 			return nil, err
 		}
 		if len(events) == 0 {
@@ -396,7 +430,7 @@ func (c *HTTPClient) MessageBodiesSince(ctx context.Context, key string, since t
 				BodyTruncated bool   `json:"body_truncated"`
 			}
 			if err := json.Unmarshal(event.Payload, &message); err != nil {
-				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, err)
+				return nil, fmt.Errorf("decode message.created event %d for %s: %w", event.Seq, key, oauth2call.DecodeError(err, event.Payload, &message))
 			}
 			if message.Body == "" {
 				return nil, fmt.Errorf("decode message.created event %d for %s: payload body is required", event.Seq, key)
@@ -566,7 +600,26 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 	return response.handoff(), nil
 }
 
+// request sends one request to Dispatch (answer) and decodes its 2xx answer into into through the
+// answer (Answer.Decode), whose error names the member that did not decode and quotes no value; a
+// nil into reads nothing of the answer.
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
+	answer, err := c.answer(ctx, method, path, body)
+	if err != nil || into == nil {
+		return err
+	}
+	if err := answer.Decode(into); err != nil {
+		return fmt.Errorf("decode Dispatch %s %s response: %w", method, path, err)
+	}
+	return nil
+}
+
+// answer sends one request to Dispatch with the daemon's bearer, body as its JSON where body is not
+// nil, bounded by the client's timeout, and answers Dispatch's 2xx answer, read whole
+// (oauth2call.ReadAnswer). A request that got no answer, or whose answer could not be read, is its
+// transport's failure (transportFailure), and an answer that is not a 2xx is Dispatch's refusal
+// (dispatchError), its status named by its code and the standard phrase.
+func (c *HTTPClient) answer(ctx context.Context, method, path string, body any) (oauth2call.Answer, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -575,12 +628,12 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	if body != nil {
 		encoded, err = json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("encode Dispatch %s %s: %w", method, path, err)
+			return oauth2call.Answer{}, fmt.Errorf("encode Dispatch %s %s: %w", method, path, err)
 		}
 	}
 	request, err := http.NewRequestWithContext(bounded, method, c.baseURL+path, bytes.NewReader(encoded))
 	if err != nil {
-		return fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
+		return oauth2call.Answer{}, fmt.Errorf("create Dispatch %s %s: %w", method, path, err)
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Authorization", "Bearer "+c.token)
@@ -590,23 +643,17 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
+		return oauth2call.Answer{}, fmt.Errorf("call Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	defer response.Body.Close()
 	answer, err := oauth2call.ReadAnswer(response, 64<<20)
 	if err != nil {
-		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
+		return oauth2call.Answer{}, fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, oauth2call.StatusLine(response.StatusCode), answer)
+		return oauth2call.Answer{}, dispatchError(response.StatusCode, oauth2call.StatusLine(response.StatusCode), answer)
 	}
-	if into == nil {
-		return nil
-	}
-	if err := answer.Decode(into); err != nil {
-		return fmt.Errorf("decode Dispatch %s %s response: %w", method, path, err)
-	}
-	return nil
+	return answer, nil
 }
 
 // TransportRefusal reports whether err, anywhere in its chain, is a failure of Dispatch's transport
@@ -747,13 +794,6 @@ func (c *claimResponse) unread() bool {
 // holder is the claim as Claim.Holder writes it.
 func (c *claimResponse) holder() string {
 	return c.claim().Holder()
-}
-
-type issueEventResponse struct {
-	Seq       int64           `json:"seq"`
-	Type      string          `json:"type"`
-	CreatedAt time.Time       `json:"created_at"`
-	Payload   json.RawMessage `json:"payload"`
 }
 
 type artifactResponse struct {

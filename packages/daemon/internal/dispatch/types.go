@@ -3,7 +3,6 @@ package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -41,9 +40,11 @@ type Client interface {
 	// (envoy_dispatch_document_replacements_unguarded_total); a token behind the live document is
 	// still refused 409 PRECONDITION_FAILED.
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
-	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
-	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
-	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
+	// EventsAfter is the issue's event log after a sequence, oldest first, each event typed in the
+	// shape the durable stream carries (Event), its payload as data: the boot catch-up's read of
+	// what a root's durable stream may not have delivered, the set-back's check of later status
+	// changes, and the read of who set an issue's label.
+	EventsAfter(ctx context.Context, key string, after int64) ([]Event, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
 	// ArtifactChanges is what changed in a document between two of its stored versions, as
 	// Dispatch reads the two (GET /api/v1/artifacts/{id}/changes). A Dispatch that answers 404

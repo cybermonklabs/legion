@@ -132,14 +132,14 @@ func (d *issueLogDispatch) SetStatusAt(_ context.Context, read dispatch.Issue, s
 	return d.GetIssue(context.Background(), ownerMoveChild)
 }
 
-func (d *issueLogDispatch) EventsAfter(_ context.Context, _ string, after int64) ([]json.RawMessage, error) {
-	var events []json.RawMessage
+func (d *issueLogDispatch) EventsAfter(_ context.Context, _ string, after int64) ([]dispatch.Event, error) {
+	var log []json.RawMessage
 	for _, entry := range d.log {
 		if entry.seq > after {
-			events = append(events, d.raw(entry))
+			log = append(log, d.raw(entry))
 		}
 	}
-	return events, nil
+	return servedEvents(log)
 }
 
 // ownerMoveRig is the tree the test runs, the daemon's two handlers that a Dispatch event goes
@@ -223,7 +223,11 @@ func (r *ownerMoveRig) catchUp() {
 		if entry.seq <= r.applied {
 			continue
 		}
-		fact, _, err := intake.DecodeDispatchEvent("LEGION", ownerMoveChild, r.dispatch.raw(entry))
+		event, err := dispatch.DecodeEvent(r.dispatch.raw(entry))
+		if err != nil {
+			r.t.Fatalf("decode event %d: %v", entry.seq, err)
+		}
+		fact, _, err := intake.DecodeDispatchEvent("LEGION", ownerMoveChild, event)
 		if err != nil {
 			r.t.Fatalf("decode event %d: %v", entry.seq, err)
 		}

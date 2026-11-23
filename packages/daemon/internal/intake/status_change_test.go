@@ -45,9 +45,9 @@ const (
 	capturedDaemonOfTheIssue = "legion-daemon:ACME"
 )
 
-// readDispatchEvents is the event log a file under testdata/dispatch-events holds, one raw event
-// for each element, as dispatch.Client.EventsAfter hands the events to its caller.
-func readDispatchEvents(t *testing.T, name string) []json.RawMessage {
+// readDispatchLog is the event log a file under testdata/dispatch-events holds, one raw event for
+// each element, as Dispatch's events route answered it.
+func readDispatchLog(t *testing.T, name string) []json.RawMessage {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(dispatchEventsDir, name))
 	if err != nil {
@@ -103,20 +103,17 @@ func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 			{"issue.updated", false, session(capturedOtherArchitect), false},
 		}},
 	} {
-		events := readDispatchEvents(t, log.file)
+		events := servedLog(t, readDispatchLog(t, log.file)...)
 		if len(events) != len(log.want) {
 			t.Fatalf("%s holds %d events, want %d", log.file, len(events), len(log.want))
 		}
-		for i, raw := range events {
+		for i, event := range events {
 			want, seq := log.want[i], log.first+int64(i)
 			t.Run(fmt.Sprintf("%s #%d %s", log.file, seq, want.typ), func(t *testing.T) {
-				var envelope struct {
-					Type string `json:"type"`
+				if event.Type != want.typ {
+					t.Fatalf("the captured event #%d is %q, want %q: the table no longer describes the fixture", seq, event.Type, want.typ)
 				}
-				if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Type != want.typ {
-					t.Fatalf("the captured event #%d is %q (%v), want %q: the table no longer describes the fixture", seq, envelope.Type, err, want.typ)
-				}
-				got, err := StatusChangeOf(raw)
+				got, err := StatusChangeOf(event)
 				if err != nil {
 					t.Fatalf("read the event: %v", err)
 				}
@@ -136,7 +133,7 @@ func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 	t.Run("a write of the status the issue already shows", func(t *testing.T) {
 		// Event #41 with no changed list: the event Dispatch writes for a write that moved no field.
 		var event map[string]any
-		if err := json.Unmarshal(readDispatchEvents(t, "acme-2766-after-40.json")[0], &event); err != nil {
+		if err := json.Unmarshal(readDispatchLog(t, "acme-2766-after-40.json")[0], &event); err != nil {
 			t.Fatalf("decode event #41: %v", err)
 		}
 		delete(event["payload"].(map[string]any), "changed")
@@ -144,7 +141,7 @@ func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 		if err != nil {
 			t.Fatalf("encode event #41 without changed: %v", err)
 		}
-		got, err := StatusChangeOf(raw)
+		got, err := StatusChangeOf(servedLog(t, raw)[0])
 		if err != nil {
 			t.Fatalf("read the event: %v", err)
 		}
@@ -154,20 +151,12 @@ func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 	})
 }
 
-// An event the reader cannot decode is an error, so the set-back's check never takes a log it
-// cannot read for a log with no status change in it.
+// An issue.updated whose payload the reader cannot decode is an error, so the set-back's check
+// never takes a log it cannot read for a log with no status change in it. An event that does not
+// decode at all is refused by the read itself (dispatch.Client.EventsAfter).
 func TestStatusChangeOfRefusesAnEventItCannotDecode(t *testing.T) {
-	for _, tc := range []struct {
-		name, event, want string
-	}{
-		{"an event that is not JSON", `{not json`, "decode Dispatch event"},
-		{"an issue.updated whose payload is not an issue", `{"seq":7,"type":"issue.updated","actor":{"kind":"user","id":"a"},"payload":"a string"}`,
-			"decode the issue payload of Dispatch event 7"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if _, err := StatusChangeOf(json.RawMessage(tc.event)); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("StatusChangeOf(%s) = %v, want an error naming %q", tc.event, err, tc.want)
-			}
-		})
+	event := servedLog(t, json.RawMessage(`{"seq":7,"type":"issue.updated","actor":{"kind":"user","id":"a"},"payload":"a string"}`))[0]
+	if _, err := StatusChangeOf(event); err == nil || !strings.Contains(err.Error(), "decode the issue payload of Dispatch event 7") {
+		t.Fatalf("StatusChangeOf(an issue.updated whose payload is a string) = %v, want an error naming the event", err)
 	}
 }

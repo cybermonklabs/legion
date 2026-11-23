@@ -479,7 +479,7 @@ func (d *fleetHandoffs) PutDesignGates(context.Context, string, []dispatch.Desig
 func (d *fleetHandoffs) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (d *fleetHandoffs) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (d *fleetHandoffs) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 func (d *fleetHandoffs) Approval(context.Context, string) (dispatch.Approval, error) {

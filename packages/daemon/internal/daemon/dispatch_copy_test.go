@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -364,7 +365,11 @@ func capturedDispatchEvent(t *testing.T, key string, seq int64, edits ...eventEd
 		}
 		event = edited
 	}
-	fact, _, err := intake.DecodeDispatchEvent("CAPTURE", key, []byte(event))
+	decoded, err := dispatch.DecodeEvent([]byte(event))
+	if err != nil {
+		t.Fatalf("decode the captured event: %v", err)
+	}
+	fact, _, err := intake.DecodeDispatchEvent("CAPTURE", key, decoded)
 	if err != nil || fact == nil {
 		t.Fatalf("decode the captured event = %#v, %v; want an issue fact", fact, err)
 	}

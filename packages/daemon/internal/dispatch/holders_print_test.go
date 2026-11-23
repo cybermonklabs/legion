@@ -15,6 +15,10 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 		Message string
 		Said    string
 	}
+	type answeredEventTwin = struct {
+		eventHeader
+		CreatedAt string
+	}
 	for _, h := range []oauth2calltest.Holder{
 		{
 			Name:     "dispatch.Error",
@@ -22,6 +26,13 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Boxed:    Error{Code: oauth2calltest.Said(oauth2calltest.Words), Said: oauth2calltest.Said(oauth2calltest.Words)},
 			Same:     errorTwin{Code: oauth2calltest.Words, Said: oauth2calltest.Words},
 			Exported: errorTwin{Code: oauth2calltest.Words, Said: oauth2calltest.Words},
+		},
+		{
+			Name:     "dispatch.answeredEvent",
+			Kind:     "fields",
+			Boxed:    answeredEvent{CreatedAt: oauth2calltest.Said(oauth2calltest.Words)},
+			Same:     answeredEventTwin{CreatedAt: oauth2calltest.Words},
+			Exported: answeredEventTwin{CreatedAt: oauth2calltest.Words},
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { oauth2calltest.PrintTest(t, h) })

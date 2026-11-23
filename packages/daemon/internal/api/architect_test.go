@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -172,7 +171,7 @@ func (r *statusRecorder) PostMessage(context.Context, string, string) error { re
 func (r *statusRecorder) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
-func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]dispatch.Event, error) {
 	return nil, nil
 }
 

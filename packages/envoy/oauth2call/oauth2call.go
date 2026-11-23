@@ -113,6 +113,11 @@ func Holds(a Answer, test func(body []byte) bool) bool { return redact.Holds(a, 
 // case it is written.
 func ContainsFold(body []byte, phrase string) bool { return redact.ContainsFold(body, phrase) }
 
+// DecodeError is redact.DecodeError: err, encoding/json's error decoding data into the value into
+// points at, as fixed text that names the type, the member and the JSON kind and quotes no value,
+// unwrapping to nothing, for a decode of bytes no answer's Decode reads whose error prints.
+func DecodeError(err error, data []byte, into any) error { return redact.DecodeError(err, data, into) }
+
 // StatusLine is redact.StatusLine: an answer's status line as a message may print it, the code and
 // its standard reason phrase, never the phrase the answering party wrote (Response.Status).
 func StatusLine(code int) string { return redact.StatusLine(code) }
