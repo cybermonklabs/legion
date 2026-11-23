@@ -393,12 +393,10 @@ type SpecEnding struct {
 // Ready says whether the ending condition holds at the head: Dispatch answered `ready`.
 func (e SpecEnding) Ready() bool { return e.State == SpecEndingReady }
 
-// SpecEndingReady and SpecEndingWaiting are the two states Dispatch's ending route answers. No
-// mechanism shares a value between this module and Dispatch's, so the spellings change together.
-const (
-	SpecEndingReady   = "ready"
-	SpecEndingWaiting = "waiting"
-)
+// SpecEndingReady is the state Dispatch's ending route answers when the change may land; it
+// answers `waiting` otherwise. No mechanism shares a value between this module and Dispatch's, so
+// the spellings change together.
+const SpecEndingReady = "ready"
 
 // EndingReason is one reason the ending condition does not hold at a head: its code
 // (`no_final_list_for_head`, `final_list_of_another_head`, `no_conclusion`, `incomplete` or

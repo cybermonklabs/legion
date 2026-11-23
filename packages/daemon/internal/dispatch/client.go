@@ -501,9 +501,7 @@ func (c *HTTPClient) ChangeRequest(ctx context.Context, key string, version int)
 	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/change-request?"+query.Encode(), nil, &response); err != nil {
 		return ChangeRequest{}, err
 	}
-	return ChangeRequest{Issue: response.Issue, Version: response.Version, SpecSource: response.SpecSource, Repo: response.Repo,
-		VerificationVersion: response.VerificationVersion, Proposes: response.Proposes, ChangesChecks: response.ChangesChecks,
-		Judgment: response.Judgment}, nil
+	return ChangeRequest(response), nil
 }
 
 // SpecEnding reads GET /api/v1/issues/{key}/change-request/ending?head=<head>: whether the issue's
