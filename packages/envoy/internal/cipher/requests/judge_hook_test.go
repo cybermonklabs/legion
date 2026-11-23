@@ -37,6 +37,7 @@ const judgedSession = "legion-1353"
 // session that enrollment recorded, the names in the request's own order, the lifetime the
 // requester signed, that requester's signed reason, and the approver the record names.
 func TestCreateHandsAPendingRequestToTheJudgeOnce(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	approver := fixtureOperator
 	nameTheSession(t, m, enr, judgedSession, fixtureOperator)
@@ -77,6 +78,7 @@ func TestCreateHandsAPendingRequestToTheJudgeOnce(t *testing.T) {
 // anyone, and that sentinel is what the hook carries, since it is who the judge decides in the
 // place of.
 func TestTheJudgeIsHandedAnAnyoneApproverRecord(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	watched := watchJudge(m)
 	if req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "Reading the shared key for INFRA-1353", 900, "SHARED_KEY"), ""); err != nil || req.State != "pending" {
@@ -91,6 +93,7 @@ func TestTheJudgeIsHandedAnAnyoneApproverRecord(t *testing.T) {
 // joins the pending request already there rather than opening a second card, and the judge is
 // handed nothing for it — so one record is judged once however many times its session asks.
 func TestTheJudgeIsNotHandedACoalescedRequest(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	watched := watchJudge(m)
 	const reason = "Rotating the Deel key for INFRA-1353"
@@ -111,6 +114,7 @@ func TestTheJudgeIsNotHandedACoalescedRequest(t *testing.T) {
 // denies at once are both answered without a person, so there is nothing for the judge to decide
 // and it is handed neither.
 func TestTheJudgeIsNotHandedARequestThePolicyDecided(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct{ secret, state string }{
 		"granted at once": {"AUTO_TOKEN", "granted"},
 		"denied at once":  {"SERVICE_KEY", "denied"},
@@ -133,6 +137,7 @@ func TestTheJudgeIsNotHandedARequestThePolicyDecided(t *testing.T) {
 // configures no judge, and such a broker writes the pending request and its record exactly as
 // before rather than faulting on a nil call.
 func TestANilJudgeIsNoJudge(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	if m.Judge != nil {
 		t.Fatal("newFixture built a machine with a judge; a machine nobody wires has none")
@@ -148,6 +153,7 @@ func TestANilJudgeIsNoJudge(t *testing.T) {
 // that is still the operator's, and the deny the policy gives a service's secret to a session
 // that is not that service's.
 func TestJudgePolicyAnswersTheLivePolicy(t *testing.T) {
+	t.Parallel()
 	m, enr, _, approver := newFixture(t)
 	decision, withheld, admin, err := m.JudgePolicy(t.Context(), enr, "DEEL_API_KEY")
 	if err != nil || decision.Outcome != policy.Approval || decision.Approver != approver || withheld || admin {
@@ -166,6 +172,7 @@ func TestJudgePolicyAnswersTheLivePolicy(t *testing.T) {
 // nothing in the outcome tells the two apart. The judge decides none of the first sort, whatever
 // seconds a rules file gives it for the name, and this is the reading its admin check makes.
 func TestJudgePolicyReportsAnAdminSecret(t *testing.T) {
+	t.Parallel()
 	m, enr, _, approver := newFixture(t)
 	retag(t, m, adminSecret())
 	decision, withheld, admin, err := m.JudgePolicy(t.Context(), enr, adminSecretName)
@@ -188,6 +195,7 @@ func TestJudgePolicyReportsAnAdminSecret(t *testing.T) {
 // every release of the secret, and an Anthropic federation secret with no admin tag is one, so the
 // judge's own check refuses it as it refuses an administrator's.
 func TestJudgePolicyReportsAFederationSecret(t *testing.T) {
+	t.Parallel()
 	m, enr, _, approver := newFixture(t)
 	retag(t, m, federationSecret())
 	decision, withheld, personOnly, err := m.JudgePolicy(t.Context(), enr, federationSecretName)
@@ -201,6 +209,7 @@ func TestJudgePolicyReportsAFederationSecret(t *testing.T) {
 // withheld name with an approval, which is exactly why the judge needs the flag as well as the
 // outcome: a name its owner took back is not one the judge hands straight back.
 func TestJudgePolicyReportsAWithheldName(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	auto, err := m.Create(t.Context(), enr, signRequest(t, m, key, "need it for INFRA-1353", "AUTO_TOKEN"), "")
 	if err != nil || auto.GrantID == nil {
@@ -226,6 +235,7 @@ func TestJudgePolicyReportsAWithheldName(t *testing.T) {
 // there, are each an error rather than a decision. A judge that read silence as approval would
 // grant a credential to a box that has gone.
 func TestJudgePolicyRefusesAnEnrollmentThatIsNotLive(t *testing.T) {
+	t.Parallel()
 	m, enr, _, _ := newFixture(t)
 	if _, err := m.Store.Pool.Exec(context.Background(), `update enrollments set revoked_at=now() where id=$1`, enr); err != nil {
 		t.Fatalf("revoke the enrollment: %v", err)

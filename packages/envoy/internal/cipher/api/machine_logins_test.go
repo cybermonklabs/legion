@@ -97,6 +97,7 @@ func (ts *testServer) enrolledBox(t *testing.T, machineKey *ecdsa.PrivateKey, cr
 // it at once — its session's proofs, its launcher proofs, its grant and its pending request all
 // go, and another person's machine login stays.
 func TestAPersonRevokesTheirOwnMachineLogin(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	otherID, _ := ts.mintLauncherCredential(t, "bob@example.com", "example-host-laptop")
@@ -195,6 +196,7 @@ func TestAPersonRevokesTheirOwnMachineLogin(t *testing.T) {
 // pod it enrolled: each pod's renew and grant values are refused, its launcher enrolls no pod more,
 // it leaves everyone's list, and the audit row names bob, the service and both pods.
 func TestAnyoneRevokesAServiceLogin(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, launcherKey := ts.mintOutstandingServiceCredential(t, testApprover)
 	podUID := uuid.NewString()
@@ -286,6 +288,7 @@ func TestAnyoneRevokesAServiceLogin(t *testing.T) {
 // NOT_ENROLLING_CREDENTIAL and ends nothing (the pod still renews); the login that enrolled the pod
 // ends it (204), and its renew is refused from then on.
 func TestOnlyTheLoginThatEnrolledAPodDeletesItsEnrollment(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrolling, enrollingKey := ts.mintServiceLauncherCredential(t)
 	other, otherKey := ts.mintServiceLauncherCredentialAs(t, otherDaemonAccount)
@@ -328,6 +331,7 @@ func TestOnlyTheLoginThatEnrolledAPodDeletesItsEnrollment(t *testing.T) {
 // login's enrollment of the same pod UID. A machine session sending a pod token is 403
 // POD_IDENTITY_MISMATCH.
 func TestAPodRenewsCarryingItsCurrentToken(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	cred, credKey := ts.mintServiceLauncherCredential(t)
 	enrollPod := func(t *testing.T) (string, string, *ecdsa.PrivateKey) {
@@ -458,6 +462,7 @@ func TestAPodRenewsCarryingItsCurrentToken(t *testing.T) {
 // own pending list and no one else's, and a service's device-code login opens nothing to wait in
 // anyone's.
 func TestAPersonsPendingMachineLoginWaitsInTheirsAlone(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	code := ts.openMachineLogin(t, newSigningKey(t), testApprover, "example-host-devbox")
 	_, body := ts.ui(t, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": code})
@@ -524,6 +529,7 @@ func (ts *testServer) mintOutstandingServiceCredential(t *testing.T, approvedBy 
 // broker opened before token logins, still pending, is refused 400 SERVICE_LOGS_IN_WITH_TOKEN to anyone who
 // approves it, and mints nothing; anyone signed in may still deny it.
 func TestAPendingServiceLoginFromBeforeTokenLoginsIsNeverApproved(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	body := record.Body{
 		Request:         signMachineLoginRequest(t, newSigningKey(t), ts.URL, "", "cluster.example", "legion-daemon"),
@@ -562,6 +568,7 @@ type stateBody struct {
 // enroll.Service.RevokeCredential does, with revoked_at set), and is answered 401 LAUNCHER_INVALID
 // once the revoke commits, the refusal the helper drops its credential on.
 func TestAnEnrollmentRacingItsMachineLoginsRevokeIsLauncherInvalid(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ctx := context.Background()
 	credentialID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
@@ -635,6 +642,7 @@ func TestAnEnrollmentRacingItsMachineLoginsRevokeIsLauncherInvalid(t *testing.T)
 // session the machine started must end, the box enrolled under the expired login included: so the
 // list shows that login, marked expired, while one of its sessions is live.
 func TestRevokingEveryListedLoginEndsEverySessionTheMachineStarted(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	oldLogin, oldMachineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	oldBox, oldBoxKey := ts.enrolledBox(t, oldMachineKey, oldLogin, "box-old-"+t.Name())

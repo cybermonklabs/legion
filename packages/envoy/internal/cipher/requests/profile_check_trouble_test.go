@@ -94,6 +94,7 @@ func answersInstallationsWith(stand *gitHubStand, status int, body string) {
 // (docs/site/src/content/docs/broker/operate.md, the "narrowing check was skipped" row): each of
 // them leaves the request pending all the same, so the request's state cannot tell them apart.
 func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testing.T) {
+	t.Parallel()
 	// APP_KEY's profile names one repository; OTHER_APP_KEY's, one the stand-in refuses, which
 	// the spent-checks row asks for to spend the enrollment's checks.
 	profiles := map[string]string{
@@ -280,6 +281,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 // and only the reason the caller reads is left: a search that runs out of budget or meets an
 // answer that is no verdict names the whole scope and says the cause was not found.
 func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.T) {
+	t.Parallel()
 	profiles := map[string]string{
 		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/` + standInRepository + `"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	}

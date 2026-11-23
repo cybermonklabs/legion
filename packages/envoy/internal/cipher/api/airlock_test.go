@@ -33,6 +33,7 @@ type wireAirlockValues struct {
 // this and no "values" entry for the name is what makes an old CLI refuse to run rather than run
 // with a placeholder it does not understand.
 func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
+	t.Parallel()
 	const (
 		proxyURL      = "http://127.0.0.1:13381"
 		caCertificate = "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"

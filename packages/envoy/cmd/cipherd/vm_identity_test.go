@@ -102,6 +102,7 @@ func captureLog(t *testing.T) *bytes.Buffer {
 // the cluster's key set alone, builds the pod verifier on it, answers that same key set for the
 // token exchange, holds no Google key set, and logs nothing about Google.
 func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
+	t.Parallel()
 	logged := captureLog(t)
 	d := &discovery{}
 	found, err := discoverVerifiers(context.Background(), vmConfig(t, ""), d.keysFor)
@@ -132,6 +133,7 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 // own keys, and logs one line naming the issuer, the audience, the machine services and how many
 // machine entries the exchange holds.
 func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
+	t.Parallel()
 	logged := captureLog(t)
 	d := &discovery{}
 	found, err := discoverVerifiers(context.Background(), vmConfig(t, "example-vm-audience"), d.keysFor)
@@ -155,6 +157,7 @@ func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 // keys the broker reads and whose tokens the exchange takes, so a dev stack's stand-in
 // (cmd/dev-oidc-issuer) serves in Google's place with nothing else changed.
 func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
+	t.Parallel()
 	logged := captureLog(t)
 	d := &discovery{}
 	cfg := vmConfig(t, "example-vm-audience")
@@ -179,6 +182,7 @@ func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
 // stops authenticating at its next call, and the request decisions, without which a machine's
 // session is never its fleet's.
 func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
+	t.Parallel()
 	cfg := vmConfig(t, "example-vm-audience")
 	enr := &enroll.Service{VMServicesByAccount: cfg.VMServicesByAccount}
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
@@ -199,6 +203,7 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 // read of Dispatch (judgeDispatch), which answers a Legion pod's issue's assignee, only where
 // BROKER_JUDGE_DISPATCH_URL is set, and is the very read main gives the model judge.
 func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
+	t.Parallel()
 	const otherAccount = "example-other@example-project.iam.gserviceaccount.com"
 	cfg := vmConfig(t, "example-vm-audience")
 	cfg.ExchangeGoogleAccounts = []exchange.GoogleEntry{
@@ -232,6 +237,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 // BROKER_VM_SERVICES', sorted and each once, so a secret a machine service owns is that
 // service's and not refused as owner-tag-malformed.
 func TestThePolicyServesTheVMServicesSecrets(t *testing.T) {
+	t.Parallel()
 	if got, want := serviceNames(vmConfig(t, "example-vm-audience")), []string{"example-fleet", "example-service"}; !slices.Equal(got, want) {
 		t.Fatalf("serviceNames = %v, want %v", got, want)
 	}
@@ -244,6 +250,7 @@ func TestThePolicyServesTheVMServicesSecrets(t *testing.T) {
 // sign-in needs a VM service for the machine's actor token, even when a Google API caller uses
 // the same audience. The refusal comes before the broker reaches its database or binds.
 func TestDeviceSignInWithNoVMServicesIsRefusedAtBoot(t *testing.T) {
+	t.Parallel()
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
@@ -262,6 +269,7 @@ func TestDeviceSignInWithNoVMServicesIsRefusedAtBoot(t *testing.T) {
 // naming the audience and all three ways to give it a caller, before the broker reaches its
 // database or binds.
 func TestAGoogleAudienceWithNoGoogleCallerIsRefusedAtBoot(t *testing.T) {
+	t.Parallel()
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",
@@ -276,6 +284,7 @@ func TestAGoogleAudienceWithNoGoogleCallerIsRefusedAtBoot(t *testing.T) {
 // issuer and no Google audience: it boots, and its boot log names neither Google's issuer nor a VM
 // identity line.
 func TestWithNoGoogleAudienceTheBootLogHoldsNoGoogleLine(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	issuer.PublishKey(t, "signing-key")
@@ -306,6 +315,7 @@ func TestWithNoGoogleAudienceTheBootLogHoldsNoGoogleLine(t *testing.T) {
 // BROKER_EXCHANGE_K8S_AUDIENCE: a pod's trade there mints no launcher credential, so no machine
 // could register a session under it.
 func TestTheSettingsNameOnlyAnAudienceAMachineCanTradeFor(t *testing.T) {
+	t.Parallel()
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")

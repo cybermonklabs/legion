@@ -76,6 +76,7 @@ func auditedEnrollment(t *testing.T, m *Machine, kind, grantID string) string {
 // answered such an approval with "the requesting enrollment is no longer live" and minted
 // nothing, which is the half of the incident the issue reports.
 func TestAnApprovalAfterTheMoveGrantsToTheEnrollmentTheRequestNamesNow(t *testing.T) {
+	t.Parallel()
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -123,6 +124,7 @@ func TestAnApprovalAfterTheMoveGrantsToTheEnrollmentTheRequestNamesNow(t *testin
 // one request row, one grant row and one record for the session — no second card for a person to
 // answer and no second grant to revoke.
 func TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack(t *testing.T) {
+	t.Parallel()
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -153,6 +155,7 @@ func TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack(t *testing.T) {
 // answers after a move: LiveGrants reads the grants row's own enrollment_id, which the move
 // rewrote, so the session's new box lists the moved grant and the box it left lists nothing.
 func TestSelfListsTheMovedGrantUnderTheEnrollmentThatHoldsItNow(t *testing.T) {
+	t.Parallel()
 	m, first, key, _ := newFixture(t)
 	ctx := context.Background()
 	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -181,6 +184,7 @@ func TestSelfListsTheMovedGrantUnderTheEnrollmentThatHoldsItNow(t *testing.T) {
 // rather than opening a second card, and the box it left, which holds nothing now, is refused
 // nothing and opens a card of its own. The approver's list shows each card once.
 func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.T) {
+	t.Parallel()
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -214,6 +218,7 @@ func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.
 // (enrollment:<id>): the session cancels its card from the box it runs on now and the box it left
 // is ErrNotYours.
 func TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot(t *testing.T) {
+	t.Parallel()
 	m, first, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -240,6 +245,7 @@ func TestTheMovedSessionCancelsItsMovedPendingRequestAndTheBoxItLeftCannot(t *te
 // after a move: it reads the grants row's own enrollment_id, which the move rewrote, so the
 // session ends its own grant from the box it runs on now and the box it left is ErrNotYours.
 func TestTheMovedSessionRevokesItsMovedGrantAndTheBoxItLeftCannot(t *testing.T) {
+	t.Parallel()
 	m, first, key, _ := newFixture(t)
 	ctx := context.Background()
 	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -270,6 +276,7 @@ func TestTheMovedSessionRevokesItsMovedGrantAndTheBoxItLeftCannot(t *testing.T) 
 // it ends it. She is the approver and not the session's operator, so it withholds nothing
 // (mayRevoke).
 func TestTheApproversRevokeReachesTheMovedGrant(t *testing.T) {
+	t.Parallel()
 	m, first, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "ALICE_KEY"), "")
@@ -310,6 +317,7 @@ func TestTheApproversRevokeReachesTheMovedGrant(t *testing.T) {
 // enrollment the grants row names now, and withhold writes against that same enrollment, so the
 // name is withheld from the box the session runs on and its next ask for it waits on a person.
 func TestTheOperatorsRevokeAfterTheMoveWithholdsAgainstTheBoxTheGrantHangsOffNow(t *testing.T) {
+	t.Parallel()
 	m, first, key, operator := newFixture(t)
 	ctx := context.Background()
 	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -341,6 +349,7 @@ func TestTheOperatorsRevokeAfterTheMoveWithholdsAgainstTheBoxTheGrantHangsOffNow
 // requester reads the withheld names by the enrollment's own id, and the move carried the rows
 // there.
 func TestAWithholdMadeBeforeTheMoveStillWithholdsAfterIt(t *testing.T) {
+	t.Parallel()
 	m, first, key, operator := newFixture(t)
 	ctx := context.Background()
 	auto, err := m.Create(ctx, first, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")

@@ -23,6 +23,7 @@ import (
 // hides the grant from them, so they are answered as for a grant id no grant has and the grant
 // stays live.
 func TestARevokeDecidesOnlyOnTheGrantTheRuleJudged(t *testing.T) {
+	t.Parallel()
 	m, session, key := newJudgeFixture(t)
 	grantID := judgedGrant(t, m, session, key, 600, "SHARED_KEY")
 	answerFrom(t, m, map[string]projectaccesstest.Row{"INFRA": {Visibility: "private", Owner: otherPerson, Listed: []string{insider}}})
@@ -59,6 +60,7 @@ func TestARevokeDecidesOnlyOnTheGrantTheRuleJudged(t *testing.T) {
 // GRANT_MOVING, having revoked and withheld nothing; once the grant stays put, the same revoke
 // ends it.
 func TestARevokeOfAGrantThatKeepsMovingAnswersErrGrantMoving(t *testing.T) {
+	t.Parallel()
 	m, a, keyA, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, grantID := grantOf(t, m, a, keyA, "deploy the worker", "AUTO_TOKEN")
 	b, _ := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)

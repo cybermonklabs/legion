@@ -89,6 +89,7 @@ func newTestEdgeMuxClocked(t *testing.T, ping func(context.Context) error, now f
 // The named revert: leave the edge's Deps.DatabasePing the broker's own, so its GET /healthz pings
 // on each check as the API port's does, and the fifty checks cost fifty pings.
 func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
+	t.Parallel()
 	var pings atomic.Int64
 	mux := newTestEdgeMuxPinging(t, func(context.Context) error { pings.Add(1); return nil })
 	for i := range 50 {
@@ -116,6 +117,7 @@ func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
 // through writeUnavailable at the edge too, and the callers write fifty-five lines, none naming a
 // port.
 func TestTheEdgesHealthWritesOneLineAPing(t *testing.T) {
+	t.Parallel()
 	log := &logtest.Recorder{}
 	logtest.SetDefault(t, log)
 	failing := fmt.Errorf("database away")
@@ -181,6 +183,7 @@ func TestTheEdgesHealthWritesOneLineAPing(t *testing.T) {
 //
 // The named revert: add "POST /v1/enrollments" to edgeRoutes, and this fails naming it.
 func TestTheEdgeMountsOnlyTheDeviceLoginRoutes(t *testing.T) {
+	t.Parallel()
 	mux := newTestEdgeMux(t)
 	want := map[string]bool{
 		http.MethodPost + " " + deviceAuthorizationPath: true,
@@ -213,6 +216,7 @@ func TestTheEdgeMountsOnlyTheDeviceLoginRoutes(t *testing.T) {
 // The named revert: mount the edge's rows by path alone, so the mux serves any method, and the
 // GET, PUT and DELETE rows reach the login handlers' gates.
 func TestTheEdgeAnswersOnlyPostOnItsLoginPaths(t *testing.T) {
+	t.Parallel()
 	mux := newTestEdgeMux(t)
 	for _, path := range []string{deviceAuthorizationPath, tokenPath} {
 		for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions} {
@@ -233,6 +237,7 @@ func TestTheEdgeAnswersOnlyPostOnItsLoginPaths(t *testing.T) {
 // machine-login service, request machine or launcher credentials' chain that does not take the
 // edge's URL as its EdgeAudience — or that serves no device grant.
 func TestTheEdgeRefusesADepsItCannotServe(t *testing.T) {
+	t.Parallel()
 	provider, err := oauth.New(oauth.Config{
 		Secret: make([]byte, 32), DeviceLifetime: time.Minute, AccessLifetime: time.Minute, RefreshLifetime: time.Hour,
 		VerificationURL: "https://dispatch.internal.example/credentials/machine", ProofSkew: time.Minute,
@@ -290,6 +295,7 @@ func TestTheEdgeRefusesADepsItCannotServe(t *testing.T) {
 // The named revert: add "POST /v1/enrollments", a launcher's route, to edgeRoutes, and this fails
 // naming it.
 func TestEveryEdgeRouteTakesNoCredential(t *testing.T) {
+	t.Parallel()
 	table := map[string]apiRoute{}
 	for _, route := range routes() {
 		table[route.Method+" "+route.Pattern] = route
@@ -318,6 +324,7 @@ func TestEveryEdgeRouteTakesNoCredential(t *testing.T) {
 // The named reverts: drop the client check, and the Google machine's and the person sign-in's
 // tokens pass; drop the person check, and the Workspace person's token passes.
 func TestTheEdgesTokenHooksServeAPersonOutsideTheWorkspaceAlone(t *testing.T) {
+	t.Parallel()
 	var ran int
 	hooks := edgeTokenHooks(oauth.TokenHooks{
 		Before: func(context.Context, oauth2.GrantType, map[string]any) error { ran++; return nil },

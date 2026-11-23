@@ -25,6 +25,7 @@ const (
 // person who did not approve it, its rotated value included, and reuse no longer hands it back:
 // asking again is a new request to the new owner.
 func TestAnApprovalStopsWhenItsSecretChangesHands(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		secret, approver, value string
 		handedOver              secrets.LocalSecret
@@ -79,6 +80,7 @@ func TestAnApprovalStopsWhenItsSecretChangesHands(t *testing.T) {
 // it (any person for one waiting on anyone, alice for one waiting on her), and bob, its secret's
 // new owner but not that approver, cannot.
 func TestAPendingRequestIsApprovedByWhomTheTagsNameNow(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	enr, key := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
@@ -147,6 +149,7 @@ func TestAPendingRequestIsApprovedByWhomTheTagsNameNow(t *testing.T) {
 // decides it again, and the session's next ask for each name is a new request to the secret's new
 // owner rather than the denied one reused.
 func TestADenialAfterAnOwnerChangeReleasesNothingAndClosesTheRecord(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	enr, key := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
@@ -227,6 +230,7 @@ func TestADenialAfterAnOwnerChangeReleasesNothingAndClosesTheRecord(t *testing.T
 // for, from the 12-hour default to DefaultHumanGrantLifetime, and reuse matches the lifetime, so
 // such a request opens a new one rather than taking the live grant.
 func TestAnOwnersApprovalSurvivesLooseningToShared(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need alice's", "ALICE_KEY"), "")
@@ -265,6 +269,7 @@ func TestAnOwnersApprovalSurvivesLooseningToShared(t *testing.T) {
 // then; but the grant releases nothing while the secret is refused, nothing once the tag is
 // corrected to alice, who never approved it, and reuse does not hand it back.
 func TestAnApprovalGivenWhileItsSecretWasRefusedReleasesNothing(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	enr, key := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
@@ -300,6 +305,7 @@ func TestAnApprovalGivenWhileItsSecretWasRefusedReleasesNothing(t *testing.T) {
 // approver for it, so alice, the approver the request waits on, may still approve it, and the
 // grant releases nothing at its first read.
 func TestAnApprovalOfASecretNoLongerServedIsLeftToItsApprover(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	enr, key := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
@@ -324,6 +330,7 @@ func TestAnApprovalOfASecretNoLongerServedIsLeftToItsApprover(t *testing.T) {
 // and padded, then raises the secret to human tier. She is still its approver, so the grant keeps
 // releasing, its new value included.
 func TestAnOwnersApprovalSurvivesHerRaisingTheTier(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	enr, key := newEnrollment(t, m.Store, "session", "box-bob-"+t.Name(), new(bob), nil)
@@ -348,6 +355,7 @@ func TestAnOwnersApprovalSurvivesHerRaisingTheTier(t *testing.T) {
 // human-tier one, and another person's session asking for the owner's agent-tier secret beside a
 // shared human-tier one, are both refused ErrMixedApprovers, writing no request and no record.
 func TestRequestsNeedingTwoApproversAreRefused(t *testing.T) {
+	t.Parallel()
 	m, ownerEnr, ownerKey, _ := newFixture(t)
 	ctx := context.Background()
 	otherEnr, otherKey := newEnrollment(t, m.Store, "session", "box-mallory-"+t.Name(), new(mallory), nil)
@@ -375,6 +383,7 @@ func TestRequestsNeedingTwoApproversAreRefused(t *testing.T) {
 // the one name "AUTO_TOKEN,SHARED_TOKEN" is not that grant, and is refused as a name the policy
 // does not serve.
 func TestReuseComparesWholeNames(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"))
 	ctx := context.Background()

@@ -20,6 +20,7 @@ import (
 // the operator's list holds a grant another login approved on their enrollment, and must say that
 // login decided it, not leave the operator to assume they did.
 func TestGrantsForApproverNamesWhoApproved(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	pending, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "ALICE_KEY"), "")
@@ -46,6 +47,7 @@ func TestGrantsForApproverNamesWhoApproved(t *testing.T) {
 // the three-field enrollment line and a slotted one's with its slot as a fourth field, both decide
 // and release through the whole chain, and each read names the slot it came from.
 func TestEachSlotOfAPodSignsItsOwnRecordAndListsItsOwnGrant(t *testing.T) {
+	t.Parallel()
 	m, _, _, approver := newFixture(t)
 	ctx := context.Background()
 	const podUID = "pod-uid-slots"
@@ -109,6 +111,7 @@ func TestEachSlotOfAPodSignsItsOwnRecordAndListsItsOwnGrant(t *testing.T) {
 // terminal-event predicate of each statement must be that literal, so one copy that drifted fails
 // the test even beside one that did not.
 func TestPendingForApproverTerminalEventsLiteralMatchesTheList(t *testing.T) {
+	t.Parallel()
 	names := record.TerminalEventNames()
 	quoted := make([]string, len(names))
 	for i, name := range names {
@@ -140,6 +143,7 @@ func TestPendingForApproverTerminalEventsLiteralMatchesTheList(t *testing.T) {
 // terminal-event reads, or credential_request_dismissals' primary key (migration 0033) for the
 // expired rows' NOT EXISTS.
 func TestPendingForApproverAvoidsSequentialScans(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	for _, statement := range []struct {
@@ -200,6 +204,7 @@ func TestPendingForApproverAvoidsSequentialScans(t *testing.T) {
 // request's own override (stated in its body at Create) independently, through both reads that
 // answer one (ReadRecord and PendingForApprover).
 func TestReadRecordAndPendingNameBothSessionIDsWhenTheyDiffer(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	if _, err := m.Store.Pool.Exec(ctx, `update enrollments set session_id=$2 where id=$1`, enr, "sess-enrollment-1"); err != nil {
@@ -229,6 +234,7 @@ func TestReadRecordAndPendingNameBothSessionIDsWhenTheyDiffer(t *testing.T) {
 // list returned that record's "aud does not match" and the approval page and GET /v1/pending
 // answered 503 for every request of that approver until the record expired.
 func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
+	t.Parallel()
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	m, first, firstKey, approver := newFixture(t)
@@ -293,6 +299,7 @@ func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
 // still be warned about once, not on every poll of every open tab. Before, leaveOut dropped its
 // entry at expires_at and logged it again on each list.
 func TestPendingForApproverWarnsOnceAboutALeftOutRecordPastItsExpiry(t *testing.T) {
+	t.Parallel()
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	m, enr, key, approver := newFixture(t)
@@ -349,6 +356,7 @@ func TestPendingForApproverWarnsOnceAboutALeftOutRecordPastItsExpiry(t *testing.
 // enrollment's revocation: enrollments.session_id is never cleared when revoked_at is set, so a
 // decided record's own read still names the session that enrolled.
 func TestReadRecordKeepsTheEnrollmentSessionIDAfterRevocation(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	if _, err := m.Store.Pool.Exec(ctx, `update enrollments set session_id=$2 where id=$1`, enr, "sess-enrollment-revoked"); err != nil {
@@ -375,6 +383,7 @@ func TestReadRecordKeepsTheEnrollmentSessionIDAfterRevocation(t *testing.T) {
 // TestReadRecordNamesNoSessionForAMachineLogin pins that a launcher_credential record - which has
 // no request row and no requesting enrollment at all - always answers both session ids empty.
 func TestReadRecordNamesNoSessionForAMachineLogin(t *testing.T) {
+	t.Parallel()
 	m, _, key, _ := newFixture(t)
 	ctx := context.Background()
 	body := record.Body{
@@ -409,6 +418,7 @@ func TestReadRecordNamesNoSessionForAMachineLogin(t *testing.T) {
 // throughout, which is what says the two reads tell the decider from the approver rather than
 // having swapped one for the other.
 func TestAJudgedRecordAndItsGrantNameTheJudge(t *testing.T) {
+	t.Parallel()
 	m, session, key := newJudgeFixture(t)
 	judge := record.JudgeActor(judgeModel)
 

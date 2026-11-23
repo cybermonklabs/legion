@@ -18,6 +18,7 @@ import (
 // false — an approval refused before its COMMIT — is written as given, with no read. The cut is
 // testCommitCut, run after the transaction committed.
 func TestAJudgesApprovalWhoseCommitAnswerWasLostLeavesOneRow(t *testing.T) {
+	t.Parallel()
 	const reason = "INFRA-12: rotate the deploy key"
 	lost := errors.New("unexpected EOF: the COMMIT's answer was lost")
 	failureRow := func(applied any, err error) map[string]any {

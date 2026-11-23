@@ -45,6 +45,7 @@ func (ts *testServer) signInCredential(t *testing.T, person, thumbprint, machine
 // machine-logins revoke does not find it, so no caller can make the no-op revoke that left the
 // sign-in alive. A machine's own credential, which is a machine login, is listed as before.
 func TestASignInsCredentialIsNoMachineLogin(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.signIn(t, signInAda, adaBoxOne, signInFleetOne)
 	credentialID := ts.signInCredential(t, signInAda, adaBoxOne, signInFleetOne)
@@ -73,6 +74,7 @@ func TestASignInsCredentialIsNoMachineLogin(t *testing.T) {
 // whole — the row, so the box's next trade is answered nothing, and the credential it held, so
 // the box reaches no secret in the meantime.
 func TestRevokingASignInEndsTheCredentialItHolds(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.signIn(t, signInAda, adaBoxOne, signInFleetOne)
 	credentialID := ts.signInCredential(t, signInAda, adaBoxOne, signInFleetOne)

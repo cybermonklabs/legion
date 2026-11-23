@@ -24,6 +24,7 @@ import (
 // his revoke answers as an unknown grant's does and ends nothing. carol, its approver, still lists
 // it.
 func TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
 	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: privProject, Person: insider}}, nil, nil, nil, "")
@@ -94,6 +95,7 @@ func TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant(t *testing.T) {
 // approved it nor is its operator, and the grant stays live with nothing withheld from the pod. Its
 // approver still ends it.
 func TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
 	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider}}, nil, nil, nil, "")
@@ -142,6 +144,7 @@ func TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay(t *te
 // The people asked are dave (the pod's person), sami and carol (PRIV's list), alice (PRIV's owner)
 // and mallory (on neither project).
 func TestAPodsAutomaticGrantIsOnThePageOfWhoeverMaySeeIt(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	everyone := []string{dave, fixtureOperator, insider, otherPerson, outsider}
 	for _, c := range []struct {

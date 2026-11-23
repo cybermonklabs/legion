@@ -22,6 +22,7 @@ import (
 // before any release leaves the grant live, and its next release goes through the minter of its
 // original type, returning that minter's token and never the stored value.
 func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *testing.T) {
+	t.Parallel()
 	for name, away := range map[string]string{"removed": "", "changed": policy.TypeGoogleLogin} {
 		t.Run(name, func(t *testing.T) {
 			machine, enrollmentID, key, _ := newAppFixture(t, "QUIET_TYPE_KEY")
@@ -85,6 +86,7 @@ func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *tes
 // below a live grant's lifetime and raised back before any release leaves that grant live, and its
 // next release mints its type's token, never the stored value.
 func TestAMaxGrantLoweredAndRaisedWithNoReleaseBetweenLeavesTheGrantAsItWas(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	var calls int
 	machine.Minters = map[string]Minter{

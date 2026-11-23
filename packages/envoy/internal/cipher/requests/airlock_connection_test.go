@@ -46,6 +46,7 @@ func twoNameGrant(t *testing.T, reason string) (m *Machine, enrollmentID, grantI
 // grant's placeholders proves the whole grant — its ids, its expiry, the issue its request named,
 // and every airlock name with its slots and its type — so the proxy can swap any of them.
 func TestAirlockConnectionAnswersEverySlotOfALiveGrant(t *testing.T) {
+	t.Parallel()
 	m, enr, grantID, release := twoNameGrant(t, "deploy for INFRA-1352 today")
 	for slot, placeholder := range maps.Clone(release.Airlock.Names["AWS_KEY"].Slots) {
 		conn, err := m.AirlockConnection(t.Context(), placeholder)
@@ -80,6 +81,7 @@ func TestAirlockConnectionAnswersEverySlotOfALiveGrant(t *testing.T) {
 // whose grant has ended are both ErrGrantNotLive, which the proxy answers 407. A revoked grant's
 // own string is the case that matters: it is in a running command's environment.
 func TestAirlockConnectionRefusesWhatOpensNothing(t *testing.T) {
+	t.Parallel()
 	m, enr, grantID, release := twoNameGrant(t, "no issue here")
 	if conn, err := m.AirlockConnection(t.Context(), PlaceholderPrefix+"neverMintedByThisBrokerAtAll00"); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("AirlockConnection(an unknown placeholder) = %+v, %v; want ErrGrantNotLive", conn, err)
@@ -103,6 +105,7 @@ func TestAirlockConnectionRefusesWhatOpensNothing(t *testing.T) {
 // it, and the grant is one the session got without asking, which a withhold that wrote them
 // would also have ended (withhold).
 func TestAirlockConnectionDropsAWithheldName(t *testing.T) {
+	t.Parallel()
 	m, enr, _, release := twoNameGrant(t, "read both")
 	placeholder := release.Airlock.Names["AWS_KEY"].Slots[SlotAWSAccessKeyID]
 	withhold := func(name string) {
@@ -150,6 +153,7 @@ func proxiedProfileFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 // session got without asking, holds a proxied profile of another name is refused with
 // ErrAirlockNoNames once the source alone is withheld, as it is when the profile's own name is.
 func TestAirlockConnectionDropsAProfileOfAWithheldSource(t *testing.T) {
+	t.Parallel()
 	m, enr, key := proxiedProfileFixture(t)
 	_, grantID := grantOf(t, m, enr, key, "read it through the proxy", "AUTO_TOKEN_PROXY")
 	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
@@ -175,6 +179,7 @@ func TestAirlockConnectionDropsAProfileOfAWithheldSource(t *testing.T) {
 // refused with ErrAirlockNoNames once AUTO_TOKEN_PROXY, another profile of that source, is the one
 // name withheld.
 func TestAirlockConnectionDropsTheSourcesOwnNameOnceAProfileOfItIsWithheld(t *testing.T) {
+	t.Parallel()
 	m, enr, key := proxiedProfileFixture(t)
 	_, grantID := grantOf(t, m, enr, key, "the source through the proxy", "AUTO_TOKEN")
 	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
@@ -244,6 +249,7 @@ func carries(t *testing.T, m *Machine, release Release, want ...string) {
 // stands, as Values releases it (stillAllowed). So the proxy carries a withheld name its owner
 // approved for the session after the withhold, as it carries any other approval.
 func TestAirlockConnectionCarriesAWithheldNameAPersonApproved(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	withholdAsItsOperator(t, m, enr, key, "AUTO_TOKEN")
 	asked, err := m.Create(t.Context(), enr, signRequest(t, m, key, "asked again once withheld", "AUTO_TOKEN"), "")
@@ -257,6 +263,7 @@ func TestAirlockConnectionCarriesAWithheldNameAPersonApproved(t *testing.T) {
 // profile whose source is withheld, which the withhold sends to the source's owner
 // (policy.Set.Withholds): the owner's approval of the profile after the withhold is carried.
 func TestAirlockConnectionCarriesAProfileOfAWithheldSourceAPersonApproved(t *testing.T) {
+	t.Parallel()
 	m, enr, key := proxiedProfileFixture(t)
 	withholdAsItsOperator(t, m, enr, key, "AUTO_TOKEN")
 	asked, err := m.Create(t.Context(), enr, signRequest(t, m, key, "the profile, once its source is withheld", "AUTO_TOKEN_PROXY"), "")
@@ -273,6 +280,7 @@ func TestAirlockConnectionCarriesAProfileOfAWithheldSourceAPersonApproved(t *tes
 // automatic decision notwithstanding, since the person who decided the request approved it under
 // the withhold (stillAllowed). So the proxy carries it too.
 func TestAirlockConnectionCarriesAWithheldNameARequestGotWithoutAskingThatAPersonApproved(t *testing.T) {
+	t.Parallel()
 	m, enr, key := proxiedProfileFixture(t)
 	mixed, err := m.Create(t.Context(), enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN_PROXY", "DEEL_API_KEY"), "")
 	if err != nil {
@@ -290,6 +298,7 @@ func TestAirlockConnectionCarriesAWithheldNameARequestGotWithoutAskingThatAPerso
 // policy version the checks ran under, which the proxy holds beside them. The names the
 // rules do not hold back are no part of it, since the session already holds them.
 func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
@@ -320,6 +329,7 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 // release checks, so a grant Values would end is ended here too rather than going on being
 // proxied by the pod that holds the connection: here a grant whose profile's proxy block moved.
 func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
@@ -343,6 +353,7 @@ func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
 // TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded: the rows of a live grant stay and
 // the rows of a revoked one go, so the table does not grow with every grant the broker ever made.
 func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, ended := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), ended, enr, ReleaseCall{}); err != nil {
@@ -368,6 +379,7 @@ func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
 // own columns, read in the join the connection read already makes, so an enrollment with no
 // session answers the empty string rather than refusing the connection.
 func TestAirlockConnectionAnswersTheEnrollmentsSessionAndRuntime(t *testing.T) {
+	t.Parallel()
 	m, enr, _, release := twoNameGrant(t, "reach the service")
 	placeholder := release.Airlock.Names["LOGIN_KEY"].Slots[SlotValue]
 	// The fixture enrolls with no session, so the row names one: a read that answered the empty

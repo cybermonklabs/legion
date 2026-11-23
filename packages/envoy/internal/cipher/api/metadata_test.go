@@ -52,6 +52,7 @@ func (ts *testServer) metadata(t *testing.T) wireMetadata {
 // device grant, the refresh grant and the token exchange are served, that a client presents no
 // credential at the token endpoint, and which subject tokens the exchange takes.
 func TestTheMetadataDocumentNamesTheBrokersOwnEndpoints(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	document := ts.metadata(t)
 
@@ -93,6 +94,7 @@ func TestTheMetadataDocumentNamesTheBrokersOwnEndpoints(t *testing.T) {
 // TestTheMetadataDocumentIsJSONForAnyCaller pins that the route takes no credential and answers
 // JSON: it is what a client reads before it holds anything to present.
 func TestTheMetadataDocumentIsJSONForAnyCaller(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	resp, err := http.Get(ts.URL + "/.well-known/oauth-authorization-server")
 	if err != nil {
@@ -139,6 +141,7 @@ func withoutTheDeviceGrant(t *testing.T) func(*api.Deps) {
 // path is a 404, and the metadata names neither the device code nor the device authorization
 // endpoint — while the token endpoint, introspection and revocation are mounted as ever.
 func TestWithNoDeviceGrantTheRouteIsGoneAndTheDocumentSaysSo(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withoutTheDeviceGrant(t))
 
 	status, body := ts.req(t, http.MethodPost, "/v1/oauth/device_authorization", nil, nil)
@@ -168,6 +171,7 @@ func TestWithNoDeviceGrantTheRouteIsGoneAndTheDocumentSaysSo(t *testing.T) {
 // TestWithNoProviderThereIsNoMetadata: a broker wired with no OAuth provider serves neither the
 // OAuth routes nor a document that would name them.
 func TestWithNoProviderThereIsNoMetadata(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) { d.OAuth = nil })
 	if status, body := ts.req(t, http.MethodGet, "/.well-known/oauth-authorization-server", nil, nil); status != http.StatusNotFound {
 		t.Fatalf("GET the metadata with no provider = %d %s, want 404", status, body)

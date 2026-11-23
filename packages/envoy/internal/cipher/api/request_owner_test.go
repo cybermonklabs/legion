@@ -176,6 +176,7 @@ func (ts *testServer) serviceLogin(t *testing.T) launcherLogin {
 // claim's, so another pod of the claim, under a session of its own, reads it and cancels it while
 // the first pod is still running and holds it, and the first pod reads the cancel.
 func TestALaterEnrollmentOfTheSameClaimReadsAndCancels(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)
 	first := ts.enrolPod(t, daemon, plannerClaim, "planner-session-1")
@@ -191,6 +192,7 @@ func TestALaterEnrollmentOfTheSameClaimReadsAndCancels(t *testing.T) {
 // request is, so another role of the same issue under the same launcher is refused NOT_YOURS on
 // both routes and the request is still pending for its own claim.
 func TestAnotherClaimOfTheSameServiceCannotCancel(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)
 	planner := ts.enrolPod(t, daemon, plannerClaim, "planner-session-1")
@@ -205,6 +207,7 @@ func TestAnotherClaimOfTheSameServiceCannotCancel(t *testing.T) {
 // person's, so their session on another box, under a machine login of its own, reads and cancels
 // it, and another person's session is refused.
 func TestAPersonReadsAndCancelsTheirRequestFromAnotherBox(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	boxOne, keyOne := ts.mintLauncherCredential(t, testApprover, "example-host-one")
 	boxTwo, keyTwo := ts.mintLauncherCredential(t, testApprover, "example-host-two")
@@ -229,6 +232,7 @@ const (
 // by the subject its credential proved, so another machine of the same fleet is refused on both
 // routes while a second session of the same machine reads it.
 func TestAnotherVMOfTheSameServiceCannotReadTheRequest(t *testing.T) {
+	t.Parallel()
 	var enrollments *enroll.Service
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Enroll.VMServicesByAccount = map[string]string{vmAccount: vmFleet}
@@ -264,6 +268,7 @@ func TestAnotherVMOfTheSameServiceCannotReadTheRequest(t *testing.T) {
 // with it. Asking for the same names again joins that request: one pending request, and one card
 // in the approver's Inbox.
 func TestAnEqualRequestFromTheNextPodOfTheClaimJoinsThePendingOne(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)
 	first := ts.enrolPod(t, daemon, plannerClaim, "planner-session-1")
@@ -294,6 +299,7 @@ func TestAnEqualRequestFromTheNextPodOfTheClaimJoinsThePendingOne(t *testing.T) 
 // up, and the claim's next pod, under a session of its own, reads the request granted and
 // releases the value.
 func TestTheNextPodOfAClaimReceivesTheValueAPersonApprovedForTheLastOne(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)
 	first := ts.enrolPod(t, daemon, plannerClaim, "planner-session-1")
@@ -322,6 +328,7 @@ func TestTheNextPodOfAClaimReceivesTheValueAPersonApprovedForTheLastOne(t *testi
 // enrollment alone, as every request was before. With a null owner on either side, even the same
 // person's other enrollment is refused.
 func TestARequestOfAnEnrollmentWithNoOwnerIsItsAlone(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ownerless := func(name string) enrolled {
 		id, key := ts.newSessionEnrollment(t, "session-"+name, testApprover)
@@ -349,6 +356,7 @@ func TestARequestOfAnEnrollmentWithNoOwnerIsItsAlone(t *testing.T) {
 // pod holds its own requests (docs/site/src/content/docs/broker/concepts.md). A second
 // enrollment of the same slot, the role process enrolled again, reads its slot's request.
 func TestTwoSlotsOfAPodThatStatesNoClaimCannotReadOrCancelEachOther(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)
 	podUID := uuid.NewString()
@@ -376,6 +384,7 @@ func TestTwoSlotsOfAPodThatStatesNoClaimCannotReadOrCancelEachOther(t *testing.T
 // refuses (enroll.ErrInvalidClaim) 400 INVALID_CLAIM, a refusal the daemon does not retry without
 // the field, and enrols nothing: a claim in a shape no claim token takes, and a claim on a session.
 func TestAClaimTheBrokerRefusesIsInvalidClaim(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)
 	box, boxKey := ts.mintLauncherCredential(t, testApprover, "example-host-one")

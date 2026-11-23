@@ -39,6 +39,7 @@ func grantUsedDetails(t *testing.T, m *Machine, grantID string) []map[string]any
 // (none here, as a client from before the field sends) and the narrowing it applied, the proxy's
 // names the names behind the airlock alone and marks them as the airlock's.
 func TestEachReleaseWritesOneGrantUsedRowWithItsOwnDetail(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")

@@ -17,6 +17,7 @@ import (
 // The named revert: read the first line (r.Header.Get), as before this change, and a caller that
 // sends a line of its own before the proxy's picks its bucket by that line's last entry.
 func TestTheBrokersOwnAddressReadsTheTrustedProxysLastLine(t *testing.T) {
+	t.Parallel()
 	const remote = "10.20.30.40"
 	for _, row := range []struct {
 		name, header string

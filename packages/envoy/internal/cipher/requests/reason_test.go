@@ -74,6 +74,7 @@ func withholdFromSession(t *testing.T, m *Machine, enr string, key *ecdsa.Privat
 // of this request?" from. The same request with a reason waits for that person, which is what
 // makes the denial the missing reason's doing and not the name's.
 func TestAReasonlessRequestOfANameThatWouldWaitIsDenied(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, secret string
 		withheld     bool
@@ -119,6 +120,7 @@ func TestAReasonlessRequestOfANameThatWouldWaitIsDenied(t *testing.T) {
 // carries no one's approval and so needs no reason: it is granted with a grant and no detail, as
 // it was before the rule existed.
 func TestAReasonlessRequestIsDeniedByTheOneNameThatWouldWait(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 
@@ -147,6 +149,7 @@ func TestAReasonlessRequestIsDeniedByTheOneNameThatWouldWait(t *testing.T) {
 // again with one and be refused all the same, learning nothing about the name that refuses it
 // whatever it says.
 func TestADenialTheRuleAndThePolicyBothSpeakToSaysBoth(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 
@@ -173,6 +176,7 @@ func TestADenialTheRuleAndThePolicyBothSpeakToSaysBoth(t *testing.T) {
 // character of reason is a reason, and the request waits for its approver with a
 // credential-request record for that person to decide.
 func TestWhatCountsAsAReasonIsWhatIsLeftOfItTrimmed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, reason string
 		wait         bool

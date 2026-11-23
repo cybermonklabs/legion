@@ -63,6 +63,7 @@ func (ts *testServer) enrollPodWith(t *testing.T, key *ecdsa.PrivateKey, credent
 // record and nothing pending for anyone; it expires with the token, and its key enrolls a pod. The
 // broker's audit records the login with the account, the pod the token is bound to and the key.
 func TestAServiceLogsInWithItsOwnTokenAndNoOneApproves(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := newSigningKey(t)
 	daemonPod := uuid.NewString()
@@ -97,6 +98,7 @@ func TestAServiceLogsInWithItsOwnTokenAndNoOneApproves(t *testing.T) {
 // the skew MaxTokenLoginLifetime allows, issues a credential that still expires an hour after the
 // login, and the audit row records the token's own later expiry.
 func TestATokenLoginIsCappedAtAnHour(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	before := time.Now()
 	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour+40*time.Second), ts.daemonRequest(t, newSigningKey(t)))
@@ -115,6 +117,7 @@ func TestATokenLoginIsCappedAtAnHour(t *testing.T) {
 // person's live machine login already holds is 409 KEY_HOLDS_LIVE_CREDENTIAL, issues nothing, and
 // leaves the person's credential on its key.
 func TestATokenLoginRefusesAKeyAnotherLoginHolds(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	personsID, key := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, "", time.Hour), ts.daemonRequest(t, key))
@@ -134,6 +137,7 @@ func TestATokenLoginRefusesAKeyAnotherLoginHolds(t *testing.T) {
 // listed account but that the issuer never signed are refused 429 once the address's bucket is
 // empty, rather than each costing a verification (and possibly a fetch of the issuer's keys).
 func TestAForgedTokenFloodIsLimitedByAddress(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.LauncherLimits = &api.LauncherLimits{
 			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 2},
@@ -154,6 +158,7 @@ func TestAForgedTokenFloodIsLimitedByAddress(t *testing.T) {
 // bucket after its address's, so the daemon's account logs in only as often as that bucket allows
 // even from an address with requests to spare.
 func TestAVerifiedAccountSpendsItsOwnBucketToo(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.LauncherLimits = &api.LauncherLimits{
 			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 100},
@@ -174,6 +179,7 @@ func TestAVerifiedAccountSpendsItsOwnBucketToo(t *testing.T) {
 // the outage, and the daemon's first login after the database is back would be refused 429 and
 // wait out its long schedule, up to a minute, instead of being served.
 func TestATokenLoginTheBrokerCouldNotCompleteSpendsNoAccountBucket(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.LauncherLimits = &api.LauncherLimits{
 			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 100},
@@ -194,6 +200,7 @@ func TestATokenLoginTheBrokerCouldNotCompleteSpendsNoAccountBucket(t *testing.T)
 // well as its account's, so the daemon retrying through an outage does not drain its address's
 // bucket either, and its first login once the database is back is not refused 429 by it.
 func TestATokenLoginTheBrokerCouldNotCompleteSpendsNoAddressBucket(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.LauncherLimits = &api.LauncherLimits{
 			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 2},
@@ -219,6 +226,7 @@ func TestATokenLoginTheBrokerCouldNotCompleteSpendsNoAddressBucket(t *testing.T)
 // by a key the issuer never published, are refused 401 until the address's bucket of 2 is empty,
 // then 429.
 func TestATokenThatDoesNotVerifySpendsItsAddressBucketWhileTheDatabaseIsAway(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.LauncherLimits = &api.LauncherLimits{
 			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 2},
@@ -241,6 +249,7 @@ func TestATokenThatDoesNotVerifySpendsItsAddressBucketWhileTheDatabaseIsAway(t *
 // ACCOUNT_NOT_LISTED), keeps its account's login spent, since the limit exists to slow guessing:
 // the account's sixth such login inside its bucket of five is refused 429.
 func TestARefusedTokenLoginStillSpendsItsAccountBucket(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.LauncherLimits = &api.LauncherLimits{
 			PerAddress: ratelimit.Limit{Every: time.Hour, Burst: 100},
@@ -268,6 +277,7 @@ func TestARefusedTokenLoginStillSpendsItsAccountBucket(t *testing.T) {
 // key's proofs stop authenticating at once; the new key enrolls a pod and ends the pod the first
 // boot enrolled.
 func TestARestartLogsInAgainAndKeepsItsOneCredential(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	firstKey := newSigningKey(t)
 	// One pod uid across both logins: a restart is the daemon's process starting again in the pod
@@ -320,6 +330,7 @@ func TestARestartLogsInAgainAndKeepsItsOneCredential(t *testing.T) {
 // (storetest.PerPodLoginSchema); TestOneSubjectHoldsOneLoginOnThisReleasesSchema drives the
 // other side of the same staging.
 func TestAReplacedPodGetsALoginOfItsOwnAndEndsItsPredecessorsPods(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	storetest.PerPodLoginSchema(t, ts.Store)
 	firstKey := newSigningKey(t)
@@ -365,6 +376,7 @@ func TestAReplacedPodGetsALoginOfItsOwnAndEndsItsPredecessorsPods(t *testing.T) 
 // per-pod login of TestAReplacedPodGetsALoginOfItsOwnAndEndsItsPredecessorsPods starts at the
 // release that drops that index.
 func TestOneSubjectHoldsOneLoginOnThisReleasesSchema(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	firstKey := newSigningKey(t)
 	status, body := ts.tokenLogin(t, ts.accountToken(t, daemonAccount, uuid.NewString(), time.Hour), ts.daemonRequest(t, firstKey))
@@ -402,6 +414,7 @@ func TestOneSubjectHoldsOneLoginOnThisReleasesSchema(t *testing.T) {
 // KEY_HOLDS_LIVE_CREDENTIAL for as long as the row lives, which the row's expiry does not end,
 // leaving the daemon unable to enrol or revoke a worker until a person intervened.
 func TestAPodBoundLoginFromBeforeTheUpgradeRenewsOnItsOwnRow(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	// The per-pod conflict target is what cannot match such a row, so this is the schema of the
 	// release after this one; on this release's the login's target is (subject) and the row is
@@ -449,6 +462,7 @@ func TestAPodBoundLoginFromBeforeTheUpgradeRenewsOnItsOwnRow(t *testing.T) {
 // TOKEN_INVALID; a request naming another service is 403 ACCOUNT_NOT_LISTED; and a request object
 // replayed is 400 REQUEST_INVALID. None issues a credential.
 func TestATokenLoginRefusesWhatDoesNotProveTheAccount(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	wrongAudience := ts.podIssuer.Claims(daemonAccount, "somebody-else")
 	replayed := ts.daemonRequest(t, newSigningKey(t))
@@ -484,6 +498,7 @@ func TestATokenLoginRefusesWhatDoesNotProveTheAccount(t *testing.T) {
 // daemon's account, the credential its token login issued stops authenticating at its next call,
 // and its next login is refused.
 func TestAnAccountTakenOffTheListLosesItsCredential(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, key := ts.mintServiceLauncherCredential(t)
 	if status, body := ts.enrollPodWith(t, key, credentialID); status != http.StatusCreated {
@@ -501,6 +516,7 @@ func TestAnAccountTakenOffTheListLosesItsCredential(t *testing.T) {
 // TestAServiceDeviceCodeLoginIsRefused: a device-code login naming a service is refused 400
 // SERVICE_LOGS_IN_WITH_TOKEN and leaves nothing pending in anyone's list.
 func TestAServiceDeviceCodeLoginIsRefused(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	for _, hint := range []string{"", testApprover} {
 		status, body := ts.deviceLogin(t, newSigningKey(t), hint, "cluster.example", "legion-daemon")
@@ -518,6 +534,7 @@ func TestAServiceDeviceCodeLoginIsRefused(t *testing.T) {
 // enrolled at once, and the daemon's next token login, its account still listed, is a new
 // credential, which enrolls again. A person's own machine list never shows it.
 func TestAnyoneRevokesAServicesTokenLoginAndItLogsInAgain(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, key := ts.mintServiceLauncherCredential(t)
 	status, body := ts.enrollPodWith(t, key, credentialID)
@@ -556,6 +573,7 @@ func TestAnyoneRevokesAServicesTokenLoginAndItLogsInAgain(t *testing.T) {
 // pod of the account BROKER_SERVICES binds to its service — every pod this login launches —
 // enrols as before; and a pod of an account no setting binds is 403 POD_NOT_LAUNCHED.
 func TestATokenLoginEnrolsOnlyItsOwnPodAndItsServicesOverTheWire(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	key := newSigningKey(t)
 	ownPod := uuid.NewString()

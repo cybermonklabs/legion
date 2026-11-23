@@ -58,6 +58,7 @@ func slackRows(priv projectaccesstest.Row, team projectaccesstest.Row) map[strin
 // channels cannot be known, or the projects share none, is Limited with an empty list, never
 // unlimited; a credential that names no project is unlimited and asks Dispatch nothing.
 func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
+	t.Parallel()
 	limitedTo := func(t *testing.T, values map[string]AirlockSecret, want []string) {
 		t.Helper()
 		got := values[slackToken]
@@ -132,6 +133,7 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 // project is granted and released exactly as the merge base released it: no refusal, no limit and
 // no ten-minute bound, though every pod's entry names a project.
 func TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore(t *testing.T) {
+	t.Parallel()
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}
 	m, _, _, _ := newProjectFixture(t, rules, publicTeam)
 	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, "")

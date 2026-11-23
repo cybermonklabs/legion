@@ -46,6 +46,7 @@ func edgeLogin(t *testing.T, rig *ciphertest.Rig, client, person string, mismatc
 // The named reverts: key the person's bucket on the person alone, and B is refused 429; spend it
 // before Deps.DeviceLogin, and C's last login is refused 429.
 func TestTheEdgeKeysAPersonsBucketOnTheCallersAddress(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	burst := api.DefaultLauncherLimits.PerLogin.Burst
 	const a, b, c = "203.0.113.160", "203.0.113.161", "203.0.113.162"
@@ -80,6 +81,7 @@ func TestTheEdgeKeysAPersonsBucketOnTheCallersAddress(t *testing.T) {
 // The named revert: key an IPv6 caller on its own address, and every address of the /64 is
 // served.
 func TestTheEdgeKeysAnIPv6CallerOnItsSlash64(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	burst := api.DefaultLauncherLimits.PerAddress.Burst
 	for i := range burst {
@@ -106,6 +108,7 @@ func TestTheEdgeKeysAnIPv6CallerOnItsSlash64(t *testing.T) {
 // The named revert: drop the shared bucket from the edge (launcherLimiter.overall), and the fourth
 // login is served.
 func TestTheEdgeBoundsTheDeviceAuthorizationsOfEveryCallerTogether(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdgeDeviceLimit(ratelimit.Limit{Every: time.Hour, Burst: 3}))
 	for i := range 3 {
 		client := fmt.Sprintf("198.51.100.%d", 170+i)
@@ -141,6 +144,7 @@ func TestTheEdgeBoundsTheDeviceAuthorizationsOfEveryCallerTogether(t *testing.T)
 // (record.VerifyRequestObject), and the dpop_jkt mismatch and the service's login spend two
 // tokens, so the second valid login is refused 429.
 func TestTheEdgeSpendsItsSharedBucketOnlyOnALoginItCanOpen(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdgeDeviceLimit(ratelimit.Limit{Every: time.Hour, Burst: 3}))
 	before := loginRows(t, rig)
 	for i, row := range []struct {
@@ -213,6 +217,7 @@ func TestTheEdgeSpendsItsSharedBucketOnlyOnALoginItCanOpen(t *testing.T) {
 // The named revert: spend the shared bucket only on the pre-check's word, and the login the
 // pre-check refused is served with the bucket empty.
 func TestEveryLoginTheEdgeOpensSpendsItsSharedBucket(t *testing.T) {
+	t.Parallel()
 	var rig *ciphertest.Rig
 	rig = ciphertest.NewRig(t,
 		ciphertest.WithEdgeDeviceLimit(ratelimit.Limit{Every: time.Hour, Burst: 1}),

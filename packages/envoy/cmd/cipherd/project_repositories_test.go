@@ -31,6 +31,7 @@ const edgeListenerAccount = "system:serviceaccount:example-ns:example-edge-liste
 // broker with no BROKER_PROJECT_ACCESS_URL answers the same edge listener 503
 // REPOSITORIES_UNKNOWN, so the answers come from the wiring and not from the route alone.
 func TestTheBrokerBinaryRelaysAnEdgeListenersRepositories(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	nats := natsCalloutEnv(t, "edge-listener/edge-a/PRIV="+edgeListenerAccount+" listener/host-a/*="+listenerAccount)
 	apiAccounts := []string{"BROKER_API_ACCOUNTS=listener=" + listenerAccount}
@@ -62,6 +63,7 @@ func TestTheBrokerBinaryRelaysAnEdgeListenersRepositories(t *testing.T) {
 // off with the one edge listener it read from BROKER_NATS_SERVICES, and answers that edge
 // listener of PRIV its list, asking Dispatch once.
 func TestTheBrokerBinaryAnswersAnEdgeListenerWithNoAuthService(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	broker := startBroker(t, brokerOptions{Env: rig.env(rig.access, []string{"BROKER_NATS_SERVICES=edge-listener/edge-a/PRIV=" + edgeListenerAccount})})
 	record := broker.AwaitRecord(t, "NATS auth service", nil)
@@ -82,6 +84,7 @@ func TestTheBrokerBinaryAnswersAnEdgeListenerWithNoAuthService(t *testing.T) {
 // verifier through its own boot, and answers that edge listener's identity token PRIV's list; a
 // Google account no entry names is 403 NOT_AN_EDGE_LISTENER.
 func TestTheBrokerBinaryAnswersAGoogleEdgeListener(t *testing.T) {
+	t.Parallel()
 	const edgeGoogleAccount = "example-edge@example-project.iam.gserviceaccount.com"
 	google := oidctest.New(t)
 	googleKey := google.PublishKey(t, "google-key")

@@ -15,6 +15,7 @@ import (
 // shared agent-tier secret at once and reads its value, and a machine session's renewal with no
 // body still renews. A kind the broker does not serve is 400 INVALID_KIND.
 func TestEveryExistingEnrollmentPathBehavesAsBefore(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, launcherKey := ts.mintServiceLauncherCredential(t)
 	podUID := uuid.NewString()

@@ -32,6 +32,7 @@ type wakeCall struct {
 // gets its own 'expired' event, and spent OAuth state is deleted (oauthstore's own tests pin
 // which rows count as spent).
 func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 
@@ -140,6 +141,7 @@ func TestSweeperTickExpiresPendingRequestsAndMachineLogins(t *testing.T) {
 // TestSweeperTickDeletesExpiredBrowserSessions pins that one Tick deletes a browser session whose
 // expiry has passed and keeps a live one signed in.
 func TestSweeperTickDeletesExpiredBrowserSessions(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	expired, live := sha256.Sum256([]byte("expired "+t.Name())), sha256.Sum256([]byte("live "+t.Name()))
@@ -211,6 +213,7 @@ func sweepLines(records []slog.Record) []string {
 // fails at its first statement as against a database that stopped answering; the store that
 // answers is the fixture's own, set on the same Sweeper, which is what holds each sweep's state.
 func TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	closed, err := pgxpool.NewWithConfig(ctx, m.Store.Pool.Config())
@@ -256,6 +259,7 @@ func TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain(t *testing.T) {
 // Tick ends lapsed enrollments before it expires requests. An enrollment still within its lease
 // keeps its grant and its pending request, and a second Tick changes nothing.
 func TestSweeperEndsLapsedEnrollments(t *testing.T) {
+	t.Parallel()
 	m, gone, goneKey, approver := newFixture(t)
 	ctx := context.Background()
 	live, liveKey := newEnrollment(t, m.Store, "session", "box-live-"+t.Name(), new(fixtureOperator), nil)
@@ -362,6 +366,7 @@ func endedState(t *testing.T, m *Machine, enrollmentID string) (ended bool, pend
 // approval and for an automatic grant alike, and the ended enrollment holds no pending request
 // and no live grant.
 func TestCreateWritesNothingOnAnEnrollmentTheSweepEnded(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"DEEL_API_KEY", "AUTO_TOKEN"} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key, _ := newFixture(t)
@@ -393,6 +398,7 @@ func TestCreateWritesNothingOnAnEnrollmentTheSweepEnded(t *testing.T) {
 // enrollment while the sweep holds it. Create waits for the sweep and, once the sweep commits,
 // refuses as not live rather than committing a pending request on the enrollment the sweep ended.
 func TestCreateWaitsOutTheSweepItRaces(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "a grant the sweep revokes", "AUTO_TOKEN"), "")

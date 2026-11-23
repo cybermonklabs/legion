@@ -151,6 +151,7 @@ func requireRefused(t *testing.T, status int, body []byte, wantStatus int, wantC
 // between two calls is the second call's answer, one call each, and a project none of whose
 // issues resolves to a repository is [].
 func TestTheBrokerRelaysAFreshRepositoryAnswer(t *testing.T) {
+	t.Parallel()
 	dispatch := repositoriesDispatch(t)
 	ts := newRepositoriesServer(t, dispatch)
 	status, body := ts.repositories(t, edgeAccount, "PRIV")
@@ -172,6 +173,7 @@ func TestTheBrokerRelaysAFreshRepositoryAnswer(t *testing.T) {
 // with no token are refused, and none of them reaches Dispatch; the edge listener of OTHER is
 // answered OTHER's list, so the refusal is the project's and not the caller's.
 func TestTheRepositoryAnswerIsOnlyForTheEdgeOfThatProject(t *testing.T) {
+	t.Parallel()
 	dispatch := repositoriesDispatch(t)
 	ts := newRepositoriesServer(t, dispatch)
 	for _, row := range []struct {
@@ -220,6 +222,7 @@ func TestTheRepositoryAnswerIsOnlyForTheEdgeOfThatProject(t *testing.T) {
 // project Dispatch does not hold, a Dispatch refusing the broker's own token and a broker that
 // reads no Dispatch at all.
 func TestAnUnreadableDispatchAnswerIsUnknown(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name  string
 		setup func(*projectaccesstest.Server)
@@ -295,6 +298,7 @@ func (h *heldReader) Repositories(ctx context.Context, project string) ([]string
 // to Dispatch; its 17th is 503 REPOSITORIES_BUSY at once and never reaches Dispatch, while another
 // edge listener is answered; once the 16 are answered, the next call is answered too.
 func TestTheSeventeenthRepositoryCallInFlightIsBusy(t *testing.T) {
+	t.Parallel()
 	edges := edgeListeners(t, edgeServices)
 	dispatch := newHeldReader("PRIV")
 	ts := newTestServerWith(t, func(d *api.Deps) {
@@ -355,6 +359,7 @@ func TestTheSeventeenthRepositoryCallInFlightIsBusy(t *testing.T) {
 // Google identity token is looked up by the account its email claim names, as a listed caller of
 // that kind is, and held to its entry's projects the same way.
 func TestAGoogleEdgeListenerIsAnsweredItsProjectsRepositories(t *testing.T) {
+	t.Parallel()
 	ts, _, token := googleEdgeServer(t, "edge-listener/edge-g/PRIV=google:"+edgeGoogleAccount)
 	for _, row := range []struct {
 		account, project string

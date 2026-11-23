@@ -13,6 +13,7 @@ import (
 )
 
 func TestARereadStartedAfterDetachedWaitBeganIsNotCounted(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
 	detached := &Detached{}
 	if err := detached.Wait(context.Background()); err != nil {

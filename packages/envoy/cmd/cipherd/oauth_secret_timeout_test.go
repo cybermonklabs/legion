@@ -37,6 +37,7 @@ import (
 // or loaded runner closes: this row goes red when the margin collapses by two orders of
 // magnitude, and for nothing else.
 func TestOAuthProviderSecretUnderATwoPodBootIsFarInsideItsTimeout(t *testing.T) {
+	t.Parallel()
 	const pods = 2
 	oauthStore := oauthstore.New(storetest.Open(t).Pool)
 

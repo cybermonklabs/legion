@@ -62,6 +62,7 @@ func introspect(t *testing.T, rig *ciphertest.Rig, token, bearer string) (int, w
 // machine's own key and naming the OAuth client — and then introspects a string the broker never
 // issued, which must read back as not live and disclose nothing else.
 func TestIntrospectionAnswersALiveTokenAndAnUnknownOne(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, tok, _ := approvedLogin(t, rig)
 
@@ -85,6 +86,7 @@ func TestIntrospectionAnswersALiveTokenAndAnUnknownOne(t *testing.T) {
 // TestIntrospectionAnswersARevokedTokenAsNotLive: once a person revokes the machine, its access
 // token reads back as simply not live, a 200 like an unknown token's, not as the broker's failure.
 func TestIntrospectionAnswersARevokedTokenAsNotLive(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, tok, credentialID := approvedLogin(t, rig)
 	if status, body := rig.UI(t, http.MethodPost, "/v1/launcher-credentials/"+credentialID+"/revoke-by-approver", map[string]any{"approver": rig.Operator}); status != http.StatusOK {
@@ -101,6 +103,7 @@ func TestIntrospectionAnswersARevokedTokenAsNotLive(t *testing.T) {
 // 401-coded error, the same it answers a revoked token with, so answering by that status would
 // tell a resource server a sound token is not valid when the truth is the broker could not tell.
 func TestIntrospectionAnswersAStorageOutage503(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, tok, _ := approvedLogin(t, rig)
 	if status, answer := introspect(t, rig, tok.AccessToken, rig.UIToken); status != http.StatusOK || !answer.Active {
@@ -134,6 +137,7 @@ func TestIntrospectionAnswersAStorageOutage503(t *testing.T) {
 // an operator at the database: it is answered 500 STORED_CLAIM_MALFORMED, naming the launcher
 // credential whose token it is.
 func TestIntrospectionAnswersAMalformedStoredClaimAsSuch(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, tok, credentialID := approvedLogin(t, rig)
 	tag, err := rig.Store.Pool.Exec(context.Background(), `update oauth_access_tokens
@@ -166,6 +170,7 @@ func TestIntrospectionAnswersAMalformedStoredClaimAsSuch(t *testing.T) {
 // the routes Dispatch's server calls are: no bearer at all, and a sound ServiceAccount token of an
 // account BROKER_API_ACCOUNTS does not name, are both refused.
 func TestIntrospectionTakesOnlyAListedCallersToken(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	if status, _ := introspect(t, rig, "anything", ""); status != http.StatusUnauthorized {
 		t.Fatalf("introspecting with no caller token = %d, want 401", status)

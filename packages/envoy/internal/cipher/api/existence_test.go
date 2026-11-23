@@ -97,6 +97,7 @@ func accepted(t *testing.T) string {
 // first, the secret request's id answered 403 DECIDE_ON_BROKER_PAGE naming its page where the
 // other two answered 401, so any caller could tell which ids named a secret request.
 func TestTheDecideRoutesAnswerACallerTheyDoNotAuthenticateTheSameForEveryRecordID(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
@@ -175,6 +176,7 @@ func refusedSecret(name string) secrets.LocalSecret {
 // enrollment the broker does not hold, each its own one answer. Before, the reread answered every
 // caller whether the broker served the name, why not and as which type.
 func TestARereadAnswersACallerWithNoSessionTheSameForEveryName(t *testing.T) {
+	t.Parallel()
 	ts := newProfiledTestServer(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")), func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	ts.Secrets.Put(refusedSecret("UNOWNED_KEY"))
@@ -214,6 +216,7 @@ func TestARereadAnswersACallerWithNoSessionTheSameForEveryName(t *testing.T) {
 // once the reread is done, as every caller was before: whether the broker serves the name, as
 // which type, and why not, for each of the four names the row above asks about.
 func TestASessionsRereadStillGetsTheAnswerItGotBefore(t *testing.T) {
+	t.Parallel()
 	ts := newProfiledTestServer(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")), func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	ts.Secrets.Put(refusedSecret("UNOWNED_KEY"))
@@ -243,6 +246,7 @@ const heldFor = 5 * time.Second
 // name. Before, the answer waited on the store, which takes one call to say it holds no secret by
 // a name and more to describe one it holds.
 func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"))
 	entered := make(chan string, 8)
 	release := make(chan struct{})
@@ -332,6 +336,7 @@ func (*throttled) Error() string {
 // has no caller to be told of it, so it is the broker's failure and it logs the ERROR line
 // "broker: reread secret failed" that an operator's alert counts, naming the secret.
 func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal()
 	loader := policytest.Loader(local)
 	loader.Store = policytest.StoreThrough(local, failingDescriber{SecretsManagerAPI: local})
@@ -368,6 +373,7 @@ func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.Descri
 // so a panic there would stop the whole broker. It recovers the panic, identifies the reread
 // step and the panic in one ERROR line, and the broker goes on answering.
 func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal()
 	loader := policytest.Loader(local)
 	loader.Store = policytest.StoreThrough(local, panickingDescriber{SecretsManagerAPI: local})
@@ -395,6 +401,7 @@ func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 }
 
 func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
 	mux := http.NewServeMux()
 	api.Register(mux, api.Deps{
@@ -424,6 +431,7 @@ func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
 // secret forms read the store, the prefix and the key under a cloud credential alone. So a caller
 // with no credential is answered 200 with all of it, the very answer a session and Dispatch get.
 func TestSettingsStayOpenToACallerWithNoCredential(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) { d.GoogleExchangeAudience = "agent-secrets-vm" })
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, open := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)

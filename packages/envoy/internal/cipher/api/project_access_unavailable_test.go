@@ -44,6 +44,7 @@ func projectsDownDispatch(t *testing.T) *projectaccesstest.Server {
 // same fixed sentence, which names neither project; what Dispatch answered goes to the broker's
 // log.
 func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
+	t.Parallel()
 	tagged := func(name, project string) secrets.LocalSecret {
 		s := policytest.Secret(name, policy.OwnerShared, policy.TierAgent, strings.ToLower(name)+"-v1")
 		s.Tags[policy.TagProject] = project
@@ -109,6 +110,7 @@ func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
 // request whose reason names no issue; the one whose reason names INFRA-12, whose project Dispatch
 // could not be asked about, is left out of that list alone rather than failing it.
 func TestThePendingListLeavesOutOnlyTheRequestDispatchCannotAnswerFor(t *testing.T) {
+	t.Parallel()
 	down := projectsDownDispatch(t)
 	access := &projectaccesstest.Swappable{}
 	access.Serve(down)

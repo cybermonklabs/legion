@@ -39,6 +39,7 @@ func (ts *testServer) askCarried(t *testing.T, key *ecdsa.PrivateKey, credential
 // The control (the pull request records the run): Create answering its lease end to the
 // nanosecond again fails the comparison with the enrolment's own answer.
 func TestTheCarriedRouteAnswersTheCallersOwnPodEnrollments(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon, daemonKey := ts.mintServiceLauncherCredential(t)
 	other, otherKey := ts.mintServiceLauncherCredentialAs(t, otherDaemonAccount)
@@ -86,6 +87,7 @@ func TestTheCarriedRouteAnswersTheCallersOwnPodEnrollments(t *testing.T) {
 // The control (the pull request records the run): the caller checked after the body is read
 // answers the list of numbers 400 INVALID_SESSION_IDS.
 func TestTheCarriedRouteRefusesALoginThatProvedNoAccount(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, key := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	for _, c := range []struct {
@@ -105,6 +107,7 @@ func TestTheCarriedRouteRefusesALoginThatProvedNoAccount(t *testing.T) {
 // TestTheCarriedRouteRefusesSessionIDsOutsideItsBounds: an empty list, 4097 ids, an id of 256
 // bytes, no list at all and a body that is no such object are each 400 INVALID_SESSION_IDS.
 func TestTheCarriedRouteRefusesSessionIDsOutsideItsBounds(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon, key := ts.mintServiceLauncherCredential(t)
 	tooMany := make([]string, 4097)
@@ -139,6 +142,7 @@ func TestTheCarriedRouteRefusesSessionIDsOutsideItsBounds(t *testing.T) {
 // the route keeps a cap of its own; a list of 4,097 ids is refused at its last entry
 // (TestTheCarriedRouteRefusesSessionIDsOutsideItsBounds).
 func TestTheCarriedRouteAnswersTheLongestListItsBoundsAllow(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	daemon, key := ts.mintServiceLauncherCredential(t)
 	list := func(n int, id string) map[string]any {

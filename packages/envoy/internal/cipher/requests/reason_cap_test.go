@@ -83,6 +83,7 @@ func approverGrants(t *testing.T, m *Machine, login string) []string {
 // sees, never one joined to a hidden request. At the bound, an agent-tier secret is granted at
 // once and its person sees the grant, as with any other reason.
 func TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 
 	refused, err := m.Create(t.Context(), enr, signRequest(t, m, key, reasonNaming(record.MaxReasonProjects+1), "DEEL_API_KEY"), "")
@@ -117,6 +118,7 @@ func TestANewRequestsReasonNamingMoreThanSixteenProjectsIsRefused(t *testing.T) 
 // as before the bound: an agent-tier secret granted at once, and a human-tier one pending on its
 // approver's list and page.
 func TestABrokerWithNoProjectAccessTakesAReasonNamingAnyNumberOfProjects(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	over := reasonNaming(record.MaxReasonProjects + 1)
 	granted, err := m.Create(t.Context(), enr, signRequest(t, m, key, over, "AUTO_TOKEN"), "")
@@ -147,6 +149,7 @@ func overTheCapNaming(project string) string {
 // list and on its page, the automatic grant in theirs. Every project its reason names is asked
 // (maySee), and none hides it.
 func TestARequestStoredOverTheCapOfNoPrivateProjectStaysVisible(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	over := overTheCapNaming(teamProject)
 	pending := storedBeforeTheCap(t, m, enr, key, over, "DEEL_API_KEY")
@@ -176,6 +179,7 @@ func TestARequestStoredOverTheCapOfNoPrivateProjectStaysVisible(t *testing.T) {
 // else of it touches PRIV. A person PRIV does not list finds it in no list, and reading it answers
 // them as an id no record has; a person PRIV lists sees it.
 func TestARequestStoredOverTheCapNamingAPrivateProjectIsHidden(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	// A pod that names no person, so every signed-in person's list reads its request
 	// (everyonesPod).
@@ -208,6 +212,7 @@ func TestARequestStoredOverTheCapNamingAPrivateProjectIsHidden(t *testing.T) {
 // outsider no longer sees it, and a person the project lists still does, whatever its reason
 // names.
 func TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	// A pod that names no person, so every signed-in person's list reads its request
 	// (everyonesPod).
@@ -238,6 +243,7 @@ func TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden(t *testi
 // are refused the outsider only as someone who is not the grant's approver, and the judge keeps
 // them: the reason's projects, not its length, decide.
 func TestTheDecisionTheRevokeAndTheJudgeReadEveryProjectOfAStoredReason(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	pod, podKey := everyonesPod(t, m, "pod-over-cap-readers", "")
 	private, public := overTheCapNaming(privProject), overTheCapNaming(teamProject)
@@ -284,6 +290,7 @@ func TestTheDecisionTheRevokeAndTheJudgeReadEveryProjectOfAStoredReason(t *testi
 // not hold them. Where none of those projects is private the rule shows both; where the last is
 // PRIV it hides both from a session that does not name PRIV and shows both to one that does.
 func TestASessionReadsARequestStoredOverTheCapByEveryProjectItsReasonNames(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		project string

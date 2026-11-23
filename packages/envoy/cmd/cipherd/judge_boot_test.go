@@ -85,6 +85,7 @@ func judgeBootEnv(t *testing.T, model, dispatch *countingServer) []string {
 // no stand-in anything while booting — the model endpoint is reached on a judged request and
 // nowhere else.
 func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 
 	t.Run("configured", func(t *testing.T) {
@@ -150,6 +151,7 @@ func TestTheBinaryLogsWhichJudgeItBooted(t *testing.T) {
 // naming the setting, as config.Load refuses it, before it opens the database it is given, which
 // nothing can reach.
 func TestTheBinaryRefusesAJudgeAccountWithNoJudge(t *testing.T) {
+	t.Parallel()
 	out := runRefusedBroker(t, buildBroker(t),
 		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 		"BROKER_PUBLIC_URL=https://secrets.internal.example",

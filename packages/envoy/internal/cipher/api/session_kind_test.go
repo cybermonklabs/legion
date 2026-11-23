@@ -9,6 +9,7 @@ import (
 )
 
 func TestEveryMachineSessionIsOneKind(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	key := newSigningKey(t)

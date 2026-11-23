@@ -82,6 +82,7 @@ const (
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestASessionsGrantFollowsItToANewBox(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	// Three issuers this test controls: the cluster's, GitHub's, and the one standing in for
 	// Google, which the machine grant and the person sign-in both trade tokens of. The cluster's
@@ -319,6 +320,7 @@ const enrollmentTookName = "broker: an enrollment took a session name from the a
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestAPairedAccountsPodEnrolsUnderItsPairsNameAndReadsItsGrant(t *testing.T) {
+	t.Parallel()
 	// One issuer stands in for the cluster's ServiceAccount token issuer and for the approval
 	// page's provider, as approval_page_test.go's fixture has one serve both.
 	issuer := oidctest.New(t)

@@ -75,6 +75,7 @@ var personPodMapping = []string{
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	clusterKey := issuer.PublishKey(t, "cluster-key")
@@ -191,6 +192,7 @@ func TestAPersonsPodReadsThePersonsAgentSecretWithNoApproval(t *testing.T) {
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
+	t.Parallel()
 	const (
 		privProject, elseProject = "PRIV", "ELSE"
 		privKey, privValue       = "ADA_PRIV_KEY", "ada-priv-value"
@@ -293,6 +295,7 @@ func TestAPersonsPodNamesItsProjectsThroughTheBinaries(t *testing.T) {
 // it, which shows that the loader reads the configured services: the refusal is the login
 // service's, not an empty service list. It needs no database.
 func TestASecretOwnedByAMappedAccountsLoginServiceIsRefusedAtLoad(t *testing.T) {
+	t.Parallel()
 	const (
 		loginOwnedSecret   = "PERSON_ADA_KEY"
 		serviceOwnedSecret = "SERVICE_KEY"

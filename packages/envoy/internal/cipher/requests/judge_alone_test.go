@@ -65,6 +65,7 @@ func listedAs(t *testing.T, m *Machine, login, recordID string) string {
 // its deadline is listed expired, as every request past its deadline is, and its decision stays
 // refused.
 func TestTheJudgesHoldIsARecordStateEveryListReads(t *testing.T) {
+	t.Parallel()
 	t.Run("held before its deadline, then the hold ends", func(t *testing.T) {
 		m, enr, key := newJudgeFixture(t)
 		req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY")
@@ -144,6 +145,7 @@ func handOver(t *testing.T, m *Machine, recordID string) {
 // start and never handed to the judge; and on a broker that runs no judge, a judge key's request
 // is the person's too. No reason cites anything in any row.
 func TestWhoDecidesIsTheKeysSetting(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		names   []string
@@ -200,6 +202,7 @@ func TestWhoDecidesIsTheKeysSetting(t *testing.T) {
 // of both — admitted by record.MayJudge on the judge key alone, since the agent-tier key needed
 // no decision, and by the chain check every release makes again. Both values are released.
 func TestTheJudgesGrantBesideAKeyGrantedAtOnceReleasesBoth(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	retag(t, m, policytest.Secret("AGENT_KEY", fixtureOperator, policy.TierAgent, "agent-v1"))
 	req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY", "AGENT_KEY")
@@ -218,6 +221,7 @@ func TestTheJudgesGrantBesideAKeyGrantedAtOnceReleasesBoth(t *testing.T) {
 // when it is written, as a max-grant tag refuses one, naming the --ttl that would do; nothing is
 // written for it and the judge is never asked.
 func TestAJudgeKeysLifetimeIsItsJudgeSeconds(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(300))}}}
 	handed := 0
@@ -246,6 +250,7 @@ func TestAJudgeKeysLifetimeIsItsJudgeSeconds(t *testing.T) {
 // at once beside it, whose own rules entry gives the judge fewer seconds, neither bounds the
 // request nor is named in a refusal, since the judge decides nothing of it.
 func TestTheJudgeSecondsAreTheDecidedKeysAndComeBeforeMaxGrant(t *testing.T) {
+	t.Parallel()
 	unsigned := func(t *testing.T, m *Machine, key *ecdsa.PrivateKey, names ...string) string {
 		t.Helper()
 		details := make([]record.AuthorizationDetail, 0, len(names))
@@ -296,6 +301,7 @@ func TestTheJudgeSecondsAreTheDecidedKeysAndComeBeforeMaxGrant(t *testing.T) {
 // may ask for longer than the judge seconds, is written pending for its person with the lifetime
 // it asked for, and is never handed to the judge.
 func TestJudgeSecondsBoundOnlyARequestTheJudgeHolds(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		names   []string
@@ -331,6 +337,7 @@ func TestJudgeSecondsBoundOnlyARequestTheJudgeHolds(t *testing.T) {
 // decision of it — approve or deny, from any page or route — is refused and writes nothing. Once
 // the hold has ended, the same decision is the person's to make.
 func TestAPersonCannotDecideWhileTheJudgeHolds(t *testing.T) {
+	t.Parallel()
 	for _, approve := range []bool{true, false} {
 		m, enr, key := newJudgeFixture(t)
 		req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY")
@@ -351,6 +358,7 @@ func TestAPersonCannotDecideWhileTheJudgeHolds(t *testing.T) {
 // that handed the request over — ends the judge's part. Its late grant and its late refusal are
 // both refused, and the request is on its person's list.
 func TestTheJudgeWritesOnlyWhileItHolds(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY")
 	endHold(t, m, req.ID)
@@ -372,6 +380,7 @@ func TestTheJudgeWritesOnlyWhileItHolds(t *testing.T) {
 // answer, an answer that does not parse, a read that failed — ends the hold in the same
 // transaction as its row, so the request is on its person's list at once and theirs to decide.
 func TestHandingOverEndsTheHold(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY")
 	if _, err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "deny", "error": "the model did not answer"}); err != nil {
@@ -396,6 +405,7 @@ func TestHandingOverEndsTheHold(t *testing.T) {
 // the judge's actor, with no login, and with the sentence its agent reads in the decision's detail.
 // The verdict goes in beside it, in the same transaction, saying nothing was applied.
 func TestTheJudgeRefusesARequestItHolds(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY")
 	const why = "the model judge refused this request: the guidance asks for a post its owner approved. This request will not be granted. Tell whoever gave you this work."
@@ -425,6 +435,7 @@ func TestTheJudgeRefusesARequestItHolds(t *testing.T) {
 // for no other. A key with no judge entry, and a judge key on a broker that ran no judge, are a
 // person's to decide; the judge's verdict on them is never their end.
 func TestTheJudgeDeniesNothingAPersonDecides(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		secret  string

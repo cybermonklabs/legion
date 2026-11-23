@@ -23,6 +23,7 @@ import (
 // context a reason naming PRIV-1, which neither source holds, is ErrProjectAccessUnavailable, so
 // the context has ended for every question Dispatch would have to answer.
 func TestAnAnswerTheListOrTheClientHoldsIsStillAnsweredOnceTheClockHasEnded(t *testing.T) {
+	t.Parallel()
 	const held, unheld = teamProject + "-1: rotate the deploy key", privProject + "-1: rotate the private key"
 	for _, c := range []struct {
 		name string
@@ -117,6 +118,7 @@ func (n noSuchProjectBare) States(ctx context.Context, projects []string) (map[s
 // (projectaccess.ProjectNotFoundError) or a source that keeps no clock answers
 // projectaccess.ErrProjectNotFound alone.
 func TestARowIsShownOnlyOnAnAnswerForEachOfItsProjects(t *testing.T) {
+	t.Parallel()
 	asked := time.Now()
 	shown := projectSeen{answered: true, asked: asked}
 	for _, c := range []struct {

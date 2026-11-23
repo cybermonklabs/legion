@@ -71,6 +71,7 @@ func (ts *testServer) personSignIns(t *testing.T, person string) []wirePersonSig
 // person signed in with and has not revoked, each naming the machine and the box key, and
 // nobody else's.
 func TestThePersonSignInsListIsThatPersonsLiveSignIns(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.signIn(t, signInAda, adaBoxOne, signInFleetOne)
 	ts.signIn(t, signInAda, adaBoxTwo, signInFleetTwo)
@@ -115,6 +116,7 @@ func TestThePersonSignInsListIsThatPersonsLiveSignIns(t *testing.T) {
 // access tokens it ended, takes the sign-in off the person's list, and leaves their other boxes
 // and everybody else's alone. Revoking it again answers the same and ends nothing.
 func TestRevokingASignInEndsItAndLeavesThePersonsOthers(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.signIn(t, signInAda, adaBoxOne, signInFleetOne)
 	ts.signIn(t, signInAda, adaBoxTwo, signInFleetTwo)
@@ -155,6 +157,7 @@ func TestRevokingASignInEndsItAndLeavesThePersonsOthers(t *testing.T) {
 // has, and another person's sign-in are each refused with the code that says which, and the
 // last two alike, so nobody learns another person's sign-ins by trying ids.
 func TestThePersonSignInRoutesRefuseWhatTheyCannot(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ts.signIn(t, signInGrace, graceBox, signInFleetOne)
 	theirs := ts.personSignIns(t, signInGrace)[0].SignInID

@@ -79,6 +79,7 @@ const signInOnJudgeDetail = "none of BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL,
 // what the policy grants at once (the launcher service's own secret, a shared agent-tier secret)
 // is granted and released as on any broker.
 func TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApprove(t *testing.T) {
+	t.Parallel()
 	f := newApprovalFixture(t)
 	f.secrets = signInOffSecrets(t)
 	databaseURL := storetest.URL(t)

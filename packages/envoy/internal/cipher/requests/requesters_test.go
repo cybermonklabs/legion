@@ -57,6 +57,7 @@ func createdAudit(t *testing.T, m *Machine, requestID string) (state, person, se
 // for an operator's session, the verified service for a service's pod — which is what a later
 // read of the trail answers "who asked for this?" from.
 func TestRequestersARefusalNamesTheSecretAndTheRule(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, otherPerson))
@@ -98,6 +99,7 @@ func TestRequestersARefusalNamesTheSecretAndTheRule(t *testing.T) {
 // moves the policy version, so the same re-check runs at the same point and releases the value,
 // which is what makes the end above the list's doing and not the retag's.
 func TestRequestersAGrantEndsForGoodWhenTheListDropsThePerson(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		drop bool
@@ -160,6 +162,7 @@ func TestRequestersAGrantEndsForGoodWhenTheListDropsThePerson(t *testing.T) {
 // over and left live for the next release, and the session gets back the denied request that says
 // why.
 func TestRequestersTheNextRequestEndsTheGrantTheListDropped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))
@@ -195,6 +198,7 @@ func TestRequestersTheNextRequestEndsTheGrantTheListDropped(t *testing.T) {
 // and mints no grant, while the event keeps the login of whoever pressed approve. With the list
 // unchanged the same approval grants, which is what makes the denial the list's doing.
 func TestRequestersAnApprovalAfterTheDropIsRecordedAsADenial(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		drop bool
@@ -262,6 +266,7 @@ func TestRequestersAnApprovalAfterTheDropIsRecordedAsADenial(t *testing.T) {
 // demands: a secret that lists who may ask for it sets whatever cap it likes, or none at all
 // (TestUncappedListedLoginAwaitsOwner).
 func TestRequestersAListedSecretGrantsForNoLongerThanItsOwnMaxGrant(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))
@@ -290,6 +295,7 @@ func TestRequestersAListedSecretGrantsForNoLongerThanItsOwnMaxGrant(t *testing.T
 // The mapping left standing is the control: the same release answers the value, which is what
 // makes the end the mapping's doing and not the re-check's.
 func TestRequestersAPodsGrantEndsWhenItsAccountStopsProvingItsService(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		unmap bool
@@ -346,6 +352,7 @@ func TestRequestersAPodsGrantEndsWhenItsAccountStopsProvingItsService(t *testing
 // is answered a denied request of its own naming the secret and the rule, and the grant the reuse
 // passed over is ended for good there rather than left live until its next release reads it.
 func TestReuseRefusesAPodWhoseServiceIsNoLongerListed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
 	retag(t, m, listedSecret("LISTED_POD_KEY", policy.OwnerShared, policy.TierAgent, fixtureService))
@@ -379,6 +386,7 @@ func TestReuseRefusesAPodWhoseServiceIsNoLongerListed(t *testing.T) {
 // a page where approving it does nothing and denying it is the only move left, for a request no
 // owner change could ever make releasable, so the list's deny is read over every name first.
 func TestRequestersADroppedNameIsDeniedBeforeAnEarlierNameRefusesTheApprover(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, approver := newFixture(t)
 	retag(t, m,
@@ -421,6 +429,7 @@ func TestRequestersADroppedNameIsDeniedBeforeAnEarlierNameRefusesTheApprover(t *
 // but a name the list dropped is no one's for good, so it is answered as the list's denial and
 // not as that refusal, which would leave the card pending until it expired.
 func TestRequestersAWithheldNameTheListDropsIsDeniedRatherThanRefused(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, approver := newFixture(t)
 	retag(t, m, listedSecret("LISTED_KEY", fixtureOperator, policy.TierAgent, fixtureOperator))
@@ -463,6 +472,7 @@ const accountValue = `{"service_account": "releases@example-project.iam.gservice
 // refused as before — another person's is denied requester-not-listed and leaves no card on
 // anyone's page, so naming a service widens who may ask and nothing else.
 func TestServiceRequesterAwaitsOwner(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
 	account := policytest.TypeSecret("GCLOUD_ACCOUNT_KEY", fixtureOperator, policy.TierHuman,
@@ -512,6 +522,7 @@ func TestServiceRequesterAwaitsOwner(t *testing.T) {
 // naming none takes DefaultHumanGrantLifetime, fifteen minutes, which is inside an hour and so
 // would be accepted just as readily by a broker that capped every listed secret at one.
 func TestUncappedListedLoginAwaitsOwner(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, _ := newFixture(t)
 	login := policytest.TypeSecret("UNCAPPED_LOGIN_KEY", fixtureOperator, policy.TierHuman, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))

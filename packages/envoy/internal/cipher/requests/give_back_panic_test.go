@@ -19,6 +19,7 @@ import (
 // is still given back, and one ERROR line names FIRST_KEY with the goroutine's stack and holds
 // neither value. Unrecovered, the panic ends the test binary, as it would the broker.
 func TestAGiveBackThatPanicsLeavesItsValueToLapseAndGoesOn(t *testing.T) {
+	t.Parallel()
 	const firstValue, secondValue = "ghs_the-first-minted-token", "ghs_the-second-minted-token"
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)

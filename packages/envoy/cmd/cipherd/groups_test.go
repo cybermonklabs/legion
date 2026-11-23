@@ -68,6 +68,7 @@ func groupStands(t *testing.T) (iam, directory *httptest.Server) {
 // policy's groups admits the member alone; the machine lists the group for the member alone; its
 // chain check admits the member alone.
 func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
+	t.Parallel()
 	iam, directory := groupStands(t)
 	cfg := config.Config{SecretsPrefix: policytest.Prefix, DirectoryURL: directory.URL, DirectoryAccount: wiredReader}
 	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}))

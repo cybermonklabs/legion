@@ -210,6 +210,7 @@ func dismissals(t *testing.T, m *Machine, recordID string) int {
 // each in words that say why (requireRestrictedRefusal), writing no dismissal and leaving the grant
 // live.
 func TestARestrictedMemberIsNoApprover(t *testing.T) {
+	t.Parallel()
 	people := []struct {
 		name, person string
 		restricted   bool
@@ -286,6 +287,7 @@ func TestARestrictedMemberIsNoApprover(t *testing.T) {
 // reads hold the requests and the grant of the secret the person owns (the owner arm) for the full
 // member alone, so each read is one that asked what kind of member the person is.
 func TestARestrictedMemberKeepsWhatIsTheirOwn(t *testing.T) {
+	t.Parallel()
 	for _, who := range []struct {
 		name, person string
 		restricted   bool
@@ -356,6 +358,7 @@ func TestARestrictedMemberKeepsWhatIsTheirOwn(t *testing.T) {
 // Dispatch answers, the lists hold the group's requests again, the dismissal is written, and their
 // revoke ends the group's grant.
 func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
+	t.Parallel()
 	rows := groupApproverRows(t)
 	m := rows.m
 	ctx := context.Background()
@@ -492,6 +495,7 @@ func insertServiceLogin(t *testing.T, m *Machine, host, service, code string, ex
 // *projectaccess.MemberKindUncheckable naming them. The control: a full member's list holds both,
 // and the full member dismisses the expired one.
 func TestARestrictedMemberIsNoApproverOfAServicesLegacyLogin(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	dispatch := projectaccesstest.NewServer(t, nil, approverKinds())
 	asks := func() { m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil) }
@@ -560,6 +564,7 @@ func TestARestrictedMemberIsNoApproverOfAServicesLegacyLogin(t *testing.T) {
 // refused *projectaccess.MemberKindUncheckable naming them. The control: a full member it names
 // lists both, once Dispatch answers, and dismisses the expired one.
 func TestALegacyServiceLoginNamingAPersonIsNoLoginOfTheirOwn(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	dispatch := projectaccesstest.NewServer(t, nil, approverKinds())
 	asks := func() { m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil) }
@@ -645,6 +650,7 @@ var guestPod = personPod{person: guestMember, service: "person-guest", account: 
 // their own session's approved grant, the service pod's grant and their former pod's grants are
 // all on their list.
 func TestARestrictedMembersGrantListHoldsOnlyTheirOwnSessionsGrants(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, _, _ := newPersonPodFixture(t)
 	m.PodOperators[guestPod.account] = guestPod.person
@@ -801,6 +807,7 @@ func personSessionAnyoneRows(t *testing.T) approverRows {
 // member whose grant list failed to read their kind a moment before is refused once Dispatch
 // answers.
 func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	answers := func(status int, body string) func(*testing.T, approverRows) {
 		return func(_ *testing.T, r approverRows) { r.dispatch.SetAnswer(status, body); r.asks() }
 	}
@@ -1055,6 +1062,7 @@ func (k kindsAskedOf) MemberKind(ctx context.Context, person string) (string, er
 // *projectaccess.MemberKindUncheckable naming them, and decides nothing. The control: a full
 // member who owns the secret approves it and denies it.
 func TestARestrictedMemberDecidesNoSecretRequest(t *testing.T) {
+	t.Parallel()
 	requestState := func(t *testing.T, m *Machine, recordID string) string {
 		t.Helper()
 		var state string
@@ -1169,6 +1177,7 @@ func (s *stalledKind) requireBounded(t *testing.T, what string) {
 // with the approver grant left off; and the dismissal is refused
 // *projectaccess.MemberKindUncheckable.
 func TestAMemberKindReadDispatchDoesNotAnswerEndsWithinTheRelaysWait(t *testing.T) {
+	t.Parallel()
 	t.Run("the named approver's revoke", func(t *testing.T) {
 		rows := ownerApproverRows(t, secondMember)
 		stalled := &stalledKind{projects: rows.m.Projects}

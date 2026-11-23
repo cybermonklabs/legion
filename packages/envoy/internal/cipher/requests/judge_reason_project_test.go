@@ -18,6 +18,7 @@ import (
 // nor the grant. A reason naming only a public project's issue is judged as at the merge base
 // (R9), and so is any reason on a broker with no project-access client.
 func TestTheJudgeLeavesARequestWhoseReasonNamesAPrivateIssueToAPerson(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newJudgeFixture(t)
 	answerFrom(t, m, map[string]projectaccesstest.Row{
 		"INFRA": {Visibility: "public", Owner: otherPerson},

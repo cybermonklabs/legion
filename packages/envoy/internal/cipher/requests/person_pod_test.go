@@ -121,6 +121,7 @@ func listsGrant(t *testing.T, m *Machine, person, grantID string) bool {
 // person. Another person's agent-tier secret waits for its owner. A shared agent-tier secret is
 // granted. A service's secret is denied. The request.created audit row names the person.
 func TestPersonPodIsDecidedAsItsPerson(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, pod, key := newPersonPodFixture(t)
 	for _, want := range []struct {
@@ -162,6 +163,7 @@ func TestPersonPodIsDecidedAsItsPerson(t *testing.T) {
 // granted to the person's mapped pod. Another person's mapped pod and a Legion worker pod are
 // not on the list, so each is denied requester-not-listed.
 func TestPersonPodIsOnTheListThatNamesItsPerson(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, pod, key := newPersonPodFixture(t)
 	granted, err := m.Create(ctx, pod, signRequestFor(t, m, key, anHour, personPodListed), "")
@@ -212,6 +214,7 @@ func TestPersonPodIsOnTheListThatNamesItsPerson(t *testing.T) {
 // the refused reuse after the change reachable. The release once the entry is back shows that
 // the setting, and nothing else, refused the grant.
 func TestPersonPodGrantsFollowTheSetting(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// change applies the setting's change to the map.
@@ -332,6 +335,7 @@ func TestPersonPodGrantsFollowTheSetting(t *testing.T) {
 // enrollment row. So a request the pod makes after the setting drops the account still names the
 // person in the grant log, although its request.created audit row names no person.
 func TestPersonPodGrantsAreThePersonsToSee(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, pod, key := newPersonPodFixture(t)
 	since := time.Now().Add(-time.Hour)

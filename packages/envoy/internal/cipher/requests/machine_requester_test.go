@@ -39,6 +39,7 @@ func newMachineEnrollment(t *testing.T, m *Machine, service, subject, runtimeID 
 // BROKER_VM_SERVICES no longer binds to that service is nobody's, so even its service's secret
 // is denied.
 func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, _, _, operator := newFixture(t)
 	m.VMServicesByAccount = map[string]string{fixtureMachineAccount: fixtureService}
@@ -81,6 +82,7 @@ func TestAMachinesSessionIsItsFleetsAndNoPersons(t *testing.T) {
 // TestAMachineSubjectReadsBackAsItsAccount guards the one reading the authority above turns on:
 // the credential subject the exchange writes is what names the fleet's account.
 func TestAMachineSubjectReadsBackAsItsAccount(t *testing.T) {
+	t.Parallel()
 	want := exchange.Subject{Kind: exchange.SubjectMachine, Account: fixtureMachineAccount}
 	if got := exchange.ReadSubject(fixtureMachineSubject); got != want {
 		t.Fatalf("ReadSubject(%q) = %+v, want %+v", fixtureMachineSubject, got, want)

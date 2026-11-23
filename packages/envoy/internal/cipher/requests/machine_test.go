@@ -198,6 +198,7 @@ func signRequest(t *testing.T, m *Machine, key *ecdsa.PrivateKey, reason string,
 }
 
 func TestCreatePendingWritesTheRecordAndApproveMintsTheGrant(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	compact, err := record.Sign(key, m.Audience, []record.AuthorizationDetail{{Type: "agent_secret", Identifier: "DEEL_API_KEY", Actions: []string{"inject"}}}, "why", "", nil, time.Now())
@@ -231,6 +232,7 @@ func TestCreatePendingWritesTheRecordAndApproveMintsTheGrant(t *testing.T) {
 // the approver decides whatever casing Dispatch sends, and the approved event records the
 // canonical deciding login the chain later re-checks.
 func TestOnlyTheRecordsApproverDecides(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "why", "DEEL_API_KEY"), "")
@@ -260,6 +262,7 @@ func TestOnlyTheRecordsApproverDecides(t *testing.T) {
 }
 
 func TestValuesRefusesAGrantWhoseRowWasForged(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "why", "DEEL_API_KEY"), "")
@@ -288,6 +291,7 @@ func TestValuesRefusesAGrantWhoseRowWasForged(t *testing.T) {
 // for the same name opens a fresh pending request rather than returning the grant whose chain no
 // longer verifies.
 func TestValuesRefusesAChainTheBrokerDidNotWrite(t *testing.T) {
+	t.Parallel()
 	for name, tamper := range map[string]func(t testing.TB, st *store.Store, recordID string){
 		"a tampered body": storetest.Exec(
 			`alter table credential_requests disable trigger credential_requests_no_update`,
@@ -349,6 +353,7 @@ func TestValuesRefusesAChainTheBrokerDidNotWrite(t *testing.T) {
 }
 
 func TestCreateRefusesLoginHintAndForeignThumbprint(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 
@@ -374,6 +379,7 @@ func TestCreateRefusesLoginHintAndForeignThumbprint(t *testing.T) {
 // (LEGION-587's hardening): an unsigned claim any enrolled process may send, capped and
 // shape-checked before it is ever stored.
 func TestCreateRefusesAnInvalidSessionID(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	for name, sessionID := range map[string]string{
@@ -393,6 +399,7 @@ func TestCreateRefusesAnInvalidSessionID(t *testing.T) {
 }
 
 func TestAutomaticAndDeniedEvaluationsWriteNoRecordRow(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 
@@ -411,6 +418,7 @@ func TestAutomaticAndDeniedEvaluationsWriteNoRecordRow(t *testing.T) {
 }
 
 func TestDenyOpensNoRecord(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY", "SERVICE_KEY"), "")
@@ -431,6 +439,7 @@ func TestDenyOpensNoRecord(t *testing.T) {
 // record. Nobody approved the service pod's grant and it runs on no one's machine, so it belongs
 // to no person and every signed-in person's grant list holds it.
 func TestAServicesSecretGoesToItsOwnPodsAlone(t *testing.T) {
+	t.Parallel()
 	m, _, _, operator := newFixture(t)
 	ctx := context.Background()
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
@@ -490,6 +499,7 @@ func TestAServicesSecretGoesToItsOwnPodsAlone(t *testing.T) {
 // policy serves at all aborts the whole Create call with policy.ErrUnknownSecret rather than
 // folding silently into an ordinary "deny" decision, and writes no request row at all.
 func TestCreateRefusesAnUnknownSecretNameWithNoRecordWritten(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	_, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "NOT_A_REAL_SECRET"), "")
@@ -506,6 +516,7 @@ func TestCreateRefusesAnUnknownSecretNameWithNoRecordWritten(t *testing.T) {
 // the policy's listing has not seen yet is served on its first request, not refused until the
 // five-minute reload.
 func TestCreateServesASecretCreatedAfterTheLastReload(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	fixtureStore(m).Put(policytest.Secret("BRAND_NEW_KEY", fixtureOperator, policy.TierAgent, "v1"))
 	// No Policy.Refresh: the cached Set predates the Put, as production's does for up to 5 minutes.
@@ -525,6 +536,7 @@ func TestCreateServesASecretCreatedAfterTheLastReload(t *testing.T) {
 // secret's does, and is never handed to the model judge, since no rules entry gives the key a
 // judge; the grant that approval mints releases the value.
 func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	var judged []PendingRequest
@@ -568,6 +580,7 @@ func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T
 // costs at most its enrollment's burst of DescribeSecret calls, and a miss past it is refused
 // without one.
 func TestMissRereadsAreBoundedPerEnrollment(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	m.MissRereads = &ratelimit.Limit{Every: time.Hour, Burst: 2}
 	count := &policytest.CountingDescriber{SecretsManagerAPI: fixtureStore(m)}
@@ -593,6 +606,7 @@ func TestMissRereadsAreBoundedPerEnrollment(t *testing.T) {
 // enrollment a miss-path token: after a request naming only such names, a secret created since
 // the last reload is still served by the enrollment's one reread.
 func TestANameNoSecretCanCarrySpendsNoMissReread(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	m.MissRereads = &ratelimit.Limit{Every: time.Hour, Burst: 1}
 	ctx := context.Background()
@@ -612,6 +626,7 @@ func TestANameNoSecretCanCarrySpendsNoMissReread(t *testing.T) {
 // LoadFailedMessage, the line that reports a failed reread of the store, and answers the request
 // with its context's error, writing no request and so no grant.
 func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -653,6 +668,7 @@ func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanag
 // Secrets Manager itself fails, while the request is still live, logs LoadFailedMessage once,
 // naming the requested secret, and the name stays unknown with no request written.
 func TestAnOrdinaryRereadFailureRaisesThePolicyAlarm(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	loader := policytest.Loader(fixtureStore(m), fixtureService)
 	loader.Store = policytest.StoreThrough(fixtureStore(m), failingDescriber{SecretsManagerAPI: fixtureStore(m), err: errors.New("throttled")})
@@ -692,6 +708,7 @@ func (d failingDescriber) DescribeSecret(context.Context, *secretsmanager.Descri
 }
 
 func TestCoalescesIdenticalPendingAndReturnsTheFirstRecordID(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	first, err := m.Create(ctx, enr, signRequest(t, m, key, "first", "DEEL_API_KEY"), "")
@@ -712,6 +729,7 @@ func TestCoalescesIdenticalPendingAndReturnsTheFirstRecordID(t *testing.T) {
 }
 
 func TestExpirePendingWritesTheExpiredEventAndFlipsTheRequest(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -744,6 +762,7 @@ func TestExpirePendingWritesTheExpiredEventAndFlipsTheRequest(t *testing.T) {
 // writes a decision or a grant — including after the sweep has actually run, which writes exactly
 // the one 'expired' event and nothing a later decision adds to.
 func TestApplyDecisionRefusesARecordPastItsExpiry(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	m.PendingTTL = -time.Minute
@@ -774,6 +793,7 @@ func TestApplyDecisionRefusesARecordPastItsExpiry(t *testing.T) {
 }
 
 func TestExpirePendingAuditsEveryExpiredRequest(t *testing.T) {
+	t.Parallel()
 	m, enrA, keyA, _ := newFixture(t)
 	ctx := context.Background()
 	enrB, keyB := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
@@ -811,6 +831,7 @@ func TestExpirePendingAuditsEveryExpiredRequest(t *testing.T) {
 }
 
 func TestOtherEnrollmentCannotUseGrant(t *testing.T) {
+	t.Parallel()
 	m, enrA, keyA, _ := newFixture(t)
 	ctx := context.Background()
 	enrB, _ := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
@@ -835,6 +856,7 @@ func TestOtherEnrollmentCannotUseGrant(t *testing.T) {
 }
 
 func TestRevokeStopsValues(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -850,6 +872,7 @@ func TestRevokeStopsValues(t *testing.T) {
 }
 
 func TestMachineSessionID(t *testing.T) {
+	t.Parallel()
 	m, enrA, keyA, _ := newFixture(t)
 	ctx := context.Background()
 	enrB, keyB := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
@@ -879,6 +902,7 @@ func TestMachineSessionID(t *testing.T) {
 }
 
 func TestCreateReusesLiveGrantForIdenticalNameSetWithoutNewRecord(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -904,6 +928,7 @@ func TestCreateReusesLiveGrantForIdenticalNameSetWithoutNewRecord(t *testing.T) 
 }
 
 func TestCreateDoesNotReuseLiveGrantForADifferentNameSet(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	first, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -924,6 +949,7 @@ func TestCreateDoesNotReuseLiveGrantForADifferentNameSet(t *testing.T) {
 }
 
 func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -958,6 +984,7 @@ func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
 // memory before fetching the first value, so no cursor (and its pooled connection) stays open
 // across a Secrets Manager read.
 func TestValuesHoldsNoPooledConnectionWhileReadingSecrets(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -1011,6 +1038,7 @@ func awaitEntered(t *testing.T, entered <-chan struct{}, what string) {
 // live. ALICE_KEY's approver (alice, its owner) is not its enrollment's operator, so each half of
 // the rule is exercised on its own.
 func TestRevokeByApproverIsLimitedToTheApproverOrOperator(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 
@@ -1061,6 +1089,7 @@ func TestRevokeByApproverIsLimitedToTheApproverOrOperator(t *testing.T) {
 // there is nothing to carry the approval to; a lapsed row that would go dormant takes the grant
 // instead (TestAnApprovalOnALapsedRowTheSweepHasNotEndedGrantsAndTheSweepThenCarriesIt).
 func TestApprovalAfterTheEnrollmentLapsedDenies(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -1088,6 +1117,7 @@ func TestApprovalAfterTheEnrollmentLapsedDenies(t *testing.T) {
 // automatic grant never had, or no longer serves the secret at all, values are refused and the
 // grant is no longer handed back by reuse.
 func TestTightenedPolicyStopsLiveGrants(t *testing.T) {
+	t.Parallel()
 	autoToken := func(owner, tier string) secrets.LocalSecret {
 		return policytest.Secret("AUTO_TOKEN", owner, tier, "auto-v1")
 	}
@@ -1139,6 +1169,7 @@ func TestTightenedPolicyStopsLiveGrants(t *testing.T) {
 // requester have the secret at once keeps its grant usable and reusable, whether the edit is to
 // another secret or to this one.
 func TestUnchangedPermissionSurvivesAPolicyChange(t *testing.T) {
+	t.Parallel()
 	for name, edit := range map[string]secrets.LocalSecret{
 		"another secret retiered": policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierAgent, "deel-v1"),
 		"this secret now shared":  policytest.Secret("AUTO_TOKEN", policy.OwnerShared, policy.TierAgent, "auto-v1"),
@@ -1171,6 +1202,7 @@ func TestUnchangedPermissionSurvivesAPolicyChange(t *testing.T) {
 // console's and the CLI's default), whose value Secrets Manager refuses to read as an invalid
 // request rather than a missing secret.
 func TestValuesNamesASecretDeletedBeforeTheNextRefresh(t *testing.T) {
+	t.Parallel()
 	for shape, remove := range map[string]func(*secrets.Local){
 		"deleted at once": func(store *secrets.Local) { store.Delete(policytest.ID("AUTO_TOKEN")) },
 		"scheduled for deletion": func(store *secrets.Local) {
@@ -1200,6 +1232,7 @@ func TestValuesNamesASecretDeletedBeforeTheNextRefresh(t *testing.T) {
 // TestRevokingARevokedGrantWritesNoSecondAuditRow pins that a repeated revoke succeeds without
 // recording a revocation that never happened: one grant.revoked row, naming the first revoker.
 func TestRevokingARevokedGrantWritesNoSecondAuditRow(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -1235,6 +1268,7 @@ func TestRevokingARevokedGrantWritesNoSecondAuditRow(t *testing.T) {
 // pins who that person is). The service's pod is a pod
 // with no operator to every secret but the service's own, which it alone gets at once.
 func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
+	t.Parallel()
 	const otherOperator = "bob@example.com"
 	type outcome struct{ state, approver string }
 	granted, denied := outcome{state: "granted"}, outcome{state: "denied"}
@@ -1308,6 +1342,7 @@ func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 // and a blank login decide nothing, approve or deny, and the grant releases its value because its
 // chain verifies under that approver.
 func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need the shared one", "SHARED_KEY"), "")
@@ -1356,6 +1391,7 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 // and no longer the pod's, the pod's grant releases nothing and its next request is denied rather
 // than reusing the grant.
 func TestAServiceGrantStopsWhenItsServiceAccountChanges(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
@@ -1382,6 +1418,7 @@ func TestAServiceGrantStopsWhenItsServiceAccountChanges(t *testing.T) {
 // in both lists rejected this combination too; nothing of either service is reachable through
 // it, which is why no refusal replaces it.
 func TestAPodBoundToOneServiceAndLoggedInAsAnotherGetsNoServiceSecrets(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	m.ServicesByAccount = map[string]string{fixtureSubject: "other-service"}
@@ -1404,6 +1441,7 @@ func TestAPodBoundToOneServiceAndLoggedInAsAnotherGetsNoServiceSecrets(t *testin
 // is not live, so its release and its reuse both refuse it and the session asks again, rather than
 // reading a source the policy no longer decides about.
 func TestAGrantFrozenOnAnotherSourceIsNotLive(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(policytest.Secret("DEEL_API_KEY", policy.OwnerShared, policy.TierAgent, "v"))
 	set := policytest.Current(t, store).Get()
 	live := set.Secrets["DEEL_API_KEY"].Source
@@ -1428,6 +1466,7 @@ const leftOutLine = "broker: a profile's permission was left out, since the inst
 // what the installation holds left out (Release.GitHubLeftOut), and writes one WARN line for each
 // entry (leftOutLine) with the profile's name, the account and the entry.
 func TestTheReleaseNamesEachPermissionTheCutLeftOut(t *testing.T) {
+	t.Parallel()
 	logged := policytest.CaptureLog(t)
 	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
@@ -1477,6 +1516,7 @@ func TestTheReleaseNamesEachPermissionTheCutLeftOut(t *testing.T) {
 // the caller as that refusal and not as ErrMintFailed, the class whose ERROR line tells the
 // operator to fix the App.
 func TestAScopeTheMinterRefusesIsNotAMintFailure(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	machine.Minters = map[string]Minter{
@@ -1498,6 +1538,7 @@ func TestAScopeTheMinterRefusesIsNotAMintFailure(t *testing.T) {
 // google-service-account source hands its minter the profile's google scopes, as whole scope
 // URLs, and never its source's wider scopes tag.
 func TestAGoogleProfileReleaseAsksForTheProfilesScopes(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	source := policytest.TypeSecret("GCP_FLEET", fixtureOperator, policy.TierAgent, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
 	source.Tags[policy.TagScopes] = "bigquery cloud-platform"
@@ -1533,6 +1574,7 @@ func TestAGoogleProfileReleaseAsksForTheProfilesScopes(t *testing.T) {
 // of a profile of it under a name of its own mints, through the real minter, under the binding the
 // deployment wrote for the source.
 func TestAGoogleProfileUnderAnotherNameMintsUnderItsSourcesBinding(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	source := policytest.TypeSecret("GCP_FLEET", fixtureOperator, policy.TierAgent, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
 	source.Tags[policy.TagScopes] = "bigquery cloud-platform"

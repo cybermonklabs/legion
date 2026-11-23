@@ -81,6 +81,7 @@ func requestRows(t *testing.T, m *Machine) (rows, records int) {
 // The named revert: drop the minted-source rule from gitHubScope, and the repository target is
 // granted an installation-wide token the caller did not ask for.
 func TestATargetNamingRepositoriesOfAMintedInstallationsProfileIsRefusedWithItsOwnError(t *testing.T) {
+	t.Parallel()
 	m, enrollmentID, key := mintedFixture(t, policy.TierAgent, storedTokens(t, readPermissions, "acme", "ada"), tokensRead)
 
 	_, err := m.Create(t.Context(), enrollmentID, signTargetRequest(t, m, key, "TOKENS_READ", "https://github.com/ada/proofs"), "")
@@ -115,6 +116,7 @@ func TestATargetNamingRepositoriesOfAMintedInstallationsProfileIsRefusedWithItsO
 // The named revert: keep the check to github-app names, and the wider token's request goes to
 // its approver.
 func TestAMintedInstallationsProfileIsCheckedAgainstItsStoredTokensBeforeAnyoneIsAsked(t *testing.T) {
+	t.Parallel()
 	wider := maps.Clone(readPermissions)
 	wider["administration"] = "write"
 	m, enrollmentID, key := mintedFixture(t, policy.TierHuman, storedTokens(t, wider, "acme", "ada"), tokensRead)
@@ -138,6 +140,7 @@ func TestAMintedInstallationsProfileIsCheckedAgainstItsStoredTokensBeforeAnyoneI
 // one value slot, and the installations object one slot per account, so the proxy swaps the
 // stored token in where the session holds its placeholder, and a command's log is redacted of it.
 func TestAMintedInstallationsValueSplitsAsAGitHubAppValue(t *testing.T) {
+	t.Parallel()
 	split, err := airlockSplitOf("", policy.TypeGitHubInstallations, githubname.ValueToken, "ghs_stored_ada")
 	if err != nil || !maps.Equal(split.values, map[string]string{SlotValue: "ghs_stored_ada"}) {
 		t.Fatalf("the split of a bare token = %v, %v; want the one value slot holding it", split.values, err)

@@ -41,6 +41,7 @@ func runCheck(t *testing.T, args ...string) (int, string, string) {
 // a pull request: two runs on the same files say the same thing, and the lines of one profile are
 // together.
 func TestProfilesCheckReportsAWholeFileAsAdded(t *testing.T) {
+	t.Parallel()
 	path := profilesFile(t, twoProfiles)
 	code, stdout, stderr := runCheck(t, path)
 	if code != 0 || stderr != "" {
@@ -149,6 +150,7 @@ func profileFieldPaths(t *testing.T) []string {
 // of a profile, today's or one added later, changes in a pull request without a line a reviewer
 // reads.
 func TestProfilesCheckReportsEveryField(t *testing.T) {
+	t.Parallel()
 	paths := profileFieldPaths(t)
 	if got, want := slices.Sorted(slices.Values(paths)), slices.Sorted(maps.Keys(everyFieldLines)); !slices.Equal(got, want) {
 		t.Fatalf("a profile's fields are %v, and this test's lines name %v: give each field its line", got, want)
@@ -207,6 +209,7 @@ func TestProfilesCheckReportsEveryField(t *testing.T) {
 // find it. Each refusal writes nothing on stdout: a report of a file the broker would not serve
 // would be read as a file it had agreed to.
 func TestProfilesCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		body string
@@ -362,6 +365,7 @@ func profilesWithHosts(t *testing.T, name string, hosts ...string) string {
 // with nothing else of the host as written. The control is a file of hosts the grammar serves in
 // a spelling a reader that folded case would change: it is valid.
 func TestProfilesCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
+	t.Parallel()
 	for _, c := range ruleHostRows {
 		t.Run(c.name, func(t *testing.T) {
 			path := profilesFile(t, profilesWithHosts(t, "GITHUB_ADMIN_PAT", "api.github.com", c.host))
@@ -396,6 +400,7 @@ func TestProfilesCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 // new, a field the file leaves to the source written as the source's; and a profile removed, with
 // every field it had.
 func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [
   {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}},
    "proxy": {"hosts": ["api.github.com"], "allow": [{"method": "GET", "pathPrefix": "/v1/"}], "judge": 300}},
@@ -449,6 +454,7 @@ profile "LEGACY": proxy.guidance ""
 // block added, with each of its fields, and one that loses a block as that block removed, with
 // each field it had, rather than as a run of fields changed from nothing.
 func TestProfilesCheckReportsABlockAddedAndABlockRemoved(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}}}]}`)
 	now := profilesFile(t, `{"profiles": [{"name": "LEGION_IMPLEMENT_APP", "proxy": {"hosts": ["api.github.com"]}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
@@ -480,6 +486,7 @@ func TestProfilesCheckReportsABlockAddedAndABlockRemoved(t *testing.T) {
 // authorization, so a file that writes "headers": [] has taken that header away, and the report
 // says so rather than treating the two as the same empty field.
 func TestProfilesCheckReportsAHostRemovedAndAHeaderRemoved(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com", "github.com"]}}]}`)
 	now := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "headers": []}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
@@ -501,6 +508,7 @@ func TestProfilesCheckReportsAHostRemovedAndAHeaderRemoved(t *testing.T) {
 // airlock package itself, so a change to that default cannot leave the report saying a header was
 // added or removed that the swap says nothing about.
 func TestProfilesCheckReportsTheDefaultHeaderTheSwapApplies(t *testing.T) {
+	t.Parallel()
 	names := proxyrules.SecretRule{}.HeaderNames()
 	if len(names) != 1 {
 		t.Fatalf("an entry with no headers field names %v; this report reads it as one header", names)
@@ -519,6 +527,7 @@ func TestProfilesCheckReportsTheDefaultHeaderTheSwapApplies(t *testing.T) {
 // else gets: a report of no lines at all would read as a report that had not run. A file that
 // spells a profile another way, an account in upper case, changes nothing the broker serves.
 func TestProfilesCheckSaysWhenNothingChanged(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["Example-Org"], "permissions": {"contents": "read", "metadata": "read"}}}]}`)
 	now := profilesFile(t, `{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "installations"}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
@@ -537,6 +546,7 @@ func TestProfilesCheckSaysWhenNothingChanged(t *testing.T) {
 // report is the point of the run, so an old file that is not there is a failure and not a run
 // against nothing.
 func TestProfilesCheckRefusesAnOldFileItCannotRead(t *testing.T) {
+	t.Parallel()
 	now := profilesFile(t, twoProfiles)
 	missing := filepath.Join(t.TempDir(), "gone.json")
 	code, stdout, stderr := runCheck(t, now, "--against", missing)
@@ -556,6 +566,7 @@ func TestProfilesCheckRefusesAnOldFileItCannotRead(t *testing.T) {
 // refusal this broker makes, and a check that refused them would refuse the pull request that
 // fixes them too.
 func TestProfilesCheckComparesAgainstAnOldFileTheBrokerWouldRefuse(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 1800}}]}`)
 	now := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 900}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
@@ -570,6 +581,7 @@ func TestProfilesCheckComparesAgainstAnOldFileTheBrokerWouldRefuse(t *testing.T)
 // TestProfilesCheckRefusesAUsageError keeps the usage errors apart from the file errors: exit 2
 // and the usage line, as the end-sessions subcommand answers its own.
 func TestProfilesCheckRefusesAUsageError(t *testing.T) {
+	t.Parallel()
 	path := profilesFile(t, twoProfiles)
 	for _, c := range []struct {
 		name string
@@ -602,6 +614,7 @@ func TestProfilesCheckRefusesAUsageError(t *testing.T) {
 // the removed `airlock-check` exits 2 naming the command that replaces it, and reads no file; and
 // `end-sessions` still reaches its own rather than being swallowed by the new one.
 func TestTheBinaryRoutesEachSubcommandWord(t *testing.T) {
+	t.Parallel()
 	binPath := buildBroker(t)
 	path := profilesFile(t, twoProfiles)
 

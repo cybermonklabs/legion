@@ -38,6 +38,7 @@ func newRereadRate(budget ratelimit.Limit) (*api.RereadRate, *bytes.Buffer) {
 // reread a pod accepts costs a store read on every pod. A count below api.MinReplicas is counted
 // as api.MinReplicas, so one pod alone never takes the whole fleet's budget.
 func TestRereadOverallForDividesTheBudgetAmongThePods(t *testing.T) {
+	t.Parallel()
 	for _, budget := range rereadBudgets {
 		t.Run(budget.name, func(t *testing.T) {
 			for _, row := range []struct {
@@ -70,6 +71,7 @@ func TestRereadOverallForDividesTheBudgetAmongThePods(t *testing.T) {
 // burst of ten. They are now the fleet budget at api.MinReplicas, and a budget edited without
 // meaning to change them goes red here.
 func TestTheMountedRereadLimitsAreTheBudgetAtTwoPods(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		got  ratelimit.Limit
@@ -90,6 +92,7 @@ func TestTheMountedRereadLimitsAreTheBudgetAtTwoPods(t *testing.T) {
 // side of each rate is there because a bucket's refill is floating-point arithmetic, and it is
 // far inside the gap between any two sizings this derivation produces.
 func TestSetReplicasMovesTheLiveRereadBuckets(t *testing.T) {
+	t.Parallel()
 	const ms = time.Millisecond
 	for _, budget := range rereadBudgets {
 		t.Run(budget.name, func(t *testing.T) {
@@ -139,6 +142,7 @@ func TestSetReplicasMovesTheLiveRereadBuckets(t *testing.T) {
 // them back at moves. A rewrite that refilled the bucket would hand every address a fresh burst
 // at each rolling deploy, which is when the count changes.
 func TestABucketSpentBeforeASetReplicasKeepsItsRereads(t *testing.T) {
+	t.Parallel()
 	const address = "203.0.113.9"
 	const spent = 5
 	rate, _ := newRereadRate(api.DefaultRereadFleetBudget)
@@ -176,6 +180,7 @@ func TestABucketSpentBeforeASetReplicasKeepsItsRereads(t *testing.T) {
 // is what a caller sees, and it is read off the bucket that refused, so this is the row that
 // says Register mounted the derived buckets rather than a constant.
 func TestARereadRefusalCarriesTheRateOfTheReplicaCountNow(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		replicas int
 		want     string
@@ -208,6 +213,7 @@ func TestARereadRefusalCarriesTheRateOfTheReplicaCountNow(t *testing.T) {
 // count this sizing supports. A later test parses these out of a real broker's stdout, so their
 // words and keys are the thing asserted.
 func TestSetReplicasLogsEachRateOnceAndWarnsAboveFour(t *testing.T) {
+	t.Parallel()
 	rate, logged := newRereadRate(api.DefaultRereadFleetBudget)
 
 	rate.SetReplicas(2)

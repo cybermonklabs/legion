@@ -73,6 +73,7 @@ const (
 //     MEMBER_KIND_UNCHECKABLE with nothing written and nothing released; once Dispatch answers,
 //     the same release and the same enrollment go through (the control).
 func TestARestrictedMembersMachineLoginEnrollsNothing(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.DatabaseURL(t)
 	cluster := oidctest.New(t)
 	uiToken := accountToken(t, cluster, cluster.PublishKey(t, "cluster-key"), apiAccount)

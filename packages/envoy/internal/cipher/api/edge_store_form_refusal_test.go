@@ -28,6 +28,7 @@ import (
 // The named revert: store the device authorization's form as the client sent it, and each row
 // answers 500 server_error.
 func TestADeviceAuthorizationFormTheStoreCannotHoldIsNeverAServerError(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	for i, row := range []struct{ name, key, value string }{
 		{"a parameter no grant reads", "note", "a\x00b"},
@@ -65,6 +66,7 @@ func TestADeviceAuthorizationFormTheStoreCannotHoldIsNeverAServerError(t *testin
 // The named revert: record the proof's jti as the client wrote it, and each row answers 500
 // server_error.
 func TestADPoPProofJTITheStoreCannotHoldIsNeverAServerError(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	via := throughBalancer{client: "203.0.113.120"}
 	m := newEdgeMachine(t, rig, via)

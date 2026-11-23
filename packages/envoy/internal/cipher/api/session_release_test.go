@@ -46,6 +46,7 @@ func (ts *testServer) releases(t *testing.T, what, bearer string, sessions []str
 // registration of it, so daemon B, listed for the same pod account, is still refused S. A's next
 // write of P and S takes the row back, and P trades again.
 func TestAReleasedNameIsNotHonoured(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	const session, pod, podB = "implementer-g1", "pod-uid-released", "pod-uid-of-b"
 	daemonA, daemonB := ts.accountToken(t, daemonAccount, "", time.Hour), ts.accountToken(t, otherDaemonAccount, "", time.Hour)
@@ -111,6 +112,7 @@ func TestAReleasedNameIsNotHonoured(t *testing.T) {
 // have taken is released with nothing to release, a NUL byte, which Postgres refuses in text,
 // included. No row's expires_at moved.
 func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
+	t.Parallel()
 	var registrars api.PodRegistrars
 	ts := newTestServerWith(t, func(d *api.Deps) { registrars = d.PodRegistrars })
 	const s1, s2, s3 = "implementer-g1", "reviewer-g1", "tester-g1"

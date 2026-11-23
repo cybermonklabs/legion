@@ -55,6 +55,7 @@ const (
 //
 // The named revert: bind the edge in main, after boot has returned.
 func TestTheEdgeIsBoundAfterTheAirlockAndBeforeTheMetricsPort(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	bind := func(step string) func() (net.Listener, error) {
 		return func() (net.Listener, error) {
@@ -94,6 +95,7 @@ func TestTheEdgeIsBoundAfterTheAirlockAndBeforeTheMetricsPort(t *testing.T) {
 //
 // The named revert: leave the API's socket open when the edge's bind fails.
 func TestTheEdgeBindRefusalClosesEverySocketBoundBefore(t *testing.T) {
+	t.Parallel()
 	var bound []net.Listener
 	bind := func() (net.Listener, error) {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -171,6 +173,7 @@ func (l closeWatched) Close() error {
 // sockets close; close the sockets in another order; leave the last socket bound before the
 // refusal open.
 func TestARefusedBootClosesEverySocketItBoundBeforeItEndsServing(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		refused string
 		closed  []string
@@ -239,6 +242,7 @@ func TestARefusedBootClosesEverySocketItBoundBeforeItEndsServing(t *testing.T) {
 //
 // The named revert: drop ShutdownEdge from stop, or call it after Shutdown has returned.
 func TestTheEdgeDrainsBesideTheAPI(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	edgeBegan := make(chan struct{})
 	stop(t.Context(), brokerStop{
@@ -414,6 +418,7 @@ func metricsScrape(t *testing.T, addr string) string {
 //
 // The named revert: bind the edge whether or not BROKER_EDGE_LISTEN_ADDR is set.
 func TestTheEdgeIsAbsentFromABrokerWithoutItsSettings(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("reads the broker's sockets from /proc, which only Linux has")
 	}
@@ -453,6 +458,7 @@ func sortedInts(ints []int) []int {
 // answers 503 SHUTTING_DOWN beside the API's, so the load balancer stops choosing the pod while
 // the edge still answers.
 func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "linux" {
 		t.Skip("reads the broker's sockets from /proc, which only Linux has")
 	}
@@ -555,6 +561,7 @@ func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 // The named revert: drop the gates' NoteQuiet (api.RegisterEdge), and each of the four writes a
 // line naming port=edge.
 func TestTheEdgesGateRefusalsAreCountedAndWriteNoLine(t *testing.T) {
+	t.Parallel()
 	broker := startBroker(t, brokerOptions{Env: []string{
 		"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
 		"BROKER_DATABASE_URL=" + storetest.URL(t),

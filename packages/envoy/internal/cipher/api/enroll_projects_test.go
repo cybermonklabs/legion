@@ -30,6 +30,7 @@ const signInMachineAccount = "example-machine@example-project.iam.gserviceaccoun
 // 403 PROJECTS_REQUIRED and naming PRIV, whose list names them, enrolls. A service's pod, which
 // acts for no person, naming a project is refused 400 PROJECTS_NEED_A_PERSON.
 func TestSelfAnswersTheProjects(t *testing.T) {
+	t.Parallel()
 	dispatch := projectaccesstest.NewServer(t,
 		map[string]projectaccesstest.Row{
 			"PRIV": {Visibility: "private", Owner: testApprover, Listed: []string{restrictedMember}},

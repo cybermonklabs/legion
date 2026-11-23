@@ -24,6 +24,7 @@ import (
 // LogJudged's transaction holds, then the read runs on it. The row must still be written, once,
 // with applied "unknown", and never false.
 func TestAJudgedRowIsWrittenWhenTheLandedReadLosesItsConnection(t *testing.T) {
+	t.Parallel()
 	const reason = "INFRA-12: rotate the deploy key"
 	lost := errors.New("unexpected EOF: the COMMIT's answer was lost")
 	m, enr, key := newJudgeFixture(t)

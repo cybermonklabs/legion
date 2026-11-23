@@ -35,6 +35,7 @@ func withheldCount(t *testing.T, m *Machine, id string) int {
 // control is a second box of another session of the same person: a withhold binds a session, so
 // that box gets nothing, and its request is granted at once.
 func TestAnOperatorsRevokeWithholdsFromEveryLiveBoxOfTheSession(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name         string
 		secondName   string
@@ -92,6 +93,7 @@ func TestAnOperatorsRevokeWithholdsFromEveryLiveBoxOfTheSession(t *testing.T) {
 // it commits without N, and N, which read its predecessors before the name was withheld, is
 // granted at once.
 func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	principal := exchange.PersonPrincipal(fixtureOperator)
 	nameTheSession(t, m, enr, "sess-in-flight", principal)
@@ -142,6 +144,7 @@ func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
 // row names him as the operator. That the revoke answers the same is
 // TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant's.
 func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
 	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider}}, nil, nil, nil, "")
@@ -188,6 +191,7 @@ func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testi
 // withholds nothing. Each case has its control: operatorOf giving no pod a person fails the
 // mapped case alone, and operatorOf ignoring the setting fails the unmapped case alone.
 func TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant(t *testing.T) {
+	t.Parallel()
 	for _, mapped := range []bool{true, false} {
 		name := "the setting maps the pod to dave"
 		if !mapped {
@@ -239,6 +243,7 @@ func TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant(t *testing.T) {
 // runs on, carries no live grant of the withheld name. The row fails when the revoke takes live
 // boxes only: D withholds nothing and G2 stays live.
 func TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName(t *testing.T) {
+	t.Parallel()
 	m, a, keyA, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	principal := exchange.PersonPrincipal(fixtureOperator)
 	nameTheSession(t, m, a, "sess-dormant", principal)
@@ -282,6 +287,7 @@ var siblingProfiles = policytest.ProfilesFile(
 // otherwise carry live to the box it runs on. The row fails when the withhold is written on box A
 // alone: B withholds nothing and its GITHUB_WRITE grant stays live.
 func TestWithholdingAReadProfileEndsItsWriteSiblingsAutomaticGrantOnEveryBoxOfTheSession(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		dormant bool

@@ -40,6 +40,7 @@ func restrictedProfileFixture(t *testing.T, memberKind string) *profileFixture {
 // of the same fixture, whose request for the profile is pending after one check mint and whose
 // request for the refused profile is PROFILE_REFUSED.
 func TestARestrictedMembersProfileRequestIsDeniedBeforeAnyCheckMintOrProfileAnswer(t *testing.T) {
+	t.Parallel()
 	t.Run("the control: a full member", func(t *testing.T) {
 		f := restrictedProfileFixture(t, projectaccess.MemberFull)
 		if req, err := f.create(t, "APP_KEY"); err != nil || req.State != "pending" || req.RecordID == nil {
@@ -102,6 +103,7 @@ func approverProfileFixture(t *testing.T, approver, approverKind string) (*profi
 // member in the same place, whose list holds the request, whose approval grants it, and whose
 // grant list and revoke reach the grant.
 func TestARestrictedMemberIsNoApproverOfAProfilesRequest(t *testing.T) {
+	t.Parallel()
 	for _, profile := range []string{"APP_KEY", "APP_READ"} {
 		for _, who := range []struct {
 			name, person string
