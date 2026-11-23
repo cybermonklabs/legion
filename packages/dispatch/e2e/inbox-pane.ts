@@ -1,7 +1,5 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { hasReadingPane, READING_PANE_WIDTH } from "./reading-pane";
-
 /**
  * The Inbox's reading column (INFRA-575), for the specs that drive the Inbox at whatever width
  * their project gives them.
@@ -18,9 +16,13 @@ import { hasReadingPane, READING_PANE_WIDTH } from "./reading-pane";
  * under `chromium` (1280 px, the column on) and `iphone` (390 px, the column off).
  */
 
-// The width and its test live in `e2e/reading-pane.ts`, which imports no runtime module, so the
-// layout layer's route list can read them; the Inbox's specs keep taking them from here.
-export { hasReadingPane, READING_PANE_WIDTH };
+/** The width the Inbox draws its reading column from (`READING_PANE_QUERY`, 80rem). */
+export const READING_PANE_WIDTH = 1280;
+
+/** Whether this page is wide enough for the Inbox page's reading column. */
+export function hasReadingPane(page: Page): boolean {
+  return (page.viewportSize()?.width ?? 0) >= READING_PANE_WIDTH;
+}
 
 /** The list column, which is the whole Inbox where there is no reading column. */
 export function inboxList(page: Page): Locator {

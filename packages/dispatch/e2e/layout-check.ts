@@ -7,6 +7,8 @@
  *
  *  It reaches no harness: its imports are Playwright's types, the breach list, the measure, the
  *  route list and the settle wait, so a stubbed row imports it in a run with no stack at all. */
+import { readFileSync } from "node:fs";
+
 import { expect, type Page } from "@playwright/test";
 
 import { type KnownLayoutBreach, type LayoutBreachKind, layoutBreaches } from "./layout-breaches";
@@ -21,6 +23,42 @@ export const MIN_ELEMENTS = 100;
 /** The height of every viewport: tall enough for a header and the first rows, which is where the
  *  rows the rule governs are, at every width. */
 const HEIGHT = 900;
+
+/** The faces the rows draw the root's first family, `Inter` (`web/src/styles.css`), in: DejaVu
+ *  Sans 2.37, Book and Bold, the files committed under `e2e/fonts/dejavu/` (their licence is
+ *  beside them). Every page but the new issue page names `Inter` first and loads no font file of
+ *  its own, so each machine draws it in what it holds: CI and this repository's Linux boxes fall
+ *  back to DejaVu Sans, a Mac to its system face, a machine with Inter to Inter, and the list's
+ *  exact counts follow the text's width. Declared as `Inter` here, these faces win over any
+ *  installed one, so every run measures the text CI measures. A weight between is matched to
+ *  these two as the browser matches it to the installed DejaVu Sans, and italic is drawn slanted
+ *  from Book as it is there, since that machine holds no DejaVu Sans Oblique either. */
+const PINNED_FACES = [
+  { file: "DejaVuSans.ttf", weight: 400 },
+  { file: "DejaVuSans-Bold.ttf", weight: 700 },
+] as const;
+/** Where the page asks for those faces; the row answers it from the committed files. */
+const PINNED_FACE_PATH = "/__layout-fonts/";
+const PINNED_FACE_SHEET = PINNED_FACES.map(
+  ({ file, weight }) =>
+    `@font-face { font-family: "Inter"; font-style: normal; font-weight: ${weight}; src: url("${PINNED_FACE_PATH}${file}") format("truetype"); }`
+).join("\n");
+
+/** Answers the page's requests for the pinned faces from `e2e/fonts/dejavu/`. */
+async function servePinnedFaces(page: Page): Promise<void> {
+  await page.route(`**${PINNED_FACE_PATH}*`, async (route) => {
+    const file = new URL(route.request().url()).pathname.slice(PINNED_FACE_PATH.length);
+    const face = PINNED_FACES.find((candidate) => candidate.file === file);
+    if (face === undefined) {
+      await route.fulfill({ body: `no pinned face ${file}`, status: 404 });
+      return;
+    }
+    await route.fulfill({
+      body: readFileSync(new URL(`./fonts/dejavu/${face.file}`, import.meta.url)),
+      contentType: "font/ttf",
+    });
+  });
+}
 
 /** One reading: a route, in one of its states or as it loads, at one width. */
 export interface ReadingPlace {
@@ -175,8 +213,11 @@ async function settle(page: Page, route: LayoutRoute, address: string): Promise<
 async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
   await page.goto(address);
   // A width transition would be read part-way, as `e2e/accessibility.e2e.ts` says of colours:
-  // the sheet makes the first frame after the load the settled one.
-  await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; }" });
+  // the sheet makes the first frame after the load the settled one. The pinned faces go in with
+  // it, and `document.fonts.ready` waits for them before the page is read.
+  await page.addStyleTag({
+    content: `*, *::before, *::after { transition: none !important; }\n${PINNED_FACE_SHEET}`,
+  });
   await settle(page, route, address);
 }
 
@@ -196,6 +237,7 @@ async function measureSettledPage(page: Page, place: ReadingPlace): Promise<Layo
  *  after every reading, with every failure `judgeReading` found. */
 export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSeed): Promise<void> {
   await route.prepare?.(page.context());
+  await servePinnedFaces(page);
   // A minute after the seed, held there: a relative time ("just now", "2 minutes ago", "3 weeks
   // ago") widens its column with the gap between the seed and the read, which moves with the
   // run's pace on the stack and with the recording's age in a replay. `setFixedTime` keeps the

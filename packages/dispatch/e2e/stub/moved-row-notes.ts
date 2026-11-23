@@ -41,6 +41,7 @@ const newInTheStubbedLayer: Record<string, string> = Object.fromEntries(
     ),
     "layout-measure.stub.e2e.ts › the layout measure reports each defect the rule names, by kind and by locator @pr",
     "layout-measure.stub.e2e.ts › the layout measure reports nothing of what the rule allows @pr",
+    "layout-measure.stub.e2e.ts › a window scrolled sideways reads as it does unscrolled @pr",
     "layout-measure.stub.e2e.ts › a layout reading fails on a blank page and keeps a stale entry @pr",
     "layout-measure.stub.e2e.ts › a layout entry accepts its own count of breaches and no new one in its region @pr",
     "layout-measure.stub.e2e.ts › a layout entry names a required group no element marks, and a page-scroll breach takes its own entry first @pr",

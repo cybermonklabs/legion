@@ -22,8 +22,12 @@ const test = stubbed(async () => ({}));
 /** Words enough to run past any box below. */
 const LONG = "a line of words much wider than the box it is drawn in, with no place to break it";
 
-/** An 80-character path with no space, which no line of a narrow box can hold or break. */
+/** An 80-character path with no space, which no line of a narrow box can hold; the browser may
+ *  break it at its hyphens. */
 const PATH = "packages/dispatch/e2e/acceptance/converted-verification-check-with-a-long-path.sh";
+
+/** A 75-character path with no space and no hyphen, which the browser does not break. */
+const BARE_PATH = "packages/dispatch/e2e/acceptance/convertedverificationcheckwithalongpath.sh";
 
 /** A one-pixel picture, drawn as wide as an `img` is told to be. */
 const PIXEL =
@@ -176,6 +180,17 @@ const defects: readonly {
     name: "a line-clamped box that cuts a line above its last",
   },
   {
+    // A two-line clamp that holds "The first line, then" and a path with no space and no
+    // hyphen: the text needs no more than its two lines, so the clamp hides none, draws no
+    // ellipsis, and the path on its last line is cut bare.
+    body:
+      '<p data-testid="clamp-hides-none" style="-webkit-box-orient: vertical; -webkit-line-clamp: 2; display: -webkit-box; overflow: hidden; width: 200px">' +
+      `The first line, then ${BARE_PATH}</p>`,
+    kind: "clipped",
+    locator: '[data-testid="clamp-hides-none"]',
+    name: "a line-clamped box that hides no line and cuts its last",
+  },
+  {
     // A strip of pictures each narrower than the box: a row, which scrolls as one.
     body:
       '<div data-testid="thumbs" style="display: flex; overflow-x: auto; width: 200px">' +
@@ -183,6 +198,25 @@ const defects: readonly {
     kind: "box-scroll",
     locator: '[data-testid="thumbs"]',
     name: "a strip of pictures each narrower than the box that scrolls for them",
+  },
+  {
+    // Three pictures each wider than the box, side by side: a row, which scrolls as one.
+    body:
+      '<div data-testid="wide-strip" style="display: flex; overflow-x: auto; width: 200px">' +
+      `${`<img alt="" height="10" src="${PIXEL}" style="flex-shrink: 0" width="250">`.repeat(3)}</div>`,
+    kind: "box-scroll",
+    locator: '[data-testid="wide-strip"]',
+    name: "a strip of pictures each wider than the box that scrolls for them",
+  },
+  {
+    // One picture narrower than the box, pushed past its edge by the margin before it: the box
+    // scrolls for the row, not for a picture too wide for it.
+    body:
+      '<div data-testid="pushed-picture" style="overflow-x: auto; width: 200px">' +
+      `<img alt="" height="10" src="${PIXEL}" style="display: block; margin-left: 100px" width="150"></div>`,
+    kind: "box-scroll",
+    locator: '[data-testid="pushed-picture"]',
+    name: "one picture narrower than the box, pushed past its edge",
   },
   {
     body: `<div data-layout-group="labels">${entries(11)}<button data-layout-more type="button">+1</button></div>`,
@@ -236,7 +270,8 @@ const allowed = [
   `<a href="#main-content" style="clip-path: inset(50%); height: 44px; overflow: hidden; position: absolute; white-space: nowrap; width: 44px">Skip to content, ${LONG}</a>`,
   `<div style="overflow: hidden; width: 200px"><details><summary>More</summary><div style="width: 400px">${LONG}</div></details></div>`,
   `<p style="-webkit-box-orient: vertical; -webkit-line-clamp: 2; display: -webkit-box; overflow: hidden; width: 200px">${LONG} ${LONG}</p>`,
-  // A clamp whose cut long word is on its last visible line, where it draws its ellipsis.
+  // A clamp whose path, broken at its hyphens, runs onto a third line, which the clamp hides: it
+  // draws its ellipsis on its last visible line, so the cut there is marked.
   `<p style="-webkit-box-orient: vertical; -webkit-line-clamp: 2; display: -webkit-box; overflow: hidden; width: 200px">The first line, then ${PATH}</p>`,
   // A fixed layer inside the viewport, and one wholly left of it as a closed drawer is.
   '<div style="left: 20px; position: fixed; top: 20px; width: 300px">A dialog inside the viewport</div>',
@@ -265,6 +300,22 @@ test("the layout measure reports nothing of what the rule allows @pr", async ({ 
     reading.breaches.map((breach) => `${breach.kind} ${breach.where}: ${breach.detail}`)
   ).toEqual([]);
   expect([...reading.groups].sort()).toEqual(["components", "labels"]);
+});
+
+// A page that scrolls sideways reads the same scrolled as not: the measure reads the elements
+// the page holds in the document, so a window a state left scrolled to the right reports the one
+// page-scroll breach and no cut at the left edge.
+test("a window scrolled sideways reads as it does unscrolled @pr", async ({ page }) => {
+  const row =
+    '<div data-testid="row" style="display: flex; justify-content: space-between; width: 900px">' +
+    `<span>near</span><span data-testid="far">far</span></div>${entries(120)}`;
+  const said = (reading: LayoutReading) =>
+    reading.breaches.map((breach) => `${breach.kind} ${breach.locator}`);
+  const unscrolled = await measure(page, row);
+  expect(said(unscrolled)).toEqual(['page-scroll [data-testid="far"]']);
+  await page.evaluate(() => window.scrollTo(540, 0));
+  expect(await page.evaluate(() => window.scrollX)).toBe(540);
+  expect(said(await page.evaluate(measureLayout, []))).toEqual(['page-scroll [data-testid="far"]']);
 });
 
 test("a layout reading fails on a blank page and keeps a stale entry @pr", async ({ page }) => {

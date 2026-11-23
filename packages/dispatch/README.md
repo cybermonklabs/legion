@@ -1160,13 +1160,16 @@ production's lengths (`e2e/layout-seed.ts`), at 360, 900, 1280, 1440 and 1920 px
 each state a route names (the Peek drawer open, rows or agents selected). At each width
 `e2e/layout-check.ts` loads the page fresh, waits for `waitForRouteSettled`, and runs
 `measureLayout` (`e2e/layout-measure.ts`) in the page: a page that scrolls sideways, a box that
-does for anything but a code block, a picture, a data table or a board's lanes, something cut off
-at a side with no ellipsis, a closed `data-layout-group` showing more entries than its cap, and a
+does for anything but a code block, one picture wider than the box, a data table or a board's
+lanes, something cut off at a side with no ellipsis, a closed `data-layout-group` showing more
+entries than its cap, and a
 group the route must mark (`requiredGroups`) that no element marks. The rows are
 `e2e/layout-rule.stub.e2e.ts`, in the stubbed layer on every pull request: their HTTP answers are
 recorded as every stubbed row's are, and the document and live sockets beside the HAR
 (`e2e/layout-sockets.ts`); `bun run e2e:stub:record -- layout-rule.stub` records them again after
-a change to the stress layer. `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
+a change to the stress layer. The rows draw the root's first family, `Inter`, in the DejaVu Sans
+faces under `e2e/fonts/dejavu/`, in `en-US` and UTC, so a run on any machine measures the text CI
+measures. `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
 case, and holds the instrument to reporting the one and not the other. A row fails on each breach
 no entry of `e2e/layout-breaches.ts` accepts - an entry accepts exactly its `count` - on a page
 whose own region drew fewer than 100 elements (or the route's own `minElements`), and on an entry
