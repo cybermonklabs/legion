@@ -2251,6 +2251,12 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", writeErr), http.StatusServiceUnavailable)
 			return
 		}
+		// The refresh may have made this replica the session's relay, or found its run here ended
+		// for want of the admission the claim just recorded: a resume starts an ended run, which
+		// the entry's change (a relayCheck) does not.
+		if d.consumers != nil && d.consumers.relay != nil {
+			d.consumers.relay.registered(body.SessionID, false, 0)
+		}
 		// landed is set by a claim that landed, whose own handover hands the claimed role's lane
 		// over, so the handovers of a claimant this refresh made live again leave that role out.
 		// At the edge a claimant is handed the kept lanes of its token's projects' roles alone

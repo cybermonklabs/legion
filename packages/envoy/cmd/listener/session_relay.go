@@ -1325,7 +1325,11 @@ func (m *sessionRelays) owedRepositoryGap(sessionID string) string {
 // that fails or does not answer in time is logged; the entry then keeps the mark, and the
 // session's next relay run sends it once more.
 func (m *sessionRelays) repositoryGapSent(ctx context.Context, sessionID, mark string) {
-	m.forgetRepositoryGap(sessionID)
+	m.repositoryGapsMu.Lock()
+	if m.repositoryGaps[sessionID] == mark {
+		delete(m.repositoryGaps, sessionID)
+	}
+	m.repositoryGapsMu.Unlock()
 	if mark == "" {
 		return
 	}
