@@ -359,7 +359,10 @@ type deliveryLiveSpec struct {
 	at       *time.Time
 	// project is the project a legion view's board shows; every other kind names none.
 	project string
-	key     string
+	// issue is the issue a legion_issue view shows (DeliveryLiveView.Issue); every other kind
+	// names none.
+	issue string
+	key   string
 }
 
 // deliveryFreshnessHeard is the freshness row as the hub last heard it, and the population's

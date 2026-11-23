@@ -54,6 +54,9 @@ type DeliveryLiveView struct {
 	Query   *string             `json:"query,omitempty"`
 	At      *string             `json:"at,omitempty"`
 	Project *string             `json:"project,omitempty"`
+	// Issue is the one issue a legion_issue view names, the key GET /api/v1/issues/{key}/legion
+	// reads (dispatch://INFRA-4869); every other kind names none.
+	Issue *string `json:"issue,omitempty"`
 }
 
 // DeliveryLiveRevs is what a page holds, as revisions (deliveryLiveRevision) in the frame's own
