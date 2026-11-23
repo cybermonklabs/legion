@@ -726,9 +726,12 @@ provider_keys:
   running keeps the prompt it launched with until its next launch, and an edit replaces no pod.
   A file an edit leaves missing, unreadable or blank, which boot refuses, stops no launch of a
   running daemon: each launch carries the text the daemon last read, and the daemon logs one WARN
-  line naming the file and the refusal (`legion daemon launches with the instructions it last
-  read: …`), then one INFO line once the file reads again (`legion daemon read an edited
-  instructions file: …`). Naming another file, or a file for the first time, is a change of
+  line for each refusal, naming the file and the refusal (`legion daemon launches with the
+  instructions it last read: …`; a copy it cannot replace is the same line at ERROR), then one INFO
+  line once the file reads again (`legion daemon read an edited instructions file: …`, or
+  `legion daemon reads an instructions file again …` when it holds the text the daemon kept). Under
+  Kubernetes the daemon must read the file from a directory mount: the kubelet never refreshes a
+  file mounted by `subPath`. Naming another file, or a file for the first time, is a change of
   `legion.yaml`, which still needs a restart.
 - **`projects.<KEY>.memory`**, the project's own block, is one of the things that append to a
   pane's `PI_CONFIG_FILES`

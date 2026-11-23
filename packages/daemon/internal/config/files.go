@@ -163,9 +163,8 @@ func MaterializeDeploymentInstructions(instructionsPath, stateDir, legionID stri
 // WriteDeploymentInstructions is MaterializeDeploymentInstructions' write, of contents
 // ReadDeploymentInstructions answered: boot reads the file with every other refusal before it
 // writes anything, and writes this copy before the first pane opens; the daemon writes it again
-// whenever a launch reads an edited file (the daemon's instructionsCopies). The copy is replaced
-// whole, so a launch composing its prompt while it is written reads the old copy or the new one,
-// never half of one.
+// whenever a launch reads an edited file. The copy is replaced whole, so a launch composing its
+// prompt while it is written reads the old copy or the new one, never half of one.
 func WriteDeploymentInstructions(contents []byte, stateDir, legionID string) (string, error) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)
@@ -236,15 +235,14 @@ func ReadHookPrompt(hook, promptPath string) (string, error) {
 // the `memory` block's arm, ReadMemoryInstructions), one per variant that names a file, at
 // VariantInstructionsFile: boot reads every such file with every other refusal before it writes
 // anything, and writes these copies before the first pane opens; the daemon writes one again
-// whenever a launch reads an edited file (the daemon's instructionsCopies). Each copy is replaced
-// whole, so a launch composing its prompt while it is written reads the old copy or the new one,
-// never half of one. The reads and the write are separate, where the deployment's own has a
-// Materialize pair as well, because only the daemon writes a variant's copy and boot refuses
-// before it writes. The path is no answer of its own: a reader of the copy builds it with
-// VariantInstructionsFile, as a launch's arms do (experiment.Launch). The copy is headed
-// `# Memory instructions (<legionID>)` for the block's arm, as the block's copy was before any
-// experiment was declared, and `# <experiment>/<variant> instructions (<legionID>)` for an arm of
-// the `experiments` key.
+// whenever a launch reads an edited file. Each copy is replaced whole, so a launch composing its
+// prompt while it is written reads the old copy or the new one, never half of one. The reads and
+// the write are separate, where the deployment's own has a Materialize pair as well, because only
+// the daemon writes a variant's copy and boot refuses before it writes. The path is no answer of
+// its own: a reader of the copy builds it with VariantInstructionsFile, as a launch's arms do
+// (experiment.Launch). The copy is headed `# Memory instructions (<legionID>)` for the block's
+// arm, as the block's copy was before any experiment was declared, and
+// `# <experiment>/<variant> instructions (<legionID>)` for an arm of the `experiments` key.
 func WriteVariantInstructions(contents []byte, stateDir, legionID, experiment string, variant Variant) error {
 	target := VariantInstructionsFile(stateDir, experiment, variant)
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
