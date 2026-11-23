@@ -421,14 +421,16 @@ func (c *relaySocketClient) next(within time.Duration) relayFrameRead {
 	return relayFrameRead{}
 }
 
-// closeQueued waits within the bound for the reader to have read the server's close, after every
-// frame before it: the state in which next must still answer the frames first. A row calls it to
-// stand where load puts it.
-func (c *relaySocketClient) closeQueued(within time.Duration) {
+// closeQueued waits for the reader to have read the server's close, after every frame before it:
+// the state in which next must still answer the frames first. A row calls it to stand where load
+// puts it. It sets no span of its own: a close that load holds back is still a close, so the wait
+// ends when the close is queued or gives up 30 s before the test binary's deadline (testwait.Until).
+func (c *relaySocketClient) closeQueued() {
 	c.t.Helper()
-	if !testwait.Holds(within, time.Millisecond, func() bool { return len(c.closed) == 1 }) {
-		c.t.Fatalf("the reader read no close within %s", within)
-	}
+	testwait.Until(c.t, "the reader to read the server's close", func() (int, bool) {
+		queued := len(c.closed)
+		return queued, queued == 1
+	})
 }
 
 // none fails the test when a frame arrives within the window.

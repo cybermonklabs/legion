@@ -790,8 +790,10 @@ func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
 // unsub that names no sid, and a sub of a sid the socket already holds - is answered the err frame
 // bad_frame, and the socket is closed 1008 with reason bad_frame. Each row reads the err frame only
 // once the client's reader has read the close behind it (closeQueued), the state load puts a run
-// in, where a read that took the close first would miss the frame that came before it. Control: a
-// well-formed sub on the same rig is taken and closes nothing.
+// in, where a read that took the close first would miss the frame that came before it. Its waits
+// for the close, the frame and the close's code set no span of their own: each ends on its fact or
+// 30 s before the test binary's deadline (testwait), so a loaded machine slows the row and does not
+// fail it. Control: a well-formed sub on the same rig is taken and closes nothing.
 func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_bad_frames"
@@ -812,11 +814,12 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 			for _, frame := range append(row.before, row.frame) {
 				client.sendRaw(websocket.TextMessage, []byte(frame))
 			}
-			client.closeQueued(5 * time.Second)
-			if frame := client.next(5 * time.Second); frame.Op != "err" || frame.Code != relayErrBadFrame {
+			client.closeQueued()
+			bound := testwait.Remaining(t, 30*time.Second)
+			if frame := client.next(bound); frame.Op != "err" || frame.Code != relayErrBadFrame {
 				t.Fatalf("%s was answered %s, want err %s", row.frame, frame.raw, relayErrBadFrame)
 			}
-			if code, text := client.closeCode(5 * time.Second); code != websocket.ClosePolicyViolation || text != relayErrBadFrame {
+			if code, text := client.closeCode(bound); code != websocket.ClosePolicyViolation || text != relayErrBadFrame {
 				t.Fatalf("%s closed the socket %d %q, want %d %q", row.frame, code, text, websocket.ClosePolicyViolation, relayErrBadFrame)
 			}
 		})
