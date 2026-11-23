@@ -4158,8 +4158,9 @@ without it the state's `consumers` show `unavailable: read the oldest waiting me
 It publishes on no core subject: role and controller notices go to the Envoy listener over HTTP, and control directives over the worker stream, so the Go daemon needs no `legion.ctl` grant.
 These subjects were verified live: a server granting exactly them logged no refusal across a boot creating both durables, a restart onto the existing ones, Dispatch and GitHub events acknowledged and a poison message terminated, and its trace showed no other API subject (no `$JS.API.INFO`, no `CONSUMER.DURABLE.CREATE`, which the TypeScript daemon uses instead);
 the daemon's permission test (`internal/daemon/nats_permissions_test.go`) creates all three durables and reads their lag under the same grant and expects no refusal.
+The same get confirms the Dispatch consumer idle before admission releases the roots it holds for that consumer to catch up: nats-server answers a publish before it counts the message as pending on a consumer, so the consumer's own count can read idle while a message waits, and the daemon reads the stream for the first message after the consumer's delivered sequence instead.
 The stored-message get reaches a deployment with the envoy-infra release that carries it:
-until then the daemon runs as before, and only the lag's oldest message is `unavailable`.
+until then the daemon runs as before, the lag's oldest message is `unavailable`, and the Dispatch consumer's idle is its own count alone, with a WARN line naming the grant each time it is read so.
 The daemon's seed is read by the same rule and refusals as the pane seed, the group-readable mount included, and neither seed falls back to the other:
 an unusable daemon seed refuses boot even beside a good pane seed.
 Unset, the daemon connects as the pane seed, and with neither, with no credential.

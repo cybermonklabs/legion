@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -104,6 +105,59 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	if !position.Idle {
 		t.Fatalf("idle = false for a freshly (re)created consumer with nothing it can ever deliver from before it existed, want true: ack floor %d, target %d",
 			position.AckFloorStream, target)
+	}
+}
+
+// nats-server answers a publish once it has stored the message, and counts the message into each
+// consumer's pending only afterwards, on a goroutine of the stream's own (DispatchPosition). A
+// CONSUMER.INFO read in between counts a Dispatch consumer with a message waiting as having nothing
+// pending and nothing awaiting an ack; read idle, it let the daemon's boot reconcile decide a key
+// that waiting message would still change (internal/daemon's
+// TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow, 1 of 20 race runs). The
+// stand-in answers that reading every time (lagStandIn's uncounted), so the gap the server leaves
+// for a moment is open for the whole row:
+//   - a GitHub message, which the Dispatch consumer's filter never matches, leaves it idle;
+//   - a Dispatch message stored after the consumer's delivered sequence makes it not idle;
+//   - with the stored-message get refused, the position keeps the counts' idle and says so.
+func TestDispatchPositionIsNotIdleWhileTheStoreHoldsAMessageTheConsumerHasNotCounted(t *testing.T) {
+	ctx := context.Background()
+	served, _ := testJetStream(t)
+	standIn := &lagStandIn{JetStream: served}
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	consumers, err := OpenConsumers(ctx, standIn, migratedPool(t), spec)
+	if err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+	standIn.uncounted = true
+	position := func() DispatchConsumerPosition {
+		t.Helper()
+		read, cancel := rowRead(t)()
+		defer cancel()
+		position, err := consumers.DispatchPosition(read)
+		if err != nil {
+			t.Fatalf("DispatchPosition: %v", err)
+		}
+		return position
+	}
+
+	publish(t, served, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	if got := position(); !got.Idle {
+		t.Fatalf("position with only a GitHub message stored = %+v, want idle: the Dispatch consumer's filter never matches it", got)
+	}
+
+	publish(t, served, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	if got := position(); got.Idle {
+		t.Fatalf("position with a Dispatch message stored and not yet counted = %+v, want not idle", got)
+	}
+
+	refused := errors.New("nats: timeout")
+	standIn.getMsg = func(context.Context) (*jetstream.RawStreamMsg, error) { return nil, refused }
+	if got := position(); !got.Idle {
+		t.Fatalf("position with the stored-message get refused = %+v, want the counts' idle", got)
+	}
+	if line := logLine(logs.String(), "level=WARN", "$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS", refused.Error()); line == "" {
+		t.Fatalf("logs = %q, want a WARN line naming the stored-message get and its error", logs.String())
 	}
 }
 

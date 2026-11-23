@@ -254,12 +254,15 @@ func (c *lagClock) advance(by time.Duration) {
 
 // lagStandIn is the test's NATS server whose notification stream refuses or never answers what a
 // test says: every CONSUMER.INFO fails with info when it is set, and every STREAM.MSG.GET is
-// getMsg's answer when it is set; everything else is the real server's. The test sets both only
-// while no consumer runs, so nothing reads them concurrently.
+// getMsg's answer when it is set; with uncounted set, every consumer's info counts nothing pending
+// and nothing awaiting an ack, as nats-server's does between storing a message and counting it
+// (DispatchPosition); everything else is the real server's. The test sets them only while no
+// consumer runs, so nothing reads them concurrently.
 type lagStandIn struct {
 	jetstream.JetStream
-	info   error
-	getMsg func(context.Context) (*jetstream.RawStreamMsg, error)
+	info      error
+	getMsg    func(context.Context) (*jetstream.RawStreamMsg, error)
+	uncounted bool
 }
 
 func (s *lagStandIn) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
@@ -279,7 +282,23 @@ func (s lagStandInStream) Consumer(ctx context.Context, name string) (jetstream.
 	if s.standIn.info != nil {
 		return nil, s.standIn.info
 	}
-	return s.Stream.Consumer(ctx, name)
+	consumer, err := s.Stream.Consumer(ctx, name)
+	if err != nil || !s.standIn.uncounted {
+		return consumer, err
+	}
+	return uncountedConsumer{Consumer: consumer}, nil
+}
+
+// uncountedConsumer is a consumer handle whose info counts nothing pending and nothing awaiting an
+// ack, whatever the server counted (lagStandIn's uncounted).
+type uncountedConsumer struct {
+	jetstream.Consumer
+}
+
+func (c uncountedConsumer) CachedInfo() *jetstream.ConsumerInfo {
+	info := *c.Consumer.CachedInfo()
+	info.NumPending, info.NumAckPending = 0, 0
+	return &info
 }
 
 func (s lagStandInStream) GetMsg(ctx context.Context, seq uint64, opts ...jetstream.GetMsgOpt) (*jetstream.RawStreamMsg, error) {
