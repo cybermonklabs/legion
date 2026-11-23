@@ -1953,6 +1953,32 @@ func TestAFactWhoseContextEndsWhileItWaitsForItsTurnTakesNoConnection(t *testing
 	}
 }
 
+// A fact hands its pool's turn on at its COMMIT, before its other commit hooks run: a hook that
+// waits (a NATS publish, say) holds up no other fact. Here the first fact's hook waits until a
+// second fact has applied; a turn held through the hooks would leave the second waiting on the
+// first's hook, and its bound would end it.
+func TestAFactsCommitHookHoldsUpNoOtherFact(t *testing.T) {
+	t.Parallel()
+	pool := store.NewPool(migratedPool(t))
+	ctx := context.Background()
+	second := make(chan error, 1)
+	hooked := handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
+		store.OnCommit(ctx, func() {
+			bounded, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := ApplyFact(bounded, pool, "test", "after-the-commit", DispatchConsumerPosition{AckFloorStream: 2})
+			second <- err
+		})
+		return Result{}, nil
+	})
+	if _, err := ApplyFact(ctx, pool, "test", "hooked", DispatchConsumerPosition{AckFloorStream: 1}, hooked); err != nil {
+		t.Fatalf("the hooked fact: %v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("a fact applied from the first fact's commit hook = %v, want it applied: the turn was handed on at the first's COMMIT", err)
+	}
+}
+
 // A reopened pull request is open again, recorded as when it opened: a closed pull request's record
 // is dropped at the next re-admission, so one reopened in between must not stay closed. The fact
 // says it is a reopen, since GitHub sends opened only once and a second one is a redelivery.
