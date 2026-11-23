@@ -150,17 +150,24 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 
 // A boot must not die on the number of terminal facts no daemon applied. Those it replays one at a
 // time, each taking the fact lock, and each may wait there behind live facts: here 100 restored
-// claims fail while the replay runs, and their failures (terminal) apply beside it. The 300
-// replayed facts and the 100 live ones take several times the replay's budget between them; the
-// replay still finishes, since the budget is each fact's own, and every fact, replayed or live, is
-// applied exactly once.
+// claims fail while the replay runs, and their failures (terminal) apply beside it. The 800
+// replayed facts and the 100 live ones take more than the replay's budget between them (900 ×
+// 20 ms at the least); the replay still finishes, since the budget is each fact's own, and every
+// fact, replayed or live, is applied exactly once.
+//
+// One budget has to cover the longest single wait, which is the live burst: the 100 live facts
+// start first, and each holds one of the pool's connections while it waits on the fact lock, so the
+// replay's read of which facts are applied queues behind all of them, as does the first replayed
+// fact. At a 5 s budget that burst fit only while a fact cost under 50 ms, and a parallel race run
+// on four CPUs cost more (1 of 20 soak runs, "read which supervise facts are applied: context
+// deadline exceeded after 5.0s"). At 15 s a fact may cost 150 ms, and the replay still outlasts it.
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
 	t.Parallel()
-	const budget = 5 * time.Second
+	const budget = 15 * time.Second
 	pool := isolatedOutboxPool(t)
 	handler := &slowFactHandler{delay: 20 * time.Millisecond, seen: map[intake.Fact]int{}}
 	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), failed: make(chan error, 1), limits: replayLimits}
-	replayed := terminalClaims(t, "legion", 300)
+	replayed := terminalClaims(t, "legion", 800)
 	failing := make([]supervise.Claim, 100)
 	for i := range failing {
 		issue := fmt.Sprintf("LEGION-%d", 1001+i)

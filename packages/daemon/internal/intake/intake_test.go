@@ -1863,6 +1863,96 @@ func TestApplyFactSerializesConcurrentFacts(t *testing.T) {
 	}
 }
 
+// A fact takes its pool's turn before it takes a connection (store.Pool.FactTurn), so a burst of
+// facts waiting on the fact lock holds one connection, not one each: with one fact inside its
+// handler and twice the pool's size of facts waiting behind it, a read of the pool still answers
+// at once. Before the turn every waiting fact held a connection, the burst held them all, and the
+// read waited for the whole burst (the boot replay's read of which facts are applied, which ran out
+// its budget so in 1 of 20 race-soak runs of internal/daemon).
+func TestABurstOfFactsWaitingOnTheLockLeavesThePoolToOtherReads(t *testing.T) {
+	t.Parallel()
+	raw := migratedPool(t)
+	pool := store.NewPool(raw)
+	ctx := context.Background()
+	inside, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	letFirstFinish := func() { releaseOnce.Do(func() { close(release) }) }
+	// A failing read must still let the first fact finish, or its open transaction holds the pool.
+	defer letFirstFinish()
+	var applied sync.WaitGroup
+	errs := make(chan error, 1+2*int(raw.Config().MaxConns))
+	applied.Go(func() {
+		_, err := ApplyFact(ctx, pool, "test", "burst-0", DispatchConsumerPosition{AckFloorStream: 0}, handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
+			close(inside)
+			<-release
+			return Result{}, nil
+		}))
+		errs <- err
+	})
+	<-inside
+	var asked sync.WaitGroup
+	for i := range 2 * int(raw.Config().MaxConns) {
+		asked.Add(1)
+		applied.Go(func() {
+			asked.Done()
+			_, err := ApplyFact(ctx, pool, "test", fmt.Sprintf("burst-%d", i+1), DispatchConsumerPosition{AckFloorStream: int64(i + 1)})
+			errs <- err
+		})
+	}
+	asked.Wait()
+	// Without the turn the burst takes every connection of the pool, each waiting on the lock; with
+	// it, only the fact inside its handler holds one. The read goes once the pool is full or a second
+	// has passed, whichever is first, so it never runs ahead of a burst that would starve it.
+	testwait.Holds(time.Second, testwait.Poll, func() bool { return raw.Stat().AcquiredConns() == raw.Config().MaxConns })
+	read, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var one int
+	if err := pool.QueryRow(read, `select 1`).Scan(&one); err != nil {
+		t.Fatalf("a read of the pool beside %d facts waiting on the fact lock = %v, want it answered at once", 2*raw.Config().MaxConns, err)
+	}
+	letFirstFinish()
+	applied.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("a fact of the burst: %v", err)
+		}
+	}
+}
+
+// A fact whose ctx ends while it waits for its pool's turn leaves the line holding nothing: it
+// takes no connection, runs no handler and records nothing, and answers ctx's error naming the
+// wait. The line moves on: once the turn is free, the same fact applies.
+func TestAFactWhoseContextEndsWhileItWaitsForItsTurnTakesNoConnection(t *testing.T) {
+	t.Parallel()
+	raw := migratedPool(t)
+	pool := store.NewPool(raw)
+	ctx := context.Background()
+	held, err := pool.FactTurn(ctx)
+	if err != nil {
+		t.Fatalf("take the pool's turn: %v", err)
+	}
+	ran := false
+	handler := handlerFunc(func(context.Context, pgx.Tx, Fact) (Result, error) {
+		ran = true
+		return Result{}, nil
+	})
+	acquired := raw.Stat().AcquireCount()
+	waiting, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	_, err = ApplyFact(waiting, pool, "test", "turn-ends", DispatchConsumerPosition{AckFloorStream: 1}, handler)
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "wait for the pool's turn to apply fact test/turn-ends") {
+		t.Fatalf("ApplyFact while another holds the turn = %v, want the wait for the turn ended by its context", err)
+	}
+	if got := raw.Stat().AcquireCount(); got != acquired || ran {
+		t.Fatalf("the fact that left the line took %d connections and ran its handler %t, want none and false", got-acquired, ran)
+	}
+	held()
+	if _, err := ApplyFact(ctx, pool, "test", "turn-ends", DispatchConsumerPosition{AckFloorStream: 1}, handler); err != nil || !ran {
+		t.Fatalf("ApplyFact once the turn is free = %v, handler ran %t; want it applied", err, ran)
+	}
+}
+
 // A reopened pull request is open again, recorded as when it opened: a closed pull request's record
 // is dropped at the next re-admission, so one reopened in between must not stay closed. The fact
 // says it is a reopen, since GitHub sends opened only once and a second one is a redelivery.
