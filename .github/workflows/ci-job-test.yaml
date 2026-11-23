@@ -648,8 +648,12 @@ jobs:
           cache: false
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
+      # The row-deadline preload marks each row, so a wait of @legion/test-fixtures/wait in a row
+      # (install-box-login-route.test.ts's lock row) ends before the row's guard and fails naming
+      # its fact, not by Bun's timeout (docs/testing.md, "A Bun test waits for its fact"; as #4437
+      # runs this step). It changes no guard: the step keeps Bun's 5 s.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
-        run: bun test scripts/e2e/lib
+        run: bun test --preload @legion/test-fixtures/row-deadline scripts/e2e/lib
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check

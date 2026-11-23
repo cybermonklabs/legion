@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 
 // The box-login route's own installer, against a fake operator home in a temp directory: never the
 // real ~/.omp. Its one outside call is `mise ls --global --json`, faked here by a `mise` first on
@@ -280,14 +281,29 @@ describe("the box-login lock", () => {
     try {
       const first = await holder.stdout.getReader().read();
       expect(new TextDecoder().decode(first.value)).toBe("locked\n");
+      // The holder's shell has taken the lock and recorded its own command line; it then becomes
+      // `sleep 60`. The refusal must name what the holder runs now, not what the lock file
+      // recorded, so the row waits until the holder runs `sleep 60`. That exec is another
+      // process's and sends no event, so the wait reads the holder's one command line again
+      // (a holder that died throws there, and ends the wait at once).
+      await until(
+        "the lock's holder to run sleep 60",
+        () => readFileSync(`/proc/${holder.pid}/cmdline`, "utf8") === "sleep\u000060\u0000"
+      );
+      // The second taker reads the holder from /proc alone: `ps`, which reads every process on
+      // the machine (docs/testing.md, "A test that looks for a process it started"), is a
+      // stand-in first on its PATH that answers nothing and fails, so a lock that asked ps again
+      // would call the holder exited, and the whole-line check below fails.
+      const noPs = join(dir, "ps-answers-nothing");
+      mkdirSync(noPs, { recursive: true });
+      writeFileSync(join(noPs, "ps"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
       const second = Bun.spawnSync(["bash", "-c", helpers(file, "take_box_login_lock")], {
-        env: { PATH: process.env.PATH ?? "", XDG_RUNTIME_DIR: join(dir, "xdg-b") },
+        env: { PATH: `${noPs}:${process.env.PATH ?? ""}`, XDG_RUNTIME_DIR: join(dir, "xdg-b") },
       });
       expect(second.exitCode).toBe(1);
-      expect(second.stderr.toString()).toContain(
-        `another box-login proof holds ${file}: pid ${holder.pid} (`
+      expect(second.stderr.toString()).toBe(
+        `take_box_login_lock: another box-login proof holds ${file}: pid ${holder.pid} (sleep 60); one box-login proof runs at a time\n`
       );
-      expect(second.stderr.toString()).toContain("one box-login proof runs at a time");
     } finally {
       holder.kill();
       await holder.exited;
