@@ -204,6 +204,14 @@ check "exits 0" "$(is "$status" 0)"
 check "counts the three files it kept" "$(contains "$out" '^pkg/app: 3 files, 0 uncovered (filter app)$')"
 check "says what it checked" "$(contains "$out" 'every changes filter selects every file its job.s typecheck compiles (1 programs, 1 filters)')"
 
+echo "case: a repository whose path holds a newline, as one under a TMPDIR holding one does"
+# The stand-in bunx prints each path absolute, as tsc does, so each splits at the root's newline
+# unless the script reads the listing with the root whole.
+root=$(fixture $'newline\nroot')
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the three files it kept" "$(contains "$out" '^pkg/app: 3 files, 0 uncovered (filter app)$')"
+
 echo "case: a file of another package the filter does not select"
 root=$(fixture uncovered-file)
 replace "$root/.github/ci-filters.yaml" "  - 'pkg/lib/**'" "  - 'other/**'"
@@ -655,9 +663,17 @@ echo "case: a python3 after the stand-ins that starts the interpreter with a PAT
 resetting=$work/resetting-python
 mkdir -p "$resetting/probe"
 printf '%s' "$PATH" > "$resetting/path"
-# Each path goes into the stand-in as one shell word: TMPDIR may hold a space or a quote.
-quoted_path=$(printf %q "$resetting/path")
-quoted_python=$(printf %q "$python")
+# sh_word <text>: <text> as one word that any POSIX sh reads back whole, for every byte but NUL:
+# in single quotes, each ' in it written '\''. Each path goes into the stand-in so, as TMPDIR may
+# hold a space, a quote or a newline. Not bash's printf %q: for a word holding a newline it writes
+# $'…\n…', which the stand-in's /bin/sh (dash 0.5.12) reads as a $ and a backslash-n, so its cat
+# reads no file.
+sh_word() {
+  local escaped="'\\''"
+  printf "'%s'" "${1//\'/"$escaped"}"
+}
+quoted_path=$(sh_word "$resetting/path")
+quoted_python=$(sh_word "$python")
 cat > "$resetting/python3" <<EOF
 #!/bin/sh
 PATH=\$(cat $quoted_path) exec $quoted_python "\$@"

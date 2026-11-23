@@ -217,6 +217,15 @@ def scrubbed(text: str, scratch: str) -> str:
     return text
 
 
+def listed_paths(text: str) -> list:
+    """The paths tsc's --listFilesOnly printed, one to a line. Where the repository root holds a
+    newline, as a test's fixture repository under a TMPDIR holding one does, splitting at each
+    newline would cut every path inside it in two, so the root is set aside as a NUL, which no path
+    holds, while the text is split, and put back in each line after."""
+    root = str(engine.REPO)
+    return [line.replace("\0", root) for line in text.replace(root, "\0").splitlines()]
+
+
 def program_files(project: str) -> list | None:
     """Every file of the project's tsc program that is inside the repository and outside
     node_modules, repository-relative. None when the command fails."""
@@ -225,7 +234,7 @@ def program_files(project: str) -> list | None:
     if result.returncode != 0:
         failed(project, " ".join(command), result, "program holds")
         return None
-    return kept(result.stdout.splitlines())
+    return kept(listed_paths(result.stdout))
 
 
 def bundle_files(entry: str) -> list | None:
