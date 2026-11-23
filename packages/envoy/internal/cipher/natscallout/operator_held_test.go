@@ -185,7 +185,7 @@ func restoreStream(ctx context.Context, nc *nats.Conn, b streamBackup, paced fun
 		} `json:"state"`
 	}
 	if err := json.Unmarshal(finished.Data, &created); err != nil || created.Error != nil {
-		return 0, fmt.Errorf("restore %s: %s", b.stream, finished.Data)
+		return 0, fmt.Errorf("restore %s: the end of the chunks was answered %q", b.stream, finished.Data)
 	}
 	return created.State.Msgs, nil
 }

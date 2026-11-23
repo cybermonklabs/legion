@@ -4717,11 +4717,16 @@ reads in step 3 with the leaked key's id and follow step 4 as written.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
-shell it runs in and requests no credential. It fetches no Secret's data either: it lists a guarded
+shell it runs in and requests no credential. It asks for no Secret's data either: it lists a guarded
 namespace's token Secrets in the API server's Table form, whose rows carry each Secret's name, type,
-number of data keys and age beside its metadata, and keeps the names. It lists each principal that
-is not a person and can mint the token of a guarded ServiceAccount (the operator's, the secrets
-broker's, and each
+number of data keys and age beside its metadata, and keeps the names. Two cases still bring a token
+into `kubectl`'s memory, though nothing prints or writes it: a token Secret made by `kubectl apply`
+from a manifest that held its token carries the token in its
+`kubectl.kubernetes.io/last-applied-configuration` annotation, which is metadata; and a server or
+proxy that cannot make the Table answers with the Secrets whole, data included, which the check
+reads as UNKNOWN, since `kubectl` then prints no `TYPE` and `DATA` columns. It lists each
+principal that is not a person and can mint the token of a guarded ServiceAccount (the operator's,
+the secrets broker's, and each
 `--guarded` pair), run or enter a pod as one, create or change a custom resource in a guarded
 namespace, write a binding or a webhook or admission policy, have the cluster sign it a client
 certificate for any user, mint the operator's Google service account's token, make a guarded
@@ -4757,8 +4762,11 @@ included. `--report <file>` writes the same as JSON, with each allowance the run
 (`--service-agent`, `--rbac-only-member`, `--fleet none`, `--credentials-arg`) under `allowances`,
 and is deleted when a run starts, so a report is that run's or none. Each flag that names a thing
 (a project, a cluster, a namespace, an account, a secret) is checked for that thing's form before
-any step runs, and a value of another form is a usage error naming the flag, never the value; a
-file flag's file is named by the flag and its place (`--rbac-render entry 2`), never its path.
+any step runs, and a value of another form is a usage error naming the flag, never the value, as is
+a value that starts with a known credential prefix (`ghp_`, `github_pat_`, `AIza`, `ya29.`, `AKIA`
+and the others the daemon's log redaction knows), which some forms admit. A value of the flag's form
+with no such prefix is used, and may be printed, as given. A file flag's file is named by the flag
+and its place (`--rbac-render entry 2`), never its path.
 `scripts/operator-token-minters.test.sh` runs every plant and control against a fake `kubectl`,
 `gcloud`, `curl` and `agent-secrets`.
 

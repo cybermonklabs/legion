@@ -17,9 +17,11 @@
 #
 # It runs with the gcloud, kubectl and agent-secrets sign-ins of the shell it runs in: an identity
 # already held, never a person's administrator credential. It requests no credential, impersonates
-# no one, and writes nothing but its own work directory and --report. It fetches no Secret's data:
+# no one, and writes nothing but its own work directory and --report. It asks for no Secret's data:
 # it lists a guarded namespace's token Secrets in the API server's Table form, whose rows carry
-# each Secret's name, type, number of data keys and age beside its metadata, and keeps the names.
+# each Secret's name, type, number of data keys and age beside its metadata, and keeps the names; a
+# list kubectl prints without the Table's columns is UNKNOWN. The two cases that still bring a token
+# into kubectl's memory are in operator-token-minters/step-rbac.sh.
 #
 # The steps, in order; each prints PASS, a FINDING per principal and right, or UNKNOWN naming why:
 #
@@ -457,8 +459,10 @@ SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPER
 AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=()
 # A usage error names the flag, or an argument's place, and never the text given: a value pasted in
 # the wrong place may be a credential. Each flag that names a thing is held to that thing's form
-# below, before any step runs, so a value of another form reaches no command line, output line or
-# report; a file flag's file is named by the flag and its place (--rbac-render entry 2).
+# below, before any step runs, and refuses a value that starts with a credential's prefix
+# (credential_prefix), so neither reaches a command line, output line or report. A value of the
+# flag's form that starts with no such prefix is used, and may be printed, as given. A file flag's
+# file is named by the flag and its place (--rbac-render entry 2).
 total_args=$#
 while [ "$#" -gt 0 ]; do
   place=$((total_args - $# + 1))
@@ -511,14 +515,24 @@ while [ "$#" -gt 0 ]; do
     --service-agent) SERVICE_AGENTS+=("$value") ;;
   esac
 done
+# credential_prefix: the start of a credential whose issuer marks it, as the daemon's redaction
+# reads one (packages/daemon/internal/capabilities/capabilities.go, credentialRules): a GitHub
+# token (ghp_, gho_, ghu_, ghs_, ghr_, github_pat_), a Google OAuth access token (ya29.), a Slack
+# token (xoxb- and the like), and an OpenAI, Dispatch, Datadog, GitLab or npm token, each with 20
+# characters or more after its prefix; a Google API key, AIza and 35 more; and an AWS access key ID,
+# AKIA or ASIA and 16 more. A name flag's form admits some: a ghp_ token, an AIza key and a
+# github_pat_ token are each of --signing-secret's form, and an AWS access key ID of --secret's.
+credential_prefix='^((gh[pousr]_|github_pat_)[A-Za-z0-9._-]{20,}|(sk-|dsp_|ddsat_|ddpat_|ddapp_|ya29\.|xox[a-z]-|glpat-|npm_)[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{35,}|(AKIA|ASIA)[A-Z0-9]{16}([^A-Za-z0-9_]|$))'
 # refuse_form FLAG PATTERN FORM VALUE...: a usage error naming FLAG and the FORM it takes, never the
-# value, unless each VALUE is empty (the flag not given) or of PATTERN's form.
+# value, unless each VALUE is empty (the flag not given), or of PATTERN's form and starting with no
+# credential's prefix (credential_prefix).
 refuse_form() {
   local flag="$1" pattern="$2" form="$3" which="its value" value
   shift 3
   [ "$#" -le 1 ] || which="one of its values"
   for value in "$@"; do
     [ -z "$value" ] || [[ "$value" =~ $pattern ]] || usage_error "$flag is $form; $which is not"
+    [[ ! "$value" =~ $credential_prefix ]] || usage_error "$flag is $form; $which starts with a credential's prefix"
   done
 }
 # A project ID, as Resource Manager allows it: 6 to 30 lowercase letters, digits and hyphens,
@@ -569,12 +583,10 @@ allowances_json() {
 # --guarded, each once.
 GUARDED=("$NAMESPACE/$KSA")
 pair_name='^[a-z0-9]([-a-z0-9]*[a-z0-9])?/[a-z0-9]([-.a-z0-9]*[a-z0-9])?$'
-if [ -n "$BROKER_WORKLOAD" ]; then
-  [[ "$BROKER_WORKLOAD" =~ $pair_name ]] || usage_error "--broker-workload is <namespace>/<name>, each a Kubernetes name; its value is not"
-  [ "$BROKER_WORKLOAD" = "${GUARDED[0]}" ] || GUARDED+=("$BROKER_WORKLOAD")
-fi
+refuse_form --broker-workload "$pair_name" "<namespace>/<name>, each a Kubernetes name" "$BROKER_WORKLOAD"
+refuse_form --guarded "$pair_name" "<namespace>/<serviceaccount>, each a Kubernetes name" ${GUARDED_FLAGS[@]+"${GUARDED_FLAGS[@]}"}
+[ -z "$BROKER_WORKLOAD" ] || [ "$BROKER_WORKLOAD" = "${GUARDED[0]}" ] || GUARDED+=("$BROKER_WORKLOAD")
 for pair in ${GUARDED_FLAGS[@]+"${GUARDED_FLAGS[@]}"}; do
-  [[ "$pair" =~ $pair_name ]] || usage_error "--guarded is <namespace>/<serviceaccount>, each a Kubernetes name; one of its values is not"
   case " ${GUARDED[*]} " in *" $pair "*) ;; *) GUARDED+=("$pair") ;; esac
 done
 refuse_form --db-secret "$pair_name" "<namespace>/<name>, each a Kubernetes name" "$DB_SECRET"

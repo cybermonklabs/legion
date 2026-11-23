@@ -276,27 +276,41 @@ case "${args[*]}" in
     # each with its data in a world marked token-secret-data, as a real API server holds them. The
     # fake answers as kubectl does from what the API server sends it (read with kubectl 1.36.4
     # against a server that records each request's Accept header): for the default output
-    # (--server-print=true --no-headers) kubectl asks for the server-side Table, whose rows carry
-    # each Secret's name, type, number of data keys and age beside its metadata alone, and prints a
-    # row a line; for -o json, -o name and -o jsonpath it asks for plain JSON and gets the Secrets
+    # (--server-print=true) kubectl asks for the server-side Table, whose rows carry each Secret's
+    # name, type, number of data keys and age beside its metadata alone, and prints the header
+    # NAME TYPE DATA AGE and a row a line. A world marked token-secrets-no-table answers as a
+    # server or proxy that cannot make the Table does, with the Secrets whole, data included, which
+    # kubectl prints under NAME and AGE alone (read with kubectl 1.36.4 against a server that
+    # answers plain JSON whatever the Accept header asks; row cr). --no-headers prints the rows
+    # alone. For -o json, -o name and -o jsonpath kubectl asks for plain JSON and gets the Secrets
     # whole, data included. Each response the API server sends is recorded, one a line, in
-    # token-secret-responses, and each list of the Secrets whole in secret-data-asked (row cp).
+    # token-secret-responses, and each list of the Secrets whole asked for with -o in
+    # secret-data-asked (row cp).
     [ ! -e "$dir/refuse-token-secrets" ] || forbidden secrets 'list resource "secrets" in API group ""' container.secrets.list
     whole="$({ if [ -e "$dir/token-secrets.json" ]; then cat "$dir/token-secrets.json"; else echo '[]'; fi; } |
       jq -c --arg ns "${args[3]}" --arg data "$([ -e "$dir/token-secret-data" ] && echo "$secret_data_b64")" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
         | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}
         + (if $data == "" then {} else {data: {token: $data}} end)]}')"
     case "${args[*]:6}" in
-      "--server-print=true --no-headers")
-        table="$(jq -c '{apiVersion: "meta.k8s.io/v1", kind: "Table",
-          columnDefinitions: [{name: "Name", type: "string"}, {name: "Type", type: "string"}, {name: "Data", type: "string"}, {name: "Age", type: "string"}],
-          rows: [.items[] | {cells: [.metadata.name, .type, ((.data // {}) | length), "1d"],
-            object: {apiVersion: "meta.k8s.io/v1", kind: "PartialObjectMetadata", metadata: .metadata}}]}' <<<"$whole")"
-        printf '%s\n' "$table" >>"$dir/token-secret-responses"
-        if [ "$(jq '.rows | length' <<<"$table")" -eq 0 ]; then
+      "--server-print=true" | "--server-print=true --no-headers")
+        if [ -e "$dir/token-secrets-no-table" ]; then
+          printf '%s\n' "$whole" >>"$dir/token-secret-responses"
+          header="NAME   AGE"
+          rows="$(jq -r '.items[] | "\(.metadata.name)   1d"' <<<"$whole")"
+        else
+          table="$(jq -c '{apiVersion: "meta.k8s.io/v1", kind: "Table",
+            columnDefinitions: [{name: "Name", type: "string"}, {name: "Type", type: "string"}, {name: "Data", type: "string"}, {name: "Age", type: "string"}],
+            rows: [.items[] | {cells: [.metadata.name, .type, ((.data // {}) | length), "1d"],
+              object: {apiVersion: "meta.k8s.io/v1", kind: "PartialObjectMetadata", metadata: .metadata}}]}' <<<"$whole")"
+          printf '%s\n' "$table" >>"$dir/token-secret-responses"
+          header="NAME   TYPE   DATA   AGE"
+          rows="$(jq -r '.rows[].cells | map(tostring) | join("   ")' <<<"$table")"
+        fi
+        if [ -z "$rows" ]; then
           echo "No resources found in ${args[3]} namespace." >&2
         else
-          jq -r '.rows[].cells | map(tostring) | join("   ")' <<<"$table"
+          [ "${args[7]:-}" = --no-headers ] || printf '%s\n' "$header"
+          printf '%s\n' "$rows"
         fi
         ;;
       "-o json" | "-o name" | "-o jsonpath="*)

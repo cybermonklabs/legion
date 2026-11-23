@@ -60,6 +60,99 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# Importing ci_job_reads.py walks the repository and runs go list. The cases at the end of this
+# file that read its race walk and its files_but_tests ask it fourteen questions, and as fourteen
+# fresh python3 processes, each importing it, they took 66 s of this harness's 115 s in CI's job
+# 137302423430: 28.8 s for the first import and about 2.8 s for each later one. So one python3,
+# started here, imports it once, from the repository's root as the check runs, while the cases
+# before those run, and answers each question in a child it forks: the child starts from the
+# module as the import left it, as a fresh python3 started from there would, and whatever the
+# question changes (the race lane, the working directory, REPO, a cache) ends with the child.
+coproc READS {
+  cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
+import os
+import sys
+import traceback
+from pathlib import Path
+
+import ci_filter_coverage
+import ci_job_reads as reads
+
+
+def derived(root, lane):
+    reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
+        reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane.split())),)
+    try:
+        return reads.race_impossible_script(reads.race_impossible_tests(root))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+
+
+def from_root(root):
+    os.chdir(root)
+    ci_filter_coverage.REPO = Path.cwd()
+    reads.repository_files.cache_clear()
+
+
+def listed(root, suffix, shape):
+    from_root(root)
+    return " ".join(reads.files_but_tests("pkg", suffix=suffix, tree=shape == "tree", skip=("testdata",)))
+
+
+def refused(root, spelling):
+    from_root(root)
+    try:
+        reads.files_but_tests(spelling)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused}
+
+
+def field():
+    """One NUL-ended field of the question; None at the end of the input."""
+    data = bytearray()
+    while (byte := sys.stdin.buffer.read(1)) != b"\0":
+        if not byte:
+            return None
+        data += byte
+    return data.decode()
+
+
+while (count := field()) is not None:
+    question, *args = [field() for _ in range(int(count))]
+    child = os.fork()
+    if child == 0:
+        try:
+            answer = questions[question](*args)
+        except BaseException:
+            traceback.print_exc()
+            os._exit(1)
+        sys.stdout.write(f"{answer}\0")
+        sys.stdout.flush()
+        os._exit(0)
+    # A question that raised, or a child that died before it answered, ends this python3 too: its
+    # stdout closes, and ask fails rather than read an empty answer.
+    if os.waitpid(child, 0)[1] != 0:
+        sys.exit(1)
+'
+}
+
+# ask <question> <arg>...: the answer of that python3 to one question, as a fresh python3 would
+# print it. A question that raises ends that python3, its traceback on stderr, and ask then fails
+# with no answer, as a fresh python3 that raised failed.
+ask() {
+  local answer
+  printf '%s\0' "$#" "$@" >&"${READS[1]}"
+  if ! IFS= read -r -d '' answer <&"${READS[0]}"; then
+    echo "the python3 that answers for ci_job_reads.py ended without answering '$1'" >&2
+    return 1
+  fi
+  printf '%s\n' "$answer"
+}
+
 # fixture <name>: a tree that passes. The app job runs `go test ./cmd/app ./lib`, whose closure is
 # cmd/app and lib (cmd/app imports lib); lib's test reads fixtures/data.json through `..`, which
 # RULES records; mod/other is a package nothing imports. The image job runs only on a pull
@@ -3329,21 +3422,7 @@ check "and reads the .yml spelling GitHub reads too" \
 # lane replaced by <lane>, a space-separated list of package paths under <root> ("pkg" for the
 # package alone, "pkg/..." for the tree). Echoes "RAISED: <what it refused>" when the walk
 # refuses what it reads.
-derived() {
-  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import sys
-
-import ci_job_reads as reads
-
-root, lane = sys.argv[1], sys.argv[2].split()
-reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
-    reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane)),)
-try:
-    print(reads.race_impossible_script(reads.race_impossible_tests(root)))
-except ValueError as refusal:
-    print("RAISED:", refusal)
-' "$1" "$2")
-}
+derived() { ask derived "$1" "$2"; }
 
 # race_tree: a lane of two packages, one of them a tree, holding every form the walk reads. Echoes
 # its root.
@@ -3786,21 +3865,7 @@ git -C "$root" add .gitignore pkg/a.go pkg/a_test.go pkg/z.go pkg/notes.txt pkg/
 rm "$root/pkg/gone.go"
 # listed_files <root> <suffix> <tree|flat>: files_but_tests("pkg") run from <root>, as the check
 # runs from the repository's, skipping testdata.
-listed_files() {
-  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import os
-import sys
-from pathlib import Path
-
-import ci_filter_coverage
-import ci_job_reads as reads
-
-os.chdir(sys.argv[1])
-ci_filter_coverage.REPO = Path.cwd()
-reads.repository_files.cache_clear()
-print(" ".join(reads.files_but_tests("pkg", suffix=sys.argv[2], tree=sys.argv[3] == "tree", skip=("testdata",))))
-' "$@")
-}
+listed_files() { ask listed "$@"; }
 check "lists the tracked and the new files, a directory's own before its subdirectory's" \
   "$(is "$(listed_files "$root" .go tree)" "pkg/a.go pkg/new.go pkg/z.go pkg/sub/b.go")"
 check "and no ignored build output, test file, deleted file or skipped directory for any suffix" \
@@ -3810,22 +3875,7 @@ check "and without the tree, the directory's own files" \
 # ./pkg, pkg/ or an absolute path would match no path of repo_files(), which spells each relative
 # and in normal form, so the reads would go missing with nothing failing: each is refused.
 for spelling in ./pkg pkg/ "$root/pkg"; do
-  refusal=$( (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import os
-import sys
-from pathlib import Path
-
-import ci_filter_coverage
-import ci_job_reads as reads
-
-os.chdir(sys.argv[1])
-ci_filter_coverage.REPO = Path.cwd()
-reads.repository_files.cache_clear()
-try:
-    reads.files_but_tests(sys.argv[2])
-except ValueError as exc:
-    print(exc)
-' "$root" "$spelling") )
+  refusal=$(ask refused "$root" "$spelling")
   check "refuses the directory spelled $spelling, naming the spelling" \
     "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
 done

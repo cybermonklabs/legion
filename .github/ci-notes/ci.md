@@ -762,7 +762,7 @@ stays on the filter, and no `!**/*.md` may exclude it.
 
 Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
 job (.github/workflows/worker-image.yaml, which the build reads too): the root
-manifest, lockfile, patches and every workspace manifest the plugin stage's frozen
+manifest, lockfile, patches and every workspace manifest the plugin-deps stage's frozen
 install copies; the packages it copies whole (the daemon with the Dockerfile, the two
 plugins and the workspace packages they inline, the Claude Code plugin, whose source
 the plugin stage builds into the image's dist/ and legion/ with the .bun-version that

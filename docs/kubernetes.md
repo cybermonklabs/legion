@@ -192,7 +192,7 @@ It carries:
 - what the capability check (`packages/daemon/internal/capabilities`, which `legion probe-image` runs
   — [the probe subsection](#the-image-is-probed-before-it-publishes)) requires of the image, each outside `HOME` for the same reason:
   the language servers Oh My Pi's LSP tools start when a working directory carries their root markers
-  — `gopls` (built static in the Dockerfile's `go` stage, at `/usr/local/bin/gopls`), `typescript-language-server` and `pyright-langserver`, the latter two installed under `/opt/language-servers/node_modules` by `npm ci --ignore-scripts` from `packages/daemon/docker/language-servers`'s own `package.json` and `package-lock.json` (the pins live in that `package.json`), with their launchers (and TypeScript's `tsc` and `tsserver`, and the `pyright` CLI) linked at `/usr/local/bin`.
+  — `gopls` (built static in the Dockerfile's `gopls` stage, at `/usr/local/bin/gopls`), `typescript-language-server` and `pyright-langserver`, the latter two installed under `/opt/language-servers/node_modules` by `npm ci --ignore-scripts` from `packages/daemon/docker/language-servers`'s own `package.json` and `package-lock.json` (the pins live in that `package.json`), with their launchers (and TypeScript's `tsc` and `tsserver`, and the `pyright` CLI) linked at `/usr/local/bin`.
   TypeScript stays on this repository's own major, since `typescript-language-server` runs `tsserver`, which TypeScript 7 no longer ships;
   the server resolves the TypeScript installed beside it unless the repository's own `node_modules` holds one, which it prefers.
   From Debian trixie's archive, at `/usr/bin`:
@@ -259,7 +259,7 @@ With `gcc` present both work: the switched toolchain's builds succeed, linked dy
 A deployment still pinning an older image digest has no `gcc` and needs zig as `CC` (`docs/solutions/testing/the-race-detector-runs-in-a-worker-pod-with-zig-as-the-c-compiler-and-a-library-callback-from-an-earlier-test-writes-your-log-sink-INFRA-182.md`).
 
 The image also carries the Go module cache of the two modules `go.work` binds, so a role's first Go build in this repository reads no package registry.
-The build fills it in the Dockerfile's `go` stage, in the layer that copies `go.work`, `go.work.sum` and each module's `go.mod` and `go.sum` and runs `go mod download`, above every source `COPY`, so a commit never rebuilds it.
+The build fills it in the Dockerfile's `go-modules` stage, which copies `go.work`, `go.work.sum` and each module's `go.mod` and `go.sum`, runs `go mod download` and copies no source, so a commit never rebuilds it.
 The runtime stage copies the download cache alone
 — the module zips, `.mod` and `.info` files and their hashes, 380 MiB over 419 module zips
 — to `/home/legion/go/pkg/mod/cache/download`, as the runtime user, its files 0644 in 0755 directories, so a role can add a module the cache does not hold.
@@ -268,11 +268,13 @@ The extracted module trees are left out:
 — those trees and this download cache together — is 2.2 GiB, which buys nothing in every pull.
 A pod tells every role `GOMODCACHE=/legion/go/mod` on the issue's volume (`roleEnvironment`, `manifest.go`), which is empty on a new volume and goes with that volume ([The disk dies with its pod](#the-disk-dies-with-its-pod), [A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), so the image's copy reaches a role as a proxy rather than as its `GOMODCACHE`:
 the build rewrites `/opt/go/go.env`'s `GOPROXY` line to `file:///home/legion/go/pkg/mod/cache/download|https://proxy.golang.org|direct`, and the `|` makes a go command fall through to the public proxy after any error, so a module the cache does not hold still resolves.
-The `go` stage deletes every `@v/list` and `@latest` file from the cache before the runtime stage copies it, and the final stage's toolchain step fails the build if one is there.
+The `go-modules` stage deletes every `@v/list` and `@latest` file from the cache before the runtime stage copies it, and the final stage's toolchain step fails the build if one is there.
 Such a file would name the versions of this image and no other, and a file proxy answers a list request from it with no error, so `go get X@latest`, `go get -u`, `go list -m -u all` and `go list -m -versions` would stop at this image's pins in every repository a role opens.
 Without those files the file proxy answers a version query with a 404, and the query falls through to `proxy.golang.org`, while the `.info`, `.mod` and `.zip` of a pinned version still come from the cache.
 `go.env` is the place for it rather than the final stage's `ENV`, for the reason the cgo paragraph above gives in reverse:
 a variable the image's `ENV` sets is one `runtime.kubernetes.pod.env` may not set, while a `go.env` default leaves `GOPROXY` to an operator, a role, or one command, each of which outranks it through the process environment.
+The `go-modules` stage also deletes the cache's `sumdb` directory, the checksum-database tiles and lookups `go mod download` fetches for the `go.mod` sums `go.work.sum` lacks: they differ with the hour they are read, so with them each build's copy of the cache was new bytes and a new layer.
+A pod's go reads the cache only through the file proxy, which has never served the checksum database (a go asks for it at `<proxy>/sumdb/<name>/supported`); a go whose own `GOMODCACHE` is the image's fetches from `sum.golang.org` the checksums it lacks, as it does for any module the cache does not hold.
 
 The image's `python3` carries Debian's PyYAML, `python3-yaml`, because six of this repository's own gates read a workflow or `.github/ci-images.yaml` with `import yaml`:
 `.github/scripts/check-action-pins.sh`, `check-bun-version.sh`, `check-ci-images.sh`, `check-image-trigger-paths.sh`, `check-release-credentials.sh`, and `check-ci-filters.sh` through `ci_filter_coverage.py`.
@@ -779,9 +781,9 @@ A WebKit check runs in a build stage of its own, `webkit-check`, as `legion`, on
 It downloads the WebKit build of the Playwright `packages/dispatch` locks, about 90 MB from Playwright's CDN, into a scratch directory it removes, and launches it once, headless, through Playwright's own host validation (`packages/daemon/docker/webkit-launch.mjs`).
 So a pull request that moves `packages/dispatch` to a Playwright whose WebKit needs a library the image lacks fails the `worker-image` job.
 Playwright checks that download against no hash, so nothing it writes may reach the image:
-only the launch's one line, `webkit: Playwright <version> launched WebKit <version>`, crosses, as a marker file the runtime stage binds, prints and checks right after it copies Bun in.
+only the launch's one line, `webkit: Playwright <version> launched WebKit <version>`, crosses, as a marker file the runtime stage binds, prints and checks right after the toolchain step and the Claude Code pin.
 That bind is what makes BuildKit build the stage at all.
-The stage reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin stage by bind mount, and BuildKit reads a bind mount's source by content, so it reruns only when the base or its packages, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins, the skills, the toolchain step or `legion`.
+The stage reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin-deps stage by bind mount, and BuildKit reads a bind mount's source by content, so it reruns only when the base or its packages, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins, the skills, the toolchain step or `legion`.
 To check a published image's toolchain end to end, a project Python install included:
 
 ```sh

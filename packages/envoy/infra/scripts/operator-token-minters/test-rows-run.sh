@@ -34,13 +34,20 @@
 #   (cj) --service-agent naming an agent's own Google service account is a usage error, and a run
 #        given --service-agent, --rbac-only-member and --fleet none writes each into --report's
 #        allowances;
-#   (co) a credential pasted alone, as the value of a flag that names a thing, or as a file flag's
-#        file is printed in neither stdout, stderr nor --report: a flag that names a thing refuses
-#        it, naming the flag and never its text, and a file flag's file is named by the flag and
-#        its place;
+#   (co) a text pasted alone, as the value of a flag that names a thing where it is not of that
+#        flag's form, or as a file flag's file is printed in neither stdout, stderr nor --report: a
+#        flag that names a thing refuses a value of another form, naming the flag and never its
+#        text, and a file flag's file is named by the flag and its place;
 #   (cp) the list of a guarded namespace's token Secrets is asked in the API server's Table form,
 #        whose response carries no data field, so no Secret's data reaches the box, the run's work
-#        directory or its output.
+#        directory or its output;
+#   (cq) a credential of a name flag's form that starts with a credential's prefix (a ghp_ token,
+#        a github_pat_ token, an AIza key and a Slack token as --signing-secret, an AWS access key
+#        ID as --secret) is refused too, naming the flag and never the value, and is printed in
+#        neither stdout, stderr nor --report;
+#   (cr) a list of a guarded namespace's token Secrets that kubectl prints without the Table's
+#        columns, as it does when a server or proxy that cannot make the Table answers with the
+#        Secrets whole, reads UNKNOWN for that namespace, and the RBAC step does not pass.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -359,11 +366,12 @@ if row cj; then
 fi
 
 # --- (co) No text given is printed unless it is of its flag's form: a token pasted alone, as the
-# value of a flag that names a thing, or as a file flag's file (--rbac-render, --iam-preview,
-# --report, the last both where it can be written and where it cannot) is in neither stdout, stderr
-# nor --report. A flag that names a thing refuses it, naming the flag and never the text; a file
-# flag's file is named by the flag and its place. Each item runs in a directory of its own, with
-# stdout and stderr apart, and writes --report there. ---
+# value of a flag that names a thing, of another form than the flag's, or as a file flag's file
+# (--rbac-render, --iam-preview, --report, the last both where it can be written and where it
+# cannot) is in neither stdout, stderr nor --report. A flag that names a thing refuses it, naming
+# the flag and never the text; a file flag's file is named by the flag and its place. Each item
+# runs in a directory of its own, with stdout and stderr apart, and writes --report there. A
+# credential of a flag's form is (cq)'s. ---
 pasted_canary="eyJhbGciOiJFZERTQSJ9.PASTED-CANARY-5c1e.sig"
 pasted_row() {
   local own="$temporary_dir/co-$1" args=() full report want want_exit=2 where
@@ -395,7 +403,7 @@ if row co; then
   each pasted_row alone unknown-flag project pool-project cluster location namespace service-account gsa agent-namespace \
     broker-account broker-workload sql-instance db-secret broker-state signing-secret secret rbac-only-member credentials-arg \
     analysis-scope fleet service-agent guarded rbac-render iam-preview report report-unwritable
-  passed "(co) a credential pasted alone, as a name flag's value or as a file flag's file is printed in neither stdout, stderr nor --report"
+  passed "(co) a text pasted alone, as a name flag's value of another form or as a file flag's file is printed in neither stdout, stderr nor --report"
 fi
 
 # --- (cp) The token Secrets are listed in the Table form: the API server's response to each list
@@ -432,4 +440,65 @@ if row cp; then
   ! has_prefix "SECRET-DATA-CANARY-7f3a" || cp_failures+="the check printed a token Secret's data "
   [ -z "$cp_failures" ] || fail "$cp_failures"
   passed "(cp) the token Secrets of a guarded namespace are listed in the Table form: no response carries a data field, and no Secret's data is kept in the work directory or printed"
+fi
+
+# --- (cq) A credential of a name flag's form is refused too when it starts with a credential's
+# prefix (operator-token-minters.sh's credential_prefix). Each value below is of its flag's form,
+# so the form alone would admit it, and the run would print it: --signing-secret's in the signing
+# key's step name (checks.sh), --secret's in the admin tag's. Each is refused, exit 2, naming the
+# flag and never the value, which is in neither stdout, stderr nor --report. Each carries
+# shaped_canary, which the row looks for. Run by hand, the control is the script with the
+# credential_prefix line of refuse_form taken out: each item is printed, and the row fails naming
+# where. ---
+shaped_canary=PASTEDCANARY5C1E
+shaped_row() {
+  local own="$temporary_dir/cq-$1" flag value full report where
+  base_world
+  mkdir -p "$own"
+  report="$own/report.json"
+  case "$1" in
+    ghp-token) flag=--signing-secret value="ghp_${shaped_canary}0123456789abcdefghij" ;;
+    github-pat) flag=--signing-secret value="github_pat_11${shaped_canary}abcdef_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVW" ;;
+    google-api-key) flag=--signing-secret value="AIza${shaped_canary}0123456789abcdefghi" ;;
+    slack-token) flag=--signing-secret value="xoxb-${shaped_canary}-1234567890-abcdefghij" ;;
+    aws-access-key-id) flag=--secret value="AKIA${shaped_canary}" ;;
+  esac
+  mapfile -t full < <(full_args)
+  status=0
+  (cd "$own" && env PATH="$fake_bin:$PATH" OPERATOR_MINTERS_WORLD="$world" TMPDIR="$temporary_dir" bash "$check" "${full[@]}" \
+    --report "$report" "$flag" "$value" >"$own/stdout" 2>"$own/stderr") || status=$?
+  output="$(cat "$own/stdout" "$own/stderr")"
+  for where in stdout stderr; do
+    ! grep -qF -- "$shaped_canary" "$own/$where" || fail "the $1 given as $flag is in $where: $(grep -F -- "$shaped_canary" "$own/$where")"
+  done
+  [ ! -f "$report" ] || ! grep -qF -- "$shaped_canary" "$report" || fail "the $1 given as $flag is in --report: $(cat "$report")"
+  want_text "operator-token-minters: $flag is " "the $1 given as $flag"
+  want_text "; its value starts with a credential's prefix" "the $1 given as $flag"
+  want_status 2 "the $1 given as $flag"
+}
+if row cq; then
+  each shaped_row ghp-token github-pat google-api-key slack-token aws-access-key-id
+  passed "(cq) a credential of a name flag's form that starts with a credential's prefix is refused, naming the flag, and printed in neither stdout, stderr nor --report"
+fi
+
+# --- (cr) The token Secrets' list answered without the Table: the world's API server answers as a
+# server or proxy that cannot make the Table does, with the Secrets whole, data included, and the
+# fake kubectl prints them under NAME and AGE alone, as kubectl 1.36.4 does. Each guarded
+# namespace's list reads UNKNOWN, naming the namespace, the run exits 2, and the RBAC step does not
+# pass. Run by hand, the control is step-rbac.sh's list as it was before this row, with
+# --no-headers and no header check, keeping the first column whatever the columns are: the RBAC
+# step passes, the run exits 0, and the row fails naming that exit. ---
+if row cr; then
+  base_world
+  jq -n '[{namespace: "envoy-operator", name: "envoy-operator-token-legacy"}, {namespace: "secrets-broker", name: "secrets-broker-token-legacy"}]' \
+    >"$world/clusters/operator-cluster/token-secrets.json"
+  : >"$world/clusters/operator-cluster/token-secrets-no-table"
+  run
+  want_status 2 "a list of token Secrets answered without the Table"
+  for ns in envoy-operator secrets-broker; do
+    want_line "UNKNOWN live: RBAC on operator-cluster: the API server's list of token Secrets in $ns came without the Table's columns NAME TYPE DATA AGE, so it was not the Table form: a server that cannot make the Table sends the Secrets whole, data included, which kubectl read though it printed none" \
+      "the list of $ns's token Secrets answered without the Table"
+  done
+  ! has_prefix "PASS live: RBAC on operator-cluster" || fail "the RBAC step passed on a list of token Secrets answered without the Table"
+  passed "(cr) a list of token Secrets that kubectl prints without the Table's columns reads UNKNOWN for its namespace, and the RBAC step does not pass"
 fi

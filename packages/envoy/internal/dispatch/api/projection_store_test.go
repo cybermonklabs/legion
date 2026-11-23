@@ -553,6 +553,19 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	// (consumernames.IntakeConsumersTable), which is not projected.
 	"packages/envoy/consumernames/pgstore/pgstore.go#pgstore.*Store.put: insert into table": {},
 	"packages/envoy/consumernames/pgstore/pgstore.go#pgstore.*Store.put: update table":      {},
+	// The writer hold's tables in cipher's own database (natshold.Store, created by
+	// internal/cipher/store/migrations/0042_nats_hold.up.sql), each named by its schema at runtime
+	// (Store.table): nats_hold and its log, the hold records and their deletes, and the cutover
+	// rows, none of which is projected.
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.Move: update s.table(\"nats_hold\")":                             {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.Move: insert into s.table(\"nats_hold_log\")":                    {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.Restore: insert into s.table(\"nats_hold\")":                     {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.Restore: insert into s.table(\"nats_hold_log\")":                 {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.PutRecord: insert into s.table(\"nats_hold_records\")":           {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.PutRecord: update s.table(\"nats_hold_records\")":                {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.DeleteCohort: delete from s.table(\"nats_hold_records\")":        {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.DeleteCohort: insert into s.table(\"nats_hold_record_deletes\")": {},
+	"packages/envoy/internal/cipher/natshold/store.go#natshold.Store.PutCutover: insert into s.table(\"nats_cutover\")":               {},
 }
 
 // runtimeTableHead matches a literal that ends where a write's table begins, the expression

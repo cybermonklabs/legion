@@ -16,8 +16,28 @@ import { CannotRunError, pool } from "./corpus-io";
  * another try would not help.
  */
 
-/** The growing waits between the tries of one read: four retries after the first try. */
-const RETRY_WAITS_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000];
+/** The growing waits between the tries of one read, in units of `retryWaitUnitMs`: four retries
+ * after the first try. */
+const RETRY_WAITS: readonly number[] = [1, 2, 4, 8];
+/** The production length of one unit of those waits: a second. */
+const RETRY_WAIT_UNIT_MS = 1_000;
+/** The length of one unit now: a second, unless a test has shortened it. */
+let retryWaitUnitMs = RETRY_WAIT_UNIT_MS;
+
+/**
+ * Runs the retry ladder with `unitMs` milliseconds in place of each second of its waits, so a test
+ * reads the same tries, the same growth and the same refusal without waiting 15 seconds for them.
+ * `resetRetryWaitUnitForTests` puts the second back.
+ */
+export function setRetryWaitUnitForTests(unitMs: number): void {
+  retryWaitUnitMs = unitMs;
+}
+
+/** Puts back the second `setRetryWaitUnitForTests` replaced. */
+export function resetRetryWaitUnitForTests(): void {
+  retryWaitUnitMs = RETRY_WAIT_UNIT_MS;
+}
+
 /** How many reads `readMany` runs at once when its caller names no other bound. */
 const DEFAULT_CONCURRENCY = 8;
 /** The page the event log is asked for, which is that route's own maximum. */
@@ -192,11 +212,11 @@ async function read<T>(
       if (error instanceof DispatchRefusedError) throw error;
       lastFailure = error instanceof Error ? error.message : String(error);
     }
-    const wait = RETRY_WAITS_MS[attempt];
+    const wait = RETRY_WAITS[attempt];
     if (wait === undefined) {
-      throw new DispatchUnreachableError(path, RETRY_WAITS_MS.length + 1, lastFailure);
+      throw new DispatchUnreachableError(path, RETRY_WAITS.length + 1, lastFailure);
     }
-    await sleep(wait);
+    await sleep(wait * retryWaitUnitMs);
   }
 }
 
