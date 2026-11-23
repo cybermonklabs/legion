@@ -555,12 +555,21 @@ func TestAConflictSecondReadOfAReleasedFirstReadLeavesTheNewerFirstReadStanding(
 }
 
 // recordCapture writes CAPTURE-1's pull request record as change leaves it, as no fact would: the
-// state a test reads a row against.
+// state a test reads a row against. It writes under the lock every fact the daemon applies takes
+// (intake.SerializeFacts), as each of the daemon's own writes of the record does. Without it, a
+// fact the daemon applies meanwhile — a merge state read's, which reads the row and writes the
+// whole row back (record.PutPullRequest) — can read the row before this write commits and write it
+// back after, putting the change out of the record again; a moved head lost that way leaves the
+// reads after the ladder following the old head for ever: the likely cause of the one time
+// TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown ran out its wait in twenty parallel runs.
 func recordCapture(t *testing.T, pool *store.Pool, change func(*record.PullRequest)) {
 	t.Helper()
 	ctx := context.Background()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(ctx, tx); err != nil {
+			return err
+		}
 		pr, err := records.PullRequest(ctx, tx, "CAPTURE-1")
 		if err != nil {
 			return err
