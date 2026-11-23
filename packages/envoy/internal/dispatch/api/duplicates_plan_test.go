@@ -51,6 +51,7 @@ func nearCopyPlanStatements() []nearCopyPlanStatement {
 // as the gate wrote it before: the same check must find the viewer in a row's filter there, or it
 // is a check that cannot fail.
 func TestTheNearCopyGateDecidesItsViewerOncePerStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	connection, err := database.Pool.Acquire(ctx)
@@ -154,6 +155,7 @@ var planParameter = regexp.MustCompile(`\$\d+\b`)
 // statement by default, prepared once and cached on the same connection: Postgres must answer
 // some run of it with a generic plan, or this fixture could not tell the two plans apart.
 func TestTheNearCopyScoreIsPlannedForItsArgumentsOnEveryRun(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	fixture := newDuplicateVocabulary(t, handler, "PLANS", duplicateNudgeScore)
 	ctx := context.Background()

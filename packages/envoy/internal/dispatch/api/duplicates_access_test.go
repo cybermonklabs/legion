@@ -22,6 +22,7 @@ import (
 // statement the terms carol's pick finds, so its own project clause is the only thing between
 // alice and the issue.
 func TestTheNearCopyStatementsNameNoIssueOfAProjectTheirViewerDoesNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	ctx := context.Background()
 	pool := seed.database.Pool
