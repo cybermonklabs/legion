@@ -99,11 +99,11 @@ function PageHeader(): ReactNode {
 }
 
 /** `ui` on `client`, signed in as alice, with every read of the viewer's state (`getMyState`) and
- *  the pin's PUT (`pinSave`) held until the test answers it. The header's other reads find a
- *  project with no repository mapping, architecture source or subscriber. */
+ *  the pin's PUT (`pinSave`) held until the test answers it. The header's other reads find no
+ *  project default repository, architecture source or subscriber. */
 function renderHeader(client: QueryClient, ui: ReactNode) {
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
+  const projects = spyOn(api, "listProjects").mockResolvedValue([]);
   const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const reads: ReturnType<typeof Promise.withResolvers<UserState>>[] = [];
@@ -133,7 +133,7 @@ function renderHeader(client: QueryClient, ui: ReactNode) {
       view.unmount();
       architectureSources.mockRestore();
       getMyState.mockRestore();
-      mappings.mockRestore();
+      projects.mockRestore();
       putIssueState.mockRestore();
       subscribers.mockRestore();
     },

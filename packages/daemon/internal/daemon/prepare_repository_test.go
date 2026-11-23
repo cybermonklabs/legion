@@ -18,6 +18,7 @@ import (
 // longer read is applied, for the workflow to keep the record's repository and say the edit was not
 // applied. A retained event of a recorded issue, which names no repository, takes the record's.
 func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

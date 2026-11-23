@@ -45,12 +45,11 @@ const (
 )
 
 // testRules give the judge 900 seconds of testSecret and 300 of shortJudgeSecret, each with its
-// guidance, and nothing of any other name. shortJudgeSecret binds no host, as an entry that only
-// says who decides a key does.
+// guidance, and nothing of any other name. Each entry binds a host, as every proxy block does.
 func testRules() proxyrules.Rules {
 	return proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: testSecret, Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: testGuidance},
-		{Name: shortJudgeSecret, Judge: new(uint32(shortJudgeSeconds)), Guidance: shortGuidance},
+		{Name: shortJudgeSecret, Hosts: []string{"release.example"}, Judge: new(uint32(shortJudgeSeconds)), Guidance: shortGuidance},
 		{Name: "NO_JUDGE_KEY", Hosts: []string{"other.example"}},
 	}}
 }

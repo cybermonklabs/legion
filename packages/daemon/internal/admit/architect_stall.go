@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -289,7 +288,7 @@ func (a *Admission) wakeStalledArchitects(ctx context.Context, tx pgx.Tx, stalls
 			Role: claim.RoleArchitect, Reason: reason}, stall.at); err != nil {
 			return err
 		}
-		intake.OnCommit(ctx, func() {
+		store.OnCommit(ctx, func() {
 			a.log.Warn("admission: the controller was told a root's architect has stalled",
 				"issue", stall.root.Key, "arm", string(stall.arm), "phase", stall.root.Phase,
 				"generation", stall.root.Generation, "reason", reason)

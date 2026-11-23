@@ -386,6 +386,20 @@ func noAnswer(env []string) string {
 	return "/bin/false"
 }
 
+// modeArgv is the argv of a call of the shared check at path in one of its modes: `<path> <mode>
+// -- <args>`, and `<path> <mode>` alone for no args. From leak-check-v33 the check refuses, with
+// exit 2, a call of exactly two arguments whose first is a mode word, since that is how a pre-push
+// hook calls it, with a remote's name and its URL; a mode call writes `--` right after the mode
+// word, which the check takes out, and only that one (its README.md, "Modes"). So a mode with one
+// argument needs the `--`, `<mode> --` with none is a call of two arguments too, and the check
+// hands the mode args exactly, a `--` of their own among them.
+func modeArgv(path, mode string, args ...string) []string {
+	if len(args) == 0 {
+		return []string{path, mode}
+	}
+	return append(append(make([]string, 0, 3+len(args)), path, mode, "--"), args...)
+}
+
 // child is one process this package runs: the shared check in one of its shapes, a read of a
 // repository's visibility (gh's REST read; where that is refused for a rate limit, gh's GraphQL
 // read and git's ls-remote; where gh failed on its connection, gh's token answer, curl's REST read
@@ -436,6 +450,27 @@ func program(base []string, name string) string {
 // did not start, one the end of ctx stopped, which is a *stoppedError, or one a signal ended,
 // which has no status. A status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
+	cmd, killed := g.command(ctx, c)
+	var printed bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &printed, &printed
+	if c.stderr != nil {
+		cmd.Stderr = c.stderr
+	}
+	started := time.Now()
+	err := procgroup.Err(cmd.Run())
+	switch {
+	case killed():
+		return 0, printed.String(), stopped(ctx, c, started)
+	case err != nil:
+		return 0, printed.String(), err
+	}
+	return cmd.ProcessState.ExitCode(), printed.String(), nil
+}
+
+// command is c as a command under ctx, not yet started, in a process group of its own, and the
+// killed answer of procgroup.Configure for it: whether the end of ctx stopped it. Its standard
+// output and error are the caller's to set.
+func (g *Guard) command(ctx context.Context, c child) (*exec.Cmd, func() bool) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
 	base := g.base()
@@ -448,28 +483,30 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// struct. It also makes the bound reach a helper the child started, which for the shared
 	// check is the git it runs against the remote.
 	killed := procgroup.Configure(cmd)
-	var printed bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &printed, &printed
-	if c.stderr != nil {
-		cmd.Stderr = c.stderr
+	cmd.WaitDelay = g.exitDelay()
+	return cmd, killed
+}
+
+// exitDelay is how long a child's output is waited for once the child has exited: exec's
+// WaitDelay, procgroup.WaitDelay where no test set Guard.waitDelay.
+func (g *Guard) exitDelay() time.Duration {
+	if g.waitDelay > 0 {
+		return g.waitDelay
 	}
-	started := time.Now()
-	err := procgroup.Err(cmd.Run())
-	switch {
-	case killed():
-		stopped := &stoppedError{
-			program:   filepath.Base(c.argv[0]),
-			ran:       time.Since(started),
-			cancelled: errors.Is(ctx.Err(), context.Canceled),
-		}
-		if deadline, ok := ctx.Deadline(); ok {
-			stopped.bound = deadline.Sub(started)
-		}
-		return 0, printed.String(), stopped
-	case err != nil:
-		return 0, printed.String(), err
+	return procgroup.WaitDelay
+}
+
+// stopped is the *stoppedError of c, started at started, which the end of ctx stopped.
+func stopped(ctx context.Context, c child, started time.Time) *stoppedError {
+	stop := &stoppedError{
+		program:   filepath.Base(c.argv[0]),
+		ran:       time.Since(started),
+		cancelled: errors.Is(ctx.Err(), context.Canceled),
 	}
-	return cmd.ProcessState.ExitCode(), printed.String(), nil
+	if deadline, ok := ctx.Deadline(); ok {
+		stop.bound = deadline.Sub(started)
+	}
+	return stop
 }
 
 // stoppedError is a child that the end of the caller's context stopped before it exited: its

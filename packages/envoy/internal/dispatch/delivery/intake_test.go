@@ -96,12 +96,10 @@ func seedDeliverySettings(t *testing.T, ctx context.Context, pool *store.Pool) D
 }
 
 // deliveryProject is the project this package's issue fixtures write their issues in, and
-// deliveryRepo the repository it owns by default. One project owns it because repo_projects'
-// primary key is the repository (migration 0005_repo_projects), so only one project can map
-// acme/widgets, and the attribution now holds a pull request's issue to the repository the pull
-// request is in (delivery's attributionHeld): an issue of a project that maps nothing resolves
-// to no repository and would attribute nobody. The key is a neutral one, since the head, the
-// attribution and the deployed fixtures all seed into it.
+// deliveryRepo its default repository. The attribution holds a pull request's issue to the
+// repository the pull request is in (delivery's attributionHeld): an issue of a project with no
+// default resolves to no repository and would attribute nobody. The key is a neutral one, since
+// the head, the attribution and the deployed fixtures all seed into it.
 const (
 	deliveryProject = "DLVY"
 	deliveryRepo    = "acme/widgets"
@@ -116,28 +114,21 @@ const (
 	deployedIssueBand    = 2000
 )
 
-// seedProjectRepository writes project key, named name, and maps repo to it as that project's
-// default, which is what makes an issue of the project resolve to repo (refs.IssueRepoTerms).
-// Idempotent: the fixtures that call it run per test, and the tests of this package share one
-// database.
+// seedProjectRepository writes project key, named name, with repo as its default repository,
+// which is what makes an issue of the project resolve to repo (refs.IssueRepoTerms).
+// Idempotent: the fixtures that call it run per test, and one test can call it more than once.
 func seedProjectRepository(t *testing.T, ctx context.Context, pool *store.Pool, key, name, repo string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-		insert into projects (key, name, default_assignee) values ($1, $2, 'alice') on conflict do nothing
-	`, key, name); err != nil {
-		t.Fatalf("seed the project: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		insert into repo_projects (repo, project, created_by, is_default)
-		values ($1, $2, '{"kind":"system","id":"delivery-test"}'::jsonb, true)
-		on conflict do nothing
-	`, repo, key); err != nil {
-		t.Fatalf("map the repository to the project: %v", err)
+		insert into projects (key, name, default_assignee, default_repo) values ($1, $2, 'alice', $3)
+		on conflict (key) do update set default_repo = excluded.default_repo
+	`, key, name, repo); err != nil {
+		t.Fatalf("seed the project with its default repository: %v", err)
 	}
 }
 
-// seedDeliveryProject writes deliveryProject and maps deliveryRepo to it as its default, so
-// every issue the fixtures seed resolves to the repository their pull requests are in.
+// seedDeliveryProject writes deliveryProject with deliveryRepo as its default, so every issue
+// the fixtures seed resolves to the repository their pull requests are in.
 // Idempotent: each fixture calls it, and one test can use several fixtures.
 func seedDeliveryProject(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()

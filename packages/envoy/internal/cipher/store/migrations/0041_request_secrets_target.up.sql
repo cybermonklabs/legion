@@ -1,0 +1,13 @@
+-- packages/envoy/internal/broker/store/migrations/0041_request_secrets_target.up.sql
+-- A request for a GitHub profile may name a target, the one account, or repositories of one
+-- account, that its signed request's locations narrow the profile to (record.AuthorizationDetail
+-- .Target). Each name a request names records that target as the request was made: a release
+-- mints the target's scope, and a live grant or a pending request is used again only for a
+-- request of the same profile and the same target (requests.Machine.reuseLiveGrant).
+--
+-- target_account is the account, and null for a name that names no target, which is every row
+-- written before this migration; target_repositories is the repositories' names without the
+-- account, sorted and each once, and null for the account form and for no target. Both columns
+-- are nullable and have no default, so adding them rewrites no row and the release before this
+-- one, which writes neither, still inserts as it did.
+alter table request_secrets add column target_account text null, add column target_repositories text[] null;

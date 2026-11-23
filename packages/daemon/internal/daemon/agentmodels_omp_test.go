@@ -46,6 +46,7 @@ func agentModelPlugin(t *testing.T, dir string) string {
 // without a word. The profile's providers listen nowhere, so no model is called and no credential
 // the machine carries decides the run.
 func TestTheAgentModelCheckOnTheRealOhMyPi(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	const models = "providers:\n" +
 		"  fake:\n    baseUrl: http://127.0.0.1:9\n    auth: apiKey\n    api: anthropic-messages\n    apiKey: static-key\n" +
@@ -184,6 +185,7 @@ func stageSkills(t *testing.T, repository, pkg, dest string) {
 // prompts dispatch, which the image's plugin lacks, is refused naming the daemon's prompt file,
 // though the image's own prompts never name it.
 func TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	home := filepath.Join(dir, "home")

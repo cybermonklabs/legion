@@ -21,6 +21,7 @@ import (
 // a bookmark's name and commit held a NUL, and the bundle's own bytes, which are bytea, as they
 // came, 0x00 included.
 func TestAReleaseSavesABundleWhoseRefsHoldNULWithReplacementCharacters(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	// A save the store refuses cancels the release, and the cancel's log line is the one place

@@ -324,7 +324,10 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
-// myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
+// myAnswersQuery is the offset page GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
+// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
+// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -577,14 +580,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/related": {
 		Status: http.StatusOK, Response: model.Suggestions{}, Request: relatedRequest{},
 	},
-	"GET /api/v1/settings/repo-projects": {Status: http.StatusOK, Response: []model.RepoProject{}},
-	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": {
-		Status: http.StatusOK, Response: model.RepoProject{}, Request: putRepoProjectInput{},
-	},
-	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}": {Status: http.StatusNoContent, Request: actorInput{}, OptionalRequest: true},
-	"GET /api/v1/github/app-installation/{owner}/{repo}":   {Status: http.StatusOK, Response: appInstallationResponse{}},
-	"GET /api/v1/settings/architecture-sources":            {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
-	"GET /api/v1/projects/{key}/architecture-sources":      {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
+	"GET /api/v1/settings/repo-projects":                 {Status: http.StatusOK, Response: []model.RepoProject{}},
+	"GET /api/v1/github/app-installation/{owner}/{repo}": {Status: http.StatusOK, Response: appInstallationResponse{}},
+	"GET /api/v1/settings/architecture-sources":          {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
+	"GET /api/v1/projects/{key}/architecture-sources":    {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"GET /api/v1/projects/{key}/architecture-source": {
 		Status: http.StatusOK, Response: model.ArchitectureSource{},
 		// A project with no source answers 200 and the JSON literal `null`
@@ -610,6 +609,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
+	},
+	"PUT /api/v1/projects/{key}/default-repository": {
+		Status: http.StatusOK, Response: projectDefaultRepository{}, Request: projectDefaultRepositoryInput{},
 	},
 	"GET /api/v1/settings/delivery": {
 		Status: http.StatusOK, Response: delivery.DeliverySettings{},
@@ -804,6 +806,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {

@@ -37,10 +37,16 @@ func mergeForwardRunner(t *testing.T, publisher notify.Publisher, asked *record.
 // mergeForwardRunnerIn is mergeForwardRunner with the pull request recorded in state.
 func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
 	t.Helper()
+	return mergeForwardRunnerAt(t, publisher, phase.Testing, "testing", state, asked)
+}
+
+// mergeForwardRunnerAt is mergeForwardRunnerIn with LEGION-208 standing in at with status.
+func mergeForwardRunnerAt(t *testing.T, publisher notify.Publisher, at phase.Phase, status string, state record.PullRequestState, asked *record.MergeForward) (*outbox, *supervisor, *store.Pool, *syncBuffer) {
+	t.Helper()
 	ctx := context.Background()
 	logs := &syncBuffer{}
-	runner, sup, pool := runnerIn(t, phase.Testing, "testing", publisher, slog.New(slog.NewJSONHandler(logs, nil)))
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	runner, sup, pool := runnerIn(t, at, status, publisher, slog.New(slog.NewJSONHandler(logs, nil)))
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return runner.records.PutPullRequest(ctx, tx, record.PullRequest{State: state, Issue: "LEGION-208", Repo: "acme/widgets",
 			Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1", HeadUpdatedAt: time.Now(), Failing: []string{},
 			CheckRuns: []record.AttemptRun{}, Base: "main", MergeForward: asked})
@@ -59,6 +65,7 @@ func mergeForwardRunnerIn(t *testing.T, publisher notify.Publisher, state record
 // with nothing published (workflow.MergeForwardAt); a landed still queued once the merge landed is
 // delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
+	t.Parallel()
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
@@ -181,6 +188,50 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 		}
 		if lines := loggedLines(t, logs.String(), mergeForwardEnded); len(lines) != 1 || lines[0]["state"] != string(supervise.StateRetired) {
 			t.Fatalf("the row logged %v, want one line naming the retired claim", lines)
+		}
+	})
+}
+
+// In merging the merge forward is the merger's (cybermonklabs/legion#4979): its ask is published
+// on the merger's own topic under the row's key. Once the issue has moved back out of merging, a
+// message to the merger still queued ends with nothing published: the phase the issue moved to
+// works the workspace now.
+func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
+	t.Parallel()
+	asked := &record.MergeForward{Head: "sha-1", Base: "main", Role: claim.RoleMerger, Phase: phase.Merging,
+		Why: record.ConflictMergeNext, AskedAt: time.Now()}
+	toMerger := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
+		Phase: phase.Merging, PullRequest: 86, Why: record.ConflictMergeNext}
+
+	t.Run("the merger's ask is told to the merger", func(t *testing.T) {
+		publisher := &holderPublisher{}
+		runner, _, pool, logs := mergeForwardRunnerAt(t, publisher, phase.Merging, "retro", record.PullRequestOpen, asked)
+		merger := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", claim.RoleMerger))
+		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", toMerger, time.Now().Add(-time.Minute)))
+		id := noticeRowID(t, pool)
+
+		drainAt(t, runner, 0, "the row's attempt")
+		_, delivered := publisher.snapshot()
+		if len(delivered) != 1 || delivered[0].topic != merger || delivered[0].message != toMerger.Message("LEGION-208", "acme/widgets") ||
+			delivered[0].key != record.OutboxKey(id) || delivered[0].keep {
+			t.Fatalf("delivered %+v, want the ask once to %s under its row's key", delivered, merger)
+		}
+		if lines := loggedLines(t, logs.String(), mergeForwardDelivered); len(lines) != 1 || lines[0]["step"] != string(record.MergeForwardAsk) ||
+			lines[0]["role"] != string(claim.RoleMerger) || lines[0]["head"] != "sha-1" {
+			t.Fatalf("the row logged %v, want one delivery of the ask of sha-1 to the merger", lines)
+		}
+	})
+
+	t.Run("the merger's ask once the issue moved back to retro ends undelivered", func(t *testing.T) {
+		publisher := &holderPublisher{}
+		runner, _, pool, logs := mergeForwardRunnerAt(t, publisher, phase.Retro, "retro", record.PullRequestOpen, asked)
+		enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", toMerger, time.Now().Add(-time.Minute)))
+		drainAt(t, runner, 0, "the row's attempt")
+		if attempts, _ := publisher.snapshot(); attempts != 0 || outboxRows(t, pool) != 0 {
+			t.Fatalf("the row made %d publishes and %d rows are left, want the row finished with nothing published", attempts, outboxRows(t, pool))
+		}
+		if lines := loggedLines(t, logs.String(), mergeForwardLeftLine); len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["why"]), "no longer stands in merging") {
+			t.Fatalf("the row logged %v, want one line naming the issue's move out of merging", lines)
 		}
 	})
 }

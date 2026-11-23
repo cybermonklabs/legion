@@ -240,6 +240,7 @@ func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, gith
 // context deadline exceeded", #1347). Control: with appAttempt classing its own deadline as a
 // refusal, the boot exits on the first attempt's "context deadline exceeded".
 func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	held := appMintAttempt + appMintAttempt/2
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
@@ -271,6 +272,7 @@ func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testin
 // A definitive answer (the App's key refused) is refused at once, naming the App whose key GitHub
 // refused and GitHub's answer: no retry changes it.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
@@ -290,6 +292,7 @@ func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 // spent before the review App's installations are asked for more than once. With a budget per App
 // the boot would wait both out, twice as long, which is what outlasted Stage 3's wait for /healthz.
 func TestABootGivesBothAppsKeyProofsOneRetryBudget(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
 		if app == "1" && n > 2 {
@@ -375,6 +378,7 @@ func linesBeforeServing(logged, msg string) []string {
 // check a-go, item 8): proveAppKeys asking the token source for each role's token on acme. That
 // mint is refused and the boot stops.
 func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	t.Run("each App's key is proved and nothing is minted", func(t *testing.T) {
 		quickAppMints(t)
 		manager, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
@@ -545,6 +549,7 @@ func commandTokensWith(t *testing.T, answer func(w http.ResponseWriter, r *http.
 // 5996655281, each attempt the bound ends is transient, and the boot refuses once the three are
 // spent, naming the key proof's context deadline exceeded.
 func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	hold := 2 * time.Duration(appMintRetry.Attempts) * appMintAttempt
 	dir := t.TempDir()
@@ -574,7 +579,7 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 		t.Fatalf("the key proof was pending %d times, want more than appMintRetry's %d attempts", len(proof), appMintRetry.Attempts)
 	}
 	for _, line := range proof {
-		if detail, _ := line["detail"].(string); !strings.Contains(detail, `.token_command for "" is still running after context deadline exceeded (a grant may wait on a person's approval)`) {
+		if detail, _ := line["detail"].(string); !strings.Contains(detail, `.token_command for every installation is still running after context deadline exceeded (a grant may wait on a person's approval)`) {
 			t.Errorf("a pending line's detail = %q, want runTokenCommand's answer that the token_command's release of every installation is still running", detail)
 		}
 	}
@@ -589,6 +594,7 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 // the three quick attempts, which the wait does not spend: before, the start exited once they were
 // spent, before the reset.
 func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, keyProofRead))
@@ -614,6 +620,7 @@ func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testin
 // names no time, so the start waits a minute, says so, and serves after it. Before, the start read
 // it as GitHub's answer about the App and exited at the first attempt.
 func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var refusals atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
@@ -646,6 +653,7 @@ func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing
 // and serves after it (c-boot-mint-rate-limit case 3). Before, the start exited once the three quick
 // attempts were spent, before the reset.
 func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, func(r *http.Request) bool { return r.URL.Path == "/app" }))
@@ -668,6 +676,7 @@ func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
 // (c-boot-mint-rate-limit case 4, on the logins read). The limit refuses the implement App's token
 // so released. Before, the start exited once the three quick attempts were spent, before the reset.
 func TestABootWaitsOutARateLimitOnATokenCommandsAppRead(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens := commandTokens(t, spentUntil(3*time.Second, &reset, func(r *http.Request) bool {
@@ -738,7 +747,16 @@ func bootStoppedWhen(t *testing.T, cfg config.Config, tokens appauth.Source, log
 // (c-boot-mint-rate-limit case 5, first half, on the key proof; the maximum shortened to 2 s): a 429
 // asking for a second waits a second, one asking for 30 s waits the 2 s, and the start serves after
 // each.
+//
+// The wait line's checks follow from the start's own decisions, whatever the machine's load: the
+// start's count of its waits (waited) is the wait it decided; the wait left can be any amount up to
+// that wait, nothing or less once the line comes late; and the until (whole seconds) is at most the
+// wait past the line and less than a second short of the wait past the refused read, which the
+// start answered after. One bound still follows the clock: the second read at most 3 s past the
+// wait, the bound on a wait that runs past its until. An earlier version held the wait left to
+// equal the wait decided; with a 1 s delay injected before the line, it failed.
 func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 2 * time.Second })
 	for _, tc := range []struct {
@@ -772,13 +790,25 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 			if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 				t.Fatalf("boot = %v, want it to wait out GitHub's Retry-After and serve", err)
 			}
-			if wait := loggedDuration(t, oneRateLimitWait(t, logs.String(), "GitHub App key proof"), "wait"); wait != tc.want {
-				t.Errorf("the wait line's wait = %s, want %s", wait, tc.want)
+			wait := oneRateLimitWait(t, logs.String(), "GitHub App key proof")
+			if waited := loggedDuration(t, wait, "waited"); waited != tc.want {
+				t.Errorf("the start's waits so far = %s, want %s: the one wait it decided", waited, tc.want)
+			}
+			if left := loggedDuration(t, wait, "wait"); left > tc.want {
+				t.Errorf("the wait left = %s, want at most the %s wait decided", left, tc.want)
+			}
+			until, err := time.Parse(time.RFC3339, fmt.Sprint(wait["until"]))
+			if err != nil {
+				t.Fatalf("the wait line's until = %v: %v", wait["until"], err)
 			}
 			mu.Lock()
 			defer mu.Unlock()
 			if len(reads) < 2 || reads[1].Sub(reads[0]) < tc.want || reads[1].Sub(reads[0]) > tc.want+3*time.Second {
 				t.Fatalf("GitHub was read for the App's installations at %v, want the refused read and one more %s after it", reads, tc.want)
+			}
+			if line := loggedAt(t, wait); until.After(line.Add(tc.want)) || !until.After(reads[0].Add(tc.want-time.Second)) {
+				t.Errorf("the wait line at %s says until %s, want at most %s past the line and less than a second short of %s past the refused read at %s",
+					line, until, tc.want, tc.want, reads[0])
 			}
 		})
 	}
@@ -786,10 +816,22 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 
 // Refusals of one call of the start that name no time wait a minute, then two (c-boot-mint-rate-limit
 // case 5, second half, at the production minute, on the key proof): GitHub answers every read of the
-// App's installations with a 429 and no rate-limit header. The first wait line says a minute; the
-// second, a minute later, says two minutes, until a time two minutes ahead. A stop during that
-// wait ends the start at once.
+// App's installations with a 429 and no rate-limit header. The start's count of its waits (waited)
+// is a minute at the first wait line and three at the second, so the second wait is two minutes; the
+// second wait begins only once the first has ended, and ends two minutes after it begins, so its
+// until is two minutes or more past the first's and at most two minutes past its own line. A stop
+// during that wait ends the start at once.
+//
+// The waited, wait-left and until checks follow from the start's own decisions, whatever the
+// machine's load: a line is written some time after its wait was decided, so its wait left can be
+// any amount under the wait decided, and an until (whole seconds) any amount under two minutes past
+// its line. Two bounds still follow the clock: the 90 s the test gives the two lines, and the 1 s
+// the start may take to return after its stop. The 90 s is the only bound on how long the first wait
+// runs past its until. An earlier version also held the second line to between 60 and 70 s after
+// the first, and each wait left to within 1 s of the wait decided; with a 1 s delay injected before
+// each line, both failed.
 func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
 		if !keyProofRead(r) {
@@ -810,18 +852,26 @@ func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing
 	if len(waits) != 2 {
 		t.Fatalf("rate-limit wait lines = %v, want two", waits)
 	}
-	// Each line gives the wait left when it is written, to a tenth of a second, so a slow runner can
-	// show a little under the wait decided; never more.
-	if first, second := loggedDuration(t, waits[0], "wait"), loggedDuration(t, waits[1], "wait"); first <= time.Minute-time.Second || first > time.Minute ||
-		second <= 2*time.Minute-time.Second || second > 2*time.Minute {
-		t.Errorf("the waits = %s and %s, want 1m0s and then 2m0s", first, second)
+	if first, second := loggedDuration(t, waits[0], "waited"), loggedDuration(t, waits[1], "waited"); first != time.Minute || second != 3*time.Minute {
+		t.Errorf("the start's waits so far = %s and then %s, want 1m0s and then 3m0s: a wait of a minute, then one of two", first, second)
 	}
-	if gap := loggedAt(t, waits[1]).Sub(loggedAt(t, waits[0])); gap < time.Minute || gap > time.Minute+10*time.Second {
-		t.Errorf("the second wait came %s after the first, want about a minute", gap)
+	if first, second := loggedDuration(t, waits[0], "wait"), loggedDuration(t, waits[1], "wait"); first <= 0 || first > time.Minute || second <= 0 || second > 2*time.Minute {
+		t.Errorf("the waits left = %s and %s, want each above nothing and at most its wait, 1m0s and then 2m0s", first, second)
 	}
-	until, err := time.Parse(time.RFC3339, fmt.Sprint(waits[1]["until"]))
-	if ahead := until.Sub(loggedAt(t, waits[1])); err != nil || ahead < 2*time.Minute-time.Second || ahead > 2*time.Minute+time.Second {
-		t.Errorf("the second wait's until = %v (%v), want two minutes after its line", waits[1]["until"], err)
+	untils := make([]time.Time, len(waits))
+	for i, wait := range waits {
+		until, err := time.Parse(time.RFC3339, fmt.Sprint(wait["until"]))
+		if err != nil {
+			t.Fatalf("wait line %d's until = %v: %v", i+1, wait["until"], err)
+		}
+		untils[i] = until
+	}
+	if first := loggedAt(t, waits[0]); untils[0].After(first.Add(time.Minute)) {
+		t.Errorf("the first wait's until = %s, want at most a minute after its line, %s", untils[0], first)
+	}
+	if second := loggedAt(t, waits[1]); second.Before(untils[0]) || untils[1].Before(untils[0].Add(2*time.Minute)) || untils[1].After(second.Add(2*time.Minute)) {
+		t.Errorf("the second wait's line at %s and until %s, want both past the first wait's until %s, and the until two minutes or more past it and at most two minutes past the line",
+			second, untils[1], untils[0])
 	}
 }
 
@@ -831,6 +881,7 @@ func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing
 // after it ends the start, naming the call, GitHub's last answer with its headers and message, the
 // 3 s waited and the App whose key the read proves.
 func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Bound = 3 * time.Second })
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
@@ -867,6 +918,7 @@ func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 // cleanly (c-boot-mint-rate-limit case 9, on the key proof): the App's installations are refused
 // until a reset a minute ahead, and run returns nil within a second of the stop.
 func TestABootStoppedWhileItWaitsOutARateLimitEndsAtOnce(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(time.Minute, &reset, keyProofRead))

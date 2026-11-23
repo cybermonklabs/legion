@@ -170,7 +170,9 @@ type secretBroker struct {
 	failSigned  int
 	signedCode  string
 	signedError string
-	settings    Settings
+	// ended is every enrollment GET /v1/enrollments/self answers not live (endEnrollment).
+	ended    map[string]bool
+	settings Settings
 }
 
 // failRereads makes the broker refuse every reread from now on with status.
@@ -193,6 +195,17 @@ func (b *secretBroker) lapseSignedRereads() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.failSigned, b.signedCode, b.signedError = http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live"
+}
+
+// endEnrollment makes GET /v1/enrollments/self answer `PROOF_INVALID` "proof invalid: not live"
+// from now on for a proof that names enrollmentID, as the broker answers once its lease lapsed.
+func (b *secretBroker) endEnrollment(enrollmentID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.ended == nil {
+		b.ended = map[string]bool{}
+	}
+	b.ended[enrollmentID] = true
 }
 
 // startSecretBroker serves a secretBroker on AGENT_SECRETS_URL for the rest of t, answering
@@ -225,6 +238,18 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 			settings := b.settings
 			b.mu.Unlock()
 			writeJSON(w, settings)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/enrollments/self":
+			eid := proofEID(r)
+			b.mu.Lock()
+			ended := b.ended[eid]
+			b.mu.Unlock()
+			if ended {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				writeJSON(w, map[string]string{"code": "PROOF_INVALID", "error": "proof invalid: not live"})
+				return
+			}
+			writeJSON(w, map[string]any{"enrollment_id": eid, "kind": "session", "lease_expires_at": time.Now().Add(time.Hour), "grants": []any{}})
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()

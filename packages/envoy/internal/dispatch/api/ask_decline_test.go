@@ -94,6 +94,7 @@ func openApprovalAsk(t *testing.T, handler http.Handler, artifactID string) stri
 // resolve route is unchanged beside it, so the room a decline makes for a person who writes
 // nothing is the decline's alone.
 func TestOnlyAPersonScopeRecordsADeclineAndNeverOnAnApprovalRequest(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "DEC", "Declining a question", "A spec")
 	note := "I have no view on this."
@@ -192,6 +193,7 @@ const declineWordsFromTheVerification = "The person chose not to answer this que
 // is on the person's answers page, each has one ask.resolved event, and a declined block ask
 // reads resolved in its document.
 func TestADeclinedAskReadsDeclinedAndWritesNoAnswer(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "DEC", "What a decline records", "A spec")
 	note := "The team decides this one, not me."

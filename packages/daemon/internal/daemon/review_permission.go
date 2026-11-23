@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // reviewPermissionTTL is how long an account GitHub gave no write access stands so for its
@@ -101,7 +102,7 @@ func (w *workflowRuntime) reviewerCanWrite(ctx context.Context, review intake.Pu
 // unread, so no check of it is ever read.
 func (w *workflowRuntime) reviewedRepository(ctx context.Context, review intake.PullRequestReview) (repository ghrepo.Repository, recorded bool, err error) {
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		pr, err = ghrepo.Under(w.repositories.renames, review.Repo, func(name string) (*record.PullRequest, error) {
 			return w.records.PullRequestByNumber(ctx, tx, name, review.Number)
@@ -171,12 +172,20 @@ const tokenRefusedWait = 5 * time.Second
 //
 // A mint that fails as GitHub's trouble rather than an answer (appauth.TransientError) is
 // returned as an intake.RetryLater naming a minute's wait, since minting on through the App's own
-// rate limit risks the same ban GitHub warns a repeated call does. A mint that fails for any
-// other reason is returned as is.
+// rate limit risks the same ban GitHub warns a repeated call does, and that wait is held for every
+// owner (holdRateLimit). A token_command's grant that waits instead (appauth.Pending: the command
+// still running, or the secrets broker's request for this owner waiting on a person) is the same
+// one-minute RetryLater with no hold: GitHub refused nothing, and the broker answers each owner's
+// grant apart, so a review on another owner is read at once. A mint that fails for any other
+// reason is returned as is.
 func (w *workflowRuntime) reviewAppClient(ctx context.Context, repository ghrepo.Repository) (githubrest.Client, appauth.Lease, ghrepo.Repository, error) {
 	serving := w.repositories.serving(repository)
 	lease, err := w.tokens.Token(ctx, appauth.Review, serving.Owner())
 	if err != nil {
+		if appauth.Pending(err) {
+			return githubrest.Client{}, appauth.Lease{}, serving, &intake.RetryLater{After: time.Minute,
+				Err: fmt.Errorf("mint the review App token for %s: its token_command's grant waits, retry in %s: %w", serving, time.Minute, err)}
+		}
 		var transient *appauth.TransientError
 		if errors.As(err, &transient) {
 			w.holdRateLimit(time.Minute)

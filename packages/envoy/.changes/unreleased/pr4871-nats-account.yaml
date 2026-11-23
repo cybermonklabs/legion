@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The secrets broker's NATS auth service places every client it admits in the hub account
+  `BROKER_NATS_ACCOUNT` names, the audience of each user it answers: `$G` when unset, as before. A
+  hub that keeps JetStream in an account of its own keeps its clients in another account, and must
+  declare that account before the broker names it, since the hub refuses every client placed in an
+  account it does not have. The broker refuses to start on `JETSTREAM`, the account a private
+  render keeps JetStream in, and on any value but `$G` or one subject token of at most 64 letters,
+  digits, `_` and `-` that holds no nkey seed in any spelling, naming the setting and never the value.
+  Its `NATS auth service state=on` boot record names the account.
+time: 2026-11-21T17:14:38Z
+custom:
+    Issue: pr4871

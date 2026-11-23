@@ -1127,18 +1127,18 @@ func TestStateGolden(t *testing.T) {
 }
 
 // The state route's body for a caller whose plugin is at the contract before
-// repositoriesLiveContract, 201, asking from a pod whose claims record it and stating it in
+// repositoriesLiveContract, asking from a pod whose claims record it and stating it in
 // `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
-// own state, asked through the route itself. 201 is no contract SupportedContracts records, so the
-// caller is served at 199, the recorded contract below it (recordedContractAtOrBelow), which the
-// mark names: its `repositories` block in the shape contract 152 gave it, written from the same
-// entries (withoutRepositoriesLive), and every other key as a caller at 199 is served it, since no
-// other row of stateNarrowings stands above 199. 199 moved no answer's shape, so those are the
-// keys a caller at 193 is served too. shapedAnswersContract's row and pauseContract's stand below
-// it, which is why the golden carries `lowestPluginContract`, each claim view's `updateState` and
-// `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's
-// schema of the block, so the narrowing is held to the reader it is written for, and its drift
-// gate holds every key of the file to that copy.
+// own state, asked through the route itself. The caller is served at the recorded contract at or
+// below the one it states (recordedContractAtOrBelow), which the mark names: its `repositories`
+// block in the shape contract 152 gave it, written from the same entries
+// (withoutRepositoriesLive), and every other key as a caller at shapedAnswersContract is served
+// it, since no other row of stateNarrowings stands between shapedAnswersContract and
+// repositoriesLiveContract. shapedAnswersContract's row and pauseContract's stand at or below the
+// contract it is served at, which is why the golden carries `lowestPluginContract`, each claim
+// view's `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a
+// copy of contract 152's schema of the block, so the narrowing is held to the reader it is written
+// for, and its drift gate holds every key of the file to that copy.
 func TestStateNarrowedRepositoriesGolden(t *testing.T) {
 	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
 	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
@@ -1499,7 +1499,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //     `pause`, the key every other resume leaves out;
 //   - the holds are a background-work streak over eleven passes with the kinds its session
 //     reported in `detail`, and a teardown's overtaken hold, which reads a hold and not the view
-//     behind it and so carries no detail at all (outbox.recordPodHold).
+//     behind it and so carries no detail at all (outbox.cancelRelease).
 func TestReleaseRecordsResponseGolden(t *testing.T) {
 	released := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{

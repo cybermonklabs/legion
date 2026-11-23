@@ -71,10 +71,14 @@
 # needs docker on PATH, refused before anything is created or started without either, while a
 # run without it builds no stands and needs no docker; (t) --callout and --project-access
 # together, in either order, are refused with exit 2 and one line naming the pair, before anything
-# is created or started and with no psql, curl, go or docker call; and (u) every broker a run
+# is created or started and with no psql, curl, go or docker call; (u) every broker a run
 # starts, the --callout run's second among them, lists the run's registrar as the registrar of the
 # pod's account and of nothing else (BROKER_POD_REGISTRARS), without which the one registration
-# the run makes is refused. (q) and (r) run after (h), and (s) and (t) after (i).
+# the run makes is refused; and (v) a run on a PATH that holds a version manager's python3 shim
+# after the fakes, as a developer's box does (mise's), reaches ready and stops: the fake python3
+# runs the real interpreter by the path that interpreter names for itself, never through the
+# shim, which would hand the call back to the fake. (q) and (r) run after (h), and (s) and (t)
+# after (i).
 #
 # The fake docker is scripts/lib/dev-stack-test-docker.sh's, and assert_project_access and the
 # --project-access cases are scripts/lib/dev-stack-test-project-access.sh's; this file sources
@@ -221,10 +225,30 @@ chmod +x "${fake_bin_dir}/env"
 # which asks the kernel for a free port for the airlock's proxy: this one prints its own PID for
 # the same reason, and with DEV_STACK_TEST_PICKED_PORT set prints that instead. The lost port race
 # of (r) does not use it: there the broker's stub reports another address
-# (DEV_STACK_TEST_AIRLOCK_BOUND). No socket is opened either way. ---
-{
-  printf '#!/usr/bin/env bash\nreal_python3=%q\n' "$(command -v python3)"
-  cat <<'EOF'
+# (DEV_STACK_TEST_AIRLOCK_BOUND). No socket is opened either way.
+#
+# write_fake_python3 DIR writes that fake to DIR/python3. Its --pass branch runs the real
+# interpreter, which it names by the path that interpreter gives for itself (sys.executable),
+# asked through whatever python3 the PATH in effect finds and checked to be an executable file,
+# never by a lookup of python3 on PATH (command -v). On a developer's box that lookup finds a
+# version manager's shim (mise's), and the shim, run with this fake first on PATH, hands the call
+# to the next python3 on PATH, which is this fake: the fake got its own `-c` back, answered it with
+# its pid as it answers the airlock's port query, and exited, so the listener never started and
+# its log was that one pid (v). The interpreter runs in the environment dev-stack.sh starts
+# held-port.py with, the server's settings alone and no HOME, which a shim may need. ---
+write_fake_python3() {
+  local dir="$1" real_python3
+  if ! real_python3="$(python3 -I -c 'import sys; print(sys.executable)')"; then
+    echo "dev-stack.test.sh: the python3 on PATH could not name its interpreter (sys.executable)" >&2
+    exit 1
+  fi
+  if [[ "$real_python3" != /* || ! -f "$real_python3" || ! -x "$real_python3" ]]; then
+    echo "dev-stack.test.sh: the python3 on PATH named its interpreter '$real_python3', which is not an executable file" >&2
+    exit 1
+  fi
+  {
+    printf '#!/usr/bin/env bash\nreal_python3=%q\n' "$real_python3"
+    cat <<'EOF'
 if [[ -n "${DEV_STACK_TEST_ARGV_FILE:-}" ]]; then printf 'python3 %s\n' "$*" >>"$DEV_STACK_TEST_ARGV_FILE"; fi
 script="${1:-}"
 case "$script" in
@@ -334,8 +358,10 @@ os.execve(sys.argv[3], sys.argv[3:], env)' "${passed[*]}" "$(printf '%s\n' "${pa
     ;;
 esac
 EOF
-} >"${fake_bin_dir}/python3"
-chmod +x "${fake_bin_dir}/python3"
+  } >"${dir}/python3"
+  chmod +x "${dir}/python3"
+}
+write_fake_python3 "$fake_bin_dir"
 
 # --- Fake go: "go build -o <dir>/ ./cmd/<pkg> ..." installs one stub per package instead of
 # compiling. Every server stub reports its own PID as its port and stays alive until it is
@@ -412,7 +438,7 @@ while [[ $# -gt 0 ]]; do
       account_and_file="${2#*=}"
       printf 'fake-token-for-%s\n' "${account_and_file%%=*}" >"${account_and_file#*=}"
       ;;
-    --code-flow) code_clients="$code_clients ${2%%=*}:$(stat -c %a "${2#*=}")" ;;
+    --code-flow) secret_and_uri="${2#*=}" && code_clients="$code_clients ${2%%=*}:$(stat -c %a "${secret_and_uri%%=*}"):${secret_and_uri#*=}" ;;
     --device-flow) device_clients="$device_clients ${2%%=*}:$(stat -c %a "${2#*=}")" ;;
     --sign-in-as) sign_in_as="$2" ;;
     *)
@@ -434,13 +460,15 @@ echo "fake broker: environ=$(tr '\0' '\n' </proc/$$/environ | sed 's/=.*//' | so
 echo "fake broker: cmdline=$(tr '\0' ' ' </proc/$$/cmdline)" >&2
 echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BROKER_PROJECT_ACCESS_URL:-} project-access-token=${BROKER_PROJECT_ACCESS_TOKEN_FILE:-}" >&2
-echo "fake broker: airlock-rules=${BROKER_AIRLOCK_RULES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
+echo "fake broker: profiles=${BROKER_PROFILES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
 echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 echo "fake broker: pod-registrars=${BROKER_POD_REGISTRARS:-}" >&2
-# The proxy binds the address it was given, as the real one does. dev-stack.sh starts every
+# The proxy binds the address it was given, as the real one does, and only when a profile of the
+# profiles file has a proxy block, as the real one binds it. dev-stack.sh starts every
 # process with env -i, so nothing of this test's environment reaches the stub: the control for a
 # lost port race bakes the other address in at build time, as DEV_STACK_TEST_BROKER_FAILS does.
-if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ]; then
+if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ] && [ -n "${BROKER_PROFILES_FILE:-}" ] &&
+  jq -e 'any(.profiles[]; .proxy != null)' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"%s"}\n' \
     "${AIRLOCK_BOUND_ADDR:-$BROKER_AIRLOCK_LISTEN_ADDR}" >&2
 fi
@@ -732,6 +760,24 @@ listener_log_port() { grep -o '"addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | s
 dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 # The value of one "export NAME=..." line of the banner.
 exported() { grep -o "export $2=.*" "$1" | head -n1 | cut -d= -f2- || true; }
+# What a run asked at one port, from its fake curl's call file: each distinct call to
+# http://127.0.0.1:PORT as its path, its bound and its whole command line ("/healthz with a 5 s
+# bound (curl -sf --max-time 5 http://127.0.0.1:PORT/healthz)"), joined by "; ", or "no call".
+# A row that wants one path and one bound names this when the run asked something else, so its
+# failure says which of the two differed.
+calls_at_port() {
+  local port="$1" file="$2" line path bound entry seen=""
+  local at="http://127\.0\.0\.1:${port}(/[^ ]*)?( |$)" max_time=' --max-time ([^ ]+) '
+  while IFS= read -r line; do
+    [[ "$line" =~ $at ]] || continue
+    path="${BASH_REMATCH[1]:-/}"
+    bound="no bound"
+    [[ " $line " =~ $max_time ]] && bound="a ${BASH_REMATCH[1]} s bound"
+    entry="$path with $bound (curl $line)"
+    [[ "; $seen; " == *"; $entry; "* ]] || seen="${seen:+$seen; }$entry"
+  done <"$file"
+  printf '%s\n' "${seen:-no call}"
+}
 
 # The globals assert_instance_ready sets for the caller: the run's work directory, the suffix its
 # names are made from, the ports every process of it reported, the port its Dispatch keeper held,
@@ -900,11 +946,11 @@ assert_instance_ready() {
   # been answered by another run's server, and gave up after 5 s, so none could wait on a port
   # nothing serves any longer (e7).
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[broker]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own broker's health at port ${process_port[broker]} with a 5 s bound"
+    fail "$label did not check its own broker's health at port ${process_port[broker]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[broker]}" "$curl_call_file")"
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own listener's health at port ${process_port[listener]} with a 5 s bound"
+    fail "$label did not check its own listener's health at port ${process_port[listener]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[listener]}" "$curl_call_file")"
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
-    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a 5 s bound"
+    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[dispatch]}" "$curl_call_file")"
 
   # Two databases of this run's own, named for it, and no other; each server pointed at its own,
   # the broker with production's pool size (k), whole URL to whole URL.
@@ -923,6 +969,10 @@ assert_instance_ready() {
     fail "$label did not point its broker at its own database with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/broker.log")"
   grep -qF "fake dispatch: database=${server_url}/dev_stack_dispatch_${run_suffix}${query} server-url=" "${work_dir}/logs/dispatch.log" ||
     fail "$label did not point Dispatch at its own database with the URL's query string alone: $(grep 'fake dispatch: database' "${work_dir}/logs/dispatch.log")"
+  # The issuer's one code-flow client is the broker's, with a 0600 secret and the approval page's
+  # loopback callback, which the real issuer registers and redirects to alone.
+  grep -qF "fake issuer: code-flow dev-stack-broker:600:http://127.0.0.1/signin/callback " "${work_dir}/logs/dev-oidc-issuer.log" ||
+    fail "$label did not serve the broker's code-flow client with its loopback callback: $(grep 'fake issuer: code-flow' "${work_dir}/logs/dev-oidc-issuer.log")"
   assert_pod_registrars "$label" "${work_dir}/logs/broker.log"
 }
 
@@ -1241,7 +1291,7 @@ for server in listener dispatch; do
   asked_port="$(head -n1 "${unserved_file}.asked" 2>/dev/null || true)"
   [[ -n "$asked_port" ]] || fail "$label never sent it a readiness request, so the row tested nothing"
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${asked_port}${asked_path}" "$curl_calls1" ||
-    fail "$label asked port $asked_port without the 5 s bound"
+    fail "$label asked port $asked_port at $(calls_at_port "$asked_port" "$curl_calls1"), not at $asked_path with a 5 s bound"
   exited_work_dir="$(work_dir_of "$log1")"
   [[ -n "$exited_work_dir" ]] || fail "$label named no work directory"
   collect_started "$exited_work_dir"
@@ -1366,6 +1416,54 @@ for source in --database-url LEGION_TEST_PG_DSN DATABASE_URL scripts/dev-postgre
 done
 [[ ! -e "${temporary_dir}/psql-calls-refusal" ]] || fail "a run with no database URL still called psql"
 printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DSN, DATABASE_URL and dev-postgres.sh, and exits 2\n'
+
+# (v) A developer's box, whose python3 on PATH is a version manager's shim (mise's): a script that
+# takes its own directory out of PATH and hands every call to the python3 it then finds there.
+# This test puts its fakes first on PATH, so there the shim's next python3 is a fake. The fake
+# python3 once ran the real interpreter by the path `command -v python3` gave, the shim's, so its
+# own `-c` came back to it; it answered with its pid and exited, the listener was never started,
+# and the run stopped with "dev-stack: listener exited during startup", the listener's log that
+# one pid, and no ready. Here the fake is written with the shim first on PATH, as a box's is, and
+# the run's PATH holds that fake, the other fakes, the shim and this test's own PATH, in that
+# order. The run reaches ready, held to all (a) to (c) hold a run to, and stops on INT as (e2)
+# does. The controls, which show the row could fail: python3 on the PATH the fake is written with
+# is the shim, and on the run's PATH the shim answers `-c` with the fake's pid rather than with
+# python. The shim takes its directory out of the PATH it hands on, not only out of its own
+# lookup: a box's own shim after it, which looks python3 up on PATH again when it falls through,
+# would otherwise find this one, and the two would hand the call to each other for good.
+python3_shim_dir="${temporary_dir}/python3-shim"
+python3_shim_fakes="${temporary_dir}/python3-shim-fakes"
+mkdir -p "$python3_shim_dir" "$python3_shim_fakes"
+{
+  printf '#!/usr/bin/env bash\nshim_dir=%q\n' "$python3_shim_dir"
+  cat <<'EOF'
+handed_path=""
+IFS=: read -r -a path_dirs <<<"$PATH"
+for dir in "${path_dirs[@]}"; do
+  [[ "$dir" == "$shim_dir" ]] || handed_path="${handed_path:+${handed_path}:}${dir}"
+done
+export PATH="$handed_path"
+exec python3 "$@"
+EOF
+} >"${python3_shim_dir}/python3"
+chmod +x "${python3_shim_dir}/python3"
+label='the run with a python3 shim on PATH'
+[[ "$(PATH="${python3_shim_dir}:${PATH}" command -v python3)" == "${python3_shim_dir}/python3" ]] ||
+  fail "$label: python3 on the PATH its fake is written with is not the shim, so the row tests nothing"
+PATH="${python3_shim_dir}:${PATH}" write_fake_python3 "$python3_shim_fakes"
+python3_shim_path="${python3_shim_fakes}:${fake_bin_dir}:${python3_shim_dir}:${PATH}"
+shim_answer="$(PATH="$python3_shim_path" "${python3_shim_dir}/python3" -c 'print("python")' 2>&1 || true)"
+[[ "$shim_answer" =~ ^[0-9]+$ ]] ||
+  fail "$label: on the run's PATH the shim answered -c with '$shim_answer', not the fake's pid, so a fake that hands its call to the shim would pass unseen"
+DEV_STACK_TEST_PATH="$python3_shim_path" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
+interrupt 1 "$label" "$log1"
+wait_for_exit 1 15 "$label"
+[[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status on INT, not 130"
+assert_everything_stopped "$label"
+assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
+printf 'PASS: a run whose PATH holds a python3 shim after the fakes, as a developer'"'"'s box does, reached ready (listener %s, dispatch %s) and stopped on INT\n' \
+  "${process_port[listener]}" "${process_port[dispatch]}"
 
 # (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
 # makes a stub of each binary in a directory of its own, and a run given that directory with

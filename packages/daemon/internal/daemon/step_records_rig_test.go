@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -115,7 +116,7 @@ func newStepRecordsRigWith(t *testing.T, proof liveProof, dispatch *scratchDispa
 	}
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Step records"}, http.StatusCreated, nil)
-	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
+	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	for place := range issues {
 		var created createdIssue
 		r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": walkTitles[place]}, http.StatusCreated, &created)
@@ -177,7 +178,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 	t.Helper()
 	ctx := context.Background()
 	approved := 1
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: r.key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
 			Title: "One issue walks to done", Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
@@ -390,23 +391,13 @@ func (r *stepRecordsRig) signOff(issue string) {
 	r.waitPhaseOf(issue, phase.Retro)
 }
 
-// merge waits for the merger's launch and publishes GitHub's merge of the pull request, which ends
-// the walk at done.
+// merge waits for the merger's launch and publishes GitHub's merge of the pull request
+// (publishMergeOf), which ends the walk at done.
 func (r *stepRecordsRig) merge() {
-	t := r.t
-	t.Helper()
+	r.t.Helper()
 	r.awaitLaunch(r.token(claim.RoleMerger))
 	r.github.merged(r.number)
-	payload, err := json.Marshal(map[string]string{
-		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(r.number), "merged": "true",
-		"merge_commit_sha": "merge-" + stepRecordsHead, "head_sha": stepRecordsHead, "base_ref": "main", "head_ref": "legion/" + r.key,
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("pr-%d-merged", r.number), string(payload))
+	r.publishMergeOf(r.number, r.key, stepRecordsHead, "main")
 	r.waitPhase(phase.Done)
 }
 

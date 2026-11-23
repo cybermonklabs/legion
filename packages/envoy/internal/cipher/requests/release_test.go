@@ -43,7 +43,7 @@ func TestEachReleaseWritesOneGrantUsedRowWithItsOwnDetail(t *testing.T) {
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
 
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
