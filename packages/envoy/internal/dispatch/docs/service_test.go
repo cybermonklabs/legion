@@ -5414,16 +5414,31 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	settlement := recorder.connOf(t, artifactID, ownerReadStatement, false)
 	storetest.WaitForEachQueuedBehind(t, blocker, settlement.PgConn().PID())
-	// The 50 ms deadline is the product's to honour. The wait for Shutdown's answer ends on that
-	// answer (testwait.Receive), bounded only by the test binary's deadline: a Shutdown that waited
-	// on the blocked settlement gives none while the blocker holds the owner's lock, and one that a
-	// loaded machine runs late still gives it.
+	// The 50 ms deadline is the product's to honour, and how soon Shutdown returns past it is what
+	// this row checks. A Shutdown that waited on the blocked settlement would still return
+	// DeadlineExceeded, once its drain budget (ShutdownDrainBudget) cut the settlement short, so
+	// the error alone cannot tell the two apart. The time Shutdown takes, measured from its call,
+	// can: the row fails by name once that time reaches the drain budget, the span a Shutdown that
+	// ignored its caller's deadline would wait out. A loaded machine cannot fail a correct run this
+	// way: a correct Shutdown returns at its caller's deadline, and only a stall of the whole drain
+	// budget, 9 s against that deadline's 50 ms, could take it to the bound.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	result := make(chan error, 1)
+	called := time.Now()
 	go func() { result <- service.Shutdown(ctx) }()
-	if err := testwait.Receive(t, "Shutdown to return past its budget rather than wait on the blocked settlement", result); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("shutdown error = %v, want deadline exceeded", err)
+	select {
+	case err := <-result:
+		// The time is read again on Shutdown's answer: an answer that comes as the bound passes
+		// can be ready together with the bound's timer, and select takes either.
+		if took := time.Since(called); took >= ShutdownDrainBudget {
+			t.Fatalf("shutdown waited on the blocked settlement: it returned %s after its call, its whole drain budget (%s) or more, against its caller's 50ms deadline", took, ShutdownDrainBudget)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("shutdown error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Until(called.Add(ShutdownDrainBudget))):
+		t.Fatalf("shutdown waited on the blocked settlement: it had not returned %s after its call, its whole drain budget, against its caller's 50ms deadline", ShutdownDrainBudget)
 	}
 }
 
