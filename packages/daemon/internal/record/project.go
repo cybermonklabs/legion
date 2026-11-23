@@ -280,8 +280,8 @@ func AcceptedAncestor(issue Issue, byKey map[string]Issue) string {
 
 // HeldUnderAccepted says whether the daemon is itself holding issue where it stands because an
 // ancestor of it has already been accepted (AcceptedAncestor): it stands at phase.Admitted, so
-// nothing of it has started, and the line will offer it no slot until that ancestor closes
-// (Waiting). It is one rule with two readers that must agree exactly: OpenBeneath leaves such an
+// nothing of it has started, and the line will offer it no slot while that ancestor stands in
+// retro or merging (Waiting). It is one rule with two readers that must agree exactly: OpenBeneath leaves such an
 // issue out too, so the ancestor's own acceptance and close are not deadlocked by the issue its
 // hold stopped. The hold never outlives the ancestor that caused it: once that ancestor closes,
 // the line reads this rule again and finds no hold, so the issue starts in its running tree; and
@@ -1350,8 +1350,8 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			hold(issue)
 			continue
 		}
-		// An issue beneath an ancestor the daemon has already accepted waits for that ancestor
-		// to close (HeldUnderAccepted): starting it would let the ancestor merge work its own
+		// An issue beneath an ancestor the daemon has already accepted waits while that ancestor
+		// stands in retro or merging (HeldUnderAccepted): starting it would let the ancestor merge work its own
 		// head does not carry. A person's move of such an issue to todo records it here at
 		// admitted and leaves it here; the architect is told why when it enters. The chain is
 		// walked over the records above this pass's own as well, so that a parent already done

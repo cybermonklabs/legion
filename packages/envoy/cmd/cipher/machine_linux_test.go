@@ -298,7 +298,7 @@ func startGrantSession(t *testing.T, binary, sock, url string) *grantSession {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(binary, "register", "--exec", "--wait", "5", "--", self, "-test.run", "^TestGrantSessionHelper$")
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(), hostIsolation(t)...),
 		"AGENT_SECRETS_GRANT_HELPER=1",
 		"AGENT_SECRETS_GRANT_BINARY="+binary,
 		"AGENT_SECRETS_GRANT_RESULTS="+results,

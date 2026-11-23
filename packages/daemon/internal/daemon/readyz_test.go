@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -72,7 +73,7 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	// The daemon's one connection is made busy and held there, before the latch is released: the
 	// lock is taken first, then the state request, which the lock stops inside the route's own
 	// transaction.
-	tx, err := pool.Begin(held)
+	tx, err := pool.BeginTx(held, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the locking transaction: %v", err)
 	}

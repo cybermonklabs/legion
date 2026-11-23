@@ -160,13 +160,16 @@ Envoy's Go tests start NATS in Docker, and the tests that need a Postgres read i
 environment (`LEGION_TEST_PG_DSN` for the daemon's). On a host without Docker, the daemon's NATS
 tests use a running nats-server with JetStream instead when `LEGION_TEST_NATS_URL` (its client URL)
 and `LEGION_TEST_NATS_MONITOR_URL` (its monitoring endpoint) are both set, one package at a time
-(`go test -p 1`); that server, and any nats-server an Envoy of your own runs against, must be 2.12
-or later, since an older one answers a retry of a publish its full stream refused as a duplicate
-it does not hold. The suites that run the real Oh My Pi or Claude Code skip unless
-`LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names the pinned binary, and the Bun ones print no line
-saying so; the Oh My Pi suites of `packages/pi-envoy` and `packages/pi-legion` that need NATS read
-`LEGION_TEST_NATS_URL` too. On GitHub Actions they fail instead, and `.github/actions/install-omp`
-and `.github/actions/install-claude-code` install the pins there.
+(`go test -p 1`). That server's JetStream store must be on this host, writable by the user running
+the tests, and named by an absolute path (`nats-server -js -sd /abs/path`): one `testnats` row
+plants a directory in the store the monitoring endpoint reports. That server, and any nats-server
+an Envoy of your own runs against, must be 2.12 or later, since an older one answers a retry of a
+publish its full stream refused as a duplicate it does not hold. The suites that run the real Oh My
+Pi or Claude Code skip unless `LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names the pinned binary, and
+the Bun ones print no line saying so; the Oh My Pi suites of `packages/pi-envoy` and
+`packages/pi-legion` that need NATS read `LEGION_TEST_NATS_URL` too. On GitHub Actions they fail
+instead, and `.github/actions/install-omp` and `.github/actions/install-claude-code` install the
+pins there.
 
 A change worth a changelog line adds a fragment to each package it changes that
 `.github/changelog-packages` lists. Open the pull request first, since the fragment carries its

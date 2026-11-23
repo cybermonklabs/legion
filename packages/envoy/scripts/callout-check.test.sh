@@ -33,9 +33,10 @@
 # UNKNOWN on line 6; (i) a hub listing one auth service connection before the kill reads UNKNOWN on
 # line 6 and kills nothing; (j) a hub whose list is read once after the kill, still naming both
 # connections, and then cannot be read FAILs line 6 with the count it last read; (k) a probe that
-# says "not admitted" in words that are not the server's FAILs lines 3 and 4; and (l) with no stack
+# says "not admitted" in words that are not the server's FAILs lines 3 and 4; (l) with no stack
 # exported, a --database-url reaches the dev-stack.sh the check starts as LEGION_TEST_PG_DSN, never
-# in its arguments.
+# in its arguments; and (m) brokers whose connections name their build after envoy-broker-callout
+# pass line 6, as the bare name does.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -151,12 +152,14 @@ echo "refused: Permissions Violation for Subscription to \"$subject\""
 exit 3
 EOF
 
-# --- Fake curl: the hub's connection list, naming Dispatch's and the listener's service users and
-# one envoy-broker-callout connection for each broker the hub lists (two, or one with one-broker,
-# and one fewer once the killed broker's is dropped); nothing with no-connections; no answer at all
-# once the second broker is gone with connz-down-after-kill, or after the first read since then
-# with connz-down-late. Each read takes 20 ms of the fake clock, the interval callout-check.sh polls
-# the list at, answered or not. ---
+# --- Fake curl: the hub's connection list, naming Dispatch's and the listener's service users, a
+# connection with no name (which nats-server lists with no name field), and one
+# envoy-broker-callout connection for each broker the hub lists (two, or one with one-broker,
+# and one fewer once the killed broker's is dropped), each with a stamped broker's build after its
+# name with built-names, as a broker built from a clean checkout names it; nothing with
+# no-connections; no answer at all once the second broker is gone with connz-down-after-kill, or
+# after the first read since then with connz-down-late. Each read takes 20 ms of the fake clock,
+# the interval callout-check.sh polls the list at, answered or not. ---
 fake curl <<'EOF'
 tick 20
 if [ -e "$control/no-connections" ]; then
@@ -174,9 +177,11 @@ fi
 callouts=2
 [ -e "$control/one-broker" ] && callouts=1
 [ "$state" = dropped ] && callouts=$((callouts - 1))
-entries='{"name": "dispatch", "authorized_user": "dispatch/dev-stack-dispatch"}, {"name": "listener", "authorized_user": "listener/dev-stack-test"}'
+entries='{"name": "dispatch", "authorized_user": "dispatch/dev-stack-dispatch"}, {"name": "listener", "authorized_user": "listener/dev-stack-test"}, {"authorized_user": "UNNAMED"}'
+callout_name="envoy-broker-callout"
+[ -e "$control/built-names" ] && callout_name="envoy-broker-callout legion@0123456789abcdef0123456789abcdef01234567"
 for _ in $(seq 1 "$callouts"); do
-  entries="$entries"', {"name": "envoy-broker-callout", "authorized_user": "UAUTHSERVICE"}'
+  entries="$entries"', {"name": "'"$callout_name"'", "authorized_user": "UAUTHSERVICE"}'
 done
 echo "{\"connections\": [$entries]}"
 EOF
@@ -201,7 +206,7 @@ output=""
 status=0
 run_check() {
   local name
-  for name in grant-all no-connections silent slow other-words no-drop connz-down-after-kill connz-down-late read-after-kill one-broker; do
+  for name in grant-all no-connections silent slow other-words no-drop connz-down-after-kill connz-down-late read-after-kill one-broker built-names; do
     rm -f "${control_dir}/${name}"
   done
   if [ "${CALLOUT_CHECK_GRANT_ALL:-}" = 1 ]; then
@@ -358,3 +363,12 @@ url_case() { # <label> <callout-check.sh argument>...
 url_case "--database-url <url>" --database-url "$secret_url" --binaries /nowhere
 url_case "--database-url=<url>" "--database-url=$secret_url" --binaries /nowhere
 echo "PASS: a --database-url reaches dev-stack.sh as LEGION_TEST_PG_DSN in either spelling, and no argument of dev-stack.sh holds it"
+
+# (m) Brokers whose connections name their build after envoy-broker-callout, as internal/bus names
+# every connection of a binary built from a clean checkout (the stack's own go build): the check
+# counts both before the kill and sees the drop, as for the bare name.
+run_check built-names
+[[ "$(line 6)" =~ ^"PASS one broker killed and a new session admitted within 2 s: the hub dropped the killed broker's connection after "[0-9]+" ms" ]] ||
+  fail "brokers that name their build: line 6 is '$(line 6)'"
+[ "$(line 7)" = "all 6 assertions passed" ] && [ "$status" -eq 0 ] || fail "brokers that name their build: exit $status, last line '$(line 7)'"
+echo "PASS: brokers whose connections name their build after envoy-broker-callout pass line 6"

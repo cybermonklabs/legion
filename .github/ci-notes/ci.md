@@ -243,6 +243,9 @@ holds the reviewer's prompt to, the GitHub App helper
 internal/api/real_github_test.go:115 sources, and the examples and
 docs its tests hold to the code (cmd/legion/config_example_test.go:164,
 internal/config/controller_test.go:214, internal/config/kubernetes_test.go:1474).
+It also names the forced-order step's script, packages/envoy/scripts/forced-order.sh,
+and the hooks under packages/envoy/internal/testnats/testdata/hooked that the script
+patches nats-server with.
 No bun_install and no skills/** - the two pages of skills/ this filter names are all
 this job reads of it: the tests of this suite that packed the two plugins - and so
 resolved the root manifest, the lockfile and the patches - or staged each plugin's
@@ -1634,6 +1637,9 @@ Postgres, the tools and the cache they need. It left the test job in dispatch://
 where one filter had to cover both: a change to a shell script, to packages/claude-envoy or
 to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
 and test, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives.
+
+It runs as two jobs of .github/workflows/ci-job-daemon-go.yaml at the same time: the race step
+in one, the rest in the other (ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own).
 
 ## Why the three plugin pack tests are a job of their own
 

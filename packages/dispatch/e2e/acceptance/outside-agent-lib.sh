@@ -1,9 +1,13 @@
 # shellcheck shell=bash
-# What both legs of the outside agent's acceptance share: outside-agent-public.sh and
-# outside-agent-tailnet.sh source this file from beside them. It is written for bash 3.2, as the
-# public leg is. It defines functions alone. They read two variables of the leg that sources them:
-# `allow_http`, OUTSIDE_ALLOW_HTTP's value, and `background`, the pids of the leg's background
-# children, which `reap` stops.
+# What the legs of the outside agent's acceptance share: outside-agent-public.sh,
+# outside-agent-tailnet.sh and outside-agent-codex.sh source this file from beside them. It is
+# written for bash 3.2, as the public leg is. It defines functions alone. They read two variables
+# of the leg that sources them: `allow_http`, OUTSIDE_ALLOW_HTTP's value, and `background`, the
+# pids of the leg's background children, which `reap` stops.
+
+# outside_issue_title: the title of the scratch project's issue that names the repository the edge
+# relays: the tailnet leg finds or makes it (row issue), and the Codex leg comments on it (C3).
+outside_issue_title() { printf '%s' 'Outside acceptance: the repository the edge relays to the project'; }
 
 # text_of FILE: FILE's first 300 characters, on one line.
 text_of() {

@@ -242,7 +242,7 @@ func TestGoingItemTextReadsOnePageInOneStatement(t *testing.T) {
 // for a hit is the text search ranked and showed the reader a snippet of.
 func TestGoingItemTextCoversSearchsOwnKinds(t *testing.T) {
 	t.Parallel()
-	page := searchPageAndTailSQL("legs")
+	page := searchPageAndTailSQL("legs", searchSeenParam)
 	for _, kind := range []string{"issue", "document", "comment", "ask", "message"} {
 		arm := "when '" + kind + "' then"
 		if !strings.Contains(goingItemTextQuery, arm) {

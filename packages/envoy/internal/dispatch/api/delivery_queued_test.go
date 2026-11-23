@@ -28,12 +28,35 @@ import (
 // with state "stopped" only when the include list names stopped, and 404 otherwise, as the real
 // route answers. crashed is a session whose registry entry still stands while its plugin has gone:
 // the registry reads it live, and the send's probe finds nobody, so the send answers it stopped.
+// hold, where set, keeps every send to the session unanswered until the test releases it, so the
+// attempt that send carries stays pending for as long as the test reads it.
 type fakeSession struct {
 	title        string
 	capabilities []string
 	stopped      bool
 	crashed      bool
+	hold         *sendHold
 }
+
+// sendHold is a send the listener has taken and not yet answered: arrived closes when the first
+// send to the session reaches the listener, and the listener answers it, and every later one,
+// once the test frees the hold. The listener client gives up on an answer after its own window
+// (envoy's defaultTimeout, 5 s), so a test reads what it needs and frees the hold well inside it.
+type sendHold struct {
+	arrived, release chan struct{}
+	once, freed      sync.Once
+}
+
+// newSendHold is a hold no send has reached yet. The test that makes one frees it with a defer:
+// the listener it is handed to registers its server's close as a cleanup, which waits for every
+// handler to answer, and a deferred free runs before any cleanup does, so a test that stops early
+// never leaves that close waiting on a held send.
+func newSendHold() *sendHold {
+	return &sendHold{arrived: make(chan struct{}), release: make(chan struct{})}
+}
+
+// free answers every send the hold kept, and every later one at once.
+func (h *sendHold) free() { h.freed.Do(func() { close(h.release) }) }
 
 // queueingListener is a fake Envoy listener that knows some sessions as running and some as
 // stopped, answers the registry's include list as the real one does, and records every registry
@@ -152,6 +175,10 @@ func (l *queueingListener) writeSend(t *testing.T, w http.ResponseWriter, r *htt
 	l.mu.Lock()
 	l.sends = append(l.sends, request)
 	l.mu.Unlock()
+	if session.hold != nil {
+		session.hold.once.Do(func() { close(session.hold.arrived) })
+		<-session.hold.release
+	}
 	// recipient_state is the registry's own age reading, which a session known only by its record
 	// reads as gone; state is the probe's, which wins.
 	answer := map[string]any{

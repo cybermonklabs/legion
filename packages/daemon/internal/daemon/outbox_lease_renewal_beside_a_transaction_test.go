@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -33,7 +34,7 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	const issue = "LEGION-208"
 	// The issue the hand-over's read finds first, so the read goes on to the hand-over table the
 	// test locks.
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, runningRoot(issue, phase.Implementing))
 	}); err != nil {
 		t.Fatalf("record the issue the hand-over's read finds: %v", err)
@@ -43,7 +44,7 @@ func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue,
 		record.HandOverStatusWrite("todo", "todo", "LEGION-1", 1), clock.Now()))
 
-	lock, err := pool.Begin(ctx)
+	lock, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the locking transaction: %v", err)
 	}
