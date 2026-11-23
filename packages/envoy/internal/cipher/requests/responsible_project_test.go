@@ -32,11 +32,13 @@ func wantListed(t *testing.T, m *Machine, recordID string, all, want []string) {
 // none of these rows was on the reader's list, and none asked Dispatch anything. Each now asks
 // whether its own person may see it, but all of them share listFallbackBound: once it is spent,
 // the rest are left off without a question, so the list costs at most the bound's worth of
-// questions, not two per row. It counts the questions Dispatch was asked about projects, not time;
-// the reader's one member-kind read, made before the clock starts (listApprovesSecrets), is
-// answered at once and counted apart (kindApart). Every row the
-// clock left off is off exactly the list it should be off, since its responsible person may see
-// it, so the list writes one line counting them and no line for any one of them.
+// questions, not two per row. The reader's own question about TEAM is the same for every row and
+// is asked once for the list (withAccessMemo), so after the first row each costs one question. It
+// counts the questions Dispatch was asked about projects, not time; the reader's one member-kind
+// read, made before the clock starts (listApprovesSecrets), is answered at once and counted apart
+// (kindApart). Every row the clock left off is off exactly the list it should be off, since its
+// responsible person may see it, so the list writes one line counting them and no line for any one
+// of them.
 func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	const rows = 20
 	const takes = 300 * time.Millisecond
@@ -61,24 +63,26 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	if n := kinds.Load(); n != 1 {
 		t.Errorf("the list read %s's member kind %d times; want once", insider, n)
 	}
-	// Without the clock the list asks two questions per row (40 here, 12 s). With it, 300 ms
-	// questions start at 0, 300, ..., 1800 ms inside 2 s: 7, the last cut short. A slow box only
-	// lowers the count, since every question takes at least its 300 ms. The test does not read
-	// listFallbackBound, so a clock taken away, or one as long as Dispatch's 5 s wait, fails it.
+	// Without the clock the list asks one question per row and the reader's once (21 here,
+	// 6.3 s). With it, 300 ms questions start at 0, 300, ..., 1800 ms inside 2 s: 7, the last cut
+	// short. A slow box only lowers the count, since every question takes at least its 300 ms. The
+	// test does not read listFallbackBound, so a clock taken away, or one as long as Dispatch's 5 s
+	// wait, fails it.
 	const most = 7
 	if asked.Load() > most {
 		t.Fatalf("the list asked Dispatch %d questions for %d other people's rows; want at most %d", asked.Load(), rows, most)
 	}
-	// A row is read whole in two questions, so at most most/2 rows were, and the clock left off
-	// every other row, whether in the middle of its read or before it.
+	// The first row is read whole in two questions and every later one in one, the reader's
+	// answer kept for the list, so at most most-1 rows were, and the clock left off every other
+	// row, whether in the middle of its read or before it.
 	wantNoLine(t, capture, rowUnansweredMessage, fallbackUnreadMessage)
 	cut := linesOf(capture, fallbackCutMessage)
 	if len(cut) != 1 {
 		t.Fatalf("the list wrote %d lines counting the rows its clock left off: %v; want one", len(cut), cut)
 	}
 	n, err := strconv.Atoi(cut[0]["rows"])
-	if err != nil || n < rows-most/2 || n > rows || cut[0]["reader"] != insider || cut[0]["level"] != "WARN" {
-		t.Fatalf("the list's count line = %v; want WARN, reader %s and from %d to %d rows", cut[0], insider, rows-most/2, rows)
+	if err != nil || n < rows-(most-1) || n > rows || cut[0]["reader"] != insider || cut[0]["level"] != "WARN" {
+		t.Fatalf("the list's count line = %v; want WARN, reader %s and from %d to %d rows", cut[0], insider, rows-(most-1), rows)
 	}
 }
 

@@ -137,7 +137,12 @@ func BuildCommand(t testing.TB, c Command) string {
 }
 
 // runBuild is one go build of c, into a binary named c.Name under a directory of its own in
-// builds. It returns the binary's path, or the empty path and why the build failed.
+// builds. It returns the binary's path, or the empty path and why the build failed. It builds with
+// -buildvcs=false, so the binary records no commit whether the checkout is clean, as CI's is, or
+// changed, as a developer's often is: internal/buildversion names a connection's build from that
+// record, and a test that reads a connection's name or a log line's name field would otherwise
+// pass on one checkout and fail on the other. A test that needs a stamped build passes its
+// -ldflags in Command.Flags, as BuildStamped does.
 func runBuild(c Command, overlay string) (string, string) {
 	buildCount.Lock()
 	buildCount.n++
@@ -147,7 +152,7 @@ func runBuild(c Command, overlay string) (string, string) {
 		return "", err.Error()
 	}
 	binary := filepath.Join(dir, c.Name)
-	args := []string{"build", "-o", binary}
+	args := []string{"build", "-buildvcs=false", "-o", binary}
 	if overlay != "" {
 		args = append(args, "-overlay", overlay)
 	}
