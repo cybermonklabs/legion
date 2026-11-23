@@ -630,9 +630,9 @@ func seedOnMain(t *testing.T, pool *store.Pool, key string, number int, at phase
 			Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}); err != nil {
 			return err
 		}
-		rows := []record.PhaseRow{{Issue: key, Role: claim.RoleImplementer, Claim: "implement-" + key}}
+		rows := []record.PhaseRow{{Issue: key, Role: claim.RoleImplementer, Claim: claim.Token("implement-" + key)}}
 		if at == phase.Reviewing {
-			rows = append(rows, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "review-" + key})
+			rows = append(rows, record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: claim.Token("review-" + key)})
 		}
 		for _, row := range rows {
 			if err := records.PutPhase(ctx, tx, row); err != nil {
