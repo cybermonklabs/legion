@@ -580,9 +580,10 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		return 0
 	}
 
-	// The state decodes through the answer (Answer.Decode), whose error names the member that did
-	// not decode and never its value, which encoding/json's errors and time.Time's quote.
-	var state api.State
+	// The state decodes through the answer (Answer.Decode, into servedState), whose error names
+	// the member that did not decode and never its value, which encoding/json's errors and
+	// time.Time's quote.
+	var state servedState
 	if err := answer.Decode(&state); err != nil {
 		fmt.Fprintf(stderr, "legion state: read the state %s served: %v\n", address, err)
 		return 1
@@ -644,6 +645,44 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 		fmt.Fprintf(stdout, "issue %s:\n%s\n", key, record)
 	}
 	return 0
+}
+
+// servedState is the daemon's state (api.State) as `legion state` reads it: every member of it,
+// under the same name and of the same type, but each pending Dispatch status write's payload
+// (pendingStatusWrite). api.State holds that payload as a json.RawMessage, which would carry the
+// answer's text out of it as plain text, so the answer is decoded into this instead. A body that
+// does not decode into api.State does not decode into this either
+// (TestServedStateIsTheStateButEachPayload).
+type servedState struct {
+	Daemon               api.DaemonInfo             `json:"daemon"`
+	Contract             *api.ContractView          `json:"contract,omitempty"`
+	Admission            api.Admission              `json:"admission"`
+	Issues               map[string]api.Issue       `json:"issues"`
+	PendingStatusWrites  []pendingStatusWrite       `json:"pendingStatusWrites"`
+	HeldOutboxRows       []api.HeldOutboxRow        `json:"heldOutboxRows"`
+	StrandedClaims       []api.StrandedClaim        `json:"strandedClaims"`
+	WakesWaiting         []api.WakeWaiting          `json:"wakesWaiting"`
+	ClaimsToRefresh      int                        `json:"claimsToRefresh"`
+	Paused               *api.PausedView            `json:"paused,omitempty"`
+	LastPause            *api.PauseView             `json:"lastPause,omitempty"`
+	ControllerLocator    *api.ControllerLocator     `json:"controllerLocator,omitempty"`
+	AgentSecretsLogin    *api.AgentSecretsLoginView `json:"agentSecretsLogin,omitempty"`
+	Capabilities         []api.CapabilityState      `json:"capabilities"`
+	Repositories         api.RepositoriesView       `json:"repositories"`
+	Settings             api.Settings               `json:"settings"`
+	Consumers            []api.ConsumerLagView      `json:"consumers"`
+	LowestPluginContract *int                       `json:"lowestPluginContract,omitempty"`
+}
+
+// pendingStatusWrite is a pending Dispatch status write (api.PendingStatusWrite) as `legion state`
+// reads it: every member but its payload, the workflow's own effect, which the wire carries whole
+// and no line of the command prints. The decode skips the payload, whatever JSON value it holds,
+// and `legion state --json` prints it as the daemon served it.
+type pendingStatusWrite struct {
+	Issue     string    `json:"issue"`
+	Attempts  int       `json:"attempts"`
+	NextAt    time.Time `json:"nextAt"`
+	LastError string    `json:"lastError,omitempty"`
 }
 
 // blockedSummary is the one line an operator reads for the issues Legion waits on a Dispatch
@@ -936,7 +975,7 @@ func awaitingSummary(issues map[string]api.Issue) string {
 // pendingSummary is the one line an operator reads for the Dispatch status writes the daemon has
 // not finished: how many wait, and why the oldest — the one its issue's later writes wait behind —
 // has not landed.
-func pendingSummary(pending []api.PendingStatusWrite) string {
+func pendingSummary(pending []pendingStatusWrite) string {
 	if len(pending) == 0 {
 		return "pending Dispatch status writes: none"
 	}
