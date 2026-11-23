@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -362,7 +363,8 @@ func writeRefSources(ctx context.Context, a *api, p refPlan) (issues, cites int,
 }
 
 // refsAnswer is what the shape check reads of a references answer: the author list of every
-// version row of every member.
+// version row of every member, as data (the answer's bytes, callResult.body), since the check
+// compares and measures each list's compact JSON and prints none of it.
 type refsAnswer struct {
 	Members []struct {
 		Artifact struct {
@@ -406,8 +408,8 @@ func refsShape(ctx context.Context, a *api, sf seedFile) error {
 			return fmt.Errorf("references of %s: %d %s %v", is.Key, res.status, res.text(), res.err)
 		}
 		var answer refsAnswer
-		if err := res.answer.Decode(&answer); err != nil {
-			return fmt.Errorf("references of %s: %w", is.Key, err)
+		if err := json.Unmarshal(res.body, &answer); err != nil {
+			return fmt.Errorf("references of %s: %w", is.Key, redact.DecodeError(err, res.body, &answer))
 		}
 		seen := map[string]bool{}
 		r, ab := 0, 0
