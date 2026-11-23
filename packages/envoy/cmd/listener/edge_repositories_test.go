@@ -184,6 +184,7 @@ func TestARepositoryGapOutlivesARelayRestart(t *testing.T) {
 	testwait.Eventually(t, "the edge to withhold the acme/pub event while no answer stands", func() bool {
 		return rig.withheld(t, "answer_unknown") >= 1
 	})
+	awaitConsumerSettled(t, rig, sessionID)
 	rig.repositories.failWith(0)
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration under a new delivery epoch")
@@ -235,6 +236,7 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 		return !noted
 	})
 
+	awaitConsumerSettled(t, rig, sessionID)
 	rig.repositories.failWith(0)
 	requireStatus(t, rig.call(t, http.MethodPost, token, "/v1/interests/subscribe", consumerRegistration(sessionID, "epoch-2", "notifications.github.acme.pub.>")),
 		http.StatusOK, "the registration that brings the session back to this listener")
@@ -248,6 +250,23 @@ func TestARepositoryGapOutlivesAMoveToAnotherListener(t *testing.T) {
 	testwait.Eventually(t, "the sent mark to be cleared from the session's entry", func() bool {
 		return storedEdgeSessionEntry(t, rig, sessionID).RepositoryGap == ""
 	})
+}
+
+// awaitConsumerSettled waits for the server to take every ack of what sessionID's consumer has
+// delivered - the session's done for a frame, the relay's own for a GitHub event it withheld - and
+// then for the consumer's stored state (awaitSessionConsumerStored), before a row's registration
+// under a new delivery epoch restarts the relay at the ack floor. A restart that finds a delivery
+// still awaiting its ack deletes the consumer and creates it again at the floor, which sends the
+// withheld event once more, and a delete that soon after a delivery or an ack can meet the
+// consumer's state write still under way, which fails the create.
+func awaitConsumerSettled(t *testing.T, rig *edgeRig, sessionID string) {
+	t.Helper()
+	info, err := rig.consumers.Info(t.Context(), sessionID)
+	if err != nil {
+		t.Fatalf("read %s's consumer: %v", sessionID, err)
+	}
+	awaitAcked(t, rig.consumers, sessionID, info.Delivered.Stream)
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 }
 
 // The gap mark a later withheld event owes outlives another relay's clear of an earlier mark:

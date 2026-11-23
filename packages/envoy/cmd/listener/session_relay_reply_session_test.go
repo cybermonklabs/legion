@@ -214,8 +214,11 @@ func TestAnotherSessionsDoneMovesNoFrameAndTheSessionIsStillDeliveredIt(t *testi
 	}
 	requireStillPending(t, consumers, s2.id, heldFrame.seq)
 
-	// s2 restarts and registers a new epoch: the relay restarts at the ack floor and sends it the
-	// frame it never wrote, and s2's own done, the control, acknowledges it.
+	// s2 restarts and registers a new epoch: the relay restarts at the ack floor, which deletes the
+	// consumer holding the frame s2 never wrote and creates it again, so the row first waits for the
+	// consumer's stored state (awaitSessionConsumerStored); it sends s2 the frame again, and s2's own
+	// done, the control, acknowledges it.
+	awaitSessionConsumerStored(t, publisher.Conn, s2.id)
 	postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(s2.id, "epoch-2"))
 	again := two.collect(t, 1, 10*time.Second)[0]
 	requireFrames(t, []relayedFrame{again}, held)
