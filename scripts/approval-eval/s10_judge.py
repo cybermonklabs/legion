@@ -77,8 +77,9 @@ request started and not finished is a deviation (`started`) that no later run ju
 6): the next run records it so before it judges anything else. A stop records itself and leaves
 the stage `started` for the same command to resume: a SIGTERM or an interrupt; a sandbox that
 refuses to start a judge, since every later request would meet the same sandbox until its cause is
-cleared; a failed preflight; a Kubernetes API call that still fails once it has been tried again
-(`s10_job.py`), which is no fault of the request's; and a read-back that Bun cannot run. It writes
+cleared; a failed preflight; a Kubernetes API call that still fails once it has been tried again,
+or a Job none of whose pods has started at a poll past `PLACEMENT_LIMIT`
+(`s10_job.py`), each no fault of the request's; and a read-back that Bun cannot run. It writes
 nothing more for the request in flight, but for one case: a stop that comes while an outcome built
 whole is read back (a read-back that cannot run, or a signal then) keeps that outcome as
 `pending-outcome.json`, and the next run reads it back and commits it, judging nothing again. That

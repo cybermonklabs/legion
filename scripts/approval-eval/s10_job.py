@@ -14,6 +14,11 @@ no judge.
 
 A failed call of the Kubernetes API is tried again (`RETRY_PAUSES`); one that still fails is no
 fault of the request's, and stops the run (`KubeUnavailable`), which writes nothing more for it.
+A Job none of whose pods the driver has seen started once `PLACEMENT_LIMIT` has passed stops the
+run the same way, since every later request would wait on the same cluster. A run's deadline is its
+pod's (`activeDeadlineSeconds`, counted from the pod's start on its node), so the time a pod waits
+for a node is never taken from its judge; the Job's own deadline is `PLACEMENT_LIMIT` and `MARGIN`
+longer.
 A Job that ran and gave no readable result is that request's own (`SandboxRun.failure`).
 """
 
@@ -53,6 +58,15 @@ ROUTE_ITEMS = ({"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml
 RETRY_PAUSES = (5, 15, 45, 90)
 # How long the preflight's Job may run, in seconds: its checks, and no judge.
 PREFLIGHT_DEADLINE = 900
+# How long, in seconds, a Job's pod may wait to be started on a node before the run stops: twenty
+# times the waits measured for this sandbox (about 3 minutes), so only an outage of the cluster's
+# capacity, or a pod it can never place, reaches it.
+PLACEMENT_LIMIT = 3600
+# An allowance, in seconds, for how late the driver sees what the cluster did: a poll, and the
+# retries of its calls (a call that hangs longer can pass it). The Job's deadline holds it, so a pod
+# the driver sees started a little after PLACEMENT_LIMIT keeps its whole deadline; and the driver
+# waits as long past the Job's.
+MARGIN = 600
 # Where Kubernetes writes the namespace of the driver's own pod, in which each Job runs.
 NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
@@ -68,8 +82,9 @@ PAYLOAD_WIDTH = 100_000
 
 
 class KubeUnavailable(Exception):
-    """A Kubernetes API call failed past its retries: no fault of the request's. The run stops and
-    writes nothing more, and the same command resumes the stage."""
+    """A Kubernetes API call failed past its retries, or the driver saw no pod of a Job started once
+    `PLACEMENT_LIMIT` had passed: no fault of the request's. The run stops and writes nothing more,
+    and the same command resumes the stage."""
 
 
 @dataclass
@@ -125,6 +140,9 @@ def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP
         "automountServiceAccountToken": False,
         "enableServiceLinks": False,
         "restartPolicy": "Never",
+        # The run's own deadline, counted from the pod's start on its node, so a wait for a node
+        # takes nothing from the judge.
+        "activeDeadlineSeconds": deadline,
         "securityContext": spec.get("securityContext") or {},
         "containers": [{
             "name": "sandbox",
@@ -160,7 +178,7 @@ def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {"name": name, "namespace": pod["metadata"]["namespace"], "labels": dict(LABEL)},
-        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": deadline,
+        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": deadline + PLACEMENT_LIMIT + MARGIN,
                  "ttlSecondsAfterFinished": 86400,
                  "template": {"metadata": {"labels": dict(LABEL)}, "spec": pod_spec}},
     }
@@ -227,7 +245,8 @@ class KubeRunner:
     once a run, the same Job with no bundle (`preflight`). It refuses an image its own pod does not
     run and its own pod's account, and holds the gateway key's bytes, which the driver keeps out of
     every file it keeps. Each Kubernetes API call is tried again after each of `pauses`; one that
-    still fails raises `KubeUnavailable`."""
+    still fails raises `KubeUnavailable`, as does a Job none of whose pods the driver has seen
+    started once `PLACEMENT_LIMIT` has passed. `clock` measures the driver's own waits."""
 
     def __init__(self, image, account, environ, poll=15, pauses=RETRY_PAUSES):
         self.image = image
@@ -235,6 +254,7 @@ class KubeRunner:
         self.environ = environ
         self.poll = poll
         self.pauses = pauses
+        self.clock = time.monotonic
         self.program = program_variable()
         self._pod = None
         refusal = image_refusal(self.own_pod(), image) or account_refusal(self.own_pod(), account)
@@ -291,8 +311,8 @@ class KubeRunner:
 
     def run_job(self, name, files, mode, extra_env=None, deadline=SANDBOX.OMP_TIMEOUT + 900):
         """One Job in `mode` (`SANDBOX.MODES`): created, waited for, its one pod's log read,
-        deleted. `KubeUnavailable` where the API fails; `failure` where the Job ran and gave no
-        readable result."""
+        deleted. `KubeUnavailable` where the API fails, or where no pod of the Job has started at a
+        poll at or past `PLACEMENT_LIMIT`; `failure` where the Job ran and gave no readable result."""
         pod = self.own_pod()
         variables = {SANDBOX.PROGRAM_VARIABLE: self.program, SANDBOX.MODE_VARIABLE: mode, **payload_variables(files),
                      **(extra_env or {})}
@@ -305,12 +325,19 @@ class KubeRunner:
                 return run
             run.facts["spec"] = redacted(spec)
             self.kubectl("create", "-f", "-", stdin=json.dumps(spec))
-            deadline = time.time() + spec["spec"]["activeDeadlineSeconds"] + 600
+            created = self.clock()
+            deadline = created + spec["spec"]["activeDeadlineSeconds"] + MARGIN
+            started = False
             while True:
                 status = self.kubectl_json("get", "job", name, "-o", "json").get("status") or {}
                 if status.get("succeeded") or status.get("failed"):
                     break
-                if time.time() > deadline:
+                now = self.clock()
+                started = started or self.started(name)
+                if not started and now - created >= PLACEMENT_LIMIT:
+                    raise KubeUnavailable(f"no pod of Job {name} had started at a poll {PLACEMENT_LIMIT} s or more "
+                                          "after its create, no fault of the request's")
+                if now > deadline:
                     run.failure = "the Job did not finish by its deadline"
                     return run
                 time.sleep(self.poll)
@@ -331,3 +358,9 @@ class KubeRunner:
         finally:
             self.kubectl("delete", "job", name, "--cascade=background", "--wait=false", "--ignore-not-found",
                          check=False)
+
+    def started(self, name):
+        """Whether a pod of Job `name` has started on a node: its `status.startTime`, from which its
+        own deadline counts."""
+        pods = self.kubectl_json("get", "pods", "-l", f"job-name={name}", "-o", "json").get("items") or []
+        return any((one.get("status") or {}).get("startTime") for one in pods)
