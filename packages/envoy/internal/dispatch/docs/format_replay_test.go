@@ -235,6 +235,7 @@ func formattingChurnRound(t *testing.T, seed uint64) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
+	holdRoomsResident(t, service)
 	seedServiceText(t, service, artifactID, formattingChurnDocument())
 	peer := newRoomPeer(t, service, artifactID, 1, reuseBob, nil)
 	rng := rand.New(rand.NewPCG(644, seed))
