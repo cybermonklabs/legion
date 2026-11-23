@@ -94,9 +94,10 @@ const PUSHES: Record<RerunsCase, { file: string; text: string; subject: string; 
 
 /** What `tester-reruns` writes, and `tester-reruns-results` and rig.sh's run_tester_reruns read:
  * the run's issue and case, the repository's commits (main's `base`, `h0` and `h1` on
- * legion/<issue>), the files the branch changes, and the number only c1's output at H1 prints;
- * once `tester-reruns-results` recorded them, the implementer's record and the pull request body
- * that carries the line of c1 Dispatch answered for the newest result. */
+ * legion/<issue>), the files the branch changes, the number only c1's output at H1 prints, and the
+ * blob of each file of H1 (`h1Files`, which the scorer compares with the files a run of c1 ran
+ * on); once `tester-reruns-results` recorded them, the implementer's record and the pull request
+ * body that carries the line of c1 Dispatch answered for the newest result. */
 const RerunsFixture = z.object({
   issue: z.string(),
   case: z.enum(RERUNS_CASES),
@@ -105,9 +106,19 @@ const RerunsFixture = z.object({
   h1: z.string(),
   filesChanged: z.array(z.string()),
   h1Output: z.string(),
+  h1Files: z.record(z.string(), z.string()),
   implement: z.object({ id: z.string(), version: z.number().int() }).optional(),
   body: z.string().optional(),
 });
+
+/** The commits of a fixture repository, and each file of H1 with its git blob. */
+export interface RerunsRepository {
+  base: string;
+  h0: string;
+  h1: string;
+  filesChanged: string[];
+  h1Files: Record<string, string>;
+}
 
 /** The fixture repository of `rerunsCase` in `dir`, a new git repository: main holds README.md;
  * legion/<key> holds the implementer's commit H0 (limits.ts, limits.test.ts, docs/limits.md),
@@ -119,7 +130,7 @@ export function rerunsRepository(
   rerunsCase: RerunsCase,
   key: string,
   when: number
-): { base: string; h0: string; h1: string; filesChanged: string[] } {
+): RerunsRepository {
   mkdirSync(dir, { recursive: true });
   const git = (...args: string[]) => {
     const run = Bun.spawnSync(
@@ -170,7 +181,22 @@ export function rerunsRepository(
   );
   const push = PUSHES[rerunsCase];
   const h1 = commit({ [push.file]: push.text }, `${push.subject} (${key})`);
-  return { base, h0, h1, filesChanged: git("diff", "--name-only", base, h1).split("\n") };
+  // Each line of `git ls-tree -r` is `<mode> blob <blob>\t<path>`.
+  const h1Files = Object.fromEntries(
+    git("ls-tree", "-r", h1)
+      .split("\n")
+      .map((line) => {
+        const [meta = "", file = ""] = line.split("\t");
+        return [file, meta.split(" ")[2] ?? ""];
+      })
+  );
+  return {
+    base,
+    h0,
+    h1,
+    filesChanged: git("diff", "--name-only", base, h1).split("\n"),
+    h1Files,
+  };
 }
 
 /** `tester-reruns <file> <case> <repository dir> <epoch seconds>`: the project ACME and its first

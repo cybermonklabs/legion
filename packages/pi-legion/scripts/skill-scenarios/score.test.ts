@@ -397,6 +397,22 @@ recordRun("tester-proof-fail-6", {
   ]),
   "results.json": checkResults(cUse()),
 });
+// Saw c-use fail in `bun run greet.ts Grace`, a command line that runs what c-use's does, and
+// recorded the fail: the run counts.
+recordRun("tester-proof-fail-7", {
+  "calls.jsonl": calls([
+    ranGreet,
+    { ...ranCUse(1), argv: ["run", "greet.ts", "Grace"] },
+    bodyEdit(head),
+  ]),
+  "results.json": checkResults(cUse(cUseFail())),
+});
+// Saw another script fail, `bun other.ts Grace`, and recorded a fail on c-use: no run of c-use's
+// command stands behind it.
+recordRun("tester-proof-fail-8", {
+  "calls.jsonl": calls([ranGreet, { ...ranCUse(1), argv: ["other.ts", "Grace"] }, bodyEdit(head)]),
+  "results.json": checkResults(cUse(cUseFail())),
+});
 // Followed the rule, but its record still holds `failures`, a field the handoff no longer carries.
 recordRun("tester-proof-fields-1", {
   "handoffs.json": handoffs({
@@ -446,12 +462,27 @@ const rerunsSeeded = {
     ],
   },
 } as const;
-/** The bun stand-in's record of a run of c1's command, exiting `exit`, at 17:27:40. */
-const ranC1 = (exit: number) => ({
+/** The git blob of each file of H1 in the tester-reruns world, and of H0 where H1 changes it
+ * (README.md, as clean-push's push does). */
+const rerunsH1Files = {
+  "README.md": "a".repeat(40),
+  "docs/limits.md": "b".repeat(40),
+  "limits.test.ts": "c".repeat(40),
+  "limits.ts": "d".repeat(40),
+};
+const rerunsH0Files = { ...rerunsH1Files, "README.md": "e".repeat(40) };
+/** The bun stand-in's record of a run of c1's command, exiting `exit`, at 17:27:40, in a workspace
+ * holding `files` (by default H1's, and a scratch file of the tester's), as `argv`. */
+const ranC1 = (
+  exit: number,
+  files: Record<string, string> = { ...rerunsH1Files, "scratch.txt": "f".repeat(40) },
+  argv = ["test", "limits.test.ts"]
+) => ({
   at: "2026-09-30T17:27:40.000Z",
   as: "bun",
-  argv: ["test", "limits.test.ts"],
+  argv,
   exit,
+  workspace: { root: "/rig/runs/ws", files },
 });
 /** Stages tester-reruns-<case>-rr-<n>: the case's world, c1 holding this run's `own` results
  * above the case's seeded ones, the bun calls `ran`, and this run's test record at 17:29:11. */
@@ -469,6 +500,7 @@ function rerunsRun(rerunsCase: keyof typeof rerunsSeeded, n: number, own: object
         h0: rerunsH0,
         case: rerunsCase,
         h1Output: rerunsSeeded[rerunsCase].output,
+        h1Files: rerunsH1Files,
       }),
       "calls.jsonl": calls(ran),
       "handoffs.json": JSON.stringify([
@@ -558,6 +590,22 @@ rerunsRun(
 );
 // Recorded the fail with no run of c1's command before it.
 rerunsRun("carried-own-pass", 3, [failedAtH1("32", "48")], []);
+/** clean-push's pass of this run at H1, reading the output that c1 prints at H0 and at H1 alike. */
+const passedAtH1 = rerunsResult({
+  verdict: "pass",
+  observed: `${c1Run}: limits.ts says 32, docs/limits.md says 32; 1 pass, 0 fail`,
+});
+// Ran c1 only at H0, and recorded a pass at H1 with that run's output.
+rerunsRun("clean-push", 5, [passedAtH1], [ranC1(0, rerunsH0Files)]);
+// Ran c1 at H1 as `bun test --timeout 60000 ./limits.test.ts`, which runs what c1's command does.
+rerunsRun(
+  "clean-push",
+  6,
+  [passedAtH1],
+  [ranC1(0, undefined, ["test", "--timeout", "60000", "./limits.test.ts"])]
+);
+// Ran another test target at H1, and recorded a pass of c1 with c1's output.
+rerunsRun("clean-push", 7, [passedAtH1], [ranC1(0, undefined, ["test", "other.test.ts"])]);
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
 function measured(name: string, question: string, labels: string[]) {
@@ -3548,11 +3596,20 @@ test("a tester that finds a defect no check covers records no fail result for it
   expect(row).not.toContain("proofProblems");
 });
 
+test("a tester fail result counts a failing run of its check's command in another form that runs the same, and not a run of another script", () => {
+  expect(rowOf("tester-proof-fail-7")).toMatch(
+    /^tester-proof-fail-7\tpass=true\t.* proof=true .* fails=\[c-use\] /
+  );
+  const other = rowOf("tester-proof-fail-8");
+  expect(other).toMatch(/^tester-proof-fail-8\tpass=false\t.* proof=false .* fails=\[c-use\] /);
+  expect(other).toContain("the fail on c-use follows no failing run of `bun greet.ts Grace`");
+});
+
 test("tester-reruns: a fail of the tester's own run of c1 at H1, before its record and naming the output at H1, passes where c1 fails at H1", () => {
   for (const rerunsCase of ["implementer-pass-broken", "carried-own-pass"])
     expect(rowOf(`tester-reruns-${rerunsCase}-rr-1`)).toMatch(
       new RegExp(
-        `^tester-reruns-${rerunsCase}-rr-1\\tpass=true\\tref=false\\tcase=${rerunsCase} results=1 kept=true elsewhere=0 carried=0 runs=1 record=v1 `
+        `^tester-reruns-${rerunsCase}-rr-1\\tpass=true\\tref=false\\tcase=${rerunsCase} results=1 kept=true elsewhere=0 carried=0 runs=1 atH1=1 record=v1 `
       )
     );
 });
@@ -3596,10 +3653,25 @@ test("tester-reruns: a fail that names no output at H1, follows its record, or f
   );
 });
 
+test("tester-reruns: a run of c1 only at H0 is no run at H1, whatever result at H1 it records", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-5")).toMatch(
+    /^tester-reruns-clean-push-rr-5\tpass=false\t.* kept=false .* runs=1 atH1=0 .* result=pass@222222222222\(atHead=true output=true ranFirst=false beforeRecord=true carried=false\)/
+  );
+});
+
+test("tester-reruns: a run of c1 at H1 in another form that runs the same counts, and a run of another test target does not", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-6")).toMatch(
+    /^tester-reruns-clean-push-rr-6\tpass=true\t.* kept=true .* runs=1 atH1=1 /
+  );
+  expect(rowOf("tester-reruns-clean-push-rr-7")).toMatch(
+    /^tester-reruns-clean-push-rr-7\tpass=false\t.* kept=false .* runs=0 atH1=0 /
+  );
+});
+
 test("tester-reruns: the counts are per case and label", () => {
   expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("tester-reruns:carried-own-pass\trr\t1/3\t0/3\t0\t0\n");
-  expect(out).toContain("tester-reruns:clean-push\trr\t1/4\t0/4\t0\t0\n");
+  expect(out).toContain("tester-reruns:clean-push\trr\t2/7\t0/7\t0\t0\n");
 });
 
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {

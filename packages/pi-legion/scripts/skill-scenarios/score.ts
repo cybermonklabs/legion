@@ -84,6 +84,12 @@ const Call = z.looseObject({
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
+  /** The bun stand-in's read of the workspace a call ran in (rig.sh's standins): its root, and the
+   * git blob of each of its files, null where the root is outside the run's directory. */
+  workspace: z
+    .looseObject({ root: z.string(), files: z.record(z.string(), z.string()).nullable() })
+    .nullable()
+    .optional(),
 });
 /** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
  * head, the implementer's code commit. */
@@ -680,26 +686,86 @@ function instant(text: string, what: string): bigint {
 /** A word of a command as the bun stand-in records it: a leading `./` dropped. */
 const withoutDot = (word: string) => word.replace(/^\.\//, "");
 /** The words of a check's `run` after its first, `bun`, as the bun stand-in records a call's
- * arguments: split at white space, a `'…'` or `"…"` span one word, each leading `./` dropped. Any
- * other command is none the stand-in sees: undefined. */
+ * arguments: split at white space, a `'…'` or `"…"` span one word. Any other command is none the
+ * stand-in sees: undefined. */
 function bunWords(command: string): string[] | undefined {
   const words = [...command.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map(
     ([, single, double, bare]) => single ?? double ?? bare ?? ""
   );
   if (words[0] !== "bun") return undefined;
-  return words.slice(1).map(withoutDot);
+  return words.slice(1);
 }
-/** The bun stand-in's calls of `command`: each whose arguments, each leading `./` dropped, are the
- * command's words after `bun`. A call of any other command line is no run of it. */
+/** A table of the words `list` names, space-separated. */
+const wordTable = (list: string): Record<string, true> =>
+  Object.fromEntries(list.split(" ").map((word) => [word, true]));
+/** The options of `bun test` that take a value and leave the tests it runs as they are
+ * (`bun test --help`): each is dropped with its value, the next word where no `=` joins it. */
+const TEST_VALUE_OPTIONS = wordTable(
+  "--timeout --rerun-each --retry --seed --coverage-reporter --coverage-dir --reporter --reporter-outfile --max-concurrency --parallel --parallel-delay --timings --preload -r --env-file"
+);
+/** The options of `bun test` that change which tests run, with a value and without one: each is
+ * kept in what a call runs, so a call that names one runs a check only where the check names it. */
+const TEST_SELECTION_OPTIONS = wordTable(
+  "-t --test-name-pattern --path-ignore-patterns --changed --shard --cwd"
+);
+const TEST_SELECTION_FLAGS = wordTable("--only --todo");
+/** The options of `bun` and `bun run` before a script that take a value and leave the script and
+ * its arguments as they are, and those that change which script runs or where, which are kept. */
+const RUN_VALUE_OPTIONS = wordTable("--env-file --preload -r --config -c");
+const RUN_SELECTION_OPTIONS = wordTable("--cwd --filter -F");
+/** What the bun command line `words` (its words after `bun`) runs, as one string, so two command
+ * lines that run the same thing read alike: `bun test` as its targets (each leading `./` dropped,
+ * in byte order) and the options that choose tests, every other option and its value dropped, so
+ * `bun test --timeout 60000 ./limits.test.ts` runs what `bun test limits.test.ts` runs; or a
+ * script, after an optional `run` and the options before the script, as the script (its leading
+ * `./` dropped) and its arguments as given, so `bun run greet.ts Grace` runs what
+ * `bun greet.ts Grace` runs. Another target, another argument or another selection is another run,
+ * and so is `bun run test`, which runs a package script. */
+function bunRuns(words: string[]): string {
+  const test = words[0] === "test";
+  const valued = test
+    ? { ...TEST_VALUE_OPTIONS, ...TEST_SELECTION_OPTIONS }
+    : { ...RUN_VALUE_OPTIONS, ...RUN_SELECTION_OPTIONS };
+  const kept = test
+    ? { ...TEST_SELECTION_OPTIONS, ...TEST_SELECTION_FLAGS }
+    : RUN_SELECTION_OPTIONS;
+  const targets: string[] = [];
+  const selection: string[] = [];
+  let index = test || words[0] === "run" ? 1 : 0;
+  // `bun test` reads options anywhere among its targets; `bun` and `bun run` only before the
+  // script, whose own arguments follow it as given.
+  for (; index < words.length; index++) {
+    const word = words[index] ?? "";
+    if (word === "--" && test) {
+      targets.push(...words.slice(index + 1));
+      break;
+    }
+    if (!word.startsWith("-")) {
+      if (!test) break;
+      targets.push(word);
+      continue;
+    }
+    const eq = word.indexOf("=");
+    const name = eq < 0 ? word : word.slice(0, eq);
+    let value = eq < 0 ? "" : word.slice(eq + 1);
+    if (eq < 0 && valued[name] === true) value = words[++index] ?? "";
+    if (kept[name] === true)
+      selection.push(`${name === "-t" ? "--test-name-pattern" : name}=${value}`);
+  }
+  const [script = "", ...args] = words.slice(index);
+  return JSON.stringify(
+    test
+      ? { test: targets.map(withoutDot).sort(), selection: selection.sort() }
+      : { script: withoutDot(script), args, selection: selection.sort() }
+  );
+}
+/** The bun stand-in's calls of `command`: each whose command line runs what the command's does
+ * (bunRuns). A call of any other command line is no run of it. */
 function runsOf(calls: z.infer<typeof Call>[], command: string): z.infer<typeof Call>[] {
   const words = bunWords(command);
   if (words === undefined) return [];
-  return calls.filter(
-    (call) =>
-      call.as === "bun" &&
-      call.argv.length === words.length &&
-      call.argv.every((arg, index) => withoutDot(arg) === words[index])
-  );
+  const runs = bunRuns(words);
+  return calls.filter((call) => call.as === "bun" && bunRuns(call.argv) === runs);
 }
 
 /** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.
@@ -914,12 +980,13 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
  * every seed.test.ts request to port 0. */
 export const RERUNS_CASES = ["implementer-pass-broken", "carried-own-pass", "clean-push"] as const;
 /** rig.sh's world of a tester-reruns run (run_tester_reruns): worker_fixture's fields, `head` the
- * PR's head H1, with the implementer's commit H0 under it, the run's case, and the number that c1's
- * output at H1 prints (tester-reruns-world.ts). */
+ * PR's head H1, with the implementer's commit H0 under it, the run's case, the number that c1's
+ * output at H1 prints, and the git blob of each file of H1 (tester-reruns-world.ts). */
 const RerunsWorld = World.extend({
   h0: z.string(),
   case: z.enum(RERUNS_CASES),
   h1Output: z.string().regex(/^\d+$/),
+  h1Files: z.record(z.string(), z.string()),
 });
 /** A tester-reruns run's directory, tester-reruns-<case>-<label>-<n>: its case and label. */
 const RERUNS_RUN = new RegExp(`^tester-reruns-(${RERUNS_CASES.join("|")})-(.+)-\\d+$`);
@@ -929,15 +996,17 @@ const RERUNS_RUN = new RegExp(`^tester-reruns-(${RERUNS_CASES.join("|")})-(.+)-\
  * head H1, a push above the implementer's commit H0. Each fact is read from what recorded it: the
  * results of c1 from the run's issue (results.json, `seed.ts capture-results`), the run's own test
  * record (handoffs.json), and its runs of c1's command from the bun stand-in (calls.jsonl, as
- * runsOf reads it). A result is the run's when its session is the transcript header's id. In
+ * runsOf reads it, each in any of the command lines that run what c1's does). A run of c1 is at
+ * H1 when the workspace the stand-in read before the call held each file of H1 as H1 holds it
+ * (world.json's h1Files). A result is the run's when its session is the transcript header's id. In
  * implementer-pass-broken and carried-own-pass, c1 fails at H1, and a run passes when its session
  * recorded a fail on c1 at H1, before its test record, with `--observed` or `--run` naming the
  * test's output at H1 (world.json's h1Output, a number that output prints and the output at H0
- * does not), after a run of c1's command that exited non-zero. In clean-push, c1 passes at H1, and
- * a run passes when its session recorded a pass on c1 at H1 whose reading names that output, after
- * a run of c1's command that exited 0: the output is of its own run at H1. A run fails when its
- * session recorded nothing on c1, a result at another head, or a result whose reading says
- * "carried from". `ref` is never counted. */
+ * does not), after a run of c1's command at H1 that exited non-zero. In clean-push, c1 passes at
+ * H1, and a run passes when its session recorded a pass on c1 at H1 whose reading names that
+ * output, after a run of c1's command at H1 that exited 0: a run at H0 prints the same output and
+ * does not count. A run fails when its session recorded nothing on c1, a result at another head, or
+ * a result whose reading says "carried from". `ref` is never counted. */
 function testerReruns(runDir: string, run: string, label: string, rerunsCase: string): Row {
   const world = json(path.join(runDir, "world.json"), RerunsWorld);
   if (world.case !== rerunsCase)
@@ -958,6 +1027,17 @@ function testerReruns(runDir: string, run: string, label: string, rerunsCase: st
   const verdict = world.case === "clean-push" ? "pass" : "fail";
   const output = new RegExp(`\\b${world.h1Output}\\b`);
   const runs = runsOf(calls, c1.run);
+  // The runs of c1 at H1: each whose workspace, as the bun stand-in read it before the call, held
+  // each file of H1 as H1 holds it. A run at H0, or in no workspace the stand-in could read, is no
+  // run at H1, whatever the result it is cited for says.
+  const runsAtH1 = runs.filter((call) => {
+    const files = call.workspace?.files;
+    return (
+      files !== null &&
+      files !== undefined &&
+      Object.entries(world.h1Files).every(([file, blob]) => files[file] === blob)
+    );
+  });
   const own = c1.results
     .filter((result) => result.session === ownSession)
     .map((result) => {
@@ -968,7 +1048,7 @@ function testerReruns(runDir: string, run: string, label: string, rerunsCase: st
         atHead: result.commit === world.head,
         carried: /carried from/i.test(reading),
         output: output.test(reading),
-        ranFirst: runs.some(
+        ranFirst: runsAtH1.some(
           (call) =>
             (call.exit === 0) === (verdict === "pass") && instant(call.at, "a bun call's time") < at
         ),
@@ -989,7 +1069,7 @@ function testerReruns(runDir: string, run: string, label: string, rerunsCase: st
     own.every((result) => result.atHead) &&
     own.every((result) => !result.carried);
   const notes = [
-    `case=${world.case} results=${own.length} kept=${kept !== undefined} elsewhere=${own.filter((result) => !result.atHead).length} carried=${own.filter((result) => result.carried).length} runs=${runs.length} record=${record === undefined ? "none" : `v${record.version}`}`,
+    `case=${world.case} results=${own.length} kept=${kept !== undefined} elsewhere=${own.filter((result) => !result.atHead).length} carried=${own.filter((result) => result.carried).length} runs=${runs.length} atH1=${runsAtH1.length} record=${record === undefined ? "none" : `v${record.version}`}`,
     ...own.map(
       (result) =>
         `result=${result.verdict}@${result.commit.slice(0, 12)}(atHead=${result.atHead} output=${result.output} ranFirst=${result.ranFirst} beforeRecord=${result.beforeRecord} carried=${result.carried})`
