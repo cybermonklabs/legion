@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room's close gate leaves with the last close or repair that held it: the server keeps none
@@ -78,12 +79,12 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	select {
-	case <-settled:
-	case <-time.After(10 * time.Second):
-		release()
-		t.Fatal("the settlement waited for the close under way instead of refusing its repair")
-	}
+	// The settlement refuses its repair and returns while the close holds the gate. The wait has no
+	// span of its own: a settlement that waits for the close never returns, since the close goes on
+	// until the test releases it, and fails here by name at the test binary's deadline less
+	// testwait's margin, while one a loaded machine is slow to run passes. The cleanup releases the
+	// gate when the wait gives up.
+	testwait.Receive(t, "the settlement to refuse its repair rather than wait for the close under way", settled)
 	release()
 	if repairs := pmdoc.BlockIDRepairCount(liveTree(t, service, artifactID)); repairs == 0 {
 		t.Fatal("the refused repair stamped the room")
@@ -150,12 +151,16 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 		close(evicting)
 		<-evict
 	}
+	// The cleanup's Shutdown ends at the test binary's deadline less roomWaitMargin, read here
+	// because a cleanup runs after t's context has ended, and at no span of its own: a Shutdown a
+	// loaded machine is slow over still returns before it.
+	shutdownBy := time.Now().Add(testwait.Remaining(t, roomWaitMargin))
 	t.Cleanup(func() {
 		letGo()
 		recoverRoom()
 		<-applied
 		service.evictWG.Wait()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithDeadline(context.Background(), shutdownBy)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			t.Errorf("shutdown: %v", err)
@@ -177,6 +182,9 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	done := state.failedDone
 	service.unlockState("room", state)
 
+	// The eviction's own context under test: Evict must end at its caller's deadline while the
+	// failed room's eviction is held, and that eviction holds until the test lets it go, so no
+	// machine's speed can make Evict return anything else.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	if err := service.Evict(ctx, "room"); !errors.Is(err, context.DeadlineExceeded) {
@@ -188,11 +196,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	letGo()
 	<-applied
 	recoverRoom()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the failed room's eviction did not finish")
-	}
+	testwait.Receive(t, "the failed room's eviction to finish", done)
 	if server.GetDoc("room") != nil || service.roomFailed("room") {
 		t.Fatal("the failed room's eviction must close the room and clear its failure")
 	}

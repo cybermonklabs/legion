@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 	"weak"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The leak registry answers one question this package's tests cannot otherwise ask: when the test
@@ -17,11 +19,12 @@ import (
 // catch. The registry holds each service through a weak pointer, so it pins nothing itself: what
 // stays alive stays alive because a test left it so.
 
-// leakWaitBudget bounds how long the report waits for the services the tests released to be
-// collected. A service is unreachable the moment its test returns, but it is only reported as
+// leakReportSpare is what the report leaves of the test binary's deadline when it stops waiting
+// for the services the tests released to be collected: the time it then takes to print what it
+// found and exit. A service is unreachable the moment its test returns, but it is only reported as
 // collected once a GC has cleared its weak pointer, and its shutdown's goroutines may still be
-// unwinding when the last test returns.
-const leakWaitBudget = 30 * time.Second
+// unwinding when the last test returns, for as long as a loaded machine takes to run them.
+const leakReportSpare = 30 * time.Second
 
 // leakWaitStep is how long the report sleeps between the pairs of collections it forces.
 const leakWaitStep = 250 * time.Millisecond
@@ -81,15 +84,19 @@ func liveServices() (built int, live []string) {
 }
 
 // reportLeakedServices forces collections until no service the tests built is still reachable, or
-// until the budget runs out, prints what it found to stderr, and reports whether a service is
-// still alive. It fails the run for one: TestMain (persistence_test.go) turns a true here into a
-// non-zero exit code when the tests themselves passed. A non-zero count of live services means a
-// test built a service and never shut it down, so that service, its rooms and their documents
-// stayed in memory for the rest of the binary's life; the lines after the count name the tests to
-// fix, each by a t.Cleanup that shuts the service it built down.
+// until leakReportSpare before the test binary's deadline (testwait.BinaryRemaining, since it runs
+// in TestMain after the tests, with no *testing.T), prints what it found to stderr, and reports
+// whether a service is still alive. The wait has no span of its own, so a service a loaded machine
+// is slow to release is not reported; under -timeout 0, which sets no deadline, it has no end, as
+// testwait.Until has none. It fails the run for a live service: TestMain (persistence_test.go)
+// turns a true here into a non-zero exit code when the tests themselves passed. A non-zero count of
+// live services means a test built a service and never shut it down, so that service, its rooms
+// and their documents stayed in memory for the rest of the binary's life; the lines after the count
+// name the tests to fix, each by a t.Cleanup that shuts the service it built down.
 func reportLeakedServices() bool {
 	start := time.Now()
-	deadline := start.Add(leakWaitBudget)
+	left, bounded := testwait.BinaryRemaining(leakReportSpare)
+	deadline := start.Add(left)
 	var built int
 	var live []string
 	for {
@@ -97,7 +104,7 @@ func reportLeakedServices() bool {
 		runtime.GC()
 		runtime.GC()
 		built, live = liveServices()
-		if len(live) == 0 || !time.Now().Before(deadline) {
+		if len(live) == 0 || bounded && !time.Now().Before(deadline) {
 			break
 		}
 		time.Sleep(leakWaitStep)

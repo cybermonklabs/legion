@@ -6,13 +6,13 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // newListenerHub is service's process listener as cmd/dispatch builds it: a pglisten.Hub on a
@@ -30,7 +30,10 @@ func newListenerHub(service *Service) *pglisten.Hub {
 // startRoomSync registers rs on hub and runs both, as cmd/dispatch does, until the test ends or
 // stop is called. listening receives a token after each LISTEN's connected work has run
 // (roomSync.connected); it waits for none, because a test whose dial is down at the start has to
-// write before any LISTEN stands. stop returns once the hub and every lane have returned.
+// write before any LISTEN stands. stop returns once the hub and every lane have returned, and its
+// wait for them has no span of its own: one that never returns fails t by name at the test
+// binary's deadline less testwait's margin (testwait.Receive), and one a loaded machine is slow to
+// unwind passes.
 func startRoomSync(t *testing.T, hub *pglisten.Hub, rs *roomSync) (listening <-chan struct{}, stop func()) {
 	t.Helper()
 	connected := make(chan struct{}, 4)
@@ -61,11 +64,7 @@ func startRoomSync(t *testing.T, hub *pglisten.Hub, rs *roomSync) (listening <-c
 	stop = func() {
 		once.Do(func() {
 			cancel()
-			select {
-			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Error("the room sync and its listener hub did not return within 10s of their context ending")
-			}
+			testwait.Receive(t, "the room sync and its listener hub to return once their context ended", done)
 		})
 	}
 	t.Cleanup(stop)
@@ -73,16 +72,12 @@ func startRoomSync(t *testing.T, hub *pglisten.Hub, rs *roomSync) (listening <-c
 }
 
 // runRoomSync runs rs on a listener hub of its service's (newListenerHub, startRoomSync) and
-// returns once its first LISTEN stands: a notification sent before that reaches nobody. stop
-// returns once the hub and rs have returned.
+// returns once its first LISTEN stands: a notification sent before that reaches nobody. The wait
+// for it has no span of its own (testwait.Receive). stop returns once the hub and rs have returned.
 func runRoomSync(t *testing.T, rs *roomSync) (stop func()) {
 	t.Helper()
 	listening, stop := startRoomSync(t, newListenerHub(rs.service), rs)
-	select {
-	case <-listening:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the room sync's listener hub never listened")
-	}
+	testwait.Receive(t, "the room sync's listener hub to listen", listening)
 	return stop
 }
 
@@ -124,7 +119,7 @@ func TestEveryProcessesRoomSyncListenerIsAMemberUntilItStops(t *testing.T) {
 	}
 
 	stopB()
-	waitFor(t, roomWait(t), "task B to leave the members once its listener stopped", func() bool {
+	waitUntil(t, "task B to leave the members once its listener stopped", func() bool {
 		members, err := roomSyncMembers(ctx, database.Pool)
 		if err != nil {
 			t.Fatalf("read the members: %v", err)
@@ -163,13 +158,8 @@ func TestTheRoomSyncSenderReachesTheOtherProcessFromInsideATransaction(t *testin
 		if err := taskA.roomSyncSender.Notify(ctx, documentAwarenessChannel, payload); err != nil {
 			t.Fatalf("%s: %v", when, err)
 		}
-		select {
-		case got := <-heard:
-			if got != payload {
-				t.Fatalf("%s: task B's handler heard %q, want %q", when, got, payload)
-			}
-		case <-time.After(roomWait(t)):
-			t.Fatalf("%s: task B's handler heard nothing while the sender's caller held its transaction", when)
+		if got := testwait.Receive(t, when+": task B's handler to hear the send while the sender's caller holds its transaction", heard); got != payload {
+			t.Fatalf("%s: task B's handler heard %q, want %q", when, got, payload)
 		}
 	}
 	send("the first send", "first")
@@ -187,7 +177,7 @@ func TestTheRoomSyncSenderReachesTheOtherProcessFromInsideATransaction(t *testin
 	if terminated != 1 {
 		t.Fatalf("terminated %d connections named %q, want the sender's one", terminated, senderName)
 	}
-	waitFor(t, roomWait(t), "the sender's terminated connection to leave pg_stat_activity", func() bool {
+	waitUntil(t, "the sender's terminated connection to leave pg_stat_activity", func() bool {
 		var alive bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select exists (select 1 from pg_stat_activity where datname = current_database() and application_name = $1)

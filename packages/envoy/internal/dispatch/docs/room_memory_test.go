@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // What a room holds in memory beyond its document: the record of each update its persistence has
@@ -116,18 +117,18 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 		err        error
 	}
 	sockets := make(chan opened, 2)
+	// Every wait below ends on its fact, at the test binary's deadline less testwait's margin and
+	// at no span of its own; dial is that moment for the sockets' handshakes, read here on the
+	// test's goroutine for the goroutines that dial.
+	dial := testwait.Context(t)
 	for range 2 {
 		go func() {
-			connection, err := dialDocument(server.URL, artifactID)
+			connection, err := dialDocument(dial, server.URL, artifactID)
 			sockets <- opened{connection, err}
 		}()
 	}
 	for range 2 {
-		select {
-		case <-arrived:
-		case <-time.After(roomWait(t)):
-			t.Fatal("two cold sockets of one document never both offered what they loaded")
-		}
+		testwait.Receive(t, "two cold sockets of one document both to offer what they loaded", arrived)
 	}
 	mu.Lock()
 	loser := losingPreload(t, service, artifactID, offered)
@@ -142,7 +143,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 		connections = append(connections, socket.connection)
 		t.Cleanup(func() { _ = socket.connection.Close() })
 	}
-	waitFor(t, roomWait(t), "both sockets to join the loaded room", func() bool {
+	waitUntil(t, "both sockets to join the loaded room", func() bool {
 		return service.srv.GetDoc(artifactID) != nil && registeredConnections(service) == 2
 	})
 
@@ -157,7 +158,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	for _, connection := range connections {
 		leaveDocument(connection)
 	}
-	waitFor(t, roomWait(t), "both sockets to be forgotten", func() bool {
+	waitUntil(t, "both sockets to be forgotten", func() bool {
 		return registeredConnections(service) == 0
 	})
 	runtime.GC()

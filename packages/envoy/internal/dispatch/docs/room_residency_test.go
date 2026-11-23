@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
@@ -29,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room that only ever receives valid writes is never refused and never loses one while readers,
@@ -57,6 +59,11 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 	t.Cleanup(httpServer.Close)
 	headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
+	// ctx is the end of every wait below, at the test binary's deadline less testwait's margin
+	// (testwait.Context): each socket's handshake, dialled with no HandshakeTimeout of its own where
+	// gorilla's DefaultDialer gives it 45 s, its first frame, and the window of reads. It is read
+	// here, on the test's goroutine, for the goroutines that dial.
+	ctx := testwait.Context(t)
 
 	stop := make(chan struct{})
 	var peers sync.WaitGroup
@@ -69,10 +76,13 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 				return
 			default:
 			}
-			connection, _, err := gws.DefaultDialer.Dial(wsURL, headers)
+			connection, _, err := (&gws.Dialer{}).DialContext(ctx, wsURL, headers)
 			if err != nil {
 				continue
 			}
+			// The peer stays 100 ms and leaves: the deadline is how long it stays in the room, not
+			// a wait for anything, so a loaded machine changes only what the peer reads before it
+			// leaves, which nothing checks.
 			connection.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 			for {
 				if _, _, err := connection.ReadMessage(); err != nil {
@@ -96,8 +106,9 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 	}
 	written := make(chan writerResult, 1)
 	// writes counts the writer's rounds as they land, so the readers run until there are enough of
-	// them to judge, not for a fixed time.
+	// them to judge, not for a fixed time; writerFailed stops the readers once the writer has failed.
 	var writes atomic.Int64
+	var writerFailed atomic.Bool
 	go func() {
 		var result writerResult
 		for round := 0; ; round++ {
@@ -110,6 +121,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 			canonical, err := joinedReplaceText(service, artifactID, bodies[round%len(bodies)], alice)
 			if err != nil {
 				result.err = fmt.Errorf("write round %d: %w", round, err)
+				writerFailed.Store(true)
 				written <- result
 				return
 			}
@@ -139,13 +151,19 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 		defer refusalsMu.Unlock()
 		refusals = append(refusals, fmt.Sprintf(format, args...))
 	}
-	// Three seconds, forty rounds and twenty writes, whichever comes later, within thirty seconds: a
-	// loaded machine takes longer over each round and each write, and a fixed window gave a pod as
-	// few as twelve writes.
+	// Three seconds, forty rounds and twenty writes, whichever comes later: a loaded machine takes
+	// longer over each round and each write, and a fixed window gave a pod as few as twelve writes.
+	// The window has no end of its own. It ends early only when the writer has failed, which the
+	// test reports below, or at ctx's end, where the test fails by name below. A socket's first
+	// frame is waited for until that same moment, so a loaded machine slow to send it is not
+	// counted as a refusal.
+	firstFrameBy, _ := ctx.Deadline()
 	start := time.Now()
 	running := func() bool {
-		elapsed := time.Since(start)
-		return elapsed < 30*time.Second && (elapsed < 3*time.Second || rounds.Load() < 40 || writes.Load() < 20)
+		if ctx.Err() != nil || writerFailed.Load() {
+			return false
+		}
+		return time.Since(start) < 3*time.Second || rounds.Load() < 40 || writes.Load() < 20
 	}
 	var readers sync.WaitGroup
 	for range 4 {
@@ -163,12 +181,12 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 				if err := version(); err != nil {
 					refuse("version %d: %v", round, err)
 				}
-				connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+				connection, response, err := (&gws.Dialer{}).DialContext(ctx, wsURL, headers)
 				if err != nil {
 					refuse("socket %d: response=%#v err=%v", round, response, err)
 					continue
 				}
-				connection.SetReadDeadline(time.Now().Add(time.Second))
+				connection.SetReadDeadline(firstFrameBy)
 				if _, _, err := connection.ReadMessage(); err != nil {
 					refuse("socket %d: first frame %v", round, err)
 				}
@@ -190,18 +208,12 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 	if missed := loads.missedWrites(); len(missed) != 0 {
 		t.Errorf("%d of %d loads of the room started without a write another instance of it had taken: %s", len(missed), loads.count(), strings.Join(missed, "; "))
 	}
-	if rounds.Load() < 20 || result.writes < 20 {
-		t.Fatalf("%d rounds of reads and versions, %d sockets and %d writes, too few to say anything", rounds.Load(), sockets.Load(), result.writes)
+	if ctx.Err() != nil {
+		t.Fatalf("the window of reads reached the test binary's deadline less testwait's margin with %d rounds of reads and versions, %d sockets and %d writes, short of forty rounds and twenty writes", rounds.Load(), sockets.Load(), result.writes)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
-		t.Fatalf("wait for the room's updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("wait for the room's durable appends: %v", err)
-	}
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 	stored, err := service.persistence.Load(ctx, artifactID)
 	if err != nil {
 		t.Fatal(err)
@@ -227,14 +239,15 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
+	// ctx bounds the peer's handshake, dialled with no HandshakeTimeout of its own where gorilla's
+	// DefaultDialer gives it 45 s, and the reads at the end, at the test binary's deadline less
+	// testwait's margin (testwait.Context).
+	ctx := testwait.Context(t)
+	peer, response, err := (&gws.Dialer{}).DialContext(ctx, "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("connect peer: response=%#v err=%v", response, err)
 	}
-	peer.SetReadDeadline(time.Now().Add(5 * time.Second))
-	if _, _, err := peer.ReadMessage(); err != nil {
-		t.Fatalf("peer's first frame: %v", err)
-	}
+	readPeersFirstFrame(t, peer)
 	write := func(markdown string, inside func()) error {
 		tree, err := parseInput(markdown)
 		if err != nil {
@@ -250,6 +263,12 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	}
 
 	entered, proceed := make(chan struct{}), make(chan struct{})
+	// letGo lets the write paused inside its Apply go on. A test that fails before it lets the write
+	// go would leave the write holding the room, and the service's Shutdown in the cleanup behind it
+	// until go test's alarm, so the cleanup lets it go as well.
+	var proceeded sync.Once
+	letGo := func() { proceeded.Do(func() { close(proceed) }) }
+	t.Cleanup(letGo)
 	first := make(chan error, 1)
 	go func() {
 		first <- write("first", func() {
@@ -264,22 +283,15 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	// The server has handled the departure, and whatever it does when a room's last peer leaves,
 	// once the socket's handler returns (Service.ServeHTTP removes the connection after that).
 	state := service.room(artifactID)
-	for deadline := time.Now().Add(5 * time.Second); ; {
+	waitUntil(t, "the server to handle the peer's departure", func() bool {
 		state.mu.Lock()
-		connected := len(state.connected)
-		state.mu.Unlock()
-		if connected == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the peer's departure was not handled")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+		defer state.mu.Unlock()
+		return len(state.connected) == 0
+	})
 	if _, err := service.currentToken(context.Background(), artifactID); err != nil {
 		t.Fatalf("read the room while the write waits: %v", err)
 	}
-	close(proceed)
+	letGo()
 	if err := <-first; err != nil {
 		t.Fatalf("first write: %v", err)
 	}
@@ -287,14 +299,8 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 		t.Fatalf("second write: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
-		t.Fatalf("wait for the room's updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("wait for the room's durable appends: %v", err)
-	}
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 	if text, err := service.Text(ctx, artifactID); err != nil || text != "second\n" {
 		t.Errorf("the room after both writes = %q (%v), want \"second\\n\"", text, err)
 	}
@@ -308,6 +314,23 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	}
 	if markdown, err := renderDocument(durable); err != nil || markdown != "second\n" {
 		t.Errorf("the stored document after both writes = %q (%v), want \"second\\n\"", markdown, err)
+	}
+}
+
+// readPeersFirstFrame waits for the first frame the server sends peer once its socket is admitted,
+// and fails the test when the read ends in an error. The wait has no span of its own
+// (testwait.Receive): a loaded machine slow to send the frame passes, and a socket that never gets
+// one fails by name. It sets no read deadline, so a later reader of peer reads as long as it is
+// open.
+func readPeersFirstFrame(t *testing.T, peer *gws.Conn) {
+	t.Helper()
+	read := make(chan error, 1)
+	go func() {
+		_, _, err := peer.ReadMessage()
+		read <- err
+	}()
+	if err := testwait.Receive(t, "the peer's first frame", read); err != nil {
+		t.Fatalf("peer's first frame: %v", err)
 	}
 }
 
@@ -332,7 +355,9 @@ func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
 		if !resident() {
 			t.Fatalf("the %s did not load the document's room", touch)
 		}
-		waitFor(t, 10*time.Second, fmt.Sprintf("ygo's idle sweep to evict the document's room after the %s, the API's last touch (idle timeout %v)", touch, service.srv.RoomIdleTimeout), func() bool {
+		// The wait has no span of its own: the defect is a room ygo never stamps idle, which no
+		// sweep evicts, and a loaded machine only delays the sweeper.
+		waitUntil(t, fmt.Sprintf("ygo's idle sweep to evict the document's room after the %s, the API's last touch (idle timeout %v)", touch, service.srv.RoomIdleTimeout), func() bool {
 			return !resident()
 		})
 	}
@@ -450,13 +475,30 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	}
 	ctx := context.Background()
 	bob := model.Actor{Kind: "user", ID: "bob"}
-	deadline := time.Now().Add(2 * time.Second)
+	// Two seconds, twenty peer writes and five projections, whichever comes later: a loaded machine
+	// takes longer over each write, and a fixed window can end with too few to judge. The window has
+	// no end of its own. It ends early only when a writer has failed, which the test reports below,
+	// or at the test binary's deadline less testwait's margin (testwait.Context), where the count
+	// below fails the test by name.
+	giveUp := testwait.Context(t)
+	start := time.Now()
 	failures := make(chan error, 3)
 	var writes, projections atomic.Int64
+	var failed atomic.Bool
+	running := func() bool {
+		if giveUp.Err() != nil || failed.Load() {
+			return false
+		}
+		return time.Since(start) < 2*time.Second || writes.Load() < 20 || projections.Load() < 5
+	}
+	fail := func(err error) {
+		failed.Store(true)
+		failures <- err
+	}
 	var writers sync.WaitGroup
 	peer := func(first int) {
 		defer writers.Done()
-		for round := first; time.Now().Before(deadline); round++ {
+		for round := first; running(); round++ {
 			tree := trees[round%len(trees)]
 			var updateErr error
 			err := service.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
@@ -464,7 +506,7 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 				transact(func(txn *crdt.Transaction) { updateErr = pmdoc.Update(txn, fragment, tree) })
 			})
 			if err = errors.Join(updateErr, err); err != nil && !errors.Is(err, ygws.ErrNoChanges) {
-				failures <- fmt.Errorf("peer write %d: %w", round, err)
+				fail(fmt.Errorf("peer write %d: %w", round, err))
 				return
 			}
 			writes.Add(1)
@@ -475,11 +517,11 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	go peer(1)
 	go func() {
 		defer writers.Done()
-		for round := 0; time.Now().Before(deadline); round++ {
+		for round := 0; running(); round++ {
 			if err := joinedProjectMark(service, artifactID, fmt.Sprintf("projection-%d", round), MarkRecord{
 				Kind: "comment", By: "user:bob", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Text: "note",
 			}, bob); err != nil {
-				failures <- fmt.Errorf("projection %d: %w", round, err)
+				fail(fmt.Errorf("projection %d: %w", round, err))
 				return
 			}
 			projections.Add(1)
@@ -491,7 +533,7 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 		t.Fatal(err)
 	}
 	if writes.Load() < 20 || projections.Load() < 5 {
-		t.Fatalf("%d peer writes and %d projections, too few to say anything", writes.Load(), projections.Load())
+		t.Fatalf("%d peer writes and %d projections by the test binary's deadline less testwait's margin, too few to say anything", writes.Load(), projections.Load())
 	}
 
 	if logged := logs.String(); logged != "" {
@@ -501,14 +543,8 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	// (consumeUpdateClass), so a peer write applied before this one could still be assigned a
 	// later version if it is still draining. Waiting for every earlier write to settle first
 	// guarantees this one's version, once assigned, is the newest.
-	drained, cancelDrain := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelDrain()
-	if err := service.waitForPendingUpdates(drained, artifactID); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.waitForDurableAppends(drained, artifactID); err != nil {
-		t.Fatal(err)
-	}
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 	// The observer's last rendering is the room's: an update that changes nothing a rendering
 	// carries, made once the writers have stopped, is recorded as no content change.
 	if err := joinedProjectMark(service, artifactID, "after-the-writers", MarkRecord{
@@ -516,14 +552,8 @@ func TestTheUpdateObserverNeverRendersAWriteHalfWay(t *testing.T) {
 	}, bob); err != nil {
 		t.Fatal(err)
 	}
-	stored, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(stored, artifactID); err != nil {
-		t.Fatal(err)
-	}
-	if err := service.waitForDurableAppends(stored, artifactID); err != nil {
-		t.Fatal(err)
-	}
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 	var changed bool
 	if err := service.store.Pool.QueryRow(ctx, `
 		select content_changed from doc_updates where artifact_id = $1 order by version desc limit 1
@@ -562,14 +592,14 @@ func TestAnEvictedRoomsReplicaGoesWithIt(t *testing.T) {
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 30*time.Second, "the evicted room's document to be collected", func() bool {
+	waitUntil(t, "the evicted room's document to be collected", func() bool {
 		runtime.GC()
 		return key.Value() == nil
 	})
 	if replica.Value() != nil {
 		t.Fatal("the collection that took the evicted room's document kept its replica")
 	}
-	waitFor(t, 30*time.Second, "the evicted room's listing to go", func() bool {
+	waitUntil(t, "the evicted room's listing to go", func() bool {
 		_, listed := service.replicas.Load(key)
 		return !listed
 	})
@@ -590,7 +620,7 @@ func listedReplica(t *testing.T, service *Service, artifactID string) (weak.Poin
 	if resident == nil {
 		t.Fatal("the written room's replica went while the room is resident")
 	}
-	waitFor(t, 10*time.Second, "the written room's replica to hold a copy", func() bool {
+	waitUntil(t, "the written room's replica to hold a copy", func() bool {
 		if resident.hold() == nil {
 			return false
 		}
@@ -630,11 +660,11 @@ func TestAnEvictedRoomsLoadRecordGoesWithIt(t *testing.T) {
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, 30*time.Second, "the evicted room's document to be collected", func() bool {
+	waitUntil(t, "the evicted room's document to be collected", func() bool {
 		runtime.GC()
 		return key.Value() == nil
 	})
-	waitFor(t, 30*time.Second, "the evicted room's load record to go: a running Dispatch process keeps one service for its whole life, so a record left behind is one more for every room the process ever loads", func() bool {
+	waitUntil(t, "the evicted room's load record to go: a running Dispatch process keeps one service for its whole life, so a record left behind is one more for every room the process ever loads", func() bool {
 		_, recorded := service.roomLoads.Load(artifactID)
 		return !recorded
 	})
@@ -707,8 +737,10 @@ see [link](https://a.example/) here
 }
 
 // newRetiringRoomService is newTestService on its own database, with a Shutdown cleanup bounded by
-// a deadline: a publish wedged on its own room would hold an unbounded cleanup, and the test binary
-// with it, for good.
+// the test binary's deadline less roomWaitMargin, read when the service is built because a
+// cleanup runs after t's own context has ended: a publish wedged on its own room would otherwise
+// hold the cleanup, and the test binary with it, for good, and a Shutdown a loaded machine is
+// merely slow over still runs to its end.
 func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 	t.Helper()
 	database := storetest.Open(t)
@@ -719,8 +751,9 @@ func newRetiringRoomService(t *testing.T) (*Service, *store.Store) {
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
+	shutdownBy := time.Now().Add(testwait.Remaining(t, roomWaitMargin))
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithDeadline(context.Background(), shutdownBy)
 		defer cancel()
 		if err := service.Shutdown(ctx); err != nil {
 			t.Logf("shutdown document service: %v", err)
@@ -744,28 +777,30 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 		peer bool
 		// closes says the close takes the room, so it cannot return while the publish is inside.
 		closes bool
-		close  func(service *Service, artifactID string) error
+		// close runs on a goroutine of its own, so the context it may take is the subtest's,
+		// read on the subtest's goroutine (testwait.Context).
+		close func(ctx context.Context, service *Service, artifactID string) error
 	}{
-		{"control: nothing closes the room", false, false, func(*Service, string) error { return nil }},
-		{"an issue's close closes the room", false, true, func(service *Service, _ string) error {
+		{"control: nothing closes the room", false, false, func(context.Context, *Service, string) error { return nil }},
+		{"an issue's close closes the room", false, true, func(_ context.Context, service *Service, _ string) error {
 			if _, err := service.store.Pool.Exec(context.Background(), `update issues set closed_at = now() where key = 'DOC-1'`); err != nil {
 				return err
 			}
 			service.issueOpenChanged(context.Background(), "DOC-1")
 			return nil
 		}},
-		{"Evict closes the room", false, true, func(service *Service, artifactID string) error {
+		{"Evict closes the room", false, true, func(_ context.Context, service *Service, artifactID string) error {
 			return service.Evict(context.Background(), artifactID)
 		}},
-		{"a failed room is evicted", false, true, func(service *Service, artifactID string) error {
+		{"a failed room is evicted", false, true, func(_ context.Context, service *Service, artifactID string) error {
 			service.failRoom(artifactID, errors.New("test: room failed"))
 			return service.awaitRoomRecovery(context.Background(), artifactID)
 		}},
 		// Shutdown waits on the paused write's durable append, which this test holds, until its
 		// budget ends, then closes the room with a connected editor once the publish has left.
-		{"Shutdown with a connected editor", true, true, func(service *Service, _ string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), ShutdownDrainBudget+11*time.Second)
-			defer cancel()
+		// Its context ends only at the test binary's deadline less testwait's margin, so a loaded
+		// machine slow over the drain and the close still sees the close made.
+		{"Shutdown with a connected editor", true, true, func(ctx context.Context, service *Service, _ string) error {
 			_ = service.Shutdown(ctx)
 			return nil
 		}},
@@ -804,15 +839,14 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 			if test.peer {
 				httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 				t.Cleanup(httpServer.Close)
-				peer, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
+				// The handshake has no HandshakeTimeout of its own, where gorilla's DefaultDialer
+				// gives it 45 s: its one bound is the test binary's deadline less testwait's margin.
+				peer, response, err := (&gws.Dialer{}).DialContext(testwait.Context(t), "ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/doc/"+artifactID, http.Header{"X-Dispatch-User": []string{"alice"}})
 				if err != nil {
 					t.Fatalf("connect peer: response=%#v err=%v", response, err)
 				}
 				t.Cleanup(func() { _ = peer.Close() })
-				peer.SetReadDeadline(time.Now().Add(5 * time.Second))
-				if _, _, err := peer.ReadMessage(); err != nil {
-					t.Fatalf("peer's first frame: %v", err)
-				}
+				readPeersFirstFrame(t, peer)
 				go func() {
 					for {
 						if _, _, err := peer.ReadMessage(); err != nil {
@@ -844,12 +878,19 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 				}
 				written <- ledger.Commit(ctx)
 			}()
-			select {
-			case <-committed:
-			case err := <-written:
-				t.Fatalf("the write finished (%v) without publishing through the room", err)
-			case <-time.After(10 * time.Second):
-				t.Fatal("the write's publish never reached the room")
+			// The publish reaches the room's observer, or the write ends without it, which fails
+			// the test: the wait is for whichever comes first, with no span of its own.
+			reached := make(chan error, 1)
+			go func() {
+				select {
+				case <-committed:
+					reached <- nil
+				case err := <-written:
+					reached <- fmt.Errorf("the write finished (%v) without publishing through the room", err)
+				}
+			}()
+			if err := testwait.Receive(t, "the write's publish to reach the room", reached); err != nil {
+				t.Fatal(err)
 			}
 			live := service.srv.GetDoc(artifactID)
 			// What the service's closes rely on: ygo itself refuses to close a room the publish
@@ -858,9 +899,13 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 				letGo()
 				t.Fatalf("ygo's CloseRoom of the room the publish is inside answered %v, want %v", err, ygws.ErrRoomInUse)
 			}
+			closing := testwait.Context(t)
 			closed := make(chan error, 1)
-			go func() { closed <- test.close(service, artifactID) }()
+			go func() { closed <- test.close(closing, service, artifactID) }()
 			if test.closes {
+				// A window in which the close must not return, since the publish is inside the
+				// room until letGo. A loaded machine only shortens how much of the close runs in
+				// it, so it cannot fail a correct run.
 				select {
 				case err := <-closed:
 					letGo()
@@ -869,39 +914,23 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 				}
 			}
 			letGo()
-			select {
-			case err := <-written:
-				if err != nil {
-					t.Fatalf("write: %v", err)
-				}
-			case <-time.After(10 * time.Second):
-				t.Fatal("the committed write's publish never returned once it was let go")
+			if err := testwait.Receive(t, "the committed write's publish to return once it was let go", written); err != nil {
+				t.Fatalf("write: %v", err)
 			}
-			select {
-			case err := <-closed:
-				if err != nil {
-					t.Fatalf("close the room: %v", err)
-				}
-			case <-time.After(ShutdownDrainBudget + 15*time.Second):
-				t.Fatal("the close never returned once the publish had left the room")
+			if err := testwait.Receive(t, "the close to return once the publish had left the room", closed); err != nil {
+				t.Fatalf("close the room: %v", err)
 			}
 			if test.closes && service.srv.GetDoc(artifactID) == live {
 				t.Fatal("the close returned with the room the publish was inside still resident")
 			}
 			// The publish's slot does not outlive it: every later room of the document persists
 			// behind the slots queued under its name.
-			for deadline := time.Now().Add(5 * time.Second); ; {
+			testwait.Until(t, "the document's persistence-suppression slots to go once its publish returned", func() (int, bool) {
 				service.suppressMu.Lock()
+				defer service.suppressMu.Unlock()
 				queued := len(service.suppressed[artifactID])
-				service.suppressMu.Unlock()
-				if queued == 0 {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("%d persistence-suppression slot(s) still queued for the document after its publish returned", queued)
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
+				return queued, queued == 0
+			})
 		})
 	}
 }
@@ -923,7 +952,19 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for _, paragraphs := range []int{20, 50, 200} {
 		t.Run(fmt.Sprintf("%d paragraphs", paragraphs), func(t *testing.T) {
+			// A trial waits for its commit until hungCommitSpare before the test binary's deadline,
+			// read here on the subtest's goroutine before anything else runs, and at no span of
+			// its own: a commit a loaded machine is slow to return passes, and one that never
+			// returns is reported with the time that report needs still left.
+			commitBound, cancelCommitBound := context.WithDeadline(context.Background(), time.Now().Add(testwait.Remaining(t, hungCommitSpare)))
+			defer cancelCommitBound()
 			service, database := newRetiringRoomService(t)
+			// Every trial's issue close runs on a pool of one connection (storetest.OneConnection),
+			// so the backend a trial waits on names its close alone, and no other backend queued
+			// on the same owner lock - a settlement of the issue's documents - is taken for it.
+			// Each trial reads that backend's pid off the connection it acquires, since a
+			// connection the pool had to replace would answer with another.
+			closers, _ := storetest.OneConnection(t, database.Pool)
 			ctx := context.Background()
 			const trials = 40
 			hungTrial := -1
@@ -935,8 +976,8 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 			// comment below says so). Two other things are. The connection itself is closed when
 			// the trial that hijacked it ends, so the subtest holds one of them at a time rather
 			// than forty of them open against its database until it returns; and cancelClosing
-			// frees the pooled connection this trial's close is waiting on, which storetest.Open's
-			// cleanup does wait for -- it closes the pool, and Pool.Close returns only once every
+			// frees the connection this trial's close is waiting on, which the close's pool of one
+			// does wait for when its cleanup closes it -- Pool.Close returns only once every
 			// connection in use has come back, so a close still waiting there wedges that cleanup
 			// and the subtest never prints its result.
 			runTrial := func(trial int) bool {
@@ -958,9 +999,11 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					t.Fatal(err)
 				}
 				conn := pooled.Hijack()
-				// Bounded, as Pool.Dedicated bounds the close of the connection it hijacked
-				// (pool.go:350-356): a connection that went half-open must not hold the trial
-				// in its Terminate.
+				// Bounded, as Pool.Dedicated bounds the close of a connection it gives up
+				// (store/pool.go): a connection that went half-open must not hold the trial in its
+				// Terminate. The bound decides nothing the test reads, since Close shuts the
+				// connection whether or not its Terminate went out in time, so a loaded machine
+				// cannot fail a correct run through it.
 				closeConn := func() {
 					terminate, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer cancel()
@@ -1000,7 +1043,7 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					t.Fatalf("trial %d: replace: %v", trial, err)
 				}
 				closed := make(chan error, 1)
-				// The close runs on a connection of the pool and waits there on the owner lock
+				// The close runs on its pool's one connection and waits there on the owner lock
 				// this trial's write holds, so it gets a context the trial can end. Cancelled
 				// when the trial leaves, its Exec stops waiting and the release below gives that
 				// connection up, which is what lets Pool.Close finish even when the commit that
@@ -1008,17 +1051,12 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				closing, cancelClosing := context.WithCancel(ctx)
 				defer cancelClosing()
 				// The connection is taken here, on the trial's own goroutine, before the
-				// goroutine below and before the sleep under it. This trial's transaction runs
-				// on the connection it hijacked, so the pool has no warm connection left to hand
-				// out, and a close that acquired inside the goroutine would spend the sleep
-				// dialling a new one -- a whole connection's handshake -- rather than waiting on
-				// the owner lock. The case is written for the interleaving where the close is
-				// already waiting on the lock the write holds by the time the commit starts, so a
-				// close that only reaches its Exec after the sleep exercises nothing.
-				closer, err := database.Pool.Acquire(ctx)
+				// goroutine below, and its backend's pid read while nothing else uses it.
+				closer, err := closers.Acquire(ctx)
 				if err != nil {
 					t.Fatal(err)
 				}
+				closerPID := closer.Conn().PgConn().PID()
 				go func() {
 					// Released whichever way this goroutine leaves, which hands the connection back
 					// to the pool's accounting, so Pool.Close stops waiting for it. A cancelled
@@ -1036,7 +1074,15 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					service.issueOpenChanged(closing, issueKey)
 					closed <- nil
 				}()
-				time.Sleep(30 * time.Millisecond)
+				// The commit starts once the close is queued behind the owner lock this trial's
+				// write holds, read off the close's own backend through the write's transaction
+				// (storetest.WaitForQueuedBehind): the case is written for that interleaving, and a
+				// fixed head start left a loaded machine to run the other one, which exercises
+				// nothing. A close that answers before it queues never waited on the lock, and the
+				// trial fails with what it answered.
+				if answer, early := storetest.WaitForQueuedBehind(t, tx, closerPID, closed); early {
+					t.Fatalf("trial %d: the issue's close answered (%v) before it queued behind the write's owner lock", trial, answer)
+				}
 				committed := make(chan error, 1)
 				committing = true
 				go func() {
@@ -1055,30 +1101,32 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					if err != nil {
 						t.Errorf("trial %d: commit: %v", trial, err)
 					}
-				case <-time.After(10 * time.Second):
+				case <-commitBound.Done():
 					hungTrial = trial
-					// A hang guard, not a measurement of anything: the commit that did not
-					// return still owns this trial's transaction, so give it ten more seconds
-					// to take the transaction back when it arrives late. They remove nothing
-					// for a commit that never arrives: that one keeps the transaction and the
-					// connection under it for good, which is why that connection is not one of
-					// the pool's.
+					// The commit has not returned by the test binary's deadline less
+					// hungCommitSpare, the one bound this wait has. It still owns this trial's
+					// transaction, so it gets lateReturn more to take the transaction back when it
+					// arrives late. That removes nothing for a commit that never arrives: that one
+					// keeps the transaction and the connection under it for good, which is why
+					// that connection is not one of the pool's. This wait and the close's below
+					// run only once the trial has failed and decide only what its report says, so
+					// a loaded machine cannot fail a correct run through them.
 					select {
 					case <-committed:
 						committing = false
 						hungCommitReturned = true
-					case <-time.After(10 * time.Second):
+					case <-time.After(lateReturn):
 					}
 					// The close is a second goroutine of this trial's making, so say whether it
 					// came back rather than walk away from it unreported.
 					select {
 					case <-closed:
 						hungCloseReturned = true
-					case <-time.After(10 * time.Second):
+					case <-time.After(lateReturn):
 					}
 					return false
 				}
-				if err := <-closed; err != nil {
+				if err := testwait.Receive(t, fmt.Sprintf("trial %d's issue close to return once its write committed", trial), closed); err != nil {
 					t.Fatalf("trial %d: close the issue: %v", trial, err)
 				}
 				return true
@@ -1090,8 +1138,8 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				}
 			}
 			if hungTrial >= 0 {
-				t.Errorf("trial %d of %d never returned from its commit once its issue closed as it published, and the loop stopped there (the commit returned within ten more seconds: %t; the close returned: %t; %d goroutine(s) in consumeSuppressedPersistence)",
-					hungTrial, trials, hungCommitReturned, hungCloseReturned, goroutinesIn("consumeSuppressedPersistence"))
+				t.Errorf("trial %d of %d never returned from its commit once its issue closed as it published, and the loop stopped there (the commit returned within %v more: %t; the close returned: %t; %d goroutine(s) in consumeSuppressedPersistence)",
+					hungTrial, trials, lateReturn, hungCommitReturned, hungCloseReturned, goroutinesIn("consumeSuppressedPersistence"))
 			}
 		})
 	}
@@ -1119,6 +1167,18 @@ func closeIssueUnderItsOwnerLock(ctx context.Context, conn *pgxpool.Conn, issueK
 // is to park and never return, which only the child process of the test below sets.
 const parkedCommitEnv = "DOCS_RESIDENCY_PARK_COMMIT_TRIAL"
 
+// lateReturn is how long a trial whose commit never returned gives the commit, and then its
+// issue's close, to come back late before it reports which of them did. It runs only on that
+// failed path and decides only what the report says.
+const lateReturn = 10 * time.Second
+
+// hungCommitSpare is what a trial's wait for its commit leaves of the test binary's deadline when
+// it gives up: the two lateReturn waits after it, roomWaitMargin for the subtest's cleanups, whose
+// Shutdown is itself bounded at the deadline less roomWaitMargin (newRetiringRoomService), and that
+// last roomWaitMargin for the pool's close and the failure, so the case reports a commit that never
+// returns before go test's alarm rather than in it.
+const hungCommitSpare = 2*lateReturn + 2*roomWaitMargin
+
 // parkedCommitTrial is the trial parkedCommitEnv names, and whether it names one.
 func parkedCommitTrial() (int, bool) {
 	value, set := os.LookupEnv(parkedCommitEnv)
@@ -1144,45 +1204,57 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	if _, parked := parkedCommitTrial(); parked {
 		t.Skip("the child process runs the case, not this test")
 	}
-	// The child reports at the end of the parked trial's own guard, thirty seconds of it (the
-	// commit's ten, ten more for a late commit, ten for the close), with its own storetest
-	// template migration and database clone before that, and storetest's drop of that clone
-	// after it: the parked commit's connection is still open on the clone, so the plain drop is
-	// answered 55006 and tried again for dropWindow, 15 s, before the drop is forced
-	// (storetest.go:132, :147-161), and Main waits for that drop before the binary exits
-	// (storetest.go:110). Both measurements take it in: 54.56 s in this package's issue pod
-	// under -race and six busy loops on two CPUs, 47.75 s plain. The deadline is three times
-	// that worst measurement, so a slow runner cannot turn a reporting child into this row's red,
-	// and it is minutes below the deadline of any run that holds this package (the -timeout
-	// .github/workflows/ci.yaml gives envoy-go-docs-finalizers and envoy-go-race-docs), so a child
-	// that truly wedges ends in this row's own failure rather than in the parent run's panic.
-	const childDeadline = 180 * time.Second
+	// The child's -test.timeout, childDeadline, is the deadline the case must report inside, and
+	// the subject of this row. The parked trial's guard gives up hungCommitSpare (80 s) before it,
+	// gives the commit and the close lateReturn each, and fails, leaving its cleanups the two
+	// roomWaitMargins after that; a guard whose moment has passed when the trial parks gives up at
+	// once. What runs before the trial parks - storetest's template migration, the database clone
+	// and the trial's seed - has all of childDeadline but those 20 s and the cleanups' 30 s. Under
+	// the guard's earlier fixed thirty seconds the whole child took 54.56 s in this package's issue
+	// pod under -race and six busy loops on two CPUs, and 47.75 s plain, of which that guard was 30 s
+	// and storetest's retried drop of the clone after it 15 s (dropWindow: the parked commit's
+	// connection is still open on the clone, so the plain drop is answered 55006 and tried again
+	// before it is forced, storetest.go:132, :147-161): under ten seconds for that setup, which the
+	// 70 s it has here covers seven times over. 120 s is minutes below the deadline of any run that
+	// holds this package (the -timeout .github/workflows/ci.yaml gives envoy-go-docs-finalizers and
+	// envoy-go-race-docs).
+	const childDeadline = 120 * time.Second
 	// -test.timeout arms only around the tests (testing.go, M.Run's startAlarm and stopAlarm), so
 	// the deadline above watches none of what the child does after them: storetest.Main's wait for
 	// those drops (storetest.go:110), the admin Exec that drops the template on
 	// context.Background(), the leak report. A child stuck in one of those would hold this row
-	// until the run that holds this package reached its own deadline, which is the end this row
-	// exists to prevent, so the child is bounded from here too. The margin over childDeadline is
-	// what that teardown is worth: the 15 s the plain drop is retried for, the forced drop behind
-	// it and the template drop after that, which a minute covers with room to spare while leaving
-	// this row minutes inside the shortest run that holds the package.
-	const childTeardown = time.Minute
-	killing, cancelKilling := context.WithTimeout(context.Background(), childDeadline+childTeardown)
-	defer cancelKilling()
+	// until the run that holds this package reached its own deadline and panicked there with no
+	// line naming it, so the child is bounded from here too: at this binary's deadline less
+	// testwait's margin (testwait.Context), where a child that has not exited is killed and this
+	// row fails by name. A child a loaded machine is merely slow to tear down is waited for.
+	killing := testwait.Context(t)
 	command := exec.CommandContext(killing, os.Args[0],
 		"-test.run=^TestAWriteSurvivesItsIssueClosingAsItPublishes$/^20_paragraphs$",
 		"-test.timeout="+childDeadline.String())
 	command.Env = append(os.Environ(), parkedCommitEnv+"=0")
-	// Killing the child closes its end of the pipe CombinedOutput reads, so Wait returns. A
-	// process the child started would keep that pipe open after the kill, and WaitDelay bounds
-	// that case: ten seconds after the kill, Wait closes the pipe itself and returns what was
-	// read.
-	command.WaitDelay = 10 * time.Second
+	// The child writes to a file, not a pipe, so Wait waits for the child's exit and nothing else.
+	// A pipe's reader is a goroutine of exec's that Wait also waits for, after the exit, which
+	// WaitDelay could bound only at a fixed span; and a process the child started could hold a
+	// pipe open after the child itself had gone. The kill at killing's end ends the child.
+	outputPath := filepath.Join(t.TempDir(), "child-output")
+	outputFile, err := os.Create(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command.Stdout = outputFile
+	command.Stderr = outputFile
 	started := time.Now()
-	output, err := command.CombinedOutput()
+	err = command.Run()
 	took := time.Since(started).Round(time.Millisecond)
+	if err := outputFile.Close(); err != nil {
+		t.Fatalf("close the child's output: %v", err)
+	}
+	output, readErr := os.ReadFile(outputPath)
+	if readErr != nil {
+		t.Fatalf("read the child's output: %v", readErr)
+	}
 	if killing.Err() != nil {
-		t.Fatalf("the child outlived its own %v deadline and was killed %v in, so it wedged past the end of its tests, where -test.timeout no longer watches it:\n%s", childDeadline, took, output)
+		t.Fatalf("the child had not exited %v in, at this test binary's deadline less testwait's margin, and was killed, so it wedged past the end of its tests, where its own %v -test.timeout no longer watches it:\n%s", took, childDeadline, output)
 	}
 	if err == nil {
 		t.Fatalf("the case passed in %v with trial 0's commit parked, so the park reached no trial:\n%s", took, output)
@@ -1203,6 +1275,7 @@ func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
 	if !strings.Contains(string(output), "never returned from its commit") {
 		t.Fatalf("the child failed in %v for something other than the parked commit:\n%s", took, output)
 	}
+	t.Logf("the child reported its parked commit and exited in %v under its %v -test.timeout", took, childDeadline)
 }
 
 // goroutinesIn counts the goroutines whose stacks name every one of functions.
