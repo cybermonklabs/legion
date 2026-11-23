@@ -134,6 +134,7 @@ func (r *mainPathRig) architectStartPending() (string, bool) {
 // row left for the lane to run again, and is sent once the wake's turn is over. Read as superseded
 // by the entry's task, the wake's task was retired at the seventh step, never taken by a turn.
 func TestAWakesTaskIsSentBeforeTheAnswerThatRaisedTheArchitectsEntry(t *testing.T) {
+	t.Parallel()
 	const child, ask = "LEGION-452", "ask-a"
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
@@ -211,6 +212,7 @@ func TestAWakesTaskIsSentBeforeTheAnswerThatRaisedTheArchitectsEntry(t *testing.
 // the resume is queued with no release marked or cancelled (queueReleaseResume). No idle pass is
 // run, so whether one releases a claim that holds its entry's task unconfirmed is not shown here.
 func TestAReleasesResumeLeavesTheTaskOfAnEntryTheClaimHolds(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -256,6 +258,7 @@ func TestAReleasesResumeLeavesTheTaskOfAnEntryTheClaimHolds(t *testing.T) {
 // suspended by the role stop's suspend alone (release); and the resume is queued with no release
 // marked or cancelled (queueReleaseResume).
 func TestTheSweepWaitsForAReleasesQueuedResumeAndRetiresNothingOfIt(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()

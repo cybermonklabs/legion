@@ -412,15 +412,15 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 // reads them: one per commit's author record, which every commit read has exactly one of.
 func readCommits(t *testing.T, guard *Guard, req PushRequest) []string {
 	t.Helper()
-	records, err := guard.pushRecords(bound(t), req)
-	if err != nil {
-		t.Fatalf("the push's records: %v", err)
-	}
 	var commits []string
-	for _, record := range records {
+	err := guard.pushRecords(bound(t), req, func(record Record) error {
 		if commit, ok := strings.CutSuffix(record.Label, " author"); ok {
 			commits = append(commits, strings.TrimPrefix(commit, "commit "))
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("the push's records: %v", err)
 	}
 	return commits
 }

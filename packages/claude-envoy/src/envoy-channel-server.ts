@@ -1701,6 +1701,16 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * old one leaves the topic list before the first registration under it. Runs
    * only inside `serialized`.
    *
+   * A `/clear` waits while the connection is closed for good and not yet replaced and set up
+   * (`connectionLost`, which the replacement's own step in the chain clears, `reopenFor`): until
+   * then the new id's relay can be neither moved to its credential nor subscribed, so the new id's
+   * registration would be refused after the identity had already moved, and the handoff would end
+   * there, half done and never reported. A heartbeat queued in the chain can run after the
+   * replacement has connected and before that set-up. The check follows the read of the handoff
+   * file: the connection can close for good, and its replacement connect, while that read is
+   * awaited, and only a check after it sees the loss. The next heartbeat after the set-up adopts
+   * the `/clear`.
+   *
    * The deregistration of the old id carries this process's client instance id, so the listener
    * removes that entry only while it is still this instance's: a later process that resumed the
    * old session id and registered it keeps its registration, and this handoff takes nothing
@@ -1710,6 +1720,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     if (handoffFile === undefined) return
     const next = await readSessionHandoff(handoffFile)
     if (next === undefined || next === identity.id) return
+    if (connectionLost !== undefined) return
     const previous = identity.id
     const previousSubject = directSubject
     const nextSubject = legacyAgentSubject(next)

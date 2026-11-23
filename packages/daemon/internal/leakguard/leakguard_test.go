@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
@@ -968,4 +970,56 @@ func sha256sumLineDigest(t *testing.T, dir string, files []string) string {
 	}
 	sum := sha256.Sum256([]byte(lines.String()))
 	return fmt.Sprintf("%x", sum)
+}
+
+// A refusal written to a log or a terminal writes no character of a path that a terminal could act
+// on or show as something else: a path is the push author's choice, and an escape sequence in it
+// (C0 or C1) would act on the terminal that shows the refusal, erasing the line that names the
+// file, a line break would start a line the guard did not write, and U+202E would reverse how the
+// rest of the path reads. The report's lines keep the path as it is; Error escapes each such
+// character and a byte that is not UTF-8 (termsafe.Escaped), and writes a backslash as it is, so
+// the shared check's already escaped lines pass unchanged.
+func TestARefusalWritesNoControlByteOfAPathRaw(t *testing.T) {
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	labels := []string{
+		"a b\x1b[2Kx.md",
+		"c\nLEAK CHECK: clean\x7f.md",
+		"c1\u009b2Kz.md",
+		"bidi\u202edm.x.txt",
+		`back\x1b.md`,
+		"bad\xffz.md",
+		"tag\U000e0041.md",
+	}
+	records := make([]Record, 0, len(labels))
+	lines := make([]string, 0, len(labels))
+	for _, label := range labels {
+		records = append(records, Record{Label: label, Text: "the runner answers at " + theHost})
+		lines = append(lines, label+": "+theClass)
+	}
+	refused := refusal(t, guard.Rules(bound(t), records...))
+	if !slices.Equal(refused.Lines, lines) {
+		t.Fatalf("the report is %q, want %q", refused.Lines, lines)
+	}
+	written := refused.Error()
+	for _, want := range []string{
+		"\n  a b\\x1b[2Kx.md: ",
+		"\n  c\\nLEAK CHECK: clean\\x7f.md: ",
+		"\n  c1\\u009b2Kz.md: ",
+		"\n  bidi\\u202edm.x.txt: ",
+		"\n  back\\x1b.md: ",
+		"\n  bad\\xffz.md: ",
+		"\n  tag\\U000e0041.md: ",
+	} {
+		if !strings.Contains(written, want+theClass) {
+			t.Errorf("the refusal is %q, want it to hold %q", written, want+theClass)
+		}
+	}
+	if !utf8.ValidString(written) || strings.Count(written, "\n") != len(refused.Lines) {
+		t.Errorf("the refusal writes a byte that is not UTF-8 or a line of its own: %q", written)
+	}
+	for _, r := range written {
+		if r != '\n' && !unicode.IsPrint(r) {
+			t.Errorf("the refusal writes %U raw: %q", r, written)
+		}
+	}
 }

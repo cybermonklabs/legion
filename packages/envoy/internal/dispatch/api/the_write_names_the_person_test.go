@@ -45,6 +45,7 @@ func approvalRequestAnswer(t *testing.T, handler http.Handler, artifactID string
 }
 
 func TestTheWriteNamesThePerson(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// NAMES is created by alice, so she is the person it defaults to and holds the issue she
 	// filed; the write below moves the default to bob, so the chain's last step and the step
@@ -135,6 +136,7 @@ func TestTheWriteNamesThePerson(t *testing.T) {
 // so an author reading the row can tell "nobody holds this issue" from "nobody is waiting on
 // this question", which is now never true.
 func TestOpenQuestionsAnswerTheAssignee(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	// Every question below is opened by this one session, the author the read answers for.
 	const author = "session-0123456789abcdef"

@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -1357,7 +1358,7 @@ func TestMain(m *testing.M) {
 		main()
 		os.Exit(0)
 	}
-	os.Exit(storetest.Main(m))
+	os.Exit(cmdtest.Run(func() int { return storetest.Main(m) }))
 }
 
 func TestWriteBlockIDBackfillReportLabelsSkippedDocuments(t *testing.T) {
@@ -2263,7 +2264,7 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		process.waitHealthy(t)
 		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
 		after := writeKeywordFillComments(t, database, 50)
-		textversionstest.AwaitRows(t, database, append(before, after...), time.Minute, nil)
+		textversionstest.AwaitRowsUntil(t, database, append(before, after...), nil)
 		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {
 			t.Fatalf("the fill wrote every event's row, and the read counts %d holds, %d rows and %d cursor rows; want each above 0", writes.holds, writes.rows, writes.cursors)
 		}

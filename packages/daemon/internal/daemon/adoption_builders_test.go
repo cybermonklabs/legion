@@ -367,6 +367,7 @@ func (r *adoptionRig) heldTask(issue string, role claim.Role) supervise.Delivery
 // phase tasks are adopted once each by the phase owner alone, and a phase task waits, unadopted,
 // while another role of the issue is in a turn.
 func TestOnlyThePhaseOwnersTaskAdoptsTheWorkingCopy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		run  func(r *adoptionRig)

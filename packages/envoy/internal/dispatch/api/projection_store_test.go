@@ -55,6 +55,7 @@ var projectedTables = slices.Sorted(maps.Keys(censustest.ProjectedColumns))
 // they insert with its node and its tuples from the transaction that inserted the row, and an
 // update of a column a tuple projects carries the transaction of the tuple it appended.
 func TestNoProjectionRowIsWrittenWithoutTheStore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	sources := readProjectionWriters(t)
 	t.Run("every write of a projected row or a projected column sits on the store writer's call path", func(t *testing.T) {

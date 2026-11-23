@@ -37,6 +37,7 @@ var spelledApart = config.Reservation{CPU: "1", CPURequest: "1000m", Memory: "1G
 // configuration names no pod: the tmux runtime sets no limits at all, which the report says in its
 // own words.
 func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
+	t.Parallel()
 	decided := map[capabilities.Name]string{capabilities.Secrets: "dispatch://LEGION-205 enrolls pods later"}
 	kubernetes := func(resources config.PodResources, agentSecrets *config.AgentSecretsConfig, launch config.ControllerLaunch) config.Config {
 		return config.Config{
@@ -78,6 +79,7 @@ func TestDeploymentReadsTheConfigurationAlone(t *testing.T) {
 // answers the names each time: the tick carries them while the log stays quiet. Under tmux every
 // deployment row starts open; the model-fallback read closing one changes the set.
 func TestReportCapabilitiesLogsAtBootAndOnChangeAlone(t *testing.T) {
+	t.Parallel()
 	var logged bytes.Buffer
 	s := &supervision{
 		cfg:         config.Config{Runtime: config.Runtime{Name: "tmux"}},
@@ -122,6 +124,7 @@ func TestReportCapabilitiesLogsAtBootAndOnChangeAlone(t *testing.T) {
 // waited on capacity before it scheduled reports pool-capacity open, with the count and the
 // scheduler's reason, until the file decides it; one whose pod scheduled at once reports it present.
 func TestReportCapabilitiesCarriesTheProbesCapacityWaits(t *testing.T) {
+	t.Parallel()
 	reason := "probe pod legion-probe-legion-1d10089a0000 is Unschedulable: 0/83 nodes are available: 25 Insufficient cpu"
 	decided := map[capabilities.Name]string{capabilities.Secrets: "dispatch://LEGION-205 enrolls pods later"}
 	cfg := config.Config{
@@ -160,6 +163,7 @@ func TestReportCapabilitiesCarriesTheProbesCapacityWaits(t *testing.T) {
 // config line and its source, however many ticks read it; once the read no longer carries it, the
 // name is gone. The row's own words are TestTheRepositoryCacheRoomRow's (capabilities).
 func TestTheCapabilityReportReadsTheCachesHealth(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		Runtime:      config.Runtime{Name: "kubernetes", Kubernetes: &config.Kubernetes{Resources: config.DefaultResources()}},
 		Capabilities: config.Capabilities{Decided: map[capabilities.Name]string{capabilities.Secrets: "dispatch://LEGION-205 enrolls pods later"}},

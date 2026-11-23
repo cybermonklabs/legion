@@ -41,7 +41,7 @@ func TestMain(m *testing.M) {
 		registerAndWait(sock)
 		return
 	}
-	os.Exit(m.Run())
+	os.Exit(cmdtest.Main(m))
 }
 
 // registerAndWait registers this process with the helper at sock, prints "registered", and lives

@@ -75,9 +75,9 @@ start-up log.
 A Slack app sends its events to the listener's public route `/webhook/slack`, which the listener
 mounts when `ENVOY_WEBHOOKS` lists `slack`. Set the app's Event Subscriptions request URL to it, for
 example `https://envoy.internal.example/webhook/slack`, and subscribe it to the `app_mention` bot
-event (its `app_mentions:read` scope). The listener answers Slack's `url_verification` challenge,
-and checks every other delivery's signature against `ENVOY_SLACK_SIGNING_SECRET`, the app's
-signing secret, answering `401` to one that does not match. The repository's
+event (its `app_mentions:read` scope). The listener checks every delivery's signature against
+`ENVOY_SLACK_SIGNING_SECRET`, the app's signing secret, before it reads the delivery as JSON,
+Slack's `url_verification` challenge included, and answers `401` to one that does not match. The repository's
 `deploy/slack/legion-app-manifest.yaml` creates such an app: the `app_mentions:read`,
 `chat:write`, `channels:history` and `groups:history` bot scopes and the `app_mention` bot event.
 
@@ -555,6 +555,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_REVIEWER_APP_ID` | Required with `github`: the id of the GitHub App that posts reviews. |
 | `ENVOY_GITHUB_MENTION_TRIGGER` | The mention that publishes a `.mention` event. Defaults to `@legion`. |
 | `ENVOY_SLACK_SIGNING_SECRET` | Required with `slack`: the Slack app's signing secret. |
+| `ENVOY_WEBHOOK_BODY_BUDGET` | The bytes of webhook body the listener holds at once across every webhook route; default 64 MiB. A delivery that finds no room within its route's short wait is answered `503` with `Retry-After: 1`. |
 
 A listener on anything but loopback refuses to start without `ENVOY_API_TOKEN`, the OIDC pair or
 the Google pair, unless `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says that something else fences its

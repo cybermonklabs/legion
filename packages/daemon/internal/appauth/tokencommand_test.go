@@ -100,6 +100,46 @@ func (b fakeBroker) refusesNarrowing(t *testing.T, owner string) {
 	t.Setenv("FAKE_BROKER_NARROW", owner)
 }
 
+// endedContext is a caller's context that has already ended, as one whose deadline passed while
+// its token_command ran: runTokenCommand starts the run or joins it first, and then answers the
+// caller ErrCommandPending while the run goes on, so the test chooses when the caller gives up
+// rather than a timer.
+func endedContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// runsEnded waits until every token_command run of tokens has ended (Manager.runs), which a run
+// does once its command exits and its result is kept.
+func runsEnded(t *testing.T, tokens *Manager) {
+	t.Helper()
+	ended := make(chan struct{})
+	go func() {
+		tokens.runs.Wait()
+		close(ended)
+	}()
+	testwait.Receive(t, "every token_command run to end", ended)
+}
+
+// watchedContext is a caller's context that never ends and says when the caller first watched for
+// its end: watched closes the first time Done is asked for. Manager.lease asks for it first where
+// a caller waits on another caller's pending mint, so a closed watched is a caller waiting there.
+type watchedContext struct {
+	context.Context
+	once    sync.Once
+	watched chan struct{}
+}
+
+func newWatchedContext() *watchedContext {
+	return &watchedContext{Context: context.Background(), watched: make(chan struct{})}
+}
+
+func (c *watchedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.watched) })
+	return c.Context.Done()
+}
+
 // fakeTokenGitHub answers what token mode asks of GitHub under an installation token: GraphQL's
 // viewer, GET /apps/<slug>, GET /users/<login> and GET /installation/repositories. It refuses any
 // JWT-only route (GET /app, the installation listing and exchange), since token mode signs none.
@@ -385,7 +425,7 @@ func TestTokenModeKeepsTokensOutOfLogsAndErrors(t *testing.T) {
 	}
 
 	huge := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "yes ghs_secret_value_padding"}}, Options{Now: func() time.Time { return now }})
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancel()
 	_, err = huge.runTokenCommand(ctx, huge.apps.Implement, mintRequest{role: Implement, owner: "acme"})
 	if err == nil || !strings.Contains(err.Error(), "printed more than") || ctx.Err() != nil {
@@ -644,39 +684,38 @@ func TestTokenModeAnInstalledOwnersCallerPastItsDeadlineIsToldTheCommandIsPendin
 		owners, err := tokens.InstalledOwners(context.Background(), Implement)
 		joined <- answer{owners, err}
 	}()
-	// The second caller joins the run still going before the command may print.
+	// The second caller most often joins the run still going before the command may print; one the
+	// machine holds until the run has ended takes the release the run keeps for it
+	// (finishedRunKeep), which answers the same, so this pause decides no verdict.
 	time.Sleep(50 * time.Millisecond)
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case got := <-joined:
-		if got.err != nil || !slices.Equal(got.owners, []string{"acme"}) {
-			t.Fatalf("the caller that joined the read = %v, %v; want acme, the release of the command still running", got.owners, got.err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the caller that joined the read was never answered")
+	if got := testwait.Receive(t, "the answer of the caller that joined the read", joined); got.err != nil || !slices.Equal(got.owners, []string{"acme"}) {
+		t.Fatalf("the caller that joined the read = %v, %v; want acme, the release of the command still running", got.owners, got.err)
 	}
 	if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 1 {
 		t.Fatalf("the command ran %d times, want once", strings.Count(string(data), "run"))
 	}
 }
 
-// A caller whose deadline ended before the command finished, and who comes back only after it
+// A caller whose context ended before the command finished, and who comes back only after it
 // finished, gets the finished run's release; the command does not run again.
 func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
-	runs := filepath.Join(t.TempDir(), "runs")
-	command := fmt.Sprintf(`echo run >>%q; sleep 0.5; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
-		runs, now.Add(time.Hour).Format(time.RFC3339))
+	dir := t.TempDir()
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
-	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	if _, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) {
-		t.Fatalf("a caller past its deadline = %v, want ErrCommandPending", err)
+	if _, err := tokens.runTokenCommand(endedContext(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.Is(err, ErrCommandPending) {
+		t.Fatalf("a caller whose context ended = %v, want ErrCommandPending", err)
 	}
-	time.Sleep(800 * time.Millisecond)
-	later, cancelLater := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runsEnded(t, tokens)
+	later, cancelLater := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancelLater()
 	got, err := tokens.runTokenCommand(later, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"})
 	if err != nil || got["acme"].token != "ghs_x" {
@@ -696,32 +735,31 @@ func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {
 // for once more.
 func TestTokenModeAnInstalledOwnersCallerBackAfterTheRunFinishedGetsItsRelease(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	runs := filepath.Join(t.TempDir(), "runs")
-	command := fmt.Sprintf(`echo run >>%q; sleep 0.5; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
-		runs, now.Add(time.Hour).Format(time.RFC3339))
+	dir := t.TempDir()
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	defer tokens.Close()
-	short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	if _, err := tokens.InstalledOwners(short, Implement); !errors.Is(err, ErrCommandPending) {
+	if _, err := tokens.InstalledOwners(endedContext(), Implement); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("InstalledOwners past its deadline = %v, want ErrCommandPending", err)
 	}
-	// The command finishes while no caller waits: the run the first call started ends.
+	// The command finishes while no caller waits: the run the first call started ends once the
+	// gate opens.
 	tokens.mu.Lock()
 	run := tokens.commands[leaseScope(false, Implement, "")]
 	tokens.mu.Unlock()
 	if run == nil {
 		t.Fatal("no token_command run goes on after the caller past its deadline left")
 	}
-	testwait.Eventually(t, "the token_command's run to end", func() bool {
-		select {
-		case <-run.done:
-			return true
-		default:
-			return false
-		}
-	})
-	later, cancelLater := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	if err := os.WriteFile(gate, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testwait.Receive(t, "the token_command's run to end", run.done)
+	// The caller comes back under no deadline but the test binary's: a deadline of its own that
+	// passed while a loaded machine held the caller before it asked would meet the run's end in
+	// one select, which may answer either.
+	later, cancelLater := context.WithTimeout(context.Background(), testwait.Remaining(t))
 	defer cancelLater()
 	owners, err := tokens.InstalledOwners(later, Implement)
 	if err != nil || !slices.Equal(owners, []string{"acme"}) {
@@ -924,66 +962,95 @@ func TestTokenModeACommandSeesNoLegionGitHubVariableButTheTwoItIsTold(t *testing
 	}
 }
 
-// A caller waiting on another's mint, which ended only because that caller's deadline did, joins
+// A caller waiting on another's mint, which ended only because that caller's context did, joins
 // the command still running under its own context and gets its lease.
 func TestTokenModeAWaiterOutlivesTheInitiatorsDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
-	gate := filepath.Join(dir, "gate")
-	command := fmt.Sprintf(`while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_waited","expires_at":"%s"}}}'`,
-		gate, now.Add(time.Hour).Format(time.RFC3339))
+	runs, gate := filepath.Join(dir, "runs"), filepath.Join(dir, "gate")
+	command := fmt.Sprintf(`echo run >>%q; while [ ! -e %q ]; do sleep 0.05; done; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_waited","expires_at":"%s"}}}'`,
+		runs, gate, now.Add(time.Hour).Format(time.RFC3339))
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
 	server := github.serve(t)
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: command}},
 		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
-	short, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
+	short, endInitiator := context.WithCancel(context.Background())
+	defer endInitiator()
 	initiator := make(chan error, 1)
 	go func() {
 		_, err := tokens.Token(short, Implement, "acme")
 		initiator <- err
 	}()
-	time.Sleep(100 * time.Millisecond)
+	// The initiator's mint is pending (Manager.lease) once its command runs.
+	testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, "the initiator's token_command to start", func() bool {
+		data, _ := os.ReadFile(runs)
+		return strings.Count(string(data), "run") == 1
+	})
+	watched := newWatchedContext()
 	waiter := make(chan Lease, 1)
 	go func() {
-		lease, err := tokens.Token(context.Background(), Implement, "acme")
+		lease, err := tokens.Token(watched, Implement, "acme")
 		if err != nil {
 			t.Errorf("the waiter = %v, want the lease", err)
 		}
 		waiter <- lease
 	}()
-	if err := <-initiator; !errors.Is(err, ErrCommandPending) {
+	// The initiator's context ends once the waiter waits on its mint, as its deadline would.
+	testwait.Receive(t, "the waiter to wait on the initiator's pending mint", watched.watched)
+	endInitiator()
+	if err := testwait.Receive(t, "the initiator's answer once its context ended", initiator); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("the initiator = %v, want ErrCommandPending", err)
 	}
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case lease := <-waiter:
-		if lease.Token != "ghs_waited" {
-			t.Fatalf("the waiter's lease = %+v, want the running command's token", lease)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the waiter never got the lease")
+	if lease := testwait.Receive(t, "the waiter's lease once the command finished", waiter); lease.Token != "ghs_waited" {
+		t.Fatalf("the waiter's lease = %+v, want the running command's token", lease)
+	}
+	// The waiter joined the command still running: a waiter that ran the command again would get
+	// the same token, so the count of runs is what tells the two apart.
+	if data, _ := os.ReadFile(runs); strings.Count(string(data), "run") != 1 {
+		t.Fatalf("the command ran %d times, want once: the waiter ran it again rather than join the run still going", strings.Count(string(data), "run"))
 	}
 }
 
-// Close ends a command still running and waits for it; a later mint is refused.
+// Close ends a command still running and waits for it; a later mint is refused. The command
+// ignores SIGTERM, so it ends only at the SIGKILL Close's stop sends a grace later
+// (procgroup.StopGrace). Its run ends only once the command has exited and been reaped
+// (execTokenCommand's Run), and Close waits for every run (Manager.runs), so the run has ended by
+// the time Close returns. A Close that stopped the command without waiting for it would return a
+// whole grace before that. The row reads the run's end, which Close's wait guarantees, rather than
+// the command's pid, which a quick exit and reap would show gone whether Close waited or not.
 func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "pid")
-	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: fmt.Sprintf(`echo $$ >%q; sleep 600`, pidFile)}}, Options{})
-	short, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	if _, err := tokens.Token(short, Implement, "acme"); !errors.Is(err, ErrCommandPending) {
+	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: fmt.Sprintf(`trap '' TERM; echo $$ >%q; sleep 600`, pidFile)}}, Options{})
+	if _, err := tokens.Token(endedContext(), Implement, "acme"); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("Token = %v, want ErrCommandPending", err)
 	}
-	closed := make(chan struct{})
-	go func() { tokens.Close(); close(closed) }()
-	select {
-	case <-closed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Close did not end the running command")
+	testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, "the token_command to run", func() bool {
+		pid, _ := os.ReadFile(pidFile)
+		return strings.TrimSpace(string(pid)) != ""
+	})
+	tokens.mu.Lock()
+	run := tokens.commands[leaseScope(false, Implement, "acme")]
+	tokens.mu.Unlock()
+	if run == nil {
+		t.Fatal("no token_command run goes on after the caller past its deadline left")
+	}
+	// Whether the run had ended is read on Close's own goroutine the moment Close returns.
+	ended := make(chan bool, 1)
+	go func() {
+		tokens.Close()
+		select {
+		case <-run.done:
+			ended <- true
+		default:
+			ended <- false
+		}
+	}()
+	if !testwait.Receive(t, "Close to end the running command", ended) {
+		t.Fatal("Close returned before the command it ended had exited: its run was still going")
 	}
 	if _, err := tokens.Token(context.Background(), Implement, "acme"); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("Token after Close = %v, want a refusal", err)
@@ -1026,9 +1093,7 @@ func TestTokenModeTheReadAndWriteScopesOfOneOwnerDoNotShareOneRun(t *testing.T) 
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	defer tokens.Close()
 	for _, read := range []bool{true, false, true} {
-		short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		_, err := tokens.runTokenCommand(short, tokens.apps.Implement, mintRequest{role: Implement, owner: "acme", read: read})
-		cancel()
+		_, err := tokens.runTokenCommand(endedContext(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme", read: read})
 		if !errors.Is(err, ErrCommandPending) {
 			t.Fatalf("the run for read=%v = %v, want ErrCommandPending while it goes on", read, err)
 		}
@@ -1036,6 +1101,8 @@ func TestTokenModeTheReadAndWriteScopesOfOneOwnerDoNotShareOneRun(t *testing.T) 
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Every run goes on to its end once the gate opens, so each has written its line by then.
+	runsEnded(t, tokens)
 	tokens.Close()
 	data, _ := os.ReadFile(runs)
 	if ran := strings.Count(string(data), "run"); ran != 2 {

@@ -69,16 +69,20 @@ real_bin_path() {
 # never returns would hold the wait past its bound, so a caller's remote calls carry their own
 # timeouts.
 until_true() {
-  local limit=$1 what=$2 polls=0 started=$SECONDS beat=$SECONDS
+  # Its time of entry is `began`, not `started`: a caller's `fail` exits inside this function, so
+  # the caller's EXIT trap runs where these locals hide the caller's variables of the same names,
+  # and a test harness's trap that stops each pid of its `started` array read this number instead
+  # and left every process the failed row had started running.
+  local limit=$1 what=$2 polls=0 began=$SECONDS beat=$SECONDS
   shift 2
   note "waiting up to ${limit}s for $what"
-  while ((SECONDS - started < limit)); do
+  while ((SECONDS - began < limit)); do
     [ ! -s "$evidence/pane-endpoint-violation.txt" ] || fail "ABORT: $(cat "$evidence/pane-endpoint-violation.txt")"
     polls=$((polls + 1))
     if "$@" >/dev/null 2>&1; then return 0; fi
     if ((SECONDS - beat >= 60)); then
       beat=$SECONDS
-      note "still waiting for $what: poll $polls, $((SECONDS - started))s of ${limit}s"
+      note "still waiting for $what: poll $polls, $((SECONDS - began))s of ${limit}s"
     fi
     sleep 0.5
   done

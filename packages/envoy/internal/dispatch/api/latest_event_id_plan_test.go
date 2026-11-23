@@ -135,6 +135,7 @@ func requireEventsReadByPrimaryKey(t *testing.T, planned *store.Pool, sent []eve
 // index can take is an index scan, and one whose comparison none can take is still a sequential
 // scan.
 func TestTheStatementsThatFindTheirEventByItsIDReadEventsByItsPrimaryKey(t *testing.T) {
+	t.Parallel()
 	recorder := &eventIDStatements{}
 	database := storetest.Open(t)
 	handler, _, _ := newTestServer(t, testServerOptions{store: database, tracer: recorder})

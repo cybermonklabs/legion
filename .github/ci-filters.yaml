@@ -263,6 +263,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/stream/*'
   - 'packages/daemon/internal/supervise/*'
   - 'packages/daemon/internal/tlsalert/*'
+  - 'packages/daemon/internal/termsafe/*'
   - 'packages/daemon/internal/treelifecycle/*'
   - 'packages/daemon/internal/volumestat/*'
   - 'packages/daemon/internal/wait/*'
@@ -559,6 +560,7 @@ plugin_pack:
   - '!packages/daemon/internal/store/**/*_test.go'
   - '!packages/daemon/internal/stream/**/*_test.go'
   - '!packages/daemon/internal/supervise/**/*_test.go'
+  - '!packages/daemon/internal/termsafe/**/*_test.go'
   - '!packages/daemon/internal/testbin/**/*_test.go'
   - '!packages/daemon/internal/testfifo/**/*_test.go'
   - '!packages/daemon/internal/testnats/**/*_test.go'
@@ -613,6 +615,7 @@ claude_envoy:
   - '.github/actions/install-claude-code/**'
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/contracts/fixtures/envelope-without-role.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'packages/envoy-client/test/**'
   - 'packages/pi-shared/test/image-manifest.ts'
   - 'packages/test-fixtures/src/**'
@@ -914,6 +917,7 @@ ci_ok_report_test: &ci_ok_report_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/ci-ok-report.test.sh'
   - '.github/scripts/ci-ok-report.sh'
+  - '.github/scripts/ci-ok-hold.sh'
   - '.github/scripts/post-check-run.sh'
   - '.github/scripts/gh-read.sh'
   - '.github/scripts/runner-shutdown.sh'
@@ -964,6 +968,14 @@ dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.test.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.sh'
+dispatch_browser_reading_rows_test: &dispatch_browser_reading_rows_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.test.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.sh'
+  - '.github/workflows/dispatch-browser.yaml'
 dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - *ci_router
   - *ci_filters_data
@@ -1100,6 +1112,7 @@ test:
   - *main_bypass_check_test
   - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
+  - *dispatch_browser_reading_rows_test
   - *dispatch_browser_run_reads_test
   - *gh_read_test
   - *dispatch_browser_samples_test
@@ -1398,6 +1411,7 @@ pi_envoy:
   - 'packages/test-fixtures/src/**'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envelope-without-role.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'skills/**'
   - 'packages/daemon/internal/prompts/**'
   - 'scripts/pi-plugin-prepack.sh'
@@ -1740,6 +1754,7 @@ envoy_go:
   - 'packages/contracts/fixtures/live/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   # why: .github/ci-notes/ci.md#envoy_go-its-natslive-step-runs-cmdlisteners-natslive-tests
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
@@ -2203,6 +2218,7 @@ listener_server_change:
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/migrationid/*'
+  - 'packages/envoy/natsgrant/*'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - '.github/scripts/go-tagged-tests.sh'
@@ -2671,6 +2687,7 @@ envoy_client:
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
   - 'packages/contracts/fixtures/envelope-without-role.json'
   - 'packages/contracts/fixtures/ask-reply-recipients.json'
+  - 'packages/contracts/fixtures/session-grant.json'
   - 'packages/envoy/internal/dispatch/api/testdata/**'
   - 'skills/**'
   - 'packages/*/AGENTS.md'

@@ -44,6 +44,7 @@ const strandedReadFailure = "read the issue record to report the claims nothing 
 // own transaction holds and the request would never be answered. The deadline on the request is
 // what makes that a failure here rather than a hung package.
 func TestTheStateRouteAnswersWhenThePoolHasOneConnection(t *testing.T) {
+	t.Parallel()
 	cfg := oneConnectionDaemonOfAReleasedPod(t)
 	d := startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
 
@@ -74,6 +75,7 @@ func TestTheStateRouteAnswersWhenThePoolHasOneConnection(t *testing.T) {
 // failed read instead of a report. The hook the daemon offers a test (strandedReported) is what
 // says the report has finished, and the deadline on waiting for it is the test's own.
 func TestTheBootReportAnswersWhenThePoolHasOneConnection(t *testing.T) {
+	t.Parallel()
 	cfg := oneConnectionDaemonOfAReleasedPod(t)
 	var logs syncBuffer
 	o := fakeRuntime(fake.NewRuntime(), &built{})

@@ -75,6 +75,7 @@ var stepRecordsTen = []stepWant{
 // record from Dispatch's store, its node and its tuples, and the same assertion must then name the
 // missing record.
 func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
@@ -111,6 +112,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 // issue's seven records reach it, each ended. The control holds the outage real: while Dispatch is
 // stopped, the outbox holds the issue's step records unfinished and the read finds no server.
 func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
@@ -150,6 +152,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 // boot token it holds. The tester answers again and completes, the walk ends at done, and the read
 // holds exactly one record of testing for that run, ended, under the id its start wrote.
 func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
@@ -203,6 +206,7 @@ var stepRecordsSeven = []stepWant{
 // record of its own at the next count, started when its entry was raised, and the tester's run
 // this release counted under its own id.
 func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	r.plan()
 	r.implement()
@@ -373,6 +377,7 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 //   - The control: the child's own architect was never started, so it holds no role, the tree's
 //     architect owns the child, and it signs the child off.
 func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
+	t.Parallel()
 	acceptance := func(r *stepRecordsRig, child string, agent claim.Token, session, model string) {
 		r.t.Helper()
 		r.waitStepsOf(child, "the child's acceptance as its owning architect's", func(read stepRecordsRead) error {
@@ -441,6 +446,7 @@ func (r *stepRecordsRig) childInAccepting() string {
 // (api.Options.AwaitStream, which serve gives the daemon's awaitStream), so the record of planning
 // ends naming the planner's session and that answer's model, not the model of the answer before.
 func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/planner-first"
@@ -473,6 +479,7 @@ func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
 // with another, and the child's acceptance ends failed, back at implementing, with the architect's
 // session and the second model.
 func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	child := r.childInAccepting()
 	architect := r.worker(claim.RoleArchitect)
@@ -608,6 +615,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 // planner's session and no model, as for an agent that named none. The model that answered first
 // did not answer last, so the record does not name it.
 func TestAModelHoldingANulIsNotKept(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/first"
@@ -633,6 +641,7 @@ func TestAModelHoldingANulIsNotKept(t *testing.T) {
 // the merge names its token and no session and no model. A step that runs names no session yet:
 // its end names the session and the model together.
 func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	planner := r.worker(claim.RolePlanner)
 	planner.model = "stand-in/planner"

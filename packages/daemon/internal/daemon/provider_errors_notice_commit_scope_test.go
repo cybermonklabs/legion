@@ -25,6 +25,7 @@ import (
 // (projectRecords.wakeOnCommit): the lane looks before the row is there, finds nothing, and the
 // notice waits for the outbox's sweep, which runs every outboxLease.
 func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	ctx := context.Background()
 	st, err := store.Open(ctx, pool.Config().ConnString())
