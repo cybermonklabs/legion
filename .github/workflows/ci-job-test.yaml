@@ -566,9 +566,6 @@ jobs:
       - name: Typecheck the Dispatch census script
         run: bunx tsc --noEmit -p scripts/dispatch
 
-      - name: Test the Dispatch census script
-        run: bun test scripts/dispatch
-
       - name: Lint the GitHub App registration script
         run: bunx biome check --error-on-warnings scripts/github-apps
 
@@ -613,10 +610,11 @@ jobs:
 
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
-      # that compiled it. What runs go here is the held-port build of the envoy listener below,
-      # the CI-filter check's go list over a scratch module and the build-tag lister, none of
-      # which that entry is filled for. The daemon's go.mod is still the one Go pin of this
-      # repository's three modules that a job without one of its own reads.
+      # that compiled it. What runs go here is the Dispatch census test's go test over a scratch
+      # module, the held-port build of the envoy listener below, the CI-filter check's go list
+      # over a scratch module and the build-tag lister, none of which that entry is filled for.
+      # The daemon's go.mod is still the one Go pin of this repository's three modules that a job
+      # without one of its own reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -624,6 +622,11 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+
+      # After setup-go: the census's main-read rows run go test over a scratch module, to get the
+      # tester's parts from Compose.
+      - name: Test the Dispatch census script
+        run: bun test scripts/dispatch
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
