@@ -1200,7 +1200,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	// The drain budget runs on the service's clock (Deps.Clock), the real one in every deployment,
+	// so a test moves that clock past the budget once Shutdown has armed it, rather than racing the
+	// budget on the machine's own clock.
+	drainCtx, cancelDrain := s.clock.WithTimeout(ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {
