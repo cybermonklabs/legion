@@ -58,6 +58,9 @@ case "\$*" in
   *"/actions/runs/41/jobs?per_page=100"*)
     if [ ! -e "$work/jobs" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/jobs" ;;
+  *"repos/o/r/actions/runs/41 --jq .created_at"*)
+    if [ ! -e "$work/created" ]; then echo "HTTP 502" >&2; exit 1; fi
+    cat "$work/created" ;;
   *"/commits/abc123/check-runs"*)
     if [ ! -e "$work/check-runs" ]; then echo "HTTP 502" >&2; exit 1; fi
     cat "$work/check-runs" ;;
@@ -500,25 +503,33 @@ if [ "\$group" != - ]; then printf '%s\t%s\n' "\$group" "\$4"; fi
 GIT
 chmod +x "$work/bin/git"
 
-# run_hold [<bound>]: sets out and status to what ci-ok-hold.sh, the ci-ok job's hold step, did
+# run_hold [<age>]: sets out and status to what ci-ok-hold.sh, the ci-ok job's hold step, did
 # for the group whose base is base123 (or base_sha) on the queue's main and whose head is abc123
-# (or head_sha), with a bound of <bound> seconds (3600 when not given) and a pause of `poll`
-# seconds between reads (0 when unset). A hold still running after 60 s is killed and its status
-# is timeout's 124, so a hold that never ends fails the checks of its case rather than hanging
-# the harness.
+# (or head_sha), ending at a group age of <age> seconds (3600 when not given), with `run_s`
+# seconds (600 when unset) as the longest run and a pause of `poll` seconds between reads (0 when
+# unset). A hold still running after 60 s is killed and its status is timeout's 124, so a hold
+# that never ends fails the checks of its case rather than hanging the harness.
 run_hold() {
   set +e
-  out=$(PATH="$work/bin:$PATH" GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r \
-    GH_RETRY_SECONDS=0 BASE_SHA=${base_sha-base123} BASE_REF=refs/heads/main \
+  out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r \
+    GITHUB_RUN_ID=41 GH_RETRY_SECONDS=0 BASE_SHA=${base_sha-base123} BASE_REF=refs/heads/main \
     HEAD_SHA=${head_sha-abc123} HEAD_REF=refs/heads/gh-readonly-queue/main/pr-1-base123 \
-    CI_OK_HOLD_SECONDS=${1:-3600} CI_OK_HOLD_POLL_SECONDS=${poll-0} \
-    timeout 60 "$script_dir/ci-ok-hold.sh" 2>&1)
+    CI_OK_HOLD_AGE_SECONDS=${1:-3600} CI_OK_HOLD_RUN_SECONDS=${run_s-600} \
+    CI_OK_HOLD_POLL_SECONDS=${poll-0} timeout 60 "$script_dir/ci-ok-hold.sh" 2>&1)
   status=$?
   set -e
 }
 
 # remote <main>:<group>...: the answer of each read, in order; the last answers every read after.
-remote() { printf '%s\n' "${@//:/ }" > "$work/remote"; rm -f "$work/calls"; }
+# The run was created now, unless the case then calls `aged`.
+remote() {
+  printf '%s\n' "${@//:/ }" > "$work/remote"
+  rm -f "$work/calls"
+  date -u +%FT%TZ > "$work/created"
+}
+# aged <seconds>: the run was created that long ago. created_refused: GitHub refuses that read.
+aged() { date -u -d "-$1 seconds" +%FT%TZ > "$work/created"; }
+created_refused() { rm -f "$work/created"; }
 reads() { calls 'git ls-remote https://github.com/o/r.git refs/heads/main refs/heads/gh-readonly-queue/main/pr-1-base123'; }
 
 # The two ways a hold may end and let the failing verdict go up while the queue builds nothing
@@ -541,7 +552,10 @@ run_hold
 check "exits 0, so the job ends on its failing verdict" "$(is "$status" 0)"
 check "read the refs four times: the hold ended at the read that found the group's base" \
   "$(is "$(reads)" 4)"
-check "made no other call: a git read spends none of the API budget" "$(is "$(calls .)" 4)"
+check "made one REST call, the run's creation, and the rest git reads" \
+  "$(is "$(calls .) $(calls 'repos/o/r/actions/runs/41 --jq .created_at')" '5 1')"
+check "says when the hold ends at the latest, from the run's creation" \
+  "$(contains "$out" '^This run was created at .*, so the hold ends at the latest at .*, when the group is 3600 s old$')"
 check "says the group stood behind the first group in front" \
   "$(contains "$out" '^This group stands behind the front of the queue after [0-9]* s: its base base123 is not other456, the tip of refs/heads/main. The failing ci-ok waits')"
 check "and behind the next, once the first merged" \
@@ -585,15 +599,32 @@ run_hold
 check "a group branch at another head ends the hold as a gone one does" \
   "$(is "$(reads) $(contains "$out" "${gone_line}def999, not its head abc123")" '2 true')"
 
-echo "case: a hold behind the front that reaches its bound lets the verdict go up, and says so"
-# The bound is for a group the queue still holds behind the front past the point where its own
-# check timeout would decide: a bound of 0 ends the hold after one read.
+echo "case: a hold behind the front ends at the group's age, counted from its run's creation"
+# The bound is for a group the queue still holds behind the front close to the queue's own check
+# timeout, which counts from the group, not from this step. A run created two hours ago is past
+# an age of one hour at the hold's first read, though the hold has just begun.
 remote other456:abc123
-run_hold 0
+aged 7200
+run_hold 3600
 check "exits 0 after one read" "$(is "$status $(reads)" '0 1')"
 check "never says the group is the front" "$(is "$(contains "$out" "$front_line")" false)"
-check "warns that the bound, not the front, ended it" \
-  "$(contains "$out" '^::warning::This group still stands behind the front of the queue after [0-9]* s, past this step.s bound of 0 s')"
+check "warns that the deadline, not the front, ended it" \
+  "$(contains "$out" '^::warning::This group still stands behind the front of the queue after [0-9]* s, at its deadline ')"
+# Control: the same hold of a run created now holds on to its next read, where main is its base.
+remote other456:abc123 base123:abc123
+run_hold 3600
+check "a young run's hold waits past that first read, to the front (control)" \
+  "$(is "$(reads) $(contains "$out" "$front_line")" '2 true')"
+# A run whose creation GitHub will not give: the hold counts from its own start, less the longest
+# run. With the longest run as long as the age, that deadline is now.
+remote other456:abc123
+created_refused
+run_s=3600 run_hold 3600
+check "an unread creation: exits 0 after one read" "$(is "$status $(reads)" '0 1')"
+check "and says it counted from its own start" \
+  "$(contains "$out" "^::warning::GitHub did not give this run's creation time (refused), so the hold counts from its own start")"
+check "having made the creation read with no deadline to wait within: three attempts" \
+  "$(is "$(calls 'repos/o/r/actions/runs/41 --jq .created_at')" 3)"
 
 echo "case: one entry that breaks every group built on it builds no group more"
 # The 2026-11-22 cascade: #4812's entry broke every group built on it, and each group's failing
@@ -653,31 +684,51 @@ check "names the input" \
   "$(contains "$out" 'ci-ok-hold.sh needs HEAD_SHA in its environment; the failing ci-ok goes up now')"
 check "and reads nothing" "$(is "$(calls .)" 0)"
 run_hold 30m
-check "a bound that is no number of seconds: fails the step" "$(is "$status" 1)"
+check "an age that is no number of seconds: fails the step" "$(is "$status" 1)"
 check "names it" \
-  "$(contains "$out" "ci-ok-hold.sh's CI_OK_HOLD_SECONDS is not a whole number of seconds: 30m")"
+  "$(contains "$out" "ci-ok-hold.sh's CI_OK_HOLD_AGE_SECONDS is not a whole number of seconds: 30m")"
 
 echo "case: the real ci.yaml's ci-ok job holds a failing verdict of a merge group's first attempt"
-# The hold is the job's last step, under failure(): a passing verdict never waits, on a re-run
-# attempt the refusal is the verdict of a tree the queue no longer waits on, and the job's check
-# run concludes as soon as the hold ends. It reads the group's base, head and branches from the
-# merge_group event, and its bound leaves its last read inside the step's own limit.
+# The hold is the step right after the verdict and keys on the verdict step's own outcome, so a
+# passing verdict never waits, whatever a later step does: had it keyed on failure(), a reconcile
+# step that failed after a passing verdict would have started it. On a re-run attempt the refusal
+# is the verdict of a tree the queue no longer waits on. The reconcile step is skipped in exactly
+# the case the hold runs, so the hold ends the job, whose check run concludes as soon as the hold
+# ends. It reads the group's base, head and branches from the merge_group event; its age leaves
+# the last pause, the last read's three attempts and the job's end under the queue's 180-minute
+# check timeout, and fits in the step's own limit.
 ci_ok_job=$(yq -o=json '.jobs["ci-ok"]' "$script_dir/../workflows/ci.yaml")
-hold=$(jq '.steps[-1]' <<<"$ci_ok_job")
-check "is the job's last step" \
-  "$(is "$(jq -r .name <<<"$hold")" 'Hold a failing verdict until this group is the front of the queue')"
-check "runs only after a failure, on a merge group's first attempt" \
-  "$(is "$(jq -r .if <<<"$hold")" "\${{ failure() && github.event_name == 'merge_group' && github.run_attempt == '1' }}")"
+step_index() { jq --arg name "$1" '[.steps[].name] | index($name)' <<<"$ci_ok_job"; }
+hold_at=$(step_index 'Hold a failing verdict until this group is the front of the queue')
+hold=$(jq --argjson i "$hold_at" '.steps[$i]' <<<"$ci_ok_job")
+verdict_at=$(step_index 'Judge every job of this run')
+hold_term="steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1'"
+check "the verdict step carries the id the hold reads" \
+  "$(is "$(jq -r --argjson i "$verdict_at" '.steps[$i].id' <<<"$ci_ok_job")" verdict)"
+check "is the step right after the verdict" "$(is "$hold_at" "$((verdict_at + 1))")"
+check "runs only on the verdict step's own failure, on a merge group's first attempt" \
+  "$(is "$(jq -r .if <<<"$hold")" "\${{ !cancelled() && $hold_term }}")"
+check "so no failure() a later step's failure could make true starts it" \
+  "$(is "$(contains "$(jq -r .if <<<"$hold")" 'failure()')" false)"
+check "and every step after it is skipped in exactly that case" \
+  "$(is "$(jq -r --argjson i "$hold_at" --arg term "!($hold_term) }}" \
+    '[.steps[$i + 1:][] | .if // "" | endswith($term)] | all' <<<"$ci_ok_job")" true)"
 check "runs ci-ok-hold.sh" "$(is "$(jq -r .run <<<"$hold")" .github/scripts/ci-ok-hold.sh)"
 check "with the group's base, head and branches" \
   "$(is "$(jq -r '[.env.BASE_SHA, .env.BASE_REF, .env.HEAD_SHA, .env.HEAD_REF] | join(" ")' <<<"$hold")" \
     "\${{ github.event.merge_group.base_sha }} \${{ github.event.merge_group.base_ref }} \${{ github.event.merge_group.head_sha }} \${{ github.event.merge_group.head_ref }}")"
-bound=$(jq -r .env.CI_OK_HOLD_SECONDS <<<"$hold")
-check "a bound inside the step's own limit, with a pause and a last read's three attempts to spare" \
-  "$(is "$((bound + 30 + 3 * 30 + 30 < $(jq -r '."timeout-minutes"' <<<"$hold") * 60))" 1)"
+check "and a job that may read its run's creation" \
+  "$(is "$(jq -r '.permissions.actions' <<<"$ci_ok_job")" read)"
+age=$(jq -r .env.CI_OK_HOLD_AGE_SECONDS <<<"$hold")
+# The last pause (30 s), the last read's three 30-second attempts and their pauses (10 s and 20 s)
+# and a minute for the job to end, inside the queue's 180-minute check timeout.
+check "an age that ends the hold inside the queue's 180-minute check timeout" \
+  "$(is "$((age + 30 + 3 * 30 + 30 + 60 <= 180 * 60))" 1)"
+check "and a step limit that a hold of a run created moments before it can use whole" \
+  "$(is "$((age + 30 + 3 * 30 + 30 < $(jq -r '."timeout-minutes"' <<<"$hold") * 60))" 1)"
 remote base123:abc123
-run_hold "$bound"
-check "a hold with that bound lets the front group's verdict go up" \
+run_hold "$age"
+check "a hold with that age lets the front group's verdict go up" \
   "$(is "$status $(contains "$out" "$front_line")" '0 true')"
 
 summary "ci-ok-report.sh posts the failing ci-ok of a merge-group run one job's result decided"

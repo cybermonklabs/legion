@@ -1738,12 +1738,15 @@ DISPATCH_NAMES = {
     "pr-title": "${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}",
 }
 # The verdict job's step that sets every other ci-ok on the head to its conclusion, and the one
-# `if:` it carries: it runs after a failed verdict (always()) and on no dispatch but one of
-# exactly refs/heads/main, since every other ci-ok on such a head is a pull request's or the
-# queue's.
+# `if:` it carries: it runs after a failed verdict (always()), on no dispatch but one of exactly
+# refs/heads/main, since every other ci-ok on such a head is a pull request's or the queue's, and
+# not where the hold step runs (HOLD_TERM): a merge group's first attempt whose verdict failed,
+# where every ci-ok posted on the head is failure already and the hold must be the job's last
+# step (.github/scripts/ci-ok-hold.sh's header).
 RECONCILE_STEP = "Set every other ci-ok on this head to this job's conclusion"
+HOLD_TERM = "steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1'"
 RECONCILE_IF = (f"${{{{ always() && (github.event_name != 'workflow_dispatch' || "
-                f"needs.changes.outputs.{REF_OUTPUT} == 'true') }}}}")
+                f"needs.changes.outputs.{REF_OUTPUT} == 'true') && !({HOLD_TERM}) }}}}")
 
 
 def dispatch_name(job_id: str) -> str:
@@ -1881,9 +1884,10 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
         if isinstance(step, dict) and step.get("name") == RECONCILE_STEP and str(step.get("if", "")) != RECONCILE_IF:
             problems.append(error(WORKFLOW, f"job {VERDICT_JOB}'s step \"{RECONCILE_STEP}\" carries `if: "
                                             f"{squash(str(step.get('if', '')))}`: give it `if: {RECONCILE_IF}`, so that "
-                                            f"it runs after a failed verdict and on no workflow_dispatch run but one of "
+                                            f"it runs after a failed verdict, on no workflow_dispatch run but one of "
                                             f"exactly refs/heads/main, since any other dispatch's verdict is no pull "
-                                            f"request's and must set none of a pull request's ci-ok check runs"))
+                                            f"request's and must set none of a pull request's ci-ok check runs, and not "
+                                            f"after the hold step, which must end the job"))
     # The output the name and the reconcile step read, and the one step that writes it.
     changes = jobs.get("changes") or {}
     have_output = (changes.get("outputs") or {}).get(REF_OUTPUT)

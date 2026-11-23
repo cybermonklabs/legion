@@ -206,7 +206,7 @@ jobs:
       - name: Judge every job of this run
         run: echo verdict
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}
         run: echo reconcile
 YAML
   cat > "$root/.github/ci-filters.yaml" <<'YAML'
@@ -1065,7 +1065,7 @@ check "names the job and the check" \
 # check_ci_ok holds them and prints them.
 ciok_name="\${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}"
 prtitle_name="\${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}"
-reconcile_if="\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}"
+reconcile_if="\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}"
 ref_run='if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"'
 # has <text> <string>: true/false for check, a fixed-string match: these strings hold [ and $,
 # which contains would read as a regex.
@@ -1138,12 +1138,15 @@ replace "$root/.github/workflows/ci.yaml" $'\n  image:\n' \
 run_check "$root"
 check "a name expression that names no required check passes" "$(is "$status" 0)"
 
-echo "case: the verdict job's reconcile step runs on a dispatch of another ref"
-# On such a run every other ci-ok of the head is a pull request's or the queue's, and the step
-# would set each posted one to that run's verdict; `if: always()` alone was the shape before, and
-# the expression's comparison of github.ref read refs/heads/Main as main.
+echo "case: the verdict job's reconcile step runs on a dispatch of another ref, or after the hold"
+# On a dispatch of another ref every other ci-ok of the head is a pull request's or the queue's,
+# and the step would set each posted one to that run's verdict; `if: always()` alone was the shape
+# before, and the expression's comparison of github.ref read refs/heads/Main as main. The third
+# shape runs the step on a merge group's first attempt whose verdict failed too, after the hold
+# step, which must end the job so its check run concludes the moment the group is the front.
 n=0
-for given in "always()" "\${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}"; do
+for given in "always()" "\${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}" \
+  "\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}"; do
   n=$((n + 1))
   root=$(fixture "ci-ok-reconcile-if-$n")
   replace "$root/.github/workflows/ci.yaml" "        if: $reconcile_if" "        if: $given"
@@ -1267,7 +1270,7 @@ echo "case: the file has no ci-ok job"
 # The job is the last of the fixture, and `replace` reads the file without its trailing newline,
 # so the block to cut starts at the newline before it and ends at its last line.
 root=$(fixture ci-ok-absent)
-replace "$root/.github/workflows/ci.yaml" $'\n  ci-ok:\n    name: ${{ github.event_name == \'workflow_dispatch\' && needs.changes.outputs.ref_is_main != \'true\' && \'ci-ok (dispatch)\' || \'ci-ok\' }}\n    needs: [changes, app, image, lint]\n    if: ${{ always() }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Judge every job of this run\n        run: echo verdict\n      - name: Set every other ci-ok on this head to this job\'s conclusion\n        if: ${{ always() && (github.event_name != \'workflow_dispatch\' || needs.changes.outputs.ref_is_main == \'true\') }}\n        run: echo reconcile' ""
+replace "$root/.github/workflows/ci.yaml" $'\n  ci-ok:\n    name: ${{ github.event_name == \'workflow_dispatch\' && needs.changes.outputs.ref_is_main != \'true\' && \'ci-ok (dispatch)\' || \'ci-ok\' }}\n    needs: [changes, app, image, lint]\n    if: ${{ always() }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Judge every job of this run\n        run: echo verdict\n      - name: Set every other ci-ok on this head to this job\'s conclusion\n        if: ${{ always() && (github.event_name != \'workflow_dispatch\' || needs.changes.outputs.ref_is_main == \'true\') && !(steps.verdict.outcome == \'failure\' && github.event_name == \'merge_group\' && github.run_attempt == \'1\') }}\n        run: echo reconcile' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the check nothing would carry" \
