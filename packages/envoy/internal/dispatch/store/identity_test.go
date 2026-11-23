@@ -14,7 +14,6 @@ import (
 // of that version before it applies anything, by the rule pgmigratetest.RunIdentityChecks holds it
 // to.
 func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
-	t.Parallel()
 	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T) (pgmigratetest.Database, pgmigratetest.Migrate) {
 		store := openEmptyTestStore(t)
 		return store.Pool, store.migrate

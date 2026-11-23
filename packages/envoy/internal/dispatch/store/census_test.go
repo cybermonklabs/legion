@@ -1397,7 +1397,6 @@ func TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit(t *testi
 // census's first copy, the holder showed "idle" with no transaction start and refused as hidden
 // from the census's role, naming pg_read_all_stats, which changes nothing for its own role.
 func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCensus(t *testing.T) {
-	t.Parallel()
 	ctx := context.Background()
 	store, url := migratedToOne(t)
 	if _, err := store.Pool.Exec(ctx, "create table others (id integer); create table blocker (id integer)"); err != nil {

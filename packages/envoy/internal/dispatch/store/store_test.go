@@ -1191,8 +1191,8 @@ func execOnAdmin(admin url.URL, statement string) error {
 // a database of its own and waits on Postgres far more than on a core: alone, the package used 22%
 // of 4 CPUs. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev box,
 // where every test's database and pools would open more connections than the test server allows
-// (testlimits.ServerConnections). Eight is the API package's measured setting (internal/dispatch/api,
-// apiTestParallelism): at sixteen, its wall-clock-bounded tests failed for want of cores.
+// (testlimits.ServerConnections). At eight, envoy-go-race's service peaked at 42 of its 483
+// connections (job 137432919111), and a test holds at most about a dozen.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const storeTestParallelism = 8
