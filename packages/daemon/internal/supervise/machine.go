@@ -358,10 +358,11 @@ type Claim struct {
 	// overwrites the other. The death's cause is kept until another death replaces it. The start
 	// failure is kept until another failed start replaces it or the agent says it is ready, which
 	// ends the episode of launch failures it names (table.go's ready). So a start failure this
-	// release records is one from after LastReady. A claim an earlier release left queued,
-	// launching, suspended or failed can hold one from before its last ready until its agent is
-	// next ready; migration 20261123212127 cleared the ones it left ready, working or idle (a row
-	// says nothing of the others). Both are a far side's text, kept as such:
+	// release records is one from after LastReady. A claim an earlier release left in any state
+	// but ready, working or idle can hold one from before its last ready until its agent is next
+	// ready, since a row says nothing of when its agent last came up; migration 20261123212127
+	// cleared the ones it left ready, working or idle, and the boot clears such a row a daemon of
+	// that release writes later (DropStaleStartFailure). Both are a far side's text, kept as such:
 	// LastStartFailure as any far side's error text is (storetext.FarSideError), and LastDeathCause
 	// as a far side's text (storetext.FarSideText) under the runtime's own bound (deathCause).
 	// LastReady is when the agent last said it could be prompted, which says how old the death's
@@ -4369,7 +4370,9 @@ func (m *Machine) takeOpenCall(callID string) (openCall, bool) {
 // (internal/daemon's restore).
 func NormalizeClaim(c *Claim) (enrollment *Enrollment, changed bool) {
 	if !HoldsCapability(c.State) {
-		changed = len(c.CapabilityHash) != 0
+		if len(c.CapabilityHash) != 0 {
+			changed = true
+		}
 		c.CapabilityHash = nil
 	}
 	if c.State != StateSuspended && c.SuspendedBy != "" {
@@ -4386,6 +4389,21 @@ func NormalizeClaim(c *Claim) (enrollment *Enrollment, changed bool) {
 		}
 	}
 	return enrollment, changed
+}
+
+// DropStaleStartFailure clears the start failure of a claim stored ready, working or idle and
+// answers whether it cleared one. That claim's agent said it was ready after the start failed,
+// which ended the failure (table.go's ready), so the sentence is a refusal its running agent came
+// after. A daemon of an earlier release keeps it past that ready, and several projects' daemons
+// share one database, so a daemon still on that release, or a rollback and a roll-forward, writes
+// such a row after migration 20261123212127 cleared the rest. The boot asks this of every claim it
+// reads, before it repairs any state (internal/daemon's restore).
+func DropStaleStartFailure(c *Claim) bool {
+	if !SaidReady(c.State) || c.LastStartFailure == "" {
+		return false
+	}
+	c.LastStartFailure = ""
+	return true
 }
 
 // ClearEnrollment removes c's enrollment and returns the broker record that must be revoked.

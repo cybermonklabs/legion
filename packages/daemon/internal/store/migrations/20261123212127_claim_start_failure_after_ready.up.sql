@@ -12,9 +12,11 @@
 -- one of those states has had an agent up since its last start failure, so the sentence it holds
 -- is a refusal its running agent came after.
 --
--- What stays: the start failure of a claim stored queued, launching, suspended or failed. Nothing
--- in the row says whether its agent came up after that start, so it stays until the claim's agent
--- is next ready.
+-- What stays: the start failure of a claim stored in any other state. Nothing in the row says
+-- whether its agent came up after that start, so it stays until the claim's agent is next ready.
+-- A daemon of the earlier release that shares the database can write a ready, working or idle row
+-- with a start failure after this ran; this release's boot clears such a row (supervise's
+-- DropStaleStartFailure).
 --
 -- There is no down file: migrations here are forward-only, and the column keeps its type and its
 -- readers. An earlier release reads an empty column as no start failure recorded, as it reads a
