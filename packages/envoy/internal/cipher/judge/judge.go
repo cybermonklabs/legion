@@ -690,8 +690,10 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 // while the judge was reading: the session's operator withheld a key or its owner tagged it an
 // administrator's (the two guards currentPolicyAdmits makes for the judge alone), the key's owner
 // changed, its max-grant fell below the request's lifetime, or the request became a private
-// project's. Each is the ordinary outcome of losing a race and no fault of the judge's (D10), and
-// the policy's all answer record.ErrNotApprover. The broker stopping under the approval
+// project's, all of which answer record.ErrNotApprover; or a profiles roll took the request's
+// target out of its profile, which the approval's own target check answers
+// requests.ErrTargetRefused. Each is the ordinary outcome of losing a race and no fault of the
+// judge's (D10). The broker stopping under the approval
 // (context.Canceled in what the approval answered), a COMMIT that failed and, by the row
 // LogJudged read, did not apply (requests.ErrCommitUncertain), Dispatch not answering the
 // approval's check, Dispatch not saying what kind of member the session's person is
@@ -705,7 +707,8 @@ func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error
 		slog.Warn("broker judge: whether the judge's approval applied could not be read: its COMMIT failed, and so did the read of its own row; the row it wrote says applied unknown",
 			attrs...)
 	case errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) ||
-		errors.Is(err, requests.ErrJudgeHoldEnded) || errors.Is(err, record.ErrNotApprover):
+		errors.Is(err, requests.ErrJudgeHoldEnded) || errors.Is(err, record.ErrNotApprover) ||
+		errors.Is(err, requests.ErrTargetRefused):
 		slog.Info("broker judge: the request was decided, expired, handed over or moved out of the judge's policy before the judge's grant landed",
 			attrs...)
 	case errors.Is(err, context.Canceled):

@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  The broker's airlock proxy refuses an IPv6 address that carries an IPv4 address it refuses. A
+  NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`), Teredo (`2001::/32`) or IPv4-compatible (`::/96`)
+  address carries an IPv4 address, and a network with a translator or relay for the form sends
+  the packet to that address. Before this, the proxy dialled such an address: a `CONNECT` to
+  `64:ff9b::a9fe:a9fe` passed the address check, so where a translator passed it on, the tunnel
+  reached `169.254.169.254`, the node's metadata server; the same held for a private, loopback,
+  `100.64.0.0/10` or `BROKER_AIRLOCK_CLUSTER_RANGES` address. The proxy now reads the IPv4 address
+  each form carries (both halves of a Teredo address) and refuses the IPv6 address `403` with that
+  address's own rule, naming the form and the address. The same forms carrying a public IPv4
+  address still open. The whole local-use translation prefix `64:ff9b:1::/48` is refused, since
+  the address alone does not say where an IPv4 address sits in it. The proxy also refuses
+  `0.0.0.0/8`, which is reserved for this network, where it refused only `0.0.0.0`.
+time: 2026-11-22T19:49:28Z
+custom:
+    Issue: airlock-carried-ipv4

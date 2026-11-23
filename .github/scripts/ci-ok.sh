@@ -158,8 +158,8 @@ fi
 # that script's warning in the log, so every failure stands as a failure.
 mapfile -t failed < <(jq -r 'to_entries[] | select(.value.result == "failure") | .key' <<<"$NEEDS")
 shutdown='[]'
-if [ "${#failed[@]}" -gt 0 ] && kills=$(runner_shutdown_kills "${failed[@]}"); then
-  shutdown=$(jq -R -s 'split("\n") | map(select(. != ""))' <<<"$kills")
+if [ "${#failed[@]}" -gt 0 ] && killed_jobs=$(runner_shutdown_kills "${failed[@]}"); then
+  shutdown=$(jq -R -s 'split("\n") | map(select(. != ""))' <<<"$killed_jobs")
 fi
 
 # One row per line, tab-separated: `info` and the line to print, `error` and the ::error:: text,

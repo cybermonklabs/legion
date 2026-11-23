@@ -60,7 +60,15 @@ Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
 naming the input. So the cloud-config is known at preview.
 
-The hub refuses these before it registers anything, with an error naming the input:
+The hub refuses these before it registers anything. Each refusal of an input is a
+`core.InputError` naming it: an entry of a list of strings by the list's own name, with its index
+in the message (`tags` for `tags[1] "…" must match …`); a user of `users` as `users`, or by the
+field's own path for its machine id (`users[0].machineId`); and the authorization's refusals of
+the listener's user as `listener`, with an empty `listener.nkey` as `listener.nkey` and a user of
+`users` named after `hostname` as `users`, and of the session user as `sessionUser`. A seed in the
+hub's own name and a missing provider refuse no input, so neither is one.
+
+It refuses:
 
 - an nkey seed, found as `envoy-infra seed` finds one (`bus.HoldsSeed`: any type, either case,
   whole, inside a longer value, split by `.`, `-`, `_` or whitespace, or percent-encoded), in the
@@ -255,7 +263,8 @@ user's name or a rule entry before any of those, naming the path and not the val
 user and the session user are named by their inputs in the same refusals, as
 `listener "<h>": nkey repeats users[0] "example-host-a"` or
 `sessionUser "<name>": nkey is not a user public key …`; a user of `users` named `<h>` is refused
-as the listener's user repeating it, as `listener "<h>": name repeats users[<index>]`.
+as the listener's user repeating it, as `listener "<h>": name repeats users[<index>]`, naming
+`users`, since that entry is the one to rename.
 
 ### The auth service
 
@@ -324,14 +333,39 @@ exporter's port, 7777. `gcp:NatsHub` opens 8222 only to Google Cloud's health-ch
 rule), from which its group's health check reads `/healthz`; no input widens that, so it has
 nothing to refuse.
 
-`privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
-(the callout, no session user, no client user beside the auth service's) reaches a running server
-only when that server restarts. On `gcp:ClusteredNatsHub` each pod takes it as the pod roll
-restarts that pod (below), and until then it keeps its old `no_auth_user` and seeded users. On
-`gcp:NatsHub` the VM takes it when the group replaces the VM. So the order holds both ways. Turn
-on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's update has completed on every server:
-every pod of the clustered hub has restarted, or the VM hub's new VM is up. Turn the hub's
-`privateProjects` off only after no project is private.
+`privateProjects` is checked when the hub is planned, and renders one thing itself: the server tag
+`server_tags: ["envoy-private-projects"]` after the ping lines (the README's
+[NATS authorization](../README.md#nats-authorization)). nats-server copies it into every
+authorization request. The auth service does not read it yet: its private-hub admission, later
+work, is to admit Dispatch's hub-admission proof only on a request that carries it, and there to
+admit a listener only in required privacy mode. A change that brings
+the hub to what `privateProjects` demands (the callout, no session user, no client user beside the
+auth service's) reaches a running server only when that server restarts: it changes `auth_callout`,
+its `auth_users` or `no_auth_user`, and nats-server 2.15.1 refuses that whole reload, the tag that
+comes with it included. On `gcp:ClusteredNatsHub` each pod takes such a change as the pod roll
+restarts that pod (below), and until then it keeps its old `no_auth_user`, seeded users and tags.
+The tag alone arrives sooner. When it is the only change in `auth.conf`, as when `privateProjects`
+is set or removed on a hub that already has the callout and the auth service's user alone, the
+reloader's reload adds it to (or removes it from) a pod before the roll restarts that pod, and that
+reload closes each client the auth service named, which reconnects through the callout
+([A reload, not a replacement](#a-reload-not-a-replacement)). Beside `privateProjects` the chart
+waits on the hub pods' NetworkPolicy, so no pod takes the tag, by reload or by restart, before the
+policy that closes 8222 is applied. On `gcp:NatsHub` the VM takes the demands and the tag when the
+group replaces the VM. Turn on Dispatch's `DISPATCH_PRIVATE_PROJECTS` only after the hub's
+update has completed on every server: every pod of the clustered hub has restarted, or the VM hub's
+new VM is up.
+
+Turn the hub's `privateProjects` off only after every project is public again; a project switched
+back to public releases what was written while it was private. Nothing orders the apply that
+removes it: without `privateProjects` the chart does not wait on the NetworkPolicy, so a policy
+that opens 8222 in the same apply can do so before a pod drops the tag, and a pod keeps the tag
+until its reload or its restart. With every project public, an open 8222 names no private
+project's subjects or connections, and a pod that still carries the tag has no private project to
+admit anyone to. On `gcp:ClusteredNatsHub`, give `monitorNamespaces` back only in a later apply
+than the one that removes `privateProjects`, after that apply has restarted every hub pod on the
+untagged lines (each pod's `envoy-infra.sjawhar.dev/auth-callout` annotation is the untagged
+hash), so that no pod carries the tag while 8222 is open, the order the chart keeps when the tag
+comes.
 
 ## The hub's listener
 
@@ -1000,11 +1034,18 @@ A users change replaces the VM of a `gcp:NatsHub` (see [Updating a hub](#updatin
 clustered hub it rewrites `auth.conf` in place, since the hub's own provider updates ConfigMaps
 rather than replacing them, and the chart's config reloader beside each server, which watches
 `nats.conf` and `auth.conf`, signals nats-server to reload once the kubelet has updated the mounted
-file. No server restarts and no client reconnects: on three local nats-server 2.15.1 processes with
-the real reloader 0.24.0, a client kept its connection id with zero reconnects while a user was
-added (it could then connect) and removed (it was then refused), and every server's PID stayed the
-same. The chart's own checksum annotation, which would restart the pods on any change to the
-ConfigMap, is off.
+file. No server restarts: on three local nats-server 2.15.1 processes with the real reloader
+0.24.0, a client kept its connection id with zero reconnects while a user was added (it could then
+connect) and removed (it was then refused), and every server's PID stayed the same. That client
+was a static user. Beside a callout, every reload, whatever it changes, also decides each callout
+connection again (`server/reload.go:1651-1654`, `:1706-1707`, `:2091-2093`): a client the auth
+service named, which Envoy's auth service does for every client it admits, names no configured
+user, so the reload closes it and it reconnects through the callout
+(`server/auth_callout.go:326-333`; `server/reload.go:2291-2299`, `:2349-2352`, `:2398-2432`), and
+an unnamed client that presented no user name or nkey goes through the callout again on its live
+connection (`server/reload.go:2354-2358`). Static users, the auth service's own among them, keep
+their connections. The chart's own checksum annotation, which would restart the pods on any change
+to the ConfigMap, is off.
 
 The session user is the exception. nats-server 2.15.1 refuses a whole reload that changes
 `no_auth_user`, logging `config reload not supported for NoAuthUser`, and keeps the users it had,
@@ -1050,12 +1091,17 @@ reload of them the server would take is an edit of their value (`server/reload.g
 interval when it re-arms (`client.go:6037-6050`), so each connection would take such an edit at
 its timer's next re-arm, within one interval of 20 s. The hub writes the SHA-256 of `auth.conf`'s
 callout lines, `core.Authorization.CalloutLines()` (the `auth_callout` block, which has no
-`timeout` line, and the ping lines), into the hub pods' annotation
-`envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the pods, by the
-same depends-on order as the session user's roll, on a change of either: a pod restarted on the old
-`auth.conf` would keep the old callout, and the reload that later brings the new one would be
-refused. The ping lines are in the digest so that every server applies an edit of them at one known
-moment, its pod's restart, with every connection's timer started fresh. The routes' own ping in
+`timeout` line, the ping lines and, beside `privateProjects`, the server tag), into the hub pods'
+annotation `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`), which rolls the
+pods, by the same depends-on order as the session user's roll, on a change of any of them: a pod
+restarted on the old `auth.conf` would keep the old callout, and the reload that later brings the
+new one would be refused. nats-server also reloads `server_tags` (`server/reload.go:360-366`,
+`:1698-1699`), so a change of the tag alone reaches a pod by its reloader before the roll restarts
+it, and that reload, like every reload, decides each callout connection again (above). The roll
+is there so that every server takes a change of these lines at one known moment, its pod's restart,
+after the ConfigMap is applied; a reload comes when the kubelet updates the mounted file, which
+nothing orders. The ping lines are in the digest so that every server applies an edit of them at
+that moment, with every connection's timer started fresh. The routes' own ping in
 `nats.conf`'s `cluster` block
 ([below](#two-ports-guarded-by-the-networkpolicy-alone)) appears and goes with the callout, so it
 always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods

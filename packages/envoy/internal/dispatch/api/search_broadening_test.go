@@ -50,6 +50,7 @@ func searchStatementCount(statements []string, sql string) int {
 // are what the narrow one is checked against: a build that broadens everything answers the first
 // query with the decoys below and fails here rather than passing on a count.
 func TestSearchBroadensOnlyTheQueryNoItemAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	recorder := &storetest.StatementRecorder{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, recorder, nil)}

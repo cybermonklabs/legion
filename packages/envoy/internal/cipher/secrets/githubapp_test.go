@@ -50,9 +50,23 @@ func githubAppValue(t *testing.T, appID string, key *rsa.PrivateKey) string {
 	return string(encoded)
 }
 
-// mintFor is a release of value for owners, the github-owners tag's lowercase logins.
-func mintFor(value string, owners ...string) secrets.MintRequest {
-	return secrets.MintRequest{Value: value, GitHubOwners: owners}
+// mintFor is a release of value for a profile of contents at read on accounts, the scope's
+// lowercase logins (readScope).
+func mintFor(value string, accounts ...string) secrets.MintRequest {
+	return secrets.MintRequest{Value: value, GitHub: readScope(accounts...)}
+}
+
+// listedHolding is what each installation the stubs of this file list holds: contents at write,
+// which the cut asks for at the read a profile of contents at read names (readScope). Mint cuts
+// a profile's permissions to what the listing says an installation holds, and an installation
+// listed with none holds nothing to cut to, so a stub whose subject is not the cut lists this.
+var listedHolding = map[string]string{"contents": "write", "metadata": "read"}
+
+// readToken is the 201 answer GitHub gives the token request of a profile of contents at read:
+// token, expiring at expiresAt, holding that permission alone, which is what Mint checks the
+// answer against before it releases the token.
+func readToken(token, expiresAt string) map[string]any {
+	return map[string]any{"token": token, "expires_at": expiresAt, "permissions": map[string]string{"contents": "read"}}
 }
 
 func verifyAppJWT(t *testing.T, authorization string, public *rsa.PublicKey, appID string, now time.Time) {
@@ -113,22 +127,19 @@ func TestGitHubAppMintSignsJWTAndFollowsPagination(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations" && r.URL.Query().Get("page") == "1":
 			installations := make([]map[string]any, 100)
 			for index := range installations {
-				installations[index] = map[string]any{"id": index + 1, "account": map[string]string{"login": fmt.Sprintf("owner-%03d", index+1)}}
+				installations[index] = map[string]any{"id": index + 1, "account": map[string]string{"login": fmt.Sprintf("owner-%03d", index+1)}, "permissions": listedHolding}
 			}
 			_ = json.NewEncoder(w).Encode(installations)
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations" && r.URL.Query().Get("page") == "2":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 101, "account": map[string]string{"login": "second-owner"}},
-				{"id": 102, "account": map[string]string{"login": "third-owner"}},
+				{"id": 101, "account": map[string]string{"login": "second-owner"}, "permissions": listedHolding},
+				{"id": 102, "account": map[string]string{"login": "third-owner"}, "permissions": listedHolding},
 			})
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/app/installations/") && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			posts++
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"token":      "installation-token-" + id,
-				"expires_at": now.Add(time.Hour).Format(time.RFC3339),
-			})
+			_ = json.NewEncoder(w).Encode(readToken("installation-token-"+id, now.Add(time.Hour).Format(time.RFC3339)))
 		default:
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
 		}
@@ -191,14 +202,14 @@ func TestGitHubAppMintSkipsSuspendedInstallations(t *testing.T) {
 	}{
 		"one suspended": {
 			installations: []map[string]any{
-				{"id": 1, "account": map[string]string{"login": "active-owner"}, "suspended_at": nil},
-				{"id": 2, "account": map[string]string{"login": "suspended-owner"}, "suspended_at": "2026-10-01T00:00:00Z"},
+				{"id": 1, "account": map[string]string{"login": "active-owner"}, "suspended_at": nil, "permissions": listedHolding},
+				{"id": 2, "account": map[string]string{"login": "suspended-owner"}, "suspended_at": "2026-10-01T00:00:00Z", "permissions": listedHolding},
 			},
 			want: []string{"active-owner"},
 		},
 		"all suspended": {
 			installations: []map[string]any{
-				{"id": 2, "account": map[string]string{"login": "suspended-owner"}, "suspended_at": "2026-10-01T00:00:00Z"},
+				{"id": 2, "account": map[string]string{"login": "suspended-owner"}, "suspended_at": "2026-10-01T00:00:00Z", "permissions": listedHolding},
 			},
 		},
 	} {
@@ -209,7 +220,7 @@ func TestGitHubAppMintSkipsSuspendedInstallations(t *testing.T) {
 					_ = json.NewEncoder(w).Encode(tc.installations)
 				case r.Method == http.MethodPost && r.URL.Path == "/app/installations/1/access_tokens":
 					w.WriteHeader(http.StatusCreated)
-					_ = json.NewEncoder(w).Encode(map[string]string{"token": "installation-token-1", "expires_at": "2026-10-23T13:00:00Z"})
+					_ = json.NewEncoder(w).Encode(readToken("installation-token-1", "2026-10-23T13:00:00Z"))
 				default:
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 					http.Error(w, "suspended", http.StatusForbidden)
@@ -287,10 +298,10 @@ func TestGitHubAppMintAcceptsPKCS8Key(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/app/installations":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "owner"}}})
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "owner"}, "permissions": listedHolding}})
 		case "/app/installations/7/access_tokens":
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": "token-7", "expires_at": "2026-10-23T13:00:00Z"})
+			_ = json.NewEncoder(w).Encode(readToken("token-7", "2026-10-23T13:00:00Z"))
 		default:
 			t.Fatalf("unexpected request %s", r.URL.Path)
 		}
@@ -303,13 +314,13 @@ func TestGitHubAppMintAcceptsPKCS8Key(t *testing.T) {
 
 // TestGitHubAppMintNamesTheClassOfEachFailure: every failure wraps the class the broker's log
 // names, so an operator can tell a bad stored key from GitHub refusing from GitHub being down. A
-// rate limit, on a release with no narrowing as on a narrowed one, is no verdict on the App and
-// not its owner's to fix, so a rate-limited 4xx is upstream, never refused: GitHub's primary limit
-// (a 403 with X-RateLimit-Remaining: 0), a 429, and a 403 whose body names its secondary limit.
-// Each row mints under a Retry on a clock the test sets, and names the attempts it made: a 502
-// and a GitHub it cannot reach are tried three times; a refusal once; and each rate limit here
-// names no wait, which counts as a minute and so ends the mint at its first attempt. A stored
-// value the minter refuses makes no attempt at all.
+// rate limit is no verdict on the App and not its owner's to fix, so a rate-limited 4xx is
+// upstream, never refused: GitHub's primary limit (a 403 with X-RateLimit-Remaining: 0), a 429,
+// and a 403 whose body names its secondary limit.
+// Each row mints under a Retry on a clock the test sets, and names the attempts it made: a 502, a
+// 408 (GitHub timing the request out) and a GitHub it cannot reach are tried three times; a refusal
+// once; and each rate limit here names no wait, which counts as a minute and so ends the mint at
+// its first attempt. A stored value the minter refuses makes no attempt at all.
 func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -326,6 +337,7 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 		return server
 	}
 	refused, down := answer(http.StatusUnauthorized, nil, "no"), answer(http.StatusBadGateway, nil, "no")
+	timedOut := answer(http.StatusRequestTimeout, nil, "no")
 	forbidden := answer(http.StatusForbidden, nil, `{"message":"Resource not accessible by integration"}`)
 	primary := answer(http.StatusForbidden, http.Header{"X-Ratelimit-Remaining": {"0"}}, `{"message":"API rate limit exceeded for installation."}`)
 	tooMany := answer(http.StatusTooManyRequests, nil, "no")
@@ -346,6 +358,7 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 		"GitHub answers 401":                 {github(refused), value, "refused", false, 1},
 		"GitHub answers 403":                 {github(forbidden), value, "refused", false, 1},
 		"GitHub answers 502":                 {github(down), value, "upstream", false, 3},
+		"GitHub answers 408":                 {github(timedOut), value, "upstream", false, 3},
 		"GitHub cannot be reached":           {secrets.GitHubApp{Base: "http://127.0.0.1:1"}, value, "upstream", false, 3},
 		"GitHub's primary rate limit, 403":   {github(primary), value, "upstream", true, 1},
 		"GitHub answers 429":                 {github(tooMany), value, "upstream", true, 1},
@@ -389,11 +402,12 @@ func TestGitHubAppMintRefusesAnAnswerPastItsCap(t *testing.T) {
 	}
 }
 
-// TestGitHubAppMintLeavesOutAnAccountItsOwnersDoNotList: a public App can be installed on any
-// account, so Mint asks GitHub for a token only for an installation on an account github-owners
-// lists, matched without regard to case, and leaves out every other installation without a
-// request for it. An App installed only on accounts the list does not name mints nothing.
-func TestGitHubAppMintLeavesOutAnAccountItsOwnersDoNotList(t *testing.T) {
+// TestGitHubAppMintLeavesOutAnAccountItsScopeDoesNotName: a public App can be installed on any
+// account, so Mint asks GitHub for a token only for an installation on an account the profile's
+// scope names, matched without regard to case, and leaves out every other installation without a
+// request for it. An App installed only on accounts the scope does not name mints nothing, and is
+// refused as the App with no installation there.
+func TestGitHubAppMintLeavesOutAnAccountItsScopeDoesNotName(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -403,14 +417,14 @@ func TestGitHubAppMintLeavesOutAnAccountItsOwnersDoNotList(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 1, "account": map[string]string{"login": "Acme-Org"}},
-				{"id": 2, "account": map[string]string{"login": "outsider"}},
-				{"id": 3, "account": map[string]string{"login": "ada"}},
+				{"id": 1, "account": map[string]string{"login": "Acme-Org"}, "permissions": listedHolding},
+				{"id": 2, "account": map[string]string{"login": "outsider"}, "permissions": listedHolding},
+				{"id": 3, "account": map[string]string{"login": "ada"}, "permissions": listedHolding},
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			asked = append(asked, r.URL.Path)
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": "token-" + r.URL.Path, "expires_at": "2026-10-23T13:00:00Z"})
+			_ = json.NewEncoder(w).Encode(readToken("token-"+r.URL.Path, "2026-10-23T13:00:00Z"))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -437,19 +451,19 @@ func TestGitHubAppMintLeavesOutAnAccountItsOwnersDoNotList(t *testing.T) {
 	}
 
 	_, err = app.Mint(t.Context(), mintFor(githubAppValue(t, "123456", key), "nobody-installed"))
-	if secrets.MintErrorClass(err) != "refused" || !strings.Contains(err.Error(), "github-owners") {
-		t.Fatalf("Mint with no listed installation = %v, want refused naming github-owners", err)
+	if secrets.MintErrorClass(err) != "refused" || !errors.Is(err, secrets.ErrMintNoInstallation) || !strings.Contains(err.Error(), "nobody-installed") {
+		t.Fatalf("Mint with no installation on the scope's account = %v, want refused as the App with no installation, naming the account", err)
 	}
 	_, err = app.Mint(t.Context(), mintFor(githubAppValue(t, "123456", key)))
 	if secrets.MintErrorClass(err) != "refused" {
-		t.Fatalf("Mint with no github-owners = %v, want refused", err)
+		t.Fatalf("Mint for a scope naming no account = %v, want refused", err)
 	}
 }
 
 // TestGitHubAppMintSkipsAnInstallationThatNamesNoAccount: an installation whose account carries
-// neither a login nor a slug names no account github-owners can list, so it is left out like any
-// unlisted installation, and the listed owners still mint: one outsider's malformed installation
-// never fails the whole release.
+// neither a login nor a slug names no account a scope can name, so it is left out like any
+// installation on an account the scope does not name, and the scope's accounts still mint: one
+// outsider's malformed installation never fails the whole release.
 func TestGitHubAppMintSkipsAnInstallationThatNamesNoAccount(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -460,13 +474,13 @@ func TestGitHubAppMintSkipsAnInstallationThatNamesNoAccount(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 1, "account": map[string]string{}},
-				{"id": 2, "account": map[string]string{"login": "ada"}},
+				{"id": 1, "account": map[string]string{}, "permissions": listedHolding},
+				{"id": 2, "account": map[string]string{"login": "ada"}, "permissions": listedHolding},
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			asked = append(asked, r.URL.Path)
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": "token-" + r.URL.Path, "expires_at": "2026-10-23T13:00:00Z"})
+			_ = json.NewEncoder(w).Encode(readToken("token-"+r.URL.Path, "2026-10-23T13:00:00Z"))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -491,7 +505,7 @@ func TestGitHubAppMintSkipsAnInstallationThatNamesNoAccount(t *testing.T) {
 
 // TestGitHubAppMintSkipsAnInstallationWithNoID: an installation record whose id is missing, null,
 // zero or negative names no installation a token can be asked for, so it is left out, and the
-// listed owner's valid installation still mints: no token request is sent for installation 0.
+// scope's account's valid installation still mints: no token request is sent for installation 0.
 func TestGitHubAppMintSkipsAnInstallationWithNoID(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
@@ -501,11 +515,11 @@ func TestGitHubAppMintSkipsAnInstallationWithNoID(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
-			_, _ = w.Write([]byte(`[{"account":{"login":"ada"}},{"id":null,"account":{"login":"ada"}},{"id":0,"account":{"login":"ada"}},{"id":-3,"account":{"login":"ada"}},{"id":2,"account":{"login":"ada"}}]`))
+			_, _ = w.Write([]byte(`[{"account":{"login":"ada"},"permissions":{"contents":"read"}},{"id":null,"account":{"login":"ada"},"permissions":{"contents":"read"}},{"id":0,"account":{"login":"ada"},"permissions":{"contents":"read"}},{"id":-3,"account":{"login":"ada"},"permissions":{"contents":"read"}},{"id":2,"account":{"login":"ada"},"permissions":{"contents":"read"}}]`))
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			asked = append(asked, r.URL.Path)
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": "token-" + r.URL.Path, "expires_at": "2026-10-23T13:00:00Z"})
+			_ = json.NewEncoder(w).Encode(readToken("token-"+r.URL.Path, "2026-10-23T13:00:00Z"))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
@@ -544,14 +558,14 @@ func TestGitHubAppMintReportsTheEarliestInstallationExpiry(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 1, "account": map[string]string{"login": "acme"}},
-				{"id": 2, "account": map[string]string{"login": "ada"}},
-				{"id": 3, "account": map[string]string{"login": "zed"}},
+				{"id": 1, "account": map[string]string{"login": "acme"}, "permissions": listedHolding},
+				{"id": 2, "account": map[string]string{"login": "ada"}, "permissions": listedHolding},
+				{"id": 3, "account": map[string]string{"login": "zed"}, "permissions": listedHolding},
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			owner := map[string]string{"1": "acme", "2": "ada", "3": "zed"}[strings.Split(r.URL.Path, "/")[3]]
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": "token-" + owner, "expires_at": expiries[owner]})
+			_ = json.NewEncoder(w).Encode(readToken("token-"+owner, expiries[owner]))
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}

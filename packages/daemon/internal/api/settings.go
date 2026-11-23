@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -209,9 +210,9 @@ type KubernetesSettings struct {
 	// every pod may read them.
 	IdleRelease IdleReleaseSettings `json:"idle_release"`
 	// MemoryGuard is the settled `runtime.kubernetes.memory_guard`: whether each issue pod's
-	// launcher runs a memory guard, and the shares, wait and interval it runs by. None of it is a
-	// credential, and a role reads it to know when a process of its own may be ended under it, so
-	// every pod may read it.
+	// launcher, and the launcher of the controller's pod, runs a memory guard, and the shares, wait
+	// and interval each runs by. None of it is a credential, and a role reads it to know when a
+	// process of its own may be ended under it, so every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
 	// VolumeTrim is the settled `runtime.kubernetes.volume_trim`: whether each issue pod's
 	// launcher runs a cache trimmer, and the marks, age and period it runs by. None of it is a
@@ -219,9 +220,10 @@ type KubernetesSettings struct {
 	// out from under a build it left running, so every pod may read it.
 	VolumeTrim VolumeTrimSettings `json:"volume_trim"`
 	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
-	// pods, the issues whose pods run in the other one, and where a microVM pod runs. Every
-	// member is a word, an issue key, a class name, or the cluster's Workload Identity pool and
-	// identity provider, which name the cluster and grant nothing, so no member is a credential.
+	// pods and of its controller's pod, which follows `type` alone, the issues whose pods run in
+	// the other one, and where a microVM pod runs. Every member is a word, an issue key, a class
+	// name, or the cluster's Workload Identity pool and identity provider, which name the cluster
+	// and grant nothing, so no member is a credential.
 	Sandbox SandboxSettings `json:"sandbox"`
 }
 
@@ -235,10 +237,11 @@ type SandboxSettings struct {
 }
 
 // MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
-// nodes, absent in a block no issue pod uses that names none; their workspace volume's class,
-// `runtime.kubernetes.storage_class` when the block names none; whether a microVM issue pod keeps
-// that volume, false when the block names none; and the metadata endpoint's two members, absent
-// while the block names none.
+// nodes, absent in a block no issue pod uses that names none; the microVM issue pods' workspace
+// volume's class, `runtime.kubernetes.storage_class` when the block names none, which the
+// controller's disk is on in either sandbox; whether a microVM issue pod keeps that volume, false
+// when the block names none; and the metadata endpoint's two members, absent while the block names
+// none.
 type MicroVMSettings struct {
 	ComputeClass string            `json:"compute_class,omitempty"`
 	StorageClass string            `json:"storage_class"`
@@ -260,9 +263,10 @@ type IdleReleaseSettings struct {
 }
 
 // MemoryGuardSettings is the settled `runtime.kubernetes.memory_guard`, by the kind of pod a
-// guard runs in.
+// guard runs in: every issue pod's, and the project controller's pod's.
 type MemoryGuardSettings struct {
-	IssuePods MemoryGuardPodSettings `json:"issue_pods"`
+	IssuePods     MemoryGuardPodSettings `json:"issue_pods"`
+	ControllerPod MemoryGuardPodSettings `json:"controller_pod"`
 }
 
 // MemoryGuardPodSettings is one kind of pod's settled memory guard. `enabled` false is the guard
@@ -362,6 +366,12 @@ type ProjectSettings struct {
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
 	// the role takes for off.
 	ProductionCheck string `json:"production_check"`
+	// DefaultSteps is `default_steps` as the file writes it, each step one word (`planner`, or
+	// `acceptance:owner`): the steps a task runs when its plan block names neither steps nor a
+	// sub-owner, and the steps of the one task of an issue whose owner gives no plan. It is what
+	// the project runs by default (config.Project.RunsByDefault), so a project that names none
+	// shows today's line up to the owner's acceptance rather than no step.
+	DefaultSteps []string `json:"default_steps"`
 	// Deploys is `projects.<KEY>.deploys`, reported while the loader still accepts the key and
 	// reads nothing from it (config's readProject, which warns a project that sets it): no
 	// deploy run wakes a production check any more. It is the deprecated key's resolved value,
@@ -586,6 +596,7 @@ func SettingsOf(cfg config.Config) Settings {
 			},
 			Experiments:     experimentsOf(project.Experiments),
 			ProductionCheck: project.ProductionCheckWord(),
+			DefaultSteps:    plan.Words(project.RunsByDefault()),
 			Deploys:         []DeploySettings{},
 		}
 		settings.Projects[key] = entry
@@ -695,13 +706,10 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			Type:         string(block.Sandbox.Type),
 			CanaryIssues: stringsOf(block.Sandbox.CanaryIssues),
 		},
-		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
-			Enabled:              block.MemoryGuard.IssuePods.Enabled,
-			ActPercent:           block.MemoryGuard.IssuePods.ActPercent,
-			FloorPercent:         block.MemoryGuard.IssuePods.FloorPercent,
-			WaitSeconds:          block.MemoryGuard.IssuePods.WaitSeconds,
-			IntervalMilliseconds: block.MemoryGuard.IssuePods.IntervalMilliseconds,
-		}},
+		MemoryGuard: MemoryGuardSettings{
+			IssuePods:     memoryGuardPodSettingsOf(block.MemoryGuard.IssuePods),
+			ControllerPod: memoryGuardPodSettingsOf(block.MemoryGuard.ControllerPod),
+		},
 		VolumeTrim: VolumeTrimSettings{
 			Enabled:         block.VolumeTrim.Enabled,
 			HighPercent:     block.VolumeTrim.HighPercent,
@@ -735,6 +743,14 @@ func reservationSettingsOf(reservation config.Reservation) ReservationSettings {
 		CPU: reservation.CPU, CPURequest: reservation.CPURequest,
 		Memory: reservation.Memory, MemoryRequest: reservation.MemoryRequest,
 		EphemeralStorage: reservation.EphemeralStorage, EphemeralStorageRequest: reservation.EphemeralStorageRequest,
+	}
+}
+
+// memoryGuardPodSettingsOf is one pod kind's settled memory guard as the state shows it.
+func memoryGuardPodSettingsOf(guard config.MemoryGuardPodConfig) MemoryGuardPodSettings {
+	return MemoryGuardPodSettings{
+		Enabled: guard.Enabled, ActPercent: guard.ActPercent, FloorPercent: guard.FloorPercent,
+		WaitSeconds: guard.WaitSeconds, IntervalMilliseconds: guard.IntervalMilliseconds,
 	}
 }
 

@@ -195,15 +195,7 @@ func composedText(t *testing.T, composer *Composer, role claim.Role, isRoot bool
 	if err != nil {
 		t.Fatalf("Compose %s (root %t): %v", role, isRoot, err)
 	}
-	var text strings.Builder
-	for _, path := range parts.RolePromptPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text.Write(body)
-	}
-	return text.String()
+	return readJoined(t, parts.RolePromptPaths...)
 }
 
 // No role's handoff is a commit: each is a record on the Dispatch issue, so no phase worker's
@@ -333,6 +325,21 @@ func foldWhitespace(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
+// readJoined is the bytes of each of paths, read in order and joined; a read that fails ends the
+// test (t.Fatalf), naming the path.
+func readJoined(t *testing.T, paths ...string) string {
+	t.Helper()
+	var text strings.Builder
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		text.Write(body)
+	}
+	return text.String()
+}
+
 // ruleParagraphs are the blank-line-separated paragraphs of a composed prompt that hold marker,
 // each folded to one line: a paragraph is the span a reader takes the rule and its framing from,
 // so it is the span a test asks what the rule calls its case. A composed prompt holds one per
@@ -360,6 +367,27 @@ func clauses(text string) []string {
 		}
 	}
 	return found
+}
+
+// clauseHolds says whether one clause of text (clauses) holds each of terms, in the order given:
+// a rule pinned by its terms, so a rewording that keeps them passes and a change of one fails,
+// while each term still has to stand in the one clause that states the rule.
+func clauseHolds(text string, terms ...string) bool {
+	for _, clause := range clauses(text) {
+		rest, held := clause, true
+		for _, term := range terms {
+			_, after, found := strings.Cut(rest, term)
+			if !found {
+				held = false
+				break
+			}
+			rest = after
+		}
+		if held {
+			return true
+		}
+	}
+	return false
 }
 
 // What a phase proved is a result recorded against a `check` block of the issue's Verification
@@ -588,15 +616,7 @@ func TestTheControllerPartNamesTheGatedSteps(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ControllerPromptPaths(headless %t): %v", headless, err)
 		}
-		var text strings.Builder
-		for _, path := range paths {
-			body, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			text.Write(body)
-		}
-		folded := foldWhitespace(text.String())
+		folded := foldWhitespace(readJoined(t, paths...))
 		if !strings.Contains(folded, "`Design gate steps:`") {
 			t.Errorf("the composed controller prompt (headless %t) never names the `Design gate steps:` line it reads its steps off", headless)
 		}
@@ -628,7 +648,7 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 		"once the branch has an open pull request",
 		"an empty one when your work is complete",
 		"tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
-		"The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
+		"The merger pushes only a merge of the base forward, and makes this read after that push as any role does",
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
 		claim.RoleReviewer, claim.RoleMerger} {
@@ -961,6 +981,45 @@ func TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCar
 			}
 			if observedNotMet == 0 {
 				t.Errorf("%s holds no fail clause for a requirement observed as not met", tc.name)
+			}
+		})
+	}
+}
+
+// An agent that wants a pod of its own for a task writes one line of a fixed form in its session,
+// and Legion starts no pod for it: the line is a wish that a later read of the stored sessions
+// counts. Legion's own part of every prompt gives the form, architect-common.md for an owner and
+// worker-common.md for the agent of a step, so each composition an issue's agents start with holds
+// the form, in the clause that says when to write it, and the clause that says Legion starts no
+// pod for it, each held by its terms. This shows the text is loaded, never that an agent writes
+// the line.
+func TestEveryPromptGivesTheSeparatePodLine(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		role   claim.Role
+		isRoot bool
+	}{
+		{"root architect", claim.RoleArchitect, true},
+		{"sub-architect", claim.RoleArchitect, false},
+		{"planner", claim.RolePlanner, false},
+		{"implementer", claim.RoleImplementer, false},
+		{"tester", claim.RoleTester, false},
+		{"reviewer", claim.RoleReviewer, false},
+		{"merger", claim.RoleMerger, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := composedText(t, composer, tc.role, tc.isRoot)
+			for _, terms := range [][]string{
+				{"pod of its own", "one line", "SEPARATE-POD", "SEPARATE-POD <ISSUE> <task> <reason>"},
+				{"Legion", "no pod", "this line"},
+			} {
+				if !clauseHolds(text, terms...) {
+					t.Errorf("no clause of the composed %s prompt holds %q, in that order", tc.name, terms)
+				}
 			}
 		})
 	}

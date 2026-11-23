@@ -469,6 +469,7 @@ func issueOfDispatchPath(path string) string {
 // its id (workflowstore's PutPlan): a plan with no task, and a task with no step, under the other
 // issue's key.
 func TestTheBoardRefusesAnIDOfAnotherIssue(t *testing.T) {
+	t.Parallel()
 	b := newLiveDispatch(t, "SR1")
 	first, other := "SR1-1", "SR1-2"
 	put := func(key, path string, write map[string]any) (int, string) {

@@ -31,6 +31,7 @@ import (
 // no record of it once every step record the same fact queued, the next step's start among them,
 // has left the outbox.
 func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForItsStream(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// noRow takes the run's row out after the boot.
@@ -105,6 +106,7 @@ func TestABootOpensTheRunTheReleaseBeforeStartedSoItsAgentsCompletionWaitsForIts
 // The boot opens a run no start counted once: a boot that runs again finds the run's row open and
 // counts nothing again, and neither boot queues a record of the run.
 func TestABootThatRunsAgainCountsNothingAgain(t *testing.T) {
+	t.Parallel()
 	r := newStepRecordsRig(t, 1)
 	planner := r.plannerTheReleaseBeforeStarted()
 	opened := r.issueStartRows()

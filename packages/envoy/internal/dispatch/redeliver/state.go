@@ -250,9 +250,8 @@ func (s *Sweeper) putRecord(guid string, next record, revision uint64) (uint64, 
 // err's text. A refusal of bus.KeyValue quotes the key it refused whole (bus/kv.go's check and
 // invalidKey), and every key of a delivery holds the delivery's GUID, which is GitHub's text and
 // may be as long as a key may be. The cut error's Unwrap is err, so errors.Is and errors.As reach
-// every class it carries (nats.ErrKeyNotFound, bus.ErrRefused and the rest). bus.IsCASConflict
-// reads the text rather than a class, so it is asked of the bucket's error before that error is
-// wrapped here, and never of what bucketErr answers.
+// every class it carries (nats.ErrKeyNotFound, bus.ErrRefused, the lost compare-and-swap
+// bus.IsCASConflict matches, and the rest).
 //
 // Every error the package takes from a call on its bucket passes through here once the caller has
 // classified it. A scan of the bucket (kvwatch) is not such a call: its errors name the pattern

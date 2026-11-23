@@ -45,6 +45,7 @@ import {
 import {
   type Cleanup,
   deliveryFor,
+  isSelfCheck,
   ompRoot,
   serveStandin,
   spawnRpc,
@@ -322,13 +323,6 @@ const runs: readonly Run[] = [
   },
 ];
 
-/** Whether a request is the run-end self-check rather than a turn: pi-envoy asks it over a snapshot
- * of the conversation whose last message is the `<btw>` block around the question. */
-function isSelfCheck(body: Record<string, unknown>): boolean {
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null).includes("<btw>");
-}
-
 /** The profile the pane runs on: one OpenAI-shaped provider at `base`, its two models, and the
  * operator overlay's own chain settings. The provider is keyed by a literal API key, as a plain
  * key caller is, and every provider a pod could otherwise answer from is disabled, so no turn
@@ -482,7 +476,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
       const model = typeof body.model === "string" ? body.model : "";
       if (pane.startedAt === 0) pane.startedAt = at;
       if (model === WEAK_ID && pane.fellBackAt === undefined) pane.fellBackAt = at;
-      if (isSelfCheck(body)) {
+      if (isSelfCheck({ path: url.pathname, body })) {
         const answer = says(model, pane.served.length, "PROCEEDING");
         record(at, model, "the run-end self-check");
         return answer.response;

@@ -1,82 +1,157 @@
 package refs
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// The canonical name of a repository is what its repo_projects row's renamed_to names, else the
-// name itself, compared case-insensitively. A repository Dispatch holds no mapping for, and one
-// whose mapping names no rename, is its own canonical name, so a repository Dispatch does not
-// map is unaffected by this rule: it reads exactly as it did before the column existed.
+// The canonical name of a repository is the new name of its rename pair, else the name itself,
+// compared without case. A repository with no pair is its own canonical name, so the rule
+// changes nothing for it.
 //
-// This is the server's one repository-renaming rule, and it is written here once because six
-// sites must come to the same answer or the rename is only half known: delivery's attributionHeld
-// puts both the issue's resolved repository and the pull request's own through it, the results
-// route canonicalises the repository of a check's issue before it asks GitHub anything, in the
-// one helper its results read and its record route share (api/issue_repo.go,
-// server.checkIssueRepository), the three writers of a pull_request_heads row key the row by it
-// (delivery/pull_request_heads.go: RefreshPullRequestHead, ReadThroughCommitPulls and
-// Intake.recordPullRequestHead), the settings route reads it to decide whether a rename's
-// target is itself renamed (api/repo_projects.go, refuseRepoRenameChain), and the CI reconcile
-// reads every repository it covers under the name it has now, so no pass asks GitHub about a
-// name it cannot read (cireconcile/repositories.go, Reconciler.covered).
+// The pairs are the repo_projects rows with a renamed_to, which no route of this release writes.
+// The boot reads them once (store.ReadRepoRenames) into one Renames, and gives that value to
+// every reader of a repository name. No reader reads the table again, so no statement but that
+// one read names repo_projects for a rename. A process whose boot finds the table gone reads no
+// pairs and serves with none: dispatch://INFRA-4411 drops it, and a statement that named a
+// dropped table would fail.
 //
-// One step is enough: the settings route refuses a pair pointing at a repository that is itself
-// renamed, and refuses renaming a repository another row already points at, so no chain and no
-// cycle exists to walk (api/repo_projects.go, putRepoProject; migration
-// 20261105075455_repo_projects_renamed_to). Dispatch never asks GitHub to resolve a name — for a
+// This is the server's one repository-renaming rule, and it is written here once because every
+// site must come to the same answer or the rename is only half known: delivery's attributionHeld
+// puts both the issue's resolved repository and the pull request's own through it, and its link
+// sources compare a URL under both names of a pair (attributionCandidates); the results route
+// canonicalises the repository of a check's issue before it asks GitHub anything
+// (api/issue_repo.go, server.checkIssueRepository); the three writers of a
+// pull_request_heads row key the row by it (delivery/pull_request_heads.go:
+// Attributor.RefreshPullRequestHead, Attributor.ReadThroughCommitPulls and
+// Intake.recordPullRequestHead); GET /api/v1/issues/resolve finds a link under either name
+// (api/issue_refs.go, resolveIssueRef); and the CI reconcile reads every repository it covers
+// under the name it has now, so no pass asks GitHub about a name it cannot read
+// (cireconcile/repositories.go, Reconciler.covered).
+//
+// Every write of a stored repository name or GitHub URL puts it through the same rule first
+// (Canonical, CanonicalURL), so no write stores an old name: an issue's own repository and its
+// external links on a create and a patch, a project's default repository, the delivery
+// settings' repositories, an architecture source's repository and a result's linked repository
+// (api; check_results.commit_repo), and the issue URLs a pull request's body cites (delivery's
+// citedIssues). The rows stored before this rule are rewritten once, by the boot's pass
+// (store.RewriteRenamedRepositories).
+//
+// One step is enough: the route that wrote the pairs refused a pair pointing at a repository
+// that is itself renamed, and refused renaming a repository another pair already points at, so
+// no chain and no cycle exists to walk. Dispatch never asks GitHub to resolve a name. For a
 // repository renamed away, GitHub answers 404 for its installation, so the old name cannot be
 // read at all and the pair is declared, never discovered.
 
-// CanonicalRepoSQL is that rule as a SQL expression over repo, itself an expression naming a
-// repository: null where repo is null, so a comparison against it stays null rather than
-// becoming true. It reads repo_projects by a lowercased name on both sides, as every comparison
-// of a repository here does, because GitHub spells an owner and a repository as their owners do
-// (`Acme/Widgets`) while Dispatch stores a mapping's path canonicalised (ExternalRepo).
-// The expression text is spliced twice, so repo must be a column, a bound parameter or another
-// side-effect-free expression.
-//
-// The inner read is an aggregate, so it answers exactly one row however many rows match: the
-// primary key is the repository's own spelling, so two mappings whose names differ only by case
-// can exist — direct SQL, or a hand repair, which migration 20261105075455_repo_projects_renamed_to
-// expects — and a plain scalar subquery over both would fail every statement this expression is
-// spliced into with `more than one row returned by a subquery`. It reads only the mappings that
-// name a rename, so a repository mapped with no rename coalesces to its own name.
-//
-// That read goes through a derived table that renames both columns it keeps, because repo is
-// the caller's own expression spliced into this one and SQL resolves an unqualified name
-// against the innermost query's columns first. Reading repo_projects directly here would put a
-// column named `repo` in scope, so a caller splicing a bare `repo` would compare that column
-// with itself — true for every row, which answers the whole table's greatest renamed_to for
-// every row of every caller rather than each row's own canonical name. No caller's column is
-// named rename_source or rename_target, so a caller's bare `repo` reaches the caller's own
-// table, and a caller whose statement has no such column fails loudly with `column "repo" does
-// not exist` rather than silently answering some other repository's name.
-func CanonicalRepoSQL(repo string) string {
-	return `coalesce((select max(rename.rename_target) from (
-			select renamed.repo as rename_source, renamed.renamed_to as rename_target
-			from repo_projects renamed where renamed.renamed_to is not null
-		) rename where lower(rename.rename_source) = lower(` + repo + `)), ` + repo + `)`
+// Renames is the rename pairs this process read at boot, which every reader of a repository
+// name is given. It is immutable: NewRenames copies the pairs, and nothing changes them after.
+// The zero value holds no pairs, and every rule below then answers each name as it is given.
+type Renames struct {
+	pairs []renamePair
 }
 
-// CanonicalRepo is that rule read through q for one full `owner/name`: the expression above,
-// selected for repo, so the Go caller and every statement that splices the expression read one
-// rule and cannot come to different answers. The caller's own spelling comes back unchanged
-// where there is no rename, so canonicalising a name never re-cases a stored row's key; where
-// there is one, the answer is the pair as the settings route canonicalised it.
-func CanonicalRepo(ctx context.Context, q Queryer, repo string) (string, error) {
-	if repo == "" {
-		return repo, nil
+// renamePair is one pair with its URL rule in each direction: toNew rewrites a URL that names
+// the old name so that it names the new one, and toOld does the opposite.
+type renamePair struct {
+	store.RepoRename
+	toNew, toOld store.RepoURLRule
+}
+
+// NewRenames is the Renames of pairs, as store.ReadRepoRenames answers them: both names in lower
+// case, and one pair for each old name.
+func NewRenames(pairs []store.RepoRename) Renames {
+	if len(pairs) == 0 {
+		return Renames{}
 	}
-	var canonical string
-	if err := q.QueryRow(ctx, `select `+CanonicalRepoSQL("$1::text"), repo).Scan(&canonical); err != nil {
-		return "", fmt.Errorf("read the canonical name of %s: %w", repo, err)
+	built := make([]renamePair, 0, len(pairs))
+	for _, pair := range pairs {
+		built = append(built, renamePair{
+			RepoRename: pair,
+			toNew:      store.NewRepoURLRule(pair.From, pair.To),
+			toOld:      store.NewRepoURLRule(pair.To, pair.From),
+		})
 	}
-	return canonical, nil
+	return Renames{pairs: built}
+}
+
+// Canonical is the canonical name of repo: the new name of the pair whose old name is repo, in
+// any case, else repo as it is given. So canonicalising a name with no pair never changes the
+// case of a stored row's key.
+func (r Renames) Canonical(repo string) string {
+	for _, pair := range r.pairs {
+		if strings.EqualFold(pair.From, repo) {
+			return pair.To
+		}
+	}
+	return repo
+}
+
+// CanonicalURL is url under the canonical name of the repository it names: url rewritten to the
+// new name of the pair whose old name it names, by the URL rule (store.RepoURLRule), else url as
+// it is given. So a write that stores a GitHub URL never stores an old name, and a URL that names
+// no old name keeps every character it has.
+func (r Renames) CanonicalURL(url string) string {
+	for _, pair := range r.pairs {
+		if rewritten, named := pair.toNew.Rewrite(url); named {
+			return rewritten
+		}
+	}
+	return url
+}
+
+// CanonicalRepoSQL is Canonical as a SQL expression over repo, an expression naming a
+// repository. With no pairs it is repo itself. Otherwise it is
+// `case lower(repo) when '<old>' then '<new>' … else repo end`, which is null where repo is
+// null, so a comparison against it stays null and does not become true. The expression text of
+// repo is spliced twice, so repo must be a column, a bound parameter or another expression with
+// no side effect.
+func CanonicalRepoSQL(renames Renames, repo string) string {
+	if len(renames.pairs) == 0 {
+		return repo
+	}
+	var b strings.Builder
+	b.WriteString(`case lower(` + repo + `)`)
+	for _, pair := range renames.pairs {
+		b.WriteString(` when ` + store.QuoteLiteral(pair.From) + ` then ` + store.QuoteLiteral(pair.To))
+	}
+	b.WriteString(` else ` + repo + ` end`)
+	return b.String()
+}
+
+// URLSpellings is url, then url under the other name of each pair that url names by either name,
+// by the URL rule (store.RepoURLRule). So a reader that looks up every spelling finds a URL
+// stored under either name of a pair.
+func (r Renames) URLSpellings(url string) []string {
+	spellings := []string{url}
+	for _, pair := range r.pairs {
+		if other, named := pair.toNew.Rewrite(url); named {
+			spellings = append(spellings, other)
+		}
+		if other, named := pair.toOld.Rewrite(url); named {
+			spellings = append(spellings, other)
+		}
+	}
+	return spellings
+}
+
+// URLSpellingsSQL is URLSpellings as a SQL text[] over url, an expression naming a URL, with each
+// spelling in lower case: url itself, and url rewritten to the other name of each pair. A
+// rewrite of a URL that names neither name of a pair is url again, which changes nothing about
+// a comparison with the array. The spellings are in lower case for a comparison
+// `lower(column) = any(…)`, which an index on lower(column) serves, as
+// issue_external_links_url_lower serves delivery's attributionCandidates.
+func URLSpellingsSQL(renames Renames, url string) string {
+	var b strings.Builder
+	b.WriteString(`array[lower(` + url + `)`)
+	for _, pair := range renames.pairs {
+		b.WriteString(`, lower(` + pair.toNew.RewriteSQL(url) + `), lower(` + pair.toOld.RewriteSQL(url) + `)`)
+	}
+	b.WriteString(`]`)
+	return b.String()
 }
 
 // The two halves of a repository GitHub could hold, copied from the daemon's own reading of the
@@ -164,9 +239,9 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 // is ErrNotGitHubRepo, naming full.
 //
 // It is the rule the routes and these readers read. The API routes that take a repository from a
-// person put the canonical form they store to it and refuse a name it refuses, and so does the
-// boot seed of the repository mappings, each through ParseGitHubRepo (api's parseSourceRepo,
-// parseIssueRepo and ParseRepoProjects). Delivery, wherever it turns a stored name into a
+// person put the canonical form they store to it and refuse a name it refuses, each through
+// ParseGitHubRepo (api's parseSourceRepo, and parseIssueRepo, which an issue's own repository
+// and a project's default repository are read by). Delivery, wherever it turns a stored name into a
 // GitHub path, cireconcile's splitRepo, the architecture importer's resolve and api's readCIRuns
 // each refuse one there, so a name stored before the routes held it to the rule, or by direct
 // SQL, reaches GitHub through none of them. Delivery's linked pull requests

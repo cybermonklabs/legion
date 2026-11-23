@@ -204,12 +204,14 @@ func ConsumerLagViewsOf(lags []intake.ConsumerLag) []ConsumerLagView {
 // body without the key, as a daemon before contract 43 serves, decodes nil.
 //
 // narrowed is set on the copy the state route serves a caller below shaping.go's
-// repositoriesLiveContract (api's withoutRepositoriesLive): that caller's plugin reads the block
-// with the schema of contract 152, which requires `owners`, `mapped`, `refused` and
-// `withoutWebhookApp` beside `caches` and knows no `live`, so it would refuse the whole state for
-// the block this contract writes, which lacks the first three. MarshalJSON writes that one body in
-// the shape contract 152 gave the block, from these same entries (at152), rather than this block
-// with keys taken out, since no part of it is a block that schema parses.
+// repositoriesLiveContract (api's withoutRepositoriesLive). A plugin from 152 to 189 reads the
+// block with the schema of contract 152, which requires `owners`, `mapped`, `refused` and
+// `withoutWebhookApp` beside `caches` and knows no `live`, and one below 152 with an earlier schema
+// that requires them too, so it would refuse the whole state for the block this contract writes,
+// which lacks the first three. A plugin from 193 on reads every key of the block as optional
+// (main's #3659), and it is served the older block all the same. MarshalJSON writes that one body
+// in the shape contract 152 gave the block, from these same entries (at152), rather than this
+// block with keys taken out, since no part of it is a block that schema parses.
 //
 // appsHidden is set on the copy the route serves a caller below shaping.go's
 // repositoryAppsContract (api's withoutRepositoryApps): the strict reader at 46 and 48 knows no
@@ -332,32 +334,13 @@ type repositoriesAt152 struct {
 
 // servedRepositoryAt152 is an entry of contract 152's `mapped`: a repository both role Apps are
 // installed on, under the name it is served under, with `default`, which that contract's schema
-// requires and which the daemon no longer knows, so it is false on every entry.
+// requires and which the daemon no longer knows, so it is false on every entry, and Apps, absent
+// only on a block served a caller below repositoryAppsContract (at152).
 type servedRepositoryAt152 struct {
-	Repo    string               `json:"repo"`
-	Default bool                 `json:"default"`
-	Apps    AppInstallationsView `json:"apps"`
-	Cache   *CacheView           `json:"cache,omitempty"`
-	// appsHidden is the block's RepositoriesView.appsHidden, set on every entry of a block served
-	// a caller below repositoryAppsContract, whose strict reader knows no `apps`: MarshalJSON
-	// leaves the key off that entry rather than writing both Apps false.
-	appsHidden bool
-}
-
-// MarshalJSON leaves `apps` off the one entry whose reader knows no such key, and writes it on
-// every other, exactly as CheckView.MarshalJSON leaves off `role`: that entry is marshalled
-// through a value whose own nil `apps` field, being `omitempty`, shadows the embedded one and so
-// is written by nothing. The shadowing field is the whole mechanism.
-func (m servedRepositoryAt152) MarshalJSON() ([]byte, error) {
-	type wire servedRepositoryAt152
-	out := wire(m)
-	if m.appsHidden {
-		return json.Marshal(struct {
-			wire
-			Apps *AppInstallationsView `json:"apps,omitempty"`
-		}{wire: out})
-	}
-	return json.Marshal(out)
+	Repo    string                `json:"repo"`
+	Default bool                  `json:"default"`
+	Apps    *AppInstallationsView `json:"apps,omitempty"`
+	Cache   *CacheView            `json:"cache,omitempty"`
 }
 
 // refusedRepositoryAt152 is an entry of contract 152's `refused`: a repository a role App is not
@@ -400,18 +383,18 @@ func (r RepositoriesView) at152() repositoriesAt152 {
 		block.Caches = []CacheView{}
 	}
 	for _, repo := range r.Live {
-		if repo.Apps != nil && repo.Apps.Implement && repo.Apps.Review {
-			served := repo.servedName()
-			owner, _, _ := strings.Cut(served, "/")
-			block.Owners = append(block.Owners, strings.ToLower(owner))
-			block.Mapped = append(block.Mapped, servedRepositoryAt152{Repo: served, Apps: *repo.Apps, Cache: repo.Cache, appsHidden: r.appsHidden})
-			continue
-		}
-		reason := cmp.Or(repo.ReadError, repo.NotInstalled(), notAnsweredAt152)
 		apps := repo.Apps
 		if r.appsHidden {
 			apps = nil
 		}
+		if repo.Apps != nil && repo.Apps.Implement && repo.Apps.Review {
+			served := repo.servedName()
+			owner, _, _ := strings.Cut(served, "/")
+			block.Owners = append(block.Owners, strings.ToLower(owner))
+			block.Mapped = append(block.Mapped, servedRepositoryAt152{Repo: served, Apps: apps, Cache: repo.Cache})
+			continue
+		}
+		reason := cmp.Or(repo.ReadError, repo.NotInstalled(), notAnsweredAt152)
 		block.Refused = append(block.Refused, refusedRepositoryAt152{Repo: repo.Repo, Reason: reason, Apps: apps})
 	}
 	slices.Sort(block.Owners)
@@ -630,10 +613,10 @@ type Admission struct {
 	// issue key. It is the other half of the three lists above — a reader that has `active`,
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
-	// the one that waits: a root whose Legion label is off, an issue none of the other words
-	// is true of, or an issue past its review under `at_work`, which no other issue holds
-	// (record.HeldAtWork says which issues read it). Never null; empty when every issue of the
-	// workflow runs or waits in the line.
+	// the one that waits: a root whose Legion label is off, a task that was stopped
+	// (`task_stopped`), an issue none of the other words is true of, or an issue past its review
+	// under `at_work`, which no other issue holds (record.HeldAtWork says which issues read it).
+	// Never null; empty when every issue of the workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below shaping.go's treeContract): that
@@ -718,8 +701,14 @@ type Issue struct {
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
-	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
-	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
+	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
+	// it ran (record.HoldTaskStopped), and `children` while a parent whose plan has no acceptance
+	// step waits, before its retro, for the issues beneath it (record.HoldForChildren). A hold of
+	// either of the last two is no architect's to retry or escalate: a later version of the plan
+	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// caller below OwnerPlanContract is served no reason for those two (withoutUnadmittedHoldReason).
+	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
+	// reason, and the view shows it again once the tree is re-admitted.
 	HoldReason string `json:"holdReason,omitempty"`
 	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
 	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
@@ -1877,9 +1866,4 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 // table a second time at another moment.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
-}
-
-// StateTransactions begins the one snapshot transaction every state response reads through.
-type StateTransactions interface {
-	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
 }

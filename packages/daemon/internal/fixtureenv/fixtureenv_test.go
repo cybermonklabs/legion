@@ -204,11 +204,11 @@ func TestIsolatedAndHomeGiveAStateHomeOfTheTestsOwn(t *testing.T) {
 // A repository whose own configuration allows http (protocol.http.allow=always, which outranks
 // protocol.allow) still reaches no network remote under Isolated: jj git push to a loopback HTTP
 // server fails and the server receives no request. Without GIT_ALLOW_PROTOCOL the same push
-// reaches the server, so the refusal is the environment's.
+// reaches the server, so the refusal is the environment's. Every jj is the real jj
+// (fixturegit.CompiledJJ): a jj of the machine's own first on PATH, a dev box's shim, can refuse
+// the push itself, which would read as the environment's refusal.
 func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T) {
-	if _, err := exec.LookPath("jj"); err != nil {
-		t.Fatalf("this test drives a real jj: %v", err)
-	}
+	jj := fixturegit.CompiledJJ(t)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
@@ -218,13 +218,13 @@ func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T)
 
 	env := fixtureenv.Isolated(t.TempDir())
 	repo := t.TempDir()
-	mustRun(t, repo, env, fixturegit.JJInit(repo, true)...)
-	mustRun(t, repo, env, "jj", "describe", "-m", "work that must not leave the test", "-R", repo)
-	mustRun(t, repo, env, "jj", "bookmark", "set", "main", "-r", "@", "-R", repo)
-	mustRun(t, repo, env, "jj", "git", "remote", "add", "origin", server.URL+"/repo.git", "-R", repo)
+	mustRun(t, repo, env, append([]string{jj}, fixturegit.JJInit(repo, true)[1:]...)...)
+	mustRun(t, repo, env, jj, "describe", "-m", "work that must not leave the test", "-R", repo)
+	mustRun(t, repo, env, jj, "bookmark", "set", "main", "-r", "@", "-R", repo)
+	mustRun(t, repo, env, jj, "git", "remote", "add", "origin", server.URL+"/repo.git", "-R", repo)
 	mustRun(t, repo, env, "git", "config", "protocol.http.allow", "always")
 
-	push := []string{"jj", "git", "push", "--remote", "origin", "--bookmark", "main", "-R", repo}
+	push := []string{jj, "git", "push", "--remote", "origin", "--bookmark", "main", "-R", repo}
 	if out, err := run(repo, env, push...); err == nil {
 		t.Errorf("jj git push under Isolated succeeded, want a refusal:\n%s", out)
 	}

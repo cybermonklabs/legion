@@ -26,6 +26,7 @@ import (
 // run (no probe here makes a model call). The Envoy plugin is the test fixture's, publishing the
 // interface as the real one does; the real one loads in TestTheRealPluginsOnTheRealOhMyPi.
 func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	noAgent := "finds no task agent thermonuclear-deep-review (dispatched by dist/skills/legion-worker/SKILL.md)"
 	noRubric := "finds no skill thermonuclear-deep-review (loaded by agents/thermonuclear-deep-review.md)"
@@ -128,6 +129,7 @@ func installPlugins(t *testing.T, omp string, environ []string, roots ...string)
 // the two packages ship between them. Only the real bundles show that the symbol strings the probe
 // reads are the ones the entries write.
 func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
+	t.Parallel()
 	omp := testbin.OMP(t)
 	envoy, legion := packedPlugin(t, "pi-envoy", "envoy"), packedPlugin(t, "pi-legion", "legion")
 	for _, testCase := range []struct {

@@ -161,6 +161,7 @@ func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
 // of its sends at once. A-1's first send waits three times, A-1's second waits behind it; each send
 // takes 5 ms, so two goroutines on the lane would have both in flight together.
 func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries, active, most atomic.Int32
 	var mu sync.Mutex
@@ -222,6 +223,7 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 // send. That is why a parked lane's pending timer says no goroutine is on it, which the park tests
 // read (parkRig.state, countParks) where a count of goroutines would lag the park.
 func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
+	t.Parallel()
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries atomic.Int32
 	sender := newMentionSender(lifetime, time.Hour,

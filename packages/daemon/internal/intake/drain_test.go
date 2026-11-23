@@ -79,11 +79,14 @@ func (drainRepositories) ResolveRepository(resolved string) (workflow.Resolution
 	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
-// transactions counts the transactions a pool's connections begin.
+// transactions counts the read-write transactions a pool's connections begin. A read-only
+// transaction, which every read outside a fact runs in (store.TransactWith), is not counted: it
+// takes no fact lock and writes nothing.
 type transactions struct{ begun atomic.Int64 }
 
 func (c *transactions) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(data.SQL)), "begin") {
+	sql := strings.ToLower(strings.TrimSpace(data.SQL))
+	if strings.HasPrefix(sql, "begin") && !strings.Contains(sql, "read only") {
 		c.begun.Add(1)
 	}
 	return ctx
@@ -102,8 +105,9 @@ type warnings = testlog.Buffer
 // Here a project runs 350 trees and keeps 10,000 records, its Postgres is a 3 ms round trip away,
 // and 5,000 events that are not Legion's wait on the stream with 50 of Legion's among them. The
 // daemon's consumer, with the handlers the daemon runs, drains them: every Legion event is applied
-// and every other one is acknowledged with no transaction. With LEGION_TEST_DRAIN_MEASURE=1 the
-// drain must also take under a minute from the first publish; the time is logged either way.
+// and every other one is acknowledged with no read-write transaction. With
+// LEGION_TEST_DRAIN_MEASURE=1 the drain must also take under a minute from the first publish; the
+// time is logged either way.
 func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.T) {
 	ctx := context.Background()
 	// requests bounds the row's own NATS requests (publishes, consumer info) by the row's deadline,

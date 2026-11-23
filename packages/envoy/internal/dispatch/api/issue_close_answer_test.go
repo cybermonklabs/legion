@@ -21,6 +21,10 @@ import (
 // two moves run in order against the one issue, not as subtests a reader could run alone, and
 // each failure names the move it came from.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
+	// Not parallel: it reads the issue right after the move and wants the sequence the move
+	// committed, so it assumes no later event of its own issue lands between the move and that
+	// read. Among this package's parallel tests on CI's runner one did, and the read answered 20
+	// for a close at 19 (job 137359069610).
 	f := newCloseAsksFixture(t)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",
@@ -62,6 +66,7 @@ func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T
 // session's own again. Both read their advice in the patch's read phase, before the withdrawal
 // and the restoration are written, so the rows the read finds are the ones the patch moves.
 func TestCloseAndReopenAdviceDescribeTheAsksThePatchLeaves(t *testing.T) {
+	t.Parallel()
 	f := newCloseAsksFixture(t)
 	closed := sessionRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{
 		"status": "done", "actor": sessionActor(),

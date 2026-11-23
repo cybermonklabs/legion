@@ -12,46 +12,38 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // todaysDefaultSteps is the five steps of today's default plan, typed here rather than read from
-// DefaultSteps: this file is the oracle of what that list is, so a change of the production list
-// fails here instead of following it.
+// the production list: this file is the oracle of what that list is, so a change of the production
+// list fails here instead of following it.
 var todaysDefaultSteps = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
 
-// The place of a phase's step is read from the steps, never stated: a list without the tester shows
-// it, since the place logic takes the steps as a parameter: the reviewer moves up to place 3, and
-// testing runs no step of that list. Today's places, each with its role and type, are held by
-// TestStepOfIsTodaysSequence (steps_test.go), which stepOf answers from DefaultSteps. Nothing global
-// is swapped: DefaultSteps answers a fresh copy, so a caller that changes the slice it got changes
-// no later answer.
-func TestStepOfReadsTheDefaultSteps(t *testing.T) {
-	if steps, want := DefaultSteps(), todaysDefaultSteps; !slices.Equal(steps, want) {
-		t.Fatalf("DefaultSteps() = %q, want %q", steps, want)
+// A run with no plan rows walks today's default steps as the task default's (todaysWalk), and its
+// plan node names them, whatever the configured project's default steps say: a project's
+// `default_steps` read later by the loader does not reach them. Today's places, each with its role
+// and type, are held by TestStepOfIsTodaysSequence (steps_test.go). Nothing global is swapped:
+// RunsByDefault answers a fresh copy, so a caller that changes the slice it got changes no later
+// answer.
+func TestARunWithNoPlanRowsWalksTodaysDefaultSteps(t *testing.T) {
+	issue := record.Issue{Key: "LEGION-208", Generation: 1}
+	if node := planNode(issue, todaysWalk()); len(node.Tasks) != 1 || node.Tasks[0].ID != "default" || !slices.Equal(node.Tasks[0].Steps, todaysDefaultSteps) ||
+		node.Source != record.PlanSourceDefault || node.PlanDocument != nil {
+		t.Fatalf("the plan node of a run with no plan rows = %+v, want the task default of %q from the source default", node, todaysDefaultSteps)
+	}
+	if !slices.Equal(todaysWalk().Line, phase.Order) {
+		t.Fatalf("today's walk runs %v, want today's line %v", todaysWalk().Line, phase.Order)
 	}
 
-	withoutTester := slices.DeleteFunc(DefaultSteps(), func(step string) bool { return step == "tester" })
-	if place, role, typ, ok := stepIn(withoutTester, phase.Reviewing); !ok || place.Place != 3 || role != "reviewer" || typ != "review" {
-		t.Errorf("the reviewing step of %q = %+v, role %q, type %q, ok %v; want place 3 under the reviewer, of type review",
-			withoutTester, place, role, typ, ok)
-	}
-	if place, role, _, ok := stepIn(withoutTester, phase.Testing); ok {
-		t.Errorf("the testing step of %q = %+v, role %q; want none, since no step of that list is the tester's", withoutTester, place, role)
-	}
-	// A retro and a merge are no step of any list: the kind tells them apart, at place 0.
-	for at, kind := range map[phase.Phase]string{phase.Retro: "retro", phase.Merging: "merge"} {
-		if place, _, _, ok := stepIn(nil, at); !ok || place != (record.StepPlace{Task: "default", Kind: kind}) {
-			t.Errorf("the %s step of no list = %+v, ok %v; want kind %s at place 0", at, place, ok, kind)
-		}
-	}
-
-	changed := DefaultSteps()
-	changed[0] = "architect"
-	if again := DefaultSteps(); again[0] != "planner" {
-		t.Fatalf("DefaultSteps() after a caller changed its answer = %q, want a fresh copy starting with the planner", again)
+	changed := config.Project{}.RunsByDefault()
+	changed[0] = plan.Step{Role: "architect"}
+	if again := (config.Project{}).RunsByDefault(); again[0].Role != "planner" {
+		t.Fatalf("RunsByDefault() after a caller changed its answer = %q, want a fresh copy starting with the planner", plan.Words(again))
 	}
 }
 
@@ -111,7 +103,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	pool := migratedPool(t)
 	root := stepRoot(t, pool, phase.Admitted)
 	engine := stepEngine(nil)
-	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect})
+	firstStep(t, pool, engine, root.Key)
 
 	first := defaultPlanNamed("LEGION-208/1", 1)
 	if plans := planWrites(t, pool, root.Key); len(plans) != 1 || !reflect.DeepEqual(plans[0], first) {
@@ -158,7 +150,7 @@ func TestAChildsPlanIsNamedByItsOwnKey(t *testing.T) {
 	engine := stepEngine(nil)
 	for _, child := range []struct{ key, name string }{{"LEGION-210", "LEGION-210/3"}, {"LEGION-209", "LEGION-209/3"}} {
 		stepChild(t, pool, child.key, phase.Admitted, nil)
-		move(t, pool, engine, child.key, TriggerGateOpened, "", record.PhaseRow{Issue: child.key, Role: claim.RoleArchitect})
+		firstStep(t, pool, engine, child.key)
 		want := defaultPlanNamed(child.name, 3)
 		if plans := planWrites(t, pool, child.key); len(plans) != 1 || !reflect.DeepEqual(plans[0], want) {
 			t.Errorf("the start of %s's work wrote the plans %+v, want the one %+v, named by %s", child.key, plans, want, child.name)

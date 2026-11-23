@@ -49,7 +49,7 @@ func samisBoxAndPod(t *testing.T) (m *Machine, pod string, podKey *ecdsa.Private
 // request is pending. Only a pending request can be cancelled.
 func askPending(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey) Request {
 	t.Helper()
-	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "", nil)
+	req, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
 	if err != nil || req.State != "pending" {
 		t.Fatalf("Create(enrollment %s, DEEL_API_KEY) = %+v, %v; want it pending", enr, req, err)
 	}

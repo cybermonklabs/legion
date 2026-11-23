@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A failed attempt's error is the far side's own text, and PostgreSQL refuses a NUL and a byte
@@ -43,7 +45,7 @@ func TestRetryOutboxStoresAnInvalidFarSideErrorBoundedTo2048Runes(t *testing.T) 
 	lastErr := first + strings.Repeat(line, (1<<20)/len(line)+1)
 	nextAt := now.Add(5 * time.Minute)
 
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		return records.RetryOutbox(ctx, tx, id, leased.LeaseToken, nextAt, lastErr)
 	}); err != nil {
 		t.Fatalf("RetryOutbox with the far side's error of %d bytes: %v", len(lastErr), err)

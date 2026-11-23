@@ -7,6 +7,8 @@ import (
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // IssueDepthCap is the most links an issue may sit below its root: a create or reparent that
@@ -27,6 +29,11 @@ var issueDepthCapSQL = strconv.Itoa(IssueDepthCap)
 // server's one recursive ancestor walk: an issue event's ancestors (api's issueAncestors), a
 // reparent's cycle refusal (api's validateIssueParent, which reads it from the proposed parent)
 // and a block pointer's ancestor rule (docs' refuseBlockPointers) are all this query.
+//
+// It binds no visibility predicate and takes no acting person, because it lists no issue to a
+// reader: every caller is a rule of a write - those three, the near-copy gate's exclusion of the
+// new issue's chain and the scope a result's check resolves in - and a rule that skipped an issue
+// it may not see would let a cycle through that issue, or route an event short of its root.
 func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error) {
 	ancestors := []string{}
 	if key == "" {
@@ -55,7 +62,10 @@ func IssueAncestors(ctx context.Context, q Queryer, key string) ([]string, error
 // This is the server's one recursive descendant walk over whole subtrees: api's coverage read is
 // this query. api's issueChildrenStatement is a different read — one row per direct child, with
 // a rollup over that child's own subtree — and stays its own.
-func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, error) {
+//
+// It answers for who: an issue who may not see is not in the answer, and the walk does not pass
+// below it, so neither it nor the issues it holds are reached through it (VisibleKind).
+func IssueDescendants(ctx context.Context, q Queryer, who model.Actor, key string) ([]string, error) {
 	descendants := []string{}
 	if key == "" {
 		return descendants, nil
@@ -63,13 +73,14 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 	if err := q.QueryRow(ctx, `
 		with recursive descendants as (
 			select c.key, 1 as depth from issues c where c.parent_key = $1
+			  and `+VisibleKind("issue", "c.key", "$3")+`
 			union
 			select c.key, d.depth + 1
 			from issues c join descendants d on c.parent_key = d.key
-			where d.depth < $2
+			where d.depth < $2 and `+VisibleKind("issue", "c.key", "$3")+`
 		)
 		select coalesce(array_agg(key order by key), '{}') from descendants
-	`, key, IssueDepthCap).Scan(&descendants); err != nil {
+	`, key, IssueDepthCap, VisibilityArg(who)).Scan(&descendants); err != nil {
 		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
 	}
 	return descendants, nil
@@ -77,20 +88,23 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 
 // IssueRepoTerms resolve the repository of every issue of `subjects`, the one-column term of
 // issue keys each statement that splices these defines before them (api's issueComponentsTerms
-// reads the same one): the nearest issue on its parent chain (itself first) whose own `repo` is
-// set, else the project's default mapping, else null. One walk climbs every subject's chain
-// together and one join reads the defaults of every project at once, so a read of many issues
-// pays one set of joins rather than a walk and a default lookup per row. A chain stops climbing
-// at the first issue that names a repository or at IssueDepthCap links up, which writes never
-// let a chain pass (api's refuseParentTooDeep): at most IssueDepthCap+1 rows per subject, at
-// most one of them naming a repository, which is why `max` over a chain is the nearest
-// repository and needs no order. A walk that reaches the cap with links still above it sets
-// `too_deep`, and the reader of these columns refuses it rather than answer with the default
-// (api's repoScan.resolve, IssueRepository below). Such a chain is a loop, or one a direct
-// database write made, or one an earlier release's API built: migration 0113 refuses to apply
-// while one exists, but an earlier release left serving after it, against the rollout rule
-// (cmd/dispatch/README.md), can build one again. A paged listing resolves only the issues of
-// its page, so such a chain fails the page it is on and no other (api/issue_queries.go,
+// reads the same one): the nearest issue of its own project on its parent chain (itself first)
+// whose own `repo` is set, else the project's default repository (projects.default_repo), else
+// null. The walk carries the subject's project and climbs only to a parent of that project, so
+// it ends at the first ancestor of another project as at a root: one project's deployment works
+// each issue, and a parent of another project passes on no repository. One walk climbs every
+// subject's chain together and one join reads the defaults of every project at once, so a read
+// of many issues pays one set of joins rather than a walk and a default lookup per row. A chain
+// stops climbing at the first issue that names a repository or at IssueDepthCap links up, which
+// writes never let a chain pass (api's refuseParentTooDeep): at most IssueDepthCap+1 rows per
+// subject, at most one of them naming a repository, which is why `max` over a chain is the
+// nearest repository and needs no order. A walk that reaches the cap with links still above it
+// sets `too_deep`, and the reader of these columns refuses it rather than answer with the
+// default (api's repoScan.resolve, IssueRepository below). Such a chain is a loop, or one a
+// direct database write made, or one an earlier release's API built: migration 0113 refuses to
+// apply while one exists, but an earlier release left serving after it, against the rollout
+// rule (cmd/dispatch/README.md), can build one again. A paged listing resolves only the issues
+// of its page, so such a chain fails the page it is on and no other (api/issue_queries.go,
 // issueSummaryQuery).
 //
 // This is the server's one repository-resolution rule. The issue page resolves a page of issues
@@ -99,11 +113,11 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 // issue to the repository it is in, so the results read and the pull-request head attribution
 // can never disagree with the issue page.
 var IssueRepoTerms = `repo_chain as (
-		select s.key as start, i.parent_key, i.repo, 0 as depth
+		select s.key as start, i.project_key, i.parent_key, i.repo, 0 as depth
 		from subjects s join issues i on i.key = s.key
 		union all
-		select c.start, p.parent_key, p.repo, c.depth + 1
-		from repo_chain c join issues p on p.key = c.parent_key
+		select c.start, c.project_key, p.parent_key, p.repo, c.depth + 1
+		from repo_chain c join issues p on p.key = c.parent_key and p.project_key = c.project_key
 		where c.repo is null and c.depth < ` + issueDepthCapSQL + `
 	), repo as (
 		select c.start as key,
@@ -114,18 +128,18 @@ var IssueRepoTerms = `repo_chain as (
 	)`
 
 // IssueRepoJoin attaches IssueRepoTerms' answer to the issue aliased `i` in the enclosing query,
-// with the default mapping of every project those issues belong to, read once. One row per
-// issue: a key that is no issue has no chain and no row, which the columns below read as the
-// default alone.
+// with the project row of every project those issues belong to, for its default repository. One
+// row per issue: a key that is no issue has no chain and no row, which the columns below read as
+// the default alone.
 const IssueRepoJoin = `left join repo on repo.key = i.key
-	left join repo_projects repo_default on repo_default.project = i.project_key and repo_default.is_default`
+	left join projects repo_default on repo_default.key = i.project_key`
 
 // IssueRepoResolved is the repository an issue resolves to, over IssueRepoJoin: the nearest one
-// its chain names, else its project's default mapping, else null. A statement that holds an
+// its chain names, else its project's default repository, else null. A statement that holds an
 // issue to a repository rather than reading one — delivery's attributionHeld, which keeps a
 // pull request's issue to the repository the pull request is in — compares against this
 // expression, so it can never be a second copy of the rule drifting from this one.
-const IssueRepoResolved = `coalesce(repo.owned, repo_default.repo)`
+const IssueRepoResolved = `coalesce(repo.owned, repo_default.default_repo)`
 
 // IssueRepoTooDeep reports whether the walk ran out of depth with links still above it, which
 // every reader of the resolved repository refuses rather than answer with the project's default
@@ -148,11 +162,12 @@ var issueRepositoryQuery = `
 	where i.key = $1`
 
 // IssueRepository is the repository the issue key resolves to, read through q: its own, the
-// nearest one above it on `child_of`, or its project's default mapping; nil when none resolves,
-// and nil for an issue no row has and for the empty key. It runs IssueRepoTerms for one key, the
-// terms the issue reads run for a whole page, so it answers exactly what the issue page shows; a
-// chain the walk could not finish is an error rather than the project's default, which would be
-// a wrong answer. The results route makes this read for the issue of a check.
+// nearest one above it on `child_of` in its own project, or its project's default repository;
+// nil when none resolves, and nil for an issue no row has and for the empty key. It runs
+// IssueRepoTerms for one key, the terms the issue reads run for a whole page, so it answers
+// exactly what the issue page shows; a chain the walk could not finish is an error rather than
+// the project's default, which would be a wrong answer. The results route makes this read for
+// the issue of a check.
 func IssueRepository(ctx context.Context, q Queryer, key string) (*string, error) {
 	if key == "" {
 		return nil, nil
