@@ -181,10 +181,13 @@ export async function setListsState(
 /** Makes every page `context` opens from now on poll the agent list every `pollMs` in place of the
  *  shell's 15 s (`AGENT_REGISTRY_POLL_MS`, read through `agentRegistryPollMs` in
  *  `web/src/features/refs/agent-registry.ts`), so a row that waits for a change of the list to
- *  reach an open page waits one short poll. Set before the page loads, as the poller reads it. */
+ *  reach an open page waits one short poll. Set before the page loads, as the poller reads it.
+ *  `Reflect.set` rather than the property itself: the `Window` field is declared in that web
+ *  module, which the docs site's program, which reads this file for its screenshots, does not
+ *  load. */
 export async function pollAgentListEvery(context: BrowserContext, pollMs: number): Promise<void> {
   await context.addInitScript((ms) => {
-    window.__dispatchAgentRegistryPollMs = ms;
+    Reflect.set(window, "__dispatchAgentRegistryPollMs", ms);
   }, pollMs);
 }
 
