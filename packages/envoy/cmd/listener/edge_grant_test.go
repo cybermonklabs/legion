@@ -74,7 +74,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 	edge.edge = testEdgeGrant(t, harness.metrics)
 
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "edge-kept-handover-"+id.New())
-	if _, err := keepRoleMessage(shared, role, item); err != nil {
+	if _, err := keepRoleMessage(context.Background(), shared, role, item); err != nil {
 		t.Fatalf("keep the copy a shared listener keeps: %v; the listener log says why:\n%s", err, harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})
@@ -107,7 +107,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		t.Fatal("the edge started a sweep of the kept role lanes")
 	}
 	otherItem := listenerTestEnvelope(contracts.RoleTopicPrefix+other, "edge-kept-keep-"+id.New())
-	if _, err := keepForNextHolder(edge, other, otherItem); !errors.Is(err, errEdgeKeepsNothing) {
+	if _, err := keepForNextHolder(context.Background(), edge, other, otherItem); !errors.Is(err, errEdgeKeepsNothing) {
 		t.Fatalf("the edge's keep for role %s's next holder answered %v, want errEdgeKeepsNothing", other, err)
 	}
 	assertNothingKept(t, harness.client, other)
@@ -126,7 +126,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence == 0 {
 		t.Fatalf("role %s's drain cursor after the shared listener's handover is %+v (%v), want one written", role, cursor, err)
 	}
-	if _, err := keepForNextHolder(shared, other, otherItem); err != nil {
+	if _, err := keepForNextHolder(context.Background(), shared, other, otherItem); err != nil {
 		t.Fatalf("the shared listener kept nothing for role %s (%v), so the rig cannot see a keep:\n%s", other, err, harness.logs.String())
 	}
 }

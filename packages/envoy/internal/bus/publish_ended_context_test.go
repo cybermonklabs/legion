@@ -122,7 +122,7 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 
 // publishConfirmed refuses an ended context before it calls publish, a deadline already spent or a
 // cancel with the deadline still ahead, and answers it with the spent-window text wrapping the
-// context's error, which is ErrWindowEndedBeforePublish as well. It is the only check of the
+// context's error, marked ErrNotSent and ErrWindowEndedBeforePublish. It is the only check of the
 // context on the core path (PublishCoreContext reads it nowhere, and ensureConnWithContext returns
 // on a healthy connection without consulting it), so it is pinned on its own, both causes driven
 // directly: publish must not be called at all. The text is pinned because a deployed filter may
@@ -154,10 +154,10 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 		{"a spent deadline", past, context.DeadlineExceeded},
 		{"a cancelled context", cancelled, context.Canceled},
 	} {
-		err = client.publishConfirmed(ended.ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish)
+		err = client.publishConfirmed(ended.ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish, false)
 		want := `bus: window elapsed before the publish to "` + subject + `" was flushed: ` + ended.err.Error()
-		if err == nil || err.Error() != want || !errors.Is(err, ended.err) || !errors.Is(err, ErrWindowEndedBeforePublish) {
-			t.Fatalf("publishConfirmed with %s = %v, want %q wrapping %v and ErrWindowEndedBeforePublish", ended.name, err, want, ended.err)
+		if err == nil || err.Error() != want || !errors.Is(err, ended.err) || !errors.Is(err, ErrNotSent) || !errors.Is(err, ErrWindowEndedBeforePublish) {
+			t.Fatalf("publishConfirmed with %s = %v, want %q wrapping %v, ErrNotSent and ErrWindowEndedBeforePublish", ended.name, err, want, ended.err)
 		}
 		if published != 0 {
 			t.Fatalf("publishConfirmed with %s called publish %d times, want none", ended.name, published)
@@ -167,8 +167,8 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 	// A window that ends after the publish was made is not one that ended before it: the publish
 	// stand-in makes its publish only once the deadline has passed (it waits on the context's end, no
 	// span), so the publish happens and the flush that follows finds the window spent. The error is
-	// the spent window's, and not ErrWindowEndedBeforePublish, which would tell the listener the
-	// forward never left this process.
+	// the spent window's, and neither ErrNotSent nor ErrWindowEndedBeforePublish, which would tell
+	// the listener the forward never left this process and need not be sent again to the same holder.
 	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancelShort()
 	late := 0
@@ -176,20 +176,52 @@ func TestAPublishConfirmedWithASpentDeadlinePublishesNothing(t *testing.T) {
 		<-short.Done()
 		late++
 		return conn.PublishMsg(msg)
-	})
+	}, false)
 	if late != 1 {
 		t.Fatalf("publishConfirmed with a deadline that passes during the publish called publish %d times, want 1", late)
 	}
-	if lateErr == nil || errors.Is(lateErr, ErrWindowEndedBeforePublish) {
-		t.Fatalf("publishConfirmed whose window ended after its publish = %v, want the spent window's error, not ErrWindowEndedBeforePublish", lateErr)
+	if lateErr == nil || errors.Is(lateErr, ErrNotSent) || errors.Is(lateErr, ErrWindowEndedBeforePublish) {
+		t.Fatalf("publishConfirmed whose window ended after its publish = %v, want the spent window's error, neither ErrNotSent nor ErrWindowEndedBeforePublish", lateErr)
 	}
 
 	live, cancelLive := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelLive()
-	if err := client.publishConfirmed(live, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish); err != nil {
+	if err := client.publishConfirmed(live, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish, false); err != nil {
 		t.Fatalf("publishConfirmed with a deadline ahead: %v", err)
 	}
 	if published != 1 {
 		t.Fatalf("publishConfirmed with a deadline ahead called publish %d times, want 1", published)
+	}
+}
+
+// A cancel that lands after the publish was made does not cut the flush of a publish its caller
+// does not send again under a Nats-Msg-Id: the publish went out, and its subscribers receive it,
+// so publishConfirmed flushes it to the window's deadline and confirms it, and a caller that gives
+// back what it took for the send (the send route's rate-limit take) gives back nothing. The
+// control is a forward's flush (cut), which the same cancel ends with the cancel's error, not
+// marked ErrNotSent, since the publish was made. The publish stand-in cancels once its publish has
+// returned, so the cancel lands between the publish and its flush, which no span of time decides.
+func TestACancelAfterThePublishCutsOnlyAForwardsFlush(t *testing.T) {
+	client, err := ConnectOwningStream([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	conn := client.Conn
+	const subject = "notifications.team.cancelled-after-publish"
+	publishThenCancel := func(cut bool) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, func(msg *nats.Msg) error {
+			err := conn.PublishMsg(msg)
+			cancel()
+			return err
+		}, cut)
+	}
+	if err := publishThenCancel(false); err != nil {
+		t.Fatalf("a publish whose caller cancelled after it was made = %v, want nil: the cancel cut its flush", err)
+	}
+	if err := publishThenCancel(true); !errors.Is(err, context.Canceled) || errors.Is(err, ErrNotSent) {
+		t.Fatalf("a forward whose caller cancelled after its publish = %v, want the cancel's error, not ErrNotSent", err)
 	}
 }

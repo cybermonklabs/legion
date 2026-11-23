@@ -1,0 +1,15 @@
+kind: Fixed
+custom:
+  Issue: pr4342
+body: |-
+  The listener no longer loses a role message it takes from the role lane when NATS fails under
+  it. A forward, a claim or session read, or a keep that fails without the listener knowing that
+  the stream holds a copy - a dropped or stalled connection, a full stream, an id still in process,
+  a no-responders answer while a clustered stream changes its leader - holds the message, counted
+  in `envoy_role_forwards_outstanding`, and runs its delivery again under the same `Nats-Msg-Id`
+  until the stream stores it, for 71 hours at most, after which it is kept on the role's kept
+  lane; the bound is judged where each attempt starts, so a wait that ends late, or a forward that
+  queued behind its holder's earlier ones, makes no attempt past it. `delivery_failed` is published
+  only when a rule ends the message. At shutdown the listener keeps every role message it holds or
+  still has buffered, and logs at ERROR any its drain could not take. A publish to a role with no
+  live holder whose keep failed on NATS is answered 503 with `Retry-After` instead of 404.

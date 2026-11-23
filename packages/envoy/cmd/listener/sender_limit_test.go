@@ -373,9 +373,9 @@ func (rig *senderLimitRig) interceptForwards(intercept func(n int, forward func(
 	forwards := 0
 	delivery := *rig.deps.delivery
 	forwardRole := delivery.forwardRole
-	delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	delivery.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		forwards++
-		return intercept(forwards, func() (func() (bus.StoredAck, error), error) { return forwardRole(subject, item, msgID, timeout) })
+		return intercept(forwards, func() (func() (bus.StoredAck, error), error) { return forwardRole(ctx, subject, item, msgID, timeout) })
 	}
 	rig.deps.delivery = &delivery
 	return &forwards
@@ -1165,8 +1165,8 @@ func TestSenderLimitCost(t *testing.T) {
 		idempotencyKey := uuid.NewString()
 		earlier := listenerTestEnvelope(contracts.RoleTopicPrefix+role, publishDedupePrefix+idempotencyKey)
 		earlier.SourceSession = sender
-		if _, err := keepRoleMessage(*released.deps.delivery, role, earlier); err != nil {
-			t.Fatalf("keep the earlier attempt; the listener log says why:\n%s", released.harness.logs.String())
+		if _, err := keepRoleMessage(context.Background(), *released.deps.delivery, role, earlier); err != nil {
+			t.Fatalf("keep the earlier attempt: %v; the listener log says why:\n%s", err, released.harness.logs.String())
 		}
 		claimRoleFor(t, released.deps.registry, released.deps.sessions, holder, role, nil)
 		forwards := released.loseFirstForwardAck(func() {

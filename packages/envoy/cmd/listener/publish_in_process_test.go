@@ -378,13 +378,13 @@ func TestARoleResendWhoseFirstForwardEndsInProcessIsAnsweredByItsNextForward(t *
 	first := make(chan ended, 1)
 	var forwards atomic.Int32
 	forward := rig.d.delivery.forwardRole
-	rig.d.delivery.forwardRole = func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
+	rig.d.delivery.forwardRole = func(ctx context.Context, subject string, item contracts.Envelope, msgID string, timeout time.Duration) (func() (bus.StoredAck, error), error) {
 		n := forwards.Add(1)
 		if n != 2 {
-			return forward(subject, item, msgID, timeout)
+			return forward(ctx, subject, item, msgID, timeout)
 		}
 		started := time.Now()
-		wait, err := forward(subject, item, msgID, inProcessForwardWindow)
+		wait, err := forward(ctx, subject, item, msgID, inProcessForwardWindow)
 		if err != nil {
 			first <- ended{err, time.Since(started)}
 			return nil, err

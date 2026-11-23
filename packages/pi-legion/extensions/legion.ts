@@ -74,9 +74,9 @@ import { createModelFallback } from "../src/model-fallback";
 import { applySessionTitle, legionSessionTitle } from "../src/session-title";
 import { daemonLaunchedController } from "../src/slack-channels";
 import { createStallAborter } from "../src/stall-abort";
-import { createStallTeller } from "../src/stall-evidence";
 import { createStallExits } from "../src/stall-exits";
 import { createStallProcesses, type StallProcessesDeps } from "../src/stall-recovery";
+import { createStallTeller } from "../src/stall-teller";
 import { createLegionTool } from "../src/tools";
 import { createTurnOutcomeReporter } from "../src/turn-outcome";
 import {
@@ -433,6 +433,10 @@ export default function legionExtension(pi: PiApi): void {
     void stallWatch?.sweep();
   };
   const armStallWatch = (session: LegionSessionKind): void => {
+    // The detector's own book of open calls: the process host's first rung counts a tool's open
+    // calls in it, and the teller reads it before each re-send of a notice, which it ends once
+    // the notice's call is no longer there.
+    const openCalls = () => stallWatch?.openCalls() ?? [];
     stallWatch = createStallWatchdog({
       now: Date.now,
       limits,
@@ -448,7 +452,7 @@ export default function legionExtension(pi: PiApi): void {
           const file = paneContext?.sessionManager.getSessionFile();
           return file?.endsWith(".jsonl") === true ? file : undefined;
         },
-        openCalls: () => stallWatch?.openCalls() ?? [],
+        openCalls,
         backgroundJobs: () => paneContext?.getAsyncJobSnapshot?.()?.running ?? [],
         log: logger,
       }),
@@ -460,6 +464,7 @@ export default function legionExtension(pi: PiApi): void {
         readRecord: (issue, signal) => roleDaemon().record(issue, { signal }),
         publisher,
         appendEntry: (customType, data) => pi.appendEntry(customType, data),
+        openCalls,
         log: logger,
       }),
       aborter: createStallAborter({

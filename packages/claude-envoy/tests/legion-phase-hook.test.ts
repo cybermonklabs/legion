@@ -633,9 +633,9 @@ test("the architect is told at the threshold, asked again when the listener kept
       // The listener's "nothing was kept for that role". The notice is the shared one
       // (`createPhaseReminder`, packages/pi-shared/src/phase-reminder.ts), which sends no `keep`
       // field, so a listener keeps it for an architect role no live session holds and answers
-      // 202. It answers this 404 when its keep failed, and a listener of an earlier release
-      // answers it for a holder that is not live. Either way the architect was not told, and the
-      // next delivered reminder publishes again under the same key.
+      // 202. It answers this 404 when the bus refuses its keep however often it is sent, and a
+      // listener of an earlier release answers it for a holder that is not live. Either way the
+      // architect was not told, and the next delivered reminder publishes again under the same key.
       throw new EnvoyApiError({
         method: "POST",
         url: "http://listener.test/v1/messages/publish",

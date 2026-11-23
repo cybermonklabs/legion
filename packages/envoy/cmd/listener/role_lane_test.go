@@ -31,7 +31,10 @@ import (
 // A forward counts as outstanding until its outcome is reported (roleForwarder.finish), so that
 // gauge is what the test waits on. The live holder's wait counts itself settled and is then held
 // too, which puts the settle counter at its number while all 100 forwards are still outstanding -
-// the window a read of the settle counter took for the gauge - and the test alone ends it.
+// the window a read of the settle counter took for the gauge - and the test alone ends it. The
+// silent holder's waits end with the stream's refusal of the message itself, a sealed stream's
+// answer (bus.StreamRefusesMessage), which ends a forward for good (roleForwardEnded), so each is
+// reported failed rather than held for another attempt.
 func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOutcomes(t *testing.T) {
 	const perHolder = 50
 	harness := newListenerDeliveryHarness(t)
@@ -41,12 +44,15 @@ func TestRoleLaneForwarderPublishesEachHoldersForwardsInOrderWithoutWaitingForOu
 	published := map[string][]string{}
 	var settled atomic.Int32
 	cfg := harness.config
-	cfg.forwardRole = func(subject string, item contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
+	cfg.forwardRole = func(_ context.Context, subject string, item contracts.Envelope, _ string, _ time.Duration) (func() (bus.StoredAck, error), error) {
 		mu.Lock()
 		published[subject] = append(published[subject], item.EventID)
 		mu.Unlock()
 		if subject == silent {
-			return func() (bus.StoredAck, error) { <-release; return bus.StoredAck{}, bus.ErrForwardNotStored }, nil
+			return func() (bus.StoredAck, error) {
+				<-release
+				return bus.StoredAck{}, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, &natsgo.APIError{Code: 400, ErrorCode: 10109, Description: "invalid operation on sealed stream"})
+			}, nil
 		}
 		return func() (bus.StoredAck, error) { settled.Add(1); <-settling; return bus.StoredAck{}, nil }, nil
 	}

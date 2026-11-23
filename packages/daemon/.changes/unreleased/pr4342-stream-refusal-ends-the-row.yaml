@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+    The daemon now stops sending a message that the Envoy message bus stream refuses. The
+    listener answers such a send 409: the stream is sealed, or the message is past its size
+    limits, and the stream refuses it however often it is sent. Before, the daemon read that
+    answer as an ordinary failure and sent the message again without end. Now every outbox row
+    that publishes (architect notices, role messages, hook prompts, update asks, merge-queue
+    removals, merge-forward messages and controller notices) ends undelivered at that answer, with
+    one ERROR line that names the row, its issue, the topic or role, and the stream's reason. A
+    hook prompt, the one row that asks the listener to keep its message for a role with no live
+    holder, whose keep failed on the bus is answered `503` by this listener, with the maybe-stored
+    code when the keep's publish went unanswered, where it was answered `404`: the row is retried
+    on its backoff, where it ended undelivered as a role with no holder.
+time: 2026-11-18T05:02:50Z
+custom:
+    Issue: pr4342

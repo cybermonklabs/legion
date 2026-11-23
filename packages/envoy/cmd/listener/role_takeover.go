@@ -553,10 +553,11 @@ func writeTakeoverRecord(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 }
 
 // roleOfLaneTopic is the key of the claim a role lane's topic names (store.RoleClaimKeyOf), and
-// whether topic is a role's topic: the one rule the role lane's delivery (resolveRoleForward), the
-// session relay and a takeover pass (readRoleFrame) read a role topic by, since the relay and the
-// pass must read a frame's role as the lane that forwarded it did. The topic names the role in
-// either form: the key is the bare name, or <project>.<role> for a free-form role under a project.
+// whether topic is a role's topic: the one rule the role lane's delivery (deliverRoleMessage, and
+// the keep of a message it held, roleForwarder.keepHeld), the session relay and a takeover pass
+// (readRoleFrame) read a role topic by, since the relay and the pass must read a frame's role as
+// the lane that forwarded it did. The topic names the role in either form: the key is the bare
+// name, or <project>.<role> for a free-form role under a project.
 func roleOfLaneTopic(topic string) (string, bool) {
 	token, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
 	if !ok || token == "" {

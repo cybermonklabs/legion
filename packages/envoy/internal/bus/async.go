@@ -490,7 +490,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 			if tick := w.client.beforeRequestFlush; tick != nil {
 				tick()
 			}
-			flushed <- confirmFlushed(w.conn, subject, before, deadline)
+			window, cancel := context.WithDeadline(context.Background(), deadline)
+			defer cancel()
+			flushed <- confirmFlushed(window, w.conn, subject, before)
 		}()
 		// denied is the server's refusal of this very send, as the connection recorded it under
 		// the subject (deniedPublish). It is the only evidence of a denial the flush cannot name:
