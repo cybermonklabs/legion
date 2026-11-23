@@ -132,6 +132,10 @@ test("ci-pass-and-fail: k1 is go-checks' check, whose run at #702's head is in p
 // longer asks for. The reviewer and the architect of these worlds read the record a tester writes,
 // and the scorer's TestHandoff refuses such a body by name.
 test("the test record a heads world seeds holds no implementerProof, failures or failed", async () => {
+  // The hook's ports and NATS, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URL = "nats://127.0.0.1:1";
   for (const role of ["reviewer", "architect"]) {
     const { calls } = await world(role);
     const bodies = calls
