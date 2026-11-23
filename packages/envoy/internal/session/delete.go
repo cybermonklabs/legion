@@ -141,11 +141,14 @@ func (c DeleteConditions) keeps(stored SessionEntry) DeleteOutcome {
 // revision together, and the delete names that revision (nats.LastRevision), so a registration
 // that landed in between is kept rather than deleted on the strength of a value that is no longer
 // stored. JetStream refuses that delete with wrong last sequence (10071, which nats.go names
-// nats.ErrKeyExists), and the whole sequence runs once more: the common cause is the deleting
-// instance's own heartbeat landing between the read and the delete, and answering "kept" for it
-// would leave the predecessor's entry alive and turn the role claim that follows into a 409 for
-// no reason. A second lost compare-and-swap answers EntryKeptAfterLostRace and no error, the
-// outcome that says the entry stayed without claiming whose registration it is now.
+// nats.ErrKeyExists), and the whole sequence runs once more, reading the entry from the bucket
+// stream's leader this time (readForStop): the common cause is the deleting instance's own
+// heartbeat landing between the read and the delete, and answering "kept" for it would leave the
+// predecessor's entry alive and turn the role claim that follows into a 409 for no reason; the
+// other is a copy of a replicated bucket one write behind the leader, whose older entry's revision
+// the bucket refuses at every attempt that reads that copy again. A second lost compare-and-swap
+// answers EntryKeptAfterLostRace and no error, the outcome that says the entry stayed without
+// claiming whose registration it is now.
 //
 // EntryDeleted and no error means the entry is gone; any kept outcome and no error means the
 // entry stayed, and the caller keeps whatever it names; an error means the bucket did not answer,
@@ -161,7 +164,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	fence := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	for attempt := 0; ; attempt++ {
-		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return r.readForStop(ctx, kv, sessionID) })
+		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return r.readForStop(ctx, kv, sessionID, attempt > 0) })
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
@@ -218,8 +221,9 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			r.reconcileDeleted(ctx, kv, epoch, sessionID, max(fence, deletedAt))
 			return EntryDeleted, nil
 		case bus.IsCASConflict(err):
-			// A write landed between the read and the delete: the sequence runs once more for
-			// it, and after a retry the row is reported kept to that write.
+			// A write landed between the read and the delete, or the read was a copy's one write
+			// behind the leader: the sequence runs once more, reading the leader, and after a
+			// retry the row is reported kept to that write.
 			if attempt == 0 {
 				continue
 			}
@@ -230,15 +234,20 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	}
 }
 
-// readForStop is the read a conditional stop (DeleteIf) judges sessionID's entry by: the entry as
-// bus.KeyValue.ReadStored reads it, a value that is no record of sessionID read again from the
-// stream's leader (recordOf), and an entry the direct get answered absent read again from the
-// leader too (GetFromLeader). On a replicated bucket a copy that has not applied the registration
-// made a moment ago answers that the entry is absent, and the stop would answer EntryDeleted over
-// an entry the bucket still holds. An entry the direct get answered is judged as read: a copy
-// behind answers an older entry, whose fenced delete the bucket refuses, and the next attempt
-// reads again.
-func (r *SessionRegistry) readForStop(ctx context.Context, kv bus.KeyValue, sessionID string) (nats.KeyValueEntry, error) {
+// readForStop is the read a conditional stop (DeleteIf) judges sessionID's entry by. On the first
+// attempt it is the entry as bus.KeyValue.ReadStored reads it, a value that is no record of
+// sessionID read again from the stream's leader (recordOf), and an entry the direct get answered
+// absent read again from the leader too (GetFromLeader): on a replicated bucket a copy that has
+// not applied the registration made a moment ago answers that the entry is absent, and the stop
+// would answer EntryDeleted over an entry the bucket still holds. After a fenced delete the bucket
+// refused (fromLeader) it is the leader's read alone: a copy one write behind answers the entry as
+// it stood before the write, a direct get may reach that copy again, and a delete fenced on its
+// revision would be refused again, so the stop would answer EntryKeptAfterLostRace while the
+// leader holds an entry it may delete.
+func (r *SessionRegistry) readForStop(ctx context.Context, kv bus.KeyValue, sessionID string, fromLeader bool) (nats.KeyValueEntry, error) {
+	if fromLeader {
+		return kv.GetFromLeader(ctx, sessionID)
+	}
 	entry, err := kv.ReadStored(ctx, sessionID, r.recordOf(sessionID))
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return kv.GetFromLeader(ctx, sessionID)
