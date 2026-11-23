@@ -1,0 +1,202 @@
+package githubrest
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+)
+
+// A client with ETags sends every GET conditional on the ETag GitHub gave the last answer for the
+// same URL, and reads GitHub's 304 - which costs the installation's rate limit nothing - as that
+// answer, its next page too, so every page of a list GitHub has not changed reads as before. A
+// changed answer is read whole and kept in place of the old one, and an answer with no ETag keeps
+// nothing, so the read after it is whole again. A client without ETags sends no condition.
+func TestAConditionalGetReadsA304AsTheAnswerItKept(t *testing.T) {
+	var mu sync.Mutex
+	versions := map[string]string{"/repos/acme/widgets/pulls/86": "v1", "/repos/acme/widgets/rules/branches/main": "r1", "/repositories/42/rules/branches/main": "p1"}
+	var conditions []string
+	var notModified int
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		version, ok := versions[r.URL.Path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		conditions = append(conditions, r.Header.Get("If-None-Match"))
+		if r.URL.Path == "/repos/acme/widgets/rules/branches/main" {
+			w.Header().Set("Link", "<"+server.URL+`/repositories/42/rules/branches/main?per_page=100&page=2>; rel="next"`)
+		}
+		etag := `"` + version + `"`
+		if version != "none" {
+			w.Header().Set("ETag", etag)
+		}
+		if version != "none" && r.Header.Get("If-None-Match") == etag {
+			notModified++
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		switch r.URL.Path {
+		case "/repos/acme/widgets/pulls/86":
+			w.Write([]byte(`{"number":86,"mergeable_state":"` + version + `"}`))
+		default:
+			w.Write([]byte(`["` + version + `"]`))
+		}
+	}))
+	defer server.Close()
+	etags := NewETags(1 << 20)
+	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	conditional := client.WithETags(etags)
+	read := func(c Client) string {
+		t.Helper()
+		var pull struct {
+			State string `json:"mergeable_state"`
+		}
+		if err := c.Get(context.Background(), "/pulls/86", &pull); err != nil {
+			t.Fatalf("Get = %v", err)
+		}
+		return pull.State
+	}
+	last := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return conditions[len(conditions)-1]
+	}
+	unchanged := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return notModified
+	}
+
+	if got := read(conditional); got != "v1" || last() != "" {
+		t.Fatalf("the first read answered %q sending %q, want v1 and no condition: nothing is kept yet", got, last())
+	}
+	if got := read(conditional); got != "v1" || last() != `"v1"` || unchanged() != 1 {
+		t.Fatalf("the second read answered %q sending %q after %d 304s, want the kept v1 read from GitHub's 304", got, last(), unchanged())
+	}
+	mu.Lock()
+	versions["/repos/acme/widgets/pulls/86"] = "v2"
+	mu.Unlock()
+	if got := read(conditional); got != "v2" || last() != `"v1"` {
+		t.Fatalf("the read of a changed pull request answered %q sending %q, want v2 read whole", got, last())
+	}
+	if got := read(conditional); got != "v2" || last() != `"v2"` || unchanged() != 2 {
+		t.Fatalf("the read after the change answered %q sending %q, want v2 kept in v1's place and read from a 304", got, last())
+	}
+	mu.Lock()
+	versions["/repos/acme/widgets/pulls/86"] = "none"
+	mu.Unlock()
+	read(conditional)
+	if got := read(conditional); got != "none" || last() != "" {
+		t.Fatalf("the read after an answer with no ETag answered %q sending %q, want it read whole with no condition", got, last())
+	}
+	if got := read(client); got != "none" || last() != "" {
+		t.Fatalf("a client without ETags answered %q sending %q, want no condition", got, last())
+	}
+
+	for pass := 1; pass <= 2; pass++ {
+		got, err := GetPages[string](context.Background(), conditional, "/rules/branches/main")
+		if err != nil || !slices.Equal(got, []string{"r1", "p1"}) {
+			t.Fatalf("pass %d of GetPages = %v, %v; want both pages", pass, got, err)
+		}
+	}
+	if got := unchanged(); got != 4 {
+		t.Fatalf("GitHub answered %d reads 304, want the two pulls reads and both pages of the second pass", got)
+	}
+}
+
+// ETags holds at most its limit of answer bodies: keeping one past it drops the URL read least
+// recently, a body larger than the limit is not kept at all, and a URL read again is the most
+// recent one.
+func TestETagsDropsTheAnswerReadLeastRecently(t *testing.T) {
+	etags := NewETags(10)
+	etags.keep("a", `"a"`, []byte("aaaa"), "")
+	etags.keep("b", `"b"`, []byte("bbbb"), "")
+	if _, ok := etags.lookup("a"); !ok {
+		t.Fatalf("a is not kept, want both a and b under the limit")
+	}
+	etags.keep("c", `"c"`, []byte("cccc"), "")
+	if _, ok := etags.lookup("b"); ok {
+		t.Fatalf("b is kept after c went past the limit, want b, the one read least recently, dropped")
+	}
+	for _, url := range []string{"a", "c"} {
+		if kept, ok := etags.lookup(url); !ok || kept.etag != `"`+url+`"` {
+			t.Fatalf("%s is kept %t as %+v, want it kept", url, ok, kept)
+		}
+	}
+	etags.keep("big", `"big"`, []byte("more than ten bytes"), "")
+	if _, ok := etags.lookup("big"); ok {
+		t.Fatalf("a body over the limit is kept, want it left out")
+	}
+	if _, ok := etags.lookup("a"); !ok {
+		t.Fatalf("a body over the limit dropped a, want what was kept left as it was")
+	}
+}
+
+// GraphQL posts the query and its variables to the GraphQL endpoint under the installation token,
+// asking for the merge-info preview its merge-state reads need, and reads the answer's data. An
+// answer whose errors list is not empty is GraphQLErrors, naming each error's type and message; a
+// refusal is an *Answer, a rate limit as a REST call's is.
+func TestGraphQLReadsTheDataOrTheErrors(t *testing.T) {
+	var mu sync.Mutex
+	answer, status := `{"data":{"viewer":{"login":"legion-implementer[bot]"}}}`, http.StatusOK
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var sent struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/graphql" || r.Header.Get("Authorization") != "Bearer token" ||
+			r.Header.Get("Accept") != graphQLAccept || json.NewDecoder(r.Body).Decode(&sent) != nil ||
+			sent.Query != "query { viewer { login } }" || sent.Variables["owner"] != "acme" {
+			http.Error(w, `{"message":"bad request"}`, http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		w.WriteHeader(status)
+		w.Write([]byte(answer))
+	}))
+	defer server.Close()
+	if got := GraphQLEndpoint(""); got != "https://api.github.com/graphql" {
+		t.Fatalf("GraphQLEndpoint of the default root = %q", got)
+	}
+	client := Client{Token: "token", API: GraphQLEndpoint(server.URL + "/")}
+	query := func() (string, error) {
+		var data struct {
+			Viewer struct {
+				Login string `json:"login"`
+			} `json:"viewer"`
+		}
+		err := client.GraphQL(context.Background(), "query { viewer { login } }", map[string]any{"owner": "acme"}, &data)
+		return data.Viewer.Login, err
+	}
+	if login, err := query(); err != nil || login != "legion-implementer[bot]" {
+		t.Fatalf("GraphQL = %q, %v; want the data's login", login, err)
+	}
+
+	mu.Lock()
+	answer = `{"data":null,"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a Repository"},{"message":"and another"}]}`
+	mu.Unlock()
+	_, err := query()
+	var graphQLErrors GraphQLErrors
+	if !errors.As(err, &graphQLErrors) || len(graphQLErrors) != 2 || !strings.Contains(err.Error(), "NOT_FOUND: Could not resolve to a Repository") {
+		t.Fatalf("GraphQL with errors = %v, want GraphQLErrors naming both", err)
+	}
+
+	mu.Lock()
+	answer, status = `{"message":"You have exceeded a secondary rate limit"}`, http.StatusForbidden
+	mu.Unlock()
+	_, err = query()
+	var refused *Answer
+	if !errors.As(err, &refused) || !refused.RateLimited || refused.Budget != BudgetSecondary || refused.Path != "/graphql" {
+		t.Fatalf("GraphQL refused for a secondary limit = %v, want an *Answer that is the secondary rate limit", err)
+	}
+}

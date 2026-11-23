@@ -39,7 +39,8 @@ import (
 // the first read by its head and its time, which releases that first read so that the next read
 // that finds the head conflicting starts the two reads again, and then hands the head to the
 // runtime's merge-state reader to follow as it follows a climb that ended on `unknown`
-// (queueMergeStateFollow, followMergeState, dispatch://INFRA-4374 R4). Without those reads the
+// (queueMergeStateFollow, the reads of its base's batch, followBase, dispatch://INFRA-4374 R4).
+// Without those reads the
 // record would read whatever the last attempt left for as long as GitHub takes, and nothing would
 // read the head again until its next event. A last read that failed starts them too, since the
 // record then follows GitHub no better. Their CONFLICTING answer is applied as every read's is, so

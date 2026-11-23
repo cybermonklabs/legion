@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  After a push to a base branch, the daemon reads the merge state of the pull requests on that base
+  that the push owes a read in one batch: one GraphQL query for each page of a hundred of the
+  base's open pull requests, where it made one REST read, `GET /pulls/{number}`, of each pull
+  request before. Which pull requests a push owes a read is unchanged. A pull request GitHub still
+  answers `unknown` for is read again by the same query on the ladder's waits, five reads half a
+  minute apart and then after one, two, four and eight minutes and every ten minutes after, until
+  GitHub answers a state, its head moves or it closes, and one query covers every such pull request
+  of the base. A climb of one pull request, after a head push, a review round that waits on GitHub
+  or a restart, still reads that pull request alone, and hands a head GitHub still answers
+  `unknown` for to its base's batch. Each read is logged as before, and each batch logs
+  `github: read the merge state of the open pull requests on a base` with the base, how many pull
+  requests it owed a read and how many pages it read.
+
+  The daemon's reads of a pull request (`GET /pulls/{number}`) and of its base's rules
+  (`GET /rules/branches/{base}`, `GET /branches/{base}`) are conditional: each sends the ETag of
+  the last answer for the same URL, and GitHub's `304 Not Modified`, which counts against no rate
+  limit, is read as that answer. The batch query spends the implement App installation's GraphQL
+  budget, which GitHub keeps apart from its REST budget.

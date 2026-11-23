@@ -142,10 +142,11 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // forward once the issue reaches one that does, with no change in GitHub's answer to key off.
 //
 // What a confirming read costs is one fact and one round settlement each time: each climb of the
-// merge-state ladder makes at most mergeStateLadderReads reads, a climb that ends on `unknown` is
-// followed by reads at a wait that doubles to mergeStateFollowWaits of the ladder's waits
-// (followMergeState), and each request for a read starts at most one more climb, whether it
-// arrives during a climb or its follow (mergeStateEnds) or after the ladder has ended
+// merge-state ladder makes at most mergeStateLadderReads reads, of one pull request or of a base's
+// batch, a climb that ends on `unknown` is followed by reads of its base's batch at a wait that
+// doubles to mergeStateFollowWaits of the ladder's waits (followBase), and each request for a read
+// starts at most one more climb, whether it arrives during a climb or a follow (mergeStateEnds,
+// baseLadderNext) or after the ladder has ended
 // (readMergeStates); the review-stuck notice such a settlement would write is deduplicated by the
 // round's own mark (record.ReviewDecision.ToldStuckHead); and a settlement that finds the round
 // mergeable advances the issue, which is the right answer whenever it is true.

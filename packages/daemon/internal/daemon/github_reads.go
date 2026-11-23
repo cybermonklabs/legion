@@ -134,6 +134,12 @@ func (p githubPullRequest) mergeState() record.MergeState {
 // built, so the per-issue read's further reads of the same pull request reuse it rather than
 // minting a second token.
 //
+// The read is conditional (githubrest.Client.ETags, the runtime's etags): it carries the ETag of
+// GitHub's last answer for the same pull request, and GitHub's 304, which costs the installation's
+// rate limit nothing, answers that same pull request again. The caller applies it as the answer it
+// is, so a 304 leaves the record holding what it held and only moves the time it was read
+// (applyMergeability). The client it returns sends its further reads whole.
+//
 // The read is made of the repository GitHub serves the recorded one under (repositories.serving),
 // as every GitHub call the daemon makes for a recorded tree is: a record keeps the name it was
 // written under until this release's one-time rename pass writes a pair's `to` over it
@@ -151,11 +157,15 @@ func (w *workflowRuntime) readPullRequest(ctx context.Context, pr record.PullReq
 		return githubrest.Client{}, githubPullRequest{}, fmt.Errorf("mint the implement App token for %s: %w", repository.Owner(), err)
 	}
 	var pull githubPullRequest
-	if err := github.Get(ctx, fmt.Sprintf("/pulls/%d", pr.Number), &pull); err != nil {
+	if err := github.WithETags(w.etags).Get(ctx, fmt.Sprintf("/pulls/%d", pr.Number), &pull); err != nil {
 		return githubrest.Client{}, githubPullRequest{}, err
 	}
 	return github, pull, nil
 }
+
+// etagBytes bounds the answer bodies the runtime keeps for its conditional reads (etags): about a
+// thousand pull requests of the size GitHub usually answers, and every base's rules beside them.
+const etagBytes = 16 << 20
 
 // implementClient is the client for repository's REST API on the implement App's installation
 // token for that repository's owner account: the App every read of an issue's own repository is

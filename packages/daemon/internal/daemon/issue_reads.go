@@ -221,7 +221,8 @@ func issueRecord(ctx context.Context, pool *store.Pool, records record.Store, ke
 //
 // A read that finds GitHub still computing the merge of an open pull request's head - merge state
 // `unknown`, or `mergeable` null - queues a ladder of reads for the issue (queueMergeState), which
-// climbs and then follows the head while GitHub goes on answering `unknown` (followMergeState).
+// climbs and then hands the head to the reads of its base, which follow it while GitHub goes on
+// answering `unknown` (followOnBase, followBase).
 // The reads that followed GitHub's merge state before the daemon stopped were held in memory, and
 // this is what goes on with them after a restart (dispatch://INFRA-4374 R4). GitHub's `unknown` is
 // the whole reason: no rule of classify.MergeStateReadOwed is read for it, and a read that answers

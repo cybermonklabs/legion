@@ -48,7 +48,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -706,10 +708,13 @@ func mergeWaitShort(sha string) string {
 // githubPullRequest) — its number, its state, the base it sits on, the head it stands at, GitHub's
 // clock for it, its lazily computed `mergeable` and `mergeable_state`, GitHub's own merge state
 // for that head — with its reviews as none (readReviews) and the branch's open pull requests as
-// none, which is what the per-issue read lists for an issue whose record holds none open. It also
-// answers what a launch reads: any repository, with default branch main, and a GraphQL root that
-// knows no pull request. Anything else is answered 404, so a read this proof did not foresee fails
-// the step that waited on it rather than reaching github.com.
+// none, which is what the per-issue read lists for an issue whose record holds none open. Its
+// GraphQL endpoint answers a read of mergeWaitBase's batch (the daemon's openPullRequestsQuery)
+// with every pull request it serves, each as GraphQL spells the same answer and each counted as
+// answered, or 503 while any of them is withheld, since GitHub answers a query whole or not at
+// all; every other query it answers as knowing no pull request. It also answers what a launch
+// reads: any repository, with default branch main. Anything else is answered 404, so a read this
+// proof did not foresee fails the step that waited on it rather than reaching github.com.
 //
 // Every field a step sets is set under this mutex, which the answer is written under too, so a
 // step that sets a head and a state sets them for every read after it and none before it.
@@ -811,6 +816,10 @@ func (g *mergeWaitGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
+		if base, batch := liveBatchQuery(req); batch {
+			g.answerBatch(w, base)
+			return
+		}
 		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		return
 	}
@@ -820,6 +829,36 @@ func (g *mergeWaitGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+}
+
+// answerBatch writes the stand-in's answer to a read of base's batch: every pull request it
+// serves on mergeWaitBase, by number, each counted as answered, or 503 with each withheld one
+// counted as refused while any is withheld.
+func (g *mergeWaitGitHub) answerBatch(w http.ResponseWriter, base string) {
+	var nodes []map[string]any
+	if base != mergeWaitBase {
+		_, _ = io.WriteString(w, liveBatchAnswer(g.t, nodes))
+		return
+	}
+	numbers := slices.Sorted(maps.Keys(g.pulls))
+	withheld := false
+	for _, number := range numbers {
+		if pull := g.pulls[number]; pull.withheld {
+			pull.refused++
+			withheld = true
+		}
+	}
+	if withheld {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"message":"Server Error"}`)
+		return
+	}
+	for _, number := range numbers {
+		pull := g.pulls[number]
+		pull.answered++
+		nodes = append(nodes, liveBatchNode(number, pull.sha, pull.branch, pull.mergeable, pull.state))
+	}
+	_, _ = io.WriteString(w, liveBatchAnswer(g.t, nodes))
 }
 
 // answer writes the stand-in's answer to a GET of path, and says whether it had one.

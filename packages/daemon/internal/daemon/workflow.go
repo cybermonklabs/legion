@@ -293,23 +293,37 @@ type workflowRuntime struct {
 	handedOff *wakeSet[string]
 	// mergeStates is each issue a fact owes a read of GitHub's merge state (queueMergeState, the
 	// engine's Config.ReadMergeState: a round waiting on GitHub's answer, and by the gate
-	// classify.MergeStateReadOwed a head move in implementing through merging or a base push in
-	// testing through merging), each the start read found GitHub still computing
-	// (readIssuesAtStart), and each a second read of a conflicting head left reading no answer
-	// (queueMergeStateFollow), that readMergeStates has not started a ladder for yet;
-	// mergeStateQueued is what each of them asked for, the head its ladder starts by following or
-	// "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue whose ladder is still
-	// reading, a climb or a follow (mergeStateRun), which is why a second fact of an issue already
+	// classify.MergeStateReadOwed a head move in implementing through merging), each the start read
+	// found GitHub still computing (readIssuesAtStart), and each a second read of a conflicting head
+	// left reading no answer (queueMergeStateFollow), that readMergeStates has not started a ladder
+	// for yet; mergeStateQueued is what each of them asked for, the head its ladder hands to the
+	// reads of its base or "" for a climb (queueMergeStateFollow); and mergeStateRunning each issue
+	// whose ladder is still climbing (mergeStateRun), which is why a second fact of an issue already
 	// being read starts no second ladder. mergeStateRetry is how long a ladder waits between reads
 	// of a state GitHub answers `unknown` for, the unit the reads after a ladder wait in, and how
 	// long the outbox's merge-queue read and second conflict read wait before they read again
 	// (mergeStateWait, which attach hands the outbox), mergeStateLadderWait when zero, which a test
 	// shortens (overrides.mergeStateRetry).
+	//
+	// baseReads is each base of a repository whose open pull requests the daemon reads in one batch
+	// (merge_state_reads.go's baseRead): a push to that base owes them a read (queueBaseMergeStates,
+	// the engine's Config.ReadBaseMergeStates), or a ladder handed it a head GitHub still answers
+	// `unknown` for (followOnBase). baseReadOf is the base each owed issue is read under, and
+	// baseWake the bases readBaseMergeStates has not started a batch ladder for yet. All of it is
+	// guarded by mergeStateMu, so a request moves an issue between a ladder of its own and its
+	// base's batch under one lock.
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateQueued  map[string]string
 	mergeStateRunning map[string]*mergeStateRun
 	mergeStateRetry   time.Duration
+	baseWake          *wakeSet[string]
+	baseReads         map[string]*baseRead
+	baseReadOf        map[string]string
+	// etags is what the conditional reads of a pull request and of its base's rules keep
+	// (githubrest.ETags, readPullRequest, readBaseRules): GitHub answers an unchanged one 304, which
+	// costs the implement App's installation none of its rate limit.
+	etags *githubrest.ETags
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -669,8 +683,8 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
-		mergeStateRunning: map[string]*mergeStateRun{},
-		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
+		mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](), etags: githubrest.NewETags(etagBytes),
+		controllerWake: cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
@@ -702,6 +716,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread = w, w.noteUnread
 	engineCfg.ReadMergeState, engineCfg.HearRepository = w.queueMergeState, w.hearRecorded
+	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one

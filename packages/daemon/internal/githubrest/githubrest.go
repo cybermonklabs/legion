@@ -29,10 +29,23 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 
 // Client calls GitHub with an installation token. Its API is a repository's REST base
 // (RepositoryAPI), which Get, Post, GetPages and GetListPages take paths under; an empty endpoint
-// is api.github.com.
+// is api.github.com. A client whose API is GitHub's GraphQL endpoint (GraphQLEndpoint) sends
+// queries (GraphQL) instead.
+//
+// ETags, when set, makes every GET the client sends conditional: it carries the ETag GitHub last
+// answered for the same URL (If-None-Match), and GitHub's 304, which says the answer has not
+// changed and costs none of the token's rate limit, is read as that earlier answer (ETags.keep).
+// Nil sends every GET whole. WithETags sets it for one read.
 type Client struct {
 	Token string
 	API   string
+	ETags *ETags
+}
+
+// WithETags is the client with every GET conditional on what etags kept (Client.ETags).
+func (c Client) WithETags(etags *ETags) Client {
+	c.ETags = etags
+	return c
 }
 
 // Get reads path under the client's REST base into into. An answer other than 2xx is an *Answer.
@@ -153,11 +166,21 @@ func getPages[T any](ctx context.Context, c Client, path, field string) ([]T, er
 	return all, nil
 }
 
+// restAccept is the media type every REST call asks for.
+const restAccept = "application/vnd.github+json"
+
 // call sends method to target, with body as JSON when it is not nil, reads a 2xx answer into into
 // when into is not nil, and returns the next page's URL its Link header names ("" for none) and
 // GitHub's response headers. An answer other than 2xx is an *Answer; when it is a rate limit, it
-// names the budget spent, the REST API's core budget when GitHub names no other.
+// names the budget spent, the REST API's core budget when GitHub names no other. A GET of a client
+// with ETags is conditional (Client.ETags): GitHub's 304 is read as the answer kept for target, its
+// body and its next page.
 func (c Client) call(ctx context.Context, method, target string, body []byte, into any) (string, http.Header, error) {
+	return c.exchange(ctx, method, target, body, into, restAccept)
+}
+
+// exchange is call with accept as the request's Accept header.
+func (c Client) exchange(ctx context.Context, method, target string, body []byte, into any, accept string) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
 		payload = bytes.NewReader(body)
@@ -167,9 +190,17 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 		return "", nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
-	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Accept", accept)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	var kept etagEntry
+	conditional := method == http.MethodGet && c.ETags != nil
+	if conditional {
+		var found bool
+		if kept, found = c.ETags.lookup(target); found {
+			request.Header.Set("If-None-Match", kept.etag)
+		}
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -180,13 +211,24 @@ func (c Client) call(ctx context.Context, method, target string, body []byte, in
 	if err != nil {
 		return "", response.Header, err
 	}
+	if response.StatusCode == http.StatusNotModified && kept.etag != "" {
+		// Unchanged since the answer kept for target: that answer is GitHub's answer now.
+		if into == nil {
+			return kept.next, response.Header, nil
+		}
+		return kept.next, response.Header, json.Unmarshal(kept.body, into)
+	}
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return "", response.Header, c.refusal(method, request.URL, response, answer)
 	}
-	if into == nil {
-		return nextPage(response.Header.Get("Link")), response.Header, nil
+	next := nextPage(response.Header.Get("Link"))
+	if conditional {
+		c.ETags.keep(target, response.Header.Get("ETag"), answer, next)
 	}
-	return nextPage(response.Header.Get("Link")), response.Header, json.Unmarshal(answer, into)
+	if into == nil {
+		return next, response.Header, nil
+	}
+	return next, response.Header, json.Unmarshal(answer, into)
 }
 
 // refusal is response, GitHub's answer other than 2xx to method at target, as the *Answer its
