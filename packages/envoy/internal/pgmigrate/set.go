@@ -4,7 +4,9 @@
 // (Identity), and apply every version they have not recorded, so both trust the set they embed to
 // give each version one file, and both run a migration's statements under locks that production's
 // reads and writes queue behind. Load refuses a set either runner would apply other than as
-// written, before the runner opens a transaction; Reconcile refuses, before the runner applies
+// written, before the runner opens a transaction, and LoadBuilt, which Dispatch's runner reads its
+// embedded set with, makes every check of Load's but the parse of a non-transactional statement,
+// which ExecNonTransactional makes before it runs one; Reconcile refuses, before the runner applies
 // anything, a database whose version table records a version under an identity other than the
 // file's own and other than one the file replaces; Exec applies each migration with its lock waits
 // bounded by LockTimeout, and names the lock a migration gave up on and the sessions that held
@@ -38,8 +40,9 @@ type Migration struct {
 	// one an earlier text or name of this version had: a database that records one of them is
 	// accepted, and its row left as it is, so the release that recorded it still boots (Reconcile).
 	Replaces []Identity
-	// NonTransactional selects a single idempotent, non-unique CREATE INDEX CONCURRENTLY outside
-	// a transaction, declared by -- pgmigrate:non-transactional on the file's first line.
+	// NonTransactional says the file's first line is -- pgmigrate:non-transactional, which selects
+	// execution outside a transaction. Load and ExecNonTransactional check that the statement is a
+	// single idempotent, non-unique CREATE INDEX CONCURRENTLY; LoadBuilt reads the marker alone.
 	// Runners without that execution mode must refuse it before applying anything.
 	NonTransactional bool
 	// Census is the text of <version>_<name>.census.sql when the migration declares one: one
@@ -93,12 +96,13 @@ func Load(fsys fs.FS, dir string) ([]Migration, error) {
 // and which a test of the runner's package holds to Load at every change. It makes every check
 // Load makes but one: it does not parse each non-transactional migration's statement with
 // libpg_query (concurrentIndex), which runs as WebAssembly in this process and compiles that
-// module on its first parse, about 1.7 s of CPU and 220 MiB of heap, at every boot of the runner
-// whether or not the database owes a migration. ExecNonTransactional parses the statement, and
-// refuses it, before it runs, so a migration this admits is applied only as Load would admit it;
-// what a runner gives up is Load's refusal of the whole set before it applies anything, which the
-// package's test makes of the embedded set instead. A set read from anywhere else goes through
-// Load.
+// module on its first parse, about 1.7 s of CPU and 220 MiB of heap: Load paid that at every
+// start of the runner, whether or not the database owed a migration. ExecNonTransactional parses
+// the statement, and refuses it, before it runs (TestExecNonTransactionalRefusesWhatLoadRefuses),
+// so a migration this admits is applied only as Load would admit it. What a runner gives up is
+// Load's refusal of the whole set before it applies anything: a bad marked migration is refused
+// at its turn, after the pending migrations before it have been applied. The runner's package
+// test makes the whole check of the embedded set instead, so such a set does not ship.
 func LoadBuilt(fsys fs.FS, dir string) ([]Migration, error) {
 	return load(fsys, dir, false)
 }

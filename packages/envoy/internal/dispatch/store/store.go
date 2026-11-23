@@ -25,8 +25,10 @@ type Store struct {
 	Pool *Pool
 }
 
-// Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
-// states why the pattern is all:migrations and holds the tree to it.
+// Every file in migrations, so the store's tests judge each one with pgmigrate.Load
+// (TestTheEmbeddedMigrationsPassEveryCheckLoadMakes) and a start reads each one with
+// pgmigrate.LoadBuilt; pgmigratetest.CheckEmbedsEveryFile states why the pattern is all:migrations
+// and holds the tree to it.
 //
 //go:embed all:migrations
 var migrationFiles embed.FS
@@ -128,38 +130,23 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 // reason lockMigrations gives. It refuses a set pgmigrate.LoadBuilt refuses before touching the
 // database, refuses a database whose schema_migrations records a version under another file's
 // identity before applying anything (prepareVersionTable), and bounds every migration's lock
-// waits by LockTimeout.
-//
-// The set is the one this binary embeds, so it reads it with pgmigrate.LoadBuilt, which leaves
-// out Load's parse of the non-transactional migrations with libpg_query: that parse compiled
-// libpg_query's WebAssembly at every boot, about 1.7 s of CPU and 220 MiB of heap, for a set
-// that cannot change after the build. TestTheEmbeddedMigrationsPassEveryCheckLoadMakes holds the
-// embedded set to the whole of Load, and a migration not yet applied is still parsed, and refused,
-// before its statement runs (pgmigrate.ExecNonTransactional).
+// waits by LockTimeout. A marked migration whose statement is not one idempotent concurrent index
+// build is refused at its turn, after the pending migrations before it have been applied
+// (pgmigrate.LoadBuilt says why the start reads the set that way).
 func (s *Store) Migrate(ctx context.Context) error {
-	migrations, err := pgmigrate.LoadBuilt(migrationFiles, "migrations")
-	if err != nil {
-		return fmt.Errorf("migrations refused, none applied: %w", err)
-	}
-	return s.apply(ctx, migrations)
+	return s.migrate(ctx, migrationFiles)
 }
 
 // versionTable is the table this runner records each applied migration in.
 const versionTable = "schema_migrations"
 
-// migrate applies the set fsys holds, read with the whole of pgmigrate.Load: a set a test builds.
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
-	migrations, err := pgmigrate.Load(fsys, "migrations")
-	if err != nil {
-		return fmt.Errorf("migrations refused, none applied: %w", err)
-	}
-	return s.apply(ctx, migrations)
-}
-
-// apply applies migrations, a set Load or LoadBuilt read, in their order.
-func (s *Store) apply(ctx context.Context, migrations []pgmigrate.Migration) error {
 	if s == nil || s.Pool == nil {
 		return fmt.Errorf("migrate: store pool required")
+	}
+	migrations, err := pgmigrate.LoadBuilt(fsys, "migrations")
+	if err != nil {
+		return fmt.Errorf("migrations refused, none applied: %w", err)
 	}
 	if err := s.prepareVersionTable(ctx, migrations); err != nil {
 		return err

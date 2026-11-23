@@ -1,9 +1,11 @@
 kind: Changed
 body: |-
-  A Dispatch server whose database owes no migration starts in about a third of the time and
-  without its 220 MiB start-up heap: a start no longer parses every migration it embeds with
-  libpg_query, whose WebAssembly it compiled to do so. A test holds the embedded set to every check
-  the start made, and a migration not yet applied is still parsed, and refused, before it runs.
+  A Dispatch server starts faster and with a smaller heap: a start no longer parses the
+  migrations it embeds with libpg_query, whose WebAssembly it compiled to do so. A test checks the
+  embedded migrations as the start did. A migration that builds an index outside a transaction is
+  still checked, and refused, before its statement runs, so a bad one is now refused at its turn,
+  after the pending migrations before it have been applied, where a start used to refuse the whole
+  set first.
 time: 2026-11-22T22:01:47Z
 custom:
     Issue: dispatch-boot-no-pgquery
