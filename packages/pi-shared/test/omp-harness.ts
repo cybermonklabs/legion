@@ -382,6 +382,9 @@ export interface Rpc {
    * exited, so a case that expects it alive races it against its own clock.
    */
   readonly exited: Promise<number>;
+  /** The process id of the omp it started: the one process whose own steps a timer record a
+   *  case hands it through the environment is read for. */
+  readonly pid: number;
 }
 
 /**
@@ -450,6 +453,7 @@ export function spawnRpc(
     },
     closed,
     exited: child.exited,
+    pid: child.pid,
   };
 }
 

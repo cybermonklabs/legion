@@ -279,6 +279,36 @@ export function recordTimers(
   };
 }
 
+/** The preload a process takes the record through, as `BUN_OPTIONS` names it. */
+const PRELOAD_FILE = "timer-record-preload.ts";
+/** The variable a compiled Bun program reads its runtime options from, the preload among them. */
+const BUN_OPTIONS = "BUN_OPTIONS";
+
+/**
+ * Removes the record's two variables, and any `--preload` of `timer-record-preload.ts` from
+ * `BUN_OPTIONS` (the variable itself once nothing else is left in it), from this process's
+ * environment, which every child it starts inherits.
+ */
+function forgetRecordEnvironment(): void {
+  delete process.env[TIMER_RECORD_FILE];
+  delete process.env[TIMER_RECORD_ROOTS];
+  const options = process.env[BUN_OPTIONS];
+  if (options === undefined) return;
+  const kept: string[] = [];
+  const words = options.split(/\s+/).filter((word) => word !== "");
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index] ?? "";
+    const next = words[index + 1] ?? "";
+    if (word === "--preload" && next.endsWith(PRELOAD_FILE)) {
+      index += 1;
+    } else if (!(word.startsWith("--preload=") && word.endsWith(PRELOAD_FILE))) {
+      kept.push(word);
+    }
+  }
+  if (kept.length === 0) delete process.env[BUN_OPTIONS];
+  else process.env[BUN_OPTIONS] = kept.join(" ");
+}
+
 /**
  * Installs the record as the preload does, when `env` names a file (`TIMER_RECORD_FILE`) and the
  * program's roots (`TIMER_RECORD_ROOTS`): each step is appended to the file as one JSON line. A
@@ -287,6 +317,12 @@ export function recordTimers(
  * its canary at that moment (`probeCanary`; `stampAfter` reads the stamps). The stamp runs on the
  * process's own `setInterval`, taken before the record wraps it, so it is never one of the
  * program's timers; the interval is unref'd, so it keeps no process alive.
+ *
+ * Each step it writes carries this process's id (`pid`), and once it has read them it removes
+ * both variables, and its own `--preload` from `BUN_OPTIONS`, from `process.env`: a child the
+ * program starts inherits none of them, so it writes nothing into the record, and a child that is
+ * handed them anyway writes steps under its own id, which a reader that takes one process's steps
+ * (`stepsOf`) leaves out.
  *
  * The writer is `@legion/envoy-client/json-line-record`'s `jsonLineRecord` written again, and the
  * copy stays: that one shared form sits in `@legion/envoy-client` because the program seams that
@@ -301,10 +337,12 @@ export function recordTimersFromEnvironment(env: Record<string, string | undefin
   const file = env[TIMER_RECORD_FILE];
   const roots = (env[TIMER_RECORD_ROOTS] ?? "").split(":").filter((root) => root !== "");
   if (file === undefined || file === "" || roots.length === 0) return;
+  forgetRecordEnvironment();
   const realSetInterval = globalThis.setInterval;
+  const pid = process.pid;
   const write = (step: TimerStep): void => {
     try {
-      appendFileSync(file, `${JSON.stringify(step)}\n`);
+      appendFileSync(file, `${JSON.stringify({ ...step, pid })}\n`);
     } catch {
       // The test's record only: a write it cannot make changes nothing the program does.
     }
@@ -405,4 +443,18 @@ export function timersBetween(
     .filter(isArming)
     .filter((step) => fired.has(step.timer))
     .map(({ delayMs, from }) => ({ delayMs, from }));
+}
+
+/**
+ * The steps of the record `steps` that process `pid`'s writer wrote, and every mark a test wrote
+ * into it, in order: what a record shared with another writer says of that one process. A step
+ * with no `pid` is none of `pid`'s.
+ */
+export function stepsOf(steps: readonly unknown[], pid: number): unknown[] {
+  return steps.filter(
+    (step) =>
+      typeof step === "object" &&
+      step !== null &&
+      ("mark" in step || ("pid" in step && step.pid === pid))
+  );
 }

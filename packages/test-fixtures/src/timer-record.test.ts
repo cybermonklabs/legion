@@ -5,6 +5,7 @@ import { temporaryDirectories } from "./temporary-directories";
 import {
   placeArming,
   recordTimers,
+  stepsOf,
   TIMER_RECORD_FILE,
   TIMER_RECORD_ROOTS,
   type TimerStep,
@@ -84,6 +85,51 @@ test("the canary names node:timers/promises only where the record came before th
     "setInterval",
     "Bun.sleep",
     "AbortSignal.timeout",
+  ]);
+});
+
+// A recorded process hands the record to no child: once its preload has read them, the two
+// variables and its own `--preload` are gone from its environment, so a child it starts writes
+// nothing into the record. And every step its writer writes carries its process id, so a reader
+// that takes one process's steps (`stepsOf`) leaves out a child that was handed them anyway.
+test("a recorded process hands the record to no child, and its steps carry its process id", () => {
+  const root = makeDirectory("child");
+  const program = join(root, "program.ts");
+  const record = join(root, "record.jsonl");
+  writeFileSync(
+    program,
+    `const child = Bun.spawnSync([process.execPath, "-e", ${JSON.stringify(
+      "console.log(JSON.stringify([process.env.LEGION_TIMER_RECORD_FILE, process.env.LEGION_TIMER_RECORD_ROOTS, process.env.BUN_OPTIONS]))"
+    )}]);
+console.log(JSON.stringify({ pid: process.pid, child: child.stdout.toString().trim() }));
+setTimeout(() => undefined, 5);
+`
+  );
+  const run = Bun.spawnSync([process.execPath, program], {
+    cwd: root,
+    env: {
+      ...process.env,
+      [TIMER_RECORD_FILE]: record,
+      [TIMER_RECORD_ROOTS]: root,
+      BUN_OPTIONS: `--preload ${PRELOAD} --smol`,
+    },
+  });
+  expect(run.exitCode, `${run.stdout.toString()}${run.stderr.toString()}`).toBe(0);
+  const said = JSON.parse(run.stdout.toString().trim().split("\n").at(-1) ?? "{}") as {
+    readonly pid: number;
+    readonly child: string;
+  };
+  // The child sees neither variable, and BUN_OPTIONS without the preload but with what else it held.
+  expect(JSON.parse(said.child)).toEqual([null, null, "--smol"]);
+  const steps = readFileSync(record, "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as { readonly pid?: number });
+  expect(steps.length, "the record's steps").toBeGreaterThan(0);
+  expect(steps.filter((step) => step.pid !== said.pid)).toEqual([]);
+  expect(stepsOf([...steps, { alive: 1, pid: said.pid + 1 }, { mark: "m" }], said.pid)).toEqual([
+    ...steps,
+    { mark: "m" },
   ]);
 });
 

@@ -24,6 +24,7 @@ import {
   markIndex,
   markRecord,
   stampAfter,
+  stepsOf,
   TIMER_APIS,
   TIMER_RECORD_FILE,
   TIMER_RECORD_ROOTS,
@@ -557,7 +558,13 @@ async function startRolePane(): Promise<RolePane> {
         `the pane's timer record ${timerRecordFile} could not be read: ${String(error)}`
       );
     }
-    return completeLines(text).map((line) => JSON.parse(line) as TimerStep);
+    // Only the pane's own steps, and the case's marks: a child of the pane that writes into the
+    // same file (the record hands its variables to none, but a child given them anyway would)
+    // writes under its own process id, and is no witness of the pane's timers or of its writer.
+    return stepsOf(
+      completeLines(text).map((line) => JSON.parse(line) as unknown),
+      rpc.pid
+    ) as TimerStep[];
   };
   return {
     held,
