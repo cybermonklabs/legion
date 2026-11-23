@@ -191,8 +191,6 @@ const renderings = (
     sortingFn: (a, b) =>
       issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
       issueStatuses.indexOf(b.original.issue.status as IssueStatus),
-    // A column the reader narrows below the widest pill cuts the label inside the pill, with an
-    // ellipsis and the whole label as its title, rather than the pill at the cell's edge.
     cell: ({ getValue }) => {
       const label = statusLabel(getValue<IssueStatus>());
       return (
@@ -240,8 +238,6 @@ const renderings = (
   labels: {
     header: "Labels",
     accessorFn: (item) => (item.issue.labels ?? []).join(", "),
-    // A label as long as its author typed, with no break in it, shortens to an ellipsis inside
-    // its own pill, with the whole label as its title, rather than running past the cell.
     cell: ({ row }) => (
       <span className="flex min-w-0 flex-wrap gap-1 [&>span]:min-w-0 [&>span]:max-w-full">
         {(row.original.issue.labels ?? []).map((label) => (

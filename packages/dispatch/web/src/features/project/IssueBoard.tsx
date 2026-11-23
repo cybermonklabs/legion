@@ -172,8 +172,6 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
         <ClaimChip claim={issue.claim} />
         <ProgressChips progress={issue.progress} />
         <UnreachableRouteMarker issue={issue} />
-        {/* The labels are a list as long as the issue's data: the first ten, then "+N" for the
-            rest, flowing in this row with the card's other chips (`contents`). */}
         {(issue.labels ?? []).length === 0 ? null : (
           <CappedGroup className="contents" label="labels" name="labels">
             {(issue.labels ?? []).map((label) => (

@@ -38,6 +38,7 @@ import { LabelPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { TruncatedText } from "../../components/TruncatedText";
 import { useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -127,10 +128,6 @@ const composerLine = `${composerLineLayout} ${dangerText}`;
 /** Where the composer is its compact grid: styles.css's `narrow-or-short` variant, in its own
  *  pixels, which the two must keep in step. */
 const COMPACT_COMPOSER_QUERY = "(max-width: 767px), (max-height: 500px)";
-/** How many recipients the compact composer shows before its "+N": one chip, its state mark and
- *  live link, held to `max-w-40`, and the control fit on one line of a 360 px screen, so the
- *  composer's height does not grow with the selection: its name and reason stay on one line,
- *  ending in an ellipsis, until the reader opens the recipients, and then every chip wraps. */
 const COMPACT_RECIPIENTS_SHOWN = 1;
 
 /**
@@ -592,9 +589,6 @@ function AgentRow({
    *  no more discards than a pin does. A send and its refusal are the held-send store's. */
   opened: boolean;
   pinned: boolean;
-  /** Whether the reader opened this row's roles past their "+N". The page holds this, not the
-   *  row, as it holds `expanded`: a row the window stops drawing loses its own state, and the
-   *  roles a reader opened would be folded again when it scrolls back. */
   rolesOpen: boolean;
   onRolesOpen: (open: boolean) => void;
   /** The group the row is listed under, which `keyboard.ts` reads to find that group's
@@ -684,7 +678,7 @@ function AgentRow({
                   title={label}
                   type="button"
                 >
-                  <span className="truncate">{name}</span>
+                  <TruncatedText>{name}</TruncatedText>
                   <span className={`shrink-0 ${disclosureButtonText}`}>
                     <ChevronIcon expanded={expanded} />
                   </span>
@@ -695,8 +689,6 @@ function AgentRow({
             sessionId={agent.session_id}
             storedTitle={agent.title}
           />
-          {/* The two copy buttons move together: on a phone they wrap under the name as a pair
-              rather than one at a time. */}
           <span className="flex items-center gap-x-2">
             <CopyButton value={agent.session_id} what="session ID">
               ID
@@ -747,7 +739,7 @@ function AgentRow({
             ))}
           </CappedGroup>
         )}
-        {/* State. A session that has missed its heartbeats is still listed and still worth
+        {/* A session that has missed its heartbeats is still listed and still worth
             messaging, so the row says which it is rather than looking like any other: its
             name's mark alone is a ring a reader would have to hover. */}
         <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
@@ -1174,8 +1166,6 @@ function BroadcastComposer({
   const sectionRef = useRef<HTMLElement>(null);
   useFootInset(sectionRef, true, "page");
   const compact = useMediaQuery(COMPACT_COMPOSER_QUERY);
-  // Whether the reader opened the recipients past their "+N". The compact composer's one chip
-  // is one line while they are closed, and every chip wraps whole once the reader opens them.
   const [chosenOpen, setChosenOpen] = useState(false);
   const chipOnOneLine = compact && !chosenOpen;
 
@@ -1206,9 +1196,6 @@ function BroadcastComposer({
       >
         Broadcast to {recipients.length} of {selected.size} selected
       </h2>
-      {/* Each chip shrinks to the list's width and, except the compact composer's closed chip,
-          its words wrap inside it, the excluded or unchecked agent's reason with them, so no
-          chip scrolls the composer sideways, however long the session's title. */}
       <CappedGroup
         className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-3 [&>li]:min-w-0 [&>li]:max-w-full"
         label="agents"
@@ -1665,7 +1652,6 @@ export function AgentsPage(): ReactNode {
   // that kept its own answer would have nothing to tell the window.
   const [expandedRows, setExpandedRows] = useState<ReadonlySet<string>>(() => new Set());
   const [openedRows, setOpenedRows] = useState<ReadonlySet<string>>(() => new Set());
-  /** The rows whose roles the reader opened past their "+N", kept here for the same reason. */
   const [rolesOpenRows, setRolesOpenRows] = useState<ReadonlySet<string>>(() => new Set());
   const openRoles = (sessionID: string, open: boolean) => {
     setRolesOpenRows((current) => {

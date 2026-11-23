@@ -523,20 +523,16 @@ export function AgentConversationPage({
                 </option>
               ))}
             </select>
-            {/* Place. A claim that the session is gone starts only from a current list. The
-                header's presence and the transcript's line keep that fact through a failed read,
-                from the kept rows of the last read that returned a list; this line waits for a
-                current one, and while the list refills or is unreachable the header names why it
-                has none. */}
+            {/* A claim that the session is gone starts only from a current list. The header's
+                presence and the transcript's line keep that fact through a failed read, from the
+                kept rows of the last read that returned a list; this line waits for a current one,
+                and while the list refills or is unreachable the header names why it has none. */}
             {agent === undefined && current ? (
               <span className={`min-w-0 ${textMutedOnCanvas}`} data-testid="agent-not-listed">
                 Not in the live session list — it may have ended.
               </span>
             ) : null}
             {agent === undefined ? null : (
-              // `basis-48`: the group stays on the delivery picker's line while 192 px are left
-              // there, and takes a line of its own below that rather than cutting the directory
-              // to nothing.
               <span className="flex min-w-0 flex-1 basis-48 items-center gap-x-3">
                 <span
                   className={`min-w-0 truncate ${textMutedOnCanvas}`}
@@ -559,8 +555,6 @@ export function AgentConversationPage({
                 </span>
               </span>
             )}
-            {/* Session: the model and thinking pickers are one flex item, so a row too narrow for
-                both moves them to the next line together, never the thinking picker alone. */}
             <span
               className="flex min-w-0 max-w-full flex-wrap items-center gap-x-3 gap-y-1 empty:hidden"
               data-testid="agent-session-group"

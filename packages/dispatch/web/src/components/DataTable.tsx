@@ -567,9 +567,6 @@ function TableHeaderCell<TData>({
             type="button"
           >
             {numeric ? mark : null}
-            {/* A header that neither wraps nor is a count shortens its name to an ellipsis
-                inside the button, and the sort arrow keeps its width, so a narrow column cuts
-                neither with no sign. */}
             {numeric || wrap ? (
               flexRender(column.columnDef.header, header.getContext())
             ) : (

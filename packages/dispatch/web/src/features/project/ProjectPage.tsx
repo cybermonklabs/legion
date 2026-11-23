@@ -166,9 +166,6 @@ export function ProjectPage(): ReactNode {
           and Attention share the first line and the rest start the next; from `md` Attention
           goes last, after the view controls. */}
       <header className="flex flex-wrap items-center gap-2 md:min-h-12">
-        {/* The name takes the width it needs and no more, so the project key sits beside a
-            short name instead of across the row from it. A long name truncates, carrying the
-            whole name as its `title`, once the group reaches half the row from `md`. */}
         <div className="flex min-w-0 max-w-full items-center gap-2 md:max-w-[50%]">
           <h1
             className={`min-w-0 truncate text-[22px] font-semibold tracking-tight ${textPrimaryOnCanvas}`}

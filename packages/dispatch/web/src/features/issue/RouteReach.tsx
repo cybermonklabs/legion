@@ -166,11 +166,6 @@ function UnreachableRoute({
           :
         </span>
       ) : null}
-      {/* Beside a route the route is what ellipsizes and the verdict stays whole. Alone, the
-          verdict gives way inside the chip when a narrow cell or card holds less than all of
-          it, rather than the chip being cut at the cell's edge: it ends in an ellipsis under
-          the chip's own title, which says it whole, and inside `NoTooltips`, which draws no
-          title, it wraps. */}
       <span
         className={
           showRoute

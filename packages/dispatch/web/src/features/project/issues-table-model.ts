@@ -189,7 +189,6 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "status",
-    // The widest pill, "NEEDS REVIEW", with its dot and the cell's padding.
     size: 148,
     min: 148,
     filter: {
