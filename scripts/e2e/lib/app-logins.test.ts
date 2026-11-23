@@ -540,11 +540,34 @@ describe("app-logins.ts", () => {
     expect(stderr).toContain("acts as a-person, not an App's bot");
   });
 
-  test("a GitHub that never answers is named by the App's role and app id", async () => {
+  test("a GitHub that never answers is named by the App's role and app id, as one that did not answer", async () => {
     const { code, stdout, stderr } = await run(config(app("101"), app("202")), {}, unreachable);
     expect(code).toBe(1);
     expect(stdout).toBe("");
     expect(stderr).toMatch(namesApp("implement", "101"));
+    expect(stderr).toContain(": GitHub did not answer (");
+  });
+
+  // The control of the row above: a GitHub that answers, but with nothing the run can read (a 200
+  // whose body is `{}`), also fails the run naming the App, so only the text above tells the two
+  // apart. A run that named an answer as no answer, or no answer as a wrong answer, fails one of
+  // these two rows.
+  test("a GitHub that answers with nothing readable is named by the App, and not as one that did not answer", async () => {
+    const answering = Bun.serve({ port: 0, fetch: () => Response.json({}) });
+    try {
+      const { code, stdout, stderr } = await run(
+        config(app("101"), app("202")),
+        {},
+        `http://127.0.0.1:${answering.port}/`
+      );
+      expect(code).toBe(1);
+      expect(stdout).toBe("");
+      expect(stderr).toMatch(namesApp("implement", "101"));
+      expect(stderr).toContain("answered no login: {}");
+      expect(stderr).not.toContain("GitHub did not answer");
+    } finally {
+      await answering.stop(true);
+    }
   });
 
   test("two roles on one App are refused, as the daemon refuses them at boot", async () => {
@@ -791,7 +814,7 @@ describe("read_app_logins", () => {
     ]);
   });
 
-  test("a GitHub that never answers fails the run, naming the App it could not read", async () => {
+  test("a GitHub that never answers fails the run, naming the App it could not read and that GitHub did not answer", async () => {
     const { code, stdout, stderr } = await readAppLogins(
       config(app("101"), app("202")),
       "echo after-read",
@@ -800,6 +823,7 @@ describe("read_app_logins", () => {
     expect(code).toBe(1);
     expect(stdout).not.toContain("after-read");
     expect(stderr).toMatch(namesApp("implement", "101"));
+    expect(stderr).toContain(": GitHub did not answer (");
     expect(stderr).toMatch(/^FAIL boot: /m);
   });
 });
