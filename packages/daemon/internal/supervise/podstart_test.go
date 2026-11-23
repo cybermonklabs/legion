@@ -380,9 +380,10 @@ func receive(t *testing.T, what string, done <-chan error, failed bool) {
 // role's pod was still coming up, loads one at a time. Every start writes the line R4 reads, naming
 // the claim and the pod, and what a start that waited waited for, how long and what ended it;
 // every load's end writes its own, one per load. No stop of a claim waiting at the gate waits for
-// the load it waits for, nor does a read of that claim, and every cut of a start names its end:
-// the subtests that stop a waiting claim or cut a start run the bodies podstart_stop_test.go
-// holds.
+// the load it waits for, nor does a read of that claim; every cut of a start names its end; and a
+// launch that parks stops the process it let go first, so a cut of the park leaves nothing
+// running: the subtests that stop a waiting claim, cut a start or stop the let-go process at the
+// park run the bodies podstart_stop_test.go holds.
 func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	t.Run("the second start waits for the first role's registration", func(t *testing.T) {
 		h := podHarness(t, "")

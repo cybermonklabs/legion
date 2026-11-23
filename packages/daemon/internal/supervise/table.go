@@ -195,7 +195,7 @@ const (
 	// firing is (podHold.notify, fire). The launch asks the runtime for its process when it fires
 	// (podStartDue). The claim waits launching with no process until then, and whatever drops the
 	// parked launch's wake disarms it with the wake and takes its start out of the gate, naming
-	// that end (dropPodPark, cutPark).
+	// that end (dropPodPark).
 	TimerPodStart TimerKind = "pod_start"
 )
 

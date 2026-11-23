@@ -176,8 +176,8 @@ type wake struct {
 	// has no moment to run: it waits on the machine with no timer of the clock's, is published as
 	// no waiting wake (publish), is no wake of the pacing's for a request that does not wait to
 	// drop (dropWakeFor), and leaves by its grant (TimerPodStart, podStartDue) or by whatever drops
-	// the wake, which takes its start out of the gate for what dropped it (dropPodPark, cutPark:
-	// suspended, retire, letGo, waitOnMachine).
+	// the wake, which takes its start out of the gate for what dropped it (dropPodPark: suspended,
+	// retire, letGo, waitOnMachine).
 	park *podHold
 }
 

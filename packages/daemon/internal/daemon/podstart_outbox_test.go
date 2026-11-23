@@ -33,7 +33,7 @@ import (
 const podStopBound = time.Second
 
 // cutShortLine is the line a launch writes when something takes its start out of the pod's gate
-// before it ran (supervise's cutPark).
+// before it ran (supervise's dropPodPark).
 const cutShortLine = "supervise: launch cut short while it waited for its issue pod's start"
 
 // waitsAtGateLine is the line a launch writes when its start parks at the pod's gate behind

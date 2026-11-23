@@ -1,11 +1,14 @@
 package supervise
 
-// The stops of a role whose start waits at its issue pod's gate, and the cuts of a start the gate
-// granted before its machine ran it (dispatch://INFRA-5297). Each function below is the body of a
-// subtest of TestAPodStartsItsRolesOneLoadAtATime (podstart_test.go), which runs it under the
-// subtest's name: no stop of a claim waiting at the gate waits for the load it waits for, nor does
-// a read of that claim, and every cut of a start names its end, in the line of the launch cut
-// short and in the start line of the start the gate grants next.
+// The stops of a role whose start waits at its issue pod's gate, the cuts of a start the gate
+// granted before its machine ran it, and the stop at the park of the process a launch let go
+// (dispatch://INFRA-5297). Each function below is the body of a subtest of
+// TestAPodStartsItsRolesOneLoadAtATime (podstart_test.go), which runs it under the subtest's name:
+// no stop of a claim waiting at the gate waits for the load it waits for, nor does a read of that
+// claim; every cut of a start names its end, in the line of the launch cut short and in the start
+// line of the start the gate grants next; and a launch that parks stops the process it let go
+// first, so a cut of the park leaves nothing running, and a stop the runtime refuses there leaves
+// the launch parked, not failed.
 
 import (
 	"context"
@@ -324,6 +327,8 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 				h.mustPostTo(r.m, RequestResume{Claim: r.token})
 				h.wantWaitsForPod(r, 0)
 			}
+			// The generation the second's try wrote before it parked, which its cut-short line names.
+			parked := second.m.View().Claim.Generation
 			h.loadEnds(first)
 			if waiting := h.podWaiting(); !slices.Equal(waiting, []claim.Token{third.token}) {
 				t.Fatalf("starts waiting for the pod = %v once the second's start was granted, want the third's alone", waiting)
@@ -340,6 +345,7 @@ func aGrantedStartCutBeforeItRan(t *testing.T) {
 				t.Fatalf("cut-short lines of the second = %d, want 1", len(lines))
 			}
 			h.wantAttr(lines[0], "by", tc.ended)
+			h.wantAttr(lines[0], "generation", fmt.Sprint(parked))
 
 			// The grant's own decision, once it runs, finds its arming gone and starts nothing.
 			release()
