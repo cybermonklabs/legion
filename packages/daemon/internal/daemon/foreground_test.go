@@ -41,7 +41,7 @@ func requireProcStatus(t *testing.T) {
 // Oh My Pi - is stopped by SIGTTOU again rather than inheriting SIG_IGN, which signal.Reset alone
 // leaves in place.
 func TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it changes the whole process's SIGTTOU disposition (terminalJob.attach, release).
 	requireProcStatus(t)
 	before := ignoredBy(t, bare)
 	if before&bit(syscall.SIGTTOU) != 0 {

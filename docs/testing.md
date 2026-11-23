@@ -523,10 +523,9 @@ clone would not let them do.
 to migrate the template its `Clone` copies, so a test binary of `internal/store` cannot import
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports nothing of the module and so is open to every package of it.
-A package whose tests migrate into the database their DSN names, rather than taking one each,
-takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
-`testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
-database they are given).
+`internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
+daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
+in place, and the tests run beside each other on databases of their own.
 
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater

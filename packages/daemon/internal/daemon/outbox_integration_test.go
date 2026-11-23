@@ -217,8 +217,8 @@ func outboxRows(t *testing.T, pool *store.Pool) int {
 }
 
 // isolatedOutboxPool is a pool on a database carrying every migration, cloned from the package's
-// template (testpg.ClonePool). The rigs' own stores share the package's run database instead
-// (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
+// template (testpg.ClonePool), as testDSN clones the database a test's daemons write in: each call
+// is a database of its own.
 func isolatedOutboxPool(t *testing.T) *store.Pool {
 	t.Helper()
 	return store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
@@ -806,7 +806,7 @@ const probeStatusRowKind = record.StatusRowKind("probe")
 // list and the switch are made to disagree from this file rather than in the production list, so
 // the hole is probed without one being left open.
 func TestAStatusRowKindWithNoRuleFailsBothPathsWithoutWriting(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it writes the package variable record.StatusRowKinds, which parallel tests read.
 	listed := record.StatusRowKinds
 	record.StatusRowKinds = append(slices.Clone(listed), probeStatusRowKind)
 	t.Cleanup(func() { record.StatusRowKinds = listed })

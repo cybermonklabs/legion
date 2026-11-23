@@ -1,8 +1,10 @@
 package daemon
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -10,6 +12,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
+
+// daemonTestParallelism is how many of this package's tests run at once when the command line
+// names no -parallel. Every test calls t.Parallel but those that change something the whole
+// process shares (each says what in a `Not parallel:` comment), which run first, one at a time.
+// Each parallel test clones a database and boots daemons whose pools hold up to four connections
+// each, and go test's default of GOMAXPROCS would run as many at once as the machine has cores:
+// four on CI's runner, hundreds on a dev box, where it would open more connections than a test
+// server allows (the shared one allows 483). Four is the runner's own count, the one the race
+// step's measurements were taken at.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const daemonTestParallelism = 4
 
 // processDSN is LEGION_TEST_PG_DSN as this test process started with it, after the guard: the
 // server whose template testDSN clones each test's database from. A test that sets the variable to
@@ -50,6 +64,10 @@ var processDSN string
 // takes neither template nor build directory, and it is told of no database either: the rig's
 // launchers run without TestPostgres, so testPGEnv takes LEGION_TEST_PG_DSN out of the child.
 func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(daemonTestParallelism)); err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: set this package's default -parallel: %v\n", err)
+		os.Exit(1)
+	}
 	if os.Getenv(idleRigURLVariable) != "" {
 		os.Exit(testnats.Main(m))
 	}
