@@ -232,6 +232,12 @@ const (
 	// an azure-login source, whose credential a profile cannot narrow at a mint, so only the
 	// proxy's hosts, methods and paths scope it.
 	ReasonProfileNeedsProxy = "profile-needs-proxy"
+	// ReasonProfileMinted: a profile whose proxy block is of kind dpop. It is proxy configuration
+	// for a capability the broker mints for a grant of its own and holds, never a secret the
+	// policy serves, so serve answers it whatever the store holds - with no stored secret of its
+	// name, and with one, which would otherwise be requested and approved like any stored secret -
+	// and apply serves it as nothing and records it in no Refused, since it is no fault to report.
+	ReasonProfileMinted = "profile-minted"
 	// ReasonGitHubAppNoProfile: a github-app secret no profile names, as its own name or as its
 	// source. Every GitHub token the broker hands over is a profile's, held to that profile's
 	// accounts and permissions, so such a secret is refused by its name rather than released with

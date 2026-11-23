@@ -9,9 +9,7 @@ package requests
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -24,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -43,6 +42,13 @@ var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session
 // rules hold back, and no retry changes a value's shape, so the proxy answers it 403 in these
 // words.
 var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its type releases")
+
+// ErrMintedOnly is readRelease's refusal of a release under a rules entry of kind dpop,
+// before anything of the name is read. A name of that kind is a capability the broker mints for a
+// grant of its own and holds (MintedKind, mintedValues), and never a stored secret: a secret
+// stored under such a name is never released, to the session or to the proxy, as a value or as a
+// placeholder.
+var ErrMintedOnly = errors.New("a name of kind dpop is a capability the broker mints and holds, never a stored secret's release")
 
 // The slots of a secret. A slot names which value of a secret a placeholder stands for, because
 // one secret can release several values at once and each needs a placeholder of its own:
@@ -68,40 +74,6 @@ const (
 	SlotAzureFederated     = "azure-federated"
 	SlotAzureAccessPrefix  = "azure-access:"
 )
-
-// PlaceholderPrefix opens every placeholder, so a value that leaks into a log or a bug report is
-// recognizable for what it is: a string that stands for a secret rather than a secret.
-const PlaceholderPrefix = "agent-secrets-placeholder-"
-
-// PlaceholderAlphabet and PlaceholderLength are what follows the prefix: 32 characters of 62, so
-// about 190 bits, which nobody guesses and no birthday collision reaches. The broker's log mask
-// reads a placeholder as the prefix and at most PlaceholderLength characters of PlaceholderAlphabet
-// after it.
-const (
-	PlaceholderAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	PlaceholderLength   = 32
-)
-
-// mintPlaceholder draws one placeholder from crypto/rand.
-//
-// Each character takes its own uniform 64-bit draw reduced modulo 62. 62 does not divide 2^64, so
-// the first 2^64 mod 62 characters of the alphabet are favoured by about one part in 2^58 — a
-// difference nothing can observe — where the obvious byte-per-character reduction would favour
-// the first eight characters by one part in four. Reducing a wide draw rejects nothing and so
-// always costs one read of the random source, where redrawing a byte until it falls below 248
-// loops an unbounded number of times.
-func mintPlaceholder() (string, error) {
-	draws := make([]byte, 8*PlaceholderLength)
-	if _, err := rand.Read(draws); err != nil {
-		return "", fmt.Errorf("mint an airlock placeholder: %w", err)
-	}
-	out := make([]byte, 0, len(PlaceholderPrefix)+PlaceholderLength)
-	out = append(out, PlaceholderPrefix...)
-	for i := range PlaceholderLength {
-		out = append(out, PlaceholderAlphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(PlaceholderAlphabet))])
-	}
-	return string(out), nil
-}
 
 // placeholderHash is a placeholder's SHA-256 in hex: the key airlock_placeholders holds it under,
 // and the only form of it any query carries, so the plaintext a command holds never reaches a
@@ -152,12 +124,12 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 			if _, minted := held[name][slot]; minted {
 				continue
 			}
-			placeholder, err := mintPlaceholder()
+			text, err := placeholder.Mint(placeholder.Prefix)
 			if err != nil {
 				return nil, err
 			}
 			names, slots = append(names, name), append(slots, slot)
-			texts, hashes = append(texts, placeholder), append(hashes, placeholderHash(placeholder))
+			texts, hashes = append(texts, text), append(hashes, placeholderHash(text))
 		}
 	}
 	if len(names) == 0 {
@@ -182,6 +154,10 @@ func (m *Machine) mintPlaceholders(ctx context.Context, grantID string, expires 
 // a connection of that grant while it lives, it goes when the grant's rows go
 // (deleteSpentPlaceholders), and AirlockConnection answers it among the name's slots.
 func (m *Machine) AirlockAccessPlaceholder(ctx context.Context, grantID, name, slot string) (string, error) {
+	if _, _, minted := m.mintedKindOfGrant(grantID); minted {
+		// A minted grant holds its kind's one slot, and no exchange is ever made for it.
+		return "", ErrGrantNotLive
+	}
 	if !strings.HasPrefix(slot, SlotAzureAccessPrefix) {
 		return "", fmt.Errorf("airlock: %q is no access-token slot", slot)
 	}
@@ -528,8 +504,11 @@ type AirlockConnection struct {
 	// they cost nothing: the read below already joins the enrollment row.
 	SessionID, RuntimeID string
 	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
-	Expires              *time.Time
-	Names                map[string]AirlockGrantName
+	// Minted marks a grant of a capability the broker mints and holds (MintedKind): it belongs to
+	// no enrollment, and the proxy holds it to the one host its grant binds.
+	Minted  bool
+	Expires *time.Time
+	Names   map[string]AirlockGrantName
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
@@ -578,7 +557,10 @@ type AirlockGrantName struct {
 // comes from the policy snapshot already in memory, which costs no query. The checks a release
 // makes besides — the approval chain, the policy re-evaluation, the max-grant and the profile
 // fingerprint — are AirlockValues's, once per grant per pod.
-func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (AirlockConnection, error) {
+func (m *Machine) AirlockConnection(ctx context.Context, presented string) (AirlockConnection, error) {
+	if kind, minted := m.mintedKindOfPlaceholder(presented); minted {
+		return m.mintedConnection(ctx, kind, presented)
+	}
 	var conn AirlockConnection
 	var reason, decidedBy string
 	var live bool
@@ -592,7 +574,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		join enrollments e on e.id = g.enrollment_id
 		join requests r on r.id = g.request_id
 		left join launcher_credentials c on c.id = e.launcher_credential_id
-		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
+		where p.placeholder_sha256 = $1`, placeholderHash(presented)).
 		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
 			&conn.RuntimeID, &conn.SessionID, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -721,6 +703,9 @@ type AirlockSecret struct {
 // whose chain fails is logged as Values logs it, under at=airlock (GrantChainInvalidMessage),
 // since the proxy refuses it GRANT_CHAIN_INVALID as the session's release does.
 func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string]AirlockSecret, string, error) {
+	if kind, id, minted := m.mintedKindOfGrant(grantID); minted {
+		return m.mintedValues(ctx, kind, id)
+	}
 	checked, err := m.checkRelease(ctx, grantID, "", "airlock")
 	if err != nil {
 		return nil, "", err

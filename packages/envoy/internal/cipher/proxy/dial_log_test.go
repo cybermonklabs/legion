@@ -29,7 +29,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 )
 
 // TestATunnelWritesOneLineNamingItsCallerAndAddress: a tunnel carries bytes the proxy never reads, so the
@@ -169,7 +169,7 @@ func TestATunnelWritesOneLineNamingItsCallerAndAddress(t *testing.T) {
 		other := testConnection()
 		other.GrantID, other.EnrollmentID = "grant-11111111", "enrollment-11111111"
 		other.SessionID, other.RuntimeID = "session-11111111", "runtime-11111111"
-		otherPlaceholder := requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
+		otherPlaceholder := placeholder.Prefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 		r.grants.setConnection(otherPlaceholder, other)
 		placeholders := map[string]string{testGrantID: workerPlaceholder, other.GrantID: otherPlaceholder}
 

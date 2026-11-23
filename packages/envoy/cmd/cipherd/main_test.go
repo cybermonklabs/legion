@@ -35,11 +35,11 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1301,7 +1301,7 @@ func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 	// A broker whose main does not set its logging up writes the refusal as text, with the
 	// placeholder in it.
 	t.Run("a host made of a placeholder in upper case, which the broker's log masks", func(t *testing.T) {
-		placeholder := strings.ToUpper(requests.PlaceholderPrefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
+		placeholder := strings.ToUpper(placeholder.Prefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
 		path := profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE."))
 		refused(t, path, []string{`"severity":"ERROR"`, `"message":"broker: fatal"`, "write it as [placeholder].example"},
 			[]string{placeholder, strings.ToLower(placeholder)})

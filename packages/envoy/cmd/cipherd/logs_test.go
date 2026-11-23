@@ -19,7 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -52,7 +52,7 @@ func isolateAWS(t *testing.T) {
 // line's fields are and with no newline at its end, its info and its warning are not written, and
 // its V is true at level 0 and false past it; and OpenTelemetry's error is an ERROR.
 func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
-	placeholder := requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
+	placeholder := placeholder.Prefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 	out := &logtest.Buffer{}
 	logtest.Keep(t)
 	// setUpLogging points grpc's and OpenTelemetry's global loggers at the broker's, and neither

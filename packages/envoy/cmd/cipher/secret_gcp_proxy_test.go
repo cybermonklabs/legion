@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -40,7 +41,7 @@ const (
 	gcpAirlockName        = "GCLOUD_TEST"
 	gcpAirlockGrantID     = "grant-gcloud-test"
 	gcpAirlockToken       = "the-real-access-token-of-the-grant"
-	gcpAirlockPlaceholder = requests.PlaceholderPrefix + "GgCcLlOoUuDdTtEeSsTtPpLlAaCcEeHh"
+	gcpAirlockPlaceholder = placeholder.Prefix + "GgCcLlOoUuDdTtEeSsTtPpLlAaCcEeHh"
 	gcpAirlockPolicy      = "policy-v1"
 )
 

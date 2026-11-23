@@ -38,6 +38,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -973,7 +974,7 @@ func TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn(t *testing.T) {
 	// The grant as it reads once its operator has withheld the one name bound to the host,
 	// holding one other name so that the read answers a grant rather than refusing.
 	withheld := testConnection()
-	withheld.Names = map[string]requests.AirlockGrantName{"OTHER_TOKEN": {Slots: map[string]string{requests.SlotValue: requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"}}}
+	withheld.Names = map[string]requests.AirlockGrantName{"OTHER_TOKEN": {Slots: map[string]string{requests.SlotValue: placeholder.Prefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"}}}
 	for _, row := range []struct {
 		name   string
 		before func()
@@ -1102,7 +1103,7 @@ func TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings(t *testing.T
 	const (
 		betaName        = "BETA_TOKEN"
 		betaValue       = "the-real-beta-token"
-		betaPlaceholder = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe02"
+		betaPlaceholder = placeholder.Prefix + "betabetabetabetabetabetabetabe02"
 		workerPath      = "/v1/stream-worker"
 		betaPath        = "/v1/stream-beta"
 	)

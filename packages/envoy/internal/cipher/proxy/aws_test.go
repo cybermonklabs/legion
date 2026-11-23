@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -44,9 +45,9 @@ const (
 )
 
 var (
-	awsKeyPlaceholder     = requests.PlaceholderPrefix + "awsKeyIdAwsKeyIdAwsKeyIdAwsKey01"
-	awsSecretPlaceholder  = requests.PlaceholderPrefix + "awsSecretAwsSecretAwsSecretAws01"
-	awsSessionPlaceholder = requests.PlaceholderPrefix + "awsSessionAwsSessionAwsSession01"
+	awsKeyPlaceholder     = placeholder.Prefix + "awsKeyIdAwsKeyIdAwsKeyIdAwsKey01"
+	awsSecretPlaceholder  = placeholder.Prefix + "awsSecretAwsSecretAwsSecretAws01"
+	awsSessionPlaceholder = placeholder.Prefix + "awsSessionAwsSessionAwsSession01"
 )
 
 // awsRules is the rules file of a key pair: one entry of kind aws, bound to the one host, with

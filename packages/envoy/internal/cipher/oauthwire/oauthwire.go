@@ -125,6 +125,36 @@ const (
 	MembershipHeld = "membership_held"
 )
 
+// AirlockRelease is how a command reaches the values the airlock holds back: the proxy it sends
+// their requests through, the certificate authority that proxy's certificates are signed by, the
+// password every connection to it opens with, and one entry per name held back. A release of
+// secrets answers it under "airlock" (POST /v1/grants/{id}/values).
+type AirlockRelease struct {
+	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
+	ProxyURL string `json:"proxy_url"`
+	// The PEM certificate the command must trust to reach the proxy, which signs a certificate
+	// for each host it carries a request to.
+	CACertificate string `json:"ca_certificate"`
+	// The password every proxy connection authenticates with: one of this grant's own
+	// placeholders, the first (name, slot) pair in sorted order.
+	ProxyPassword string `json:"proxy_password"`
+	// Each name the airlock holds back, by the name the command knows it as.
+	Names map[string]AirlockName `json:"names"`
+}
+
+// AirlockName is one name the airlock holds back.
+type AirlockName struct {
+	// What the command's environment variable of that name holds: the released shape of the
+	// secret with a placeholder wherever its value would be.
+	Value string `json:"value"`
+	// Each slot of the secret and the placeholder standing for it, so a command that takes one
+	// value of the secret apart knows which placeholder is which.
+	Slots map[string]string `json:"slots"`
+	// The hosts the secret's airlock entry allows, which the command keeps off its NO_PROXY so
+	// their requests reach the proxy.
+	Hosts []string `json:"hosts"`
+}
+
 // The wire names of a token's project scope, which an introspection answer's ProjectScope carries
 // and the exchange writes onto the session it stores (internal/cipher/oauth, ClaimProjectScope).
 // They are short and fixed so a reader of either reads one word rather than the prose

@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 )
 
 // GoogleOptions is what a GoogleStand answers with.
@@ -449,7 +449,7 @@ const sigV4Scheme = "AWS4-HMAC-SHA256"
 // here rather than through an AWS library, and the refusal of any placeholder anywhere in the
 // request. It answers nil for a call AWS would accept and what is wrong for every other.
 func VerifySigV4(seen Request, keyID, secretKey, sessionToken string) error {
-	if dump := fmt.Sprint(seen.Method, seen.Path, seen.Query, seen.Host, seen.Header, seen.Body); strings.Contains(dump, requests.PlaceholderPrefix) {
+	if dump := fmt.Sprint(seen.Method, seen.Path, seen.Query, seen.Host, seen.Header, seen.Body); strings.Contains(dump, placeholder.Prefix) {
 		return fmt.Errorf("this call carries a placeholder: %s", dump)
 	}
 	authorization := seen.Header.Get("Authorization")
