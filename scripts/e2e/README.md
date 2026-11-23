@@ -478,7 +478,7 @@ Each item below names a script, then what it proves.
 
   the calls the `legion` tool makes for an owner's plan, made by the plugin's own daemon client (`createLegionDaemonClient` under bun, each grant from `mintClaimGrant`, each completion through the phase op `executePhaseOp`) against the whole daemon booted as [`owner-steps.sh`](#owner-stepssh) boots it, over four issues of one project:
   `register_plan` with the architect's grant is taken, and `register_plan` and `stop_task` with an implementer's are refused `403 ARCHITECT_REQUIRED`;
-  a tester's `handoff_complete` with `return_to 1` returns task `a` to its step 1, and `return_to 2` is refused `409 RETURN_REFUSED`;
+  a tester's `handoff_complete` with `return_to 1` and no verdict, its check failing at the head it tested, returns task `a` to its step 1, and `return_to 2` is refused `409 RETURN_REFUSED`;
   `stop_task` holds the issue `task-stopped`, and the stopped task's report is refused `409 TASK_STOPPED`;
   the plugin of the release before, which the run builds from main itself, reads this daemon's state and its `TASK_STOPPED` within the turn its pane was in at the upgrade, and its own registration is refused `409`.
   No GitHub, no cluster
@@ -5808,14 +5808,16 @@ The commit is taken with `git archive` into a directory of the run's own and giv
 | `older-client-tree` | the walk of main and the build above | the commit, its date and subject, its contract and its tree | — |
 | `control-client-plan-version-absent`, `client-register-plan` | `planRegister` with the architect's grant, version 1 of the first issue's `plan.md` | `200` with version 1 and one task `a` naming `implementer` and `tester` | the same call naming version 2, which Dispatch does not hold: `409 VERSION_NOT_IN_DISPATCH` |
 | `client-phase-worker-refused` | `planRegister` and `taskStop` with the implementer's grant | each `403 ARCHITECT_REQUIRED` | the architect's `200` above |
-| `client-return-to` | the tester's phase op `handoff_complete {verdict fail, return_to 1}` | taken; the issue stands in implementing and task `a`'s step 1 started a second time | `control-client-return-to-refused`: `return_to 2`, the tester's own place, is refused `409 RETURN_REFUSED` and the second issue stays in testing; its pass after that is taken |
+| `client-return-to` | the check state at the tested head a fail, then the tester's phase op `handoff_complete {return_to 1}`, with no verdict and the tested head as its commit | taken; the issue stands in implementing and task `a`'s step 1 started a second time | `control-client-return-to-refused`: `return_to 2`, the tester's own place, is refused `409 RETURN_REFUSED` and the second issue stays in testing; its completion after that, on a passing check, is taken |
 | `older-client-reads` | the fourth issue's tester registered at this contract, its claim's `plugin_contract` set to the release before's while no daemon runs, and the daemon restarted; that release's client | the state of the issue in testing; no `planRegister` and no `taskStop` among its calls; `409 TASK_STOPPED` for its report after the owner's stop; its own registration at its contract refused `409` | — |
 | `client-stop-task` | `taskStop` of task `a` with the architect's grant | `200 {}`, and the issue held `task-stopped` | task `zz`, which the plan does not hold: `404 TASK_NOT_FOUND` |
-| `client-stopped-report-refused` | the stopped task's tester's phase op `handoff_complete` | `409 TASK_STOPPED` | the second issue's taken pass |
+| `client-stopped-report-refused` | the stopped task's tester's phase op `handoff_complete` | `409 TASK_STOPPED` | the second issue's taken completion |
 
-Three things are stood in for, beside what [`step-records.sh`](#step-recordssh) stands in for:
+Four things are stood in for, beside what [`step-records.sh`](#step-recordssh) stands in for:
 
 - the package's test config leaves `review_round_cap` at 0, which the plugin's client refuses in the state's settings, so the driver sets 3, the default the config loader gives every deployment;
+
+- the check states that decide a tester's step: before each tester's completion the driver gives the daemon the state of the tested head's one check, as Dispatch's `check.state_changed` event gives it (`testedAs`, `internal/daemon/check_states_test.go`), a fail where the completion names `return_to` and a pass elsewhere;
 
 - no daemon of the release before registers the older pane: this daemon refuses a registration at any contract but its own and relaunches a pane of another contract once its turn ends, so the pane is one registered here whose claim the store records at the release before's contract, as that release leaves it;
 

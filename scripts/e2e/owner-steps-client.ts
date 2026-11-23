@@ -17,10 +17,12 @@
  *   - `register_plan` (args `issue`, `artifactId`, `version`): `client.planRegister` with a grant
  *     minted by `mintClaimGrant`, as tools.ts's `register_plan` posts it;
  *   - `stop_task` (args `issue`, `task`): `client.taskStop`, as tools.ts's `stop_task`;
- *   - `handoff_complete` (args as the tool's: `summary`, `verdict`, `return_to`): the phase op
- *     itself (`executePhaseOp`), with `report` as what the pane's handoff record answers;
+ *   - `handoff_complete` (args as the tool's: `summary` and `return_to`, with no verdict on a phase
+ *     completion): the phase op itself (`executePhaseOp`), with `report` as what the pane's
+ *     handoff record answers, the tester's naming the head it tested as `commit`;
  *   - `complete` (args `summary`, `verdict`): `client.handoffComplete` with a fresh grant and
- *     `report`, for a client whose phase op cannot run (one whose state read refuses);
+ *     `report`, for a client whose phase op cannot run (one whose state read refuses), such as
+ *     the plugin of the release before, which still sends its tester's verdict;
  *   - `state` (args `issue`, `project`): `client.state()`, answering that issue's record, its
  *     `admission.held` rows and the project's settings;
  *   - `register` (args as `RegisterInput`: `bootToken`, `sessionId`, `ompSessionFile`, `agentId`,
