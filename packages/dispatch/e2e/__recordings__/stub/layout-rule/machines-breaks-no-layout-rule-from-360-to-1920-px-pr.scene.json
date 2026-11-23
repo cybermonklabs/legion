@@ -1,14 +1,15 @@
 {
-  "broadcast": "9c5b8d3e-5811-4c5b-8e32-9f9c2eb958dc",
+  "broadcast": "4b7e0405-5f13-4770-bcf2-d6386eaf24cd",
   "deliveryQuery": "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z",
   "issue": "CORE-1",
   "issueArtifactSlug": "requirements-md",
   "machine": "build-host",
+  "person": "alice",
   "pipelineAt": "2026-10-02T12:00:00Z",
   "priority": "local-testing-is-one-command",
   "project": "CORE",
   "projectDocumentSlug": "runbook",
   "agentArtifactSlug": "layout-stress-screenshot-of-the-issue-header-at-1280-png",
   "agentSession": "019a5200-0008-7a00-8000-000000000008",
-  "seededAt": "2026-11-23T04:38:19.756Z"
+  "seededAt": "2026-11-23T12:51:08.182Z"
 }
