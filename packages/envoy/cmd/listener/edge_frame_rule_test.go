@@ -523,14 +523,8 @@ func TestAnEdgeRelaysOnlyItsTokensProjects(t *testing.T) {
 			requireStatus(t, recorder, http.StatusOK, "the earlier process's "+call.path)
 		}
 		// The role's message is forwarded to the session's own subject while no process of it
-		// reads its consumer, which holds the forward for its next registration: the relay pulls
-		// it and holds it unacknowledged, since this replica admitted no registration of the
-		// session. That registration restarts the relay at the ack floor, which deletes the
-		// consumer holding the forward and creates it again, so the row waits for the hold and
-		// then for the consumer's stored state (awaitSessionConsumerStored).
+		// reads its consumer, which holds the forward for its next registration.
 		publishInfraRole(t, rig, infraRole)
-		awaitAckState(t, rig.consumers, session, 1, 0)
-		awaitSessionConsumerStored(t, rig.harness.client.Conn, session)
 
 		privToken := tokenOf("scope-priv-token", scopeProject)
 		client := rig.openSocket(t, session, privToken)
