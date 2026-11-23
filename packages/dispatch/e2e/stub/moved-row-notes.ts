@@ -26,13 +26,9 @@ import { layoutRoutes } from "../layout-routes";
 export const unchangedByTheMove =
   "unchanged - the move renames the file, lifts the shared seeding into the fixture and adds the lane tag to the title, and touches no line of what the row asserts";
 
-/** What the map says of a row written in the stubbed layer from the start: it moved from
- *  nowhere, so the usual sentence would claim a move that never happened. */
 const NEW_IN_THE_STUBBED_LAYER =
   "new - written in the stubbed layer from the start (dispatch://INFRA-5200), with no real-stack copy that moved";
 
-/** The layout layer's stubbed rows (`e2e/layout-rule.stub.e2e.ts`, one per route a recording can
- *  draw) and the instrument's controls (`e2e/layout-measure.stub.e2e.ts`). */
 const newInTheStubbedLayer: Record<string, string> = Object.fromEntries(
   [
     ...layoutRoutes.map(

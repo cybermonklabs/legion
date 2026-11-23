@@ -1,13 +1,3 @@
-/** What the layout layer's rows share: how one route is read at every width and in every state,
- *  how a reading is judged against `e2e/layout-breaches.ts` and the route's required groups, and
- *  the stale-entry check each row file runs after its worker's rows. The rows
- *  (`e2e/layout-rule.stub.e2e.ts`) and the instrument's own controls
- *  (`e2e/layout-measure.stub.e2e.ts`) both judge through `judgeReading`, so the controls prove
- *  the judgement the rows make and not a copy of it.
- *
- *  It reaches no harness: its imports are Playwright's types, the breach list, the measure, the
- *  route list and the settle wait, and it reads the pinned faces' files under `e2e/fonts/` with
- *  `node:fs`, so a stubbed row imports it in a run with no stack at all. */
 import { readFileSync } from "node:fs";
 
 import { expect, type Page } from "@playwright/test";
@@ -21,8 +11,6 @@ import { waitForRouteSettled } from "./review-routes";
  *  drawn, unless the route names a floor of its own (`minElements`) with why. */
 export const MIN_ELEMENTS = 100;
 
-/** The height of every viewport: tall enough for a header and the first rows, which is where the
- *  rows the rule governs are, at every width. */
 const HEIGHT = 900;
 
 /** The faces the rows draw the app's font stacks in, from the files committed under `e2e/fonts/`
@@ -71,7 +59,6 @@ const PINNED_FACES = [
 export const PINNED_FAMILIES: readonly string[] = [
   ...new Set(PINNED_FACES.map((face) => face.family)),
 ];
-/** Where the page asks for those faces; the row answers it from the committed files. */
 const PINNED_FACE_PATH = "/__layout-fonts/";
 /** The faces, and Tailwind's two font variables opened with their pinned face. */
 export const PINNED_FACE_SHEET = [
@@ -82,11 +69,8 @@ export const PINNED_FACE_SHEET = [
   ':root { --font-mono: "Liberation Mono", monospace; --font-sans: "Liberation Sans", sans-serif; }',
 ].join("\n");
 
-/** The pages whose font requests `servePinnedFaces` already answers, so a second call adds no
- *  second handler. */
 const servedPages = new WeakSet<Page>();
 
-/** Answers the page's requests for the pinned faces from `e2e/fonts/`, once per page. */
 async function servePinnedFaces(page: Page): Promise<void> {
   if (servedPages.has(page)) return;
   servedPages.add(page);
@@ -150,7 +134,6 @@ function entryKey(entry: KnownLayoutBreach): string {
   return `${placeKey(entry)} ${entry.kind} ${entry.element}`;
 }
 
-/** The entries of the breach list that a reading of `place` may match. */
 function entriesAt(
   place: ReadingPlace,
   entries: readonly KnownLayoutBreach[]
@@ -158,11 +141,6 @@ function entriesAt(
   return entries.filter((entry) => placeKey(entry) === placeKey(place));
 }
 
-/** What a worker measured, and which entries its readings matched in full. `staleEntries` reads
- *  both, as `e2e/accessibility.e2e.ts`'s afterAll does and for its reasons: an entry whose place
- *  this worker measured, and which its readings did not match, would hide the regression it once
- *  accepted; judging only what this worker measured keeps a shard that ran none of an entry's
- *  route from failing for it. */
 const measuredHere = new Set<string>();
 const matchedHere = new Set<string>();
 
@@ -173,12 +151,9 @@ export interface ReadingNeeds {
   readonly minElements?: number;
 }
 
-/** One thing a reading broke, as the breach list names it. */
 interface Found {
   readonly kind: LayoutBreachKind;
   readonly locator: string;
-  /** For a page-scroll breach, the listed selectors any element past the viewport inside it
-   *  sits in; empty for every other kind, which matches its own locator alone. */
   readonly listed: readonly string[];
   readonly said: string;
 }
@@ -227,8 +202,6 @@ export function judgeReading(
   const unlisted = new Map<string, { count: number; said: string }>();
   for (const breach of found) {
     const ofKind = listed.filter((candidate) => candidate.kind === breach.kind);
-    // Its own locator first: a page-scroll breach inside a region another entry names would
-    // otherwise take that wider entry's place, and leave its own unmatched on every run alike.
     const entry =
       ofKind.find((candidate) => candidate.element === breach.locator && room(candidate)) ??
       ofKind.find((candidate) => breach.listed.includes(candidate.element) && room(candidate));
@@ -271,8 +244,6 @@ export function staleEntries(entries: readonly KnownLayoutBreach[] = layoutBreac
     .map(entryKey);
 }
 
-/** Waits until `route`'s page has settled, as both review layers wait (`waitForRouteSettled`):
- *  the route's ready locators, no body still parsing, and the Inbox number holding still. */
 async function settle(page: Page, route: LayoutRoute, address: string): Promise<void> {
   await waitForRouteSettled(page, {
     kind: "reviewed",
@@ -284,7 +255,6 @@ async function settle(page: Page, route: LayoutRoute, address: string): Promise<
   });
 }
 
-/** Loads `address` fresh at the page's current width and waits until `route` has settled. */
 async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
   await page.goto(address);
   // A width transition would be read part-way, as `e2e/accessibility.e2e.ts` says of colours:
@@ -294,8 +264,6 @@ async function loadSettled(page: Page, route: LayoutRoute, address: string): Pro
   await settle(page, route, address);
 }
 
-/** Reads the settled page: the fonts landed, then `measureLayout` with the entries `place` may
- *  match. */
 async function measureSettledPage(page: Page, place: ReadingPlace): Promise<LayoutReading> {
   // A web font that lands after the wait widens every line it sets.
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
@@ -331,8 +299,6 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
     for (const state of route.states ?? []) {
       await loadSettled(page, route, address);
       await state.act(page);
-      // What the action opened reads its own data, a body that parses and the Inbox number among
-      // them, as a load does.
       await settle(page, route, address);
       const acted = { route: route.name, state: state.name, width };
       failures.push(

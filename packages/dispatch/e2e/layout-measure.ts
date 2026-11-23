@@ -93,14 +93,8 @@ export interface LayoutReading {
 export function measureLayout(listed: readonly string[] = []): LayoutReading {
   const root = document.documentElement;
   const viewport = root.clientWidth;
-  /** A code block or a picture: its own width is its content's, and it may be cut. A `code` in a
-   *  line of prose is no code block. */
   const CODE_OR_PICTURE = "pre, img, picture, svg, canvas, video";
-  /** What a box may scroll sideways for whatever its width: a code block, a data table, a board's
-   *  lanes. */
   const SCROLLS_FOR = "pre, table, [role='table'], [role='grid'], [data-layout-scroll='board']";
-  /** A picture, which a box may scroll sideways for only when the picture is wider than the box.
-   *  An `svg` is no picture here: inline, it is an icon in a row of controls. */
   const PICTURE = "img, picture, video, canvas";
   /** One pixel of slack on every edge: a box's edges are fractional, its scroll sizes whole. */
   const SLACK = 1;
@@ -200,7 +194,6 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     }
     return "page";
   };
-  /** The nearest ancestor that clips `el` sideways, or `null` when nothing does. */
   const clipperOf = (el: Element): Element | null => {
     const holder = holderOf(el);
     return typeof holder === "string" ? null : holder;
@@ -230,7 +223,6 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
         (rect.right > edge.right + SLACK || rect.left < edge.left - SLACK)
     );
   };
-  /** The outermost of `elements`: those whose parent is not among them. */
   const outermostOf = (elements: readonly Element[]): Element[] => {
     const among = new Set(elements);
     return elements.filter((el) => el.parentElement === null || !among.has(el.parentElement));
@@ -281,8 +273,6 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     }
   }
 
-  // A box that scrolls sideways for anything but a code block, a data table, a board's lanes or a
-  // picture wider than itself running past its edges.
   const scrollers = new Set<Element>();
   for (const el of all) {
     const style = styleOf(el);
@@ -290,15 +280,12 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     if (!scrolls || !shown(el) || visuallyHidden(el)) continue;
     if (el.scrollWidth <= el.clientWidth + SLACK) continue;
     scrollers.add(el);
-    // The box is the exempt element itself: a code block scrolling its own lines, a data table
-    // or a board's lanes.
     if (el.closest("pre") !== null || el.matches(SCROLLS_FOR)) continue;
     const box = el.getBoundingClientRect();
     const left = box.left + el.clientLeft;
     const right = left + el.clientWidth;
     const runsPast = (edges: DOMRect, contentRight = edges.right): boolean =>
       contentRight > right + SLACK || edges.left < left - SLACK;
-    /** Whether a line of text directly inside `holder` runs past the box. */
     const textRunsPast = (holder: Element): boolean =>
       [...holder.childNodes].some((node) => {
         if (node.nodeType !== Node.TEXT_NODE || (node.textContent ?? "").trim() === "")
@@ -309,27 +296,20 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
       });
     // An element runs past the box when its own box does, or when its content does: a block
     // that does not clip holds text wider than itself, which is how a `pre` overflows.
-    const overflowing = [...el.querySelectorAll("*")].filter((inner) => {
+    const overflowingDescendants = [...el.querySelectorAll("*")].filter((inner) => {
       if (!shown(inner) || clipperOf(inner) !== el) return false;
       const edges = inner.getBoundingClientRect();
       return styleOf(inner).overflowX === "visible"
         ? runsPast(edges, Math.max(edges.right, edges.left + inner.scrollWidth))
         : runsPast(edges);
     });
-    // What overflows is the deepest of them, and any whose own text runs past: an element that
-    // runs past only because a child does is that child's wrapper, not the cause.
-    const sources = overflowing.filter(
+    const overflowSources = overflowingDescendants.filter(
       (inner) =>
-        !overflowing.some((other) => other !== inner && inner.contains(other)) ||
+        !overflowingDescendants.some((other) => other !== inner && inner.contains(other)) ||
         textRunsPast(inner)
     );
     const ownText = textRunsPast(el);
-    /** Whether this source of the overflow is one the box may scroll for: a code block, a data
-     *  table or a board's lanes it sits in, or a picture when the box scrolls no further than that
-     *  picture and its own padding need. A strip of pictures, narrow or wide, is a row, and so is a
-     *  picture pushed past the box by what stands beside it or by its margin: the box scrolls
-     *  further than the picture, for the row. */
-    const exempt = (inner: Element): boolean => {
+    const isExemptOverflowSource = (inner: Element): boolean => {
       if (inner.closest(SCROLLS_FOR) !== null) return true;
       const picture = inner.closest(PICTURE);
       if (picture === null) return false;
@@ -337,13 +317,14 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
       const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
       return el.scrollWidth <= picture.getBoundingClientRect().width + padding + SLACK;
     };
-    const forItsTables = !ownText && sources.length > 0 && sources.every(exempt);
-    if (forItsTables) continue;
-    const causes = sources.filter((inner) => !exempt(inner));
+    const allOverflowIsExempt =
+      !ownText && overflowSources.length > 0 && overflowSources.every(isExemptOverflowSource);
+    if (allOverflowIsExempt) continue;
+    const causes = overflowSources.filter((inner) => !isExemptOverflowSource(inner));
     breaches.push({
       detail:
         `holds ${el.scrollWidth}px in a ${el.clientWidth}px box; past its edges: ` +
-        [...(ownText || sources.length === 0 ? ["its own text"] : []), ...causes.map(label)]
+        [...(ownText || overflowSources.length === 0 ? ["its own text"] : []), ...causes.map(label)]
           .slice(0, 3)
           .join(", "),
       kind: "box-scroll",
@@ -354,7 +335,6 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     });
   }
 
-  // An element cut off by the box that clips it, with no ellipsis to say so.
   const cut = new Set<Element>();
   const cutInside = new Set<Element>();
   for (const el of all) {
@@ -366,7 +346,6 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     const edge = clipper.getBoundingClientRect();
     if (box.right <= edge.right + SLACK && box.left >= edge.left - SLACK) continue;
     cut.add(el);
-    // Its parent is cut too, inside the same box: the parent is the breach, not this.
     const parent = el.parentElement;
     if (parent !== null && parent !== clipper && cut.has(parent)) continue;
     cutInside.add(clipper);
@@ -418,7 +397,6 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   const cutAtViewport = new Set<Element>();
   for (const el of all) {
     if (!shown(el) || visuallyHidden(el)) continue;
-    // What a code block or a picture holds is its own to cut; the block or picture itself is not.
     const holderOfContent = el.parentElement?.closest(CODE_OR_PICTURE);
     if (holderOfContent !== null && holderOfContent !== undefined) continue;
     const holder = holderOf(el);

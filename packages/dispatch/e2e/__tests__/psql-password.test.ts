@@ -57,7 +57,6 @@ function realExecutable(name: string): string | undefined {
   return undefined;
 }
 
-/** The real tool each stand-in of the run-server rows hands its call on to. */
 const realTools = { env: realExecutable("env"), python3: realExecutable("python3") };
 
 /** What the stand-in psql was last handed. */

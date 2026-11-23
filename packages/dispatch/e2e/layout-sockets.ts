@@ -33,7 +33,6 @@ import { answerTo } from "./stub/live-frames";
 import { recordingPath } from "./stub/recordings";
 import { stubRecording } from "./stub/selection";
 
-/** One frame, as it crossed: text as text, binary as base64. */
 interface Frame {
   readonly binary: boolean;
   readonly data: string;
@@ -44,9 +43,7 @@ interface DocConnection {
 }
 
 interface Recorded {
-  /** The first connection to each document, by its path (`/ws/doc/<artifact id>`). */
   readonly doc: Record<string, DocConnection>;
-  /** Every live frame the server sent for a subscription, by the view the page subscribed to. */
   readonly live: Record<string, readonly string[]>;
 }
 
@@ -69,14 +66,10 @@ interface LiveFrame {
   view?: unknown;
 }
 
-/** The key a subscription's frames are kept under: its view, which the page asks again for on
- *  every load and in both modes. */
 function viewKey(view: unknown): string {
   return JSON.stringify(view ?? null);
 }
 
-/** Records the document and live sockets the page opens against the harness, and returns the
- *  write that keeps them beside the row's HAR. */
 async function record(page: Page, testInfo: TestInfo): Promise<() => void> {
   const recorded: { doc: Record<string, DocConnection>; live: Record<string, string[]> } = {
     doc: {},
@@ -84,15 +77,16 @@ async function record(page: Page, testInfo: TestInfo): Promise<() => void> {
   };
   await page.routeWebSocket(DOC, (socket: WebSocketRoute) => {
     const path = new URL(socket.url()).pathname;
-    const frames: ({ from: "page" | "server" } & Frame)[] = [];
-    if (recorded.doc[path] === undefined) recorded.doc[path] = { frames };
+    const frames: ({ from: "page" | "server" } & Frame)[] | undefined =
+      recorded.doc[path] === undefined ? [] : undefined;
+    if (frames !== undefined) recorded.doc[path] = { frames };
     const server = socket.connectToServer();
     socket.onMessage((message) => {
-      frames.push({ from: "page", ...frameOf(message) });
+      frames?.push({ from: "page", ...frameOf(message) });
       server.send(message);
     });
     server.onMessage((message) => {
-      frames.push({ from: "server", ...frameOf(message) });
+      frames?.push({ from: "server", ...frameOf(message) });
       socket.send(message);
     });
   });
@@ -125,7 +119,6 @@ async function record(page: Page, testInfo: TestInfo): Promise<() => void> {
   };
 }
 
-/** Answers the page's document and live sockets from the row's recorded frames. */
 async function replay(page: Page, testInfo: TestInfo): Promise<void> {
   const recorded = JSON.parse(
     readFileSync(recordingPath(testInfo, ".sockets.json"), "utf8")
@@ -133,18 +126,18 @@ async function replay(page: Page, testInfo: TestInfo): Promise<void> {
   await page.routeWebSocket(DOC, (socket: WebSocketRoute) => {
     const connection = recorded.doc[new URL(socket.url()).pathname];
     if (connection === undefined) return;
-    // The server's frames, in groups: the frames that followed the page's n-th frame are sent
-    // when the page sends its n-th frame here, and those before its first are sent at once.
-    const groups: Frame[][] = [[]];
+    const serverFramesAfterEachPageFrame: Frame[][] = [[]];
     for (const frame of connection.frames) {
-      if (frame.from === "page") groups.push([]);
-      else groups[groups.length - 1]?.push(frame);
+      if (frame.from === "page") serverFramesAfterEachPageFrame.push([]);
+      else serverFramesAfterEachPageFrame[serverFramesAfterEachPageFrame.length - 1]?.push(frame);
     }
-    let sent = 0;
-    for (const frame of groups[0] ?? []) socket.send(messageOf(frame));
+    let pageFramesReceived = 0;
+    for (const frame of serverFramesAfterEachPageFrame[0] ?? []) socket.send(messageOf(frame));
     socket.onMessage(() => {
-      sent += 1;
-      for (const frame of groups[sent] ?? []) socket.send(messageOf(frame));
+      pageFramesReceived += 1;
+      for (const frame of serverFramesAfterEachPageFrame[pageFramesReceived] ?? []) {
+        socket.send(messageOf(frame));
+      }
     });
   });
   await page.routeWebSocket(LIVE, (socket: WebSocketRoute) => {
@@ -174,10 +167,8 @@ export async function routeLayoutSockets(page: Page, testInfo: TestInfo): Promis
       await route.fallback();
       return;
     }
-    // The server's `UserIssueState`, the fields the mark wrote over what a new reader holds.
     const wrote = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
     await route.fulfill({
-      contentType: "application/json",
       json: { dismissed: [], last_read_seq: 0, pinned: false, seq: 0, ...wrote },
     });
   });
