@@ -354,22 +354,27 @@ func (a Approval) LatestReviewer() Actor {
 // ChangeRequest is what Dispatch reads of an issue's change request at one version of the issue's
 // spec (GET /api/v1/issues/{key}/change-request): the version it read, whether the issue's
 // repository is an enabled spec source of its project (SpecSource), the repository and the
-// version of the Verification document whose checks it compared, whether the version proposes a
-// statement, component or interface (Proposes, a problem of such a block included), whether it
-// changes an approved check (ChangesChecks), whether a check it changes is one the approved spec
-// does not hold as written, so no person's approval wrote it (ChangesChecksUnapproved, R25), and
-// the judgment of its conclusion. The daemon's design gate decides from SpecSource and
-// ProposesNothing whether a version opens with no person (R23), and from ChangesChecksUnapproved
-// whether the checks hold the gate whatever stands open (R25); the proposals themselves are the
-// person's to read on Dispatch, so this type does not carry them.
+// version of the Verification document whose checks it compared, the approved spec it compared
+// against (ApprovedSpecMark: it rises with each write of that repository's approved spec, which
+// another issue's approval makes while this issue's documents stand, and is 0 for no spec source),
+// whether the version proposes a statement, component or interface (Proposes, a problem of such a
+// block included), whether it changes an approved check (ChangesChecks), whether a proposal or a
+// changed check is one the approved spec does not hold as written, so no person's approval wrote
+// it (ProposesUnapproved, ChangesChecksUnapproved, R25), and the judgment of its conclusion. The
+// daemon's design gate decides from SpecSource and ProposesNothing whether a version opens with no
+// person (R23), and from ProposesUnapproved and ChangesChecksUnapproved whether the request holds
+// the gate whatever stands open (R25); the proposals themselves are the person's to read on
+// Dispatch, so this type does not carry them.
 type ChangeRequest struct {
 	Issue                   string
 	Version                 int
 	SpecSource              bool
 	Repo                    string
 	VerificationVersion     int
+	ApprovedSpecMark        int64
 	Proposes                bool
 	ChangesChecks           bool
+	ProposesUnapproved      bool
 	ChangesChecksUnapproved bool
 	Judgment                string
 }

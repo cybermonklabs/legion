@@ -470,10 +470,12 @@ const legionMergeWaitView = z.object({
 /** `api.GateView` — the design gate; `approvedVersion` is null until a human approves one, and
  * `exemptVersion` until a version of a spec-source root's change request that proposes nothing
  * opens it with no person (contract 232). `rule` is the rule the gate started under, `approval`
- * or `change_request`. `verificationVersion` is the version of the root's Verification document
- * its change request was read at (0 for none), and `checksUnapproved` whether that read found a
- * check of The Spec the document changes that no person approved (contract 232). The gate is open
- * exactly when either version equals `currentVersion` and `checksUnapproved` is false. */
+ * or `change_request`. `verificationVersion` and `approvedSpecMark` are the version of the root's
+ * Verification document and the approved spec (Dispatch's `approved_spec_mark`) its change
+ * request was read at (0 for none), and `checksUnapproved` and `proposesUnapproved` whether that
+ * read found a check of The Spec the document changes, or a statement, component or interface the
+ * spec proposes, that no person approved (contract 232). The gate is open exactly when either
+ * version equals `currentVersion` and neither `checksUnapproved` nor `proposesUnapproved` holds. */
 const legionGateView = z.object({
   artifactId: nonEmptyString.optional(),
   currentVersion: z.number().int().positive().optional(),
@@ -481,7 +483,9 @@ const legionGateView = z.object({
   exemptVersion: z.number().int().positive().nullable().optional(),
   rule: nonEmptyString.optional(),
   verificationVersion: z.number().int().nonnegative().optional(),
+  approvedSpecMark: z.number().int().nonnegative().optional(),
   checksUnapproved: z.boolean().optional(),
+  proposesUnapproved: z.boolean().optional(),
 });
 
 /** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
@@ -493,12 +497,13 @@ const legionDesignStep = z.enum(DESIGN_GATE_STEPS);
  * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for
  * the step and that document's current version, absent until one is registered; `approvedVersion`
  * is the version a person approved, null until one does, and `exemptVersion` the version that
- * opened it with no person, null for none; `verificationVersion` and `checksUnapproved` are the
- * Verification version its change request was read at and whether that read found a changed
- * check no person approved (contract 232). `status` is where the step stands: `unregistered` (the
+ * opened it with no person, null for none; `verificationVersion`, `approvedSpecMark`,
+ * `checksUnapproved` and `proposesUnapproved` are the Verification version and the approved spec
+ * its change request was read at and whether that read found a changed check or a proposal no
+ * person approved (contract 232). `status` is where the step stands: `unregistered` (the
  * deployment gates it and the issue holds no record of it, so it holds the tree's work), `waiting`
  * (registered, and no person's review stands on its current version, which includes an approval
- * a changed check holds), `approved` (a person approved its current version), `exempt` (its
+ * a changed check or proposal holds), `approved` (a person approved its current version), `exempt` (its
  * current version proposes nothing, so it opened with no person; contract 232) or
  * `changes_requested` (its reviewer asked for changes at its current version, with
  * `changesReason` the reason they gave; absent under every other status). `approved` and `exempt`
@@ -513,7 +518,9 @@ const legionGatedStepView = z.object({
   approvedVersion: z.number().int().positive().nullable().optional(),
   exemptVersion: z.number().int().positive().nullable().optional(),
   verificationVersion: z.number().int().nonnegative().optional(),
+  approvedSpecMark: z.number().int().nonnegative().optional(),
   checksUnapproved: z.boolean().optional(),
+  proposesUnapproved: z.boolean().optional(),
   status: z.enum(["unregistered", "waiting", "approved", "exempt", "changes_requested"]).optional(),
   changesReason: nonEmptyString.optional(),
 });

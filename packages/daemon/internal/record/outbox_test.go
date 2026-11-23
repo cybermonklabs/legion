@@ -95,6 +95,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main", Phase: phase.Retro, PullRequest: 42},
 		SpecEndingRead{Head: "c0de", Cause: SpecEndingCauseHead},
 		SpecEndingRead{Head: "c0de", Cause: SpecEndingCauseOutcomes},
+		SpecEndingRead{Head: "c0de", Cause: SpecEndingCauseApprovedSpec},
+		SpecGateRead{Cause: SpecGateCauseApprovedSpec},
+		SpecGateRead{Cause: SpecGateCauseOlderRead},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -270,7 +273,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindSpecEndingRead}
+		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindSpecEndingRead, OutboxKindSpecGateRead}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -351,6 +354,9 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// A read of a change request's ending condition reads Dispatch and starts no turn; the
 		// role messages and notices its fact queues are held, each by its own kind.
 		OutboxKindSpecEndingRead: "",
+		// A read of a spec gate's change request again reads Dispatch and starts no turn; the role
+		// messages its fact queues are held, each by its own kind.
+		OutboxKindSpecGateRead: "",
 	}
 	for _, lane := range OutboxLanes() {
 		for _, kind := range LaneKinds(lane) {
@@ -489,6 +495,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a conflict confirm of no pull request", payload: ConflictConfirm{Head: "c0de", FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a spec ending read at no head", payload: SpecEndingRead{Cause: SpecEndingCauseHead}, reason: "a spec ending read names the head it reads the ending condition at"},
 		{name: "a spec ending read of no cause", payload: SpecEndingRead{Head: "c0de"}, reason: "a spec ending read names what queued it"},
+		{name: "a spec gate read of no cause", payload: SpecGateRead{}, reason: "a spec gate read names what queued it"},
 		{name: "a conflict confirm with no head", payload: ConflictConfirm{Number: 42, FirstReadAt: now}, reason: "a conflict confirm names the pull request it reads again and the head"},
 		{name: "a conflict confirm with no time of the first read", payload: ConflictConfirm{Number: 42, Head: "c0de"}, reason: "a conflict confirm names when the first read it reads again was made"},
 		{name: "a merge-forward message of no step", payload: MergeForwardMessage{Role: claim.RoleImplementer, Head: "c0de", Base: "main", Phase: phase.Testing, PullRequest: 42, Why: ConflictCheckNotGreen}, reason: "is an ask, a hold, a landed or a review"},

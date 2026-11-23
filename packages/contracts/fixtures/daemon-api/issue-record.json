@@ -147,7 +147,9 @@
     "exemptVersion": null,
     "rule": "approval",
     "verificationVersion": 0,
-    "checksUnapproved": false
+    "approvedSpecMark": 0,
+    "checksUnapproved": false,
+    "proposesUnapproved": false
   },
   "gatedSteps": [
     {
@@ -157,7 +159,9 @@
       "approvedVersion": 6,
       "exemptVersion": null,
       "verificationVersion": 0,
+      "approvedSpecMark": 0,
       "checksUnapproved": false,
+      "proposesUnapproved": false,
       "status": "waiting"
     }
   ],

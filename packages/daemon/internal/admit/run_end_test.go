@@ -408,6 +408,7 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.ListenerWake{}, intake.PodBackstopDue{}, intake.WorkerSilent{}, intake.WorkerBackgroundStalled{},
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{},
 		intake.Handover{}, intake.CloseRoot{}, intake.SpecRequestStale{}, intake.SpecOutcomesRecorded{}, intake.SpecEndingRead{},
+		intake.ApprovedSpecWritten{}, intake.SpecGateRead{},
 	} {
 		if name := factName(fact); name == kind {
 			return fact

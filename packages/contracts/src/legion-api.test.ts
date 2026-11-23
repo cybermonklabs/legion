@@ -2578,10 +2578,11 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // shape, and the lowest plugin contract reports the claims of the snapshot the route projected
   // the body from, a pod at 201, which `state.json`'s own fixture does not hold. Two bands stand
   // above 199: the repositories block's at 202, and the spec gate's at 232, which leaves off each
-  // issue's `designGate.exemptVersion`, `designGate.rule`, `designGate.verificationVersion` and
-  // `designGate.checksUnapproved`, and each gated step's `exemptVersion`, `verificationVersion`
-  // and `checksUnapproved`. So the narrowing changes the one block and those keys, and nothing
-  // beside.
+  // issue's `designGate.exemptVersion`, `designGate.rule`, `designGate.verificationVersion`,
+  // `designGate.approvedSpecMark`, `designGate.checksUnapproved` and
+  // `designGate.proposesUnapproved`, and each gated step's `exemptVersion`, `verificationVersion`,
+  // `approvedSpecMark`, `checksUnapproved` and `proposesUnapproved`. So the narrowing changes the
+  // one block and those keys, and nothing beside.
   const { daemonApiVersion } = z
     .object({ daemonApiVersion: z.number() })
     .parse(fixture("version.json"));
@@ -2605,12 +2606,16 @@ test("a reader at contract 152 parses the repositories block served below 202", 
       delete gate.exemptVersion;
       delete gate.rule;
       delete gate.verificationVersion;
+      delete gate.approvedSpecMark;
       delete gate.checksUnapproved;
+      delete gate.proposesUnapproved;
     }
     for (const step of (issue.gatedSteps ?? []) as Array<Record<string, unknown>>) {
       delete step.exemptVersion;
       delete step.verificationVersion;
+      delete step.approvedSpecMark;
       delete step.checksUnapproved;
+      delete step.proposesUnapproved;
     }
   }
   expect(narrowedRest).toEqual(rest);

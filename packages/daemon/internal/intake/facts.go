@@ -1127,22 +1127,28 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // ChangeRequestRead is what the daemon read of an issue's change request at one version of its
 // spec (dispatch.ChangeRequest), carried by the fact that applies that version, since the workflow
 // performs no I/O: the version read, the version of the issue's Verification document the read
-// took its checks from (0 for none), whether the issue's repository is a spec source, whether that
-// version proposes no statement, component or interface and changes no approved check, and whether
-// a check it changes is one the approved spec does not hold as written, so no person approved it
-// (ChecksUnapproved, R25).
+// took its checks from (0 for none), the approved spec it compared against (ApprovedSpecMark, 0
+// for none), whether the issue's repository is a spec source, whether that version proposes no
+// statement, component or interface and changes no approved check, and whether a proposal or a
+// check it changes is one the approved spec does not hold as written, so no person approved it
+// (ProposesUnapproved, ChecksUnapproved, R25). Version, VerificationVersion and ApprovedSpecMark
+// are the whole identity of the comparison: another issue's approval moves the third while this
+// issue's documents stand.
 type ChangeRequestRead struct {
 	Version             int
 	VerificationVersion int
+	ApprovedSpecMark    int64
 	SpecSource          bool
 	ProposesNothing     bool
+	ProposesUnapproved  bool
 	ChecksUnapproved    bool
 }
 
 // ChangeRequestReadOf is read as a fact carries it.
 func ChangeRequestReadOf(read dispatch.ChangeRequest) *ChangeRequestRead {
-	return &ChangeRequestRead{Version: read.Version, VerificationVersion: read.VerificationVersion, SpecSource: read.SpecSource,
-		ProposesNothing: read.ProposesNothing(), ChecksUnapproved: read.ChangesChecksUnapproved}
+	return &ChangeRequestRead{Version: read.Version, VerificationVersion: read.VerificationVersion, ApprovedSpecMark: read.ApprovedSpecMark,
+		SpecSource: read.SpecSource, ProposesNothing: read.ProposesNothing(), ProposesUnapproved: read.ProposesUnapproved,
+		ChecksUnapproved: read.ChangesChecksUnapproved}
 }
 
 // ExemptsVersion says whether the read opens version with no person: it is of that very version,
@@ -1192,6 +1198,33 @@ type SpecOutcomesRecorded struct {
 }
 
 func (f SpecOutcomesRecorded) namedIssue() (string, bool) { return f.Key, true }
+
+// ApprovedSpecWritten is Dispatch's spec.approved_written on Key: an act of that issue, a person's
+// approval of its change request or the import of its approved level (Act), wrote the approved
+// spec of the repository Repo (`owner/name`, as Dispatch names a spec source). Every other issue of
+// that repository reads its change request against that approved spec, so the daemon reads the
+// change request of each spec gate it holds on such an issue again (record.SpecGateRead), though
+// nothing of that issue moved. Key itself need not be an issue the daemon holds.
+type ApprovedSpecWritten struct {
+	Key  string
+	Seq  int64
+	Repo string
+	Act  string
+}
+
+func (f ApprovedSpecWritten) namedIssue() (string, bool) { return f.Key, true }
+
+// SpecGateRead is the outbox's read of the change request of Issue's spec gate at the gate's
+// current version (record.SpecGateRead), never decoded from an event: what Dispatch answered, nil
+// for a Dispatch older than the route or a version it refuses for good. The workflow applies it as
+// a read the approved spec moved under: it can hold or take back the gate, or take a hold away,
+// and never opens it with no person.
+type SpecGateRead struct {
+	Issue string
+	Read  *ChangeRequestRead
+}
+
+func (f SpecGateRead) namedIssue() (string, bool) { return f.Issue, true }
 
 // SpecEndingRead is the outbox's read of the ending condition of Issue's change request at Head
 // (record.SpecEndingRead), never decoded from an event: State is Dispatch's `ready` or `waiting`,

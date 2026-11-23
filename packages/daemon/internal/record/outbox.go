@@ -75,6 +75,9 @@ const (
 	// OutboxKindSpecEndingRead reads the ending condition of a change request again for one issue
 	// in merging (SpecEndingRead).
 	OutboxKindSpecEndingRead OutboxKind = "spec_ending_read"
+	// OutboxKindSpecGateRead reads the change request of one issue's spec gate again after the
+	// approved spec it is read against moved (SpecGateRead).
+	OutboxKindSpecGateRead OutboxKind = "spec_gate_read"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
@@ -96,9 +99,10 @@ const (
 // runs in the issue's pod, its architect included (update_ask). It also runs the reads that come
 // before a message: the read of GitHub before a merge-queue removal's message (merge_queue_read),
 // the second read of a head a first read found conflicting, whose confirmation is what writes a
-// merge forward's messages (conflict_confirm), and the read of Dispatch's ending condition of a
+// merge forward's messages (conflict_confirm), the read of Dispatch's ending condition of a
 // change request, whose answer is what tells the merger its gate closed or opened
-// (spec_ending_read). It is a lane of its
+// (spec_ending_read), and the read of a spec gate's change request again after the approved spec
+// moved, whose answer can close the gate under the merger (spec_gate_read). It is a lane of its
 // own because the board lane's architect notices are ordered among themselves and one of them
 // waits for as long as its architect holds no role (the daemon's errNoticeWaits): a role given the
 // words a hook fired on a move back, told that its pull request left the merge queue, asked to
@@ -129,7 +133,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
-	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindSpecEndingRead},
+	LaneRoleMessage: {OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindSpecEndingRead, OutboxKindSpecGateRead},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
@@ -1786,6 +1790,33 @@ const (
 	SpecEndingCauseVersion  SpecEndingCause = "version"
 	SpecEndingCauseApproval SpecEndingCause = "approval"
 	SpecEndingCauseExempted SpecEndingCause = "exempted"
+	// SpecEndingCauseApprovedSpec is a read of the spec gate's change request after the approved
+	// spec moved (SpecGateRead) that left the gate open by exemption: the approved spec is an input
+	// of the conclusion's judgment too.
+	SpecEndingCauseApprovedSpec SpecEndingCause = "approved_spec"
+)
+
+// SpecGateRead is the daemon's read of its issue's change request again, at the issue's spec gate's
+// current version, after the approved spec that request is read against moved with no event of
+// the issue's own (Cause): an approval or an import of another issue wrote the approved spec of
+// the issue's repository (SpecGateCauseApprovedSpec, Dispatch's spec.approved_written), or the
+// read the gate took last, of a version or a Verification version new to it, was of an older
+// approved spec than the read before it (SpecGateCauseOlderRead). Its executor reads Dispatch once
+// and applies what it read (intake.SpecGateRead), whose transaction holds the gate, takes its
+// exemption back or takes a hold away, and tells the tree when the standing gate moves. It finishes
+// without a read once the issue holds no spec gate under the rule of a change request.
+type SpecGateRead struct {
+	Cause SpecGateCause `json:"cause"`
+}
+
+func (SpecGateRead) OutboxKind() OutboxKind { return OutboxKindSpecGateRead }
+
+// SpecGateCause is what queued a SpecGateRead, which its executor logs.
+type SpecGateCause string
+
+const (
+	SpecGateCauseApprovedSpec SpecGateCause = "approved_spec"
+	SpecGateCauseOlderRead    SpecGateCause = "older_read"
 )
 
 // MergeForwardStep is which message of a merge forward a MergeForwardMessage carries
@@ -2170,6 +2201,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindSpecGateRead:
+		value := SpecGateRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindStepRecord:
 		value := StepRecord{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2495,9 +2532,15 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a spec ending read names the head it reads the ending condition at; it names none")
 		}
 		switch value.Cause {
-		case SpecEndingCauseHead, SpecEndingCauseOutcomes, SpecEndingCauseVersion, SpecEndingCauseApproval, SpecEndingCauseExempted:
+		case SpecEndingCauseHead, SpecEndingCauseOutcomes, SpecEndingCauseVersion, SpecEndingCauseApproval, SpecEndingCauseExempted, SpecEndingCauseApprovedSpec:
 		default:
 			return fmt.Errorf("a spec ending read names what queued it; it names %q", value.Cause)
+		}
+	case SpecGateRead:
+		switch value.Cause {
+		case SpecGateCauseApprovedSpec, SpecGateCauseOlderRead:
+		default:
+			return fmt.Errorf("a spec gate read names what queued it; it names %q", value.Cause)
 		}
 	case MergeForwardMessage:
 		if _, known := mergeForwardRoles[value.Step]; !known {

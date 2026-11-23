@@ -1692,15 +1692,16 @@ func scannedMark(seq *int64, at *time.Time) EventMark {
 	return mark
 }
 
-const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened, rule, exempt_version, verification_version, checks_unapproved`
+const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened, rule, exempt_version, verification_version, checks_unapproved, approved_spec_mark, proposes_unapproved`
 
 // scanGate reads a gate row in the shape PutGate writes: an approval's mark only with the approval,
 // a told changes request's reason and mark only with its version. An older daemon, which knows none
 // of these columns, may clear a version and leave the rest, so the shape is the reader's and the
 // writer's to keep rather than a constraint that would refuse that daemon's write. The rule's word
 // is read back as its rule (GateRule.Word), and a row the release before wrote, which names
-// neither the rule, the exemption, the Verification version nor a changed check, reads as the rule
-// of a person's approval with no exemption, read at no Verification version, holding no check.
+// neither the rule, the exemption, the Verification version, the approved spec nor a hold, reads as
+// the rule of a person's approval with no exemption, read at no Verification version and against
+// no approved spec, holding nothing.
 func scanGate(row scanner) (DesignGate, error) {
 	var gate DesignGate
 	var approvedSeq, toldSeq *int64
@@ -1708,7 +1709,7 @@ func scanGate(row scanner) (DesignGate, error) {
 	var step, rule string
 	if err := row.Scan(&gate.Issue, &step, &gate.ArtifactID, &gate.LatestVersion, &gate.ApprovedVersion, &approvedSeq, &approvedAt,
 		&gate.ToldChangesVersion, &gate.ToldChangesReason, &toldSeq, &toldAt, &gate.EverOpened, &rule, &gate.ExemptVersion, &gate.VerificationVersion,
-		&gate.ChecksUnapproved); err != nil {
+		&gate.ChecksUnapproved, &gate.ApprovedSpecMark, &gate.ProposesUnapproved); err != nil {
 		return DesignGate{}, err
 	}
 	gate.Rule = gateRuleOfWord(rule)
@@ -1808,6 +1809,35 @@ func (s *Postgres) GatedIssues(ctx context.Context, tx pgx.Tx, project string) (
 	return keys, nil
 }
 
+// SpecGatesOfRepository is the spec gate of each issue of project whose repository is repo, in
+// either spelling of its case (Dispatch names a spec source in lower case, and Repo is spelled as
+// the issue's clone is), that stands under the rule of a change request and that Dispatch does not
+// show as done, in issue order: the gates whose change requests are read against repo's approved
+// spec, which an approval of any issue of that repository moves (the workflow's
+// approvedSpecWritten). One query, whatever the number of gates the project records.
+func (s *Postgres) SpecGatesOfRepository(ctx context.Context, tx pgx.Tx, project, repo string) ([]DesignGate, error) {
+	rows, err := tx.Query(ctx, `select `+gateColumns+` from design_gates
+		where step = $3 and rule = $4 and issue in (
+			select key from issues where project = $1 and lower(repo) = lower($2) and dispatch_status <> 'done')
+		order by issue`, project, repo, string(DesignStepSpec), GateRuleChangeRequest.Word())
+	if err != nil {
+		return nil, fmt.Errorf("list the spec gates of %s in %s: %w", repo, project, err)
+	}
+	defer rows.Close()
+	var gates []DesignGate
+	for rows.Next() {
+		gate, err := scanGate(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list the spec gates of %s in %s: %w", repo, project, err)
+		}
+		gates = append(gates, gate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the spec gates of %s in %s: %w", repo, project, err)
+	}
+	return gates, nil
+}
+
 // GatesForArtifact is every gate registered on artifactID, in issue and then step order: one row
 // for each step of the document's owner that names it, and each copy a hand-over carried to a
 // child of its tree. Each row carries its own step.
@@ -1860,8 +1890,8 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	// it (GateOpen), which classify.DesignGateOpen calls too.
 	_, err := tx.Exec(ctx, `insert into design_gates (issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at,
 		told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened, rule, exempt_version, verification_version,
-		checks_unapproved)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		checks_unapproved, approved_spec_mark, proposes_unapproved)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		on conflict (issue, step) do update set artifact_id = excluded.artifact_id,
 		latest_version = excluded.latest_version, approved_version = excluded.approved_version,
 		approved_seq = excluded.approved_seq, approved_at = excluded.approved_at,
@@ -1869,10 +1899,12 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 		told_changes_seq = excluded.told_changes_seq, told_changes_at = excluded.told_changes_at,
 		ever_opened = design_gates.ever_opened or excluded.ever_opened,
 		rule = excluded.rule, exempt_version = excluded.exempt_version, verification_version = excluded.verification_version,
-		checks_unapproved = excluded.checks_unapproved`,
+		checks_unapproved = excluded.checks_unapproved, approved_spec_mark = excluded.approved_spec_mark,
+		proposes_unapproved = excluded.proposes_unapproved`,
 		gate.Issue, string(step), gate.ArtifactID, gate.LatestVersion, gate.ApprovedVersion, approvedSeq, approvedAt,
 		gate.ToldChangesVersion, toldReason, toldSeq, toldAt,
-		gate.EverOpened || GateOpen(gate), gate.Rule.Word(), gate.ExemptVersion, gate.VerificationVersion, gate.ChecksUnapproved)
+		gate.EverOpened || GateOpen(gate), gate.Rule.Word(), gate.ExemptVersion, gate.VerificationVersion, gate.ChecksUnapproved,
+		gate.ApprovedSpecMark, gate.ProposesUnapproved)
 	if err != nil {
 		return fmt.Errorf("put design gate for %s: %w", gate.Issue, err)
 	}

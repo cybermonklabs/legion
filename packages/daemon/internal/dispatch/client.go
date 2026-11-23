@@ -769,8 +769,10 @@ type changeRequestResponse struct {
 	SpecSource              bool   `json:"spec_source"`
 	Repo                    string `json:"repo"`
 	VerificationVersion     int    `json:"verification_version"`
+	ApprovedSpecMark        int64  `json:"approved_spec_mark"`
 	Proposes                bool   `json:"proposes"`
 	ChangesChecks           bool   `json:"changes_checks"`
+	ProposesUnapproved      bool   `json:"proposes_unapproved"`
 	ChangesChecksUnapproved bool   `json:"changes_checks_unapproved"`
 	Judgment                string `json:"judgment"`
 }

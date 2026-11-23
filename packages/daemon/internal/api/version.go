@@ -3077,12 +3077,14 @@ package api
 // condition holds at the head that would land (D10). `GET /legion/v1/state` gains, on each
 // issue's `designGate`, `exemptVersion` (the version that opened the gate with no person, null
 // for none), `rule` (`approval` or `change_request`, the rule the gate started under, which a
-// later registration keeps, R24), `verificationVersion` (the version of the issue's Verification
-// document the gate's change request was read at, 0 for none) and `checksUnapproved` (whether
-// that read found a check of The Spec the document changes that no person approved, which holds
-// the gate closed whatever approval or exemption stands, R25), and on each `gatedSteps` entry
-// `exemptVersion`, `verificationVersion`, `checksUnapproved` and the status `exempt`
-// (api.GateView, api.GatedStepView). A caller below 232 is served those keys left off
+// later registration keeps, R24), `verificationVersion` and `approvedSpecMark` (the version of the
+// issue's Verification document and the approved spec, Dispatch's `approved_spec_mark`, the gate's
+// change request was read at, 0 for none), and `checksUnapproved` and `proposesUnapproved`
+// (whether that read found a check of The Spec the document changes, or a statement, component or
+// interface the spec proposes, that no person approved, which holds the gate closed whatever
+// approval or exemption stands, R25), and on each `gatedSteps` entry `exemptVersion`,
+// `verificationVersion`, `approvedSpecMark`, `checksUnapproved`, `proposesUnapproved` and the
+// status `exempt` (api.GateView, api.GatedStepView). A caller below 232 is served those keys left off
 // (shaping.go's withoutGateExemption) and a step in `exempt` without its `status`
 // (withoutExemptStatus), which its schema reads as optional. No request shape moves:
 // `POST /legion/v1/gates/register` takes what it took, and reads Dispatch's change request for
@@ -3091,7 +3093,8 @@ package api
 // `spec-ending-waits` and `spec-request-stale` are new, to the architect and, for the second, to
 // the controller (`record.validNoticeKinds`); an outbox payload is decoded strictly, so the way
 // back of this change's migration (`store/migrations/20261122104755_spec_gate_exemption.up.sql`)
-// deletes their unsent rows and the queued `spec_ending_read` rows before a rollback.
+// deletes their unsent rows and the queued `spec_ending_read` and `spec_gate_read` rows before a
+// rollback.
 // (This entry takes 232, the lowest number above every number this branch, origin/main and the
 // open heads hold, in a reading of `const DaemonAPIVersion` at the head of each of the 530 open
 // pull requests, made between 2026-11-23T00:37:58Z and 00:48:05Z: this branch 227, origin/main

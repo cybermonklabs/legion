@@ -1522,18 +1522,29 @@ type DesignGate struct {
 	// VerificationVersion is the newest version of the issue's Verification document a read of its
 	// change request saw (0 while no read saw one): under the rule of a change request the request
 	// reads its checks from that document, so it is the other half of what the gate stands open on
-	// beside LatestVersion. Every write that moves it decides ExemptVersion and ChecksUnapproved
-	// again from the same read, so an exemption that stands at LatestVersion was read at
+	// beside LatestVersion. Every write that moves it decides ExemptVersion and the holds again
+	// from the same read, so an exemption that stands at LatestVersion was read at
 	// VerificationVersion, and a read made before a later version of that document the gate already
 	// applied exempts nothing and holds nothing (the workflow's readChanges).
 	VerificationVersion int
-	// ChecksUnapproved is whether the read at VerificationVersion found a check of The Spec that the
+	// ApprovedSpecMark is the approved spec the read the gate stands on compared against (Dispatch's
+	// approved_spec_mark, 0 while no read named one): the third input of the read, which another
+	// issue's approval moves while this issue's documents stand. With LatestVersion and
+	// VerificationVersion it is the identity of that read, so a read of the same versions at a
+	// lower mark, made before an approval elsewhere the gate already applied, changes nothing
+	// (readChanges).
+	ApprovedSpecMark int64
+	// ChecksUnapproved is whether the read the gate stands on found a check of The Spec that the
 	// Verification document changes and that no person approved: the approved spec does not hold it
-	// as the document writes it (R25: a changed approved check waits for the person). Under the rule
-	// of a change request it closes the gate whatever approval or exemption stands
-	// (GateApproved, GateExempt), until a later read finds the change held by the approved spec, which
-	// only a person's approval of a request that covers it writes.
-	ChecksUnapproved bool
+	// as the document writes it (R25: a changed approved check waits for the person).
+	// ProposesUnapproved is the same of a statement, component or interface the spec proposes: the
+	// approved spec does not hold it as written, which a person's approval of an earlier version
+	// never covers once another approval changed that node. Under the rule of a change request
+	// either closes the gate whatever approval or exemption stands (RequestHeld, GateApproved,
+	// GateExempt), until a later read finds the change held by the approved spec, which only a
+	// person's approval of a request that covers it writes.
+	ChecksUnapproved   bool
+	ProposesUnapproved bool
 }
 
 // GateRule is the rule a design gate opens under: GateRuleApproval, a person approves the current
@@ -2169,6 +2180,10 @@ type Store interface {
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.
 	GatesOf(ctx context.Context, tx pgx.Tx, issue string) (map[DesignStep]DesignGate, error)
+	// SpecGatesOfRepository is the spec gate under the rule of a change request of each issue of
+	// project whose repository is repo and that Dispatch does not show as done, in issue order: the
+	// gates whose change requests are read against that repository's approved spec.
+	SpecGatesOfRepository(ctx context.Context, tx pgx.Tx, project, repo string) ([]DesignGate, error)
 	// Gates is the design gates of each of issues, by issue and then step, in one read: the
 	// gates one look over many trees judges from (ReadLineFacts), rather than a read per tree
 	// under the fact lock. An issue with no gate has no entry.

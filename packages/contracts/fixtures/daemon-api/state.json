@@ -103,7 +103,9 @@
           "approvedVersion": 4,
           "exemptVersion": null,
           "verificationVersion": 0,
+          "approvedSpecMark": 0,
           "checksUnapproved": false,
+          "proposesUnapproved": false,
           "status": "approved"
         }
       ],
@@ -273,7 +275,9 @@
         "exemptVersion": null,
         "rule": "approval",
         "verificationVersion": 0,
-        "checksUnapproved": false
+        "approvedSpecMark": 0,
+        "checksUnapproved": false,
+        "proposesUnapproved": false
       },
       "gatedSteps": [
         {
@@ -283,7 +287,9 @@
           "approvedVersion": 6,
           "exemptVersion": null,
           "verificationVersion": 0,
+          "approvedSpecMark": 0,
           "checksUnapproved": false,
+          "proposesUnapproved": false,
           "status": "waiting"
         }
       ],
@@ -386,7 +392,9 @@
           "approvedVersion": null,
           "exemptVersion": null,
           "verificationVersion": 0,
+          "approvedSpecMark": 0,
           "checksUnapproved": false,
+          "proposesUnapproved": false,
           "status": "unregistered"
         }
       ],
@@ -445,7 +453,9 @@
           "approvedVersion": 3,
           "exemptVersion": null,
           "verificationVersion": 0,
+          "approvedSpecMark": 0,
           "checksUnapproved": false,
+          "proposesUnapproved": false,
           "status": "approved"
         }
       ],
@@ -488,7 +498,9 @@
           "approvedVersion": null,
           "exemptVersion": null,
           "verificationVersion": 0,
+          "approvedSpecMark": 0,
           "checksUnapproved": false,
+          "proposesUnapproved": false,
           "status": "changes_requested",
           "changesReason": "name the rollback path for the schema change"
         }
@@ -576,7 +588,9 @@
           "approvedVersion": 5,
           "exemptVersion": null,
           "verificationVersion": 0,
+          "approvedSpecMark": 0,
           "checksUnapproved": false,
+          "proposesUnapproved": false,
           "status": "approved"
         }
       ],
@@ -638,7 +652,9 @@
           "approvedVersion": 2,
           "exemptVersion": null,
           "verificationVersion": 0,
+          "approvedSpecMark": 0,
           "checksUnapproved": false,
+          "proposesUnapproved": false,
           "status": "approved"
         }
       ],

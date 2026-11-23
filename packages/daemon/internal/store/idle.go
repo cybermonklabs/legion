@@ -22,13 +22,15 @@ import (
 // front of a role (record.HookPrompt), the ask an update round puts to a role of the pod
 // (record.UpdateAsk), the message that tells the merger its pull request left the merge queue
 // (record.MergeQueueRemoval), and each message of a merge forward, the ask to the implementer and
-// the word to the worker of the phase the issue stays in (record.MergeForwardMessage). Three reads
+// the word to the worker of the phase the issue stays in (record.MergeForwardMessage). Four reads
 // reach no session themselves, but their answers are what write a message, so each holds the pod
 // as its message does: the read of GitHub that comes before a merge-queue removal's message
 // (record.MergeQueueRead), the second read of a head a first read found conflicting, whose
-// confirmation writes a merge forward's messages (record.ConflictConfirm), and the read of
+// confirmation writes a merge forward's messages (record.ConflictConfirm), the read of
 // Dispatch's ending condition of a change request, whose answer tells the merger its gate closed
-// or opened (record.SpecEndingRead). The issue's board
+// or opened (record.SpecEndingRead), and the read of a spec gate's change request again after the
+// approved spec moved, whose answer can tell the merger its gate closed (record.SpecGateRead). The
+// issue's board
 // writes — its Dispatch status, its messages on the Dispatch issue — reach no session and hold no
 // pod. The same set is what the release's boundary is read over (IssueRelease), so the rule that
 // holds a pod and the rule that cancels its release never disagree about which row speaks to a
@@ -37,7 +39,7 @@ import (
 // never reads it. An update ask holds the pod only while its row is pending, which is one attempt
 // where the publish goes through or finds no holder.
 var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_ask", "merge_queue_read", "merge_queue_removal",
-	"conflict_confirm", "merge_forward", "spec_ending_read"}
+	"conflict_confirm", "merge_forward", "spec_ending_read", "spec_gate_read"}
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the save of the workspace's unpushed work,
