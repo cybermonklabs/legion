@@ -4821,7 +4821,7 @@ The 3 s are `roleNamespaceDrain` and a second more, which the launcher passes th
 A session process that shows the sign before it leaves, as an agent that the kernel stopped does while it is a zombie its shim has not reaped, is named as any process is.
 Where a session process of its role, that process itself among them, has left by the time the pass that would name it looks for those processes, it is set aside instead, and its kill ends on the `killed unnamed` line, unless a pass names another process in its place within the rule's one limit, as above.
 
-The classifier cannot tell the agent from the shim's other direct children, the secrets renewer, the working copy's adoption and the CodeGraph warm-up, so it counts them all as session processes.
+The classifier counts every direct child of the shim as a session process, by its place in the tree: the agent, and the shim's other direct children, the secrets renewer, the working copy's adoption and the CodeGraph warm-up, alike.
 Where one of those ends by itself, the watch names no process of its role for the rest of that wait either.
 That costs kills left unnamed, and a wrong name only within the rule's one limit ("What the sign does not show", below).
 
@@ -6978,7 +6978,7 @@ In each role it protects:
 
 - the role's shim, the oldest direct child of that `role-init` that is the launcher's own executable run as `worker-shim`;
 
-- every direct child of the shim: the agent, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer, the jj of the working copy's adoption and the CodeGraph warm-up;
+- every direct child of the shim but the CodeGraph warm-up: the agent, whether its start wrapper has run `exec` yet or not, the agent-secrets renewer and the jj of the working copy's adoption;
 
 - Oh My Pi's helpers, each reached from the agent through a chain of helpers:
   a process that runs the agent's own executable with a first argument that starts `__omp_worker_`, except `__omp_worker_js_eval_process`, the kernel of Oh My Pi's JavaScript eval tool, which runs the code the agent writes, and whose parent is the agent or another such helper.
@@ -6986,7 +6986,10 @@ In each role it protects:
 
 - for a role that runs Claude Code, `claude`, the child of `legion claude-bridge`, and Claude Code's MCP server, the child of `claude` whose first argument ends with `/claude-envoy/dist/envoy-channel.js`.
 
-Every other process may be ended: a command the agent ran and what that command started, a helper's name under such a command, which no chain of helpers reaches, what a helper runs that is no helper (`gopls`), a Python kernel, the JavaScript eval kernel wherever it runs and what it starts, and a shell that `kubectl exec` started with what it runs.
+Every other process may be ended: a command the agent ran and what that command started, a helper's name under such a command, which no chain of helpers reaches, what a helper runs that is no helper (`gopls`), a Python kernel, the JavaScript eval kernel wherever it runs and what it starts, a shell that `kubectl exec` started with what it runs, and the CodeGraph warm-up with all it starts.
+The shim starts the warm-up during its agent's session load, and its end ends no session: the next start runs it again or finds the index its last build left.
+The classifier tells it from the agent by its command, the image's `codegraph` script under its shell, or the script's bundled `node` on `codegraph.js` once the script has run `exec` (`codegraphWarmUp`, `packages/daemon/internal/launcher/memoryguard.go`).
+It still counts the warm-up, like every direct child of the shim, as a session process.
 A process is a role's when that role's `role-init` is its ancestor by the parent chain, and otherwise when it shares that `role-init`'s PID namespace; any other process is no role's, `role=none` in a line.
 The ancestor comes first because a process can make a PID namespace of its own inside a role, as a sandboxed Chromium does.
 
@@ -7320,6 +7323,43 @@ A suspend and resume of the controller's claim (`legion claims suspend`, then `l
   Among them, it never ends memory that Oh My Pi holds in its own process, it never ends a process it cannot read, and it does not stop a fill faster than its margin.
   The controller's pod has no role namespaces, so a process that is not dumpable reads as the second kind of "It does not end a process it cannot read" above wherever it runs in that pod.
   When Oh My Pi itself fills the limit, the container still ends `OOMKilled`, and the daemon relaunches the controller and resumes its session ("The claim" in [Daemon-launched controller](#daemon-launched-controller)).
+
+### One session load at a time in an issue pod
+
+An issue pod's roles share one memory limit, and an Oh My Pi process that resumes a long session peaks at about 3.6 to 4.3 GiB for some tens of seconds while it loads, then falls to about 1.2 to 1.5 GiB.
+Two such loads at once can pass an 8 GiB pod's limit, where the memory guard can stop nothing, since every byte is in agents' own processes ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and the kernel stops the whole pod.
+So the daemon starts the roles of one issue pod one at a time (`PodStarts`, `internal/supervise/podstart.go`):
+a role's process starts only when no other role of that pod is loading its session and no role ahead of it waits.
+
+- **Waiting** runs from the moment the daemon asks for a role's start into the pod until its process starts, its launch fails, or its claim is suspended or retired.
+  The wait sits in the daemon's own start path, before the runtime is called, and not in the pod's launch turn, which a suspension and a release take too and which never waits for a load.
+  A waiting launch is parked on its claim, written as launching with no process, as a launch the wake pacing holds over no process is, so nothing that reads or stops the claim waits for it, and the outbox row that asked for the start is done.
+  A launch that replaces a running process, as a relaunch after a stall or onto a new plugin does, stops that process before it parks, so the old process neither runs nor holds memory while the other role loads.
+  A suspension, a release, a close or a retirement of a waiting role, or a pause's stop of it, ends its wait at once, and its process is never started.
+  A waiting start that the gate lets through while the project is paused starts no process either: the pause holds its launch and stops the role for the pause, owed a launch at the resume, as it holds every launch asked during a pause, and the next role's start goes on.
+
+- **Loading** runs from the role's process start until 30 seconds after the agent registers, or until its launch fails, its process ends, or its claim is suspended or retired.
+  The registration alone is too early: the plugin registers inside Oh My Pi's `session_start`, and in two resumes read every half second in an issue pod, of a 4.7 MB and a 75 MB transcript, the process's memory went on rising after it and peaked 6.7 and 16.4 seconds later.
+  The daemon keeps the 30 seconds itself.
+
+- **The bound** is two minutes from the start of the load of the role waited for, and it holds only until that role's agent registers:
+  a load whose agent has not registered by then lets the next role start all the same, and that start's line says so;
+  a load whose agent has registered ends 30 seconds after the registration, however late it came, since a load that registers late is the one whose peak is late.
+
+- **The order:**
+  the first start to reach a pod that holds nothing starts at once, whatever its role and whatever raised it;
+  the starts that wait behind a load go with the earliest whose start a request raised (a task, a message, an operator's start) first, then the others in the order their starts were asked for;
+  where no request raised any of them, as after a roles container restart or a pod an update round replaced, the role working the issue's current phase goes first (none does in the architect's own phases, admitted and accepting), then the others in the order architect, planner, implementer, tester, reviewer, merger.
+
+The rule holds under `runtime: kubernetes` for every role of an issue pod, whatever starts it: a fresh session, a resume, an operator's start, a start the wake pacing exempts, and with or without a wake pace.
+The controller's own pod is not an issue pod and never waits.
+
+Each process start into an issue pod logs `supervise: started a role's process in its issue pod` with its claim, `pod` and `generation`;
+a start that waited also names `waitedFor`, `waited` and `waitEndedBy`
+(`load end`, `failed launch`, `process end`, `suspension`, `retirement` or `bound`).
+Each load's end logs `supervise: a role's session load in its issue pod ended` with its claim, `pod`, `generation`, `loaded` (from the process start) and `endedBy`
+(`registration`, the same end the next start names `load end`, or `process end`, `suspension` or `retirement`);
+a load whose agent registered also carries `registered`, the time from the process start to the registration, and a load the bound released carries `releasedByBound=true`.
 
 ### The disk dies with its pod
 

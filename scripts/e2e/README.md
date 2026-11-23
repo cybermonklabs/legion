@@ -5065,8 +5065,9 @@ LEGION_OMP_PATH=/opt/omp/bin/omp bash scripts/e2e/refusal-fallback-omp.sh     # 
 ```
 
 dispatch://INFRA-956's live proof that a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (its R1).
-It is a script of its own because the window it measures is longer than any CI job holds:
-Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes, the plugin's cooldown here is ten, and `ci.yaml`'s pi-legion job has `timeout-minutes: 10`, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
+It is a script of its own because the window it measures is a quarter of an hour:
+Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes and the plugin's cooldown here is ten, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
+The pi-legion job that runs the plugin's suite (`.github/workflows/ci-job-pi-legion.yaml`) has `timeout-minutes: 28`, but its test step lasts as long as its slowest worker, and it took at most 296.7 s in the three runs of 2026-11-22 that file's comment measures, while a whole run of this proof takes 798 s (below): as a file of that suite it would be the slowest worker, and every run of the job would wait on it.
 It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkout's root) and `go`, which builds the one server it starts — no PostgreSQL, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable, as for [`provider-error-retry.sh`](#provider-error-retrysh), and the script prints which build it ran.
 It reaches no network:
