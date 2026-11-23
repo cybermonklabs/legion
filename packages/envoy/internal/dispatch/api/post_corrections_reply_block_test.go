@@ -10,6 +10,7 @@ import "testing"
 // that node (event-refresh.ts's appendRepliedBlock), so an event without it leaves that read
 // stale. Each routing field is read from the reply's creation first, so each check can fail.
 func TestABlockReplysDeleteEventNamesTheBlockItAnswersAndNoTextOfIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A block reply's delete event", "A spec")
 	parent := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "The standing parent.\n\nIts second paragraph."}, "alice")

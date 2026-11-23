@@ -70,6 +70,7 @@ func correctionDeleteRoutes(t *testing.T) map[refs.ItemKind]string {
 // The control: before the deletes, the creation of each reply that freezes words of the post it
 // answers carries those words in its preview, so a delete event that copied them would be seen.
 func TestNoCorrectionEventCarriesTextOfAnotherPost(t *testing.T) {
+	t.Parallel()
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Every correction event", "The zarquoninsertedwords quick brown fox")
 	routes := correctionDeleteRoutes(t)

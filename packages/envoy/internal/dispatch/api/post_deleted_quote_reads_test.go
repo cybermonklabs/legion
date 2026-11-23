@@ -18,6 +18,7 @@ import (
 // related-item check and the document's citing rows no longer find the post at all, since the
 // delete took the words they found it by.
 func TestEveryReadThatGivesADeletedPostsWordsAsPartOfAnotherGivesNoneOfThem(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Posts other reads quote", "before")
 	cited := createProjectDocument(t, handler, "TEST", "Cited notes", "# Cited notes\n\nAlpha bravo.\n")

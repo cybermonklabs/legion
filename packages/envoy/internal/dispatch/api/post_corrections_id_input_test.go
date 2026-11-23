@@ -14,6 +14,7 @@ import (
 // is no uuid and no id written short. The read routes beside them are the control: they are the
 // answer this test holds the five to, and they carry the same refusal today.
 func TestEveryCorrectionRouteRefusesAPathIDThatIsNoID(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for name, route := range map[string]struct {
 		method string

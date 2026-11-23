@@ -482,6 +482,7 @@ func requireQuotedPostMark(t *testing.T, step string, block *model.ReplyBlock, d
 // block with the post's delete mark, on the thread's read and on the reply's own, so the quote
 // says the parent is deleted rather than showing the block as merely removed.
 func TestAReplysQuoteOfADeletedPostCarriesThePostsMark(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Quotes of a deleted post", "before")
 
@@ -562,6 +563,7 @@ func requireQuotedEdit(t *testing.T, handler http.Handler, step, path string, wa
 // /api/v1/issues/{key}/messages/{id} of the reply - still say the parent was edited: no
 // edited_at while nobody edited the parent, and the parent's own edited_at once its author did.
 func TestAReplysQuoteOfAnEditedPostCarriesThePostsEdit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Quotes of an edited post", "before")
 

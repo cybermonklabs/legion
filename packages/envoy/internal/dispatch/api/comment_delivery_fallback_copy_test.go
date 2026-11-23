@@ -710,6 +710,7 @@ func TestARetryThatFailsDoesNotHoldTheCommentOfTheAttemptItOvertook(t *testing.T
 // held copy (TestAMentionQueuedPastALeasePublishesItsCopyWhenTheSendFails), so a pass that runs
 // after the delete with the copy due publishes nothing of the comment to s1's own topic.
 func TestADeleteSettlesAHeldCopyOfTheCommentWithNothingPublished(t *testing.T) {
+	t.Parallel()
 	lane := aMentionQueuedBehindAStalledSend(t, "session:s1")
 	ageAttempts(t, lane.database, lane.sending, lane.queued)
 	published := &recordingOutboxPublisher{}

@@ -169,6 +169,7 @@ func TestABoundSendTakesAnUnpinnedAttemptAndPinsTheSessionItsTargetResolvedTo(t 
 // whose attempt the delete settled is. The sender read the message before the delete, as one
 // that was already on its way did, so what decides is the row it reads under the lock.
 func TestABoundSendOfADeletedMessageWithNoAttemptOpensNoneAndSendsNothing(t *testing.T) {
+	t.Parallel()
 	listener := startResumeListener(t)
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.server.URL})
 	direct := directServer(deps)

@@ -20,6 +20,7 @@ import (
 // stored comment.deleted, and in the event log's read of every event of the comment (test round at
 // 869d340e).
 func TestDeletingAnOrphanedInsertSuggestionLeavesNoneOfItsWords(t *testing.T) {
+	t.Parallel()
 	const words = "zarquonorphaninsert"
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete an orphaned insert", "The "+words+" brown fox")

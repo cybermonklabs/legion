@@ -33,6 +33,7 @@ func deletedMarkOf(node map[string]any) (at any, ok bool) {
 // keeps its own text and its own edge; what the delete takes is the root's words, and a reader
 // of that edge is told why the row carries none.
 func TestTheGraphNodeOfADeletedPostSaysItIsDeleted(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")

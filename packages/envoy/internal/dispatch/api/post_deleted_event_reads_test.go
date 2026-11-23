@@ -31,6 +31,7 @@ import (
 // Each row relies on attachPostMarks taking the body, body_truncated and suggestion out of
 // every event of the deleted post (postBodyEventKinds) and adding its mark.
 func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -193,6 +194,8 @@ func TestEveryKindOfADeletedPostsOwnEventReadsWithTheMarkAndNoBody(t *testing.T)
 // validator it gave before the message's delete. Before the delete each read gives the posts'
 // words; after it each gives none of them, and every event of either post carries the mark.
 func TestEveryReadOfTheEventLogGivesADeletedPostsEventsWithTheMarkAndNoBody(t *testing.T) {
+	// Not parallel: it reads the event log through awaitHorizonRead, whose horizontest.Listen
+	// changes slog's default logger for the whole process (slog.SetDefault).
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	handler, database := rig.handler, rig.database
 	issue := createInteractionIssue(t, handler, "TEST", "Posts the log carries", "A spec")

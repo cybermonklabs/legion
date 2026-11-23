@@ -44,6 +44,7 @@ const insertedWords = "zarquoninserted"
 // own and is listed as itself. The service settles nothing on its own here (Settle is an hour), so
 // only the delete can have written the stores without the words.
 func TestTheLatestVersionsStoresHoldNoWordOfAPendingInsertOnceItsDeleteCommits(t *testing.T) {
+	t.Parallel()
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An insert's words", "The "+insertedWords+" brown fox jumps")
 	writeBrowserMark(t, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{

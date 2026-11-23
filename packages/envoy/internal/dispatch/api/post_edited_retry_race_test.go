@@ -19,6 +19,7 @@ import (
 // a comment's frame replays - carries the text the edit replaced. holdWriterBehindOwnerLock is
 // the race of the route table, as in post_deleted_retry_race_test.go.
 func TestARetryQueuedBehindAnEditSendsTheEditedText(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name  string
 		ready func(t *testing.T, base routeFixture) lockedItemWrite

@@ -20,6 +20,7 @@ import (
 // Somebody else's post is refused to that same token, because it carries its owner's
 // authorship and nobody else's.
 func TestAPersonsOwnTokenCorrectsTheirOwnPostAndNobodyElses(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TOK", "A person's token corrects", "before")
 	token := mintPersonalToken(t, handler, "alice", actingTokenName, []string{model.ScopePerson})

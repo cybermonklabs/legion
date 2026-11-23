@@ -268,6 +268,7 @@ func TestReferenceTargetsRefuseASetPastTheCapAndAReferenceItCannotRead(t *testin
 // naming the two blocks alone, which the edit leaves as they were, changes at the edit and again
 // at the delete: a holder of the older tag is answered the new answer, never 304.
 func TestReferenceTargetsMarkAnEditedPostAndGiveNoWordOfADeletedOne(t *testing.T) {
+	t.Parallel()
 	handler, _ := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createReferenceAPIIssue(t, handler, "CORE")

@@ -244,6 +244,7 @@ func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
 // build left it: one block's stored sum is not the sum this build reads, and one block this build
 // reads is stored by nothing.
 func TestReindexingAnEditedMessageStampsItsBlocksAtTheEdit(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "Re-index an edited message", "before")

@@ -28,6 +28,7 @@ type personNodesMarksRead struct {
 // its new first line; the deleted comment keeps its row, with the delete's time and actor and an
 // empty title, which gives no part of the body the delete cleared.
 func TestAPersonPageMarksAnEditedCommentAndADeletedOne(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "PAGE", "A person's corrected comments", "# Spec\n\nA passage.\n")
 	const person, reader = "alice", "bob"

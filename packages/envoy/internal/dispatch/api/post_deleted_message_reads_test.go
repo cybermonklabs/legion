@@ -25,6 +25,7 @@ import (
 // each read gives the message's words; after it each gives none of them, and says the message is
 // deleted wherever its answer carries the message.
 func TestEveryReadOfADeletedIssueMessageSaysItIsDeletedAndGivesNoneOfIt(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	const phrase = "zarquonwithdrawnmessage"
 	message := f.message(t, map[string]any{

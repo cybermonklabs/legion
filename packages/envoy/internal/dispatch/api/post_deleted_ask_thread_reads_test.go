@@ -18,6 +18,7 @@ import (
 // reply's words; after it each gives none of them, and says on the reply and on bob's quote of it
 // that the reply is deleted.
 func TestEveryReadOfAnAsksThreadSaysADeletedReplyIsDeletedAndGivesNoneOfIt(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A thread with a withdrawn reply", "before")
 	askID := openTurnAsk(t, handler, issue.Key, "Which auditor signs off?")

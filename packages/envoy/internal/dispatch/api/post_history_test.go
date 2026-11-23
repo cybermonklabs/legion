@@ -30,6 +30,7 @@ func readPostHistory(t *testing.T, handler http.Handler, target string) postHist
 // A post nobody has edited has an empty history, not an error: the read is the record of what
 // replaced a body, and nothing has replaced one.
 func TestPostHistoryOfAPostNobodyEditedIsEmptyAndNotAnError(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Untouched posts", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "stands as written"}, "alice")
@@ -58,6 +59,7 @@ func TestPostHistoryOfAPostNobodyEditedIsEmptyAndNotAnError(t *testing.T) {
 // replaced it and the time; ?before= reads the page after a row, and anything that is not an
 // RFC 3339 time is refused.
 func TestCommentHistoryListsEachReplacedBodyNewestFirst(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Edited twice", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -116,6 +118,7 @@ func TestCommentHistoryListsEachReplacedBodyNewestFirst(t *testing.T) {
 // --history` takes as full (POST_HISTORY_PAGE_LIMIT, the declaration this constant is generated
 // from); the one row past it is the page after, ?before= the oldest row the first page gave.
 func TestPostHistoryAnswersAPageOfThePageLimitAndTheRowsBeforeItAfter(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A long history", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the body today"}, "alice")
@@ -149,6 +152,7 @@ func TestPostHistoryAnswersAPageOfThePageLimitAndTheRowsBeforeItAfter(t *testing
 // A history is read by whoever reads the post: any authenticated caller, the author or not. An
 // agent that did not write the comment reads what replaced its bodies, as a person does.
 func TestCommentHistoryIsReadByASessionThatIsNotItsAuthor(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Another session reads", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -178,6 +182,7 @@ func TestCommentHistoryIsReadByASessionThatIsNotItsAuthor(t *testing.T) {
 // A delete gives no part of the body on any read of the post, so the history it kept is served
 // as the mark and no text at all.
 func TestDeletedPostHistoryGivesTheMarkAndNoBody(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Deleted history", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the first body"}, "alice")
@@ -237,6 +242,7 @@ const (
 // after the read refuses the settle, as one the read never found does, and the route answers
 // both 409 DELETE_CONTENDED with Retry-After: 1, with nothing settled.
 func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "Settle what the read found", "before")
@@ -385,6 +391,7 @@ func TestADeletesSettleHoldsEachPendingAttemptToWhatItsReadFound(t *testing.T) {
 // no deleted_at, no kept body, the attempt still pending - and the same delete sent again reads
 // the attempt as it stands then and answers 200.
 func TestADeleteWhoseSendMovesWhileItIsWrittenAnswersDeleteContended(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "A send that moves under its delete", "before")

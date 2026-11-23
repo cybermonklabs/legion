@@ -84,6 +84,7 @@ func endedByTheDelete(t *testing.T, answer *httptest.ResponseRecorder) {
 // attempt reads as the delete left it. A sender that sent on a claim it no longer held put the
 // withdrawn text on the wire after the delete had committed.
 func TestAMentionSendWhoseClaimADeleteSettledSendsNothing(t *testing.T) {
+	t.Parallel()
 	mention := newMentionRetryBehindADelete(t, "A delete inside a send's resolution")
 	// The Retry's resolution of s1 waits, between its claim and the record of that resolution on
 	// the claim; the delete is written while it does.
@@ -110,6 +111,7 @@ func TestAMentionSendWhoseClaimADeleteSettledSendsNothing(t *testing.T) {
 // and the attempt reads as the delete left it. A sender whose last word on its claim was the
 // record put the withdrawn text on the wire after the delete had committed.
 func TestAMentionSendWhoseClaimADeleteSettledDuringItsCopyRuleSendsNothing(t *testing.T) {
+	t.Parallel()
 	mention := newMentionRetryBehindADelete(t, "A delete inside a send's copy rule")
 	// The Retry's send waits once its copy rule has answered, between the record of its
 	// resolution on the claim and the re-check of that claim; the delete is written while it does.
@@ -141,6 +143,7 @@ func TestAMentionSendWhoseClaimADeleteSettledDuringItsCopyRuleSendsNothing(t *te
 // words, and they stay true of that attempt, frame and all: the words say the delete ended it and
 // nothing of whether a frame had gone out, which here it had.
 func TestAMentionWhoseFrameLeftBeforeTheDeleteReadsEndedByThePostsDelete(t *testing.T) {
+	t.Parallel()
 	mention := newMentionRetryBehindADelete(t, "A delete after a send left")
 	landed, answer := mention.listener.holdAnswer("s1")
 	t.Cleanup(answer)

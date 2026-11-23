@@ -83,6 +83,7 @@ func keyedSend(t *testing.T, handler http.Handler, method, target string, body m
 // answers (reply_block): the delete ends nothing of that answer, and its replay keeps the first
 // answer's members, which hold none of the text.
 func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	holder := createInteractionIssue(t, handler, "TEST", "Posts the census deletes", "alpha bravo charlie")
 	asker := createProjectIssue(t, handler, "TEST", "Where the census asks", "delta echo foxtrot")
@@ -267,6 +268,7 @@ func TestAKeyedRepeatOfAnAnswerADeleteEndedGivesNoPartOfTheDeletedText(t *testin
 // replay, under the first answer's status, answered ANSWER_NOT_KEPT, with no part of the deleted
 // text: a delete ends the answer whatever time it began (answerEndedByDelete).
 func TestADeleteEndsAKeptAnswerWhateverTimeItBegan(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	holder := createInteractionIssue(t, handler, "TEST", "Posts deleted before the key", "alpha bravo charlie")
 	// related is a related-item check for match, under a key, as alice.
@@ -368,6 +370,7 @@ func TestADeleteEndsAKeptAnswerWhateverTimeItBegan(t *testing.T) {
 // document on another issue than the one whose references they are, which the delete renames;
 // the comment lists and the activity feed carry the post itself.
 func TestAConditionalReadAfterADeleteAnswersWithoutTheDeletedText(t *testing.T) {
+	t.Parallel()
 	_, handler, _ := browserDocumentService(t)
 	holder := createInteractionIssue(t, handler, "TEST", "Posts the reads quote", "alpha bravo charlie")
 	citer := createProjectIssue(t, handler, "TEST", "The issue that cites", "delta echo foxtrot")
@@ -459,6 +462,7 @@ func TestAConditionalReadAfterADeleteAnswersWithoutTheDeletedText(t *testing.T) 
 // answers 200 under a new ETag with the new name, never 304 over the old one. One row for each
 // variant: the full answer and ?versions=latest.
 func TestAReferencesReadAfterACitedDocumentIsRenamedAnswersTheNewName(t *testing.T) {
+	t.Parallel()
 	_, handler, _ := browserDocumentService(t)
 	holder := createInteractionIssue(t, handler, "TEST", "Documents the references cite", "alpha bravo charlie")
 	citer := createProjectIssue(t, handler, "TEST", "The issue that cites", "delta echo foxtrot")
@@ -508,6 +512,7 @@ func TestAReferencesReadAfterACitedDocumentIsRenamedAnswersTheNewName(t *testing
 // id. After the parent's delete the repeat answers those kept bytes under the kept status, and
 // never ANSWER_NOT_KEPT.
 func TestAKeptRefusalListingAPostThatIsThenDeletedIsReplayedAsKept(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A refusal listing a parent that is then deleted", "before")
 	parent := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A parent of one paragraph."}, "alice")
@@ -542,6 +547,7 @@ func TestAKeptRefusalListingAPostThatIsThenDeletedIsReplayedAsKept(t *testing.T)
 // a plain comment anchored on it, which made no version. Each first answer carries that uuid, and
 // the repeat after the delete answers it byte for byte.
 func TestAKeptAnswerHoldingNoTextOfADeletedPostIsReplayedAsKept(t *testing.T) {
+	t.Parallel()
 	_, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Writes beside a deleted comment", "alpha bravo charlie")
 	rows := []struct {
@@ -599,6 +605,7 @@ func TestAKeptAnswerHoldingNoTextOfADeletedPostIsReplayedAsKept(t *testing.T) {
 // markdown round trip, each sent under a key, write nothing and leave their key unmarked, where a
 // document's rename, the control, marks its key.
 func TestAKeyedRequestThatWritesNothingLeavesItsKeyUncommitted(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "What a keyed request writes", "alpha bravo charlie")
 	document := uploadIssueDocument(t, handler, issue.Key, "measured.md", "alpha bravo charlie")
@@ -636,6 +643,7 @@ func TestAKeyedRequestThatWritesNothingLeavesItsKeyUncommitted(t *testing.T) {
 // told the request ran and to read what it wrote. Each is a replay under the first answer's
 // status, ANSWER_NOT_KEPT, and gives no part of the deleted body.
 func TestARepeatOfAnAnswerADeleteEndedSaysWhetherTheRequestWrote(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Answers a delete ends", "alpha bravo charlie")
 	rows := []struct {
@@ -711,6 +719,7 @@ func TestARepeatOfAnAnswerADeleteEndedSaysWhetherTheRequestWrote(t *testing.T) {
 // answers, reply_block, a delivery's comment_id or message_id) or in a member naming a document
 // (primary_artifact_id) is none of them. One row for each shape.
 func TestAKeptAnswerHoldsTheObjectsItsOwnIDsName(t *testing.T) {
+	t.Parallel()
 	const (
 		comment  = "0b9e1c2e-6f4a-4d6e-9a51-1c3f6a7b8c01"
 		parent   = "0b9e1c2e-6f4a-4d6e-9a51-1c3f6a7b8c02"
@@ -757,6 +766,7 @@ func TestAKeptAnswerHoldsTheObjectsItsOwnIDsName(t *testing.T) {
 // with the post read again (keyedRereads) or from its recovery point (keyedReplays), and no
 // refusal, which every route replays as kept, holds one.
 func TestEveryKeyedAnswerThatCanHoldAReplyBlockIsReadAfresh(t *testing.T) {
+	t.Parallel()
 	block := reflect.TypeFor[model.ReplyBlock]()
 	var holds func(ty reflect.Type, seen map[reflect.Type]bool) bool
 	holds = func(ty reflect.Type, seen map[reflect.Type]bool) bool {

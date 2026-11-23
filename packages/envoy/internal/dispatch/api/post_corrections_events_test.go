@@ -60,6 +60,7 @@ func onePayloadOfType(t *testing.T, handler http.Handler, issueKey, eventType st
 // edit carries the new body; a delete carries no body and the fields the outbox reads to compute
 // its destinations, beside the mark.
 func TestTheFourCorrectionEventsCarryTheirBodiesAndTheirMarks(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "The correction events", "A spec")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the first comment body"}, "alice")
@@ -182,6 +183,7 @@ func storedThreadRootID(t *testing.T, database *store.Store, eventType, id strin
 // corrections carry no thread_root_id, and they name the logins with a row on that thread when
 // the correction is written, bob's reply among them: his row draws the root.
 func TestACommentsCorrectionsCarryItsThreadRootAndTheLoginsOnItsThread(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A corrected thread", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Who reviews this?"}, "alice")
@@ -219,6 +221,7 @@ func TestACommentsCorrectionsCarryItsThreadRootAndTheLoginsOnItsThread(t *testin
 // events carry each thing requireNoBody looks for: a body, the body_truncated a cut body earns,
 // and the suggestion. The test reads that before the delete, so each of those checks can fail.
 func TestEveryEventOfADeletedCommentGivesNoBodyAndKeepsTheReplysFrozenPreview(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A deleted comment's events", "A spec")
 	const phrase = "the withdrawn claim no reader may meet again"
@@ -290,6 +293,7 @@ func TestEveryEventOfADeletedCommentGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 // and body_truncated. A message has no suggestion, so those two are every key of its events that
 // gives the body. The test reads both before the delete, so each check after it can fail.
 func TestEveryEventOfADeletedMessageGivesNoBodyAndKeepsTheReplysFrozenPreview(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A deleted message's events", "A spec")
 	const phrase = "the withdrawn message no reader may meet again"
@@ -343,6 +347,7 @@ func TestEveryEventOfADeletedMessageGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 // reply's reply_block keeps the fields that name the block and route the event. The control is
 // the reply's creation, which keeps the preview.
 func TestAReplysDeleteEventCarriesNoTextOfThePostItAnswers(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A reply's delete event", "A spec")
 	const phrase = "the standing parent whose words its replies quote"
@@ -401,6 +406,7 @@ func TestAReplysDeleteEventCarriesNoTextOfThePostItAnswers(t *testing.T) {
 // first written, and the mark is what tells a reader of the log that the body was replaced
 // since. An event of a post nobody edited reads with no edit time.
 func TestEveryEventOfAnEditedPostCarriesTheTimeOfItsLastEdit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An edited post's events", "A spec")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the comment as first written"}, "alice")

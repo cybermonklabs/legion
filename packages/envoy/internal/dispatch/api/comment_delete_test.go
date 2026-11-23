@@ -91,6 +91,7 @@ func postEmbeddingWindows(t *testing.T, database *store.Store, ownerKey string) 
 // the search vector, each block row with its stored excerpt, the document margin mark, and a
 // suggestion's replacement text.
 func TestDeleteCommentClearsEveryCopyOfItsBody(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete a comment", "before")
 	const body = "The first paragraph of the withdrawn claim.\n\nThe second paragraph of it."
@@ -151,6 +152,7 @@ func TestDeleteCommentClearsEveryCopyOfItsBody(t *testing.T) {
 // A suggestion's replacement text is the comment's text too, so the delete clears it with the
 // body.
 func TestDeleteCommentClearsItsSuggestion(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete a suggestion", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -172,6 +174,7 @@ func TestDeleteCommentClearsItsSuggestion(t *testing.T) {
 // Each reply keeps its own text and its own place: the deleted root stays where it was in the
 // thread, with the reply under it, reading as it always did.
 func TestDeleteCommentKeepsEachReplysTextAndPlace(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete a root", "before")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the withdrawn root"}, "alice")
@@ -209,6 +212,7 @@ func TestDeleteCommentKeepsEachReplysTextAndPlace(t *testing.T) {
 // A delivery still pending would send the text after the delete, so the delete fails it with
 // the one error that says why, and appends the comment.delivery receipt that settle owes.
 func TestDeleteCommentFailsEachPendingMentionAttempt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete with a pending send", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "mentioning a session"}, "alice")
@@ -254,6 +258,7 @@ func TestDeleteCommentFailsEachPendingMentionAttempt(t *testing.T) {
 // The refusals are in one order on this write: the author first, then the post already deleted,
 // since a delete is final. A session deletes its own comment, and no other session's.
 func TestDeleteCommentIsAuthorOnlyAndFinal(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Who may delete", "before")
 	agents := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -289,6 +294,7 @@ func TestDeleteCommentIsAuthorOnlyAndFinal(t *testing.T) {
 // of a deleted comment's block then reads as one the comment does not hold. The same pinned read
 // of a comment that stands is the control: it still gives its text.
 func TestAPinnedBlockReferenceToADeletedCommentGivesNoText(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Pinned blocks of a deleted comment", "before")
 	const withdrawn = "The second paragraph of the withdrawn claim."
@@ -325,6 +331,7 @@ func TestAPinnedBlockReferenceToADeletedCommentGivesNoText(t *testing.T) {
 // the words every refusal of a deleted post uses, and give no part of the body. The same two
 // reads of a comment that stands are the control: unchanged, text and all.
 func TestABlockReferenceToADeletedCommentNamesTheDeletion(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Blocks of a deleted comment", "before")
 	const withdrawn = "The second paragraph of the withdrawn claim."
@@ -385,6 +392,7 @@ func TestABlockReferenceToADeletedCommentNamesTheDeletion(t *testing.T) {
 // comment's own anchor writes (docs.RejectDeletedCommentSuggestion), so the withdrawn text
 // leaves the document there too, where an accept and a reject of the suggestion are refused.
 func TestDeleteCommentRejectsItsPendingSuggestion(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, quote, replaceWith, want string
 		insert, closed                 bool
@@ -519,6 +527,7 @@ func payloadAnchorQuote(payload map[string]any) (string, bool) {
 // (docs.refreshAnchors), so the delete's own margin write already finds no mark. A plain
 // comment's mark stays in the document, so it reads anchored.
 func TestDeletingAPendingInsertSuggestionClearsTheQuoteOfItsWords(t *testing.T) {
+	t.Parallel()
 	const words = "zarquoninserted"
 	for _, test := range []struct {
 		name               string
@@ -691,6 +700,7 @@ func TestDeletingAPendingInsertSuggestionClearsTheQuoteOfItsWords(t *testing.T) 
 // delete mark, as every read of the comment does, so its stored payload never reads as a comment
 // that stands with an empty body.
 func TestAnAnchorRefreshAfterTheDeleteStoresTheDeleteMark(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Refresh a deleted comment", "The quick brown fox")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -725,6 +735,7 @@ func TestAnAnchorRefreshAfterTheDeleteStoresTheDeleteMark(t *testing.T) {
 // stands with 200 where those two answer 409. A delete nothing can undo is what a withdrawn post
 // needs, and the orphaned mark is the one case the reject itself refuses.
 func TestDeleteCommentWithAnOrphanedSuggestionStands(t *testing.T) {
+	t.Parallel()
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete an orphaned suggestion", "The quick brown fox")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -758,6 +769,7 @@ func TestDeleteCommentWithAnOrphanedSuggestionStands(t *testing.T) {
 // (Docs.NamedVersion), so that name is a copy of the body; the tester found it served by the
 // document read after the delete (test round at 55e4dfdf). The red row of that round.
 func TestADeletedAcceptedSuggestionLeavesNoPartOfItsBodyInTheDocumentRead(t *testing.T) {
+	t.Parallel()
 	_, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete an accepted suggestion", "The quick brown fox")
 	const phrase = "zarquonacceptedrationale"
@@ -788,6 +800,7 @@ func TestADeletedAcceptedSuggestionLeavesNoPartOfItsBodyInTheDocumentRead(t *tes
 // deletes the comment, that replay is a read of the post that gives its body and no mark; the
 // tester found it within the key's lifetime (test round at 55e4dfdf). The red row of that round.
 func TestAKeyedReplayAfterTheDeleteGivesNoPartOfTheBody(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Replay a resolve of a deleted comment", "before")
 	const phrase = "zarquonkeyedresolve"
@@ -814,6 +827,7 @@ func TestAKeyedReplayAfterTheDeleteGivesNoPartOfTheBody(t *testing.T) {
 // /api/v1/projects/{key}/related; the issue and ask creates and the decision-block edits carry
 // the same check in their advice). The red row of that round.
 func TestAKeyedRelatedCheckRepeatedAfterTheDeleteGivesNoSnippetOfThePost(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A related check of a deleted comment", "before")
 	const phrase = "zarquonquokkatelemetry"
@@ -841,6 +855,7 @@ func TestAKeyedRelatedCheckRepeatedAfterTheDeleteGivesNoSnippetOfThePost(t *test
 // found it at 286089e7 for PATCH /api/v1/artifacts/{id} and for an upload to an existing
 // document. The red row of that round.
 func TestAKeyedDocumentRenameRepeatedAfterTheDeleteGivesNoVersionNamedAfterTheBody(t *testing.T) {
+	t.Parallel()
 	_, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Rename a document an accepted suggestion named", "The quick brown fox")
 	const phrase = "zarquonrenamedversion"
@@ -890,6 +905,7 @@ func TestAKeyedDocumentRenameRepeatedAfterTheDeleteGivesNoVersionNamedAfterTheBo
 // ... read what the request wrote to see it", for a request that wrote nothing, and the refusal's
 // own code is lost (test round at 5bd5c11d). The repeat keeps the refusal it was given.
 func TestAKeptRefusalRepeatedAfterTheDeleteOfThePostItNamesIsTheSameRefusal(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A refusal naming a parent that is then deleted", "before")
 	parent := createThreadComment(t, handler, issue.Key, map[string]any{"body": "A parent of one paragraph."}, "alice")

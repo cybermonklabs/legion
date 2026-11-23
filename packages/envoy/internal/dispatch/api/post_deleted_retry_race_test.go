@@ -17,6 +17,7 @@ import (
 // withdrawn body. holdWriterBehindOwnerLock is the race of the route table: the writer queues on
 // the owner lock with nothing written, and the holder's meanwhile commits before the writer runs.
 func TestARetryQueuedBehindADeleteOpensNoAttemptOfTheDeletedPost(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name  string
 		ready func(t *testing.T, base routeFixture) lockedItemWrite

@@ -199,6 +199,7 @@ func (f suggestionToDelete) deleteAndFindTheWords(t *testing.T) (model.Comment, 
 // no fact of the row's text tells it from document text; the kind the create stored says it is an
 // insert's, and the delete empties it.
 func TestDeletingAnOrphanedInsertSuggestionABrowserRetypedLeavesNoneOfItsWords(t *testing.T) {
+	t.Parallel()
 	fixture := orphanedInsertSuggestion(t, true, false)
 
 	read, giving := fixture.deleteAndFindTheWords(t)
@@ -216,6 +217,7 @@ func TestDeletingAnOrphanedInsertSuggestionABrowserRetypedLeavesNoneOfItsWords(t
 // replace_with is the very text it quotes: that is the one replace whose quote the rule for a row
 // with no stored kind empties, so only the stored kind keeps it.
 func TestDeletingAnOrphanedReplaceSuggestionKeepsItsQuote(t *testing.T) {
+	t.Parallel()
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete an orphaned replace", "The quick brown fox")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{
@@ -253,6 +255,7 @@ func TestDeletingAnOrphanedReplaceSuggestionKeepsItsQuote(t *testing.T) {
 // replace_with, byte for byte, and stays otherwise, as the words of an insert a browser retyped
 // stay, which no fact of such a row tells from document text.
 func TestDeletingAnOrphanedSuggestionOfARowWithNoStoredKindComparesItsQuote(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name    string
 		retyped bool
@@ -285,6 +288,7 @@ func TestDeletingAnOrphanedSuggestionOfARowWithNoStoredKindComparesItsQuote(t *t
 // mark a quote anchor writes - and no answer carries it: every read decodes the column into
 // model.Suggestion, which has no kind, and so does the comment.created event the create wrote.
 func TestASuggestionStoresTheKindOfItsMarkAndNoAnswerCarriesIt(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name, kind string
 		mark       bool
@@ -435,6 +439,7 @@ func rejectedSuggestion(t *testing.T, kind string, retyped, legacy bool) suggest
 // stores nor any event of the comment the event log reads, its creation's and its reject's
 // included, gives any of them.
 func TestDeletingARejectedInsertSuggestionLeavesNoneOfItsWords(t *testing.T) {
+	t.Parallel()
 	fixture := rejectedSuggestion(t, "insert", true, false)
 
 	read, giving := fixture.deleteAndFindTheWords(t)
@@ -452,6 +457,7 @@ func TestDeletingARejectedInsertSuggestionLeavesNoneOfItsWords(t *testing.T) {
 // text it quotes, the one quote the rule for a row with no stored kind empties, so only the kind
 // the reject kept keeps it.
 func TestDeletingARejectedReplaceSuggestionKeepsItsQuote(t *testing.T) {
+	t.Parallel()
 	fixture := rejectedSuggestion(t, "replace", false, false)
 	beforeDelete := lastEventID(t, fixture.database)
 
@@ -483,6 +489,7 @@ func TestDeletingARejectedReplaceSuggestionKeepsItsQuote(t *testing.T) {
 // goes when it is the suggestion's replace_with, byte for byte, as the words of an insert no
 // browser retyped are.
 func TestDeletingARejectedSuggestionOfARowWithNoStoredKindComparesItsQuote(t *testing.T) {
+	t.Parallel()
 	fixture := rejectedSuggestion(t, "insert", false, true)
 
 	read, giving := fixture.deleteAndFindTheWords(t)
@@ -501,6 +508,7 @@ func TestDeletingARejectedSuggestionOfARowWithNoStoredKindComparesItsQuote(t *te
 // (TestASuggestionStoresTheKindOfItsMarkAndNoAnswerCarriesIt): neither the decision's own answer,
 // the read, the comment list nor the stored suggestion.accepted or suggestion.rejected.
 func TestADecidedSuggestionKeepsTheKindOfItsMarkAndNoAnswerCarriesIt(t *testing.T) {
+	t.Parallel()
 	for _, action := range []string{"accept", "reject"} {
 		t.Run(action, func(t *testing.T) {
 			documentService, handler, database := browserDocumentService(t)

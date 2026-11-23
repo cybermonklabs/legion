@@ -607,6 +607,7 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 // something: the citing node of a Referenced by list. A post never edited, and its blocks, carry
 // none.
 func TestAnEditedPostsNodeAndItsBlocksCarryTheEditTime(t *testing.T) {
+	t.Parallel()
 	handler, database := blockIndexHandler(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "Edited posts as nodes", "A spec")

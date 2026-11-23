@@ -529,6 +529,7 @@ func TestSearchNarrowsEveryLegByStatusAuthorAndDate(t *testing.T) {
 // message (PATCH /api/v1/messages/{id}) - are written before the watermark and edited after it,
 // beside one of each written before it and never edited, which the filter must still drop.
 func TestSearchKeepsAPostEditedAfterTheDateItNarrowsBy(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "")
@@ -586,6 +587,7 @@ func TestSearchKeepsAPostEditedAfterTheDateItNarrowsBy(t *testing.T) {
 // none: on a request for keywords only and on one that asks for no such thing, each of which
 // runSearch answers through the one stamp of the page (stampSearchPostMarks).
 func TestSearchCarriesTheEditTimeOfAnEditedPost(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "")
@@ -640,6 +642,7 @@ func TestSearchCarriesTheEditTimeOfAnEditedPost(t *testing.T) {
 // window would leave (refs.recordItemIndexed), and the tick is not run between that and the
 // search.
 func TestSearchMeaningHitOfADeletedPostCarriesItsDeleteMark(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "Body text.")
@@ -752,6 +755,7 @@ func writeBackPostWindows(t *testing.T, database *store.Store, state, column, id
 // the same query finds all four posts before the delete, so the arm reached the two it then
 // loses; a comment and a message that stand are the control after it, found as before.
 func TestDeleteDropsThePostsWindowsBeforeAnyTick(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "Body text.")

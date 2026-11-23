@@ -115,6 +115,7 @@ func acceptSuggestionNamed(t *testing.T, handler http.Handler, issueKey, quote, 
 // body, and touches no other version; the artifact.version event keeps the name it carried, as
 // every event keeps its payload.
 func TestDeletingAnAcceptedSuggestionRenamesTheVersionItMade(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Rename the accepted version", "The quick brown fox")
 	const phrase = "zarquonrenamedversion"
@@ -150,6 +151,7 @@ func TestDeletingAnAcceptedSuggestionRenamesTheVersionItMade(t *testing.T) {
 // makes the lookup ambiguous: the delete renames neither, rather than one it cannot tell is the
 // accept's, and stands.
 func TestADeleteRenamesNoVersionWhenTwoCarryTheAcceptsTime(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Two versions at one time", "The quick brown fox")
 	const byHand = "A version named by hand"
@@ -176,6 +178,7 @@ func TestADeleteRenamesNoVersionWhenTwoCarryTheAcceptsTime(t *testing.T) {
 // second named version of the document carrying the accept's very time, which leaves the lookup by
 // time no single version, is no candidate, and keeps the name it was given.
 func TestADeleteRenamesTheVersionItsAcceptRecordedWhereAnotherCarriesTheAcceptsTime(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "The accept's own version", "The quick brown fox")
 	const byHand = "A version named by hand"
@@ -207,6 +210,7 @@ func TestADeleteRenamesTheVersionItsAcceptRecordedWhereAnotherCarriesTheAcceptsT
 // found by the time its accept wrote it, and renamed, where no other named version of the document
 // carries that time.
 func TestADeleteFindsAnAcceptedVersionNoLinkNamesByTheAcceptsTime(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An accept before the link", "The quick brown fox")
 	const phrase = "zarquonunlinkedversion"

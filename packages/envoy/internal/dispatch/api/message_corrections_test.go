@@ -122,6 +122,7 @@ func messageBlockState(t *testing.T, database *store.Store, messageID string) (o
 // author learns nothing else about the post; then the kind, since only a message on an issue is
 // edited; then a post already deleted.
 func TestEditMessageIsAuthorOnlyAndOnlyOnAnIssue(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Edit a message", "before")
 	message := createSessionIssueMessage(t, handler, issue.Key, "the session's first body")
@@ -178,6 +179,7 @@ func TestEditMessageIsAuthorOnlyAndOnlyOnAnIssue(t *testing.T) {
 
 // The same order on the delete, with the second delete refused: a delete is final.
 func TestDeleteMessageIsAuthorOnlyAndOnlyOnAnIssueAndFinal(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete a message", "before")
 	message := createSessionIssueMessage(t, handler, issue.Key, "the withdrawn claim")
@@ -216,6 +218,7 @@ func TestDeleteMessageIsAuthorOnlyAndOnlyOnAnIssueAndFinal(t *testing.T) {
 // A read of the message gives the new body and the time of the edit, and the event the edit
 // appended carries the new body, as comment.edited does.
 func TestEditMessageReadsBackTheNewBodyAndTheTimeOfTheEdit(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An edited message reads", "before")
 	message := createSessionIssueMessage(t, handler, issue.Key, "the first body")
@@ -265,6 +268,7 @@ func TestEditMessageReadsBackTheNewBodyAndTheTimeOfTheEdit(t *testing.T) {
 // The block index follows the body on both writes: an edit re-indexes from the new body, and a
 // delete leaves no block in the body with no excerpt a reply read could serve.
 func TestMessageBlockIndexFollowsAnEditAndADelete(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "An edited message's blocks", "before")
 	message := createSessionIssueMessage(t, handler, issue.Key,
@@ -333,6 +337,7 @@ func TestMessageBlockIndexFollowsAnEditAndADelete(t *testing.T) {
 // index at a time of its own could only have been written then; an edited one is read at
 // coalesce(edited_at, created_at), as a comment is.
 func TestOwedBlocksOfAnEditedMessageAreStampedAtTheEdit(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Owed blocks of an edit", "before")
 	message := createSessionIssueMessage(t, handler, issue.Key, "the first body")
@@ -376,6 +381,7 @@ func TestOwedBlocksOfAnEditedMessageAreStampedAtTheEdit(t *testing.T) {
 // A send still pending would carry the text after the delete, so the delete fails it with the
 // one error that says why, and appends the message.delivery receipt that settle owes.
 func TestDeleteMessageFailsEachPendingSend(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Delete with a pending send", "before")
 	message := createSessionIssueMessage(t, handler, issue.Key, "the message a send is waiting on")

@@ -382,6 +382,7 @@ func TestATargetedMessageAnsweredBetweenItsTriesIsNotQueued(t *testing.T) {
 // registers again - and the attempt reads as the delete left it, with the one receipt the delete
 // appended.
 func TestATargetedMessageDeletedDuringItsLastTryIsNotQueued(t *testing.T) {
+	t.Parallel()
 	landed := make(chan string, 1)
 	release := make(chan struct{})
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

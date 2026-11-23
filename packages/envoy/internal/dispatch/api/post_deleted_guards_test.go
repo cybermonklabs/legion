@@ -31,6 +31,7 @@ func refusedAsDeleted(t *testing.T, name string, response *httptest.ResponseReco
 // second edit of either kind. A second delete is refused by the same rule, which the author
 // tests of each delete route hold.
 func TestEveryWriteThatAddsToADeletedPostIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A deleted post refuses", "before")
 
@@ -134,6 +135,7 @@ func TestEveryWriteThatAddsToADeletedPostIsRefused(t *testing.T) {
 // attempt carried, so the route reads the answer's own mark (replyAfterAnswer,
 // message_delivery.go).
 func TestAFollowUpUnderADeletedAnswerIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A follow-up under a withdrawn answer", "before")
 	message := createIssueMessage(t, handler, issue.Key,
@@ -184,6 +186,7 @@ func TestAFollowUpUnderADeletedAnswerIsRefused(t *testing.T) {
 // before the lock, so this reply was judged on a message that still stood and posted under a
 // deleted one.
 func TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheOwnerLock(t *testing.T) {
+	t.Parallel()
 	write := sessionReplyWrite(t,
 		func(t *testing.T, answer *httptest.ResponseRecorder, fixture itemRowFixture, messageID string) {
 			refusedAsDeleted(t, "a reply the delete beat to the issue's owner lock", answer)
@@ -211,6 +214,7 @@ func TestAReplyIsRefusedByADeleteThatCommitsWhileItWaitsForTheOwnerLock(t *testi
 // post is told the post is gone and not that the delete took its blocks. A reply to a post nobody
 // deleted still stands, which the last two cases hold.
 func TestThreadReplyToADeletedPostIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A deleted post takes no reply", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the withdrawn comment"}, "alice")
@@ -299,6 +303,7 @@ func TestThreadReplyToADeletedPostIsRefused(t *testing.T) {
 // A write that moves no text stands on a deleted post: a resolve and a reopen of its thread, and
 // the session's record that it took a deleted message as its own turn.
 func TestEveryWriteThatMovesNoTextStandsOnADeletedPost(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A deleted post stands", "before")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the withdrawn root"}, "alice")
@@ -356,6 +361,7 @@ func TestEveryWriteThatMovesNoTextStandsOnADeletedPost(t *testing.T) {
 // An edit and a delete of a post of a closed issue answer 200: they take the prologue that does
 // not refuse a closed owner. Every other write of an existing comment keeps today's refusal.
 func TestEditAndDeleteOfAPostOfAClosedIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Correct a closed issue's posts", "before")
 	edited := createThreadComment(t, handler, issue.Key, map[string]any{"body": "the first body"}, "alice")
@@ -399,6 +405,7 @@ func TestEditAndDeleteOfAPostOfAClosedIssue(t *testing.T) {
 // nothing else (docs.WithCommentMarks, allowInject). The anchors are made before the close,
 // where any quote of the document can still be marked.
 func TestEditAndDeleteOfAnAnchoredPostOfAClosedIssue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Correct a closed issue's anchored posts",
 		"The quick brown fox jumps")
@@ -453,6 +460,7 @@ func TestEditAndDeleteOfAnAnchoredPostOfAClosedIssue(t *testing.T) {
 // A deleted reply keeps its place in the ask's thread, so it goes on deciding whose turn the ask
 // waits on: the delete clears the body and keeps the row newestReply reads.
 func TestADeletedNewestReplyStillDecidesTheAsksTurn(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "The turn after a delete", "before")
 	askID := openTurnAsk(t, handler, issue.Key, "Which auditor?")

@@ -41,6 +41,7 @@ func keyedSessionRequest(t *testing.T, handler http.Handler, method, target stri
 // The comment reply's rows delete the comment the reply answers, whose block text the reply
 // carries (reply_block); every other row deletes the post the answer is.
 func TestAKeyedRepeatAfterADeleteGivesThePostAsItStandsNow(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Keyed repeats of deleted posts", "alpha bravo charlie")
 	session := sessionActor()["id"].(string)

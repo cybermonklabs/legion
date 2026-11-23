@@ -282,6 +282,7 @@ func TestAWriteWhoseTreeCannotBeStoredStillSucceeds(t *testing.T) {
 // issue's event log, whose events of the post are read masked (attachPostMarks) - carries a tree
 // of the old text, or any word of it.
 func TestNoReadOfADeletedPostServesTheTreeOfItsOldText(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	const (
 		commentBody = "The **withdrawn** claim about the *rollout*."

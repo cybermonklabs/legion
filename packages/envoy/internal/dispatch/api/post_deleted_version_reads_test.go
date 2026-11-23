@@ -37,6 +37,7 @@ func versionSummaries(t *testing.T, read string, body []byte) []string {
 // gives none of the body, and the version under the name an accept gives a suggestion with no
 // body.
 func TestEveryReadOfADocumentsVersionsNamesTheAcceptedVersionAsTheDeleteRenamedIt(t *testing.T) {
+	t.Parallel()
 	_, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Versions an accept named", "The quick brown fox")
 	ledger := createProjectDocument(t, handler, "TEST", "Ledger", "# Ledger\n\nkilo lima mike\n")

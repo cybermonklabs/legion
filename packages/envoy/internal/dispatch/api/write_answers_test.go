@@ -136,6 +136,7 @@ func (f writeAnswersFixture) requireMessageAnswerListsTheRead(t *testing.T, writ
 // mention wrote, as a read made right after the write lists them: the author's edit and delete,
 // a thread's resolve and its reopen, and a suggestion's accept and its reject.
 func TestCommentWriteAnswersListTheMentionsAndDeliveriesAReadLists(t *testing.T) {
+	t.Parallel()
 	f := newWriteAnswersFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "A comment's writes answer", "before")
 	type write struct {
@@ -190,6 +191,7 @@ func TestCommentWriteAnswersListTheMentionsAndDeliveriesAReadLists(t *testing.T)
 // The edit and the delete of an issue message sent to a role answer the message with the attempt
 // that send wrote, as a read made right after each lists it.
 func TestMessageCorrectionAnswersListTheDeliveriesAReadLists(t *testing.T) {
+	t.Parallel()
 	f := newWriteAnswersFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "A message's corrections answer", "before")
 	message := createIssueMessage(t, f.handler, issue.Key, map[string]any{
@@ -245,6 +247,7 @@ func (f writeAnswersFixture) rowColumns(t *testing.T, rows, columns, id string) 
 // them equal: for the edits and the deletes body, edited_at and deleted_at, of which each write
 // moves some.
 func TestAWriteWhoseAnswerCannotBeReadDoesNotLand(t *testing.T) {
+	t.Parallel()
 	f := newWriteAnswersFixture(t)
 	issue := createInteractionIssue(t, f.handler, "TEST", "A write whose answer cannot be read", "before")
 	type post struct {

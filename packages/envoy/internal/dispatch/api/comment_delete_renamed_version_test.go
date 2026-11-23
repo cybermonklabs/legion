@@ -16,6 +16,7 @@ import (
 // the suggestion's quote and replacement, the document's own text since the accept, and none of
 // the comment's body.
 func TestTheDeleteOfAnAcceptedSuggestionNamesTheVersionItRenamed(t *testing.T) {
+	t.Parallel()
 	_, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Name the renamed version", "The quick brown fox")
 	const phrase = "zarquonversionbody"

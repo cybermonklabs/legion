@@ -96,6 +96,7 @@ func (rig goingRoutesRig) readStream(t *testing.T, id, lastEventID string) strin
 // read gives the withdrawal alone, under the id of the run's ending, and no frame of the run: no
 // text carrying the comment's words and no item naming it.
 func TestGoingStreamAfterACommentItReadIsDeletedGivesOnlyTheWithdrawal(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{}
 	rig := newGoingRoutesRig(t, answerer)
 	issue := createInteractionIssue(t, rig.handler, "GWC", "Where the answer reads", "The issue the comment is on.")
@@ -119,6 +120,7 @@ func TestGoingStreamAfterACommentItReadIsDeletedGivesOnlyTheWithdrawal(t *testin
 
 // Row 2: the same for an issue message.
 func TestGoingStreamAfterAnIssueMessageItReadIsDeletedGivesOnlyTheWithdrawal(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{}
 	rig := newGoingRoutesRig(t, answerer)
 	issue := createInteractionIssue(t, rig.handler, "GWM", "Where the answer reads", "The issue the message is on.")
@@ -145,6 +147,7 @@ func TestGoingStreamAfterAnIssueMessageItReadIsDeletedGivesOnlyTheWithdrawal(t *
 // the frames past the one it holds. A reader that already holds the ending was written the run's
 // one ending and is written nothing more, so no reader is written two endings.
 func TestGoingStreamResumedAfterTheDeleteGivesOnlyTheWithdrawal(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{}
 	rig := newGoingRoutesRig(t, answerer)
 	issue := createInteractionIssue(t, rig.handler, "GWR", "Where the answer reads", "The issue the comment is on.")
@@ -167,6 +170,7 @@ func TestGoingStreamResumedAfterTheDeleteGivesOnlyTheWithdrawal(t *testing.T) {
 // byte for byte, when another comment on the same issue, one the run was never given, is
 // deleted. What withdraws an answer is the delete of a post it read, and nothing else.
 func TestGoingStreamOfARunGivenOnlyStandingPostsIsUnchanged(t *testing.T) {
+	t.Parallel()
 	answerer := &fakeAnswerer{}
 	rig := newGoingRoutesRig(t, answerer)
 	issue := createInteractionIssue(t, rig.handler, "GWS", "Where the answer reads", "The issue the comments are on.")
@@ -235,6 +239,7 @@ func (h *heldAnswerer) Run(ctx context.Context, request going.Request, emit func
 // alone after the delete, under the id of the run's one ending, and a reader that comes later is
 // written that withdrawal and nothing else.
 func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
+	t.Parallel()
 	const phrase = "zarquonheldcomment"
 	answerer := &heldAnswerer{
 		searches: phrase,

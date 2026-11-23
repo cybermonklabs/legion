@@ -15,6 +15,7 @@ import (
 // GET /api/v1/agents/{session_id}/answers: a comment a person deleted keeps its place in the
 // session's list, with no text and the mark.
 func TestSessionAnswersMarksADeletedComment(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{"body": "Use SQLite.", "ask_id": askID}, "alice")
@@ -35,6 +36,7 @@ func TestSessionAnswersMarksADeletedComment(t *testing.T) {
 
 // The message arm of the same read carries the time of an edit and the mark of a delete.
 func TestSessionAnswersCarriesAMessagesEditTimeAndItsDeletedMark(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	root := f.message(t, map[string]any{"body": "The deploy is blocked on review."}, answersSession)
 	reply := f.message(t, map[string]any{"body": "I will review it now.", "in_reply_to": root}, "alice")
@@ -100,6 +102,7 @@ func editThreadComment(t *testing.T, handler http.Handler, id, body, login strin
 // GET /api/v1/me/answers: the caller's own reply on an ask carries no edit time while it stands
 // as first written, and the time of the edit once the caller edited it.
 func TestMyAnswersCarriesAnEditedReplysEditTime(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "My answers and an edited reply", "A spec")
 	ask := createAnswerListAsk(t, handler, issue.Key, "Which day do we ship?")
@@ -136,6 +139,7 @@ func TestMyAnswersCarriesAnEditedReplysEditTime(t *testing.T) {
 // GET /api/v1/me/answers: the caller's own reply on an ask, deleted, reads with the mark and no
 // body.
 func TestMyAnswersMarksADeletedReply(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "My answers and a deleted reply", "A spec")
 	ask := createAnswerListAsk(t, handler, issue.Key, "Which day do we ship?")
@@ -165,6 +169,7 @@ func TestMyAnswersMarksADeletedReply(t *testing.T) {
 // GET /api/v1/me/replies: the thread's root and the newest reply each carry the mark, so a row
 // whose subject or whose reply a delete cleared says that the post is deleted.
 func TestMyRepliesMarksADeletedRootAndADeletedReply(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "My replies and a deleted post", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Ship it on Friday?"}, "alice")
@@ -203,6 +208,7 @@ func TestMyRepliesMarksADeletedRootAndADeletedReply(t *testing.T) {
 // comment thread and for an issue message thread alike, and none while the root stands as first
 // written.
 func TestMyRepliesCarriesTheEditTimeOfAnEditedRoot(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "My replies and an edited root", "A spec")
 	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Ship it on Friday?"}, "alice")
