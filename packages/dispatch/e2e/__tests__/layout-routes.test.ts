@@ -4,7 +4,7 @@ import { layoutBreaches } from "../layout-breaches";
 import { layoutRoutes, layoutUnread } from "../layout-routes";
 import { reviewRoutes } from "../review-routes";
 
-// e2e/layout.e2e.ts reads the pages e2e/layout-routes.ts lists against the layout rule. The review
+// e2e/layout-rule.stub.e2e.ts reads the pages e2e/layout-routes.ts lists against the layout rule. The
 // table already holds every route of the router (e2e/__tests__/review-routes.test.ts); this holds
 // the layout list to that table, so a page the table reviews or excludes is read here or left out
 // with a reason, never silently skipped.
@@ -29,7 +29,7 @@ describe("the layout layer's route list", () => {
   });
 
   // An entry of e2e/layout-breaches.ts whose `route` names no route of the list is inert: no
-  // reading can match it, and the stale check in e2e/layout.e2e.ts judges only the routes a worker
+  // reading can match it, and the stale check of e2e/layout-check.ts judges only the routes a worker
   // measured, so nothing reports it either. A typo or a renamed route would accept a breach for
   // ever, in silence.
   test("names a read route, and one of its states, in every breach list entry, once", () => {

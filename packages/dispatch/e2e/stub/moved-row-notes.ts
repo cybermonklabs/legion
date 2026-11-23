@@ -35,15 +35,15 @@ const NEW_IN_THE_STUBBED_LAYER =
  *  draw) and the instrument's controls (`e2e/layout-measure.stub.e2e.ts`). */
 const newInTheStubbedLayer: Record<string, string> = Object.fromEntries(
   [
-    ...layoutRoutes
-      .filter((route) => route.needsStack === undefined)
-      .map(
-        (route) =>
-          `layout-rule.stub.e2e.ts › ${route.name} breaks no layout rule from 360 to 1920 px @pr`
-      ),
+    ...layoutRoutes.map(
+      (route) =>
+        `layout-rule.stub.e2e.ts › ${route.name} breaks no layout rule from 360 to 1920 px @pr`
+    ),
     "layout-measure.stub.e2e.ts › the layout measure reports each defect the rule names, by kind and by locator @pr",
     "layout-measure.stub.e2e.ts › the layout measure reports nothing of what the rule allows @pr",
-    "layout-measure.stub.e2e.ts › a layout reading fails on a blank page, on a required group no element marks, and keeps a stale entry @pr",
+    "layout-measure.stub.e2e.ts › a layout reading fails on a blank page and keeps a stale entry @pr",
+    "layout-measure.stub.e2e.ts › a layout entry accepts its own count of breaches and no new one in its region @pr",
+    "layout-measure.stub.e2e.ts › a layout entry names a required group no element marks, and a page-scroll breach takes its own entry first @pr",
   ].map((key) => [key, NEW_IN_THE_STUBBED_LAYER])
 );
 

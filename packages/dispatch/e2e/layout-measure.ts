@@ -10,36 +10,40 @@
  *    to hold it - an element inside a box that clips or scrolls is that box's, never the page's.
  *  - `box-scroll`: a box whose `overflow-x` is `auto` or `scroll` holds content wider than
  *    itself, so the box scrolls sideways. It is exempt only when everything that runs past its
- *    edges is, or sits in, a code block (`pre`, `code`), a picture (`img`, `picture`, `video`,
- *    `canvas`), a data table (`table`, `role=table`, `role=grid`) or a board's lanes (a box marked
- *    `data-layout-scroll="board"`), or when the box is one of those itself: a code block
- *    scrolling its own lines, a data table's own box, the board box. Anything else that overflows
- *    beside them - a row of chips next to a table, an icon's `svg`, the box's own text - makes it
- *    a breach.
+ *    edges is, or sits in, a code block (`pre`; a `code` in a line of prose is none), a picture
+ *    (`img`, `picture`, `video`, `canvas`), a data table (`table`, `role=table`, `role=grid`) or a
+ *    board's lanes (a box marked `data-layout-scroll="board"`), or when the box is one of those
+ *    itself: a code block scrolling its own lines, a data table's own box, the board box.
+ *    Anything else that overflows beside them - a row of chips next to a table, an icon's `svg`,
+ *    the box's own text - makes it a breach.
  *  - `clipped`: something is cut off at a side with no sign of it, in either of two ways. An
  *    element runs past the left or right edge of the ancestor that clips it (`overflow-x`
  *    `hidden` or `clip`): only the outermost such element is reported, since its children are cut
- *    because it is, and a cut an ellipsis or a line clamp of that ancestor shows is none - but an
- *    ellipsis is drawn for inline text alone, so a cut atomic box (`inline-flex`, `inline-block`,
- *    `inline-grid`) or block is a breach under it. Or a box that clips holds more than
- *    its width of its own content (`scrollWidth` past `clientWidth`), which is how a line of text
- *    is cut, with no `text-overflow: ellipsis` and no line clamp. A screen-reader-only element,
- *    clipped to a pixel on purpose, is skipped, and so is an element whose containing block is
- *    outside the ancestor, which does not clip it (an absolutely positioned element above its
- *    positioned ancestor, a fixed one).
+ *    because it is. An ellipsis or a line clamp of that ancestor excuses a plain `inline`
+ *    element, whose text it stands in for, and nothing else: a cut atomic box (`inline-flex`,
+ *    `inline-block`, `inline-grid`) or block shows no ellipsis, and an element that carries its
+ *    own has it cut away with the rest. Or a box that clips holds more than its width of its own
+ *    content (`scrollWidth` past `clientWidth`), which is how a line of text is cut, with no
+ *    `text-overflow: ellipsis` and no line clamp. Skipped: a screen-reader-only element (a box
+ *    of a pixel, an empty `clip`, `clip-path: inset(50%)`), what a code block or a picture cuts of
+ *    its own content, and an element whose containing block is outside the ancestor, which does
+ *    not clip it (an absolutely positioned element above its positioned ancestor, a fixed one).
  *  - `group-over-cap`: a group marked `data-layout-group` shows more entries than its
  *    `data-layout-max` (10 when unset), not counting the one control marked `data-layout-more`
  *    that opens the rest, unless the reader opened it (`data-layout-open`).
  *
- *  `listed` is a list of CSS selectors, the `element` of each known breach the caller may match
- *  (`e2e/layout-breaches.ts`). Each breach answers in `listed` the selectors its element sits in
- *  (`closest`); a page-scroll breach answers those of every element past the viewport inside it
- *  too, since the cause of a page's overflow is usually deeper than the outermost element that
- *  carries it.
+ *  An element is read only where it draws (`checkVisibility`): the content of a closed
+ *  `<details>` keeps a box in Chromium, and is no breach.
  *
- *  `elements` is how many elements it read, so a caller can refuse a blank page: a page that drew
- *  nothing breaks nothing, and that is not a pass. `groups` names every `data-layout-group` on the
- *  page, so a caller can require the groups a page must mark. */
+ *  `listed` is a list of CSS selectors, the `element` of each known breach the caller may match
+ *  (`e2e/layout-breaches.ts`). A page-scroll breach answers in `listed` the selectors of every
+ *  element past the viewport inside it, since the cause of a page's overflow is usually deeper
+ *  than the outermost element that carries it.
+ *
+ *  `elements` and `contentElements` count what it read, the page and the page's own region, so a
+ *  caller can refuse a blank page: a page that drew nothing breaks nothing, and that is not a
+ *  pass. `groups` names every `data-layout-group` on the page, so a caller can require the groups
+ *  a page must mark. */
 export interface LayoutBreach {
   readonly kind: "page-scroll" | "box-scroll" | "clipped" | "group-over-cap";
   /** A short CSS path to the element, the outermost of its four last parts first. */
@@ -67,6 +71,9 @@ export interface LayoutReading {
   readonly viewport: number;
   /** How many elements under `body` it read. */
   readonly elements: number;
+  /** How many of them are in the page's own region (`[data-testid="main-content"]`), the shell
+   *  around it left out: what a route's floor (`minElements`) is read against. */
+  readonly contentElements: number;
   /** The name of every `data-layout-group` on the page, once each. */
   readonly groups: readonly string[];
   readonly breaches: readonly LayoutBreach[];
@@ -75,12 +82,13 @@ export interface LayoutReading {
 export function measureLayout(listed: readonly string[] = []): LayoutReading {
   const root = document.documentElement;
   const viewport = root.clientWidth;
-  /** A code block or a picture: its own width is its content's, and it may be cut. */
-  const CODE_OR_PICTURE = "pre, code, img, picture, svg, canvas, video";
+  /** A code block or a picture: its own width is its content's, and it may be cut. A `code` in a
+   *  line of prose is no code block. */
+  const CODE_OR_PICTURE = "pre, img, picture, svg, canvas, video";
   /** What a box may scroll sideways for: a code block, a picture, a data table, a board's lanes.
    *  An `svg` is no picture here: inline, it is an icon in a row of controls. */
   const SCROLLS_FOR =
-    "pre, code, img, picture, video, canvas, table, [role='table'], [role='grid'], [data-layout-scroll='board']";
+    "pre, img, picture, video, canvas, table, [role='table'], [role='grid'], [data-layout-scroll='board']";
   /** One pixel of slack on every edge: a box's edges are fractional, its scroll sizes whole. */
   const SLACK = 1;
 
@@ -129,12 +137,10 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   const styles = new Map<Element, CSSStyleDeclaration>();
   for (const el of all) styles.set(el, getComputedStyle(el));
   const styleOf = (el: Element): CSSStyleDeclaration => styles.get(el) ?? getComputedStyle(el);
-  const shown = (el: Element): boolean => {
-    const style = styleOf(el);
-    return (
-      style.display !== "none" && style.visibility !== "hidden" && el.getClientRects().length > 0
-    );
-  };
+  /** Whether `el` draws: not `display: none` and not hidden, by `visibility` or by a closed
+   *  `<details>` (whose content keeps a box in Chromium, so a box alone does not say it shows). */
+  const shown = (el: Element): boolean =>
+    el.getClientRects().length > 0 && el.checkVisibility({ visibilityProperty: true });
   /** A screen-reader-only element is clipped to a pixel on purpose. */
   const visuallyHidden = (el: Element): boolean => {
     const box = el.getBoundingClientRect();
@@ -235,7 +241,7 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     scrollers.add(el);
     // The box is the exempt element itself: a code block scrolling its own lines, a data table
     // or a board's lanes.
-    if (el.closest("pre, code") !== null || el.matches(SCROLLS_FOR)) continue;
+    if (el.closest("pre") !== null || el.matches(SCROLLS_FOR)) continue;
     const box = el.getBoundingClientRect();
     const left = box.left + el.clientLeft;
     const right = left + el.clientWidth;
@@ -303,11 +309,12 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     const parent = el.parentElement;
     if (parent !== null && parent !== clipper && cut.has(parent)) continue;
     cutInside.add(clipper);
-    const style = styleOf(el);
-    // An ellipsis stands in for inline text it cuts: a chip (`inline-flex`), an `inline-block` or
-    // a block it cuts shows no ellipsis, so only a plain `inline` element is excused by one.
-    const inline = style.display === "inline";
-    if (style.textOverflow === "ellipsis" || (inline && marksItsCut(styleOf(clipper)))) continue;
+    // An ellipsis stands in for inline text its box cuts: a chip (`inline-flex`), an
+    // `inline-block` or a block the box cuts shows no ellipsis, and nor does an element that
+    // carries its own, since the box cuts that ellipsis away with the rest. So only a plain
+    // `inline` element inside a box that draws one is excused.
+    const inline = styleOf(el).display === "inline";
+    if (inline && marksItsCut(styleOf(clipper))) continue;
     breaches.push({
       detail: `spans ${Math.round(box.left)}-${Math.round(box.right)}px inside ${path(clipper)} at ${Math.round(edge.left)}-${Math.round(edge.right)}px`,
       kind: "clipped",
@@ -360,5 +367,7 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     }
   }
 
-  return { breaches, elements: all.length, groups: [...groups], viewport };
+  const content = document.querySelector("[data-testid='main-content']");
+  const contentElements = content === null ? 0 : content.querySelectorAll("*").length;
+  return { breaches, contentElements, elements: all.length, groups: [...groups], viewport };
 }

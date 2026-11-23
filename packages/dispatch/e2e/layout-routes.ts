@@ -5,10 +5,8 @@
  *  architecture source opens on. A route may also carry states - what the page draws once the
  *  reader has acted on it - each read at every width after the plain load.
  *
- *  Two rows read them. `e2e/layout-rule.stub.e2e.ts` reads every route that draws from its HTTP
- *  answers and the live socket's subscription frames, against a recording, on every pull request;
- *  `e2e/layout.e2e.ts` reads, on the real stack, the routes whose `needsStack` says why a
- *  recording cannot draw them.
+ *  `e2e/layout-rule.stub.e2e.ts` reads them all, against a recording of their HTTP answers and of
+ *  the document and live sockets they draw from (`e2e/layout-sockets.ts`), on every pull request.
  *
  *  Data and locators only, as `e2e/review-routes.ts` is, so `e2e/__tests__/layout-routes.test.ts`
  *  reads it without a browser or a harness: its imports are Playwright's types, the review
@@ -63,11 +61,9 @@ export interface LayoutRoute {
   /** The `data-layout-group` names the page must mark as it loads with the stress layer, so a
    *  growing group nobody marked fails rather than passing unmeasured. */
   readonly requiredGroups?: readonly string[];
-  /** Why a recording cannot draw this route, when it cannot: then the real-stack row reads it. */
-  readonly needsStack?: string;
-  /** The fewest elements the drawn page holds, where it is fewer than `MIN_ELEMENTS`
-   *  (`e2e/layout-check.ts`), with why. The route's ready locators still have to be on the screen
-   *  first, so a sign-in page or a skeleton still fails. */
+  /** The fewest elements the page's own region (`[data-testid="main-content"]`) holds once drawn,
+   *  where it is fewer than `MIN_ELEMENTS` (`e2e/layout-check.ts`), with why. The route's ready
+   *  locators still have to be on the screen first, so a sign-in page or a skeleton still fails. */
   readonly minElements?: { readonly count: number; readonly reason: string };
 }
 
@@ -98,67 +94,41 @@ const twoRowsSelected: LayoutState = {
   name: "two-rows-selected",
 };
 
-/** Why a short page draws fewer than `MIN_ELEMENTS`: below the wide layout the shell draws no
- *  sidebar, so the page is its own few elements and the compact header. */
-function narrowShell(measured: number): string {
-  return `a short page below 1280 px, where the shell draws no sidebar: ${measured} elements at 360 px on the stress seed`;
-}
+/** Every agent selected for a broadcast, which draws the composer and its list of chosen agents
+ *  (`AgentsPage.tsx`'s "Selected agents"): the stress layer's 17 sessions are past its cap. */
+const allAgentsSelected: LayoutState = {
+  act: async (page) => {
+    await page.getByRole("checkbox", { name: "Select all matching agents" }).check();
+    await page.getByRole("region", { exact: true, name: "Broadcast" }).waitFor();
+  },
+  name: "all-agents-selected",
+  requiredGroups: ["chosen-agents"],
+};
 
-/** What a reviewed route adds here: its states, the groups it must mark, and why the stack draws
- *  it alone. */
+/** The lists of chips today's issue page draws from the stress issue's data: its 12 labels, its
+ *  13 components and its 15 pull requests. Each is a list of R3, which `components/CappedGroup.tsx`
+ *  marks with these names. */
+const ISSUE_GROUPS = ["labels", "components", "pull-requests"];
+
+/** What a reviewed route adds here: its states, the groups it must mark and its floor. */
 const additions: Readonly<
-  Record<string, Pick<LayoutRoute, "minElements" | "needsStack" | "requiredGroups" | "states">>
+  Record<string, Pick<LayoutRoute, "minElements" | "requiredGroups" | "states">>
 > = {
-  agents: { states: [peekDrawer] },
-  answers: { minElements: { count: 40, reason: narrowShell(54) } },
-  broadcast: { minElements: { count: 50, reason: narrowShell(70) } },
-  broadcasts: { minElements: { count: 25, reason: narrowShell(36) } },
-  "credentials-machine": {
-    // Measured: 97 elements from 1280 px up on the stack.
-    minElements: { count: 40, reason: "a one-field page: the code a machine shows, in the shell" },
-  },
-  machine: { minElements: { count: 50, reason: narrowShell(68) } },
-  machines: { minElements: { count: 25, reason: narrowShell(37) } },
-  "not-found": { minElements: { count: 20, reason: narrowShell(26) } },
-  pipeline: { minElements: { count: 20, reason: narrowShell(26) } },
-  "project-documents": { minElements: { count: 45, reason: narrowShell(62) } },
-  "issue-artifact": {
-    needsStack:
-      "It settles on its document's connected status, which only the `/ws/doc` socket gives, and the stubbed layer answers no `/ws/doc`.",
-  },
-  "issue-plan": {
-    needsStack:
-      "Its plan document is drawn over the `/ws/doc` socket, which the stubbed layer does not answer: replayed, the page drew 32 elements fewer than on the stack at every width (358 against 390 at 360 px).",
-  },
-  "issue-verification": {
-    needsStack:
-      "It settles on the reference its Verification document draws over the `/ws/doc` socket, which the stubbed layer does not answer, so a replay never settles.",
-  },
-  "issue-spec": {
-    needsStack:
-      "It settles on its document's connected status, which only the `/ws/doc` socket gives, and the stubbed layer answers no `/ws/doc`.",
-  },
-  "project-document": {
-    needsStack:
-      "It settles on its document's connected status, which only the `/ws/doc` socket gives, and the stubbed layer answers no `/ws/doc`.",
-  },
+  agents: { requiredGroups: ["roles"], states: [peekDrawer, allAgentsSelected] },
+  "issue-children": { requiredGroups: [...ISSUE_GROUPS, "child-links"] },
   "project-issues": { states: [twoRowsSelected] },
 };
 
 const reviewed: readonly LayoutRoute[] = reviewRoutes
   .filter((route): route is ReviewedRoute => route.kind === "reviewed")
-  .map(({ name, path, pattern, ready }) => ({ name, path, pattern, ready, ...additions[name] }));
-
-/** The Inbox, read again on the real stack: from the wide layout up its reading pane draws the
- *  selected row's document, which a recording does not draw (replayed, 341 elements against 416
- *  at 1280 px), so the stubbed `inbox` row reads the list and this one reads the pane too. */
-const inboxOnStack: readonly LayoutRoute[] = reviewed
-  .filter((route) => route.name === "inbox")
-  .map((route) => ({
-    ...route,
-    name: "inbox-on-stack",
-    needsStack:
-      "From 1280 px up its reading pane draws the selected row's document, which a replay does not: 341 elements against 416 on the stack.",
+  .map(({ name, path, pattern, ready }) => ({
+    name,
+    path,
+    pattern,
+    ready,
+    // Today's issue page, whichever tab: the header draws the three lists on every one.
+    ...(name.startsWith("issue-") ? { requiredGroups: ISSUE_GROUPS } : {}),
+    ...additions[name],
   }));
 
 /** The routes the review table excludes that this layer does not read either, each with why.
@@ -171,7 +141,6 @@ export const layoutUnread: Readonly<Record<string, string>> = {
 
 export const layoutRoutes: readonly LayoutRoute[] = [
   ...reviewed,
-  ...inboxOnStack,
   {
     name: "issue-spec-outline",
     // The new issue page: today's page unless the reader chose it, in this browser.
@@ -223,13 +192,10 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ],
   },
   {
-    minElements: { count: 50, reason: narrowShell(68) },
     name: "agent-live",
     // Excluded from the review table because its frames land over a live socket and the view
     // scrolls as they do, so no two shots match; a layout reading taken once the replayed turns
     // are drawn reads the same boxes every time.
-    needsStack:
-      "Its turns arrive as the session's replay over the live relay, and the stubbed layer's `/ws/live` answers a subscription with the contract fixtures' opening frame alone (`e2e/stub/live-frames.ts`).",
     path: (seed) => `/agents/${seed.agentSession}/live`,
     pattern: "/agents/:sessionId/live",
     ready: (page) => [
@@ -237,7 +203,6 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ],
   },
   {
-    minElements: { count: 45, reason: narrowShell(63) },
     name: "agent-artifact",
     // Excluded from the review table because its chrome is the issue-artifact page's; the
     // layout rule reads that chrome around a picture, which no other route draws.

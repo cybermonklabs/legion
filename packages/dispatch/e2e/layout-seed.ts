@@ -1,8 +1,9 @@
-/** The stress layer `e2e/layout.e2e.ts` reads every page through: `e2e/review-seed.ts`'s corpus,
- *  and on top of it the data the layout defects of dispatch://INFRA-5200 need to show. The
- *  review corpus is small on purpose - a visual baseline reads it - so a row of chips that
- *  scrolls sideways at forty entries draws three there and passes; this layer writes the lengths
- *  production holds, so a page that breaks the layout rule on production breaks it here.
+/** The stress layer the layout rows read every page through (`e2e/layout-rule.stub.e2e.ts`):
+ *  `e2e/review-seed.ts`'s corpus, and on top of it the data the layout
+ *  defects of dispatch://INFRA-5200 need to show. The review corpus is small on purpose - a visual
+ *  baseline reads it - so a row of chips that scrolls sideways at forty entries draws three there
+ *  and passes; this layer writes the lengths production holds, so a page that breaks the layout
+ *  rule on production breaks it here.
  *
  *  It changes nothing `seedReviewRoutes` writes that a route's readiness reads: the issue the
  *  issue routes open keeps its spec, documents and asks, and its new title still begins with the
@@ -11,17 +12,18 @@
  *  What it adds, each for the defect the INFRA-5200 audit measured on production
  *  (dispatch://INFRA-5200/spec, "Problem"):
  *  - on the issue the issue routes open: a 170-character title, twelve labels, a `role:` route
- *    nobody holds, a claim by a session with a 60-character title, a parent, two priorities,
+ *    nobody holds, a claim by a session with a 64-character title, a parent, two priorities,
  *    fifteen GitHub pull requests with checks, five subscribers, thirteen components of a
- *    fifteen-component architecture source, four more children of four pull requests each, and
- *    a recorded result whose run command is 200 characters with no space (the header's rail,
- *    its state row, the Children tab, the Verification tab);
+ *    fifteen-component architecture source, four more children of four pull requests each, a
+ *    recorded result whose run command is 200 characters with no space, and a check whose words
+ *    hold an 80-character path (the header, its state row, the Children tab, the Verification
+ *    tab);
  *  - an answered ask whose three options are 160 characters each (`/answers`);
- *  - six open asks for the reader with long questions and long options, and a reply from a
- *    session with a long title (the Inbox, its cards below 1280 px);
+ *  - six open asks for the reader with long questions and long options, two of them replied to
+ *    by an agent (the Inbox's reply chip), and a mention reply from a session with a long title;
  *  - a project with an 80-character name, the server's cap (the Settings forms' project pickers);
  *  - twelve sessions on the machine `/machines/:machine` opens, each in a tmux window of its own
- *    (the machine page's window strip, the Agents page's rows);
+ *    (the machine page's window strip, the Agents page's rows and its chosen agents);
  *  - a live session with a replayed conversation and an uploaded picture, for the two agent
  *    pages the review layers exclude (`agentSession`, `agentArtifactSlug`).
  *
@@ -43,7 +45,9 @@ import {
   createIssue,
   createPriority,
   createProject,
+  editArtifact,
   getIssue,
+  listIssueArtifacts,
   patchIssue,
   publishAgentStreamFrame,
   putArchitectureSource,
@@ -320,6 +324,26 @@ export async function seedLayoutStress({
     ),
     surface: "cli",
     verdict: "pass",
+  });
+
+  // A check whose words hold an 80-character path with no space: on production at 400 px a
+  // check of this shape made the Verification tab 428 px wide.
+  const verification = (await listIssueArtifacts(issue)).find(
+    (artifact) => artifact.name === "verification.md"
+  );
+  if (verification === undefined) {
+    throw new Error(`seedLayoutStress: ${issue} has no verification.md to add a check to`);
+  }
+  await editArtifact(verification.id, {
+    ops: [
+      {
+        after: "block:c-ready",
+        markdown:
+          `:::check{#c-long-path serves="dispatch://${issue}/artifact/${review.issueArtifactSlug}#b-r2" surface="cli" run="bash packages/dispatch/e2e/acceptance/converted-verification-check-with-a-long-path.sh" negative_control="Point it at a skeleton and it fails."}\n` +
+          "Before READY, against production, bash packages/dispatch/e2e/acceptance/converted-verification-check-with-a-long-path.sh\n:::",
+        op: "insert",
+      },
+    ],
   });
 
   // The Answers page: an answered ask whose three options are 160 characters each.
