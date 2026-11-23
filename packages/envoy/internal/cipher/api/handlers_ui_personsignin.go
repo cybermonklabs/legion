@@ -7,7 +7,6 @@ package api
 
 import (
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -40,7 +39,7 @@ func (s *server) listPersonSignIns(w http.ResponseWriter, r *http.Request, _ str
 	}
 	rows, err := s.deps.Enroll.Store.PersonSignIns(r.Context(), person)
 	if err != nil {
-		writeInternal(w, "list person sign-ins", err)
+		s.writeInternal(w, "list person sign-ins", err)
 		return
 	}
 	out := make([]wire.PersonSignInResp, len(rows))
@@ -82,10 +81,10 @@ func (s *server) revokePersonSignIn(w http.ResponseWriter, r *http.Request, call
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no sign-in of that person has that id")
 		return
 	case err != nil:
-		writeInternal(w, "revoke person sign-in", err)
+		s.writeInternal(w, "revoke person sign-in", err)
 		return
 	}
-	slog.Info("person sign-in revocation relayed", "caller", callerName, "person", person, "signin", id, "tokens_ended", ended)
+	s.log.Info("person sign-in revocation relayed", "caller", callerName, "person", person, "signin", id, "tokens_ended", ended)
 	writeJSON(w, http.StatusOK, personSignInRevokedResponse{State: "revoked", TokensEnded: ended})
 }
 

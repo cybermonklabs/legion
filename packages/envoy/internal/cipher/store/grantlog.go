@@ -228,9 +228,9 @@ func ReadGrantLog(ctx context.Context, pool *pgxpool.Pool, q GrantLogQuery) ([]G
 // do: a reader of the broker's log filters on each.
 const GrantLogMessage = "broker: grant log"
 
-// LogGrantEvent writes ev as the broker's one grant-log line: the event's own fields, each as its
-// own attribute of its own, and a field the event does not hold left out, so the line names what
-// the writer had in hand and claims nothing else. It is the only writer of that line, as
+// LogGrantEvent writes ev to log as the broker's one grant-log line: the event's own fields, each
+// as its own attribute of its own, and a field the event does not hold left out, so the line names
+// what the writer had in hand and claims nothing else. It is the only writer of that line, as
 // ReadGrantLog is the only reader of the rows behind it, which is what lets one test pin the two
 // constructions against each other.
 //
@@ -243,7 +243,7 @@ const GrantLogMessage = "broker: grant log"
 // A line is lost if the process dies between the transaction's commit and this call. That is the
 // right way round: the audit row is the record the review reads, and the line is the copy the log
 // pipeline keeps.
-func LogGrantEvent(ev GrantLogEvent) {
+func LogGrantEvent(log *slog.Logger, ev GrantLogEvent) {
 	attrs := make([]any, 0, 19)
 	add := func(key string, value any) { attrs = append(attrs, slog.Any(key, value)) }
 	text := func(key, value string) {
@@ -280,5 +280,5 @@ func LogGrantEvent(ev GrantLogEvent) {
 	text("reason", ev.Reason)
 	text("detail", ev.Detail)
 	text("raw", string(ev.Raw))
-	slog.Info(GrantLogMessage, attrs...)
+	log.Info(GrantLogMessage, attrs...)
 }

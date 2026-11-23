@@ -38,7 +38,7 @@ func TestTheEdgeKeepsAnIdleConnectionLongerThanItsLoadBalancer(t *testing.T) {
 	t.Parallel()
 	const balancerKeepalive = 600 * time.Second
 	apiServer := &http.Server{ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: writeTimeout, IdleTimeout: 2 * time.Minute}
-	edge := newEdgeServer(http.NewServeMux(), nil, slog.Default(), apiServer)
+	edge := newEdgeServer(http.NewServeMux(), nil, slog.New(slog.DiscardHandler), apiServer)
 	if edge.IdleTimeout <= balancerKeepalive {
 		t.Errorf("the edge's idle timeout is %s, want more than the load balancer's %s backend keepalive", edge.IdleTimeout, balancerKeepalive)
 	}
@@ -56,8 +56,8 @@ func TestTheEdgeKeepsAnIdleConnectionLongerThanItsLoadBalancer(t *testing.T) {
 var edgeLogFields = []string{"time", "severity", "message", "method", "path", "protocol", "status", "user_agent", "x_forwarded_for"}
 
 // edgeLogRig is the edge's server as main builds it (newEdgeServer) over a mux of the test's own,
-// serving a socket of its own, with the default logger, which the answer recorder writes its
-// refusal lines on, and the access log both writing the broker's own JSON lines into log.
+// serving a socket of its own, with a logger of the rig's own, which the answer recorder writes
+// its refusal lines on and the access log its lines, both as the broker's own JSON lines into log.
 type edgeLogRig struct {
 	url string
 	log *logtest.Buffer
@@ -67,9 +67,8 @@ type edgeLogRig struct {
 func newEdgeLogRig(t *testing.T, mux http.Handler) *edgeLogRig {
 	t.Helper()
 	log := &logtest.Buffer{}
-	logtest.SetDefault(t, logging.NewCloudHandler(log))
 	server := httptest.NewUnstartedServer(nil)
-	server.Config = newEdgeServer(mux, nil, slog.Default(), &http.Server{})
+	server.Config = newEdgeServer(mux, nil, slog.New(logging.NewCloudHandler(log)), &http.Server{})
 	server.Start()
 	t.Cleanup(server.Close)
 	return &edgeLogRig{url: server.URL, log: log}
@@ -113,7 +112,7 @@ func (r *edgeLogRig) send(t *testing.T, method, target string, headers http.Head
 // is in the line; log a header the line does not name, and its planted value is; drop the access
 // log from edgeHandler, and the request writes no line.
 func TestTheEdgeAccessLogNamesTheRequestsFieldsAndNothingElse(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newEdgeLogRig, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const (
 		userAgent    = "agent-secrets/1.2.3 (edge access log row)"
 		forwardedFor = "198.51.100.7, 203.0.113.70, 35.191.0.1"
@@ -200,7 +199,7 @@ func TestTheEdgeAccessLogNamesTheRequestsFieldsAndNothingElse(t *testing.T) {
 // 200; drop the access log from edgeHandler, and no row writes a line; let the line go unwritten
 // when the handler panics, and the last row writes none.
 func TestTheEdgeAccessLogWritesALineForEveryAnswer(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newEdgeLogRig, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
 		// As the edge's gate refuses a person of the Workspace: before any bucket, quiet.
@@ -266,7 +265,7 @@ func TestTheEdgeAccessLogWritesALineForEveryAnswer(t *testing.T) {
 // The named reverts: cut X-Forwarded-For from its start, and the balancer's entries are lost;
 // write any of the four fields uncut, and the line passes the bound.
 func TestTheEdgeAccessLogCutsWhatTheCallerWrote(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newEdgeLogRig, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const entryLimit = 256 << 10
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(http.ResponseWriter, *http.Request) {})
@@ -317,7 +316,7 @@ func TestTheEdgeAccessLogCutsWhatTheCallerWrote(t *testing.T) {
 // returns, so the handler gives up waiting for that read; drop its Unwrap, and SetWriteDeadline
 // answers http.ErrNotSupported.
 func TestTheEdgeAccessLogPassesTheWriterOn(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newEdgeLogRig, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	read := make(chan struct{})
 	released := make(chan bool, 1)
 	controlled := make(chan error, 1)

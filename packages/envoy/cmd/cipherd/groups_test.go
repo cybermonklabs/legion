@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -71,10 +72,11 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 	t.Parallel()
 	iam, directory := groupStands(t)
 	cfg := config.Config{SecretsPrefix: policytest.Prefix, DirectoryURL: directory.URL, DirectoryAccount: wiredReader}
-	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}))
+	quiet := slog.New(slog.DiscardHandler)
+	reader := newGroupReader(cfg, iam.URL, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podBearer}), quiet)
 
 	local := secrets.NewLocal(policytest.Secret("TEAM_TOKEN", record.GroupPrefix+wiredGroup, policy.TierAgent, "team-v1"))
-	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, policytest.Store(local), policy.Profiles{}, metrics.New(), reader), reader, metrics.New(), firstGroupReadsWait)
+	current, err := loadFirstPolicy(t.Context(), policyLoader(cfg, policytest.Store(local), policy.Profiles{}, metrics.New(), reader, quiet), reader, metrics.New(), firstGroupReadsWait)
 	if err != nil {
 		t.Fatalf("loadFirstPolicy: %v", err)
 	}
@@ -92,7 +94,7 @@ func TestEveryDecisionSiteAdmitsAMember(t *testing.T) {
 		}
 	}
 	approver := record.GroupPrefix + wiredGroup
-	machine := newRequestMachine(cfg, nil, current, nil, nil, proxyrules.Rules{}, "", nil, nil, reader)
+	machine := newRequestMachine(cfg, nil, current, nil, nil, proxyrules.Rules{}, "", nil, nil, reader, quiet)
 	for _, c := range []struct {
 		login string
 		want  bool

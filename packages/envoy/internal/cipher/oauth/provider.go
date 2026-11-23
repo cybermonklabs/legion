@@ -12,6 +12,7 @@
 package oauth
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -63,6 +64,9 @@ type Config struct {
 	// Exchange is what the RFC 8693 token exchange decides and verifies with: the listed
 	// identities, and the issuers whose tokens it accepts as a subject token.
 	Exchange ExchangeConfig
+	// Log is where the provider's lines go: the exchange's and the token endpoint's. Nil is
+	// slog.Default(), which New reads once.
+	Log *slog.Logger
 }
 
 // Provider runs the machine login's device authorization and token endpoints, and the token
@@ -92,6 +96,8 @@ type Provider struct {
 	// while it does.
 	reserved  atomic.Bool
 	reserving sync.Mutex
+	// log is Config.Log, or slog.Default() for a Config with none.
+	log *slog.Logger
 }
 
 // DeviceGrant reports whether this provider serves the device authorization grant (RFC 8628),
@@ -287,6 +293,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		// configuration ignores the context this lookup takes.
 		dpopAlgorithms: cfg.GetDPoPAllowedJWSAlgorithms(context.Background()),
 		reservations:   reservations,
+		log:            cmp.Or(c.Log, slog.Default()),
 	}
 	// A provider built with no store serves no request at all and is only ever inspected, as the
 	// broker's route wiring test inspects it, so there is nothing there to give the decision or the
@@ -517,7 +524,7 @@ func (p *Provider) Revoke(w http.ResponseWriter, r *http.Request) {
 // record of what the broker failed at.
 func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWriter, err error) {
 	if oauth2.ErrorToRFC6749Error(err).CodeField >= http.StatusInternalServerError {
-		slog.Error("broker: OAuth revocation failed", "error", oauth2.ErrorToDebugRFC6749Error(err))
+		p.log.Error("broker: OAuth revocation failed", "error", oauth2.ErrorToDebugRFC6749Error(err))
 	}
 	p.oauth.WriteRevocationResponse(ctx, w, err)
 }
@@ -569,7 +576,7 @@ func (p *Provider) writeError(ctx context.Context, w http.ResponseWriter, reques
 		return
 	}
 	if oauth2.ErrorToRFC6749Error(err).CodeField >= http.StatusInternalServerError {
-		slog.Error("broker: OAuth request failed", "error", oauth2.ErrorToDebugRFC6749Error(err))
+		p.log.Error("broker: OAuth request failed", "error", oauth2.ErrorToDebugRFC6749Error(err))
 	}
 	p.oauth.WriteAccessError(ctx, w, request, err)
 }

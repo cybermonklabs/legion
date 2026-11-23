@@ -46,11 +46,12 @@ func newEdgeServer(mux http.Handler, answers *metrics.Counter, log *slog.Logger,
 
 // edgeHandler is what the edge's server serves: mux, the edge's routes (api.RegisterEdge), behind
 // its answer recorder (answer.EdgeMiddleware), which wraps the mux itself so it reads each answer's
-// route; the request deadline around that; and, outermost, the edge's access log on log, so every
-// request a handler of the edge is handed writes its line, the 404 and 405 the mux answers and a
-// refusal before any route among them, with the status the broker answered with.
+// route and writes its refusal lines on log; the request deadline around that; and, outermost,
+// the edge's access log on log, so every request a handler of the edge is handed writes its line,
+// the 404 and 405 the mux answers and a refusal before any route among them, with the status the
+// broker answered with.
 func edgeHandler(mux http.Handler, answers *metrics.Counter, log *slog.Logger) http.Handler {
-	return edgeAccessLog(withRequestDeadline(answer.EdgeMiddleware(mux, answers), requestDeadline), log)
+	return edgeAccessLog(withRequestDeadline(answer.EdgeMiddleware(mux, answers, log), requestDeadline), log)
 }
 
 // edgeAccessLog serves next, then writes one line on log at INFO under edgeRequestMessage for the

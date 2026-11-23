@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"log"
+	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
@@ -243,7 +243,7 @@ func Loader(store *secrets.Local, services ...string) policy.Loader {
 // changes. It stops reloading when t ends.
 func Current(t testing.TB, store *secrets.Local, services ...string) *policy.Current {
 	t.Helper()
-	return current(t, Loader(store, services...))
+	return CurrentOf(t, Loader(store, services...))
 }
 
 // Profiles is file, a profiles file's text, as the broker's boot reads it: parsed by
@@ -267,7 +267,7 @@ func ProfiledCurrent(t testing.TB, store *secrets.Local, file string, services .
 	t.Helper()
 	loader := Loader(store, services...)
 	loader.Profiles = Profiles(t, file, services...)
-	return current(t, loader)
+	return CurrentOf(t, loader)
 }
 
 // AppProfile is the profile that serves the github-app secret name by its own name, as the
@@ -283,31 +283,33 @@ func ProfilesFile(profiles ...string) string {
 	return `{"profiles": [` + strings.Join(profiles, ", ") + `]}`
 }
 
-// MeteredCurrent is Current with the policy's two metrics on registry, as cmd/cipherd/main.go
-// registers them: broker_policy_store_reads_total counted from the first load on
-// (policy.NewStoreReads), and broker_unservable_secrets once that load answered
-// (policy.NewUnservableSecrets).
-func MeteredCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, services ...string) *policy.Current {
-	t.Helper()
-	return MeteredProfiledCurrent(t, store, registry, "", services...)
-}
-
-// MeteredProfiledCurrent is MeteredCurrent with file as the deployment's profiles file (Profiles),
-// or none for "", as BROKER_PROFILES_FILE is set or not.
+// MeteredProfiledCurrent is Current over store metered as MeteredCurrentOf meters it, with file as
+// the deployment's profiles file (Profiles), or none for "", as BROKER_PROFILES_FILE is set or not.
 func MeteredProfiledCurrent(t testing.TB, store *secrets.Local, registry *metrics.Registry, file string, services ...string) *policy.Current {
 	t.Helper()
 	loader := Loader(store, services...)
 	if file != "" {
 		loader.Profiles = Profiles(t, file, services...)
 	}
+	return MeteredCurrentOf(t, loader, registry)
+}
+
+// MeteredCurrentOf is CurrentOf with the policy's two metrics on registry, as cmd/cipherd/main.go
+// registers them: broker_policy_store_reads_total counted from the first load on
+// (policy.NewStoreReads), and broker_unservable_secrets once that load answered
+// (policy.NewUnservableSecrets). It is the metered Current for a test that builds its loader
+// itself, such as one that sets the loader's Log.
+func MeteredCurrentOf(t testing.TB, loader policy.Loader, registry *metrics.Registry) *policy.Current {
+	t.Helper()
 	loader.StoreReads = policy.NewStoreReads(registry)
-	cur := current(t, loader)
+	cur := CurrentOf(t, loader)
 	policy.NewUnservableSecrets(registry, cur)
 	return cur
 }
 
-// current is loader's policy as NewCurrent first loads it, reloading hourly until t ends.
-func current(t testing.TB, loader policy.Loader) *policy.Current {
+// CurrentOf is loader's policy as NewCurrent first loads it, reloading hourly until t ends: the
+// Current for a test that builds its loader itself, such as one that sets the loader's Log.
+func CurrentOf(t testing.TB, loader policy.Loader) *policy.Current {
 	t.Helper()
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
@@ -316,20 +318,12 @@ func current(t testing.TB, loader policy.Loader) *policy.Current {
 	return cur
 }
 
-// CaptureLog points the default slog handler, which the broker logs through, at a buffer with no
-// timestamp until t ends, so a test reads the exact lines the broker writes; the reload ticker's
-// goroutine may write while the test reads. The log output is global, so a goroutine that outlives
-// t and logs writes into whichever capture is live then: another test's. synctest.Test returns only
-// once every goroutine it started has returned, which is how the policy package's reload tests keep
-// their ticker's lines in their own capture.
-func CaptureLog(t testing.TB) fmt.Stringer {
-	t.Helper()
-	logged := &lockedBuffer{}
-	flags, output := log.Flags(), log.Writer()
-	log.SetFlags(0)
-	log.SetOutput(logged)
-	t.Cleanup(func() { log.SetFlags(flags); log.SetOutput(output) })
-	return logged
+// Log is a logger that writes each line as the broker's default logger writes it with no
+// timestamp (logtest.DefaultText), and the buffer it writes into, which the test reads while the
+// code under test writes. A test hands the logger to the code it tests (policy.Loader.Log,
+// requests.Machine.Log, api.Deps.Log, ...), so the buffer holds that code's lines alone, whatever
+// any other test logs meanwhile.
+func Log() (*slog.Logger, fmt.Stringer) {
+	logged := &logtest.Buffer{}
+	return slog.New(logtest.DefaultText(logged)), logged
 }
-
-type lockedBuffer = logtest.Buffer

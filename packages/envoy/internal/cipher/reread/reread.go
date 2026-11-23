@@ -14,6 +14,7 @@
 package reread
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -125,16 +126,19 @@ type Listener struct {
 	// session is listening before it sends the notification that session must not miss. Slow
 	// work in it delays the notifications behind it, as slow work in OnNotify does.
 	OnConnected func()
+	// Log is where the listener's lines go; nil is slog.Default(), read once when Run starts.
+	Log *slog.Logger
 }
 
 // Run listens until ctx ends, redialing on every failure (pglisten.Listener).
 func (l *Listener) Run(ctx context.Context) {
+	log := cmp.Or(l.Log, slog.Default())
 	listener := &pglisten.Listener{
 		Owner:       "broker",
 		Dial:        l.Dial,
 		Channels:    []string{Channel},
-		OnConnected: l.onConnected,
-		OnNotify:    func(_, payload string) { l.notified(ctx, payload) },
+		OnConnected: func() { l.onConnected(log) },
+		OnNotify:    func(_, payload string) { l.notified(ctx, log, payload) },
 	}
 	listener.Run(ctx)
 }
@@ -147,8 +151,8 @@ func (l *Listener) Run(ctx context.Context) {
 // five-minute reload does not already give. So the promise the fan-out is documented as keeping
 // is "within seconds, except while a pod's listener is redialing, where that reload is the
 // backstop".
-func (l *Listener) onConnected() {
-	slog.Info("broker: listening for the other pods' secret rereads", "channel", Channel)
+func (l *Listener) onConnected(log *slog.Logger) {
+	log.Info("broker: listening for the other pods' secret rereads", "channel", Channel)
 	if l.OnConnected != nil {
 		l.OnConnected()
 	}
@@ -163,10 +167,10 @@ func (l *Listener) onConnected() {
 // arbitrary bytes, and each names the fan-out rather than repeating the HTTP reread's own
 // "broker: reread secret failed", so an operator alarming on that line still reads one pod's
 // own request path alone.
-func (l *Listener) notified(ctx context.Context, payload string) {
+func (l *Listener) notified(ctx context.Context, log *slog.Logger, payload string) {
 	note, err := parse(payload)
 	if err != nil {
-		slog.Warn("broker: dropped an unreadable secret-reread notification", "error", err, "payload_bytes", len(payload))
+		log.Warn("broker: dropped an unreadable secret-reread notification", "error", err, "payload_bytes", len(payload))
 		return
 	}
 	if note.Sender == l.Sender {
@@ -175,6 +179,6 @@ func (l *Listener) notified(ctx context.Context, payload string) {
 	refresh, cancel := context.WithTimeout(ctx, refreshTimeout)
 	defer cancel()
 	if err := l.Refresh(refresh, note.Name); err != nil {
-		slog.Warn("broker: a notification's reread of a secret did not run", "secret", note.Name, "sender", note.Sender, "error", err)
+		log.Warn("broker: a notification's reread of a secret did not run", "secret", note.Name, "sender", note.Sender, "error", err)
 	}
 }

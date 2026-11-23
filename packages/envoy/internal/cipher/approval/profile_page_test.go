@@ -4,6 +4,7 @@
 package approval_test
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -158,14 +159,14 @@ func TestAnApprovalIsBoundToTheProfileItsPagePrinted(t *testing.T) {
 // current policy no longer lets the person approve it.
 func TestAnApprovalWhoseTargetARollTookOutIsARefusal(t *testing.T) {
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	r := newRig(t)
+	log := slog.New(capture)
+	r := newRig(t, func(s *rigSetup) { s.log = log })
 	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
 	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	const block = `"permissions": {"contents": "read", "metadata": "read"}`
 	before := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "repositories": ["ada/lean", "ada/proofs"], ` + block + `}}`)
 	after := policytest.ProfilesFile(`{"name": "GITHUB_READ", "source": "ADA_APP", "github": {"accounts": ["ada"], "repositories": ["ada/lean"], ` + block + `}}`)
-	r.machine.Policy = policytest.ProfiledCurrent(t, local, before)
+	r.machine.Policy = profiledCurrent(t, local, before, log)
 	enrollmentID, key := r.benSession(t, "ben-box")
 	compact, err := record.Sign(key, r.url, []record.AuthorizationDetail{
 		{Type: record.KindAgentSecret, Identifier: "GITHUB_READ", Actions: []string{"inject"}, Locations: []string{"https://github.com/ada/proofs"}},
@@ -183,7 +184,7 @@ func TestAnApprovalWhoseTargetARollTookOutIsARefusal(t *testing.T) {
 	}
 	recordID := *created.RecordID
 
-	r.machine.Policy = policytest.ProfiledCurrent(t, local, after)
+	r.machine.Policy = profiledCurrent(t, local, after, log)
 	b := r.browser(t)
 	b.SignIn(t, recordID, person(ada))
 	form := decisionForm(t, b.Page(t, recordID).Body, recordID)

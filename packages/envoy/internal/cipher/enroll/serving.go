@@ -1,6 +1,7 @@
 package enroll
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
@@ -35,14 +36,24 @@ import (
 // last count stands until a beat commits again.
 //
 // Each ServingClock is one process in broker_serving: it draws a random id on its first beat and
-// beats on that row alone.
+// beats on that row alone. Log is where its lines go: nil is slog.Default(), read once, at the
+// first line.
 type ServingClock struct {
 	Enrollments               *Service
 	Interval, NotServingAfter time.Duration
 	OnReplicas                func(replicas int)
+	Log                       *slog.Logger
 
 	processOnce sync.Once
 	process     string
+	logOnce     sync.Once
+	logTo       *slog.Logger
+}
+
+// log is Log, or slog.Default() for a clock given none, read once.
+func (c *ServingClock) log() *slog.Logger {
+	c.logOnce.Do(func() { c.logTo = cmp.Or(c.Log, slog.Default()) })
+	return c.logTo
 }
 
 // servingLock is the advisory lock a beat that found a gap takes before it gives the gap back, so
@@ -69,11 +80,11 @@ func (c *ServingClock) Run(ctx context.Context) {
 		switch {
 		case ctx.Err() != nil:
 		case err != nil && !failing:
-			slog.Warn("broker: the serving clock could not beat; it retries every interval and logs again once it beats",
+			c.log().Warn("broker: the serving clock could not beat; it retries every interval and logs again once it beats",
 				"process", c.processID(), "error", err, "timed_out", beatTimedOut(err))
 			failing = true
 		case err == nil && failing:
-			slog.Info("broker: the serving clock beats again")
+			c.log().Info("broker: the serving clock beats again")
 			failing = false
 		}
 		select {
@@ -203,7 +214,7 @@ func (c *ServingClock) Beat(ctx context.Context) error {
 		return err
 	}
 	if gaveBack {
-		slog.Info("broker: gave back the time no broker was serving to every lease still running when the last broker served",
+		c.log().Info("broker: gave back the time no broker was serving to every lease still running when the last broker served",
 			"gap", gap, "last_serving_at", last, "enrollments", restored)
 	}
 	if c.OnReplicas != nil {

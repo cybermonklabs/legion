@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,7 +40,7 @@ func TestARevokeRefusalAnswersItsOwnCode(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			writeRevokeRefusal(rec, c.err)
+			(&server{log: slog.New(slog.DiscardHandler)}).writeRevokeRefusal(rec, c.err)
 			var body struct {
 				Code  string `json:"code"`
 				Error string `json:"error"`

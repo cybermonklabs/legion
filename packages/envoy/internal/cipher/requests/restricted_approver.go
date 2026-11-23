@@ -39,7 +39,6 @@ package requests
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
@@ -152,7 +151,7 @@ func (m *Machine) listApprovesSecrets(ctx context.Context, login, list string) b
 		return approves
 	}
 	if ctx.Err() == nil && m.rowsUnansweredLogged.due("member kind "+login) {
-		slog.Warn(approverKindUnreadMessage, "list", list, "person", login, "error", err)
+		m.log().Warn(approverKindUnreadMessage, "list", list, "person", login, "error", err)
 	}
 	return false
 }

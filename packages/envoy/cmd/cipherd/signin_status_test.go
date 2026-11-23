@@ -108,7 +108,7 @@ func TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			before := time.Now().Add(-time.Second)
-			checkSignInClient(ctx, c.signIn, st, &logged)
+			checkSignInClient(ctx, c.signIn, st, &logged, slog.New(slog.DiscardHandler))
 			status, err := st.SignInStatus(ctx)
 			if err != nil {
 				t.Fatalf("SignInStatus: %v", err)
@@ -157,16 +157,17 @@ type clientCheckPass struct {
 	want   []string
 }
 
-// passClientChecks takes each pass in order on one clientCheckLog, as runClientChecks does, and
-// fails at the first pass whose client check lines are not the ones it wants.
+// passClientChecks takes each pass in order on one clientCheckLog and one logger over the test's
+// own recorder, as runClientChecks does, and fails at the first pass whose client check lines are
+// not the ones it wants.
 func passClientChecks(t *testing.T, passes []clientCheckPass) {
 	t.Helper()
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	log := slog.New(capture)
 	var logged clientCheckLog
 	for _, pass := range passes {
 		before := len(capture.Records())
-		checkSignInClient(context.Background(), pass.signIn, pass.st, &logged)
+		checkSignInClient(context.Background(), pass.signIn, pass.st, &logged, log)
 		if got := clientCheckLines(capture.Records()[before:]); !slices.Equal(got, pass.want) {
 			t.Fatalf("%s logged %q, want %q", pass.name, got, pass.want)
 		}
@@ -179,7 +180,7 @@ func passClientChecks(t *testing.T, passes []clientCheckPass) {
 // writes it once more, and the pass that finds the client ready again writes
 // clientCheckReadyMessage once, naming the state it leaves, after which ready writes nothing.
 func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (passClientChecks, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	st := storetest.Open(t)
 	issuer := oidctest.New(t)
 	signIn := ciphertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
@@ -207,7 +208,7 @@ func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
 // check's own state is written beside them. The store that fails is a pool on the test's own
 // database, closed before it runs a statement, as a database that stopped answering fails.
 func TestClientCheckLogsAFailedWriteOnceUntilItWritesAgain(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (passClientChecks, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	st := storetest.Open(t)
 	issuer := oidctest.New(t)
 	signIn := ciphertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))

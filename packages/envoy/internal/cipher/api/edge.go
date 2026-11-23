@@ -1,7 +1,9 @@
 package api
 
 import (
+	"cmp"
 	"context"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/url"
@@ -109,7 +111,8 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 	if edge.Now != nil {
 		now = edge.Now
 	}
-	edgeDeps.DatabasePing = (&cachedPing{ping: deps.pingDatabase, now: now, port: answer.PortEdge}).result
+	log := cmp.Or(deps.Log, slog.Default())
+	edgeDeps.DatabasePing = (&cachedPing{ping: deps.pingDatabase, now: now, port: answer.PortEdge, log: log}).result
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {
 		limits = *deps.LauncherLimits
@@ -136,6 +139,7 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 		loginKeyByAddress: true,
 		verificationURI:   edge.VerificationURL,
 		pingLogsItself:    true,
+		log:               log,
 	}
 	for _, route := range routes() {
 		pattern := route.Method + " " + route.Pattern

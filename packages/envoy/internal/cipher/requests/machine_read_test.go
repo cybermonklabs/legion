@@ -13,7 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestGrantsForApproverNamesWhoApproved pins that the approver list names each grant's approver:
@@ -234,10 +233,9 @@ func TestReadRecordAndPendingNameBothSessionIDsWhenTheyDiffer(t *testing.T) {
 // list returned that record's "aud does not match" and the approval page and GET /v1/pending
 // answered 503 for every request of that approver until the record expired.
 func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	m, first, firstKey, approver := newFixture(t)
+	t.Parallel()
+	logger, capture := recordLog()
+	m, first, firstKey, approver := newLoggedFixture(t, logger)
 	ctx := context.Background()
 
 	current := m.Audience
@@ -299,10 +297,9 @@ func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
 // still be warned about once, not on every poll of every open tab. Before, leaveOut dropped its
 // entry at expires_at and logged it again on each list.
 func TestPendingForApproverWarnsOnceAboutALeftOutRecordPastItsExpiry(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	m, enr, key, approver := newFixture(t)
+	t.Parallel()
+	logger, capture := recordLog()
+	m, enr, key, approver := newLoggedFixture(t, logger)
 	ctx := context.Background()
 
 	current := m.Audience

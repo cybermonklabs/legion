@@ -40,7 +40,7 @@ func newTargetServer(t *testing.T) *profileServer {
 	t.Helper()
 	sources := appSources()
 	sources[1].Tags[policy.TagGitHubOwners] = "acme ada example-org"
-	return newProfileServerOf(t, targetProfiles, minting, sources, "APP_KEY", "PROOFS_READ", "HUMAN_APP_KEY", "GITHUB_READ", "ADA_TOKEN", "DEEL_PROXIED")
+	return newProfileServerOf(t, nil, targetProfiles, minting, sources, "APP_KEY", "PROOFS_READ", "HUMAN_APP_KEY", "GITHUB_READ", "ADA_TOKEN", "DEEL_PROXIED")
 }
 
 // signTargetRequest signs a request object for the one name narrowed to the target locations
@@ -135,7 +135,7 @@ func TestAPolicyDenialComesBeforeTheTargetCheck(t *testing.T) {
 	t.Parallel()
 	const profile = "LISTED_READ"
 	const outside = "https://github.com/example-org"
-	s := newProfileServerOf(t, policytest.ProfilesFile(
+	s := newProfileServerOf(t, nil, policytest.ProfilesFile(
 		`{"name": "`+profile+`", "source": "APP_KEY", "requesters": ["`+listedRequester+`"], "github": {"accounts": ["ada"], "repositories": ["ada/lean"], "permissions": {"contents": "read", "metadata": "read"}}}`,
 	), minting, appSources(), "APP_KEY", profile)
 

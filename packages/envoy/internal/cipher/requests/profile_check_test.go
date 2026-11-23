@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -168,6 +169,14 @@ var appNames = []string{"APP_KEY", "OTHER_APP_KEY", "AUTO_APP_KEY", "UNLISTED_AP
 // a profile of its own name whose github block is github's entry for it, or policytest.AppProfile's.
 func newProfileFixture(t *testing.T, installations map[string]int64, github map[string]string) *profileFixture {
 	t.Helper()
+	return newLoggedProfileFixture(t, nil, installations, github)
+}
+
+// newLoggedProfileFixture is newProfileFixture whose Machine (Machine.Log), policy Current
+// (policy.Loader.Log) and github-app minter (secrets.GitHubApp.Log) write their lines to log. Nil
+// is slog.Default().
+func newLoggedProfileFixture(t *testing.T, log *slog.Logger, installations map[string]int64, github map[string]string) *profileFixture {
+	t.Helper()
 	st := storetest.Open(t)
 	value := standInAppValue(t)
 	unlisted := policytest.TypeSecret("UNLISTED_APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, value)
@@ -188,15 +197,19 @@ func newProfileFixture(t *testing.T, installations map[string]int64, github map[
 	}
 	enrollmentID, key := newEnrollment(t, st)
 	stand := newGitHubStand(t, installations)
+	loader := policytest.Loader(local)
+	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(profiles...))
+	loader.Log = log
 	machine := &requests.Machine{
 		Store:      st,
-		Policy:     policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(profiles...)),
+		Policy:     policytest.CurrentOf(t, loader),
 		Secrets:    policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   checkAudience,
 		Skew:       time.Minute,
 		Replay:     replayer(st),
-		Minters:    map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: stand.service.URL()}.Mint},
+		Minters:    map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: stand.service.URL(), Log: log}.Mint},
+		Log:        log,
 	}
 	machine.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, machine.Airlock)
 	return &profileFixture{Machine: machine, enrollmentID: enrollmentID, key: key, stand: stand}
@@ -352,7 +365,7 @@ func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
 // before anybody is asked (secrets.ErrMintNoInstallation, naming the account). A target naming
 // one account of two that are both installed is minted on that account's installation alone.
 func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// installations are where the App is installed, accounts the profile's, as the
@@ -373,8 +386,8 @@ func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
 		{name: "a target naming the account of two the App has no installation on", installations: map[string]int64{standInOwner: 7}, accounts: `["acme", "ada"]`, target: []string{"https://github.com/acme"}, account: otherOwner, want: secrets.ErrMintNoInstallation},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			logged := policytest.CaptureLog(t)
-			f := newProfileFixture(t, tc.installations, map[string]string{
+			logger, logged := policytest.Log()
+			f := newLoggedProfileFixture(t, logger, tc.installations, map[string]string{
 				"APP_KEY": `{"accounts": ` + tc.accounts + `, "permissions": {"contents": "read", "metadata": "read"}}`,
 			})
 

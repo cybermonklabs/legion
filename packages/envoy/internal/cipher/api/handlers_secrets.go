@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -194,7 +193,7 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the reread finished; send it again")
 		return
 	case err != nil:
-		writeInternal(w, "reread secret", err)
+		s.writeInternal(w, "reread secret", err)
 		return
 	}
 	resp := rereadResponse{Name: name, Served: lk.Served, Reason: lk.Reason}
@@ -243,7 +242,7 @@ func (s *server) rereadAfterAnswer(ctx context.Context, name string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rereadAfterAnswerTimeout)
 	if !s.deps.Detached.start() {
 		cancel()
-		slog.Warn("broker: reread after its answer was not run because the pod is stopping", "name", name)
+		s.log.Warn("broker: reread after its answer was not run because the pod is stopping", "name", name)
 		return
 	}
 	go func() {
@@ -257,13 +256,13 @@ func (s *server) rereadAfterAnswer(ctx context.Context, name string) {
 			}
 			err, stack := fmt.Errorf("panic: %v", p), string(debug.Stack())
 			if notifying {
-				slog.Error("broker: peer notice panicked", "name", name, "error", err, "stack", stack)
+				s.log.Error("broker: peer notice panicked", "name", name, "error", err, "stack", stack)
 				return
 			}
-			slog.Error("broker: reread panicked", "name", name, "error", err, "stack", stack)
+			s.log.Error("broker: reread panicked", "name", name, "error", err, "stack", stack)
 		}()
 		if _, err := s.refreshAndTell(ctx, name, func() { notifying = true }); err != nil {
-			slog.Error("broker: reread secret failed", "name", name, "error", err)
+			s.log.Error("broker: reread secret failed", "name", name, "error", err)
 		}
 	}()
 }

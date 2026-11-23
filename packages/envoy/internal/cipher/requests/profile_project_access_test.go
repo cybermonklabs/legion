@@ -29,7 +29,7 @@ var privateProfiles = policytest.ProfilesFile(
 // blocks in force.
 func newPrivateProfileFixture(t *testing.T, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey) {
 	t.Helper()
-	m, enrollmentID, key, _ = newProfiledProjectFixture(t, privateProfiles, policytest.Profiles(t, privateProfiles, fixtureService).ProxyRules(), team)
+	m, enrollmentID, key, _ = newProfiledProjectFixture(t, nil, privateProfiles, policytest.Profiles(t, privateProfiles, fixtureService).ProxyRules(), team)
 	return m, enrollmentID, key
 }
 

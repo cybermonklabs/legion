@@ -22,7 +22,7 @@ import (
 // failure line quotes the refresh token. The minter retries as the broker's does, waiting no real
 // time, so the error that reaches both is the last of its three attempts'.
 func TestAMintFailureEchoingTheRefreshTokenReachesNeitherTheSessionNorTheLog(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
 	const canary = "refresh-token-canary-77d2"
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -45,10 +45,10 @@ func TestAMintFailureEchoingTheRefreshTokenReachesNeitherTheSessionNorTheLog(t *
 			}()
 		}
 	}()
-	logged := policytest.CaptureLog(t)
+	log, logged := policytest.Log()
 	// retry waits no real time: the row is about what the failure quotes, not the backoff.
 	retry := &secrets.Retry{Sleep: func(context.Context, time.Duration) error { return nil }}
-	ts := newTestServerWith(t, func(d *api.Deps) {
+	ts := newLoggedTestServer(t, log, "", func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
 			policy.TypeGoogleLogin: secrets.GoogleLogin{TokenURL: "http://" + listener.Addr().String(), Retry: retry}.Mint,
 		}

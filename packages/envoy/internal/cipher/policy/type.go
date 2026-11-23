@@ -28,11 +28,13 @@ const LegacyTypeTagMessage = "agent secret uses legacy classifier tag; retag it 
 // across loads and rereads, so each secret is reported once per process.
 var legacyTypesLogged sync.Map
 
-func listingType(ls secrets.Listing) string {
+// listingType is ls's type (TypeFromTags), writing LegacyTypeTagMessage to log the first time this
+// process reads it from LegacyTypeTag.
+func listingType(log *slog.Logger, ls secrets.Listing) string {
 	if _, present := ls.Tags[TagType]; !present {
 		if _, legacy := ls.Tags[LegacyTypeTag]; legacy {
 			if _, logged := legacyTypesLogged.LoadOrStore(ls.ID, struct{}{}); !logged {
-				slog.Warn(LegacyTypeTagMessage, "name", ls.ID, "old_tag", LegacyTypeTag, "tag", TagType)
+				log.Warn(LegacyTypeTagMessage, "name", ls.ID, "old_tag", LegacyTypeTag, "tag", TagType)
 			}
 		}
 	}

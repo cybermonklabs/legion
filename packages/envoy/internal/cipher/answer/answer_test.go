@@ -42,12 +42,11 @@ func newRig(t *testing.T, next http.Handler) *rig {
 }
 
 // newRigOf is newRig behind the recorder middleware builds: answer.Middleware or
-// answer.EdgeMiddleware.
-func newRigOf(t *testing.T, next http.Handler, middleware func(http.Handler, *metrics.Counter) http.Handler) *rig {
+// answer.EdgeMiddleware, logging to the rig's own recorder.
+func newRigOf(t *testing.T, next http.Handler, middleware func(http.Handler, *metrics.Counter, *slog.Logger) http.Handler) *rig {
 	t.Helper()
 	r := &rig{log: &logtest.Recorder{}, registry: metrics.New()}
-	logtest.SetDefault(t, r.log)
-	recorded := middleware(next, answer.NewAnswers(r.registry))
+	recorded := middleware(next, answer.NewAnswers(r.registry), slog.New(r.log))
 	r.handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
@@ -496,11 +495,10 @@ func TestARefusalsLineBoundsTheNamesItLists(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
 			out := &logtest.Buffer{}
-			logtest.SetDefault(t, logging.NewCloudHandler(out))
 			handler := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				answer.FromContext(req.Context()).NoteSecrets(row.names...)
 				writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
-			}), nil)
+			}), nil, slog.New(logging.NewCloudHandler(out)))
 			handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/requests", nil))
 
 			var refusals []string
@@ -639,11 +637,10 @@ func TestARefusalsLineCountsTheNamesAsItWritesThem(t *testing.T) {
 	)
 	named := slices.Repeat([]string{"\x01"}, 40000)
 	out := &logtest.Buffer{}
-	logtest.SetDefault(t, logging.NewCloudHandler(out))
 	handler := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		answer.FromContext(req.Context()).NoteSecrets(named...)
 		writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
-	}), nil)
+	}), nil, slog.New(logging.NewCloudHandler(out)))
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/requests", nil))
 
 	var refusals []string
@@ -715,7 +712,7 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 		edit(req)
 		answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
-		}), nil).ServeHTTP(httptest.NewRecorder(), req)
+		}), nil, nil).ServeHTTP(httptest.NewRecorder(), req)
 	}
 	// airlockLine is a refusal's line as the airlock's proxy port fills it (refusalFields).
 	airlockLine := answer.RefusalLine{ID: answer.NewID(), Status: http.StatusForbidden, Code: "NOT_ALLOWED",

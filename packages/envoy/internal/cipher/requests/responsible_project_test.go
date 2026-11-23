@@ -40,10 +40,11 @@ func wantListed(t *testing.T, m *Machine, recordID string, all, want []string) {
 // responsible person may see it, so the list writes one line counting them and no line for any one
 // of them.
 func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const rows = 20
 	const takes = 300 * time.Millisecond
-	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	logger, capture := recordLog()
+	m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 	for i := range rows {
 		operator := fmt.Sprintf("op%02d@example.com", i)
 		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-slow-%02d", i), new(operator), nil)
@@ -54,8 +55,7 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	answerFrom(t, m, dispatchRows(publicTeam))
 	var asked, kinds atomic.Int32
 	m.Projects = kindApart{slowAccess: slowAccess{inner: m.Projects, takes: takes, asked: &asked}, inner: m.Projects, kinds: &kinds}
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	mark := len(capture.Records())
 	listed, err := m.PendingForApprover(t.Context(), insider, PendingStates{})
 	if err != nil || len(listed) != 0 {
 		t.Fatalf("PendingForApprover(%s) = %d rows, %v; want none: every row is another person's, who may see it", insider, len(listed), err)
@@ -76,8 +76,8 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 	// The first row is read whole in two questions and every later one in one, the reader's
 	// answer kept for the list, so at most most-1 rows were, and the clock left off every other
 	// row, whether in the middle of its read or before it.
-	wantNoLine(t, capture, rowUnansweredMessage, fallbackUnreadMessage)
-	cut := linesOf(capture, fallbackCutMessage)
+	wantNoLine(t, recordedSince(capture, mark), rowUnansweredMessage, fallbackUnreadMessage)
+	cut := linesOf(recordedSince(capture, mark), fallbackCutMessage)
 	if len(cut) != 1 {
 		t.Fatalf("the list wrote %d lines counting the rows its clock left off: %v; want one", len(cut), cut)
 	}
@@ -124,16 +124,18 @@ func (f failForPerson) States(ctx context.Context, projects []string) (map[strin
 
 // strandedRow is the fixture operator's request naming TEAM-7, made while TEAM is public; TEAM is
 // then private with insider alone on its list, so the operator, its responsible person, may no
-// longer see it, and the fallback lists it for insider (listedInStead).
-func strandedRow(t *testing.T) (*Machine, string) {
+// longer see it, and the fallback lists it for insider (listedInStead). The recorder it answers
+// holds every line its Machine and policy log (newLoggedProjectFixture), the request's own too.
+func strandedRow(t *testing.T) (*Machine, string, *logtest.Recorder) {
 	t.Helper()
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	logger, capture := recordLog()
+	m, enr, key, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || req.RecordID == nil || req.State != "pending" {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
 	}
 	answerFrom(t, m, dispatchRows(privateTeam(insider)))
-	return m, *req.RecordID
+	return m, *req.RecordID, capture
 }
 
 // wantLine fails t unless capture holds exactly one line of message, at WARN and naming the
@@ -184,50 +186,45 @@ func wantUnreadLine(t *testing.T, capture *logtest.Recorder, recordID string) {
 // Dispatch still answers each reader's member kind in both outages; a list whose reader's kind
 // cannot be read holds none of their secret requests (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestTheFallbackFailsClosed(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	t.Run("control", func(t *testing.T) {
-		m, stranded := strandedRow(t)
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		m, stranded, capture := strandedRow(t)
+		mark := len(capture.Records())
 		wantListed(t, m, stranded, []string{insider, outsider}, []string{insider})
-		wantNoLine(t, capture, rowUnansweredMessage, fallbackUnreadMessage, fallbackCutMessage)
+		wantNoLine(t, recordedSince(capture, mark), rowUnansweredMessage, fallbackUnreadMessage, fallbackCutMessage)
 	})
 	t.Run("the reader's own read fails", func(t *testing.T) {
-		m, stranded := strandedRow(t)
+		m, stranded, capture := strandedRow(t)
 		m.Projects = failForPerson{inner: m.Projects, person: outsider}
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(capture.Records())
 		wantListed(t, m, stranded, []string{outsider}, nil)
-		wantUnreadLine(t, capture, stranded)
+		wantUnreadLine(t, recordedSince(capture, mark), stranded)
 	})
 	t.Run("the responsible person's read fails", func(t *testing.T) {
-		m, stranded := strandedRow(t)
+		m, stranded, capture := strandedRow(t)
 		m.Projects = failForPerson{inner: m.Projects, person: fixtureOperator}
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(capture.Records())
 		wantListed(t, m, stranded, []string{insider}, nil)
-		wantUnreadLine(t, capture, stranded)
+		wantUnreadLine(t, recordedSince(capture, mark), stranded)
 	})
 	t.Run("an outage", func(t *testing.T) {
-		m, stranded := strandedRow(t)
+		m, stranded, capture := strandedRow(t)
 		dispatch := answerFrom(t, m, dispatchRows(privateTeam(insider)))
 		dispatch.SetProjectsDown(true)
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(capture.Records())
 		wantListed(t, m, stranded, []string{insider}, nil)
-		wantUnreadLine(t, capture, stranded)
+		wantUnreadLine(t, recordedSince(capture, mark), stranded)
 	})
 	t.Run("an outage, on the responsible person's own list", func(t *testing.T) {
-		m, stranded := strandedRow(t)
+		m, stranded, capture := strandedRow(t)
 		dispatch := answerFrom(t, m, dispatchRows(privateTeam(insider)))
 		dispatch.SetProjectsDown(true)
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(capture.Records())
 		wantListed(t, m, stranded, []string{fixtureOperator}, nil)
-		if line := wantLine(t, capture, rowUnansweredMessage, stranded); line["list"] != "pending" || line["error"] == "" {
+		if line := wantLine(t, recordedSince(capture, mark), rowUnansweredMessage, stranded); line["list"] != "pending" || line["error"] == "" {
 			t.Fatalf("the operator's list's line for %s = %v; want it to name the pending list and the error", stranded, line)
 		}
-		wantNoLine(t, capture, fallbackUnreadMessage, fallbackCutMessage)
+		wantNoLine(t, recordedSince(capture, mark), fallbackUnreadMessage, fallbackCutMessage)
 	})
 }
 

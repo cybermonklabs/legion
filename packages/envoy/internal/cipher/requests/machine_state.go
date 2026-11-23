@@ -30,6 +30,7 @@
 package requests
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -400,6 +401,12 @@ type Machine struct {
 	// (ApplyDecision), a revoke (RevokeByApprover) and the lists of a member's pending records
 	// and grants (PendingForApprover, GrantsForApprover). A nil reader admits nobody to a group.
 	Groups record.Directory
+	// Log is where the machine's lines go: its own, and the grant log's (store.LogGrantEvent).
+	// Nil is slog.Default(), read once, at the first line (log), since a Machine is a struct its
+	// caller fills and has no constructor.
+	Log     *slog.Logger
+	logOnce sync.Once
+	logTo   *slog.Logger
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -446,6 +453,12 @@ type Machine struct {
 	testCommitCut  func() error
 	testHoldCommit func(backend uint32) error
 	testLandedRead func(backend uint32) error
+}
+
+// log is Log, or slog.Default() for a Machine given none, read once.
+func (m *Machine) log() *slog.Logger {
+	m.logOnce.Do(func() { m.logTo = cmp.Or(m.Log, slog.Default()) })
+	return m.logTo
 }
 
 // missRereadLimiter is the per-enrollment buckets MissRereads names, built on the first miss.
@@ -921,7 +934,7 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 			if err := tx.Commit(ctx); err != nil {
 				return Request{}, err
 			}
-			logBrokerMoved(ended, kept.ID, enrollmentID)
+			m.logBrokerMoved(ended, kept.ID, enrollmentID)
 			existing, err := m.Get(ctx, kept.ID)
 			existing.Coalesced = true
 			return existing, err
@@ -935,7 +948,7 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 		if err := tx.Commit(ctx); err != nil {
 			return Request{}, err
 		}
-		logBrokerMoved(ended, kept.ID, enrollmentID)
+		m.logBrokerMoved(ended, kept.ID, enrollmentID)
 		return Request{}, refused
 	}
 	r := newRequest{
@@ -974,8 +987,8 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	if err := tx.Commit(ctx); err != nil {
 		return Request{}, err
 	}
-	logBrokerMoved(ended, r.id, enrollmentID)
-	store.LogGrantEvent(r.createdRequestLogEvent(enr))
+	m.logBrokerMoved(ended, r.id, enrollmentID)
+	store.LogGrantEvent(m.log(), r.createdRequestLogEvent(enr))
 	// The model judge, for a request this call has just written pending and held for it. It is
 	// called here, past the commit and past the grant-log line, so the judge's own reads find the
 	// request and the record that are now there and nothing it does runs inside the transaction.
@@ -1104,7 +1117,7 @@ func (m *Machine) endBesideReusedGrant(ctx context.Context, enrollmentID string,
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	logBrokerMoved(ended, reused, enrollmentID)
+	m.logBrokerMoved(ended, reused, enrollmentID)
 	return nil
 }
 
@@ -1116,10 +1129,10 @@ func (m *Machine) endBesideReusedGrant(ctx context.Context, enrollmentID string,
 // live grant answered, the reused grant's request (endBesideReusedGrant). Each caller calls it
 // straight after the commit, before anything that can fail, so an end that committed is logged
 // and one that did not never is.
-func logBrokerMoved(ended []store.EndedRequest, newRequest, enrollmentID string) {
+func (m *Machine) logBrokerMoved(ended []store.EndedRequest, newRequest, enrollmentID string) {
 	for _, r := range ended {
-		store.LogGrantEvent(endedRequestLogEvent(brokerMovedEnd, r.EnrollmentID, r.ID))
-		slog.Info(RequestEndedBrokerMovedMessage, "request", r.ID, "record_id", deref(r.RecordID), "new_request", newRequest, "enrollment", enrollmentID)
+		store.LogGrantEvent(m.log(), endedRequestLogEvent(brokerMovedEnd, r.EnrollmentID, r.ID))
+		m.log().Info(RequestEndedBrokerMovedMessage, "request", r.ID, "record_id", deref(r.RecordID), "new_request", newRequest, "enrollment", enrollmentID)
 	}
 }
 
@@ -1161,7 +1174,7 @@ func (m *Machine) rereadMissing(ctx context.Context, enrollmentID string, names 
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			slog.Error(policy.LoadFailedMessage, "name", name, "error", err)
+			m.log().Error(policy.LoadFailedMessage, "name", name, "error", err)
 			continue
 		}
 		set = m.Policy.Get()
@@ -1554,7 +1567,7 @@ func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	store.LogGrantEvent(endedRequestLogEvent(end, requestEnrollment, id))
+	store.LogGrantEvent(m.log(), endedRequestLogEvent(end, requestEnrollment, id))
 	return nil
 }
 
@@ -1695,7 +1708,7 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	if err := tx.Commit(ctx); err != nil {
 		return Dismissal{}, err
 	}
-	slog.Info(DismissedMessage, "record_id", recordID, "kind", kind, "login", login, "wrote", d.Wrote)
+	m.log().Info(DismissedMessage, "record_id", recordID, "kind", kind, "login", login, "wrote", d.Wrote)
 	return d, nil
 }
 
@@ -1831,7 +1844,7 @@ func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg 
 		return nil, err
 	}
 	for _, r := range ended {
-		store.LogGrantEvent(endedRequestLogEvent(end, r.EnrollmentID, r.ID))
+		store.LogGrantEvent(m.log(), endedRequestLogEvent(end, r.EnrollmentID, r.ID))
 	}
 	return ended, nil
 }
@@ -2102,7 +2115,7 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
-	logGrantRow(judgedKind, actor, enr, requestID, "", rawJSON(detail))
+	m.logGrantRow(judgedKind, actor, enr, requestID, "", rawJSON(detail))
 	return wrote, nil
 }
 
@@ -2695,9 +2708,9 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		ev.LifetimeSeconds = *rowLifetime
 	}
 	ev.Reason, ev.Detail, ev.Raw = obj.Reason, detail, rawJSON(rowDetail)
-	store.LogGrantEvent(ev)
+	store.LogGrantEvent(m.log(), ev)
 	if who.isJudge() {
-		logGrantRow(judgedKind, who.actor(), enr, requestID, grantID, rawJSON(judged))
+		m.logGrantRow(judgedKind, who.actor(), enr, requestID, grantID, rawJSON(judged))
 	}
 	return Decision{RequestID: requestID, State: next, GrantID: grantID, Detail: detail}, false, nil
 }
@@ -2968,7 +2981,7 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
-	logGrantRow("grant.revoked", actor, enrollmentRow{ID: owner}, requestID, grantID, rawJSON(auditDetail{}))
+	m.logGrantRow("grant.revoked", actor, enrollmentRow{ID: owner}, requestID, grantID, rawJSON(auditDetail{}))
 	return nil
 }
 
@@ -3098,10 +3111,10 @@ func grantLogEvent(kind, actor string, enr enrollmentRow) store.GrantLogEvent {
 // back (endGrant), and both writers of the judge's verdict (LogJudged and
 // applyDecisionAttempt) — so they all build the same line. A request's own decision line sets
 // fields past these three and builds its event itself.
-func logGrantRow(kind, actor string, enr enrollmentRow, requestID, grantID string, raw json.RawMessage) {
+func (m *Machine) logGrantRow(kind, actor string, enr enrollmentRow, requestID, grantID string, raw json.RawMessage) {
 	ev := grantLogEvent(kind, actor, enr)
 	ev.RequestID, ev.GrantID, ev.Raw = requestID, grantID, raw
-	store.LogGrantEvent(ev)
+	store.LogGrantEvent(m.log(), ev)
 }
 
 // endedRequestLogEvent is one request store.EndPendingRequests has just ended, as its grant-log

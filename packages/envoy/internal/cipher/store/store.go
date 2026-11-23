@@ -13,6 +13,7 @@
 package store
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"embed"
@@ -40,6 +41,9 @@ var migrationFiles embed.FS
 
 type Store struct {
 	Pool *pgxpool.Pool
+	// Log is where the store's own line goes: a migration connection whose session reset failed
+	// (releaseMigrationConn). Nil is slog.Default(), read once when a migration starts.
+	Log *slog.Logger
 
 	// mu guards listen, the one-connection pool Listener opens on first use, so two callers
 	// cannot open two of them, and closed, so a dial after Close opens no pool nobody closes.
@@ -256,7 +260,7 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if err != nil {
 		return err
 	}
-	defer releaseMigrationConn(ctx, conn)
+	defer releaseMigrationConn(ctx, conn, cmp.Or(s.Log, slog.Default()))
 	if err := pgmigrate.RetryVersionTableLockTimeouts(ctx, versionTable, func(ctx context.Context) error {
 		return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			if err := lockAndPin(ctx, tx); err != nil {
@@ -367,8 +371,8 @@ func (s *Store) CheckVersions(ctx context.Context) (*pgmigrate.VersionCheck, err
 // destroys it. A connection whose reset fails carries a session that is unknown, so it is taken out
 // of the pool (Hijack) and closed, never given back. migrate's own answer does not change: the set
 // has committed or rolled back already, and the closed connection reaches no later caller. So the
-// failed reset is logged at WARN.
-func releaseMigrationConn(ctx context.Context, conn *pgxpool.Conn) {
+// failed reset is logged at WARN, to log.
+func releaseMigrationConn(ctx context.Context, conn *pgxpool.Conn, log *slog.Logger) {
 	if conn.Conn().IsClosed() {
 		conn.Release()
 		return
@@ -380,7 +384,7 @@ func releaseMigrationConn(ctx context.Context, conn *pgxpool.Conn) {
 		conn.Release()
 		return
 	}
-	slog.Warn("broker: the migration connection's session reset failed; the connection is closed, not given back to the pool", "error", err)
+	log.Warn("broker: the migration connection's session reset failed; the connection is closed, not given back to the pool", "error", err)
 	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
 	defer closeCancel()
 	_ = conn.Hijack().Close(closeCtx)

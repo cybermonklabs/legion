@@ -26,23 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// capturingHandler records every slog record it is asked to handle, so a test can assert what the
-// broker logged (as cipher/wake/envoy_test.go does).
-type capturingHandler struct {
-	records *[]slog.Record
-}
-
-func (h capturingHandler) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h capturingHandler) Handle(_ context.Context, r slog.Record) error {
-	*h.records = append(*h.records, r)
-	return nil
-}
-
-func (h capturingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-
-func (h capturingHandler) WithGroup(string) slog.Handler { return h }
-
 // wireLauncherCredential is one machine login in GET /v1/launcher-credentials's answer.
 type wireLauncherCredential struct {
 	CredentialID string    `json:"credential_id"`
@@ -331,8 +314,11 @@ func TestOnlyTheLoginThatEnrolledAPodDeletesItsEnrollment(t *testing.T) {
 // login's enrollment of the same pod UID. A machine session sending a pod token is 403
 // POD_IDENTITY_MISMATCH.
 func TestAPodRenewsCarryingItsCurrentToken(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.Swap, slog.SetDefault).
-	ts := newTestServer(t)
+	t.Parallel()
+	// capture holds every record the server logs; each window below reads those written since its
+	// mark.
+	capture := &logtest.Recorder{}
+	ts := newLoggedTestServer(t, slog.New(capture), "", nil)
 	cred, credKey := ts.mintServiceLauncherCredential(t)
 	enrollPod := func(t *testing.T) (string, string, *ecdsa.PrivateKey) {
 		t.Helper()
@@ -357,14 +343,13 @@ func TestAPodRenewsCarryingItsCurrentToken(t *testing.T) {
 
 	t.Run("a new pod renews without a token, logged, until it renews with its own token", func(t *testing.T) {
 		id, podUID, key := enrollPod(t)
-		var records []slog.Record
-		restore := logtest.Swap(t, capturingHandler{records: &records})
+		mark := len(capture.Records())
 		for range 2 {
 			if status, code := renew(t, key, id, nil); status != http.StatusOK {
 				t.Fatalf("renew with no body, a new pod enrollment = %d %s, want 200", status, code)
 			}
 		}
-		restore()
+		records := capture.Records()[mark:]
 		warned := 0
 		for _, r := range records {
 			attrs := map[string]string{}
@@ -398,12 +383,11 @@ func TestAPodRenewsCarryingItsCurrentToken(t *testing.T) {
 		if status, code := renew(t, key, id, map[string]any{"pod_token": ts.podToken(t, workerAccount, podUID)}); status != http.StatusOK {
 			t.Fatalf("renew with the pod's own token = %d %s, want 200", status, code)
 		}
-		records = nil
-		restore = logtest.Swap(t, capturingHandler{records: &records})
+		mark = len(capture.Records())
 		if status, code := renew(t, key, id, nil); status != http.StatusForbidden || code != "POD_TOKEN_REQUIRED" {
 			t.Fatalf("renew with no body after renewing with the token = %d %s, want 403 POD_TOKEN_REQUIRED", status, code)
 		}
-		restore()
+		records = capture.Records()[mark:]
 		refusedWarn, recorded := 0, 0
 		for _, r := range records {
 			attrs := map[string]string{}

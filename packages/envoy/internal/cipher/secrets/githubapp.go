@@ -26,12 +26,15 @@ const githubAPIBase = "https://api.github.com"
 // Base, HTTP and Now let tests replace GitHub, its transport and the clock. Retry is the policy
 // each of a mint's calls is retried under, and the process-wide budget it draws from; nil makes
 // one attempt of each. It is a pointer, so every copy of the minter (typeMinters takes it by
-// value) draws from the one budget.
+// value) draws from the one budget. Log is where a mint's and a give-back's lines go (the
+// revokes GitHub did not confirm); nil is slog.Default(), read once at the start of each Mint and
+// GiveBack, since a GitHubApp is a value built where it is used and has no constructor.
 type GitHubApp struct {
 	Base  string
 	HTTP  *http.Client
 	Now   func() time.Time
 	Retry *Retry
+	Log   *slog.Logger
 }
 
 type githubInstallation struct {
@@ -424,11 +427,11 @@ func skipJSONValue(decoder *json.Decoder) error {
 // logged as such with why, the error the answer failed with (unrevokableMessage).
 func (m GitHubApp) giveBackUnusable(ctx context.Context, mint *mintRetry, appID string, installationID int64, token string, why error) {
 	if token == "" {
-		slog.Warn(unrevokableMessage, "app", appID, "installation", installationID, "error", why)
+		m.Log.Warn(unrevokableMessage, "app", appID, "installation", installationID, "error", why)
 		return
 	}
 	if revokeErr := m.revokeInstallationToken(ctx, mint, token); revokeErr != nil {
-		slog.Warn(revokedUnusableMessage, "app", appID, "installation", installationID, "error", revokeErr)
+		m.Log.Warn(revokedUnusableMessage, "app", appID, "installation", installationID, "error", revokeErr)
 	}
 }
 
@@ -445,7 +448,7 @@ func (m GitHubApp) revokeUnreleased(ctx context.Context, mint *mintRetry, minted
 			continue
 		}
 		if err := m.revokeInstallationToken(ctx, mint, installation.Token); err != nil {
-			slog.Warn(revokedUnreleasedMessage, slices.Concat(named, []any{"installation", installation.InstallationID, "expires_at", installation.ExpiresAt, "error", err})...)
+			m.Log.Warn(revokedUnreleasedMessage, slices.Concat(named, []any{"installation", installation.InstallationID, "expires_at", installation.ExpiresAt, "error", err})...)
 		}
 	}
 }
@@ -464,6 +467,7 @@ func (m GitHubApp) revokeUnreleased(ctx context.Context, mint *mintRetry, minted
 // release of a github-app name gives a token back. A revoke GitHub does not confirm is logged
 // with name= (revokedUnreleasedMessage) and leaves its token live until it lapses.
 func (m GitHubApp) GiveBack(ctx context.Context, name, value, form string) {
+	m.Log = cmp.Or(m.Log, slog.Default())
 	var minted githubMintedInstallations
 	switch {
 	case value == "":
@@ -533,6 +537,7 @@ type installationMint struct {
 // inside ErrMintRefused, and an empty cut ErrMintEmptyCut, which is inside ErrMintNarrowingRefused;
 // the broker's check before an approval reads both.
 func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err error) {
+	m.Log = cmp.Or(m.Log, slog.Default())
 	scope := req.GitHub
 	if scope == nil {
 		// A programming error in the broker: every github-app name it serves is a profile's, and
@@ -633,7 +638,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 			// heldBy reads what GitHub says the token holds and never the token itself, so the
 			// verdict below is still the one the release would get.
 			if revokeErr := m.revokeToken(ctx, mint, token.Token); revokeErr != nil {
-				slog.Warn(revokedCheckMessage, "app", secret.AppID, "installation", one.installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
+				m.Log.Warn(revokedCheckMessage, "app", secret.AppID, "installation", one.installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
 			}
 			token.Token = ""
 		}
@@ -641,7 +646,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 			if !req.Check {
 				// A check revoked this token already, and holds none to revoke here.
 				if revokeErr := m.revokeInstallationToken(ctx, mint, token.Token); revokeErr != nil {
-					slog.Warn(revokedWiderMessage, "app", secret.AppID, "installation", one.installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
+					m.Log.Warn(revokedWiderMessage, "app", secret.AppID, "installation", one.installation.ID, "expires_at", token.ExpiresAt, "error", revokeErr)
 				}
 			}
 			return Minted{}, fmt.Errorf("%w: github app %s: installation %d: %w", ErrMintUpstream, secret.AppID, one.installation.ID, err)

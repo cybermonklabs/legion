@@ -95,7 +95,7 @@ const (
 
 // e2eServer is a live broker HTTP server (real handlers, real Postgres) wired exactly like
 // cmd/cipherd/main.go: a real policy.Loader over Secrets, reloading on a real ticker. Log holds
-// everything the broker logged.
+// every line the broker's components wrote to the one logger the harness handed them.
 type e2eServer struct {
 	URL     string
 	Store   *store.Store
@@ -135,18 +135,19 @@ func newE2EServer(t *testing.T) *e2eServer {
 // enroll.Service (+ ChainVerifier), the group reader, requests.Machine, machine.Service,
 // policy.NewCurrent — the same way main.go does, minus the HTTP listener and signal handling
 // (api.Register mounts on an httptest.Server instead of a real net/http.Server, as api_test.go's
-// newTestServer does). The broker logs through slog's default handler, as main.go's does, here
-// into Log.
+// newTestServer does). As main.go hands the logger setUpLogging made to every component, this
+// hands each one logger writing into Log (policytest.Log), so Log holds this broker's lines alone,
+// whatever any other test logs meanwhile.
 func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	t.Helper()
 	st := storetest.Open(t)
-	logged := policytest.CaptureLog(t)
+	log, logged := policytest.Log()
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	enr := &enroll.Service{Store: st, Lease: time.Hour}
+	enr := &enroll.Service{Store: st, Lease: time.Hour, Log: log}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 
 	local := secrets.NewLocal(o.secrets...)
@@ -155,7 +156,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	// The group reader as main.go's newGroupReader builds it, started on the serving context.
 	// The pod's own credential is a fixed one, which only the IAM stand-in reads.
 	reader := &groups.Reader{
-		BaseURL: o.directoryURL, Now: o.now,
+		BaseURL: o.directoryURL, Now: o.now, Log: log,
 		Source: groups.NewTokenSource(groups.TokenOptions{
 			Account: o.directoryAccount, IAMCredentialsURL: o.iamURL,
 			Default: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: podOwnBearer}),
@@ -164,6 +165,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	reader.Start(ctx)
 	loader := policytest.Loader(local)
 	loader.Groups = reader
+	loader.Log = log
 	current, err := policy.NewCurrent(ctx, loader, reloadInterval)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -173,7 +175,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 		Store: st, Policy: current, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
-		Groups: reader,
+		Groups: reader, Log: log,
 		Minters: map[string]requests.Minter{
 			policy.TypeAnthropicFederation: (&secrets.AnthropicFederation{
 				Accounts:      o.serviceAccounts,
@@ -193,7 +195,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	if err != nil {
 		t.Fatalf("oidc.New: %v", err)
 	}
-	provider := ciphertest.NewOAuthProvider(t, st, issuer)
+	provider := ciphertest.NewOAuthProvider(t, st, issuer, log)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -209,7 +211,8 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// People sign in to the page at the same local issuer, which stands in for every provider.
-		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine),
+		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine, log),
+		Log:      log,
 	})
 
 	// The caller's token lives well inside the hour one may, as a projected token does.
@@ -448,6 +451,7 @@ func (s *e2eServer) deviceLogin(t *testing.T, key *ecdsa.PrivateKey, person, hos
 // --- the test ---
 
 func TestEndToEnd(t *testing.T) {
+	t.Parallel()
 	ts := newE2EServer(t)
 
 	// Shared across steps: the box enrollment and its session key (step 1), and the step-3 grant

@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
@@ -209,9 +208,9 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	// names the request whose grant it ended, which is not the revoked grant's, and the
 	// enrollment that grant hung off.
 	for _, e := range withheld.ended {
-		logGrantRow("grant.revoked", actor, e.enr, e.grant.RequestID, e.grant.GrantID, e.grant.Detail)
+		m.logGrantRow("grant.revoked", actor, e.enr, e.grant.RequestID, e.grant.GrantID, e.grant.Detail)
 	}
-	logGrantRow(kind, actor, holder, requestID, grantID, rawJSON(detail))
+	m.logGrantRow(kind, actor, holder, requestID, grantID, rawJSON(detail))
 	return nil
 }
 
@@ -486,7 +485,7 @@ func (m *Machine) revokeApproves(ctx context.Context, login string, judged grant
 		return approverStanding{}, err
 	}
 	if ctx.Err() == nil {
-		slog.Warn(RevokeUncheckedMessage, "person", record.CanonicalLogin(login), "error", err)
+		m.log().Warn(RevokeUncheckedMessage, "person", record.CanonicalLogin(login), "error", err)
 	}
 	return approverStanding{approves: true}, nil
 }

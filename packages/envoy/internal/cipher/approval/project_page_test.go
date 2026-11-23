@@ -351,13 +351,13 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 // the session's person is (TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable).
 func TestADispatchOutageLeavesATaggedRequestUnavailableAndDecidesTheRest(t *testing.T) {
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
 	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		privProject: {Visibility: "private", Owner: ada, Listed: []string{ben}},
 	}, nil)
 	access := &projectaccesstest.Swappable{}
 	access.Serve(up)
 	r := newRig(t, func(s *rigSetup) {
+		s.log = slog.New(capture)
 		shared := policytest.Secret("PRIV_SHARED", policy.OwnerShared, policy.TierHuman, "priv-shared-not-a-secret")
 		shared.Tags[policy.TagProject] = privProject
 		s.secrets = []secrets.LocalSecret{shared}
@@ -418,7 +418,8 @@ func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	access := &projectaccesstest.Swappable{}
 	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
 	access.Serve(up)
-	r := newRig(t, func(s *rigSetup) { s.projects = access })
+	records := &logtest.Recorder{}
+	r := newRig(t, func(s *rigSetup) { s.projects, s.log = access, slog.New(records) })
 	session, key := r.benSession(t, "ben-member-kind-box")
 	req := r.request(t, session, key, "rotate the wiki key", nil, "", "SHARED_SECRET")
 	b := r.browser(t)
@@ -430,8 +431,7 @@ func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
 	down.SetDown(true)
 	access.Serve(down)
-	var records logtest.Recorder
-	logtest.SetDefault(t, &records)
+	logged := len(records.Records())
 
 	res := b.FromPage(t, "/approve", decision(form, "approve"))
 	to := res.Header.Get("Location")
@@ -443,7 +443,7 @@ func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
 	if text := pageText(t, landed.Body); landed.Status != http.StatusServiceUnavailable || !strings.Contains(text, kindUnreadNote) || strings.Contains(text, "SHARED_SECRET") {
 		t.Fatalf("the page the approval lands on = %d; want 503 saying %q, and nothing of the request:\n%s", landed.Status, kindUnreadNote, text)
 	}
-	for _, rec := range records.Records() {
+	for _, rec := range records.Records()[logged:] {
 		if rec.Level >= slog.LevelError {
 			t.Errorf("the approval wrote the ERROR line %q; want none: Dispatch not answering is no fault of the page's", rec.Message)
 		}

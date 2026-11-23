@@ -18,14 +18,40 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// captureRecords points the default logger at a recorder until t ends, so a test reads the
-// records the broker logs as its handler receives them, attributes and all.
-func captureRecords(t *testing.T) *logtest.Recorder {
-	t.Helper()
+// recordLog is a logger over a recorder of its own, and the recorder: a test hands the logger to
+// the code it tests (Machine.Log, and policy.Loader.Log through a fixture such as
+// newLoggedFixture) and reads back the records that code alone logs, as its handler receives
+// them, attributes and all, whatever any other test logs meanwhile.
+func recordLog() (*slog.Logger, *logtest.Recorder) {
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	return capture
+	return slog.New(capture), capture
 }
+
+// recordedSince is a recorder holding the records capture got from its mark-th on, where mark is
+// len(capture.Records()) taken before a step: the step's own lines, for a test whose recorder has
+// been on its machine since the machine was built and so holds the earlier steps' lines too.
+func recordedSince(capture *logtest.Recorder, mark int) *logtest.Recorder {
+	since := &logtest.Recorder{}
+	for _, r := range capture.Records()[mark:] {
+		_ = since.Handle(context.Background(), r)
+	}
+	return since
+}
+
+// loggedSince is what logged (policytest.Log's text) gains from the moment loggedSince is called
+// on: the lines of the steps after it, for a test whose logger has been on its machine since the
+// machine was built and so has written the earlier steps' lines too.
+func loggedSince(logged fmt.Stringer) fmt.Stringer {
+	return textSince{logged: logged, mark: len(logged.String())}
+}
+
+// textSince is the text logged holds past its first mark bytes.
+type textSince struct {
+	logged fmt.Stringer
+	mark   int
+}
+
+func (s textSince) String() string { return s.logged.String()[s.mark:] }
 
 // releasedRecords are the attributes of each ReleasedMessage line capture holds (loggedLines),
 // each checked to be at INFO: a test reads the values the release logged rather than one
@@ -99,9 +125,9 @@ func loggedCommandOf(t *testing.T, m *Machine, grantID string) []string {
 // release starts. The proxy's release of the same grant records the reason too, and marks itself
 // as the airlock's in place of a command, since it starts none.
 func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
-	capture := captureRecords(t)
-	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+	t.Parallel()
+	logger, capture := recordLog()
+	m, enr, key, _ := newLoggedPlaceholderFixture(t, logger, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	const reason = "publish the docs site"
 	requestID, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN", "SECOND_TOKEN")
@@ -138,9 +164,9 @@ func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
 // holds the call's reason to a request's own rules (record.Sanitize), dropping the runes no reason
 // may carry and cutting it to record.MaxReasonRunes, since nothing refused it before the release.
 func TestAReleaseLogsTheReasonItsOwnCallGave(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
-	capture := captureRecords(t)
-	m, enr, key, _ := newFixture(t)
+	t.Parallel()
+	logger, capture := recordLog()
+	m, enr, key, _ := newLoggedFixture(t, logger)
 	const reason, again = "publish the docs site", "rebuild the search index"
 	requestID, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN")
 	if _, reused := grantOf(t, m, enr, key, again, "AUTO_TOKEN"); reused != grantID {
@@ -186,7 +212,7 @@ func TestAReleaseLogsTheReasonItsOwnCallGave(t *testing.T) {
 // The value is redacted before the argument is clipped to its 256 bytes, so a value that crosses
 // the cut leaves no prefix of itself behind. (The values below are fixtures, not credentials.)
 func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	// Each value opens with eight bytes no other line of the log or the rows holds, a test's
 	// name included, since what the rows and the log must not hold is those eight bytes.
 	const storedValue = "v7c1e9a2-stored-0123456789abcdef"
@@ -208,8 +234,8 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 	}
 
 	t.Run("a-stored-value", func(t *testing.T) {
-		capture := captureRecords(t)
-		m, enr, key, _ := newFixture(t)
+		logger, capture := recordLog()
+		m, enr, key, _ := newLoggedFixture(t, logger)
 		retag(t, m, policytest.Secret("STORED_KEY", fixtureOperator, policy.TierAgent, storedValue))
 		_, grantID := grantOf(t, m, enr, key, "call the API", "STORED_KEY")
 		command := []string{"curl", "-H", "Authorization: Bearer " + storedValue, "https://api.example.com/v1"}
@@ -227,8 +253,8 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 	})
 
 	t.Run("a-token-in-a-minted-document", func(t *testing.T) {
-		capture := captureRecords(t)
-		m, enr, key, _ := newAppFixture(t, "APP_KEY")
+		logger, capture := recordLog()
+		m, enr, key, _ := newLoggedAppFixture(t, logger, "APP_KEY")
 		retag(t, m, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 		m.Minters = map[string]Minter{
 			policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -250,8 +276,8 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 	})
 
 	t.Run("a-placeholder-the-airlock-handed-out", func(t *testing.T) {
-		capture := captureRecords(t)
-		m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
+		logger, capture := recordLog()
+		m, enr, key, _ := newLoggedPlaceholderFixture(t, logger, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 		_, grantID := grantOf(t, m, enr, key, "call the API", "AUTO_TOKEN")
 		first, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 		if err != nil || first.Airlock == nil {
@@ -270,8 +296,8 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 	})
 
 	t.Run("a-value-across-the-cut", func(t *testing.T) {
-		capture := captureRecords(t)
-		m, enr, key, _ := newFixture(t)
+		logger, capture := recordLog()
+		m, enr, key, _ := newLoggedFixture(t, logger)
 		retag(t, m, policytest.Secret("STORED_KEY", fixtureOperator, policy.TierAgent, storedValue))
 		_, grantID := grantOf(t, m, enr, key, "call the API", "STORED_KEY")
 		// The value starts eight bytes before the 256th: clipping first would keep those eight.

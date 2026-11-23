@@ -7,7 +7,6 @@ package requests
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -109,7 +108,7 @@ func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *polic
 		return ""
 	}
 	unread := func(err error, boundReached bool) string {
-		slog.Warn(AssigneeUnreadMessage, "issue", key, "enrollment", e.ID, "error", err.Error(), "bound_reached", boundReached)
+		m.log().Warn(AssigneeUnreadMessage, "issue", key, "enrollment", e.ID, "error", err.Error(), "bound_reached", boundReached)
 		return ""
 	}
 	requester, err := m.requester(ctx, m.Store.Pool, e, facts)

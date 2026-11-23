@@ -32,6 +32,7 @@
 package judge
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -205,6 +206,8 @@ type Options struct {
 	// would have stopped. It is the negative control of the judge's own checks and is for
 	// the broker's local stack alone (BROKER_JUDGE_TEST_SKIP_CHECKS).
 	SkipChecks bool
+	// Log is where the runs' lines go. Nil is slog.Default(), which New reads once.
+	Log *slog.Logger
 }
 
 // Runner judges the pending requests a broker hands it. New takes the broker's serving
@@ -212,11 +215,13 @@ type Options struct {
 type Runner struct {
 	ctx  context.Context
 	opts Options
+	// log is Options.Log, or slog.Default() for Options with none.
+	log *slog.Logger
 }
 
 // New is the runner for one broker. ctx is that broker's serving lifetime.
 func New(ctx context.Context, o Options) *Runner {
-	return &Runner{ctx: ctx, opts: o}
+	return &Runner{ctx: ctx, opts: o, log: cmp.Or(o.Log, slog.Default())}
 }
 
 // Consider starts one run for one pending request, on a goroutine of its own with runBudget off
@@ -619,7 +624,7 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 		// The run's budget went, or the broker stopped serving, so nothing is written. The
 		// hold runs out at its own time and the request is then its person's
 		// (requests.JudgeHold).
-		slog.Info("broker judge: the run ended before it wrote anything", "record", p.RecordID,
+		r.log.Info("broker judge: the run ended before it wrote anything", "record", p.RecordID,
 			"request", p.RequestID, "secrets", p.Secrets, "reason", ctx.Err())
 		return
 	}
@@ -667,13 +672,13 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 		if row.notApplied != nil {
 			attrs = append(attrs, "not_applied", row.notApplied)
 		}
-		slog.Error("broker judge: the verdict could not be written", attrs...)
+		r.log.Error("broker judge: the verdict could not be written", attrs...)
 		return
 	}
 	if wrote == requests.JudgedAlreadyApplied {
 		// The approval's own row is there, so its transaction committed: it may have granted,
 		// or recorded the request's own denial, and that row says which.
-		slog.Info("broker judge: the judge's approval committed, and only its answer was lost; its own row records what it did, so no second row was written",
+		r.log.Info("broker judge: the judge's approval committed, and only its answer was lost; its own row records what it did, so no second row was written",
 			"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", row.notApplied)
 		return
 	}
@@ -704,27 +709,27 @@ func (r *Runner) notApplied(p requests.PendingRequest, modelID string, err error
 	attrs := []any{"record", p.RecordID, "request", p.RequestID, "model", modelID, "err", err}
 	switch {
 	case wrote == requests.JudgedAppliedUnknown:
-		slog.Warn("broker judge: whether the judge's approval applied could not be read: its COMMIT failed, and so did the read of its own row; the row it wrote says applied unknown",
+		r.log.Warn("broker judge: whether the judge's approval applied could not be read: its COMMIT failed, and so did the read of its own row; the row it wrote says applied unknown",
 			attrs...)
 	case errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) ||
 		errors.Is(err, requests.ErrJudgeHoldEnded) || errors.Is(err, record.ErrNotApprover) ||
 		errors.Is(err, requests.ErrTargetRefused):
-		slog.Info("broker judge: the request was decided, expired, handed over or moved out of the judge's policy before the judge's grant landed",
+		r.log.Info("broker judge: the request was decided, expired, handed over or moved out of the judge's policy before the judge's grant landed",
 			attrs...)
 	case errors.Is(err, context.Canceled):
-		slog.Info("broker judge: the broker stopped while the judge's approval was being written; the approval was not applied, and the request waits for its person",
+		r.log.Info("broker judge: the broker stopped while the judge's approval was being written; the approval was not applied, and the request waits for its person",
 			attrs...)
 	case errors.Is(err, requests.ErrCommitUncertain):
-		slog.Warn("broker judge: the judge's approval's COMMIT failed, and its own row shows it did not apply; the request waits for its person",
+		r.log.Warn("broker judge: the judge's approval's COMMIT failed, and its own row shows it did not apply; the request waits for its person",
 			attrs...)
 	case errors.Is(err, requests.ErrProjectAccessUnavailable) || errors.Is(err, context.DeadlineExceeded):
-		slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not be asked whether the request is still the judge's, or the run's time ran out; the request waits for its person",
+		r.log.Warn("broker judge: the judge's approval was not applied: Dispatch could not be asked whether the request is still the judge's, or the run's time ran out; the request waits for its person",
 			attrs...)
 	case errors.As(err, new(*projectaccess.MemberKindUncheckable)):
-		slog.Warn("broker judge: the judge's approval was not applied: Dispatch could not say whether the session's person is a restricted member; the request waits for its person",
+		r.log.Warn("broker judge: the judge's approval was not applied: Dispatch could not say whether the session's person is a restricted member; the request waits for its person",
 			attrs...)
 	default:
-		slog.Error("broker judge: the judge's grant was refused", attrs...)
+		r.log.Error("broker judge: the judge's grant was refused", attrs...)
 	}
 }
 
@@ -750,10 +755,10 @@ func (r *Runner) refuse(ctx context.Context, p requests.PendingRequest, row verd
 	why := refusalOf(row)
 	if _, err := r.opts.Requests.DenyJudged(ctx, p.RecordID, modelID, row.detail(modelID), why); err != nil {
 		if errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, requests.ErrJudgeHoldEnded) {
-			slog.Info("broker judge: the request was decided, expired or handed over before the judge's refusal landed",
+			r.log.Info("broker judge: the request was decided, expired or handed over before the judge's refusal landed",
 				"record", p.RecordID, "request", p.RequestID, "model", modelID, "reason", err)
 		} else {
-			slog.Error("broker judge: the judge's refusal was refused", "record", p.RecordID,
+			r.log.Error("broker judge: the judge's refusal was refused", "record", p.RecordID,
 				"request", p.RequestID, "model", modelID, "err", err)
 		}
 		return false
@@ -815,7 +820,7 @@ func (r *Runner) logged(p requests.PendingRequest, row verdictRow) {
 	case row.notPending == "":
 		attrs = append(attrs, "handed_over", true)
 	}
-	slog.Info("broker judge: wrote a verdict", attrs...)
+	r.log.Info("broker judge: wrote a verdict", attrs...)
 }
 
 // firstFailure is the first check that failed, and nil for a run every check passed.

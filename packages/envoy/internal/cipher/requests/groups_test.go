@@ -69,12 +69,20 @@ type groupFixture struct {
 
 func newGroupFixture(t *testing.T) *groupFixture {
 	t.Helper()
+	return newLoggedGroupFixture(t, nil)
+}
+
+// newLoggedGroupFixture is newGroupFixture whose Machine (Machine.Log) and policy Current
+// (policy.Loader.Log) write their lines to log. Nil is slog.Default().
+func newLoggedGroupFixture(t *testing.T, log *slog.Logger) *groupFixture {
+	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(groupSecrets()...)
 	directory := groupstest.New()
 	directory.Set(approversGroup, groupMember, secondMember)
 	loader := policytest.Loader(local)
 	loader.Groups = directory
+	loader.Log = log
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("NewCurrent: %v", err)
@@ -88,6 +96,7 @@ func newGroupFixture(t *testing.T) *groupFixture {
 		Skew:       time.Minute,
 		Replay:     replayer(st),
 		Groups:     directory,
+		Log:        log,
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	m.Chain.Groups = directory
@@ -312,9 +321,9 @@ func TestAnAutomaticGrantOfAStaleGroupIsNotReusedUnderAnUnchangedPolicy(t *testi
 // lapsed grant once the group is stale: refused as no longer live, the group's refusal beneath,
 // and no broken-chain line written.
 func TestAnApprovedGrantOfAStaleGroupIsRefusedWithNoChainAlarm(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
-	capture := captureRecords(t)
-	f := newGroupFixture(t)
+	t.Parallel()
+	logger, capture := recordLog()
+	f := newLoggedGroupFixture(t, logger)
 	_, grantID := f.approvedTeamKey(t)
 	if _, err := f.m.Values(context.Background(), grantID, f.asker, ReleaseCall{}); err != nil {
 		t.Fatalf("Values while the group is fresh = %v, want the value", err)
@@ -360,9 +369,9 @@ func requireLines(t *testing.T, capture *logtest.Recorder, mark, chainMark int, 
 // naming the grant, its record, its secret, the decider, the group and where; a fresh group's
 // refusal writes exactly one broken-chain line beside it, and a stale group's none.
 func TestALapsedGroupApprovalWritesOneLogLine(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
-	capture := captureRecords(t)
-	f := newGroupFixture(t)
+	t.Parallel()
+	logger, capture := recordLog()
+	f := newLoggedGroupFixture(t, logger)
 	ctx := context.Background()
 	recordID, grantID := f.approvedTeamKey(t)
 	lapsedSoFar := func() int { return len(loggedLines(t, capture, GrantApproverLapsedMessage)) }
@@ -592,9 +601,9 @@ func (f *groupFixture) retag(t *testing.T, name string, secret secrets.LocalSecr
 // the one that can fail, since the reuse path is where a lapsed line was once written from the
 // policy's approver rather than the record's.
 func TestTheLapseLineFollowsTheRecordsGroup(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
-	capture := captureRecords(t)
-	f := newGroupFixture(t)
+	t.Parallel()
+	logger, capture := recordLog()
+	f := newLoggedGroupFixture(t, logger)
 	ctx := context.Background()
 	recordID, grantID := f.approvedTeamKey(t)
 	f.retag(t, "TEAM_KEY", policytest.Secret("TEAM_KEY", groupOwner, policy.TierHuman, "team-v1"))

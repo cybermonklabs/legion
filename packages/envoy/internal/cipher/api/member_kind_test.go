@@ -26,8 +26,9 @@ func TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode(t *testing.T) {
 	t.Parallel()
 	failure := errors.New("dial tcp 10.20.0.9:8766: connect: connection refused")
 	uncheckable := &projectaccess.MemberKindUncheckable{Person: "uma@example.com", Err: failure}
+	s := &server{log: slog.New(slog.DiscardHandler)}
 	w := httptest.NewRecorder()
-	if !writeMemberKindUncheckable(w, "the release", fmt.Errorf("read grant: %w", uncheckable)) {
+	if !s.writeMemberKindUncheckable(w, "the release", fmt.Errorf("read grant: %w", uncheckable)) {
 		t.Fatal("writeMemberKindUncheckable did not answer a wrapped MemberKindUncheckable")
 	}
 	var body struct{ Code, Error string }
@@ -40,7 +41,7 @@ func TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode(t *testing.T) {
 	if strings.Contains(w.Body.String(), "10.20.0.9") {
 		t.Fatalf("the answer %q names the failure", w.Body.String())
 	}
-	if writeMemberKindUncheckable(httptest.NewRecorder(), "the release", failure) {
+	if s.writeMemberKindUncheckable(httptest.NewRecorder(), "the release", failure) {
 		t.Fatal("writeMemberKindUncheckable answered an error that is no MemberKindUncheckable")
 	}
 }
@@ -51,7 +52,7 @@ func TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode(t *testing.T) {
 // hung up (answer.Recorder.NoteCallerEnded): it says nothing of Dispatch. A failure to ask
 // Dispatch is logged at ERROR and counted failed, as before.
 func TestACallerThatEndedIsNoDispatchFailure(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		failure error
@@ -63,11 +64,11 @@ func TestACallerThatEndedIsNoDispatchFailure(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			capture := &logtest.Recorder{}
-			logtest.SetDefault(t, capture)
+			s := &server{log: slog.New(capture)}
 			registry := metrics.New()
 			handler := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				writeMemberKindUncheckable(w, "the release", &projectaccess.MemberKindUncheckable{Person: "uma@example.com", Err: row.failure})
-			}), answer.NewAnswers(registry))
+				s.writeMemberKindUncheckable(w, "the release", &projectaccess.MemberKindUncheckable{Person: "uma@example.com", Err: row.failure})
+			}), answer.NewAnswers(registry), s.log)
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/grants/g/values", nil))
 			if w.Code != http.StatusServiceUnavailable {

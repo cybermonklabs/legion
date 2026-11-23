@@ -14,6 +14,7 @@ package wake
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,11 +28,14 @@ import (
 // Envoy sends a "secret request <state>" notification directly to the target session, presenting
 // the broker's own platform identity (Account, read afresh for each notice) as its bearer: the
 // listener admits the account that token names, as it admits every caller's, so no bearer is
-// shared between the broker and the listener's other callers.
+// shared between the broker and the listener's other callers. Log is where a notice that failed
+// is logged; nil is slog.Default(), read once at the start of each Notify, since an Envoy is a
+// value built where it is used and has no constructor.
 type Envoy struct {
 	URL     string
 	Account ciphertoken.Account
 	HTTP    *http.Client
+	Log     *slog.Logger
 }
 
 type secretRequestPayload struct {
@@ -42,16 +46,17 @@ type secretRequestPayload struct {
 
 // Notify tells sessionID that requestID reached state. Any failure — building the request,
 // reaching Envoy, or a non-2xx response (including a 404 for a session that is no longer live) —
-// is logged with slog.Warn and otherwise ignored: the caller has already applied the decision
+// is logged at WARN to e.Log and otherwise ignored: the caller has already applied the decision
 // and this is only a best-effort nudge.
 func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
+	log := cmp.Or(e.Log, slog.Default())
 	payload, err := json.Marshal(secretRequestPayload{
 		Type:      "secret-request",
 		RequestID: requestID,
 		State:     state,
 	})
 	if err != nil {
-		slog.Warn("wake envoy: marshal payload", "session", sessionID, "request", requestID, "error", err)
+		log.Warn("wake envoy: marshal payload", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
 	payloadText := string(payload)
@@ -64,28 +69,28 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 		TargetSession: sessionID,
 	})
 	if err != nil {
-		slog.Warn("wake envoy: marshal body", "session", sessionID, "request", requestID, "error", err)
+		log.Warn("wake envoy: marshal body", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.URL+"/v1/messages/send", bytes.NewReader(body))
 	if err != nil {
-		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", err)
+		log.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
 	bearer, err := e.Account.Read()
 	if err != nil {
-		slog.Warn("wake envoy: read the broker's account token", "session", sessionID, "request", requestID, "error", err)
+		log.Warn("wake envoy: read the broker's account token", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	resp, err := e.HTTP.Do(req)
 	if err != nil {
-		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", err)
+		log.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "status", resp.StatusCode, "error", fmt.Sprintf("unexpected status %d", resp.StatusCode))
+		log.Warn("wake envoy: send", "session", sessionID, "request", requestID, "status", resp.StatusCode, "error", fmt.Sprintf("unexpected status %d", resp.StatusCode))
 	}
 }

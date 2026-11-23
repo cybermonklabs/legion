@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -235,7 +234,7 @@ type pageView struct {
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
-		writeMessage(w, http.StatusBadRequest, codeRecordIDInput, say("Not a request", "Credential-request record ids are lowercase-hex SHA-256 hashes."))
+		p.writeMessage(w, http.StatusBadRequest, codeRecordIDInput, say("Not a request", "Credential-request record ids are lowercase-hex SHA-256 hashes."))
 		return
 	}
 	switching := r.URL.Query().Get("switch") == "1"
@@ -250,15 +249,15 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	unanswered := errors.Is(err, requests.ErrProjectAccessUnavailable)
 	switch {
 	case unanswered:
-		slog.Warn("approval page: Dispatch could not say whether the person may see the request", "record", id, "login", sess.Login, "error", err)
+		p.log.Warn("approval page: Dispatch could not say whether the person may see the request", "record", id, "login", sess.Login, "error", err)
 		detail = requests.RecordDetail{RecordID: id}
 	case errors.Is(err, pgx.ErrNoRows):
 		m := say("No such request", "The secrets broker has no credential request "+id+".")
 		m.Login = sess.Login
-		writeMessage(w, http.StatusNotFound, codeRecordNotFound, m)
+		p.writeMessage(w, http.StatusNotFound, codeRecordNotFound, m)
 		return
 	case err != nil:
-		writeUnavailable(w, "read the request", err)
+		p.writeUnavailable(w, "read the request", err)
 		return
 	}
 	if switching {
@@ -277,7 +276,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		MachineLoginURL: p.cfg.MachineLoginURL,
 	}
 	if view.Outcomes, err = p.outcomes(r.Context(), r.URL.Query().Get("decided"), r.URL.Query().Get("refused"), sess.Login, now, detail, unanswered); err != nil {
-		writeUnavailable(w, "read the decided requests", err)
+		p.writeUnavailable(w, "read the decided requests", err)
 		return
 	}
 	var printed, digests []string
@@ -287,7 +286,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	}
 	pending, err := p.cfg.Machine.PendingForApprover(r.Context(), sess.Login, requests.PendingStates{})
 	if err != nil {
-		writeUnavailable(w, "list the pending requests", err)
+		p.writeUnavailable(w, "list the pending requests", err)
 		return
 	}
 	for _, s := range pending {
@@ -305,7 +304,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 			// answer for its projects: left off, as the list itself leaves off such a request.
 			continue
 		case err != nil:
-			writeUnavailable(w, "read a pending request", err)
+			p.writeUnavailable(w, "read a pending request", err)
 			return
 		}
 		if v := p.recordView(other, sess.Login, now); v.Buttons {
@@ -321,7 +320,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	if len(printed) > 1 {
 		view.ApproveAll = printed
 	}
-	writePage(w, status, "record.html", view)
+	p.writePage(w, status, "record.html", view)
 }
 
 // The words of the page that shows a signed-in person no secret request (mayShowRecords). The 403
@@ -356,16 +355,16 @@ func (p *Page) mayShowRecords(w http.ResponseWriter, r *http.Request, sess Sessi
 	}
 	if err != nil {
 		if r.Context().Err() == nil {
-			slog.Warn("approval page: Dispatch could not say whether the person may decide secret requests", "login", sess.Login, "error", err)
+			p.log.Warn("approval page: Dispatch could not say whether the person may decide secret requests", "login", sess.Login, "error", err)
 		}
 		m := say("Unavailable", kindUnreadViewer)
 		m.Login, m.Record = sess.Login, id
-		writeMessage(w, http.StatusServiceUnavailable, "", m)
+		p.writeMessage(w, http.StatusServiceUnavailable, "", m)
 		return false
 	}
 	m := say("Not yours to decide", restrictedViewer)
 	m.Login, m.Record = sess.Login, id
-	writeMessage(w, http.StatusForbidden, codeRestrictedViewer, m)
+	p.writeMessage(w, http.StatusForbidden, codeRestrictedViewer, m)
 	return false
 }
 
@@ -635,12 +634,12 @@ func firstRecordID(values []string) string {
 // from the records themselves.
 func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session) {
 	if !p.sameOrigin(r) {
-		refuseOrigin(w)
+		p.refuseOrigin(w)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if err := r.ParseForm(); err != nil {
-		writeMessage(w, http.StatusBadRequest, codeFormUnreadable, say("Not a decision", "The form could not be read, so nothing was decided."))
+		p.writeMessage(w, http.StatusBadRequest, codeFormUnreadable, say("Not a decision", "The form could not be read, so nothing was decided."))
 		return
 	}
 	if !sess.live() {
@@ -650,7 +649,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		} else {
 			m.Lines = append(m.Lines, "This form names no request, so open the request's page again from the Inbox to sign in.")
 		}
-		writeMessage(w, http.StatusOK, "", m)
+		p.writeMessage(w, http.StatusOK, "", m)
 		return
 	}
 	form := r.PostForm
@@ -660,7 +659,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		approve = true
 	case "deny":
 	default:
-		writeMessage(w, http.StatusBadRequest, codeDecisionInvalid, say("Not a decision", "A decision is approve or deny, so nothing was decided."))
+		p.writeMessage(w, http.StatusBadRequest, codeDecisionInvalid, say("Not a decision", "A decision is approve or deny, so nothing was decided."))
 		return
 	}
 	printed, printedOK := recordIDs(form["printed"])
@@ -668,22 +667,22 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	expires, err := strconv.ParseInt(form.Get("expires"), 10, 64)
 	token, tokenErr := hex.DecodeString(form.Get("token"))
 	if !printedOK || !decideOK || len(decide) == 0 || err != nil || tokenErr != nil {
-		writeMessage(w, http.StatusBadRequest, codeDecisionRecordsInvalid, say("Not a decision", "The form names no request it may decide, so nothing was decided."))
+		p.writeMessage(w, http.StatusBadRequest, codeDecisionRecordsInvalid, say("Not a decision", "The form names no request it may decide, so nothing was decided."))
 		return
 	}
 	switch {
 	case !hmac.Equal(token, pageMAC(sess.secret, expires, printed)):
-		writeMessage(w, http.StatusForbidden, codePageTokenInvalid, say("Refused",
+		p.writeMessage(w, http.StatusForbidden, codePageTokenInvalid, say("Refused",
 			"This form was not made for your sign-in, so nothing was decided. Open the request again."))
 		return
 	case time.Now().Unix() >= expires:
-		writeMessage(w, http.StatusForbidden, codePageExpired, say("Page expired",
+		p.writeMessage(w, http.StatusForbidden, codePageExpired, say("Page expired",
 			"This page is more than an hour old, so nothing was decided. Open the request again."))
 		return
 	}
 	for _, id := range decide {
 		if !slices.Contains(printed, id) {
-			writeMessage(w, http.StatusForbidden, codeRecordNotPrinted, say("Refused",
+			p.writeMessage(w, http.StatusForbidden, codeRecordNotPrinted, say("Refused",
 				"This form names a request its page did not print, so nothing was decided. Open the request again."))
 			return
 		}
@@ -695,11 +694,11 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	if approve && !restricted {
 		moved, err := p.profilesMoved(r.Context(), decide, profileDigests(form["profile_digest"]))
 		if err != nil {
-			writeUnavailable(w, "read the requests", err)
+			p.writeUnavailable(w, "read the requests", err)
 			return
 		}
 		if moved {
-			writeMessage(w, http.StatusForbidden, codeProfileChanged, say("Profile changed",
+			p.writeMessage(w, http.StatusForbidden, codeProfileChanged, say("Profile changed",
 				"A profile this page printed has changed since the page was made, so nothing was decided. Open the request again to read what an approval grants now."))
 			return
 		}
@@ -715,7 +714,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		if code != "" {
 			refused = append(refused, id+":"+code)
 		}
-		slog.Info("approval page decision", "login", sess.Login, "record", id, "decision", form.Get("decision"),
+		p.log.Info("approval page decision", "login", sess.Login, "record", id, "decision", form.Get("decision"),
 			"outcome", outcome)
 	}
 	// One write for the POST, however many records it named, and none at all when it decided
@@ -844,7 +843,7 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 	case errors.Is(err, pgx.ErrNoRows):
 		return "no such record", "", false
 	case err != nil:
-		slog.Error("approval page: read the record's kind", "record", id, "error", err)
+		p.log.Error("approval page: read the record's kind", "record", id, "error", err)
 		return "error", refusedError, false
 	case kind != record.KindAgentSecret:
 		return "not decided: a machine login", "", false
@@ -885,6 +884,6 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 	case errors.Is(err, requests.ErrJudgeHolds):
 		return "refused: the model judge is deciding this request", "", false
 	}
-	slog.Error("approval page: decide the record", "record", id, "error", err)
+	p.log.Error("approval page: decide the record", "record", id, "error", err)
 	return "error", refusedError, false
 }

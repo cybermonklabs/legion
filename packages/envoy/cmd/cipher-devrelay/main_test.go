@@ -83,7 +83,7 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 	if err != nil {
 		t.Fatalf("oidc.New: %v", err)
 	}
-	provider := ciphertest.NewOAuthProvider(t, st, issuer)
+	provider := ciphertest.NewOAuthProvider(t, st, issuer, nil)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -99,7 +99,7 @@ func newDevrelayTestServer(t *testing.T) (brokerURL, callerToken string, issuer 
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// People sign in to the approval page at the same local issuer, which stands in for every
 		// provider.
-		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine),
+		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), srv.URL, st, reqMachine, nil),
 	})
 	// The caller's token lives well inside the hour one may, as a projected token does.
 	callerClaims := issuer.Claims(dispatchAccount, dispatchAudience)

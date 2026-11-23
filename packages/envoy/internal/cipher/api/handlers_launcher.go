@@ -74,7 +74,7 @@ func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 	login := s.deps.MachineLogin
 	account, err := login.VerifyServiceToken(r.Context(), body.Token)
 	if err != nil {
-		writeTokenLoginRefusal(w, err)
+		s.writeTokenLoginRefusal(w, err)
 		return
 	}
 	recorder.NoteCaller(answer.CallerService, serviceIdentity(account))
@@ -84,7 +84,7 @@ func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	cred, err := login.TokenLogin(r.Context(), account, body.Request)
 	if err != nil {
-		if writeTokenLoginRefusal(w, err) {
+		if s.writeTokenLoginRefusal(w, err) {
 			giveBackAccount()
 			giveBackAddress()
 		}
@@ -97,7 +97,7 @@ func (s *server) tokenLogin(w http.ResponseWriter, r *http.Request) {
 // reports couldNotComplete when it answered 500: a refusal that is none of the documented ones,
 // such as the database being away, which decided nothing about the token. tokenLogin gives back
 // what the login spent of its buckets on that report only once the token has verified.
-func writeTokenLoginRefusal(w http.ResponseWriter, err error) (couldNotComplete bool) {
+func (s *server) writeTokenLoginRefusal(w http.ResponseWriter, err error) (couldNotComplete bool) {
 	switch {
 	case errors.Is(err, machine.ErrTokenLoginsOff):
 		writeError(w, http.StatusNotFound, "TOKEN_LOGIN_OFF", err.Error())
@@ -114,7 +114,7 @@ func writeTokenLoginRefusal(w http.ResponseWriter, err error) (couldNotComplete 
 	case errors.Is(err, machine.ErrKeyHoldsLiveCredential):
 		writeError(w, http.StatusConflict, "KEY_HOLDS_LIVE_CREDENTIAL", err.Error())
 	default:
-		writeInternal(w, "token login", err)
+		s.writeInternal(w, "token login", err)
 		return true
 	}
 	return false

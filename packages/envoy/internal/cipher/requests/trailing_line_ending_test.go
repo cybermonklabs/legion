@@ -109,10 +109,10 @@ func wantTrimLog(t *testing.T, captured string, changed, unchanged []string) {
 // (The values below are fixtures, not credentials; each is read as a length and a digest all
 // the same.)
 func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
 	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
-	logged := policytest.CaptureLog(t)
-	m, enrollmentID, key, _ := newAppFixture(t, "MINTED_INPUT_KEY")
+	logger, logged := policytest.Log()
+	m, enrollmentID, key, _ := newLoggedAppFixture(t, logger, "MINTED_INPUT_KEY")
 
 	for _, c := range []struct{ row, secret, stored, want string }{
 		{"token-and-a-line-feed", "LINE_FEED_KEY", "tok\n", "tok"},
@@ -175,9 +175,9 @@ func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 // word the tag holds, and the log holds one line for each of them. The rows share one fixture
 // and one log capture and none is parallel. (The values below are fixtures, not credentials.)
 func TestTheBrokerReleasesTheTrimmedValue(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	logged := policytest.CaptureLog(t)
-	m, enrollmentID, key, _ := newFixture(t)
+	t.Parallel()
+	logger, logged := policytest.Log()
+	m, enrollmentID, key, _ := newLoggedFixture(t, logger)
 	tagged := func(name, leftover, stored string) secrets.LocalSecret {
 		s := policytest.Secret(name, fixtureOperator, policy.TierAgent, stored)
 		if leftover != "" {

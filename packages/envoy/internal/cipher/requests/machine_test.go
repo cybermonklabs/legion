@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -142,7 +143,14 @@ func insertEnrollment(t *testing.T, st *store.Store, kind, runtimeID string, ope
 // record.Sign), and the login DEEL_API_KEY's records name as approver (its owner, the operator).
 func newFixture(t *testing.T) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
 	t.Helper()
-	return newAppFixture(t)
+	return newLoggedAppFixture(t, nil)
+}
+
+// newLoggedFixture is newFixture whose Machine and policy write their lines to log
+// (newLoggedAppFixture).
+func newLoggedFixture(t *testing.T, log *slog.Logger) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
+	t.Helper()
+	return newLoggedAppFixture(t, log)
 }
 
 // newAppFixture is newFixture whose deployment serves each of apps, a github-app secret the test
@@ -151,36 +159,48 @@ func newFixture(t *testing.T) (m *Machine, enrollmentID string, requesterKey *ec
 // the deployment has no profiles file.
 func newAppFixture(t *testing.T, apps ...string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
 	t.Helper()
+	return newLoggedAppFixture(t, nil, apps...)
+}
+
+// newLoggedAppFixture is newAppFixture whose Machine (Machine.Log) and policy Current
+// (policy.Loader.Log) write their lines to log, so a test that hands it a logger of its own reads
+// both, the policy's RefusedMessage among them, and no other test's. Nil is slog.Default().
+func newLoggedAppFixture(t *testing.T, log *slog.Logger, apps ...string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
+	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(fixtureSecrets()...)
 	enrollmentID, requesterKey = newEnrollment(t, st, "session", "box-a-"+t.Name(), new(fixtureOperator), nil)
 
 	m = &Machine{
 		Store:             st,
-		Policy:            appCurrent(t, local, apps...),
+		Policy:            appCurrent(t, local, log, apps...),
 		Secrets:           policytest.Store(local),
 		PendingTTL:        12 * time.Hour,
 		Audience:          testAudience,
 		Skew:              time.Minute,
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
+		Log:               log,
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	return m, enrollmentID, requesterKey, fixtureOperator
 }
 
 // appCurrent is the live policy of local with fixtureService registered and, for each of apps, a
-// profile of that github-app secret's own name; with none, a deployment with no profiles file.
-func appCurrent(t *testing.T, local *secrets.Local, apps ...string) *policy.Current {
+// profile of that github-app secret's own name; with none, a deployment with no profiles file. Its
+// lines go to log (policy.Loader.Log; nil is slog.Default()).
+func appCurrent(t *testing.T, local *secrets.Local, log *slog.Logger, apps ...string) *policy.Current {
 	t.Helper()
-	if len(apps) == 0 {
-		return policytest.Current(t, local, fixtureService)
+	loader := policytest.Loader(local, fixtureService)
+	loader.Log = log
+	if len(apps) > 0 {
+		profiles := make([]string, len(apps))
+		for i, app := range apps {
+			profiles[i] = policytest.AppProfile(app)
+		}
+		loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(profiles...), fixtureService)
 	}
-	profiles := make([]string, len(apps))
-	for i, app := range apps {
-		profiles[i] = policytest.AppProfile(app)
-	}
-	return policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(profiles...), fixtureService)
+	return policytest.CurrentOf(t, loader)
 }
 
 // signRequest signs an agent_secret request object over names, ready for Machine.Create.
@@ -626,19 +646,21 @@ func TestANameNoSecretCanCarrySpendsNoMissReread(t *testing.T) {
 // LoadFailedMessage, the line that reports a failed reread of the store, and answers the request
 // with its context's error, writing no request and so no grant.
 func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	m, enr, key, _ := newFixture(t)
+	t.Parallel()
+	logger, logText := policytest.Log()
+	m, enr, key, _ := newLoggedFixture(t, logger)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	loader := policytest.Loader(fixtureStore(m), fixtureService)
 	loader.Store = policytest.StoreThrough(fixtureStore(m), abandoningDescriber{SecretsManagerAPI: fixtureStore(m), cancel: cancel})
+	loader.Log = logger
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.Policy = cur
 	fixtureStore(m).Put(policytest.Secret("BRAND_NEW_KEY", fixtureOperator, policy.TierAgent, "v1"))
-	logged := policytest.CaptureLog(t)
+	logged := loggedSince(logText)
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), "")
 	if !errors.Is(err, context.Canceled) || req.GrantID != nil {
 		t.Fatalf("Create whose request ended during the reread = %+v, %v; want context.Canceled and no grant", req, err)
@@ -668,17 +690,19 @@ func (d abandoningDescriber) DescribeSecret(ctx context.Context, _ *secretsmanag
 // Secrets Manager itself fails, while the request is still live, logs LoadFailedMessage once,
 // naming the requested secret, and the name stays unknown with no request written.
 func TestAnOrdinaryRereadFailureRaisesThePolicyAlarm(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	m, enr, key, _ := newFixture(t)
+	t.Parallel()
+	logger, logText := policytest.Log()
+	m, enr, key, _ := newLoggedFixture(t, logger)
 	loader := policytest.Loader(fixtureStore(m), fixtureService)
 	loader.Store = policytest.StoreThrough(fixtureStore(m), failingDescriber{SecretsManagerAPI: fixtureStore(m), err: errors.New("throttled")})
+	loader.Log = logger
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.Policy = cur
 	fixtureStore(m).Put(policytest.Secret("BRAND_NEW_KEY", fixtureOperator, policy.TierAgent, "v1"))
-	logged := policytest.CaptureLog(t)
+	logged := loggedSince(logText)
 	if _, err := m.Create(context.Background(), enr, signRequest(t, m, key, "need it", "BRAND_NEW_KEY"), ""); !errors.Is(err, policy.ErrUnknownSecret) {
 		t.Fatalf("Create whose reread Secrets Manager failed = %v; want policy.ErrUnknownSecret", err)
 	}
@@ -1466,9 +1490,9 @@ const leftOutLine = "broker: a profile's permission was left out, since the inst
 // what the installation holds left out (Release.GitHubLeftOut), and writes one WARN line for each
 // entry (leftOutLine) with the profile's name, the account and the entry.
 func TestTheReleaseNamesEachPermissionTheCutLeftOut(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	logged := policytest.CaptureLog(t)
-	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
+	t.Parallel()
+	logger, logged := policytest.Log()
+	machine, enrollmentID, key, _ := newLoggedAppFixture(t, logger, "APP_KEY")
 	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var scopes []secrets.GitHubScope
 	machine.Minters = map[string]Minter{

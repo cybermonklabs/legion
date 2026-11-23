@@ -25,7 +25,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/judge"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -90,22 +89,21 @@ func issuedBy(issuer string) string {
 	return "e30." + base64.RawURLEncoding.EncodeToString(payload) + ".c2ln"
 }
 
-// captureLog sends slog's default logger to a buffer until t ends.
-func captureLog(t *testing.T) *bytes.Buffer {
-	t.Helper()
+// captureLog is a logger writing slog's text lines into the buffer it answers, for a test to hand
+// the code it drives.
+func captureLog() (*slog.Logger, *bytes.Buffer) {
 	var logged bytes.Buffer
-	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
-	return &logged
+	return slog.New(slog.NewTextHandler(&logged, nil)), &logged
 }
 
 // TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer: with no Google audience the broker reads
 // the cluster's key set alone, builds the pod verifier on it, answers that same key set for the
 // token exchange, holds no Google key set, and logs nothing about Google.
 func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureLog, logtest.SetDefault, Swap, slog.SetDefault).
-	logged := captureLog(t)
+	t.Parallel()
+	log, logged := captureLog()
 	d := &discovery{}
-	found, err := discoverVerifiers(context.Background(), vmConfig(t, ""), d.keysFor)
+	found, err := discoverVerifiers(context.Background(), vmConfig(t, ""), d.keysFor, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,10 +131,10 @@ func TestWithNoGoogleAudienceTheBrokerDiscoversOneIssuer(t *testing.T) {
 // own keys, and logs one line naming the issuer, the audience, the machine services and how many
 // machine entries the exchange holds.
 func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureLog, logtest.SetDefault, Swap, slog.SetDefault).
-	logged := captureLog(t)
+	t.Parallel()
+	log, logged := captureLog()
 	d := &discovery{}
-	found, err := discoverVerifiers(context.Background(), vmConfig(t, "example-vm-audience"), d.keysFor)
+	found, err := discoverVerifiers(context.Background(), vmConfig(t, "example-vm-audience"), d.keysFor, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,12 +155,12 @@ func TestAGoogleAudienceDiscoversGooglesIssuer(t *testing.T) {
 // keys the broker reads and whose tokens the exchange takes, so a dev stack's stand-in
 // (cmd/dev-oidc-issuer) serves in Google's place with nothing else changed.
 func TestAStandInIssuerIsDiscoveredInGooglesPlace(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureLog, logtest.SetDefault, Swap, slog.SetDefault).
-	logged := captureLog(t)
+	t.Parallel()
+	log, logged := captureLog()
 	d := &discovery{}
 	cfg := vmConfig(t, "example-vm-audience")
 	cfg.GoogleOIDCIssuer = "http://127.0.0.1:18080"
-	found, err := discoverVerifiers(context.Background(), cfg, d.keysFor)
+	found, err := discoverVerifiers(context.Background(), cfg, d.keysFor, log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +186,7 @@ func TestTheEnrollmentServiceCarriesTheMachineServices(t *testing.T) {
 	if want := map[string]string{exampleVMAccount: "example-fleet"}; !maps.Equal(enr.VMServicesByAccount, want) {
 		t.Fatalf("the enrollment service's VMServicesByAccount = %v, want %v", enr.VMServicesByAccount, want)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil, slog.New(slog.DiscardHandler))
 	if want := map[string]string{"system:serviceaccount:example:example-sa": "example-service"}; !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
@@ -213,7 +211,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch := judgeDispatch(cfg); dispatch != nil {
 		t.Fatalf("judgeDispatch = %#v with no BROKER_JUDGE_DISPATCH_URL; want none", dispatch)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, judgeDispatch(cfg), nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, judgeDispatch(cfg), nil, slog.New(slog.DiscardHandler))
 	if want := map[string]string{exampleVMAccount: "ada@example.com"}; !maps.Equal(m.VMPersonsByAccount, want) {
 		t.Fatalf("request Machine's VMPersonsByAccount = %v, want %v", m.VMPersonsByAccount, want)
 	}
@@ -227,7 +225,7 @@ func TestTheRequestMachineCarriesWhoIsResponsible(t *testing.T) {
 	if dispatch == nil || dispatch.BaseURL != cfg.JudgeDispatchURL || dispatch.Account == nil {
 		t.Fatalf("judgeDispatch = %#v; want a read of Dispatch at %s", dispatch, cfg.JudgeDispatchURL)
 	}
-	m = newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, dispatch, nil)
+	m = newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, dispatch, nil, slog.New(slog.DiscardHandler))
 	if got, ok := m.Assignees.(*judge.Dispatch); !ok || got != dispatch {
 		t.Fatalf("request Machine's Assignees = %#v; want the one read of Dispatch judgeDispatch built, %p", m.Assignees, dispatch)
 	}

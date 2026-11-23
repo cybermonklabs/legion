@@ -2,6 +2,7 @@ package ciphertest
 
 import (
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -43,11 +44,12 @@ func SignIn(issuer *oidctest.Issuer, key *oidctest.Key) approval.SignIn {
 }
 
 // NewApprovalPage builds the broker's approval page as cmd/cipherd/main.go does, for a broker at
-// publicURL whose records m reads and decides and whose sessions st keeps.
-func NewApprovalPage(t *testing.T, signIn approval.SignIn, publicURL string, st *store.Store, m *requests.Machine) *approval.Page {
+// publicURL whose records m reads and decides and whose sessions st keeps, logging to log (nil
+// is slog.Default()).
+func NewApprovalPage(t *testing.T, signIn approval.SignIn, publicURL string, st *store.Store, m *requests.Machine, log *slog.Logger) *approval.Page {
 	t.Helper()
 	page, err := approval.New(approval.Config{
-		SignIn: signIn, PublicURL: publicURL, MachineLoginURL: MachineLoginURL, Store: st, Machine: m,
+		SignIn: signIn, PublicURL: publicURL, MachineLoginURL: MachineLoginURL, Store: st, Machine: m, Log: log,
 	})
 	if err != nil {
 		t.Fatalf("approval.New: %v", err)

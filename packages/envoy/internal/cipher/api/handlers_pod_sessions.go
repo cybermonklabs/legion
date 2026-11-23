@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
@@ -194,13 +193,13 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 	case errors.Is(err, exchange.ErrSessionInvalid):
 		writeError(w, http.StatusBadRequest, "SESSION_INVALID", err.Error())
 	case errors.As(err, &held):
-		slog.Warn("broker: a pod's session registration was refused: another registrar holds the session name",
+		s.log.Warn("broker: a pod's session registration was refused: another registrar holds the session name",
 			"service", registrar.Service, "registrar", registrar.Subject, "holder", held.Holder,
 			"account", claims.Subject, "pod", claims.PodUID, "session", body.Session)
 		writeError(w, http.StatusConflict, "SESSION_NAME_HELD_BY_ANOTHER_REGISTRAR",
 			fmt.Sprintf("the session name %s is bound to another registrar, %s, which registered it first and holds it for good", held.Session, held.Holder))
 	case err != nil:
-		writeInternal(w, "register the pod's session name", err)
+		s.writeInternal(w, "register the pod's session name", err)
 	default:
 		attrs := []any{"service", registrar.Service, "account", claims.Subject, "pod", claims.PodUID, "session", body.Session}
 		if body.Thumbprint != "" || body.Generation != 0 || stored.JKT != "" || stored.Generation != 0 || stored.Replaced != "" {
@@ -209,11 +208,11 @@ func (s *server) registerPodSession(w http.ResponseWriter, r *http.Request, regi
 		}
 		switch {
 		case !stored.Applied:
-			slog.Warn("broker: a pod's session registration was not written: the registration holds a later generation", attrs...)
+			s.log.Warn("broker: a pod's session registration was not written: the registration holds a later generation", attrs...)
 		case stored.Replaced != "":
-			slog.Info("broker: registered a pod to write under a session name", append(attrs, "replaced_thumbprint", stored.Replaced)...)
+			s.log.Info("broker: registered a pod to write under a session name", append(attrs, "replaced_thumbprint", stored.Replaced)...)
 		default:
-			slog.Info("broker: registered a pod to write under a session name", attrs...)
+			s.log.Info("broker: registered a pod to write under a session name", attrs...)
 		}
 		writeJSON(w, http.StatusOK, podSessionResponse{PodUID: claims.PodUID, Session: body.Session, Thumbprint: stored.JKT, Generation: stored.Generation, ExpiresAt: stored.ExpiresAt})
 	}
@@ -381,10 +380,10 @@ func (s *server) releasePodSessions(w http.ResponseWriter, r *http.Request, regi
 	names := slices.Compact(body.Sessions)
 	released, err := s.deps.OAuth.ReleasePodSessions(r.Context(), registrar.Subject, names)
 	if err != nil {
-		writeInternal(w, "release the pod session names", err)
+		s.writeInternal(w, "release the pod session names", err)
 		return
 	}
-	slog.Info("broker: released a registrar's pod-session registrations",
+	s.log.Info("broker: released a registrar's pod-session registrations",
 		"service", registrar.Service, "registrar", registrar.Subject, "sessions", len(names), "released", released)
 	writeJSON(w, http.StatusOK, podSessionReleaseResponse{Sessions: len(names), Released: released})
 }

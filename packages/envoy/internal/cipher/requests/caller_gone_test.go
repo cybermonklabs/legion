@@ -9,7 +9,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // goneOnFirstAsk is a Dispatch whose caller goes away as it is asked its first question: the
@@ -52,7 +51,7 @@ func (g *goneOnFirstAsk) States(ctx context.Context, _ []string) (map[string]pro
 // own pending rows, rows whose responsible person is someone else (the fallback), and the grant
 // list.
 func TestAListWhoseCallerWentAwayLogsNothingOfTheRowsItLeftOff(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const rows = 5
 	for _, list := range []struct {
 		name string
@@ -96,7 +95,8 @@ func TestAListWhoseCallerWentAwayLogsNothingOfTheRowsItLeftOff(t *testing.T) {
 		},
 	} {
 		t.Run(list.name, func(t *testing.T) {
-			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+			logger, capture := recordLog()
+			m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 			for i := range rows {
 				list.make(t, m, i)
 			}
@@ -104,13 +104,12 @@ func TestAListWhoseCallerWentAwayLogsNothingOfTheRowsItLeftOff(t *testing.T) {
 			defer cancel()
 			gone := &goneOnFirstAsk{cancel: cancel}
 			m.Projects = gone
-			capture := &logtest.Recorder{}
-			logtest.SetDefault(t, capture)
+			mark := len(capture.Records())
 			_ = list.read(ctx, m)
 			if gone.asked.Load() == 0 {
 				t.Fatal("the list asked Dispatch nothing, so its caller never left while it read and the row proves nothing")
 			}
-			wantNoLine(t, capture, rowUnansweredMessage, fallbackCutMessage, fallbackUnreadMessage)
+			wantNoLine(t, recordedSince(capture, mark), rowUnansweredMessage, fallbackCutMessage, fallbackUnreadMessage)
 		})
 	}
 }

@@ -28,8 +28,7 @@ import (
 // that refuses nothing prints none.
 func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	r := newRig(t)
+	r := newRig(t, func(s *rigSetup) { s.log = slog.New(capture) })
 	enrollmentID, key := r.benSession(t, "ben-box")
 	a := r.request(t, enrollmentID, key, "deploy", nil, "", "TEST_SECRET")
 	page := "/approve/" + a.recordID
@@ -80,7 +79,9 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 		}, http.StatusNotFound, "NOT_FOUND"},
 		{"a page a person Dispatch calls a restricted member opens", func(t *testing.T) ciphertest.Response {
 			dispatch := projectaccesstest.NewServer(t, nil, map[string]string{ada: projectaccess.MemberRestricted})
-			restricted := newRig(t, func(s *rigSetup) { s.projects = projectaccess.New(dispatch.URL, dispatch.Account, nil) })
+			restricted := newRig(t, func(s *rigSetup) {
+				s.projects, s.log = projectaccess.New(dispatch.URL, dispatch.Account, nil), slog.New(capture)
+			})
 			viewer := restricted.browser(t)
 			viewer.SignIn(t, a.recordID, person(ada))
 			return viewer.Get(t, page)
@@ -202,10 +203,9 @@ func TestEachRefusalOfThePageNamesItsCodeAndPrintsItsAnswerID(t *testing.T) {
 // would name a line the broker never wrote.
 func TestTheRateLimitedPagePrintsNoAnswerID(t *testing.T) {
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
 	limited := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		new(approval.Page).WriteRateLimited(w, 1)
-	}), nil)
+	}), nil, slog.New(capture))
 	w := httptest.NewRecorder()
 	limited.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/approve/not-a-record", nil))
 	id := w.Header().Get(answer.Header)

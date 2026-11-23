@@ -449,6 +449,7 @@ func (s *abandonedRead) GetSecretValue(ctx context.Context, in *secretsmanager.G
 // ctx cut short, or wait for the writer lock on ctx); FIRST_KEY is then still served after the
 // reload and this test fails.
 func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(
 		typeSecret("FIRST_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
 		typeSecret("SECOND_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
@@ -506,6 +507,7 @@ func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *
 // The named revert: RefreshOne drops readValues' answer (c.readValues(ctx, ctx, reads, false),
 // then return lk, nil); each reread then answers a nil error and this test fails.
 func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *testing.T) {
+	t.Parallel()
 	const deadline = 300 * time.Millisecond
 	// endedUnrecorded checks what a reread of APP_KEY whose deadline passed left: its error is
 	// ErrValueUnchecked and that deadline's, nothing was written and APP_KEY is still served; and,
@@ -665,12 +667,14 @@ func hangingLoader(t *testing.T) (*hangingLister, policy.Loader) {
 // TestAReloadGivesUpWithinItsInterval pins that a periodic reload whose Secrets Manager stops
 // answering fails once its interval has passed, logging LoadFailedMessage, rather than holding the
 // writer lock every reread waits on for as long as the process lives. It runs in a synctest
-// bubble, which waits for the reload goroutine to return, so none of its lines reach a later
-// test's capture.
+// bubble, which waits for the reload goroutine to return, and the policy writes its lines to the
+// test's own logger (policytest.Log), so no other test reads them.
 func TestAReloadGivesUpWithinItsInterval(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		lister, loader := hangingLoader(t)
-		logged := policytest.CaptureLog(t)
+		log, logged := policytest.Log()
+		loader.Log = log
 		cur, err := policy.NewCurrent(t.Context(), loader, 50*time.Millisecond)
 		if err != nil {
 			t.Fatal(err)
@@ -689,9 +693,11 @@ func TestAReloadGivesUpWithinItsInterval(t *testing.T) {
 // ended, the broker shutting down, is no failed load: LoadFailedMessage says a reload failed while
 // the broker was serving, so a reload in flight when that context ends logs nothing.
 func TestAReloadItsShutdownEndsLogsNothing(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		lister, loader := hangingLoader(t)
-		logged := policytest.CaptureLog(t)
+		log, logged := policytest.Log()
+		loader.Log = log
 		ctx, shutdown := context.WithCancel(t.Context())
 		if _, err := policy.NewCurrent(ctx, loader, time.Minute); err != nil {
 			t.Fatal(err)
@@ -710,9 +716,10 @@ func TestAReloadItsShutdownEndsLogsNothing(t *testing.T) {
 	})
 }
 
-// refusedLine is the exact RefusedMessage line Current writes, as CaptureLog reads it, for the
-// secret whose whole name in the store is id: refused for reason, its owner tag owner, first_load
-// on the pod's first load, and was the reason before on a change of reason ("" for none).
+// refusedLine is the exact RefusedMessage line Current writes, as policytest.Log writes it, for
+// the secret whose whole name in the store is id: refused for reason, its owner tag owner,
+// first_load on the pod's first load, and was the reason before on a change of reason ("" for
+// none).
 func refusedLine(id, reason, owner string, firstLoad bool, was string) string {
 	line := "ERROR " + policy.RefusedMessage + " name=" + id + " reason=" + reason + " owner=" + textValue(owner) + " first_load=" + strconv.FormatBool(firstLoad)
 	if was != "" {
@@ -750,8 +757,8 @@ func decodeWhy(t *testing.T, secretType, value string) string {
 // begins "broker:" as every other line of the broker does.
 const noProfilesLine = `INFO broker: profiles applied served=0 refused=0 file_digest=""` + "\n"
 
-// servableLine is the exact ServableMessage line Current writes, as CaptureLog reads it, for the
-// secret whose whole name in the store is id, which was refused for reason with owner: now is
+// servableLine is the exact ServableMessage line Current writes, as policytest.Log writes it, for
+// the secret whose whole name in the store is id, which was refused for reason with owner: now is
 // servable or absent.
 func servableLine(id, reason, owner, now string) string {
 	return "INFO " + policy.ServableMessage + " name=" + id + " reason=" + reason + " owner=" + textValue(owner) + " now=" + now + "\n"
@@ -789,6 +796,7 @@ func unservable(id, reason, owner string) string {
 // The named revert: write a line for every refused secret at every publish, not only for one
 // whose state changed; the catch-up load's step then fails.
 func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		noOwner := policytest.Secret("NO_OWNER_KEY", owner, policy.TierAgent, "v")
 		delete(noOwner.Tags, policy.TagOwner)
@@ -799,8 +807,8 @@ func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
 			policytest.Secret("GOING_KEY", owner, "admin", "v"),
 			noOwner,
 		)}
-		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix}
-		logged := policytest.CaptureLog(t)
+		log, logged := policytest.Log()
+		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, Log: log}
 		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 		if err != nil {
 			t.Fatalf("NewCurrent: %v", err)
@@ -946,11 +954,12 @@ func TestThePolicyWritesAChangeOfASecretsStateNotEachLoad(t *testing.T) {
 // The named revert: drop the failing flag from the reload loop, logging every failed reload; the
 // second failure's line then fails this test.
 func TestAFailingReloadLogsOnceUntilItLoadsAgain(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		store := &failingSecrets{Local: secrets.NewLocal(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
 		registry := metrics.New()
-		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
-		logged := policytest.CaptureLog(t)
+		log, logged := policytest.Log()
+		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry), Log: log}
 		if _, err := policy.NewCurrent(t.Context(), loader, time.Minute); err != nil {
 			t.Fatal(err)
 		}

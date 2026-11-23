@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -132,7 +133,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil)
+	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil, slog.New(slog.DiscardHandler))
 	for _, secretType := range policy.Types {
 		if machine.Minters[secretType] == nil {
 			t.Fatalf("request machine has no minter for %s", secretType)
@@ -174,7 +175,7 @@ func TestTypeMintersShareOneRetryBudget(t *testing.T) {
 	retry := secrets.NewRetry(metrics.New())
 	retry.Now = func() time.Time { return now }
 	retry.Sleep = func(context.Context, time.Duration) error { return nil }
-	minters := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: github.URL, AirlockTestGoogleTokenURL: google.URL}, nil, nil, nil, nil, proxyrules.Rules{}, "", retry, nil, nil).Minters
+	minters := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: github.URL, AirlockTestGoogleTokenURL: google.URL}, nil, nil, nil, nil, proxyrules.Rules{}, "", retry, nil, nil, slog.New(slog.DiscardHandler)).Minters
 	app := secrets.MintRequest{Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHub: appScope("acme-org")}
 	login := secrets.MintRequest{Type: policy.TypeGoogleLogin, Value: policytest.TypeValue(policy.TypeGoogleLogin)}
 
@@ -209,7 +210,7 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 	stand := proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}, Answer: proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensFailOnce}})
 	service.AnswerWith(stand.Answer)
 	registry := metrics.New()
-	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, proxyrules.Rules{}, "", secrets.NewRetry(registry), nil, nil)
+	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, proxyrules.Rules{}, "", secrets.NewRetry(registry), nil, nil, slog.New(slog.DiscardHandler))
 
 	minted, err := machine.Minters[policy.TypeGitHubApp](t.Context(), secrets.MintRequest{
 		Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHub: appScope("acme-org"),
@@ -241,7 +242,7 @@ func TestRequestMachineGivesBackAGitHubAppTokenAtTheMintersGitHub(t *testing.T) 
 	defer service.Close()
 	stand := proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}})
 	service.AnswerWith(stand.Answer)
-	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, proxyrules.Rules{}, "", secrets.NewRetry(metrics.New()), nil, nil)
+	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, proxyrules.Rules{}, "", secrets.NewRetry(metrics.New()), nil, nil, slog.New(slog.DiscardHandler))
 	giveBack := machine.GiveBacks[policy.TypeGitHubApp]
 	if giveBack == nil || len(machine.GiveBacks) != 1 {
 		t.Fatalf("the machine's GiveBacks hold %d types, github-app's %t; want github-app's alone", len(machine.GiveBacks), giveBack != nil)

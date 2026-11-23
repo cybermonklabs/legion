@@ -95,6 +95,7 @@ func refresh(t *testing.T, cur *policy.Current) {
 // The named revert: drop readValues' decode (take every read as decoded); the first load then
 // serves BAD_APP and this test fails.
 func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testing.T) {
+	t.Parallel()
 	store := &refusingReads{Local: secrets.NewLocal(
 		typeSecret("BAD_APP", policy.TypeAzureLogin, undecodable),
 		typeSecret("GOOD_LOGIN", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
@@ -149,6 +150,7 @@ func TestTheBootLoadRefusesAValueTheDecoderRefusesBeforeTheFirstRequest(t *testi
 // The named revert: decode on every load (ignore the decoded key); the second load's read=value
 // count then fails this test.
 func TestANewVersionIsReadOnceAndASecretOfNoTypeIsNeverRead(t *testing.T) {
+	t.Parallel()
 	login := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	store := &refusingReads{Local: secrets.NewLocal(login, policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "plain-v1"))}
 	cur, registry, logged := valueCurrent(t, store)
@@ -205,6 +207,7 @@ func TestANewVersionIsReadOnceAndASecretOfNoTypeIsNeverRead(t *testing.T) {
 // google-login value, which names no tenant, as value-malformed, and the retag back reads it once
 // more and serves it again, each with one line, the value's version the same throughout.
 func TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
+	t.Parallel()
 	value := policytest.TypeValue(policy.TypeGoogleLogin)
 	login := typeSecret("RETAGGED_KEY", policy.TypeGoogleLogin, value)
 	store := &refusingReads{Local: secrets.NewLocal(login)}
@@ -256,6 +259,7 @@ func TestARetagOfTheTypeOnTheSameVersionDecodesTheValueAgain(t *testing.T) {
 // The named revert: write the failure line on every failed read, not only the first of a run; the
 // second failing load then fails this test.
 func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
+	t.Parallel()
 	store := &refusingReads{Local: secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
@@ -311,6 +315,7 @@ func TestAFailedValueReadMarksNothingAndLogsWhenItStartsAndEnds(t *testing.T) {
 // drops it, though that read fails too, writing ServableMessage. The load that reads that version
 // and finds it refused refuses the secret again.
 func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T) {
+	t.Parallel()
 	store := &refusingReads{Local: secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable)), refusing: true}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
@@ -368,6 +373,7 @@ func TestAMintTheDecoderRefusesRefusesTheSecretTheLoadCouldNotRead(t *testing.T)
 // same value stored again is read again by the load that lists it and refused again, and a new
 // value the decoder reads makes it servable.
 func TestASecretThatLeavesTheListingDropsItsValueRefusal(t *testing.T) {
+	t.Parallel()
 	store := &refusingReads{Local: secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, undecodable))}
 	cur, registry, logged := valueCurrent(t, store)
 	gained := logChecker(logged)
@@ -404,12 +410,13 @@ func TestASecretThatLeavesTheListingDropsItsValueRefusal(t *testing.T) {
 
 // bootThrough is the Current a pod boots over local, its Secrets Manager calls made through
 // client, with the store-read counter and broker_unservable_secrets on a registry of its own as
-// main wires them, and the lines it writes captured from before its first load.
+// main wires them, and the lines it writes, from before its first load, read from a logger of its
+// own (policytest.Log).
 func bootThrough(t *testing.T, local *secrets.Local, client secrets.SecretsManagerAPI) (*policy.Current, *metrics.Registry, fmt.Stringer) {
 	t.Helper()
 	registry := metrics.New()
-	loader := policy.Loader{Store: policytest.StoreThrough(local, client), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
-	logged := policytest.CaptureLog(t)
+	log, logged := policytest.Log()
+	loader := policy.Loader{Store: policytest.StoreThrough(local, client), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry), Log: log}
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("NewCurrent: %v", err)
@@ -437,6 +444,7 @@ func (b binaryValues) GetSecretValue(ctx context.Context, in *secretsmanager.Get
 // series, and writes no ValueReadFailedMessage. A reload and a reread read the value no more and
 // write nothing.
 func TestAValueThatIsNotTextIsRefusedAndReadOnce(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(typeSecret("BINARY_APP", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 	cur, registry, logged := bootThrough(t, local, binaryValues{local})
 	gained := logChecker(logged)
@@ -498,6 +506,7 @@ func (s *stalledRead) GetSecretValue(ctx context.Context, in *secretsmanager.Get
 // no ValueReadFailedMessage, and the next load, which reads nothing since that value is decoded,
 // writes nothing either.
 func TestAFailedReadRecordedAfterASuccessfulReadOfTheSameValueRecordsNothing(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 	store := &stalledRead{Local: local}
 	cur, registry, logged := bootThrough(t, local, store)
@@ -598,6 +607,7 @@ func (s *lockedOutRead) ListSecrets(ctx context.Context, in *secretsmanager.List
 // (fbaa5626); the reread then waits for the reload to let go, past its deadline, and this test
 // fails.
 func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 	store := &lockedOutRead{Local: local}
 	cur, registry, logged := bootThrough(t, local, store)
@@ -677,6 +687,7 @@ func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
 // value decodes under either type (secrets.ParseValue) and the retag between them leaves the
 // secret served: what is under test is the key a refusal is weighed against, not the decode.
 func TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing(t *testing.T) {
+	t.Parallel()
 	const value = `{"type":"authorized_user","client_id":"client","client_secret":"secret","refresh_token":"refresh","tenant_id":"tenant"}`
 	secret := typeSecret("LOGIN_KEY", policy.TypeGoogleLogin, value)
 	store := &refusingReads{Local: secrets.NewLocal(secret)}

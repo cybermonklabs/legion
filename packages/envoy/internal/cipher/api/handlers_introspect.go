@@ -8,7 +8,6 @@ package api
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
@@ -54,11 +53,11 @@ func (s *server) introspect(w http.ResponseWriter, r *http.Request, _ string) {
 	answer, err := s.deps.OAuth.Introspect(r.Context(), r.PostForm.Get("token"))
 	switch {
 	case errors.Is(err, oauth.ErrStoredClaimMalformed):
-		slog.Error("broker: introspect token failed: a stored claim is malformed", "error", err)
+		s.log.Error("broker: introspect token failed: a stored claim is malformed", "error", err)
 		writeError(w, http.StatusInternalServerError, "STORED_CLAIM_MALFORMED", err.Error())
 		return
 	case err != nil:
-		writeUnavailable(w, "DATABASE_UNAVAILABLE", "introspect token", err)
+		s.writeUnavailable(w, "DATABASE_UNAVAILABLE", "introspect token", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, answer)

@@ -13,7 +13,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -129,7 +128,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 	}
 	requester, err := m.requester(ctx, m.Store.Pool, enr, facts)
 	if err != nil {
-		skippedNarrowingCheck(enr.ID, "", "the requester could not be read", err)
+		m.skippedNarrowingCheck(enr.ID, "", "the requester could not be read", err)
 		return nil
 	}
 	e, err := m.evaluate(set, names, requester, reason)
@@ -137,7 +136,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 		return nil
 	}
 	if !m.narrowingCheckLimiter().Allow(enr.ID) {
-		skippedNarrowingCheck(enr.ID, "", "this enrollment has made more checks than its bound allows", nil)
+		m.skippedNarrowingCheck(enr.ID, "", "this enrollment has made more checks than its bound allows", nil)
 		return nil
 	}
 	budget, cancel := context.WithTimeout(ctx, m.narrowingCheckBudget())
@@ -155,7 +154,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 		// github-installations' reads the tokens its minter stored, as the release does.
 		mint := m.Minters[secretType]
 		if mint == nil {
-			skippedNarrowingCheck(enr.ID, d.Name, "this broker has no "+secretType+" minter", nil)
+			m.skippedNarrowingCheck(enr.ID, d.Name, "this broker has no "+secretType+" minter", nil)
 			return nil
 		}
 		checked, refusal := m.checkProfile(budget, mint, enr.ID, d.Name, source, served, target)
@@ -163,7 +162,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 			return nil
 		}
 		if refusal != nil {
-			refusedBeforeApproval(enr.ID, d.Name, refusal)
+			m.refusedBeforeApproval(enr.ID, d.Name, refusal)
 			return refusal
 		}
 	}
@@ -201,7 +200,7 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 	}
 	stored, err := m.Secrets.Read(ctx, source)
 	if err != nil {
-		skippedNarrowingCheck(enrollmentID, name, "the stored value could not be read", err)
+		m.skippedNarrowingCheck(enrollmentID, name, "the stored value could not be read", err)
 		return false, nil
 	}
 	// The line-ending rule is spent here as the release spends it (Machine.release), and writes no
@@ -237,7 +236,7 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 		// which writes the context's words into its text without wrapping it). GitHub decided
 		// nothing either way, so this is not logged as an answer of GitHub's: an operator reading
 		// a run of these raises the bounds or looks at what is slowing Create down.
-		skippedNarrowingCheck(enrollmentID, name, "the check's time ran out, or its caller went away, before GitHub answered", err)
+		m.skippedNarrowingCheck(enrollmentID, name, "the check's time ran out, or its caller went away, before GitHub answered", err)
 		return false, nil
 	case errors.Is(err, secrets.ErrMintStoredValue):
 		// The stored value was read and the minter cannot mint from it: for a github-app secret
@@ -249,13 +248,13 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 		if served.Type() == policy.TypeGitHubInstallations {
 			why = "the stored value is not installation tokens the minter can read"
 		}
-		skippedNarrowingCheck(enrollmentID, name, why, err)
+		m.skippedNarrowingCheck(enrollmentID, name, why, err)
 		return false, nil
 	case errors.Is(err, secrets.ErrMintTokenStale):
 		// The token a github-installations secret stores lapses within the margin, and its minter
 		// has not stored a newer one yet. That says nothing of the profile, and the minter's next
 		// write may serve the release a person approves, so the request goes to its approver.
-		skippedNarrowingCheck(enrollmentID, name, "the stored installation token is within the margin of its expiry", err)
+		m.skippedNarrowingCheck(enrollmentID, name, "the stored installation token is within the margin of its expiry", err)
 		return false, nil
 	case errors.Is(err, secrets.ErrMintRefused):
 		// GitHub refused the call rather than the scope: the App's JWT was not accepted (a clock
@@ -263,10 +262,10 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 		// limit, a 404 on the token route among them. The profile may be perfectly mintable once
 		// the App works again, so the request takes the path it took before the check existed
 		// and the release says the same thing again.
-		skippedNarrowingCheck(enrollmentID, name, "GitHub refused the App rather than the narrowing", err)
+		m.skippedNarrowingCheck(enrollmentID, name, "GitHub refused the App rather than the narrowing", err)
 		return false, nil
 	default:
-		skippedNarrowingCheck(enrollmentID, name, "GitHub's answer decided nothing about the narrowing", err)
+		m.skippedNarrowingCheck(enrollmentID, name, "GitHub's answer decided nothing about the narrowing", err)
 		return false, nil
 	}
 }
@@ -380,18 +379,18 @@ func scopeWords(scope *secrets.GitHubScope) string {
 // refusedBeforeApproval logs one refusal this check made, at WARN and under the message a
 // release's refused scope is logged with (NarrowingRefusedMessage), with no grant= key: no grant
 // exists, and the refusal is why none will.
-func refusedBeforeApproval(enrollmentID, name string, err error) {
-	slog.Warn(NarrowingRefusedMessage, "enrollment", enrollmentID, "name", name, "error", err)
+func (m *Machine) refusedBeforeApproval(enrollmentID, name string, err error) {
+	m.log().Warn(NarrowingRefusedMessage, "enrollment", enrollmentID, "name", name, "error", err)
 }
 
 // skippedNarrowingCheck logs the trouble that ended a check and let its request through
 // (NarrowingCheckSkippedMessage): the enrollment, the profile the check had reached, empty where
 // it had reached none, why it ended, and the failure itself where there was one. A reason with no
 // failure carries no error= key at all, rather than an empty one a reader would go looking for.
-func skippedNarrowingCheck(enrollmentID, name, reason string, err error) {
+func (m *Machine) skippedNarrowingCheck(enrollmentID, name, reason string, err error) {
 	attributes := []any{"enrollment", enrollmentID, "name", name, "reason", reason}
 	if err != nil {
 		attributes = append(attributes, "error", err)
 	}
-	slog.Info(NarrowingCheckSkippedMessage, attributes...)
+	m.log().Info(NarrowingCheckSkippedMessage, attributes...)
 }

@@ -27,8 +27,8 @@ type loggedLine struct {
 // loggedLines are the lines capture holds whose message is message, in the order they were
 // written, so a test reads the attributes the broker logged rather than a rendering of them:
 // store.GrantLogMessage, the one line the access review's log pipeline keeps, or a release's
-// ReleasedMessage. Every other line is skipped. The records are one test's own: logtest puts the
-// previous default logger back when it ends.
+// ReleasedMessage. Every other line is skipped. The records are one test's own: capture is the
+// handler of the logger that test handed its machine (recordLog).
 func loggedLines(t *testing.T, capture *logtest.Recorder, message string) []loggedLine {
 	t.Helper()
 	var lines []loggedLine
@@ -49,13 +49,13 @@ func loggedLines(t *testing.T, capture *logtest.Recorder, message string) []logg
 	return lines
 }
 
-// newGrantLogFixture is newFixture with every log line captured and its enrollment named as a
-// session, which is where the route reads the session fields from.
+// newGrantLogFixture is newFixture with every line its machine and its policy log captured
+// (newLoggedFixture) and its enrollment named as a session, which is where the route reads the
+// session fields from.
 func newGrantLogFixture(t *testing.T, sessionID string) (*logtest.Recorder, *Machine, string, *ecdsa.PrivateKey, string) {
 	t.Helper()
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	m, enr, key, approver := newFixture(t)
+	logger, capture := recordLog()
+	m, enr, key, approver := newLoggedFixture(t, logger)
 	nameSession(t, m, enr, sessionID)
 	return capture, m, enr, key, approver
 }
@@ -111,7 +111,7 @@ func sameAttr(got, want any) bool {
 func routeLine(t *testing.T, capture *logtest.Recorder, ev store.GrantLogEvent) loggedLine {
 	t.Helper()
 	before := len(loggedLines(t, capture, store.GrantLogMessage))
-	store.LogGrantEvent(ev)
+	store.LogGrantEvent(slog.New(capture), ev)
 	lines := loggedLines(t, capture, store.GrantLogMessage)
 	if len(lines) != before+1 {
 		t.Fatalf("LogGrantEvent wrote %d lines, want one", len(lines)-before)
@@ -156,7 +156,7 @@ func eventFor(t *testing.T, events []store.GrantLogEvent, kind, requestID string
 // event is rendered through store.LogGrantEvent itself, so what is compared is the two
 // constructions and not a third rendering of either.
 func TestGrantLogLineAndTheRoutesEventSayTheSameThing(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newGrantLogFixture, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-drift")
 	ctx := context.Background()
 	since := time.Now().Add(-time.Hour)
@@ -296,7 +296,7 @@ func linedRows(t *testing.T, lines []loggedLine) [][3]string {
 // all for a release (grant.used) or for an enrollment's own row. A session that reads its grant
 // every few seconds writes one audit row per release and no grant-log line for any of them.
 func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newGrantLogFixture, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-volume")
 	ctx := context.Background()
 
@@ -384,7 +384,7 @@ func TestGrantLogLogsEveryDecisionAndEveryGrantEndAndNothingElse(t *testing.T) {
 // grant.revoked audit row of its own, so the log carries one line per grant rather than one per
 // revoke.
 func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newGrantLogFixture, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-withhold")
 	ctx := context.Background()
 
@@ -436,7 +436,7 @@ func TestGrantLogLogsOneLinePerAuditRowAndNotOnePerTransaction(t *testing.T) {
 // request's detail says another session of the owner cancelled it. The request's own session
 // cancelling still reads as before.
 func TestACancelByAnotherEnrollmentOfTheOwnerNamesTheRequestsEnrollment(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newGrantLogFixture, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	capture, m, enr, key, _ := newGrantLogFixture(t, "sess-owner-cancel")
 	ctx := context.Background()
 	other, _ := newEnrollment(t, m.Store, "session", "box-other-"+t.Name(), new(fixtureOperator), nil)

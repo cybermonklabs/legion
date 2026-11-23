@@ -74,14 +74,16 @@ type rig struct {
 // rigSetup is what a test changes of the broker newRig wires: secrets served beside the four
 // every rig serves, the client of Dispatch's project access the request machine and the
 // enrollment ask (nil for none, as on a broker with no BROKER_PROJECT_ACCESS_URL), a profiles
-// file ("" for none), whose proxy blocks the request machine holds in force, and the group reader
-// every decision site asks (nil for none). A rig holding a client serves a secret tagged with a
-// project, as cmd/cipherd's does (Loader.ProjectChecks).
+// file ("" for none), whose proxy blocks the request machine holds in force, the group reader
+// every decision site asks (nil for none), and the logger every part of the broker writes its
+// lines to (nil for slog.Default(), for a test that reads none). A rig holding a client serves a
+// secret tagged with a project, as cmd/cipherd's does (Loader.ProjectChecks).
 type rigSetup struct {
 	secrets  []secrets.LocalSecret
 	projects projectaccess.Access
 	profiles string
 	groups   record.Directory
+	log      *slog.Logger
 }
 
 // newRig wires the broker as cmd/cipherd does, its approval page signed in at a provider of the
@@ -105,6 +107,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		loader.Profiles = policytest.Profiles(t, setup.profiles)
 	}
 	loader.Groups = setup.groups
+	loader.Log = setup.log
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -114,7 +117,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	// Behind the answer recorder (answer.Middleware), which cmd/cipherd wraps the mux in, inside
 	// withRequestDeadline, so every answer of the page a test reads is the one a deployment sends,
 	// its answer id included.
-	srv := httptest.NewTLSServer(answer.Middleware(mux, nil))
+	srv := httptest.NewTLSServer(answer.Middleware(mux, nil, setup.log))
 	t.Cleanup(srv.Close)
 
 	issuer := oidctest.New(t)
@@ -125,12 +128,12 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		t.Fatalf("oidc.New: %v", err)
 	}
 
-	enr := &enroll.Service{Store: st, Lease: time.Hour, Projects: setup.projects}
+	enr := &enroll.Service{Store: st, Lease: time.Hour, Projects: setup.projects, Log: setup.log}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	reqMachine := &requests.Machine{
 		Store: st, Policy: current, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Projects: setup.projects,
-		Groups: setup.groups,
+		Groups: setup.groups, Log: setup.log,
 	}
 	if setup.profiles != "" {
 		reqMachine.Airlock = loader.Profiles.ProxyRules()
@@ -139,7 +142,7 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 	// (requests.NewChainVerifier) from the rules it is given.
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	reqMachine.Chain.Groups = setup.groups
-	provider := ciphertest.NewOAuthProvider(t, st, issuer)
+	provider := ciphertest.NewOAuthProvider(t, st, issuer, setup.log)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: current,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -153,16 +156,26 @@ func newRig(t *testing.T, setups ...func(*rigSetup)) *rig {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: current, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Approval: ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine),
+		Approval: ciphertest.NewApprovalPage(t, signInConfig, srv.URL, st, reqMachine, setup.log),
+		Log:      setup.log,
 	})
 
 	claims := issuer.Claims(dispatchAccount, dispatchAudience)
 	claims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	return &rig{
 		url: srv.URL, srv: srv, st: st, issuer: issuer, machine: reqMachine,
-		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool), Interval: time.Hour},
+		sweeper:      &requests.Sweeper{Enrollments: enr, Machine: reqMachine, MachineLogins: mach, OAuth: oauthstore.New(st.Pool), Interval: time.Hour, Log: setup.log},
 		accountToken: issuer.Mint(t, key, claims),
 	}
+}
+
+// profiledCurrent is policytest.ProfiledCurrent of local and file, logging to log.
+func profiledCurrent(t *testing.T, local *secrets.Local, file string, log *slog.Logger) *policy.Current {
+	t.Helper()
+	loader := policytest.Loader(local)
+	loader.Profiles = policytest.Profiles(t, file)
+	loader.Log = log
+	return policytest.CurrentOf(t, loader)
 }
 
 // --- the broker's machine and session side, which makes the records a person decides ---
@@ -418,7 +431,7 @@ func (r *rig) requirePending(t *testing.T, recordID string) {
 	}
 }
 
-// --- reading what the broker logged, through a logtest.Recorder the test made the default ---
+// --- reading what the broker logged, through a logtest.Recorder the test handed the rig ---
 
 // logFields is a logged record's attributes by key.
 func logFields(line slog.Record) map[string]any {

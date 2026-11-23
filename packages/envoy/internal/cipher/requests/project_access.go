@@ -374,7 +374,7 @@ func (m *Machine) channelsOf(ctx context.Context, facts projectFacts) (channelGr
 // logChannelsMissing writes ChannelsMissingMessage for project once per projectaccess.CacheTTL.
 func (m *Machine) logChannelsMissing(project string) {
 	if m.channelsMissingLogged.due(project) {
-		slog.Warn(ChannelsMissingMessage, "project", project)
+		m.log().Warn(ChannelsMissingMessage, "project", project)
 	}
 }
 
@@ -390,7 +390,7 @@ const rowUnansweredMessage = "an approver's list leaves out a row whose project 
 // poll of every open Inbox tab, and one line per row says all an operator needs.
 func (m *Machine) logRowUnanswered(key string, err error, attrs ...any) {
 	if m.rowsUnansweredLogged.due(key) {
-		slog.Warn(rowUnansweredMessage, append(attrs, "error", err)...)
+		m.log().Warn(rowUnansweredMessage, append(attrs, "error", err)...)
 	}
 }
 
@@ -407,7 +407,7 @@ const fallbackUnreadMessage = "an approver's list leaves out a row whose respons
 // often its list is read, as logRowUnanswered does.
 func (m *Machine) logFallbackUnread(recordID, responsible string, err error) {
 	if m.rowsUnansweredLogged.due("fallback " + recordID) {
-		slog.Warn(fallbackUnreadMessage, "list", "pending", "record", recordID, "responsible", responsible, "error", err)
+		m.log().Warn(fallbackUnreadMessage, "list", "pending", "record", recordID, "responsible", responsible, "error", err)
 	}
 }
 
@@ -424,7 +424,7 @@ const fallbackCutMessage = "an approver's list leaves out, unread, rows whose re
 // slow every one of them runs out of the clock.
 func (m *Machine) logFallbackCut(reader string, rows int, err error) {
 	if m.rowsUnansweredLogged.due("cut " + reader) {
-		slog.Warn(fallbackCutMessage, "list", "pending", "reader", reader, "rows", rows, "bound", listFallbackBound, "error", err)
+		m.log().Warn(fallbackCutMessage, "list", "pending", "reader", reader, "rows", rows, "bound", listFallbackBound, "error", err)
 	}
 }
 
@@ -624,7 +624,7 @@ func (m *Machine) maySee(ctx context.Context, login string, projects []string, r
 		go func() {
 			defer wg.Done()
 			defer func() { <-slots }()
-			defer recoverRead(&seens[i].err)
+			defer recoverRead(m.log(), &seens[i].err)
 			answer, err := m.access(ctx, project, person)
 			var missing *projectaccess.ProjectNotFoundError
 			switch {
@@ -758,10 +758,10 @@ func (m *Machine) access(ctx context.Context, project, person string) (projectac
 			entry = &accessMemoEntry{done: make(chan struct{})}
 			memo.entries[question] = entry
 			memo.mu.Unlock()
-			if !memo.start(ctx, m.Projects, question, entry) {
+			if !memo.start(ctx, m.Projects, question, entry, m.log()) {
 				// ctx or the list's clock ended before the question took a slot: the read asks
 				// Dispatch nothing, and answers only from the client's cache, or fails at once.
-				entry.settle(func() (projectaccess.Answer, error) { return m.Projects.Access(ended(ctx), project, person) }, func(err error) bool { return err != nil })
+				entry.settle(m.log(), func() (projectaccess.Answer, error) { return m.Projects.Access(ended(ctx), project, person) }, func(err error) bool { return err != nil })
 				return entry.answer, entry.err
 			}
 			if !entry.wait(ctx) {
@@ -796,7 +796,7 @@ func (m *Machine) access(ctx context.Context, project, person string) (projectac
 // after another, so a row's ctx can still read as live just after the clock has ended, and the
 // question it would start then would reach Dispatch before onList's cancel, which runs on a
 // goroutine of its own, ends it.
-func (memo *accessMemo) start(ctx context.Context, a projectaccess.Access, question accessMemoQuestion, entry *accessMemoEntry) bool {
+func (memo *accessMemo) start(ctx context.Context, a projectaccess.Access, question accessMemoQuestion, entry *accessMemoEntry, log *slog.Logger) bool {
 	if ctx.Err() != nil || memo.list.Err() != nil {
 		return false
 	}
@@ -815,7 +815,7 @@ func (memo *accessMemo) start(ctx context.Context, a projectaccess.Access, quest
 	go func() {
 		defer func() { <-memo.slots }()
 		defer cancel()
-		entry.settle(func() (projectaccess.Answer, error) { return a.Access(asking, question.project, question.person) }, func(err error) bool { return err != nil && asking.Err() != nil })
+		entry.settle(log, func() (projectaccess.Answer, error) { return a.Access(asking, question.project, question.person) }, func(err error) bool { return err != nil && asking.Err() != nil })
 	}()
 	return true
 }
@@ -844,9 +844,9 @@ func ended(ctx context.Context) context.Context {
 // settle writes entry's answer from ask, cut when cut says its error is, and closes done however
 // ask ends: a panic in ask is the entry's error (recoverRead), so every row waiting on it fails
 // closed at once rather than waiting out its clock.
-func (entry *accessMemoEntry) settle(ask func() (projectaccess.Answer, error), cut func(error) bool) {
+func (entry *accessMemoEntry) settle(log *slog.Logger, ask func() (projectaccess.Answer, error), cut func(error) bool) {
 	defer close(entry.done)
-	defer recoverRead(&entry.err)
+	defer recoverRead(log, &entry.err)
 	entry.answer, entry.err = ask()
 	entry.cut = cut(entry.err)
 }

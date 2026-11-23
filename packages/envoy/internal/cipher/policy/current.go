@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -60,6 +61,9 @@ type Current struct {
 	// stops serving as a type secret leaves it, with whatever refusal it held.
 	values map[string]*valueState
 	now    func() time.Time
+	// log is the loader's Log, or slog.Default() for a loader with none, read once by NewCurrent:
+	// where every line of c goes.
+	log *slog.Logger
 }
 
 // valueKey is what a type secret's value is decoded under: the version of the value the listing
@@ -118,7 +122,8 @@ type valueOutcome struct {
 // for each interval. A reload that fails once ctx has ended, the broker shutting down, is no
 // failed load and writes nothing.
 func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Current, error) {
-	c := &Current{loader: loader, mu: make(chan struct{}, 1), recent: map[string]time.Time{}, values: map[string]*valueState{}, now: time.Now}
+	loader.Log = cmp.Or(loader.Log, slog.Default())
+	c := &Current{loader: loader, mu: make(chan struct{}, 1), recent: map[string]time.Time{}, values: map[string]*valueState{}, now: time.Now, log: loader.Log}
 	// The loader weighs a secret waiting for its value by c's clock, which PendingValue reads too,
 	// so the two never answer differently. Load and LoadOne run under the writer lock, which SetNow
 	// holds while it changes the clock.
@@ -141,10 +146,10 @@ func NewCurrent(ctx context.Context, loader Loader, every time.Duration) (*Curre
 				switch {
 				case ctx.Err() != nil:
 				case err != nil && !failing:
-					slog.Error(LoadFailedMessage, "error", err)
+					c.log.Error(LoadFailedMessage, "error", err)
 					failing = true
 				case err == nil && failing:
-					slog.Info(LoadRecoveredMessage)
+					c.log.Info(LoadRecoveredMessage)
 					failing = false
 				}
 			}
@@ -600,7 +605,7 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 		id := c.storeID(o.name)
 		if o.err != nil {
 			if !state.failing {
-				slog.Warn(ValueReadFailedMessage, "name", id, "version", o.key.version, "error", o.err)
+				c.log.Warn(ValueReadFailedMessage, "name", id, "version", o.key.version, "error", o.err)
 				state.failing = true
 			}
 			if state.refused && state.refusedAt != o.key.version {
@@ -609,7 +614,7 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 			continue
 		}
 		if state.failing {
-			slog.Info(ValueReadRecoveredMessage, "name", id, "version", o.key.version)
+			c.log.Info(ValueReadRecoveredMessage, "name", id, "version", o.key.version)
 			state.failing = false
 		}
 		state.decoded = o.key
@@ -739,17 +744,17 @@ func (c *Current) publish(next *Set, first bool) {
 		pending, waits := next.Pending[id]
 		switch {
 		case refused && !wasRefused:
-			slog.Error(RefusedMessage, refusedAttrs(id, now, first, "")...)
+			c.log.Error(RefusedMessage, refusedAttrs(id, now, first, "")...)
 		case refused:
-			slog.Error(RefusedMessage, refusedAttrs(id, now, false, was.Reason)...)
+			c.log.Error(RefusedMessage, refusedAttrs(id, now, false, was.Reason)...)
 		case waits && !wasRefused:
-			slog.Info(PendingMessage, "name", id, "reason", ReasonPendingValue, "owner", pending.Owner, "first_load", first)
+			c.log.Info(PendingMessage, "name", id, "reason", ReasonPendingValue, "owner", pending.Owner, "first_load", first)
 		case waits:
-			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "pending")
+			c.log.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "pending")
 		case c.serves(next, id):
-			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "servable")
+			c.log.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "servable")
 		default:
-			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "absent")
+			c.log.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "absent")
 		}
 	}
 	if live == nil {
@@ -785,7 +790,7 @@ func (c *Current) profilesApplied(next *Set) {
 			served++
 		}
 	}
-	slog.Info(ProfilesAppliedMessage, "served", served, "refused", refused, "file_digest", c.loader.Profiles.fileDigest)
+	c.log.Info(ProfilesAppliedMessage, "served", served, "refused", refused, "file_digest", c.loader.Profiles.fileDigest)
 }
 
 // serves reports whether set serves the secret whose whole name in the store is id, or, for a

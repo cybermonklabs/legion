@@ -231,8 +231,9 @@ func (ts *testServer) insertLegacyServiceLogin(t *testing.T, code string, expire
 
 // restrictedStand is a Dispatch stand-in that calls restrictedGuest a restricted member and carol
 // and bob full members, behind a client a test swaps, and a broker that asks it from both the
-// request machine and the enroll service.
-func restrictedStand(t *testing.T) (*testServer, *projectaccesstest.Swappable, *projectaccesstest.Server) {
+// request machine and the enroll service, whose every component logs to log (nil is
+// slog.Default()).
+func restrictedStand(t *testing.T, log *slog.Logger) (*testServer, *projectaccesstest.Swappable, *projectaccesstest.Server) {
 	t.Helper()
 	access := &projectaccesstest.Swappable{}
 	stand := projectaccesstest.NewServer(t, nil, map[string]string{
@@ -241,7 +242,7 @@ func restrictedStand(t *testing.T) (*testServer, *projectaccesstest.Swappable, *
 		"bob@example.com": projectaccess.MemberFull,
 	})
 	access.Serve(stand)
-	ts := newTestServerWith(t, func(d *api.Deps) {
+	ts := newLoggedTestServer(t, log, "", func(d *api.Deps) {
 		d.Enroll.Projects = access
 		d.Machine.Projects = access
 	})
@@ -256,7 +257,7 @@ func restrictedStand(t *testing.T) (*testServer, *projectaccesstest.Swappable, *
 // dismissing nothing. The control: bob, a full member, lists both and dismisses the expired one.
 func TestAServicesLegacyLoginIsOnNoRestrictedMembersList(t *testing.T) {
 	t.Parallel()
-	ts, _, _ := restrictedStand(t)
+	ts, _, _ := restrictedStand(t, nil)
 	pending := ts.insertLegacyServiceLogin(t, "WXYZ-ABCD", time.Now().Add(15*time.Minute))
 	expired := ts.insertLegacyServiceLogin(t, "QRST-UVWX", time.Now().Add(-time.Hour))
 	listed := func(t *testing.T, person string) []string {
@@ -338,7 +339,7 @@ func (ts *testServer) machineLoginLive(t *testing.T, id string) bool {
 // member, lists both service logins and ends the daemon's.
 func TestARestrictedMemberListsAndEndsNoServicesMachineLogin(t *testing.T) {
 	t.Parallel()
-	ts, access, stand := restrictedStand(t)
+	ts, access, stand := restrictedStand(t, nil)
 	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
 	legacyLogin, _ := ts.mintOutstandingServiceCredential(t, testApprover)
 	ownLogin, _ := ts.mintLauncherCredential(t, restrictedGuest, "guest-laptop")
@@ -390,12 +391,12 @@ func TestARestrictedMemberListsAndEndsNoServicesMachineLogin(t *testing.T) {
 // (api.MachineLoginsOwnOnlyMessage) once, since it writes it at most once per person per minute.
 // The control: once Dispatch answers him a full member, his list holds the daemon's login again.
 func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const bob = "bob@example.com"
-	ts, access, stand := restrictedStand(t)
-	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	ts, access, stand := restrictedStand(t, slog.New(capture))
+	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
+	mark := len(capture.Records())
 	for _, fault := range []struct {
 		name, host string
 		set        func(*projectaccesstest.Server)
@@ -428,7 +429,7 @@ func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testin
 		})
 	}
 	var held int
-	for _, rec := range capture.Records() {
+	for _, rec := range capture.Records()[mark:] {
 		if rec.Message == api.MachineLoginsOwnOnlyMessage && rec.Level == slog.LevelWarn {
 			held++
 		}
@@ -451,14 +452,14 @@ func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testin
 // call: Dispatch's page reads the list each time it opens. While Dispatch is down, bob lists his
 // machine logins three times and carol once: one line names bob and one names carol.
 func TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const bob = "bob@example.com"
-	ts, access, _ := restrictedStand(t)
+	capture := &logtest.Recorder{}
+	ts, access, _ := restrictedStand(t, slog.New(capture))
 	down := projectaccesstest.NewServer(t, nil, nil)
 	down.SetDown(true)
 	access.Serve(down)
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	mark := len(capture.Records())
 	for range 3 {
 		ts.machineLoginIDs(t, bob)
 	}
@@ -467,7 +468,7 @@ func TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute(t *testing.T) {
 		t.Fatal("the down Dispatch was never asked: the row is blind")
 	}
 	held := map[string]int{}
-	for _, rec := range capture.Records() {
+	for _, rec := range capture.Records()[mark:] {
 		if rec.Message != api.MachineLoginsOwnOnlyMessage || rec.Level != slog.LevelWarn {
 			continue
 		}
@@ -490,8 +491,9 @@ func TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute(t *testing.T) {
 // line, and is counted cancelled (answer.Recorder.NoteCallerEnded), as every route counts a caller
 // that hung up.
 func TestARevokeWhoseCallerHungUpWritesNothingAndNoErrorLine(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
-	ts := newTestServer(t)
+	t.Parallel()
+	capture := &logtest.Recorder{}
+	ts := newLoggedTestServer(t, slog.New(capture), "", nil)
 	box, boxKey := ts.newSessionEnrollment(t, "hang-up-box-"+t.Name(), "operator@example.com")
 	grant := ts.approveAs(t, ts.requestAs(t, boxKey, box, "DEEL_API_KEY"), testApprover)
 	before := ts.writtenRows(t)
@@ -504,15 +506,14 @@ func TestARevokeWhoseCallerHungUpWritesNothingAndNoErrorLine(t *testing.T) {
 	}))
 	t.Cleanup(hanging.Close)
 	ts.machine.Projects = projectaccess.New(hanging.URL, projectaccesstest.NewServer(t, nil, nil).Account, nil)
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	mark := len(capture.Records())
 
 	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/grants/"+grant+"/revoke-by-approver", strings.NewReader(`{"approver":"`+testApprover+`"}`))
 	request.Header.Set("Authorization", "Bearer "+ts.uiToken)
 	request.Header.Set("Content-Type", "application/json")
 	ts.handler.ServeHTTP(httptest.NewRecorder(), request)
 
-	for _, rec := range capture.Records() {
+	for _, rec := range capture.Records()[mark:] {
 		if rec.Level >= slog.LevelError {
 			t.Errorf("the revoke whose caller hung up wrote the ERROR line %q; want none", rec.Message)
 		}
@@ -559,16 +560,16 @@ func (h hangsUpAfterKinds) MemberKind(ctx context.Context, person string) (strin
 // ERROR line and is counted cancelled (answer.Recorder.NoteCallerEnded), as a hang-up during the
 // read is; it ends nothing, since its transaction never began.
 func TestARevokeWhoseCallerHungUpAfterTheMemberKindReadWritesNoErrorLine(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
-	ts := newTestServer(t)
+	t.Parallel()
+	capture := &logtest.Recorder{}
+	ts := newLoggedTestServer(t, slog.New(capture), "", nil)
 	box, boxKey := ts.newSessionEnrollment(t, "hang-up-after-box-"+t.Name(), "operator@example.com")
 	grant := ts.approveAs(t, ts.requestAs(t, boxKey, box, "DEEL_API_KEY"), testApprover)
 	before := ts.writtenRows(t)
 	ctx, hangUp := context.WithCancel(t.Context())
 	stand := projectaccesstest.NewServer(t, nil, map[string]string{testApprover: projectaccess.MemberFull})
 	ts.machine.Projects = hangsUpAfterKinds{answers: projectaccess.New(stand.URL, stand.Account, nil), hangUp: hangUp}
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	mark := len(capture.Records())
 
 	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/v1/grants/"+grant+"/revoke-by-approver", strings.NewReader(`{"approver":"`+testApprover+`"}`))
 	request.Header.Set("Authorization", "Bearer "+ts.uiToken)
@@ -578,7 +579,7 @@ func TestARevokeWhoseCallerHungUpAfterTheMemberKindReadWritesNoErrorLine(t *test
 	if stand.Calls() == 0 {
 		t.Fatal("the member kind was never read: the row is blind to a hang-up after it")
 	}
-	for _, rec := range capture.Records() {
+	for _, rec := range capture.Records()[mark:] {
 		if rec.Level >= slog.LevelError {
 			t.Errorf("the revoke whose caller hung up after the member-kind read wrote the ERROR line %q; want none", rec.Message)
 		}
@@ -675,7 +676,7 @@ func TestTheMachineLoginRoutesReadTheMemberKindWithinTheRelaysWait(t *testing.T)
 // GET /v1/grants does not list it to them; bob, a full member, the control, sees it.
 func TestAServicePodsGrantIsOnNoRestrictedMembersList(t *testing.T) {
 	t.Parallel()
-	ts, _, _ := restrictedStand(t)
+	ts, _, _ := restrictedStand(t, nil)
 	credentialID, launcherKey := ts.mintOutstandingServiceCredential(t, testApprover)
 	podUID := uuid.NewString()
 	key := newSigningKey(t)

@@ -6,7 +6,6 @@
 package api
 
 import (
-	"log/slog"
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
@@ -30,7 +29,7 @@ func (s *server) revokeOAuthToken(w http.ResponseWriter, r *http.Request, caller
 		return
 	}
 	// The two form fields are the caller's own text, so the line cuts each (answer.ClipFields).
-	slog.Info("token revocation relayed", answer.ClipFields([]any{"caller", callerName,
+	s.log.Info("token revocation relayed", answer.ClipFields([]any{"caller", callerName,
 		"client_id", r.PostForm.Get("client_id"), "token_type_hint", r.PostForm.Get("token_type_hint")})...)
 	s.deps.OAuth.Revoke(w, withoutCallerToken(r))
 }

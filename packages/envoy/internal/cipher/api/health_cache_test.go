@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -24,6 +25,7 @@ func TestTheEdgesHealthPingsPostgresAtMostOnceASecond(t *testing.T) {
 	c := &cachedPing{
 		ping: func(ctx context.Context) error { pings++; return answer },
 		now:  func() time.Time { return now },
+		log:  slog.New(slog.DiscardHandler),
 	}
 	for i := range 100 {
 		now = start.Add(time.Duration(i) * 9 * time.Millisecond)
@@ -62,6 +64,7 @@ func TestTheEdgesHealthWaitersLeaveWhenTheirRequestEnds(t *testing.T) {
 	c := &cachedPing{
 		ping: func(context.Context) error { pings++; close(started); <-release; return nil },
 		now:  time.Now,
+		log:  slog.New(slog.DiscardHandler),
 	}
 	first := make(chan error, 1)
 	go func() { first <- c.result(context.Background()) }()
@@ -112,6 +115,7 @@ func TestTheEdgesHealthPingOutlivesACallerWhoLeaves(t *testing.T) {
 			return ctx.Err()
 		},
 		now: time.Now,
+		log: slog.New(slog.DiscardHandler),
 	}
 	leaving, cancel := context.WithCancel(context.Background())
 	first := make(chan error, 1)
@@ -149,6 +153,7 @@ func TestTheEdgesHealthPingsAgainAfterAPingThatPanicked(t *testing.T) {
 			return nil
 		},
 		now: time.Now,
+		log: slog.New(slog.DiscardHandler),
 	}
 	func() {
 		defer func() {

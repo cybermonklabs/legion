@@ -213,7 +213,7 @@ func sweepLines(records []slog.Record) []string {
 // fails at its first statement as against a database that stopped answering; the store that
 // answers is the fixture's own, set on the same Sweeper, which is what holds each sweep's state.
 func TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	ctx := context.Background()
 	closed, err := pgxpool.NewWithConfig(ctx, m.Store.Pool.Config())
@@ -222,15 +222,14 @@ func TestSweeperLogsEachSweepsFailureOnceUntilItSucceedsAgain(t *testing.T) {
 	}
 	closed.Close()
 	down := &store.Store{Pool: closed}
-	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: down}, Machine: &Machine{Store: down}, MachineLogins: &machine.Service{Store: down}, OAuth: oauthstore.New(closed), Interval: time.Hour}
+	capture := &logtest.Recorder{}
+	sweeper := &Sweeper{Enrollments: &enroll.Service{Store: down}, Machine: &Machine{Store: down}, MachineLogins: &machine.Service{Store: down}, OAuth: oauthstore.New(closed), Interval: time.Hour, Log: slog.New(capture)}
 
 	var failed, recovered []string
 	for _, sw := range sweeps {
 		failed = append(failed, "WARN "+sw.failed+" sweep="+sw.name)
 		recovered = append(recovered, "INFO "+SweepRecoveredMessage+" sweep="+sw.name)
 	}
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
 	tick := func(name string, want []string) int {
 		t.Helper()
 		before := len(capture.Records())

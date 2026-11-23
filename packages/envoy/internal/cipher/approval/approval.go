@@ -13,6 +13,7 @@ package approval
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/rand"
 	"crypto/sha256"
 	"embed"
@@ -102,6 +103,8 @@ type Config struct {
 	// and its group reader (requests.Machine.Groups) says whether the signed-in person is a member
 	// of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
+	// Log is where the page's lines go. Nil is slog.Default(), which New reads once.
+	Log *slog.Logger
 }
 
 // Page is the approval page and its sign-in, whose methods are the broker's routes for them.
@@ -118,6 +121,8 @@ type Page struct {
 	// provider outage never stops the broker serving machines and never queues page loads
 	// behind one another (internal/oidc/discovery.go).
 	signIn *oidc.CodeFlow
+	// log is Config.Log, or slog.Default() for a Config with none.
+	log *slog.Logger
 }
 
 // New builds the page from cfg, refusing a public URL that is not an absolute http(s) URL. It
@@ -134,6 +139,7 @@ func New(cfg Config) (*Page, error) {
 	return &Page{
 		cfg: cfg, origin: originOf(u), redirectURL: strings.TrimRight(cfg.PublicURL, "/") + "/signin/callback",
 		signIn: oidc.NewCodeFlow(cfg.SignIn.Issuer, cfg.SignIn.ClientID, cfg.SignIn.ClientSecret, cfg.SignIn.Domain),
+		log:    cmp.Or(cfg.Log, slog.Default()),
 	}, nil
 }
 
@@ -174,7 +180,7 @@ func (p *Page) Authenticate(w http.ResponseWriter, r *http.Request) (Session, bo
 	case errors.Is(err, pgx.ErrNoRows):
 		return Session{}, true
 	case err != nil:
-		writeUnavailable(w, "read the sign-in session", err)
+		p.writeUnavailable(w, "read the sign-in session", err)
 		return Session{}, false
 	}
 	return Session{Login: login, secret: secret}, true
@@ -240,8 +246,8 @@ func (p *Page) sameOrigin(r *http.Request) bool {
 }
 
 // refuseOrigin answers a POST sameOrigin refuses, having written nothing.
-func refuseOrigin(w http.ResponseWriter) {
-	writeMessage(w, http.StatusForbidden, codeOriginRefused, say("Refused",
+func (p *Page) refuseOrigin(w http.ResponseWriter) {
+	p.writeMessage(w, http.StatusForbidden, codeOriginRefused, say("Refused",
 		"This request did not come from the secrets broker's own page, so nothing was changed."))
 }
 
@@ -251,9 +257,9 @@ func refuseOrigin(w http.ResponseWriter) {
 // rather than the API's JSON because the caller here is a browser: the answer has to carry the
 // headers every answer of a page route carries, and the person flooding a page never sent the
 // ServiceAccount token that refusal names.
-func (*Page) WriteRateLimited(w http.ResponseWriter, retryAfter int) {
+func (p *Page) WriteRateLimited(w http.ResponseWriter, retryAfter int) {
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-	writeMessage(w, http.StatusTooManyRequests, codeRateLimited, say("Too many requests",
+	p.writeMessage(w, http.StatusTooManyRequests, codeRateLimited, say("Too many requests",
 		"Too many requests have come from this address. Try again in a moment."))
 }
 
@@ -361,29 +367,29 @@ const (
 // which is counted under HTTP_<status> whatever is noted. A refusal's page prints the answer's
 // id, so a person refused on it has the id the broker's own record of that refusal names; a 429
 // (WriteRateLimited) writes no such record (answer.Refused), so its page prints none.
-func writeMessage(w http.ResponseWriter, status int, code string, m message) {
+func (p *Page) writeMessage(w http.ResponseWriter, status int, code string, m message) {
 	recorder := answer.FromWriter(w)
 	recorder.NoteCode(code)
 	if answer.Refused(status, code) {
 		m.AnswerID = recorder.ID()
 	}
-	writePage(w, status, "message.html", m)
+	p.writePage(w, status, "message.html", m)
 }
 
 // writeUnavailable logs a dependency that could not answer and answers 503 saying so.
-func writeUnavailable(w http.ResponseWriter, op string, err error) {
-	slog.Error("approval page: "+op, "error", err)
-	writeMessage(w, http.StatusServiceUnavailable, "", say("Unavailable",
+func (p *Page) writeUnavailable(w http.ResponseWriter, op string, err error) {
+	p.log.Error("approval page: "+op, "error", err)
+	p.writeMessage(w, http.StatusServiceUnavailable, "", say("Unavailable",
 		"The secrets broker could not "+op+" just now. Try again shortly."))
 }
 
 // writePage renders the named template into a buffer first, so a template that fails answers 500
 // rather than half a page.
-func writePage(w http.ResponseWriter, status int, name string, view any) {
+func (p *Page) writePage(w http.ResponseWriter, status int, name string, view any) {
 	var buf bytes.Buffer
 	setHeaders(w.Header())
 	if err := pages.ExecuteTemplate(&buf, name, view); err != nil {
-		slog.Error("approval page: render", "page", name, "error", err)
+		p.log.Error("approval page: render", "page", name, "error", err)
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte("the approval page failed to render\n"))
@@ -405,7 +411,7 @@ func ServeStylesheet(w http.ResponseWriter, _ *http.Request) {
 // writeSignInUnavailable answers a sign-in whose provider could not be reached, the one failure
 // of a sign-in that is the broker's dependency rather than the person's credential.
 func (p *Page) writeSignInUnavailable(w http.ResponseWriter, err error) {
-	slog.Error("approval sign-in: reach the provider", "issuer", p.cfg.SignIn.Issuer, "error", err)
-	writeMessage(w, http.StatusServiceUnavailable, "", say("Sign-in unavailable",
+	p.log.Error("approval sign-in: reach the provider", "issuer", p.cfg.SignIn.Issuer, "error", err)
+	p.writeMessage(w, http.StatusServiceUnavailable, "", say("Sign-in unavailable",
 		"The secrets broker could not reach its sign-in provider, "+p.cfg.SignIn.Issuer+". Try again shortly."))
 }

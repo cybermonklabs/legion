@@ -117,7 +117,7 @@ func newContractRig(t *testing.T) *contractRig {
 		Audience:   brokerServer.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(brokerStore, brokerServer.URL, time.Minute, reqMachine.Airlock)
-	provider := ciphertest.NewOAuthProvider(t, brokerStore, issuer)
+	provider := ciphertest.NewOAuthProvider(t, brokerStore, issuer, nil)
 	mach := &machine.Service{
 		Store: brokerStore, Enroll: enr, Policy: cur,
 		Audience: brokerServer.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -139,7 +139,7 @@ func newContractRig(t *testing.T) *contractRig {
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// People sign in to the broker's approval page at the same local issuer, which stands in for
 		// every provider.
-		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), brokerServer.URL, brokerStore, reqMachine),
+		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, issuerKey), brokerServer.URL, brokerStore, reqMachine, nil),
 	})
 
 	dispatchDB := storetest.Open(t)

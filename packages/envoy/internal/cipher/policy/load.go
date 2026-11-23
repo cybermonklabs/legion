@@ -1,9 +1,11 @@
 package policy
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
@@ -310,6 +312,10 @@ type Loader struct {
 	// before Evaluate reads it. A loader without one refuses every secret carrying a
 	// dispatch-project tag (ReasonProjectUnchecked) and serves every other secret as before.
 	ProjectChecks bool
+	// Log is where the policy's lines go: the loader's own (LegacyTypeTagMessage) and every line
+	// of the Current NewCurrent builds on it. Nil is slog.Default(), which NewCurrent reads once;
+	// a Loader no Current holds reads it at each load.
+	Log *slog.Logger
 	// now is the clock the loader weighs a secret waiting for its value by (pendingAt): Current's
 	// own, which NewCurrent sets, and time.Now while it is nil, for a Loader no Current holds.
 	now func() time.Time
@@ -322,6 +328,9 @@ func (l Loader) clock() time.Time {
 	}
 	return l.now()
 }
+
+// logger is Log, or slog.Default() for a Loader built with none.
+func (l Loader) logger() *slog.Logger { return cmp.Or(l.Log, slog.Default()) }
 
 // Load reads the namespace into a Set: each secret it serves, each it refuses with why
 // (Set.Refused, refusalOf), each waiting for its value (Set.Pending) by the loader's clock
@@ -524,7 +533,7 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 		}
 		s.SessionDefault = true
 	}
-	if secretType := listingType(ls); secretType != "" {
+	if secretType := listingType(l.logger(), ls); secretType != "" {
 		if !ValidType(secretType) {
 			return Secret{}, ReasonTypeUnknown, nil
 		}

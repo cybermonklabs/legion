@@ -35,11 +35,13 @@ import (
 // written as a fixed phrase and its first line cut as a call line's fields are. grpc and
 // OpenTelemetry keep loggers of their own on stderr, which write past all of that, so both are
 // pointed at the default logger too (grpcLog, and logr's slog handler): grpc's before any gRPC
-// call, as grpclog asks.
-func setUpLogging(stderr io.Writer) {
+// call, as grpclog asks. It answers that default logger, which main hands every part of the
+// broker it builds, so the broker's own lines reach it by argument and not through the process.
+func setUpLogging(stderr io.Writer) *slog.Logger {
 	logmask.SetDefault(logging.NewCloudHandler(logmask.Writer(stderr)))
 	grpclog.SetLoggerV2(grpcLog{})
 	otel.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
+	return slog.Default()
 }
 
 // grpcMessage is the message of a line grpc writes (grpcLog).

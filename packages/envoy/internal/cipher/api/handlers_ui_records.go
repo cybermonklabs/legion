@@ -19,7 +19,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -112,7 +111,7 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 		writeNoSuchRecord(w)
 		return
 	case err != nil:
-		writeInternal(w, "read credential request kind", err)
+		s.writeInternal(w, "read credential request kind", err)
 		return
 	case kind != record.KindLauncherCredential:
 		s.refuseSecretRequestDecision(w, r, recordID)
@@ -127,7 +126,7 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	}
 	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
 	// (answer.ClipFields).
-	slog.Info("decision relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "record", recordID, "approve", approve})...)
+	s.log.Info("decision relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "record", recordID, "approve", approve})...)
 	s.decideMachineLogin(w, r, recordID, approve, body)
 }
 
@@ -149,10 +148,10 @@ func (s *server) refuseSecretRequestDecision(w http.ResponseWriter, r *http.Requ
 		writeNoSuchRecord(w)
 		return
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
-		writeProjectAccessUnavailable(w, "decide credential request", err)
+		s.writeProjectAccessUnavailable(w, "decide credential request", err)
 		return
 	case err != nil:
-		writeInternal(w, "read credential request", err)
+		s.writeInternal(w, "read credential request", err)
 		return
 	}
 	// Only the hold is read, not the record: a record signed for another BROKER_PUBLIC_URL
@@ -220,13 +219,13 @@ func (s *server) decideMachineLogin(w http.ResponseWriter, r *http.Request, reco
 	case errors.Is(err, machine.ErrServiceLogsInWithToken):
 		writeError(w, http.StatusBadRequest, "SERVICE_LOGS_IN_WITH_TOKEN", err.Error())
 		return
-	case writeMemberKindUncheckable(w, "the machine login's denial", err):
+	case s.writeMemberKindUncheckable(w, "the machine login's denial", err):
 		// A deny of a service's login, which no person Dispatch calls a restricted member makes,
 		// and the broker could not learn what kind of member the denying person is: nothing was
 		// decided, and the same deny runs once Dispatch answers.
 		return
 	case err != nil:
-		writeInternal(w, "decide machine login", err)
+		s.writeInternal(w, "decide machine login", err)
 		return
 	}
 	if !approve {
@@ -280,7 +279,7 @@ func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerNam
 	}
 	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
 	// (answer.ClipFields).
-	slog.Info("dismissal relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "record", recordID})...)
+	s.log.Info("dismissal relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "record", recordID})...)
 	dismissal, err := s.deps.Machine.Dismiss(r.Context(), recordID, body.Approver)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -291,7 +290,7 @@ func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerNam
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		// Dispatch could not say whether the person may see the record's project, so nothing was
 		// dismissed; the same dismissal succeeds once Dispatch answers.
-		writeProjectAccessUnavailable(w, "dismiss credential request", err)
+		s.writeProjectAccessUnavailable(w, "dismiss credential request", err)
 		return
 	case errors.Is(err, requests.ErrRestrictedDismissal):
 		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
@@ -305,13 +304,13 @@ func (s *server) dismissRecord(w http.ResponseWriter, r *http.Request, callerNam
 	case errors.Is(err, requests.ErrTerminal):
 		writeError(w, http.StatusConflict, "RECORD_TERMINAL", "the credential request was decided, or cancelled before its deadline, so it did not expire and there is nothing to dismiss")
 		return
-	case writeMemberKindUncheckable(w, "the dismissal", err):
+	case s.writeMemberKindUncheckable(w, "the dismissal", err):
 		// The record's list holds the person only as one of its approvers, and the broker could
 		// not learn whether Dispatch calls them a restricted member: nothing was dismissed, and the
 		// same dismissal runs once Dispatch answers.
 		return
 	case err != nil:
-		writeInternal(w, "dismiss credential request", err)
+		s.writeInternal(w, "dismiss credential request", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, dismissResponse{RecordID: dismissal.RecordID, DismissedBy: dismissal.DismissedBy, DismissedAt: dismissal.DismissedAt})

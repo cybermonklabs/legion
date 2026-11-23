@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -199,10 +198,10 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 	case errors.Is(err, enroll.ErrRestrictedMember):
 		writeError(w, http.StatusForbidden, "RESTRICTED_MEMBER_ENROLLS_NOTHING", err.Error())
 		return
-	case writeMemberKindUncheckable(w, "the enrollment", err):
+	case s.writeMemberKindUncheckable(w, "the enrollment", err):
 		return
 	case err != nil:
-		writeInternal(w, "create enrollment", err)
+		s.writeInternal(w, "create enrollment", err)
 		return
 	}
 
@@ -242,7 +241,7 @@ func (s *server) deleteEnrollment(w http.ResponseWriter, r *http.Request, cred e
 		writeError(w, http.StatusForbidden, "NOT_ENROLLING_CREDENTIAL", err.Error())
 		return
 	case err != nil && !errors.Is(err, enroll.ErrNotLive):
-		writeInternal(w, "revoke enrollment", err)
+		s.writeInternal(w, "revoke enrollment", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -314,7 +313,7 @@ func (s *server) carriedEnrollments(w http.ResponseWriter, r *http.Request, cred
 		writeError(w, http.StatusBadRequest, "INVALID_SESSION_IDS", err.Error())
 		return
 	case err != nil:
-		writeInternal(w, "read carried enrollments", err)
+		s.writeInternal(w, "read carried enrollments", err)
 		return
 	}
 	out := carriedResponse{Carried: make([]carriedEnrollment, 0, len(carried))}
@@ -448,7 +447,7 @@ func (s *server) renewEnrollment(w http.ResponseWriter, r *http.Request, id stri
 		writeError(w, http.StatusUnauthorized, "ENROLLMENT_NOT_LIVE", "enrollment is not live")
 		return
 	case errors.Is(err, enroll.ErrMachineLoginEnded):
-		slog.Warn("broker: machine session renewal refused: its machine login has ended", "enrollment", id)
+		s.log.Warn("broker: machine session renewal refused: its machine login has ended", "enrollment", id)
 		writeError(w, http.StatusUnauthorized, "ENROLLMENT_NOT_LIVE", err.Error())
 		return
 	case errors.Is(err, enroll.ErrPodTokenExpired):
@@ -458,15 +457,15 @@ func (s *server) renewEnrollment(w http.ResponseWriter, r *http.Request, id stri
 		writeError(w, http.StatusForbidden, "POD_IDENTITY_MISMATCH", err.Error())
 		return
 	case errors.Is(err, enroll.ErrPodTokenRequired):
-		slog.Warn("broker: pod enrollment renewal refused: projected token required", "enrollment", id)
+		s.log.Warn("broker: pod enrollment renewal refused: projected token required", "enrollment", id)
 		writeError(w, http.StatusForbidden, "POD_TOKEN_REQUIRED", err.Error())
 		return
 	case err != nil:
-		writeInternal(w, "renew enrollment", err)
+		s.writeInternal(w, "renew enrollment", err)
 		return
 	}
 	if renewal.WithoutPodToken {
-		slog.Warn("broker: pod enrollment renewed without its projected token", "enrollment", id, "pod_uid", renewal.RuntimeID, "slot", renewal.Slot)
+		s.log.Warn("broker: pod enrollment renewed without its projected token", "enrollment", id, "pod_uid", renewal.RuntimeID, "slot", renewal.Slot)
 	}
 	writeJSON(w, http.StatusOK, leaseResponse{LeaseExpiresAt: renewal.LeaseExpires})
 }
@@ -479,12 +478,12 @@ func (s *server) readSelf(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	if err != nil {
-		writeInternal(w, "read enrollment", err)
+		s.writeInternal(w, "read enrollment", err)
 		return
 	}
 	grants, err := s.deps.Machine.LiveGrants(ctx, id)
 	if err != nil {
-		writeInternal(w, "read live grants", err)
+		s.writeInternal(w, "read live grants", err)
 		return
 	}
 	if grants == nil {

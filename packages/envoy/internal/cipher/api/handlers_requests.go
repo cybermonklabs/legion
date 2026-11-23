@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -87,8 +86,8 @@ const projectAccessUnavailable = "the broker could not ask Dispatch about the pr
 
 // writeProjectAccessUnavailable logs err, which names the project Dispatch was asked about, and
 // answers the session 503 PROJECT_ACCESS_UNAVAILABLE with projectAccessUnavailable alone.
-func writeProjectAccessUnavailable(w http.ResponseWriter, op string, err error) {
-	slog.Warn("broker: "+op+": Dispatch could not be asked about a project", "error", err)
+func (s *server) writeProjectAccessUnavailable(w http.ResponseWriter, op string, err error) {
+	s.log.Warn("broker: "+op+": Dispatch could not be asked about a project", "error", err)
 	writeError(w, http.StatusServiceUnavailable, "PROJECT_ACCESS_UNAVAILABLE", projectAccessUnavailable)
 }
 
@@ -204,7 +203,7 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		// A requested secret belongs to a Dispatch project, and the broker could not ask Dispatch
 		// about it. Nothing was decided; the same request succeeds once Dispatch answers.
-		writeProjectAccessUnavailable(w, "create request", err)
+		s.writeProjectAccessUnavailable(w, "create request", err)
 		return
 	case errors.Is(err, policy.ErrPendingValue):
 		// A secret `agent-secrets secret create` made and has not yet filled: not final, unlike
@@ -217,12 +216,12 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		// enroll.Renew guards against. The caller's proof is no longer good for anything.
 		writeError(w, http.StatusUnauthorized, "PROOF_INVALID", "enrollment is not live")
 		return
-	case writeMemberKindUncheckable(w, "the secret request", err):
+	case s.writeMemberKindUncheckable(w, "the secret request", err):
 		// The broker could not learn whether Dispatch calls the session's person a restricted
 		// member, so it decides nothing and writes no request: 503, and the session asks again.
 		return
 	case err != nil:
-		writeInternal(w, "create request", err)
+		s.writeInternal(w, "create request", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, createRequestResponse{
@@ -426,14 +425,14 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())
 		return
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
-		writeProjectAccessUnavailable(w, "read request", err)
+		s.writeProjectAccessUnavailable(w, "read request", err)
 		return
 	case err != nil && wait > 0 && errors.Is(ctx.Err(), context.Canceled) && time.Now().Before(deadline.Add(requestWaitStep)):
 		recorder.NoteCallerEnded()
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the read finished; send it again")
 		return
 	case err != nil:
-		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read request", err)
+		s.writeUnavailable(w, "DATABASE_UNAVAILABLE", "read request", err)
 		return
 	}
 	resp := requestStatusResponse{
@@ -526,10 +525,10 @@ func (s *server) cancelRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such request")
 		return
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
-		writeProjectAccessUnavailable(w, "cancel request", err)
+		s.writeProjectAccessUnavailable(w, "cancel request", err)
 		return
 	case err != nil:
-		writeInternal(w, "cancel request", err)
+		s.writeInternal(w, "cancel request", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stateResponse{State: "cancelled"})
@@ -576,14 +575,14 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		// The grant holds a secret of a Dispatch project, which is checked again on every release,
 		// and Dispatch did not answer. Nothing was released and the grant stays live.
-		writeProjectAccessUnavailable(w, "read grant values", err)
+		s.writeProjectAccessUnavailable(w, "read grant values", err)
 		return
-	case writeMemberKindUncheckable(w, "the release", err):
+	case s.writeMemberKindUncheckable(w, "the release", err):
 		// As the request route answers it: nothing is released while the broker cannot learn
 		// whether the session's person is a restricted member.
 		return
 	case err != nil:
-		writeInternal(w, "read grant values", err)
+		s.writeInternal(w, "read grant values", err)
 		return
 	}
 	values := release.Values
@@ -625,10 +624,10 @@ func (s *server) revokeGrant(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such grant")
 		return
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
-		writeProjectAccessUnavailable(w, "revoke grant", err)
+		s.writeProjectAccessUnavailable(w, "revoke grant", err)
 		return
 	case err != nil:
-		writeInternal(w, "revoke grant", err)
+		s.writeInternal(w, "revoke grant", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stateResponse{State: "revoked"})

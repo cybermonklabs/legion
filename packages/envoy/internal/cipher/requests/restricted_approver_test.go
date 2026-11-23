@@ -60,12 +60,15 @@ func approverKinds() map[string]string {
 // approverRows is what one arm of approval puts in front of a person: a secret request still
 // pending and one whose deadline passed with nobody deciding it, each waiting on the person
 // through the arm, and a live grant the arm makes theirs to end. m asks dispatch, the stand-in,
-// what kind of member each person is; everything was written before it first asked.
+// what kind of member each person is; everything was written before it first asked. capture
+// records every line m and its policy log, from m's first on (recordLog), so a test reads one
+// step's lines as those past a mark (recordedSince).
 type approverRows struct {
 	m                *Machine
 	dispatch         *projectaccesstest.Server
 	pending, expired string
 	grant            string
+	capture          *logtest.Recorder
 }
 
 // asks m's stand-in afresh: a client of its own, with no answer kept from an earlier read.
@@ -105,14 +108,15 @@ func pendingRecord(t *testing.T, what string, req Request) string {
 // the grant of one of them groupMember approved.
 func groupApproverRows(t *testing.T) approverRows {
 	t.Helper()
-	f := newGroupFixture(t)
+	logger, capture := recordLog()
+	f := newLoggedGroupFixture(t, logger)
 	f.directory.Set(approversGroup, groupMember, secondMember, guestMember)
 	ask := func(box string) Request {
 		t.Helper()
 		enr, key := newEnrollment(t, f.m.Store, "session", box+"-"+t.Name(), new(groupAsker), nil)
 		return f.ask(t, enr, key, "TEAM_KEY")
 	}
-	rows := approverRows{m: f.m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds())}
+	rows := approverRows{m: f.m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds()), capture: capture}
 	rows.pending = pendingRecord(t, "TEAM_KEY asked for", ask("box-pending"))
 	expired := ask("box-expired")
 	rows.expired = pendingRecord(t, "TEAM_KEY asked for", expired)
@@ -137,9 +141,10 @@ func groupApproverRows(t *testing.T) approverRows {
 // person is to decide has ended (endHold), so it is on the person's list.
 func ownerApproverRows(t *testing.T, owner string) approverRows {
 	t.Helper()
-	m, enr, key := newJudgeFixture(t)
+	logger, capture := recordLog()
+	m, enr, key := newLoggedJudgeFixture(t, logger)
 	retag(t, m, policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1"))
-	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds())}
+	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds()), capture: capture}
 	pending := newSecretRequest(t, m, "box-pending")
 	rows.pending = *pending.RecordID
 	endHold(t, m, pending.ID)
@@ -161,7 +166,8 @@ func ownerApproverRows(t *testing.T, owner string) approverRows {
 // pod in anyone's stead.
 func anyoneApproverRows(t *testing.T) approverRows {
 	t.Helper()
-	m, _, _ := newJudgeFixture(t)
+	logger, capture := recordLog()
+	m, _, _ := newLoggedJudgeFixture(t, logger)
 	ask := func(runtimeID string) Request {
 		t.Helper()
 		pod, key := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, runtimeID+"-"+t.Name())
@@ -172,7 +178,7 @@ func anyoneApproverRows(t *testing.T) approverRows {
 		endHold(t, m, req.ID)
 		return req
 	}
-	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds())}
+	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds()), capture: capture}
 	rows.pending = pendingRecord(t, "SHARED_KEY asked for", ask("pod-pending"))
 	expired := ask("pod-expired")
 	rows.expired = pendingRecord(t, "SHARED_KEY asked for", expired)
@@ -358,7 +364,7 @@ func TestARestrictedMemberKeepsWhatIsTheirOwn(t *testing.T) {
 // Dispatch answers, the lists hold the group's requests again, the dismissal is written, and their
 // revoke ends the group's grant.
 func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	rows := groupApproverRows(t)
 	m := rows.m
 	ctx := context.Background()
@@ -424,8 +430,7 @@ func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
 		requireRevokedBy(t, m, *own.GrantID, secondMember)
 	})
 	t.Run("while Dispatch cannot say, a member's revoke of the group's grant is refused", func(t *testing.T) {
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(rows.capture.Records())
 		asked := rows.dispatch.Calls()
 		// A fresh client, so the read is a call of its own and not the failure the reads above
 		// kept (projectaccess's failureTTL): the revoke is seen to ask.
@@ -439,7 +444,7 @@ func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
 		if rows.dispatch.Calls() == asked {
 			t.Fatal("the revoke asked the down Dispatch nothing: it never met the outage")
 		}
-		if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 0 {
+		if lines := linesOf(recordedSince(rows.capture, mark), RevokeUncheckedMessage); len(lines) != 0 {
 			t.Fatalf("the log holds %v of %q; want none: nothing went ahead", lines, RevokeUncheckedMessage)
 		}
 	})
@@ -754,7 +759,8 @@ func resolvedAs(failure *net.DNSError) *http.Client {
 // group listing secondMember and guestMember beside them. Only its grant is filled in.
 func servicePodGroupRows(t *testing.T) approverRows {
 	t.Helper()
-	f := newGroupFixture(t)
+	logger, capture := recordLog()
+	f := newLoggedGroupFixture(t, logger)
 	f.directory.Set(approversGroup, groupMember, secondMember, guestMember)
 	pod, key := newServiceEnrollment(t, f.m.Store, fixtureService, fixtureSubject, "pod-team-"+t.Name())
 	asked := pendingRecord(t, "TEAM_KEY asked for by a service's pod", f.ask(t, pod, key, "TEAM_KEY"))
@@ -762,7 +768,7 @@ func servicePodGroupRows(t *testing.T) approverRows {
 	if err != nil || dec.GrantID == "" {
 		t.Fatalf("ApplyDecision(TEAM_KEY on a service's pod) by %s = %+v, %v; want a grant", groupMember, dec, err)
 	}
-	rows := approverRows{m: f.m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds()), grant: dec.GrantID}
+	rows := approverRows{m: f.m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds()), grant: dec.GrantID, capture: capture}
 	requireGrantApprover(t, f.m, rows.grant, approversForm)
 	rows.asks()
 	return rows
@@ -773,8 +779,9 @@ func servicePodGroupRows(t *testing.T) approverRows {
 // anyone's stead. Only its grant is filled in.
 func personSessionAnyoneRows(t *testing.T) approverRows {
 	t.Helper()
-	m, session, key := newJudgeFixture(t)
-	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds()), grant: judgedGrant(t, m, session, key, 600, "SHARED_KEY")}
+	logger, capture := recordLog()
+	m, session, key := newLoggedJudgeFixture(t, logger)
+	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds()), grant: judgedGrant(t, m, session, key, 600, "SHARED_KEY"), capture: capture}
 	requireGrantApprover(t, m, rows.grant, record.AnyoneApprover)
 	rows.asks()
 	return rows
@@ -807,7 +814,7 @@ func personSessionAnyoneRows(t *testing.T) approverRows {
 // member whose grant list failed to read their kind a moment before is refused once Dispatch
 // answers.
 func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	answers := func(status int, body string) func(*testing.T, approverRows) {
 		return func(_ *testing.T, r approverRows) { r.dispatch.SetAnswer(status, body); r.asks() }
 	}
@@ -821,13 +828,12 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 	}
 	wentAhead := func(t *testing.T, rows approverRows, person string) {
 		t.Helper()
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(rows.capture.Records())
 		if err := rows.m.RevokeByApprover(t.Context(), rows.grant, person, record.HumanActor(person)); err != nil {
 			t.Fatalf("RevokeByApprover by %s = %v; want it ended", person, err)
 		}
 		requireRevokedBy(t, rows.m, rows.grant, person)
-		if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 1 || lines[0]["person"] != person || lines[0]["level"] != "WARN" {
+		if lines := linesOf(recordedSince(rows.capture, mark), RevokeUncheckedMessage); len(lines) != 1 || lines[0]["person"] != person || lines[0]["level"] != "WARN" {
 			t.Fatalf("the log holds %v of %q; want one WARN line naming %s", lines, RevokeUncheckedMessage, person)
 		}
 	}
@@ -866,8 +872,7 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 	)
 	refused := func(t *testing.T, rows approverRows, person string, is error, why string) {
 		t.Helper()
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(rows.capture.Records())
 		err := rows.m.RevokeByApprover(t.Context(), rows.grant, person, record.HumanActor(person))
 		var uncheckable *projectaccess.MemberKindUncheckable
 		if !errors.As(err, &uncheckable) || uncheckable.Person != person || is != nil && !errors.Is(err, is) {
@@ -877,7 +882,7 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 			t.Fatalf("the refusal of %s's revoke says %q; want it to end %q", person, uncheckable.Error(), why)
 		}
 		requireGrantLive(t, rows.m, rows.grant)
-		if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 0 {
+		if lines := linesOf(recordedSince(rows.capture, mark), RevokeUncheckedMessage); len(lines) != 0 {
 			t.Fatalf("the log holds %v of %q; want none: nothing went ahead", lines, RevokeUncheckedMessage)
 		}
 	}
@@ -920,15 +925,14 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 		}))
 		t.Cleanup(hanging.Close)
 		rows.m.Projects = projectaccess.New(hanging.URL, rows.dispatch.Account, nil)
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(rows.capture.Records())
 		err := rows.m.RevokeByApprover(ctx, rows.grant, secondMember, record.HumanActor(secondMember))
 		var uncheckable *projectaccess.MemberKindUncheckable
 		if !errors.As(err, &uncheckable) || uncheckable.Person != secondMember || !uncheckable.CallerEnded() {
 			t.Fatalf("RevokeByApprover by %s whose caller hung up = %v; want MemberKindUncheckable naming them, its caller ended", secondMember, err)
 		}
 		requireGrantLive(t, rows.m, rows.grant)
-		if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 0 {
+		if lines := linesOf(recordedSince(rows.capture, mark), RevokeUncheckedMessage); len(lines) != 0 {
 			t.Fatalf("the log holds %v of %q; want none: nothing went ahead", lines, RevokeUncheckedMessage)
 		}
 	})
@@ -992,13 +996,12 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 	for _, arm := range servicePodArms {
 		t.Run("while Dispatch answers, a full member's revoke of "+arm.name+" ends it", func(t *testing.T) {
 			rows := arm.build(t)
-			capture := &logtest.Recorder{}
-			logtest.SetDefault(t, capture)
+			mark := len(rows.capture.Records())
 			if err := rows.m.RevokeByApprover(t.Context(), rows.grant, secondMember, record.HumanActor(secondMember)); err != nil {
 				t.Fatalf("RevokeByApprover by %s while Dispatch answers = %v; want it ended", secondMember, err)
 			}
 			requireRevokedBy(t, rows.m, rows.grant, secondMember)
-			if lines := linesOf(capture, RevokeUncheckedMessage); len(lines) != 0 {
+			if lines := linesOf(recordedSince(rows.capture, mark), RevokeUncheckedMessage); len(lines) != 0 {
 				t.Fatalf("the log holds %v of %q; want none: Dispatch answered", lines, RevokeUncheckedMessage)
 			}
 		})

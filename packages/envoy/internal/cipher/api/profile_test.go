@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"strings"
@@ -37,9 +38,11 @@ type profileServer struct {
 	mint   func(secrets.MintRequest) (secrets.Minted, error)
 }
 
-func newProfileServer(t *testing.T, mint func(secrets.MintRequest) (secrets.Minted, error)) *profileServer {
+// newProfileServer is the profileServer over APP_KEY and HUMAN_APP_KEY, whose every component logs
+// to log (nil is slog.Default()).
+func newProfileServer(t *testing.T, log *slog.Logger, mint func(secrets.MintRequest) (secrets.Minted, error)) *profileServer {
 	t.Helper()
-	return newProfileServerOf(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY"), policytest.AppProfile("HUMAN_APP_KEY")), mint, appSources(), "APP_KEY", "HUMAN_APP_KEY")
+	return newProfileServerOf(t, log, policytest.ProfilesFile(policytest.AppProfile("APP_KEY"), policytest.AppProfile("HUMAN_APP_KEY")), mint, appSources(), "APP_KEY", "HUMAN_APP_KEY")
 }
 
 // appSources are the two github-app secrets of a profileServer: APP_KEY, agent tier, and
@@ -54,10 +57,10 @@ func appSources() []secrets.LocalSecret {
 // newProfileServerOf is newProfileServer whose deployment's profiles file is file and whose
 // store holds sources, which the broker serves once each name of reread is reread, as a
 // session's reread makes the broker serve a secret stored after its last load.
-func newProfileServerOf(t *testing.T, file string, mint func(secrets.MintRequest) (secrets.Minted, error), sources []secrets.LocalSecret, reread ...string) *profileServer {
+func newProfileServerOf(t *testing.T, log *slog.Logger, file string, mint func(secrets.MintRequest) (secrets.Minted, error), sources []secrets.LocalSecret, reread ...string) *profileServer {
 	t.Helper()
 	s := &profileServer{mint: mint}
-	s.testServer = newProfiledTestServer(t, file, func(d *api.Deps) {
+	s.testServer = newLoggedTestServer(t, log, file, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
 			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 				s.mu.Lock()
@@ -155,7 +158,7 @@ func minting(secrets.MintRequest) (secrets.Minted, error) {
 // route's refusal of a field it does not take.
 func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
 	t.Parallel()
-	s := newProfileServer(t, minting)
+	s := newProfileServer(t, nil, minting)
 	grantID := s.grant(t)
 	s.take()
 
@@ -224,9 +227,9 @@ func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
 // (secrets.ErrMintNoInstallation). Each is logged at WARN as a refused scope, never as the
 // operator's mint failure, beside the record of the refusal the answer recorder writes for it.
 func TestAProfileMintRefusalIs422ProfileMintRefused(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	logged := policytest.CaptureLog(t)
-	s := newProfileServer(t, minting)
+	t.Parallel()
+	log, logged := policytest.Log()
+	s := newProfileServer(t, log, minting)
 	grantID := s.grant(t)
 	s.take()
 
@@ -280,7 +283,7 @@ func TestAProfileMintRefusalIs422ProfileMintRefused(t *testing.T) {
 // holds left out, and no github_app; a release whose cut left nothing out carries neither key.
 func TestTheValuesAnswerNamesWhatTheCutLeftOut(t *testing.T) {
 	t.Parallel()
-	s := newProfileServer(t, minting)
+	s := newProfileServer(t, nil, minting)
 	grantID := s.grant(t)
 
 	s.setMint(func(secrets.MintRequest) (secrets.Minted, error) {
@@ -325,7 +328,7 @@ func TestTheValuesAnswerNamesWhatTheCutLeftOut(t *testing.T) {
 // and still carries secrets.ErrMintNoInstallation, which only createRequest answers 422.
 func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.T) {
 	t.Parallel()
-	s := newProfileServer(t, minting)
+	s := newProfileServer(t, nil, minting)
 	grantID := s.grant(t)
 	s.setMint(refusing(fmt.Errorf("%w: github app 123456 has no installation on ada", secrets.ErrMintNoInstallation)))
 	status, body := s.values(t, grantID, nil)

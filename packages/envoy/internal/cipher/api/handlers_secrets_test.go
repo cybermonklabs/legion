@@ -235,19 +235,21 @@ func TestARereadNamesTheTypeItServes(t *testing.T) {
 // told to reread the name as on a 200, on a context of the handler's own; one whose request ended
 // during its metadata read merged nothing and tells nobody, nor does the 500.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
+	log, logged := policytest.Log()
 	verifier, sign := oneSession(t)
 	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
-	// telling the other pods through notifier.
+	// telling the other pods through notifier, the route and its policy logging to log.
 	route := func(local *secrets.Local, client secrets.SecretsManagerAPI, notifier *recordingNotifier) *http.ServeMux {
 		loader := policytest.Loader(local)
 		loader.Store = policytest.StoreThrough(local, client)
+		loader.Log = log
 		cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 		if err != nil {
 			t.Fatal(err)
 		}
 		mux := http.NewServeMux()
-		api.Register(mux, api.Deps{PublicURL: oneSessionBroker, Proof: verifier, Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, NotifyReread: notifier.notify})
+		api.Register(mux, api.Deps{PublicURL: oneSessionBroker, Proof: verifier, Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, NotifyReread: notifier.notify, Log: log})
 		return mux
 	}
 	// signed is a session's reread of name, on ctx.
@@ -266,7 +268,6 @@ func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
 	valueLocal, valueNotifier := secrets.NewLocal(), &recordingNotifier{}
 	valueMux := route(valueLocal, abandoningReader{SecretsManagerAPI: valueLocal, cancel: cancelValue}, valueNotifier)
 	valueLocal.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-	logged := policytest.CaptureLog(t)
 
 	for _, ended := range []struct {
 		during   string

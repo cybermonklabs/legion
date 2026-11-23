@@ -53,7 +53,7 @@ type brokerBoot struct {
 	// LISTEN is in place, into current, the same policy StartListener is given. In production:
 	// current.Refresh.
 	Catchup func(ctx context.Context, current *policy.Current) error
-	// Log is where every line this sequence logs goes. In production: slog.Default().
+	// Log is where every line this sequence logs goes. In production: the logger setUpLogging answers.
 	Log *slog.Logger
 }
 
@@ -304,7 +304,7 @@ type brokerStop struct {
 	EndServing func()
 	// CloseStore releases the database pools. In production: store.Store.Close.
 	CloseStore func()
-	// Log is where every line this sequence logs goes. In production: slog.Default().
+	// Log is where every line this sequence logs goes. In production: the logger setUpLogging answers.
 	Log *slog.Logger
 }
 

@@ -14,9 +14,10 @@ import (
 // LegacyTypeTagMessage once across two loads and two rereads. The ids logged are forgotten
 // first and after, so the count is this run's whatever ran before it in the process (-count=2).
 func TestTypeTagWinsAndOldTagLogsOnce(t *testing.T) {
+	// Not parallel: it clears the package-level legacyTypesLogged map (policy.ForgetLegacyTypeTagLines), which every load in the test binary reads and writes.
 	policy.ForgetLegacyTypeTagLines()
 	t.Cleanup(policy.ForgetLegacyTypeTagLines)
-	logged := policytest.CaptureLog(t)
+	log, logged := policytest.Log()
 	for _, row := range []struct {
 		name    string
 		tags    map[string]string
@@ -36,6 +37,7 @@ func TestTypeTagWinsAndOldTagLogsOnce(t *testing.T) {
 				secret.Tags[key] = value
 			}
 			loader := policytest.Loader(secrets.NewLocal(secret))
+			loader.Log = log
 			for range 2 {
 				set, err := loader.Load(t.Context())
 				if err != nil {

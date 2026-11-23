@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -564,13 +563,13 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	case taken != "" && fixed:
 		// Logged once the claim has committed, because it is one of the two ways a principal
 		// loses a name it used within the retention: the configuration now fixes it for an entry.
-		slog.Warn("broker: the token exchange took a session name the configuration fixes from its holder",
+		p.log.Warn("broker: the token exchange took a session name the configuration fixes from its holder",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	case taken != "":
 		// The other way: a claim the configuration does not fix takes a live name only from an
 		// account paired with its own (oauthstore.Store.SetSessionPairs), as an operator moving a
 		// deployment's pods to another account does. Logged once it has committed, as the other.
-		slog.Warn("broker: the token exchange took a session name from the account paired with its own",
+		p.log.Warn("broker: the token exchange took a session name from the account paired with its own",
 			"session", session.Extra[ClaimSession], "from", taken, "to", session.Principal)
 	}
 	p.oauth.WriteAccessResponse(ctx, w, request, resp)
@@ -600,7 +599,7 @@ func (p *Provider) reserveSessions(ctx context.Context) error {
 		return err
 	}
 	for session, holder := range left {
-		slog.Warn("broker: the token exchange left a session name the configuration fixes with its holder until the entry claims it",
+		p.log.Warn("broker: the token exchange left a session name the configuration fixes with its holder until the entry claims it",
 			"session", session, "holder", holder, "entry", p.reservations[session])
 	}
 	p.reserved.Store(true)
@@ -845,7 +844,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 		case errors.Is(err, projectaccess.ErrUnknownMemberKind):
 			return unknownMemberKind(err)
 		case errors.Is(err, projectaccess.ErrUnchecked):
-			slog.WarnContext(ctx, "broker: the token exchange goes on to mint an entry's token naming no project unchecked, since Dispatch could not be asked what kind of member its person is",
+			p.log.WarnContext(ctx, "broker: the token exchange goes on to mint an entry's token naming no project unchecked, since Dispatch could not be asked what kind of member its person is",
 				"principal", session.Principal, "session", name, "person", person, "error", err)
 			return nil
 		default:
@@ -876,7 +875,7 @@ func (p *Provider) projectAccess(ctx context.Context, subjectTokenType string, s
 	case errors.Is(err, projectaccess.ErrUnknownMemberKind):
 		return unknownMemberKind(err)
 	case errors.Is(err, projectaccess.ErrUnchecked):
-		slog.WarnContext(ctx, "broker: the token exchange goes on to mint a person's token naming no project unchecked, since Dispatch could not be asked what kind of member the person is",
+		p.log.WarnContext(ctx, "broker: the token exchange goes on to mint a person's token naming no project unchecked, since Dispatch could not be asked what kind of member the person is",
 			"principal", session.Principal, "session", name, "person", person, "error", err)
 		return nil
 	default:
@@ -1288,23 +1287,23 @@ func (p *Provider) registeredPodSession(ctx context.Context, session *oauthstore
 	var notThisRegistrars *oauthstore.PodSessionNotThisRegistrarsError
 	switch {
 	case errors.As(err, &released):
-		slog.Warn("broker: the token exchange refused a pod's trade under a registration its registrar released",
+		p.log.Warn("broker: the token exchange refused a pod's trade under a registration its registrar released",
 			"principal", session.Principal, "pod", session.Instance, "session", name, "registrar", released.Registrar)
 		return oauth2.ErrInvalidGrant.WithHintf("Refused: this pod's registration for session '%s' was released; a pod trades only under a registration its registrar has not released.", name)
 	case errors.As(err, &notThisRegistrars):
 		refused := oauth2.ErrInvalidGrant.WithDescription(oauthwire.SessionNameNotThisRegistrars + ":")
 		if notThisRegistrars.Holder == "" {
-			slog.Warn("broker: the token exchange refused a pod's trade under a session name bound to no daemon",
+			p.log.Warn("broker: the token exchange refused a pod's trade under a session name bound to no daemon",
 				"principal", session.Principal, "pod", session.Instance, "session", name,
 				"registrar", notThisRegistrars.Registrar)
 			return refused.WithHintf("The session name '%s' is bound to no daemon: a pod trades only under a session name the daemon that registered it holds.", name)
 		}
-		slog.Warn("broker: the token exchange refused a pod's trade under a session name another daemon holds",
+		p.log.Warn("broker: the token exchange refused a pod's trade under a session name another daemon holds",
 			"principal", session.Principal, "pod", session.Instance, "session", name,
 			"registrar", notThisRegistrars.Registrar, "holder", notThisRegistrars.Holder)
 		return refused.WithHintf("The session name '%s' belongs to another daemon: a pod trades only under a session name the daemon that registered it holds.", name)
 	case errors.As(err, &bound):
-		slog.Warn("broker: the token exchange refused a pod's trade proved with a key other than the one its registration for the session is bound to",
+		p.log.Warn("broker: the token exchange refused a pod's trade proved with a key other than the one its registration for the session is bound to",
 			"principal", session.Principal, "pod", session.Instance, "session", name,
 			"bound_thumbprint", bound.Bound, "presented_thumbprint", presented)
 		return oauth2.ErrInvalidGrant.WithHintf("Refused: this pod's registration for session '%s' is bound to another key; a role trades only for its own session.", name)

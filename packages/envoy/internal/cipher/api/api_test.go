@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -129,6 +130,18 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 // none for "", as the broker's BROKER_PROFILES_FILE is set or not.
 func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *testServer {
 	t.Helper()
+	return newLoggedTestServer(t, nil, file, adjust)
+}
+
+// newLoggedTestServer is newProfiledTestServer whose every component logs to log: the policy
+// (policy.Loader.Log), the answer recorder, the enrollment service, the request machine, the
+// OAuth provider, the approval page and the routes (api.Deps.Log), as cmd/cipherd/main.go hands
+// each the broker's one logger. A test that reads what the broker logs hands it a logger over a
+// recorder of its own, so it reads its own server's lines and no other test's; nil is
+// slog.Default(). adjust, nil for none, sees Deps.Log set, so a component it builds in place of
+// the server's own logs there too.
+func newLoggedTestServer(t *testing.T, log *slog.Logger, file string, adjust func(*api.Deps)) *testServer {
+	t.Helper()
 	st := storetest.Open(t)
 
 	local := secrets.NewLocal(
@@ -136,19 +149,19 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"),
 		policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"),
 	)
-	var cur *policy.Current
-	if file == "" {
-		cur = policytest.Current(t, local)
-	} else {
-		cur = policytest.ProfiledCurrent(t, local, file)
+	loader := policytest.Loader(local)
+	loader.Log = log
+	if file != "" {
+		loader.Profiles = policytest.Profiles(t, file)
 	}
+	cur := policytest.CurrentOf(t, loader)
 
 	mux := http.NewServeMux()
 	// Behind the answer recorder (answer.Middleware), which cmd/cipherd wraps the mux in, inside
 	// withRequestDeadline, counting on a registry of the server's own, so every answer a test reads
 	// is the one a deployment sends.
 	registry := metrics.New()
-	handler := answer.Middleware(mux, answer.NewAnswers(registry))
+	handler := answer.Middleware(mux, answer.NewAnswers(registry), log)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
@@ -165,7 +178,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	// daemon accounts log in as, which is what lets their logins enrol those pods. An account
 	// outside it is a pod no login here launches (POD_NOT_LAUNCHED).
 	servicesByAccount := map[string]string{workerAccount: "legion-daemon", otherAccount: "legion-daemon"}
-	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount}
+	enr := &enroll.Service{Store: st, Lease: time.Hour, Pod: enroll.K8sPodVerifier{Verifier: podVerifier}, ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, Log: log}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	// Wired as cmd/cipherd/main.go wires the enrollment route, so the route refuses a name another
 	// principal holds, unless a test pairs that principal's account with the enrolling pod's
@@ -193,9 +206,10 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		Store: st, Policy: cur, Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
+		Log: log,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := ciphertest.NewOAuthProvider(t, st, issuer)
+	provider := ciphertest.NewOAuthProvider(t, st, issuer, log)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -212,9 +226,12 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
 		// The page signs people in at the same local issuer, which stands in for every provider.
-		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, podKey), srv.URL, st, reqMachine),
+		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, podKey), srv.URL, st, reqMachine, log),
+		Log:      log,
 	}
-	adjust(&deps)
+	if adjust != nil {
+		adjust(&deps)
+	}
 	api.Register(mux, deps)
 
 	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry, sessions: sessions, handler: handler}
@@ -1142,9 +1159,9 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 // operator, naming the secret and the error's class, never the stored value: the refresh token
 // it holds, a canary no JSON or log quoting changes, is in neither.
 func TestAFailedMintIs502MintFailed(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	logged := policytest.CaptureLog(t)
-	ts := newTestServerWith(t, func(d *api.Deps) {
+	t.Parallel()
+	log, logged := policytest.Log()
+	ts := newLoggedTestServer(t, log, "", func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
 			policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 				return secrets.Minted{}, fmt.Errorf("%w: Google login needs a new sign-in: invalid_grant (invalid_rapt)", secrets.ErrMintRefused)

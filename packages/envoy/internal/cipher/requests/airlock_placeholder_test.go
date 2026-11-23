@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -32,8 +33,15 @@ const (
 // under a live grant (rollProfiles).
 func newPlaceholderFixture(t *testing.T, rules proxyrules.Rules, apps ...string) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, file string) {
 	t.Helper()
+	return newLoggedPlaceholderFixture(t, nil, rules, apps...)
+}
+
+// newLoggedPlaceholderFixture is newPlaceholderFixture whose Machine and policy write their lines
+// to log (newLoggedAirlockFixture).
+func newLoggedPlaceholderFixture(t *testing.T, log *slog.Logger, rules proxyrules.Rules, apps ...string) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, file string) {
+	t.Helper()
 	file = rulesProfiles(t, rules, apps...)
-	m, enrollmentID, key = newAirlockFixture(t, file)
+	m, enrollmentID, key = newLoggedAirlockFixture(t, log, file)
 	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
 	return m, enrollmentID, key, file
 }

@@ -3,7 +3,6 @@ package approval
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/oauthrefusal"
@@ -86,7 +85,7 @@ func signInFailureCode(err error) string {
 // recordSignIn writes the time of a sign-in that completed.
 func (p *Page) recordSignIn(ctx context.Context) {
 	if err := p.cfg.Store.RecordSignIn(ctx, time.Now()); err != nil {
-		slog.Warn("approval: the sign-in status was not written", "fact", "the last sign-in", "error", err)
+		p.log.Warn("approval: the sign-in status was not written", "fact", "the last sign-in", "error", err)
 	}
 }
 
@@ -97,17 +96,17 @@ func (p *Page) recordSignIn(ctx context.Context) {
 func (p *Page) recordFailedSignIn(ctx context.Context, err error) {
 	code := signInFailureCode(err)
 	if code == "" {
-		slog.Warn("approval: a failed sign-in that no status code names, so the sign-in status still reports the last one that was named", "error", err)
+		p.log.Warn("approval: a failed sign-in that no status code names, so the sign-in status still reports the last one that was named", "error", err)
 		return
 	}
 	if err := p.cfg.Store.RecordFailedSignIn(ctx, code, time.Now()); err != nil {
-		slog.Warn("approval: the sign-in status was not written", "fact", "the last failed sign-in", "error", err)
+		p.log.Warn("approval: the sign-in status was not written", "fact", "the last failed sign-in", "error", err)
 	}
 }
 
 // recordDecision writes the time of a decision made on the page.
 func (p *Page) recordDecision(ctx context.Context) {
 	if err := p.cfg.Store.RecordDecision(ctx, time.Now()); err != nil {
-		slog.Warn("approval: the sign-in status was not written", "fact", "the last decision", "error", err)
+		p.log.Warn("approval: the sign-in status was not written", "fact", "the last decision", "error", err)
 	}
 }

@@ -13,21 +13,24 @@ import (
 )
 
 func TestARereadStartedAfterDetachedWaitBeganIsNotCounted(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
+	log, logged := policytest.Log()
 	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
+	loader := policytest.Loader(local)
+	loader.Log = log
 	detached := &Detached{}
 	if err := detached.Wait(context.Background()); err != nil {
 		t.Fatalf("wait before a reread: %v", err)
 	}
 	mux := http.NewServeMux()
 	Register(mux, Deps{
-		Policy:        policytest.Current(t, local),
+		Policy:        policytest.CurrentOf(t, loader),
 		Detached:      detached,
 		SecretsStore:  secrets.StoreAWS,
 		SecretsPrefix: policytest.Prefix,
 		SecretsKMSKey: policytest.KeyARN,
+		Log:           log,
 	})
-	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/WORKER_TOKEN/reread", nil))
 	if recorder.Code != http.StatusAccepted {

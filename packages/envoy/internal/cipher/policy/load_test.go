@@ -31,7 +31,8 @@ import (
 // as the source, for every form Secrets Manager reports the agent-secrets key in — its ARN, its
 // key id, and an alias that points at it by name or by ARN.
 func TestLoadServesEveryWellTaggedSecretOnTheKey(t *testing.T) {
-	logged := policytest.CaptureLog(t)
+	t.Parallel()
+	log, logged := policytest.Log()
 	keyID := policytest.KeyARN[strings.LastIndex(policytest.KeyARN, "/")+1:]
 	byForm := map[string]string{
 		"BY_ARN":       policytest.KeyARN,
@@ -48,7 +49,9 @@ func TestLoadServesEveryWellTaggedSecretOnTheKey(t *testing.T) {
 	}
 	store.Put(policytest.Secret("DEEL_API_KEY", policy.OwnerShared, policy.TierHuman, "v"))
 
-	set, err := policytest.Loader(store).Load(context.Background())
+	loader := policytest.Loader(store)
+	loader.Log = log
+	set, err := loader.Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -118,6 +121,7 @@ func TestARefusalForANameOrTagCostsNoAliasLookup(t *testing.T) {
 // halves of that tag: a word the loader knows is carried into the Secret, and a word it does not
 // is refused.
 func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
+	t.Parallel()
 	refusals := map[string]struct {
 		secret secrets.LocalSecret
 		want   policy.Refusal
@@ -174,8 +178,9 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	store.Put(badName)
 	want[badName.Name] = policy.Refusal{Reason: policy.ReasonNameMalformed, Owner: owner}
 
-	logged := policytest.CaptureLog(t)
+	log, logged := policytest.Log()
 	loader := policytest.Loader(store, legion)
+	loader.Log = log
 	set, err := loader.Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -328,10 +333,13 @@ func TestLoadServesASecretOnlyWhileAVersionIsCurrent(t *testing.T) {
 // still without a value write nothing, and the reload that serves it writes the one line that
 // says so (now=servable). Its synctest bubble waits for the reload goroutine to return.
 func TestReloadServesASecretOnceItIsGivenAValue(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		store := secrets.NewLocal(policytest.Secret("SEEDED_LATER", owner, policy.TierHuman, ""))
-		logged := policytest.CaptureLog(t)
-		cur, err := policy.NewCurrent(t.Context(), policytest.Loader(store), 10*time.Millisecond)
+		log, logged := policytest.Log()
+		loader := policytest.Loader(store)
+		loader.Log = log
+		cur, err := policy.NewCurrent(t.Context(), loader, 10*time.Millisecond)
 		if err != nil {
 			t.Fatalf("NewCurrent: %v", err)
 		}
@@ -373,13 +381,14 @@ func (f *failingSecrets) ListSecrets(ctx context.Context, in *secretsmanager.Lis
 // TestReloadKeepsThePolicyWhenSecretsManagerFails pins the live policy across reloads: a tag edit
 // takes effect on the next tick, a reload that cannot reach Secrets Manager logs the exact
 // LoadFailedMessage line and keeps the previous policy, and a first load that fails fails the
-// broker's boot. Its synctest bubble waits for the reload goroutine to return, so no failed
-// reload logs into a later test's capture.
+// broker's boot. Its synctest bubble waits for the reload goroutine to return, and the policy
+// writes its lines to the test's own logger (policytest.Log), so no other test reads them.
 func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		store := &failingSecrets{Local: secrets.NewLocal(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
-		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix}
-		logged := policytest.CaptureLog(t)
+		log, logged := policytest.Log()
+		loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, Log: log}
 		cur, err := policy.NewCurrent(t.Context(), loader, 10*time.Millisecond)
 		if err != nil {
 			t.Fatalf("NewCurrent: %v", err)
@@ -653,6 +662,7 @@ func TestMergedSetVersionEqualsAFullLoads(t *testing.T) {
 // which is no refusal. Like Load it logs nothing: the lines are Current's. A name no secret can
 // carry is ErrNameInvalid.
 func TestLoadOneAnswersOneNameByLoadsRules(t *testing.T) {
+	t.Parallel()
 	deleting := policytest.Secret("DELETING", owner, policy.TierAgent, "v")
 	deleting.DeletedAt = new(time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC))
 	noOwner := policytest.Secret("NO_OWNER", owner, policy.TierAgent, "v")
@@ -663,8 +673,9 @@ func TestLoadOneAnswersOneNameByLoadsRules(t *testing.T) {
 		noOwner,
 		deleting,
 	)
+	log, logged := policytest.Log()
 	loader := policytest.Loader(store)
-	logged := policytest.CaptureLog(t)
+	loader.Log = log
 	ctx := context.Background()
 	set, err := loader.Load(ctx)
 	if err != nil {

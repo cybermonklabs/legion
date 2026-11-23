@@ -517,8 +517,9 @@ func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 // attempts the real minter's Retry makes, its line says attempts=3, and the counter holds the
 // third attempt under type google-login.
 func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	machine, enrollmentID, key, _ := newFixture(t)
+	t.Parallel()
+	logger, written := policytest.Log()
+	machine, enrollmentID, key, _ := newLoggedFixture(t, logger)
 	retag(t, machine, requestTypeSecret("FLAKY_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, ""))
 	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
@@ -534,7 +535,7 @@ func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want an automatic grant", request, err)
 	}
-	logged := policytest.CaptureLog(t)
+	logged := loggedSince(written)
 	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, ReleaseCall{})
 	if !errors.Is(err, ErrMintFailed) || secrets.MintAttempts(err) != 3 || release.Values != nil {
 		t.Fatalf("Values = %v, %v (%d attempts); want ErrMintFailed after 3 attempts", release.Values, err, secrets.MintAttempts(err))
@@ -556,8 +557,9 @@ func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
 // no minter, as every unservable secret's does. A new value stored and decoded serves it again,
 // and the same grant mints, since a value's version moves no policy Version.
 func TestAMintThatRefusesTheStoredValueRefusesTheSecret(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	machine, enrollmentID, key, _ := newAppFixture(t, "REFUSED_APP_KEY")
+	t.Parallel()
+	logger, written := policytest.Log()
+	machine, enrollmentID, key, _ := newLoggedAppFixture(t, logger, "REFUSED_APP_KEY")
 	secret := requestTypeSecret("REFUSED_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 	retag(t, machine, secret)
 	calls, refuse := 0, true
@@ -572,7 +574,7 @@ func TestAMintThatRefusesTheStoredValueRefusesTheSecret(t *testing.T) {
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want an automatic grant", request, err)
 	}
-	logged := policytest.CaptureLog(t)
+	logged := loggedSince(written)
 	if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, ReleaseCall{}); !errors.Is(err, ErrMintFailed) || !errors.Is(err, secrets.ErrMintStoredValue) || release.Values != nil {
 		t.Fatalf("Values = %v, %v; want ErrMintFailed for the stored value", release.Values, err)
 	}

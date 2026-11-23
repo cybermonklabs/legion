@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -106,12 +107,19 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 // fixture's operator naming no project.
 func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
 	t.Helper()
-	return newProfiledProjectFixture(t, rulesProfiles(t, rules), rules, team)
+	return newLoggedProjectFixture(t, nil, rules, team)
 }
 
-// newProfiledProjectFixture is newProjectFixture serving file, a profiles file, with rules, its
-// proxy blocks, in force.
-func newProfiledProjectFixture(t *testing.T, file string, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
+// newLoggedProjectFixture is newProjectFixture whose Machine (Machine.Log) and policy Current
+// (policy.Loader.Log) write their lines to log. Nil is slog.Default().
+func newLoggedProjectFixture(t *testing.T, log *slog.Logger, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
+	t.Helper()
+	return newProfiledProjectFixture(t, log, rulesProfiles(t, rules), rules, team)
+}
+
+// newProfiledProjectFixture is newLoggedProjectFixture serving file, a profiles file, with rules,
+// its proxy blocks, in force.
+func newProfiledProjectFixture(t *testing.T, log *slog.Logger, file string, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
 	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(append(fixtureSecrets(), projectSecrets()...)...)
@@ -119,6 +127,7 @@ func newProfiledProjectFixture(t *testing.T, file string, rules proxyrules.Rules
 	loader := policytest.Loader(local, fixtureService)
 	loader.ProjectChecks = true
 	loader.Profiles = policytest.Profiles(t, file, fixtureService)
+	loader.Log = log
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -132,6 +141,7 @@ func newProfiledProjectFixture(t *testing.T, file string, rules proxyrules.Rules
 		Skew:              time.Minute,
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
+		Log:               log,
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
@@ -426,8 +436,9 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 // (listApprovesSecrets); while it cannot say that either, the list holds none of those requests
 // (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
-	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	t.Parallel()
+	logger, written := policytest.Log()
+	m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 	keyedService, keyedServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-keyed-"+t.Name())
 	_, keyedGrant := grantOf(t, m, keyedService, keyedServiceKey, "INFRA-13: deploy the broker", "SERVICE_KEY")
 	plainService, plainServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-plain-"+t.Name())
@@ -444,7 +455,7 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 	}
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 	dispatch.SetProjectsDown(true)
-	logged := policytest.CaptureLog(t)
+	logged := loggedSince(written)
 
 	pendingIDs := func() []string {
 		t.Helper()

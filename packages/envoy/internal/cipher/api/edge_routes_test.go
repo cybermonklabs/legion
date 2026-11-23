@@ -48,15 +48,17 @@ func newTestEdgeMux(t *testing.T) *http.ServeMux {
 func newTestEdgeMuxPinging(t *testing.T, ping func(context.Context) error) *http.ServeMux {
 	t.Helper()
 	frozen := time.Unix(1_700_000_000, 0)
-	return newTestEdgeMuxClocked(t, ping, func() time.Time { return frozen })
+	return newTestEdgeMuxClocked(t, ping, func() time.Time { return frozen }, nil)
 }
 
-// newTestEdgeMuxClocked is newTestEdgeMuxPinging with now as its health cache's clock.
-func newTestEdgeMuxClocked(t *testing.T, ping func(context.Context) error, now func() time.Time) *http.ServeMux {
+// newTestEdgeMuxClocked is newTestEdgeMuxPinging with now as its health cache's clock, whose
+// every component logs to log (nil is slog.Default()).
+func newTestEdgeMuxClocked(t *testing.T, ping func(context.Context) error, now func() time.Time, log *slog.Logger) *http.ServeMux {
 	t.Helper()
 	provider, err := oauth.New(oauth.Config{
 		Secret: make([]byte, 32), DeviceLifetime: time.Minute, AccessLifetime: time.Minute, RefreshLifetime: time.Hour,
 		VerificationURL: "https://dispatch.internal.example/credentials/machine", ProofSkew: time.Minute,
+		Log: log,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -65,14 +67,15 @@ func newTestEdgeMuxClocked(t *testing.T, ping func(context.Context) error, now f
 		PublicURL:    "https://secrets.internal.example",
 		OAuth:        provider,
 		MachineLogin: &machine.Service{Audience: "https://secrets.internal.example", EdgeAudience: testEdgeURL},
-		Machine:      &requests.Machine{Audience: "https://secrets.internal.example", EdgeAudience: testEdgeURL},
-		Enroll:       &enroll.Service{Chain: &record.ChainVerifier{Audience: "https://secrets.internal.example", EdgeAudience: testEdgeURL}},
+		Machine:      &requests.Machine{Audience: "https://secrets.internal.example", EdgeAudience: testEdgeURL, Log: log},
+		Enroll:       &enroll.Service{Chain: &record.ChainVerifier{Audience: "https://secrets.internal.example", EdgeAudience: testEdgeURL}, Log: log},
 		DeviceLogin:  func(context.Context, url.Values, string) error { return nil },
 		TokenHooks: oauth.TokenHooks{
 			Before: func(context.Context, oauth2.GrantType, map[string]any) error { return nil },
 			After:  func(context.Context, oauth2.GrantType, map[string]any) (map[string]any, error) { return nil, nil },
 		},
 		DatabasePing: ping,
+		Log:          log,
 	}
 	mux := http.NewServeMux()
 	RegisterEdge(mux, deps, Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine", WorkspaceDomains: []string{"example.com"},
@@ -117,9 +120,8 @@ func TestTheEdgesHealthIsServedFromItsCachedPing(t *testing.T) {
 // through writeUnavailable at the edge too, and the callers write fifty-five lines, none naming a
 // port.
 func TestTheEdgesHealthWritesOneLineAPing(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	log := &logtest.Recorder{}
-	logtest.SetDefault(t, log)
 	failing := fmt.Errorf("database away")
 	var hang atomic.Bool
 	hang.Store(true)
@@ -131,7 +133,7 @@ func TestTheEdgesHealthWritesOneLineAPing(t *testing.T) {
 			return ctx.Err()
 		}
 		return failing
-	}, func() time.Time { return time.Unix(0, now.Load()) })
+	}, func() time.Time { return time.Unix(0, now.Load()) }, slog.New(log))
 	lines := func(what string, want int) {
 		t.Helper()
 		records := log.Records()

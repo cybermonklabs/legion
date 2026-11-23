@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -59,7 +58,7 @@ func (p *Page) beginSignIn(w http.ResponseWriter, r *http.Request, recordID, hin
 	}
 	raw, err := json.Marshal(pending)
 	if err != nil {
-		writeUnavailable(w, "start the sign-in", err)
+		p.writeUnavailable(w, "start the sign-in", err)
 		return
 	}
 	setCookie(w, signInCookie, base64.RawURLEncoding.EncodeToString(raw), signInMaxAge)
@@ -104,34 +103,34 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 	pending, ok := readPending(r)
 	clearCookie(w, signInCookie)
 	if !ok {
-		writeMessage(w, http.StatusBadRequest, codeSignInNotStarted, say("No sign-in in progress",
+		p.writeMessage(w, http.StatusBadRequest, codeSignInNotStarted, say("No sign-in in progress",
 			"This browser has no sign-in to the secrets broker in progress, or it took more than ten minutes. Open the request again to sign in."))
 		return
 	}
 	query := r.URL.Query()
 	if subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(pending.State)) != 1 {
-		slog.Warn("approval sign-in refused: the state is not the sign-in's")
-		writeMessage(w, http.StatusBadRequest, codeSignInStateInvalid, say("Sign-in refused",
+		p.log.Warn("approval sign-in refused: the state is not the sign-in's")
+		p.writeMessage(w, http.StatusBadRequest, codeSignInStateInvalid, say("Sign-in refused",
 			"This sign-in is not the one this browser started, so it was refused. Open the request again to sign in."))
 		return
 	}
 	if !validNext(pending.Next) {
-		slog.Warn("approval sign-in refused: it returns somewhere other than a request's page")
-		writeMessage(w, http.StatusBadRequest, codeSignInNextInvalid, say("Sign-in refused", "A sign-in returns only to a request's page."))
+		p.log.Warn("approval sign-in refused: it returns somewhere other than a request's page")
+		p.writeMessage(w, http.StatusBadRequest, codeSignInNextInvalid, say("Sign-in refused", "A sign-in returns only to a request's page."))
 		return
 	}
 	if providerError := query.Get("error"); providerError != "" {
 		// The error is the callback's query, which whoever holds the browser writes, so the line
 		// cuts it (answer.ClipFields).
-		slog.Warn("approval sign-in refused by the provider", answer.ClipFields([]any{"error", providerError})...)
-		writeMessage(w, http.StatusForbidden, codeSignInProviderRefused, say("Not signed in",
+		p.log.Warn("approval sign-in refused by the provider", answer.ClipFields([]any{"error", providerError})...)
+		p.writeMessage(w, http.StatusForbidden, codeSignInProviderRefused, say("Not signed in",
 			"The sign-in provider did not sign you in. Open the request again to try once more."))
 		return
 	}
 	code := query.Get("code")
 	if len(code) > oidc.MaxCallbackCode {
-		slog.Warn("approval sign-in refused: the code is longer than the broker sends a provider", "bytes", len(code))
-		writeMessage(w, http.StatusBadRequest, codeSignInCodeInvalid, say("Sign-in refused",
+		p.log.Warn("approval sign-in refused: the code is longer than the broker sends a provider", "bytes", len(code))
+		p.writeMessage(w, http.StatusBadRequest, codeSignInCodeInvalid, say("Sign-in refused",
 			"This sign-in's code is not one the sign-in provider issues, so it was refused. Open the request again to sign in."))
 		return
 	}
@@ -147,32 +146,32 @@ func (p *Page) ServeCallback(w http.ResponseWriter, r *http.Request, _ Session) 
 			p.writeSignInUnavailable(w, err)
 			return
 		}
-		slog.Warn("approval sign-in refused: the code exchange or the ID token failed", "error", err)
-		writeMessage(w, http.StatusForbidden, codeSignInUnverified, say("Sign-in refused",
+		p.log.Warn("approval sign-in refused: the code exchange or the ID token failed", "error", err)
+		p.writeMessage(w, http.StatusForbidden, codeSignInUnverified, say("Sign-in refused",
 			"The sign-in provider's answer did not verify, so you are not signed in. Open the request again to sign in."))
 		return
 	}
 	login, err := oidc.WorkspaceLogin(claims, p.cfg.SignIn.Domain)
 	if err != nil {
-		slog.Warn("approval sign-in refused", "login", login, "error", err)
+		p.log.Warn("approval sign-in refused", "login", login, "error", err)
 		p.recordFailedSignIn(r.Context(), err)
-		writeMessage(w, http.StatusForbidden, codeSignInAccountRefused, say("Sign-in refused", workspaceRefusal(err, p.cfg.SignIn.Domain)))
+		p.writeMessage(w, http.StatusForbidden, codeSignInAccountRefused, say("Sign-in refused", workspaceRefusal(err, p.cfg.SignIn.Domain)))
 		return
 	}
 	secret := randomBytes()
 	if old, ok := sessionSecret(r); ok {
 		if err := p.cfg.Store.DeleteBrowserSession(r.Context(), sha256.Sum256(old)); err != nil {
-			writeUnavailable(w, "end the previous sign-in", err)
+			p.writeUnavailable(w, "end the previous sign-in", err)
 			return
 		}
 	}
 	lifetime := p.cfg.SignIn.SessionLifetime
 	if err := p.cfg.Store.CreateBrowserSession(r.Context(), sha256.Sum256(secret), login, time.Now().Add(lifetime)); err != nil {
-		writeUnavailable(w, "keep the sign-in", err)
+		p.writeUnavailable(w, "keep the sign-in", err)
 		return
 	}
 	setCookie(w, sessionCookie, base64.RawURLEncoding.EncodeToString(secret), lifetime)
-	slog.Info("approval sign-in", "login", login)
+	p.log.Info("approval sign-in", "login", login)
 	p.recordSignIn(r.Context())
 	redirect(w, http.StatusSeeOther, pending.Next)
 }
@@ -194,27 +193,27 @@ func workspaceRefusal(err error, domain string) string {
 // browser nowhere: the provider's own sign-in is the person's.
 func (p *Page) ServeLogout(w http.ResponseWriter, r *http.Request, sess Session) {
 	if !p.sameOrigin(r) {
-		refuseOrigin(w)
+		p.refuseOrigin(w)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if err := r.ParseForm(); err != nil {
-		writeMessage(w, http.StatusBadRequest, codeFormUnreadable, say("Not signed out", "The form could not be read."))
+		p.writeMessage(w, http.StatusBadRequest, codeFormUnreadable, say("Not signed out", "The form could not be read."))
 		return
 	}
 	if secret, ok := sessionSecret(r); ok {
 		if err := p.cfg.Store.DeleteBrowserSession(r.Context(), sha256.Sum256(secret)); err != nil {
-			writeUnavailable(w, "end the sign-in", err)
+			p.writeUnavailable(w, "end the sign-in", err)
 			return
 		}
 	}
 	clearCookie(w, sessionCookie)
 	if sess.live() {
-		slog.Info("approval sign-out", "login", sess.Login)
+		p.log.Info("approval sign-out", "login", sess.Login)
 	}
 	m := say("Signed out", "You are signed out of the secrets broker.")
 	if next := r.PostForm.Get("next"); validNext(next) {
 		m.Link = &link{Href: next, Text: "Back to the request"}
 	}
-	writeMessage(w, http.StatusOK, "", m)
+	p.writeMessage(w, http.StatusOK, "", m)
 }

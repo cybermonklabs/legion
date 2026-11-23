@@ -44,7 +44,8 @@ func projectsDownDispatch(t *testing.T) *projectaccesstest.Server {
 // same fixed sentence, which names neither project; what Dispatch answered goes to the broker's
 // log.
 func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
+	log, logged := policytest.Log()
 	tagged := func(name, project string) secrets.LocalSecret {
 		s := policytest.Secret(name, policy.OwnerShared, policy.TierAgent, strings.ToLower(name)+"-v1")
 		s.Tags[policy.TagProject] = project
@@ -55,10 +56,11 @@ func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
 		"PRIV": {Visibility: "private", Owner: testApprover},
 		"PUB":  {Visibility: "public", Owner: testApprover},
 	}, nil))
-	ts := newTestServerWith(t, func(d *api.Deps) {
+	ts := newLoggedTestServer(t, log, "", func(d *api.Deps) {
 		local := secrets.NewLocal(tagged("PRIV_KEY", "PRIV"), tagged("PUB_KEY", "PUB"))
 		loader := policytest.Loader(local)
 		loader.ProjectChecks = true
+		loader.Log = d.Log
 		current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 		if err != nil {
 			t.Fatalf("policy.NewCurrent: %v", err)
@@ -75,7 +77,6 @@ func TestAnUnansweredProjectNamesNoProjectToTheSession(t *testing.T) {
 
 	down := projectsDownDispatch(t)
 	access.Serve(down)
-	logged := policytest.CaptureLog(t)
 	var sentences []string
 	for _, c := range []struct {
 		what, path, project string

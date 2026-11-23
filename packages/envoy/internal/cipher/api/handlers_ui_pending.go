@@ -31,7 +31,7 @@ func (s *server) listPending(w http.ResponseWriter, r *http.Request, _ string) {
 	}
 	rows, err := s.deps.Machine.PendingForApprover(r.Context(), approver, states)
 	if err != nil {
-		writeInternal(w, "list pending requests", err)
+		s.writeInternal(w, "list pending requests", err)
 		return
 	}
 	entries := make([]wire.PendingEntry, len(rows))

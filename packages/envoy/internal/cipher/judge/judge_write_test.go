@@ -17,13 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
 
-// capturedLog is every line slog writes while f runs, at every level.
-func capturedLog(t *testing.T, f func()) []string {
+// capturedLog is every line runner logs while f runs, at every level: runner logs to a logger of
+// the test's own while f runs, and to its own again after.
+func capturedLog(t *testing.T, runner *Runner, f func()) []string {
 	t.Helper()
 	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	defer slog.SetDefault(previous)
+	previous := runner.log
+	runner.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	defer func() { runner.log = previous }()
 	f()
 	return strings.Split(strings.TrimSpace(logs.String()), "\n")
 }
@@ -55,7 +56,7 @@ func TestAShutdownDuringTheApprovalIsNoRefusal(t *testing.T) {
 	stop := time.AfterFunc(200*time.Millisecond, cancel)
 	defer stop.Stop()
 
-	lines := capturedLog(t, func() {
+	lines := capturedLog(t, runner, func() {
 		runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 	})
 	if line := lineWith(lines, "record=record-1", "the broker stopped"); !strings.Contains(line, "level=INFO") {
@@ -89,7 +90,7 @@ func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
 			machine.applyErr = errors.New("unexpected EOF")
 			machine.wrote = c.wrote
 			runner := New(t.Context(), testOptions(t, dispatch, model, machine))
-			lines := capturedLog(t, func() {
+			lines := capturedLog(t, runner, func() {
 				runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 			})
 			if line := lineWith(lines, "record=record-1", c.says); !strings.Contains(line, c.level) {
@@ -117,7 +118,7 @@ func TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.applyErr = fmt.Errorf("%w: conn closed", requests.ErrCommitUncertain)
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
-	lines := capturedLog(t, func() {
+	lines := capturedLog(t, runner, func() {
 		runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 	})
 	if line := lineWith(lines, "record=record-1", "COMMIT"); !strings.Contains(line, "level=WARN") {
@@ -142,7 +143,7 @@ func TestAnUnexpectedRefusalDuringAStopIsStillAnError(t *testing.T) {
 	machine.onApply = cancel
 	machine.applyErr = errors.New("the state machine refused the approval for a reason the judge never meets")
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
-	lines := capturedLog(t, func() {
+	lines := capturedLog(t, runner, func() {
 		runner.write(ctx, pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 	})
 	if line := lineWith(lines, "record=record-1", "refused"); !strings.Contains(line, "level=ERROR") {
@@ -161,7 +162,7 @@ func TestTheVerdictLineWaitsForTheRowItNames(t *testing.T) {
 	machine.applyErr = fmt.Errorf("%w: unexpected EOF", requests.ErrCommitUncertain)
 	machine.logErr = errors.New("the database refused the row")
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
-	lines := capturedLog(t, func() {
+	lines := capturedLog(t, runner, func() {
 		runner.write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 	})
 	if line := lineWith(lines, "record=record-1", "could not be written"); !strings.Contains(line, "level=ERROR") || !strings.Contains(line, "not_applied=") {

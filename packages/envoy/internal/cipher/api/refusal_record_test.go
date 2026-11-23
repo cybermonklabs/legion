@@ -157,11 +157,13 @@ func refusalRecords(capture *logtest.Recorder, answerID string) []map[string]any
 // grant's authorization_pending and slow_down write no record and are counted. No record holds
 // the value of a secret the port released, or a refusal's message.
 func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
+	// Both servers below log to capture, so a record either writes is read, and a record neither
+	// may write is looked for where it would be.
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	log := slog.New(capture)
 	var failDeviceLogin, draining atomic.Bool
-	ts := newTestServerWith(t, func(d *api.Deps) {
+	ts := newLoggedTestServer(t, log, "", func(d *api.Deps) {
 		login := d.DeviceLogin
 		d.DeviceLogin = func(ctx context.Context, form url.Values, userCode string) error {
 			if failDeviceLogin.Load() {
@@ -177,7 +179,7 @@ func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
 	})
 	// A server whose page and account routes take one request an hour from an address, so the
 	// second answers the approval page's own 429 (Page.WriteRateLimited).
-	limited := newTestServerWith(t, func(d *api.Deps) { d.AccountLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1} })
+	limited := newLoggedTestServer(t, log, "", func(d *api.Deps) { d.AccountLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1} })
 
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	// WORKER_TOKEN is granted at once and its value released through the port, so the record

@@ -336,17 +336,18 @@ func (*throttled) Error() string {
 // has no caller to be told of it, so it is the broker's failure and it logs the ERROR line
 // "broker: reread secret failed" that an operator's alert counts, naming the secret.
 func TestARereadNoCallerWaitsOnLogsTheStoresFailure(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
+	log, logged := policytest.Log()
 	local := secrets.NewLocal()
 	loader := policytest.Loader(local)
 	loader.Store = policytest.StoreThrough(local, failingDescriber{SecretsManagerAPI: local})
+	loader.Log = log
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
-	logged := policytest.CaptureLog(t)
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, Log: log})
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
 	if recorder.Code != http.StatusAccepted {
@@ -373,17 +374,18 @@ func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.Descri
 // so a panic there would stop the whole broker. It recovers the panic, identifies the reread
 // step and the panic in one ERROR line, and the broker goes on answering.
 func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
+	log, logged := policytest.Log()
 	local := secrets.NewLocal()
 	loader := policytest.Loader(local)
 	loader.Store = policytest.StoreThrough(local, panickingDescriber{SecretsManagerAPI: local})
+	loader.Log = log
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN})
-	logged := policytest.CaptureLog(t)
+	api.Register(mux, api.Deps{Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN, Log: log})
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
 	if recorder.Code != http.StatusAccepted {
@@ -401,17 +403,20 @@ func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 }
 
 func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
+	log, logged := policytest.Log()
 	local := secrets.NewLocal(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
+	loader := policytest.Loader(local)
+	loader.Log = log
 	mux := http.NewServeMux()
 	api.Register(mux, api.Deps{
-		Policy:        policytest.Current(t, local),
+		Policy:        policytest.CurrentOf(t, loader),
 		SecretsStore:  secrets.StoreAWS,
 		SecretsPrefix: policytest.Prefix,
 		SecretsKMSKey: policytest.KeyARN,
 		NotifyReread:  func(context.Context, string, []string) { panic("a peer-notice defect") },
+		Log:           log,
 	})
-	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
 	if recorder.Code != http.StatusAccepted {

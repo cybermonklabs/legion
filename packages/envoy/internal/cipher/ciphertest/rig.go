@@ -13,6 +13,7 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -363,7 +364,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		PodOperators: podOperators, Projects: config.projectAccess,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)
+	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess, nil)
 	mach := &machine.Service{
 		Store: st, Enroll: enr, Policy: cur,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, PendingTTL: 15 * time.Minute, CredentialLifetime: 7 * 24 * time.Hour,
@@ -383,7 +384,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine),
+		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine, nil),
 	}
 	api.Register(mux, deps)
 	if config.edge {
@@ -431,15 +432,15 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
 // ExchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
 // one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
-// one, and an unlisted one to be refused as.
-func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
+// one, and an unlisted one to be refused as. It logs to log (nil is slog.Default()).
+func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, log *slog.Logger) *oauth.Provider {
 	t.Helper()
-	return newOAuthProvider(t, st, issuer, 15*time.Minute, nil)
+	return newOAuthProvider(t, st, issuer, 15*time.Minute, nil, log)
 }
 
 // newOAuthProvider is NewOAuthProvider whose access tokens live accessLifetime and whose trades
 // are held to what access answers, nil for no project check.
-func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration, access projectaccess.Access) *oauth.Provider {
+func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, accessLifetime time.Duration, access projectaccess.Access, log *slog.Logger) *oauth.Provider {
 	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -475,6 +476,7 @@ func newOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, ac
 			GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
 			Projects:   access,
 		},
+		Log: log,
 	}, oauthStore)
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)

@@ -7,6 +7,7 @@ package requests
 import (
 	"crypto/ecdsa"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -58,7 +59,14 @@ func federationSecret() secrets.LocalSecret {
 // for a judge key is held for it; a test of a broker that runs no judge sets m.Judge to nil.
 func newJudgeFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 	t.Helper()
-	m, enrollmentID, key, _ := newFixture(t)
+	return newLoggedJudgeFixture(t, nil)
+}
+
+// newLoggedJudgeFixture is newJudgeFixture whose Machine and policy write their lines to log
+// (newLoggedFixture).
+func newLoggedJudgeFixture(t *testing.T, log *slog.Logger) (*Machine, string, *ecdsa.PrivateKey) {
+	t.Helper()
+	m, enrollmentID, key, _ := newLoggedFixture(t, log)
 	m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{
 		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900))},
 		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(900))},

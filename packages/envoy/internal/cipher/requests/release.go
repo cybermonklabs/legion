@@ -10,7 +10,6 @@ package requests
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"runtime"
 	"runtime/debug"
 	"time"
@@ -222,7 +221,7 @@ func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 		defer m.givingBack.Done()
 		for _, each := range back {
 			func() {
-				defer recoverGiveBack(each.name)
+				defer m.recoverGiveBack(each.name)
 				each.giveBack(detached, each.name, each.value, each.form)
 			}()
 		}
@@ -236,10 +235,10 @@ func (m *Machine) giveBack(ctx context.Context, read []releasedName) {
 const giveBackPanickedMessage = "broker: a give-back of a minted value panicked; the value is left to lapse"
 
 // recoverGiveBack, deferred directly around one value's GiveBack (giveBack), logs a panic there
-// (giveBackPanickedMessage) and lets the give-back go on to the next value.
-func recoverGiveBack(name string) {
+// (giveBackPanickedMessage) to the machine's logger and lets the give-back go on to the next value.
+func (m *Machine) recoverGiveBack(name string) {
 	if p := recover(); p != nil {
-		slog.Error(giveBackPanickedMessage, "name", name, "error", panicText(p), "stack", string(debug.Stack()))
+		m.log().Error(giveBackPanickedMessage, "name", name, "error", panicText(p), "stack", string(debug.Stack()))
 	}
 }
 
@@ -294,6 +293,6 @@ func (m *Machine) auditGrantUsed(ctx context.Context, grantID string, checked gr
 		checked.enrollmentID, checked.requestID, grantID, "session:"+checked.enrollmentID, detail); err != nil {
 		return err
 	}
-	slog.Info(ReleasedMessage, attrs...)
+	m.log().Info(ReleasedMessage, attrs...)
 	return nil
 }

@@ -11,6 +11,7 @@
 package enroll
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -338,6 +340,11 @@ type Service struct {
 	// every credential the token exchange minted for a machine, which keeps that credential
 	// authenticating only while its account is still listed.
 	VMServicesByAccount map[string]string
+	// Log is where the service's lines go. Nil is slog.Default(), read once, at the first line
+	// (log), since a Service is a struct its caller fills and has no constructor.
+	Log     *slog.Logger
+	logOnce sync.Once
+	logTo   *slog.Logger
 
 	// testConflictHook, when set, runs once a 23505 insert conflict is detected in createAttempt,
 	// before the recovery lookup. It exists only so a test can deterministically reproduce the
@@ -350,6 +357,12 @@ type Service struct {
 	// so a test can deterministically reproduce the race where the next release's migration
 	// drops the index that read saw; no production caller sets it.
 	testSchemaReadHook func()
+}
+
+// log is Log, or slog.Default() for a Service given none, read once.
+func (s *Service) log() *slog.Logger {
+	s.logOnce.Do(func() { s.logTo = cmp.Or(s.Log, slog.Default()) })
+	return s.logTo
 }
 
 // execer is satisfied by both *pgxpool.Pool (via Store.Pool) and pgx.Tx, so mintLauncherCredential
@@ -921,7 +934,7 @@ func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
 	case errors.Is(err, projectaccess.ErrListRequired):
 		return ErrProjectsRequired
 	case errors.Is(err, projectaccess.ErrUnchecked) && len(in.Projects) == 0:
-		slog.WarnContext(ctx, "broker: a session naming no project enrolled unchecked, since Dispatch could not be asked what kind of member its person is",
+		s.log().WarnContext(ctx, "broker: a session naming no project enrolled unchecked, since Dispatch could not be asked what kind of member its person is",
 			"person", *in.Operator, "runtime_id", in.RuntimeID, "error", err)
 		return nil
 	}
@@ -1001,7 +1014,7 @@ func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollm
 		// An enrollment's claim is never fixed (bindSessionName), so a name it took from a live
 		// holder is a pair's take: the one way a principal loses a name it used within the
 		// retention to an enrollment. Logged once it has committed, as the exchange logs its own.
-		slog.Warn("broker: an enrollment took a session name from the account paired with its own",
+		s.log().Warn("broker: an enrollment took a session name from the account paired with its own",
 			"session", *in.SessionID, "from", taken, "to", *in.name, "enrollment", in.ID)
 	}
 	return in, false, nil

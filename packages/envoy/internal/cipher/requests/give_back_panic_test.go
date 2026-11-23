@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestAGiveBackThatPanicsLeavesItsValueToLapseAndGoesOn: a release hands two minted values back,
@@ -19,13 +17,12 @@ import (
 // is still given back, and one ERROR line names FIRST_KEY with the goroutine's stack and holds
 // neither value. Unrecovered, the panic ends the test binary, as it would the broker.
 func TestAGiveBackThatPanicsLeavesItsValueToLapseAndGoesOn(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const firstValue, secondValue = "ghs_the-first-minted-token", "ghs_the-second-minted-token"
-	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	logger, capture := recordLog()
 	var mu sync.Mutex
 	var gaveBack []string
-	m := &Machine{GiveBacks: map[string]GiveBack{"github-app": func(_ context.Context, name, value, _ string) {
+	m := &Machine{Log: logger, GiveBacks: map[string]GiveBack{"github-app": func(_ context.Context, name, value, _ string) {
 		if name == "FIRST_KEY" {
 			panic(fmt.Sprintf("the revoke of %s failed", value))
 		}

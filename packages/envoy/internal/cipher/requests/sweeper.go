@@ -1,9 +1,11 @@
 package requests
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
@@ -60,7 +62,8 @@ var sweeps = [...]struct{ name, failed string }{
 // read fresh from Postgres, never from memory, so a restart resumes exactly where the rows are. A
 // lease that ran out while no broker was serving is not lapsed (enroll.Service.EndLapsed), so the
 // first sweep after an outage never ends it for that: the broker's serving clock
-// (enroll.ServingClock) gives it the time back instead.
+// (enroll.ServingClock) gives it the time back instead. Log is where its lines go: nil is
+// slog.Default(), read once, at the first line.
 type Sweeper struct {
 	Enrollments   *enroll.Service
 	Machine       *Machine
@@ -68,9 +71,18 @@ type Sweeper struct {
 	OAuth         *oauthstore.Store
 	Interval      time.Duration
 	Wake          func(ctx context.Context, enrollmentID, requestID, state string)
+	Log           *slog.Logger
 	// failing is, for each sweep, whether its last run failed (settle), which is the whole of
 	// what this Sweeper remembers between ticks: the rows are read fresh every tick.
 	failing [len(sweeps)]bool
+	logOnce sync.Once
+	logTo   *slog.Logger
+}
+
+// log is Log, or slog.Default() for a Sweeper given none, read once.
+func (s *Sweeper) log() *slog.Logger {
+	s.logOnce.Do(func() { s.logTo = cmp.Or(s.Log, slog.Default()) })
+	return s.logTo
 }
 
 func (s *Sweeper) Run(ctx context.Context) {
@@ -100,14 +112,14 @@ func (s *Sweeper) Run(ctx context.Context) {
 func (s *Sweeper) Tick(ctx context.Context) {
 	ended, err := s.Enrollments.EndLapsed(ctx)
 	for _, e := range ended {
-		slog.Info("broker sweeper: ended an enrollment whose lease lapsed", "enrollment_id", e.ID, "kind", e.Kind,
+		s.log().Info("broker sweeper: ended an enrollment whose lease lapsed", "enrollment_id", e.ID, "kind", e.Kind,
 			"runtime_id", e.RuntimeID, "slot", e.Slot, "lease_expired_at", e.LeaseExpires,
 			"grants_revoked", e.GrantsRevoked, "requests_cancelled", e.RequestsCancelled, "left_dormant", e.Dormant, "handed_to", e.HandedTo)
 	}
 	s.settle(ctx, sweepLapsedEnrollments, err)
 	carried, err := s.Enrollments.EndCarried(ctx)
 	for _, e := range carried {
-		slog.Info("broker sweeper: ended a dormant enrollment whose carry window passed", "enrollment_id", e.ID,
+		s.log().Info("broker sweeper: ended a dormant enrollment whose carry window passed", "enrollment_id", e.ID,
 			"kind", e.Kind, "runtime_id", e.RuntimeID, "slot", e.Slot, "session_id", e.SessionID,
 			"dormant_since", e.DormantSince, "grants_revoked", e.GrantsRevoked, "requests_cancelled", e.RequestsCancelled)
 	}
@@ -135,7 +147,7 @@ func (s *Sweeper) Tick(ctx context.Context) {
 	deleted, err := s.Machine.Store.DeleteExpiredBrowserSessions(ctx, now)
 	s.settle(ctx, sweepExpiredBrowserSessions, err)
 	if err == nil && deleted > 0 {
-		slog.Info("broker sweeper: deleted expired browser sessions", "count", deleted)
+		s.log().Info("broker sweeper: deleted expired browser sessions", "count", deleted)
 	}
 	// The placeholders of a revoked or expired grant, which the table would otherwise keep for
 	// as long as the grant row lives. Deleting them is safe at the moment the grant ends,
@@ -147,7 +159,7 @@ func (s *Sweeper) Tick(ctx context.Context) {
 	deleted, err = s.Machine.deleteSpentPlaceholders(ctx)
 	s.settle(ctx, sweepEndedGrantPlaceholders, err)
 	if err == nil && deleted > 0 {
-		slog.Info("broker sweeper: deleted the placeholders of grants that have ended", "count", deleted)
+		s.log().Info("broker sweeper: deleted the placeholders of grants that have ended", "count", deleted)
 	}
 }
 
@@ -160,10 +172,10 @@ func (s *Sweeper) settle(ctx context.Context, sw sweep, err error) {
 	switch {
 	case ctx.Err() != nil:
 	case err != nil && !s.failing[sw]:
-		slog.Warn(sweeps[sw].failed, "sweep", sweeps[sw].name, "error", err)
+		s.log().Warn(sweeps[sw].failed, "sweep", sweeps[sw].name, "error", err)
 		s.failing[sw] = true
 	case err == nil && s.failing[sw]:
-		slog.Info(SweepRecoveredMessage, "sweep", sweeps[sw].name)
+		s.log().Info(SweepRecoveredMessage, "sweep", sweeps[sw].name)
 		s.failing[sw] = false
 	}
 }

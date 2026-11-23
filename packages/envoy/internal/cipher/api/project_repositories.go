@@ -69,7 +69,7 @@ func (s *server) projectRepositories(w http.ResponseWriter, r *http.Request, edg
 	defer s.repositoryCalls.leave(edge.Account)
 	repositories, err := s.deps.ProjectRepositories.Repositories(r.Context(), project)
 	if err != nil {
-		writeUnavailable(w, "REPOSITORIES_UNKNOWN", "read the project's repositories from Dispatch", err)
+		s.writeUnavailable(w, "REPOSITORIES_UNKNOWN", "read the project's repositories from Dispatch", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, projectRepositoriesResponse{Project: project, Repositories: repositories})

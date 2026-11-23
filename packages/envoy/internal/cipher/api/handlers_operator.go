@@ -91,7 +91,7 @@ func (s *server) retireOperatorMachine(w http.ResponseWriter, r *http.Request, c
 		return
 	}
 	if err := s.deps.Enroll.RetireCredential(r.Context(), id, record.LauncherActor(id)); err != nil {
-		writeInternal(w, "retire launcher credential", err)
+		s.writeInternal(w, "retire launcher credential", err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

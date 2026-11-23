@@ -400,7 +400,7 @@ func TestNoQuestionIsAskedOnceTheListsClockHasEnded(t *testing.T) {
 // be asked, so it is left off and logged with the SLOW rows: the threshold listRowsAtOnce's doc
 // states. With no bound on the rows read at once, the TEAM row is listed after 64 too.
 func TestAListReadsAtMostSixtyFourRowsAtOnce(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	for _, c := range listsUnderTest {
 		for _, k := range []struct {
 			stalled int
@@ -410,12 +410,13 @@ func TestAListReadsAtMostSixtyFourRowsAtOnce(t *testing.T) {
 			{listRowsAtOnce, false},
 		} {
 			t.Run(fmt.Sprintf("%s, %d rows naming SLOW read first", c.name, k.stalled), func(t *testing.T) {
-				m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+				logger, all := recordLog()
+				m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 				stall, team, slow := stalledRowsFirst(t, m, c, k.stalled)
-				capture := &logtest.Recorder{}
-				logtest.SetDefault(t, capture)
+				mark := len(all.Records())
 
 				listed := c.listed(t, m)
+				capture := recordedSince(all, mark)
 
 				if stall.stalled.Load() == 0 {
 					t.Fatal("the list asked Dispatch nothing about SLOW, so nothing stalled: the test is blind")
@@ -532,17 +533,18 @@ func panicLogged(capture *logtest.Recorder) bool {
 // panics, asked outside any list, is ErrProjectAccessUnavailable. Each panic is logged at ERROR
 // with its stack. Unrecovered, each panic ends the test binary.
 func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	for _, c := range listsUnderTest {
 		t.Run("a question of "+c.name, func(t *testing.T) {
-			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+			logger, all := recordLog()
+			m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 			team := c.row(t, m, "panic-team", teamProject+"-1: rotate the deploy key")
 			boom := c.row(t, m, "panic-boom", boomProject+"-1: rotate the boom key")
 			m.Projects = panicsAbout{inner: m.Projects, project: boomProject}
-			capture := &logtest.Recorder{}
-			logtest.SetDefault(t, capture)
+			mark := len(all.Records())
 
 			listed := c.listed(t, m)
+			capture := recordedSince(all, mark)
 
 			if !slices.Contains(listed, team) {
 				t.Errorf("the list leaves off the row naming TEAM-1, %s; want it listed: the list goes on", team)
@@ -577,7 +579,8 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 	}
 
 	t.Run("a row's own read on the pending list", func(t *testing.T) {
-		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+		logger, all := recordLog()
+		m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 		pod, key := privatePod(t, m)
 		plain, err := m.Create(t.Context(), pod, signRequest(t, m, key, "rotate the vendor key", "SHARED_KEY"), "")
 		if err != nil || plain.RecordID == nil {
@@ -591,10 +594,10 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 			t.Fatalf("PendingForApprover(%s) before any panic = %v; want both of PRIV's pod's requests: the test is blind", insider, listed)
 		}
 		m.Projects = panicsAbout{inner: m.Projects, states: true}
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(all.Records())
 
 		listed := pendingRecords(t, m, insider)
+		capture := recordedSince(all, mark)
 
 		if !slices.Contains(listed, *plain.RecordID) {
 			t.Errorf("the list leaves off the untagged request %s; want it listed: the list goes on", *plain.RecordID)
@@ -608,7 +611,8 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 	})
 
 	t.Run("a row's own read on the grant list", func(t *testing.T) {
-		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+		logger, all := recordLog()
+		m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 		pod, key := privatePod(t, m)
 		plain, err := m.Create(t.Context(), pod, signRequest(t, m, key, "rotate the service key", "SERVICE_KEY"), "")
 		if err != nil || plain.GrantID == nil {
@@ -622,10 +626,10 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 			t.Fatalf("GrantsForApprover(%s) before any panic = %v; want both of PRIV's pod's grants: the test is blind", fixtureOperator, listed)
 		}
 		m.Projects = panicsAbout{inner: m.Projects, states: true}
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(all.Records())
 
 		listed := approverGrants(t, m, fixtureOperator)
+		capture := recordedSince(all, mark)
 
 		if !slices.Contains(listed, *plain.GrantID) {
 			t.Errorf("the list leaves off the untagged grant %s; want it listed: the list goes on", *plain.GrantID)
@@ -639,16 +643,16 @@ func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
 	})
 
 	t.Run("a decision's question", func(t *testing.T) {
-		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+		logger, all := recordLog()
+		m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 		boom := listsUnderTest[0].row(t, m, "panic-decision", boomProject+"-1: rotate the boom key")
 		m.Projects = panicsAbout{inner: m.Projects, project: boomProject}
-		capture := &logtest.Recorder{}
-		logtest.SetDefault(t, capture)
+		mark := len(all.Records())
 
 		if err := m.HideUnseen(t.Context(), boom, outsider); !errors.Is(err, ErrProjectAccessUnavailable) {
 			t.Errorf("HideUnseen(the request naming BOOM-1, %s) = %v; want ErrProjectAccessUnavailable, failing closed", outsider, err)
 		}
-		if !panicLogged(capture) {
+		if capture := recordedSince(all, mark); !panicLogged(capture) {
 			t.Errorf("the log holds %v; want an ERROR line of %q with its stack", linesOf(capture, readPanickedMessage), readPanickedMessage)
 		}
 	})

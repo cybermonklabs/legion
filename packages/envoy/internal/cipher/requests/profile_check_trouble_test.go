@@ -94,7 +94,7 @@ func answersInstallationsWith(stand *gitHubStand, status int, body string) {
 // (docs/site/src/content/docs/broker/operate.md, the "narrowing check was skipped" row): each of
 // them leaves the request pending all the same, so the request's state cannot tell them apart.
 func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
+	t.Parallel()
 	// APP_KEY's profile names one repository; OTHER_APP_KEY's, one the stand-in refuses, which
 	// the spent-checks row asks for to spend the enrollment's checks.
 	profiles := map[string]string{
@@ -233,8 +233,8 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			logged := policytest.CaptureLog(t)
-			f := newProfileFixture(t, map[string]int64{standInOwner: 7}, profiles)
+			logger, logged := policytest.Log()
+			f := newLoggedProfileFixture(t, logger, map[string]int64{standInOwner: 7}, profiles)
 			tc.trouble(t, f)
 
 			request, err := f.create(t, "APP_KEY")

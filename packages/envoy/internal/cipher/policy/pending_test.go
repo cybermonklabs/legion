@@ -42,12 +42,15 @@ func createdWithoutValue(name string, created time.Time) secrets.LocalSecret {
 // it no-current-value, with the ERROR line and the series that refusal has always had. The ten
 // minutes are written here as a literal, so a change of the window fails this test.
 func TestASecretWithoutAValueIsPendingForItsFirstTenMinutes(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		created := time.Now()
 		store := secrets.NewLocal(createdWithoutValue("WAITING_KEY", created))
 		registry := metrics.New()
-		logged := policytest.CaptureLog(t)
-		cur := policytest.MeteredCurrent(t, store, registry)
+		log, logged := policytest.Log()
+		loader := policytest.Loader(store)
+		loader.Log = log
+		cur := policytest.MeteredCurrentOf(t, loader, registry)
 		id := policytest.ID("WAITING_KEY")
 		ctx := context.Background()
 
@@ -125,11 +128,14 @@ func TestAStrandedSecretIsRefusedButNeverDeleted(t *testing.T) {
 // within the window is served at the next reread, writing nothing beyond the one pending line;
 // one deleted within the window leaves the policy writing nothing either.
 func TestAPendingSecretThatGetsItsValueIsServedWithNoMoreLines(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		now := time.Now()
 		store := secrets.NewLocal(createdWithoutValue("FILLED_KEY", now), createdWithoutValue("DROPPED_KEY", now))
-		logged := policytest.CaptureLog(t)
-		cur := policytest.Current(t, store)
+		log, logged := policytest.Log()
+		loader := policytest.Loader(store)
+		loader.Log = log
+		cur := policytest.CurrentOf(t, loader)
 		want := pendingLine(policytest.ID("DROPPED_KEY"), owner, true) + pendingLine(policytest.ID("FILLED_KEY"), owner, true) + noProfilesLine
 		if logged.String() != want {
 			t.Fatalf("the first load logged\n%s\nwant\n%s", logged, want)

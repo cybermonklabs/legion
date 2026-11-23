@@ -261,8 +261,8 @@ const (
 )
 
 // registrationRig is a test server whose exchange lists the daemon's account and the worker's,
-// the daemon's own login as the registrar, and the token of the worker's pod pod, with the
-// default logger captured for the test.
+// the daemon's own login as the registrar, and the token of the worker's pod pod, with every line
+// the server logs kept in capture, the recorder of the logger the rig hands it.
 type registrationRig struct {
 	ts                  *testServer
 	capture             *logtest.Recorder
@@ -275,8 +275,7 @@ type registrationRig struct {
 func newRegistrationRig(t *testing.T, pod string) *registrationRig {
 	t.Helper()
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
+	ts := newLoggedTestServer(t, slog.New(capture), "", withExchangeAccounts(t, daemonAccount, workerAccount))
 	return &registrationRig{
 		ts: ts, capture: capture, pod: pod,
 		registrar: ts.accountToken(t, daemonAccount, "", time.Hour),
@@ -327,7 +326,7 @@ func (r *registrationRig) loggedOnly(t *testing.T, what string, want map[string]
 // as registered, naming the registrar and the thumbprint and generation it sent beside those
 // stored, and no key replaced, since there was none to replace.
 func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newRegistrationRig, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const kA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	rig := newRegistrationRig(t, "pod-uid-fresh")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
@@ -345,7 +344,7 @@ func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
 // neither, and is still logged naming the registrar beside the thumbprint it replaced, since the
 // line of a takeover is the one record of it.
 func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newRegistrationRig, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-relaunched")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
@@ -381,7 +380,7 @@ func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
 // own naming the registrar and the thumbprint and generation it sent beside the row's, which it
 // left as it was.
 func TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (newRegistrationRig, logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-late")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})

@@ -7,7 +7,6 @@ package api
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/jackc/pgx/v5"
@@ -40,7 +39,7 @@ func (s *server) listGrantsForApprover(w http.ResponseWriter, r *http.Request, _
 func (s *server) writeApproverGrants(w http.ResponseWriter, r *http.Request, approver string) {
 	rows, err := s.deps.Machine.GrantsForApprover(r.Context(), approver)
 	if err != nil {
-		writeInternal(w, "list grants for approver", err)
+		s.writeInternal(w, "list grants for approver", err)
 		return
 	}
 	out := make([]wire.ApproverGrantResp, len(rows))
@@ -87,7 +86,7 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 	}
 	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
 	// (answer.ClipFields).
-	slog.Info("grant revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "grant", id})...)
+	s.log.Info("grant revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "grant", id})...)
 	s.revokeGrantAs(w, r, id, body.Approver, record.HumanActor(body.Approver))
 }
 
@@ -116,7 +115,7 @@ func (s *server) revokeByApprover(w http.ResponseWriter, r *http.Request, caller
 // them without asking end too, and its later requests for them ask their owner.
 func (s *server) revokeGrantAs(w http.ResponseWriter, r *http.Request, id, login, actor string) {
 	if err := s.deps.Machine.RevokeByApprover(r.Context(), id, login, actor); err != nil {
-		writeRevokeRefusal(w, err)
+		s.writeRevokeRefusal(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stateResponse{State: "revoked"})
@@ -126,17 +125,17 @@ func (s *server) revokeGrantAs(w http.ResponseWriter, r *http.Request, id, login
 const grantMoving = "the grant moved to another box each time this revoke read it, so nothing was revoked; run the same revoke again"
 
 // writeRevokeRefusal answers the error RevokeByApprover refused a revoke with, err not nil.
-func writeRevokeRefusal(w http.ResponseWriter, err error) {
+func (s *server) writeRevokeRefusal(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such grant")
 	case errors.Is(err, requests.ErrProjectAccessUnavailable):
 		// Dispatch could not say whether the person may see the grant's project, so nothing was
 		// revoked; the same revoke succeeds once Dispatch answers.
-		writeProjectAccessUnavailable(w, "revoke grant", err)
+		s.writeProjectAccessUnavailable(w, "revoke grant", err)
 	case errors.Is(err, requests.ErrNotApprover):
 		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
-	case writeMemberKindUncheckable(w, "the revoke", err):
+	case s.writeMemberKindUncheckable(w, "the revoke", err):
 		// The grant admits the person only as an approver, and the broker could not read what kind
 		// of member they are: Dispatch answered what the broker cannot read, the caller went away,
 		// or Dispatch did not answer and the grant does not name the person as its approver.
@@ -144,7 +143,7 @@ func writeRevokeRefusal(w http.ResponseWriter, err error) {
 	case errors.Is(err, requests.ErrGrantMoving):
 		// Adoptions kept moving the grant between the person rule and the transaction, so the
 		// revoke decided nothing; it succeeds once the grant stays on one session.
-		slog.Warn("broker: revoke grant: the grant kept moving", "error", err)
+		s.log.Warn("broker: revoke grant: the grant kept moving", "error", err)
 		writeError(w, http.StatusConflict, "GRANT_MOVING", grantMoving)
 	case errors.Is(err, context.Canceled):
 		// The caller hung up, and a read or the transaction after the member-kind read failed on
@@ -154,6 +153,6 @@ func writeRevokeRefusal(w http.ResponseWriter, err error) {
 		answer.FromWriter(w).NoteCallerEnded()
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the revoke finished; send it again")
 	default:
-		writeInternal(w, "revoke grant", err)
+		s.writeInternal(w, "revoke grant", err)
 	}
 }

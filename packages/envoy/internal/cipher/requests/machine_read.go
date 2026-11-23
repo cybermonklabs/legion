@@ -124,7 +124,7 @@ const GrantApproverLapsedMessage = "group approval lapsed"
 // noteLapsedApprover writes GrantApproverLapsedMessage for grant grantID, whose chain rests on
 // recordID and which holds granted, refused at at, when err holds a
 // record.ApproverNotAdmittedError, fresh or not, and writes nothing for any other error.
-func noteLapsedApprover(grantID, recordID, at string, granted []requestedSecret, err error) {
+func (m *Machine) noteLapsedApprover(grantID, recordID, at string, granted []requestedSecret, err error) {
 	var lapsed record.ApproverNotAdmittedError
 	if !errors.As(err, &lapsed) {
 		return
@@ -133,7 +133,7 @@ func noteLapsedApprover(grantID, recordID, at string, granted []requestedSecret,
 	for i, g := range granted {
 		names[i] = g.name
 	}
-	slog.Warn(GrantApproverLapsedMessage, "grant", grantID, "record_id", recordID, "secret", strings.Join(names, ","),
+	m.log().Warn(GrantApproverLapsedMessage, "grant", grantID, "record_id", recordID, "secret", strings.Join(names, ","),
 		"decider", lapsed.Login, "group", lapsed.Group, "reason", "decider is not a member now", "at", at)
 }
 
@@ -241,7 +241,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 		return grantRelease{}, err
 	}
 	if recordID, err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at); err != nil {
-		noteLapsedApprover(grantID, recordID, at, granted, err)
+		m.noteLapsedApprover(grantID, recordID, at, granted, err)
 		return grantRelease{}, err
 	}
 	// The grant's names, once the grant is the caller's and its chain verifies, so a refusal of
@@ -337,7 +337,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) (string, error) {
 	recordID, err := m.verifyChain(ctx, grantID)
 	if errors.Is(err, ErrGrantChainInvalid) {
-		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
+		m.log().Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
 	}
 	return recordID, err
 }
@@ -447,7 +447,7 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 		return secrets.Minted{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
 	}
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
-		slog.Warn(NarrowingRefusedMessage, "grant", grantID, "enrollment", enrollmentID, "name", g.name, "error", err)
+		m.log().Warn(NarrowingRefusedMessage, "grant", grantID, "enrollment", enrollmentID, "name", g.name, "error", err)
 	}
 	if err != nil {
 		return secrets.Minted{}, fmt.Errorf("read %s: %w", g.name, err)
@@ -558,7 +558,7 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 	// The grant's own release path reads no enrollment row here, so the line names the
 	// enrollment and nothing else of the session; the route's read fills the rest in
 	// (grantLogEvent).
-	logGrantRow("grant.revoked", GrantEndedActor, enrollmentRow{ID: enrollmentID}, requestID, grantID, rawJSON(rowDetail))
+	m.logGrantRow("grant.revoked", GrantEndedActor, enrollmentRow{ID: enrollmentID}, requestID, grantID, rawJSON(rowDetail))
 	return reason
 }
 
@@ -595,7 +595,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		if err != nil {
 			return secrets.Minted{}, err
 		}
-		return secrets.Minted{Value: trimmedValue(stored, g.name)}, nil
+		return secrets.Minted{Value: m.trimmedValue(stored, g.name)}, nil
 	}
 	if secretType == policy.TypeAzureLogin && g.decision != policy.Approval {
 		return secrets.Minted{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
@@ -619,14 +619,14 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		return secrets.Minted{}, err
 	}
-	token, err := mint(ctx, mintRequest(g.name, secretType, served, trimmedValue(value, g.name), scope))
+	token, err := mint(ctx, mintRequest(g.name, secretType, served, m.trimmedValue(value, g.name), scope))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		return secrets.Minted{}, err
 	}
 	if err != nil {
 		// The minter's error names its class and why, never the stored value or a token, so the
 		// line is safe to log; the session sees the same words as MINT_FAILED.
-		slog.Error(MintFailedMessage, "name", g.name, "type", secretType, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
+		m.log().Error(MintFailedMessage, "name", g.name, "type", secretType, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
 			m.Policy.RefuseValue(ctx, g.name, version, secretType, err)
 		}
@@ -634,7 +634,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	}
 	for _, account := range slices.Sorted(maps.Keys(token.LeftOut)) {
 		for _, permission := range token.LeftOut[account] {
-			slog.Warn(ProfilePermissionLeftOutMessage, "name", g.name, "account", account, "permission", permission)
+			m.log().Warn(ProfilePermissionLeftOutMessage, "name", g.name, "account", account, "permission", permission)
 		}
 	}
 	return token, nil
@@ -670,10 +670,10 @@ func mintRequest(name, secretType string, served policy.Secret, value string, sc
 // (TrailingLineEndingRemovedMessage) naming the secret each time the rule changed it. Both of
 // release's reads pass through it, so the value a session is handed and the input a minter is
 // given are read by the one rule and logged alike.
-func trimmedValue(value, name string) string {
+func (m *Machine) trimmedValue(value, name string) string {
 	spend, changed := policy.TrimLineEnding(value)
 	if changed {
-		slog.Info(TrailingLineEndingRemovedMessage, "name", name)
+		m.log().Info(TrailingLineEndingRemovedMessage, "name", name)
 	}
 	return spend
 }
@@ -1367,7 +1367,7 @@ candidates:
 		// lapsed, is passed over for the next candidate, its lines written as a release writes
 		// them.
 		if recordID, err := m.verifyChainForRelease(ctx, match.grantID, enr.ID, "reuse"); err != nil {
-			noteLapsedApprover(match.grantID, recordID, "reuse", granted, err)
+			m.noteLapsedApprover(match.grantID, recordID, "reuse", granted, err)
 			if errors.Is(err, ErrGrantChainInvalid) || errors.Is(err, ErrGrantNotLive) {
 				continue candidates
 			}
@@ -1803,7 +1803,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	judging.Go(func() error {
 		for i, p := range out {
 			if notify := insteadOf(i); p.Kind == record.KindAgentSecret && notify != "" {
-				readRow(&verdicts[i], func() (bool, error) {
+				readRow(m.log(), &verdicts[i], func() (bool, error) {
 					return m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason)
 				})
 			}
@@ -1813,7 +1813,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	for i, p := range out {
 		if p.Kind == record.KindAgentSecret && insteadOf(i) == "" {
 			judging.Go(func() error {
-				readRow(&verdicts[i], func() (bool, error) {
+				readRow(m.log(), &verdicts[i], func() (bool, error) {
 					return m.maySeeRecord(own, approver, p.Identifiers, reads[i].sessionProjects, reads[i].reason)
 				})
 				return nil
@@ -1908,8 +1908,8 @@ type rowVerdict struct {
 // readRow is read's answer for one row of a list, into verdict. A panic in read is the row's error
 // (recoverRead), so the row fails closed, left off and logged as one Dispatch did not answer for,
 // and the list goes on.
-func readRow(verdict *rowVerdict, read func() (bool, error)) {
-	defer recoverRead(&verdict.err)
+func readRow(log *slog.Logger, verdict *rowVerdict, read func() (bool, error)) {
+	defer recoverRead(log, &verdict.err)
 	verdict.listed, verdict.err = read()
 }
 
@@ -1924,16 +1924,16 @@ const readPanickedMessage = "requests: a read of whose request this is panicked,
 
 // recoverRead, deferred directly by a goroutine a read of the person rule runs in (a list's row
 // (readRow), one of maySee's questions, or a question the list's memo asks (accessMemoEntry.settle)),
-// turns a panic there into *err, errReadPanicked naming it, and logs it with its stack
-// (readPanickedMessage). net/http recovers a panic only on a handler's own goroutine, so one in a
+// turns a panic there into *err, errReadPanicked naming it, and logs it with its stack to log
+// (readPanickedMessage), the machine's logger. net/http recovers a panic only on a handler's own goroutine, so one in a
 // goroutine a read started would end the broker; recovered, the row it was read for fails closed.
-func recoverRead(err *error) {
+func recoverRead(log *slog.Logger, err *error) {
 	p := recover()
 	if p == nil {
 		return
 	}
 	*err = fmt.Errorf("%w: %s", errReadPanicked, panicText(p))
-	slog.Error(readPanickedMessage, "error", *err, "stack", string(debug.Stack()))
+	log.Error(readPanickedMessage, "error", *err, "stack", string(debug.Stack()))
 }
 
 // listedInStead answers whether reader's list holds the agent-secret row p, whose record names
@@ -2029,7 +2029,7 @@ func (m *Machine) leaveOut(id, kind string, expires time.Time, reason error) {
 	m.leftOut[id] = keep
 	m.leftOutMu.Unlock()
 	if !logged {
-		slog.Warn(PendingLeftOutMessage, "record_id", id, "kind", kind, "reason", reason)
+		m.log().Warn(PendingLeftOutMessage, "record_id", id, "kind", kind, "reason", reason)
 	}
 }
 
@@ -2473,7 +2473,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 			continue
 		}
 		judging.Go(func() error {
-			readRow(&verdicts[i], func() (bool, error) {
+			readRow(m.log(), &verdicts[i], func() (bool, error) {
 				return m.maySeeRecord(own, login, g.Names, reads[i].sessionProjects, reads[i].reason)
 			})
 			return nil

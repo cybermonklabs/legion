@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"log/slog"
 	"maps"
 	"net/url"
 	"os"
@@ -136,7 +137,7 @@ func issuedClaims(t *testing.T) []string {
 		// The person's own token is checked against Google's issuer too, under the device-flow
 		// client's audience; the actor token below is the machine's, under Google's own.
 		PersonAudience: claimsDeviceAudience,
-	}}
+	}, log: slog.Default()}
 
 	subjects := []struct {
 		tokenType    string

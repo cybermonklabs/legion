@@ -52,8 +52,8 @@ const (
 // grantLogLines are the store.GrantLogMessage lines capture holds, in the order they were
 // written, each as its attributes by key, so the test reads the attributes the broker logged
 // rather than a rendering of them. Every other line the broker logs is skipped: this is the one
-// line the access review's log pipeline keeps. The records are this test's own: logtest puts the
-// previous default logger back when it ends.
+// line the access review's log pipeline keeps. The records are this test's own: capture is the
+// handler of the logger its server alone logs to (newGrantLogServer).
 func grantLogLines(t *testing.T, capture *logtest.Recorder) []map[string]any {
 	t.Helper()
 	var lines []map[string]any
@@ -81,10 +81,11 @@ type wireGrantLog struct {
 
 // newGrantLogServer is the test server with the two callers beside Dispatch's that this file
 // drives: the access review, listed for readsGrantLog alone, and the Envoy listener, listed for
-// introspection alone. It answers the server and each of those two callers' own tokens.
-func newGrantLogServer(t *testing.T) (ts *testServer, reviewToken, listenerToken string) {
+// introspection alone, logging to log. It answers the server and each of those two callers' own
+// tokens.
+func newGrantLogServer(t *testing.T, log *slog.Logger) (ts *testServer, reviewToken, listenerToken string) {
 	t.Helper()
-	ts = newTestServerWith(t, func(d *api.Deps) {
+	ts = newLoggedTestServer(t, log, "", func(d *api.Deps) {
 		d.APIAccounts[reviewAccount] = ciphertest.Caller(t, reviewCaller)
 		d.APIAccounts[listenerAccount] = ciphertest.Caller(t, listenerCaller)
 	})
@@ -273,10 +274,9 @@ func eventFor(t *testing.T, events []store.GrantLogEvent, kind, requestID string
 // callers that reach every other named-caller route — Dispatch's server and the Envoy listener —
 // read nothing here at all.
 func TestGrantLog(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
-	ts, reviewToken, listenerToken := newGrantLogServer(t)
+	ts, reviewToken, listenerToken := newGrantLogServer(t, slog.New(capture))
 	flow := driveGrantLogFlow(t, ts)
 	period := closeGrantLogPeriod(t, ts)
 	table := ts.auditRows(t, period)

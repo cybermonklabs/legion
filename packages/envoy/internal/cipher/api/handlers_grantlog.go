@@ -99,7 +99,7 @@ func (s *server) listGrantLog(w http.ResponseWriter, r *http.Request, _ string) 
 		Since: since, Until: until, After: after, Limit: int(limit),
 	})
 	if err != nil {
-		writeInternal(w, "read the grant log", err)
+		s.writeInternal(w, "read the grant log", err)
 		return
 	}
 	resp := grantLogResponse{Events: events, NextAfter: after}

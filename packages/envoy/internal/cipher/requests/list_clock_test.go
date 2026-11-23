@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // stalledProject is the project the stand-in below does not answer for.
@@ -70,7 +69,7 @@ func (s *stallFor) States(ctx context.Context, projects []string) (map[string]pr
 // are listed, the TEAM row's question asked beside the stalled one, and the SLOW row is left off
 // and logged. The pending list and the grant list each do so.
 func TestAStalledProjectLeavesOffOnlyTheRowsNamingIt(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	reasons := []string{"TEAM-1: rotate the deploy key", "rotate the wiki key", stalledProject + "-1: rotate the slow key"}
 	for _, c := range []struct {
 		name string
@@ -117,14 +116,14 @@ func TestAStalledProjectLeavesOffOnlyTheRowsNamingIt(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+			logger, all := recordLog()
+			m, _, _, _ := newLoggedProjectFixture(t, logger, proxyrules.Rules{}, publicTeam)
 			ids := c.rows(t, m)
 			team, plain, slow := ids[0], ids[1], ids[2]
 			answerFrom(t, m, dispatchRows(publicTeam))
 			stall := &stallFor{inner: m.Projects, project: stalledProject, hold: 6 * time.Second}
 			m.Projects = stall
-			capture := &logtest.Recorder{}
-			logtest.SetDefault(t, capture)
+			mark := len(all.Records())
 
 			start := time.Now()
 			listed := c.listed(t, m)
@@ -145,6 +144,7 @@ func TestAStalledProjectLeavesOffOnlyTheRowsNamingIt(t *testing.T) {
 			if slices.Contains(listed, slow) {
 				t.Errorf("the list holds the row naming SLOW-1, %s; want it left off, since Dispatch never answered for it", slow)
 			}
+			capture := recordedSince(all, mark)
 			var logged bool
 			for _, line := range linesOf(capture, rowUnansweredMessage) {
 				logged = logged || line[c.key] == slow && line["level"] == "WARN"

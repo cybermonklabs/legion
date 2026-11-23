@@ -23,9 +23,9 @@ import (
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
-// withProvider wires the broker's OAuth provider on the test server's own database. adjust, nil
-// for none, changes the configuration before the provider is built, which is where a test states
-// the one thing it needs of it.
+// withProvider wires the broker's OAuth provider on the test server's own database, logging where
+// the server's routes log (api.Deps.Log). adjust, nil for none, changes the configuration before
+// the provider is built, which is where a test states the one thing it needs of it.
 func withProvider(t *testing.T, adjust func(*oauth.Config)) func(*api.Deps) {
 	t.Helper()
 	return func(d *api.Deps) {
@@ -38,6 +38,7 @@ func withProvider(t *testing.T, adjust func(*oauth.Config)) func(*api.Deps) {
 		config := oauth.Config{
 			Secret: secret, DeviceLifetime: 15 * time.Minute, AccessLifetime: 15 * time.Minute, RefreshLifetime: time.Hour,
 			VerificationURL: ciphertest.MachineLoginURL, ProofSkew: time.Minute,
+			Log: d.Log,
 		}
 		if adjust != nil {
 			adjust(&config)

@@ -10,7 +10,6 @@ package api
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -45,12 +44,12 @@ func (s *server) lookupMachineLogin(w http.ResponseWriter, r *http.Request, _ st
 		writeError(w, http.StatusNotFound, "NO_SUCH_CODE", "no pending machine login has this code")
 		return
 	case err != nil:
-		writeInternal(w, "lookup machine login", err)
+		s.writeInternal(w, "lookup machine login", err)
 		return
 	}
 	detail, err := s.deps.Machine.ReadRecord(r.Context(), view.RecordID)
 	if err != nil {
-		writeInternal(w, "read credential request", err)
+		s.writeInternal(w, "read credential request", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, buildRecordResponse(detail))
@@ -101,7 +100,7 @@ func (s *server) machineLoginsOwnOnly(r *http.Request, person, route string) boo
 	restricted, err := projectaccess.Restricted(ctx, s.deps.Enroll.Projects, login)
 	if err != nil {
 		if r.Context().Err() == nil && s.ownOnlyLogged.Allow(login) {
-			slog.Warn(MachineLoginsOwnOnlyMessage, "route", route, "person", login, "error", err)
+			s.log.Warn(MachineLoginsOwnOnlyMessage, "route", route, "person", login, "error", err)
 		}
 		return true
 	}
@@ -130,7 +129,7 @@ const ownOnlyLogEvery = time.Minute
 func (s *server) writeLauncherCredentials(w http.ResponseWriter, r *http.Request, list func(context.Context, string) ([]enroll.LiveCredential, error), person string) {
 	rows, err := list(r.Context(), person)
 	if err != nil {
-		writeInternal(w, "list launcher credentials", err)
+		s.writeInternal(w, "list launcher credentials", err)
 		return
 	}
 	out := make([]wire.LauncherCredentialResp, len(rows))
@@ -164,7 +163,7 @@ func (s *server) revokeLauncherCredential(w http.ResponseWriter, r *http.Request
 	}
 	// The approver is the caller's word, of any length requireApprover takes, so the line cuts it
 	// (answer.ClipFields).
-	slog.Info("machine login revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "credential", id})...)
+	s.log.Info("machine login revocation relayed", answer.ClipFields([]any{"caller", callerName, "approver", body.Approver, "credential", id})...)
 	revoke := s.deps.Enroll.RevokeCredential
 	if s.machineLoginsOwnOnly(r, body.Approver, "revoke") {
 		revoke = s.deps.Enroll.RevokeOwnCredential
@@ -189,7 +188,7 @@ func (s *server) revokeCredentialAs(w http.ResponseWriter, r *http.Request, revo
 		writeError(w, http.StatusForbidden, "NOT_APPROVER", err.Error())
 		return
 	case err != nil:
-		writeInternal(w, "revoke launcher credential", err)
+		s.writeInternal(w, "revoke launcher credential", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stateResponse{State: "revoked"})

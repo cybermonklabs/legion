@@ -36,7 +36,7 @@ func TestARefusalNamesTheBrokersAnswerID(t *testing.T) {
 	})
 	// sent is each answer id the recorded broker sent, once its answer is written.
 	sent := make(chan string, 1)
-	recorder := answer.Middleware(mux, nil)
+	recorder := answer.Middleware(mux, nil, nil)
 	recorded := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder.ServeHTTP(w, r)
 		sent <- w.Header().Get(answer.Header)

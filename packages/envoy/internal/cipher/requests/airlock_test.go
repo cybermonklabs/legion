@@ -3,6 +3,7 @@ package requests
 import (
 	"crypto/ecdsa"
 	"errors"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -17,18 +18,29 @@ import (
 // deployment every other row of this package is about.
 func newAirlockFixture(t *testing.T, file string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey) {
 	t.Helper()
+	return newLoggedAirlockFixture(t, nil, file)
+}
+
+// newLoggedAirlockFixture is newAirlockFixture whose Machine (Machine.Log) and policy Current
+// (policy.Loader.Log) write their lines to log. Nil is slog.Default().
+func newLoggedAirlockFixture(t *testing.T, log *slog.Logger, file string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey) {
+	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(fixtureSecrets()...)
 	enrollmentID, requesterKey = newEnrollment(t, st, "session", "box-a-"+t.Name(), new(fixtureOperator), nil)
+	loader := policytest.Loader(local, fixtureService)
+	loader.Profiles = policytest.Profiles(t, file, fixtureService)
+	loader.Log = log
 	m = &Machine{
 		Store:             st,
-		Policy:            policytest.ProfiledCurrent(t, local, file, fixtureService),
+		Policy:            policytest.CurrentOf(t, loader),
 		Secrets:           policytest.Store(local),
 		PendingTTL:        12 * time.Hour,
 		Audience:          testAudience,
 		Skew:              time.Minute,
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
+		Log:               log,
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	return m, enrollmentID, requesterKey

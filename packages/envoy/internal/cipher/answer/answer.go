@@ -46,6 +46,7 @@ package answer
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -222,21 +223,23 @@ const PortEdge = "edge"
 // mux's own 404 and 405 (an answer to a path or a method the edge serves no route for, which a
 // scanner sends at its own rate) and the refusals a handler marks NoteQuiet are counted and write
 // no line.
-func EdgeMiddleware(next http.Handler, answers *metrics.Counter) http.Handler {
-	return middleware(next, answers, PortEdge)
+func EdgeMiddleware(next http.Handler, answers *metrics.Counter, log *slog.Logger) http.Handler {
+	return middleware(next, answers, PortEdge, log)
 }
 
 // Middleware records every answer next writes: it gives the answer its id, counts it on answers
-// (nil counts nothing), writes a refusal's line, and adds answer_id to a JSON refusal body that
-// does not hold it. The line's route is the Pattern the mux sets on the request it is handed, read
-// from the request Middleware hands next, so next is the mux itself: a handler between the two
-// that hands the mux a request of its own (r.WithContext) leaves every line's route empty.
-func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
-	return middleware(next, answers, "")
+// (nil counts nothing), writes a refusal's line to log (nil is slog.Default(), read once here),
+// and adds answer_id to a JSON refusal body that does not hold it. The line's route is the
+// Pattern the mux sets on the request it is handed, read from the request Middleware hands next,
+// so next is the mux itself: a handler between the two that hands the mux a request of its own
+// (r.WithContext) leaves every line's route empty.
+func Middleware(next http.Handler, answers *metrics.Counter, log *slog.Logger) http.Handler {
+	return middleware(next, answers, "", log)
 }
 
 // middleware is Middleware for the port port names: "" for the API port, PortEdge for the edge.
-func middleware(next http.Handler, answers *metrics.Counter, port string) http.Handler {
+func middleware(next http.Handler, answers *metrics.Counter, port string, log *slog.Logger) http.Handler {
+	log = cmp.Or(log, slog.Default())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), arrived: time.Now(), class: CallerPublic, port: port}
 		// The request the mux is handed, whose Pattern names the route once next has returned.
@@ -255,7 +258,7 @@ func middleware(next http.Handler, answers *metrics.Counter, port string) http.H
 		}()
 		next.ServeHTTP(rec, r)
 		completed = true
-		rec.finish(r, answers)
+		rec.finish(r, answers, log)
 	})
 }
 
@@ -612,11 +615,11 @@ func (rec *Recorder) release() {
 }
 
 // finish records the answer to r, the request the mux was handed, once the handler has returned:
-// its line when it is a refusal, its count, and then a held refusal's status and body, answer_id
-// added to a JSON object that names none. The line is written before the body, so whoever reads
-// the answer can find its line. An answer whose caller had gone (NoteCallerEnded) writes no line
-// and is counted cancelled.
-func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
+// its line to log when it is a refusal, its count, and then a held refusal's status and body,
+// answer_id added to a JSON object that names none. The line is written before the body, so
+// whoever reads the answer can find its line. An answer whose caller had gone (NoteCallerEnded)
+// writes no line and is counted cancelled.
+func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter, log *slog.Logger) {
 	if rec.status == 0 {
 		// A handler that wrote nothing answers 200 with no body, which net/http sends once it
 		// returns.
@@ -644,7 +647,7 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 			if rec.port != "" {
 				extras = []any{"port", rec.port}
 			}
-			slog.Warn(RefusalMessage, line.Fields(extras)...)
+			log.Warn(RefusalMessage, line.Fields(extras)...)
 		}
 		countAt(answers, rec.status, answerCode, class, rec.port)
 	}

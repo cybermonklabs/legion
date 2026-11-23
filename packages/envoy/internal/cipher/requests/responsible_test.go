@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 const (
@@ -179,7 +178,7 @@ func TestASharedRequestIsListedForTheClaimIssuesAssignee(t *testing.T) {
 // reached, so an operator sees that the step is off, and the line holds nothing of what the read
 // held; a row that read nothing, or read an issue nobody is assigned to, logs none.
 func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) {
-	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
+	t.Parallel()
 	for _, c := range []struct {
 		name      string
 		claim     string
@@ -207,9 +206,8 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 		{name: "a machine whose fleet names no person", machine: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			capture := &logtest.Recorder{}
-			logtest.SetDefault(t, capture)
-			m, _, _, _ := newFixture(t)
+			logger, capture := recordLog()
+			m, _, _, _ := newLoggedFixture(t, logger)
 			if !c.noReader && c.assignees != nil {
 				m.Assignees = c.assignees
 				if c.assignees.block != nil {

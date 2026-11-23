@@ -569,10 +569,14 @@ func TestRereadingAProfileNameRereadsItsSource(t *testing.T) {
 // line, with the counts of the profiles it served and refused and the digest of the file it read,
 // beside a refusal line for each refused profile; no later publish writes it again.
 func TestTheFirstPublishWritesTheProfilesLine(t *testing.T) {
-	logged := policytest.CaptureLog(t)
+	t.Parallel()
+	log, logged := policytest.Log()
 	file := policytest.ProfilesFile(readProfile, `{"name": "GHOST_READ", "source": "NO_SUCH_APP", `+acmeRead+`, `+apiProxy+`}`)
 	store := secrets.NewLocal(everySource()...)
-	cur := policytest.ProfiledCurrent(t, store, file, daemonService)
+	loader := policytest.Loader(store, daemonService)
+	loader.Profiles = policytest.Profiles(t, file, daemonService)
+	loader.Log = log
+	cur := policytest.CurrentOf(t, loader)
 	sum := sha256.Sum256([]byte(file))
 	want := "INFO " + policy.ProfilesAppliedMessage + " served=1 refused=1 file_digest=" + hex.EncodeToString(sum[:]) + "\n"
 	if got := logged.String(); strings.Count(got, policy.ProfilesAppliedMessage) != 1 || !strings.Contains(got, want) {

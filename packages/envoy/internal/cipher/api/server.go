@@ -3,6 +3,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -187,6 +188,9 @@ type Deps struct {
 	// projectaccess presents). Nil is a broker that reads no Dispatch, where that route answers
 	// every listed edge listener 503 REPOSITORIES_UNKNOWN.
 	ProjectRepositories ProjectRepositoriesReader
+	// Log is where the routes' lines go, and the edge's cached ping's. Nil is slog.Default(),
+	// which Register and RegisterEdge each read once. RereadRate logs to its own logger.
+	Log *slog.Logger
 }
 
 // pingDatabase pings Postgres: DatabasePing when set, and the store's pool otherwise.
@@ -237,6 +241,8 @@ type server struct {
 	// ownOnlyLogged lets MachineLoginsOwnOnlyMessage be written once per person per
 	// ownOnlyLogEvery (machineLoginsOwnOnly).
 	ownOnlyLogged *ratelimit.Keyed
+	// log is Deps.Log, or slog.Default() for a Deps with none.
+	log *slog.Logger
 }
 
 func Register(mux *http.ServeMux, deps Deps) {
@@ -288,6 +294,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		address:         address,
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
 		ownOnlyLogged:   ratelimit.NewKeyed(ratelimit.Limit{Every: ownOnlyLogEvery, Burst: 1}),
+		log:             cmp.Or(deps.Log, slog.Default()),
 	}
 	if deps.OAuth != nil {
 		s.verificationURI = deps.OAuth.VerificationURL()
@@ -410,7 +417,7 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
 			return caller{}, false
 		case err != nil:
-			writeUnavailable(w, "DATABASE_UNAVAILABLE", "verify launcher proof", err)
+			s.writeUnavailable(w, "DATABASE_UNAVAILABLE", "verify launcher proof", err)
 			return caller{}, false
 		}
 		if subject.LauncherID == "" {
@@ -433,7 +440,7 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
 			return caller{}, false
 		case err != nil:
-			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
+			s.writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
 			return caller{}, false
 		}
 		return caller{launcher: cred}, true
@@ -442,7 +449,7 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 	case authRenewProof:
 		return s.sessionCaller(w, r, "ENROLLMENT_NOT_LIVE", "enrollment is not live")
 	}
-	writeInternal(w, "authenticate", fmt.Errorf("route has unknown authentication %d", auth))
+	s.writeInternal(w, "authenticate", fmt.Errorf("route has unknown authentication %d", auth))
 	return caller{}, false
 }
 
@@ -507,7 +514,7 @@ func (s *server) sessionCaller(w http.ResponseWriter, r *http.Request, notLiveCo
 		writeError(w, http.StatusUnauthorized, "PROOF_INVALID", err.Error())
 		return caller{}, false
 	case err != nil:
-		writeUnavailable(w, "DATABASE_UNAVAILABLE", "verify proof", err)
+		s.writeUnavailable(w, "DATABASE_UNAVAILABLE", "verify proof", err)
 		return caller{}, false
 	}
 	if subject.EnrollmentID == "" {
@@ -806,22 +813,22 @@ func (s *server) pendingApproveURL(req requests.Request) string {
 // writeInternal logs a failed operation with its error and answers 500 INTERNAL naming the
 // operation. Errors on these paths carry no secret values; the log line is the only place the
 // cause of a 500 is recorded.
-func writeInternal(w http.ResponseWriter, op string, err error) {
-	slog.Error("broker: "+op+" failed", "error", err)
+func (s *server) writeInternal(w http.ResponseWriter, op string, err error) {
+	s.log.Error("broker: "+op+" failed", "error", err)
 	writeError(w, http.StatusInternalServerError, "INTERNAL", op+" failed")
 }
 
 // writeUnavailable logs a dependency that could not answer (logUnavailable) and answers 503 with
 // code naming it (answerUnavailable).
-func writeUnavailable(w http.ResponseWriter, code, op string, err error) {
-	logUnavailable(op, err)
+func (s *server) writeUnavailable(w http.ResponseWriter, code, op string, err error) {
+	logUnavailable(s.log, op, err)
 	answerUnavailable(w, code, op)
 }
 
-// logUnavailable writes the ERROR line of a dependency op could not reach: "broker: <op> failed",
-// with err and any attrs after it.
-func logUnavailable(op string, err error, attrs ...any) {
-	slog.Error("broker: "+op+" failed", append([]any{"error", err}, attrs...)...)
+// logUnavailable writes to log the ERROR line of a dependency op could not reach: "broker: <op>
+// failed", with err and any attrs after it.
+func logUnavailable(log *slog.Logger, op string, err error, attrs ...any) {
+	log.Error("broker: "+op+" failed", append([]any{"error", err}, attrs...)...)
 }
 
 // answerUnavailable answers 503 with code naming the dependency op could not reach, and writes no
@@ -841,7 +848,7 @@ func answerUnavailable(w http.ResponseWriter, code, op string) {
 // projectaccess.UncheckableCode, spelled out here because the broker's generated HTTP reference
 // (cmd/cipher-refgen) reads each refusal's code from a literal;
 // TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode holds the two to one spelling.
-func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) bool {
+func (s *server) writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) bool {
 	var uncheckable *projectaccess.MemberKindUncheckable
 	if !errors.As(err, &uncheckable) {
 		return false
@@ -849,7 +856,7 @@ func writeMemberKindUncheckable(w http.ResponseWriter, what string, err error) b
 	if uncheckable.CallerEnded() {
 		answer.FromWriter(w).NoteCallerEnded()
 	} else {
-		slog.Error("broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused",
+		s.log.Error("broker: whether Dispatch calls a person a restricted member cannot be read, so "+what+" is refused",
 			"person", uncheckable.Person, "error", uncheckable.Err)
 	}
 	writeError(w, http.StatusServiceUnavailable, "MEMBER_KIND_UNCHECKABLE", uncheckable.Error())
@@ -895,7 +902,7 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 			answerUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres")
 			return
 		}
-		writeUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres", err)
+		s.writeUnavailable(w, "DATABASE_UNAVAILABLE", "ping Postgres", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, healthResponse{Status: "ok"})
@@ -926,6 +933,8 @@ type cachedPing struct {
 	port string
 	// timeout bounds one ping; zero means healthPingTimeout.
 	timeout time.Duration
+	// log is where the line of a failed ping goes.
+	log *slog.Logger
 
 	mu  sync.Mutex
 	at  time.Time
@@ -983,7 +992,7 @@ func (c *cachedPing) run(ctx context.Context, done chan struct{}) error {
 	c.at, c.err = c.now(), err
 	c.mu.Unlock()
 	if err != nil {
-		logUnavailable("ping Postgres", err, "port", c.port)
+		logUnavailable(c.log, "ping Postgres", err, "port", c.port)
 	}
 	return err
 }
@@ -1026,7 +1035,7 @@ func (s *server) signInStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status, err := s.deps.Enroll.Store.SignInStatus(r.Context())
 	if err != nil {
-		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the sign-in status", err)
+		s.writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the sign-in status", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, signInStatusResponse{
