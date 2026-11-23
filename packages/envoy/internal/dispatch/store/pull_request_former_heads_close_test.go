@@ -120,7 +120,7 @@ func TestEveryCloseEndsTheLifecycleItClosesWhereverDispatchFirstSawIt(t *testing
 // TestAResultRecordedWhileAPullRequestIsClosedCountsAfterItReopensOnEitherSideOfTheInstall:
 // CORE-1's #70 stands at 4444… before the install, where its row is written, and a tester records
 // a result at 1111… while #70 is open. #70 then closes at 4444…, its row written closed, which
-// Dispatch records on its own clock (pull_request_heads_closes), and a result is recorded at
+// Dispatch records on its own clock (pull_request_heads_lifecycle), and a result is recorded at
 // 4444… while #70 is closed: before the install, or after it. #70 then reopens at 3333… and moves
 // on to 7777…, and CORE-1's settle drains what is owed. Wherever the install falls, the result at
 // 1111… is of the lifecycle the close ended and stays out, and the result at 4444… is of the
@@ -222,7 +222,7 @@ func reopenedFormerHeads(t *testing.T, store *Store, exec func(what, sql string,
 // install then runs, and #70 reopens at 3333… and moves on to 7777…. The result at 4444… is of
 // the lifecycle the close ended, so it is no candidate of the reopened pull request: the install
 // orders a result and a close by Dispatch's own clock alone, when it recorded the result and when
-// it recorded the close (pull_request_heads_closes), never by a time GitHub gave. Each close is
+// it recorded the close (pull_request_heads_lifecycle), never by a time GitHub gave. Each close is
 // tried with the result in either result table.
 func TestAResultRecordedBeforeTheCloseStaysOutWhateverTimeGitHubGaveTheClose(t *testing.T) {
 	ctx := context.Background()
@@ -260,7 +260,7 @@ func TestAResultRecordedBeforeTheCloseStaysOutWhateverTimeGitHubGaveTheClose(t *
 // row again with GitHub's later time, before the install. #70 reopens at 3333… and moves on to
 // 7777…. The result at 4444… came after the close in Dispatch's own records, and a write of a row
 // that is closed already records no close: Dispatch's record of the close is of the write that
-// closed the row (pull_request_heads_closes), so 4444… is a candidate of the reopened pull
+// closed the row (pull_request_heads_lifecycle), so 4444… is a candidate of the reopened pull
 // request. The neighbour writes the closed row no more. Each is tried with the result in either
 // result table.
 func TestAClosedRowWrittenAgainKeepsTheTimeItFirstReadClosed(t *testing.T) {
@@ -292,32 +292,73 @@ func TestAClosedRowWrittenAgainKeepsTheTimeItFirstReadClosed(t *testing.T) {
 	}
 }
 
-// TestAPullRequestClosedBeforeDispatchRecordedClosesKeepsOutEveryResultRecordedBeforeThen: the
-// schedule of TestAClosedRowWrittenAgainKeepsTheTimeItFirstReadClosed, where #70 closed before
-// Dispatch recorded closes (migration pull_request_heads_closes), so no record on Dispatch's clock
-// says when it closed, only that it was closed when that migration ran, which records it then.
-// The install takes every result recorded before that as one from before the close: a result
-// taken from the lifecycle the close ended can carry a pass across the reopen, and one left out
-// leaves its commit with no state, which a testing move waits on. So after the reopen the result
-// at 4444… recorded before then is no candidate, while a result recorded since, before the
-// install or after it, is. The neighbour closes #70 once Dispatch records closes, and the
-// closed-period result counts.
-func TestAPullRequestClosedBeforeDispatchRecordedClosesKeepsOutEveryResultRecordedBeforeThen(t *testing.T) {
+// TestAPullRequestClosedBeforeDispatchRecordedClosesKeepsOutEveryResultRecordedBeforeTheInstall:
+// the schedule of TestAClosedRowWrittenAgainKeepsTheTimeItFirstReadClosed, where #70 closed before
+// Dispatch recorded closes (migration pull_request_heads_lifecycle), so no record on Dispatch's
+// clock says when it closed, only that it was closed when that migration ran. Every result recorded
+// before the install stays out after a reopen: a result taken from the lifecycle the close ended
+// can carry a pass across the reopen, and one left out leaves its commit with no state, which a
+// testing move waits on until a tester records again. So after the reopen no result at 4444…
+// recorded before the install is a candidate, whether it was recorded before that migration or
+// after it, and whatever write of the closed pull request follows: a second closed row under its
+// canonical name, the close of a row of its old name that was open, a reopen that leaves it open
+// at the install. A result recorded after the install is one. The neighbours: Dispatch recorded
+// the close, and the closed-period result counts; and #70, closed before, reopens and closes
+// again since, so the closed period begins at a close Dispatch recorded, and a result after it
+// counts.
+func TestAPullRequestClosedBeforeDispatchRecordedClosesKeepsOutEveryResultRecordedBeforeTheInstall(t *testing.T) {
 	ctx := context.Background()
 	const afterInstallH6 = "6666666666666666666666666666666666666666"
+	rename := closeStep{what: "record the repository's old name", sql: `
+		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
+		values ('acme/old-widgets', 'CORE', '{"kind":"system","id":"store-test"}', false, 'acme/widgets')`}
 	for _, row := range []struct {
 		name string
-		// recorded closes #70 after Dispatch records closes; resultSince records the result at
-		// 4444… after that migration, before the install.
-		recorded, resultSince, afterInstall, counts bool
-		want                                        []string
+		// recorded closes #70 after Dispatch records closes; resultSince records the closed-period
+		// result after that migration, before the install, at resultAt (4444… where empty).
+		recorded, resultSince, afterInstall bool
+		resultAt                            string
+		// first runs before the close, beside runs before the migration that records closes, after
+		// the close, and since runs after it, before the closed-period result where resultSince.
+		first, beside, since []closeStep
+		want                 []string
 	}{
 		{name: "the close and the result are from before Dispatch recorded closes", want: []string{"acme/widgets#70@3333"}},
 		{name: "the close and the result are from before Dispatch recorded closes and a result is recorded after the install", afterInstall: true,
 			want: []string{"acme/widgets#70@3333", "acme/widgets#70@6666 unverified"}},
-		{name: "the close is from before Dispatch recorded closes and the result from since", resultSince: true, counts: true,
+		{name: "the close is from before Dispatch recorded closes and the result from since", resultSince: true,
+			want: []string{"acme/widgets#70@3333"}},
+		{name: "the close is from before Dispatch recorded closes and the pull request is written closed under its canonical name since",
+			resultSince: true,
+			first: []closeStep{rename, {what: "store #70 under the old name",
+				sql: `update pull_request_heads set repo = 'acme/old-widgets' where number = 70`}},
+			since: []closeStep{
+				{what: "write #70 closed under its canonical name, as the canonical-name writer does", sql: `
+					insert into pull_request_heads (repo, number, head_sha, state, issue_key) values ('acme/widgets', 70, $1, 'closed', 'CORE-1')`,
+					args: []any{closedPeriodH4}},
+				{what: "delete #70's row under the old name", sql: `delete from pull_request_heads where repo = 'acme/old-widgets' and number = 70`}},
+			want: []string{"acme/widgets#70@3333"}},
+		{name: "the close is from before Dispatch recorded closes and an open row of its old name closes since",
+			resultSince: true,
+			beside: []closeStep{rename, {what: "store #70 open under the old name too, a stale copy", sql: `
+				insert into pull_request_heads (repo, number, head_sha, state, issue_key) values ('acme/old-widgets', 70, $1, 'open', 'CORE-1')`,
+				args: []any{installH2}}},
+			since: []closeStep{
+				{what: "close #70's row under the old name", sql: `update pull_request_heads set state = 'closed' where repo = 'acme/old-widgets' and number = 70`},
+				{what: "delete #70's row under the old name", sql: `delete from pull_request_heads where repo = 'acme/old-widgets' and number = 70`}},
+			want: []string{"acme/widgets#70@3333"}},
+		{name: "the close is from before Dispatch recorded closes and the pull request reopens since and is open at the install",
+			resultSince: true, resultAt: installH3,
+			since: []closeStep{{what: "reopen #70 at 3333…",
+				sql: `update pull_request_heads set state = 'open', head_sha = $1 where number = 70`, args: []any{installH3}}},
+			want: []string{}},
+		{name: "the close is from before Dispatch recorded closes and the pull request reopens and closes again since",
+			resultSince: true,
+			since: []closeStep{
+				{what: "reopen #70 at 2222…", sql: `update pull_request_heads set state = 'open', head_sha = $1 where number = 70`, args: []any{installH2}},
+				{what: "close #70 again", sql: `update pull_request_heads set state = 'closed' where number = 70`}},
 			want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
-		{name: "Dispatch recorded the close", recorded: true, counts: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
+		{name: "Dispatch recorded the close", recorded: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			store := openEmptyTestStore(t)
@@ -326,10 +367,31 @@ func TestAPullRequestClosedBeforeDispatchRecordedClosesKeepsOutEveryResultRecord
 				through = formerHeadsInstall(t) - 1
 			}
 			documents := installFixtureThrough(t, store, through)
+			run := func(steps []closeStep) {
+				t.Helper()
+				for _, step := range steps {
+					if _, err := store.Pool.Exec(ctx, step.sql, step.args...); err != nil {
+						t.Fatalf("%s: %v", step.what, err)
+					}
+				}
+			}
+			run(row.first)
 			exec := installCloseStory(t, store, documents, "check_results", installH1, `update pull_request_heads set state = 'closed', event_at = clock_timestamp() where number = 70`)
+			var recording int
+			if err := store.Pool.QueryRow(ctx, `select count(*) from schema_migrations where version = $1`, closesRecordedSince(t)).Scan(&recording); err != nil {
+				t.Fatalf("read whether Dispatch records closes: %v", err)
+			}
+			if (recording == 1) != row.recorded {
+				t.Fatalf("the migration that records closes had run when #70 closed: %v, want %v: this test holds no such close", recording == 1, row.recorded)
+			}
+			run(row.beside)
+			resultAt := closedPeriodH4
+			if row.resultAt != "" {
+				resultAt = row.resultAt
+			}
 			closedPeriod := func() {
 				t.Helper()
-				exec("record a result at 4444… while #70 is closed", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], closedPeriodH4)
+				exec("record the result at "+resultAt[:4]+"… before the install", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], resultAt)
 			}
 			if !row.resultSince {
 				closedPeriod()
@@ -337,15 +399,9 @@ func TestAPullRequestClosedBeforeDispatchRecordedClosesKeepsOutEveryResultRecord
 			if err := store.migrate(ctx, migrationsThrough(t, formerHeadsInstall(t)-1)); err != nil {
 				t.Fatalf("migrate through the version before the install: %v", err)
 			}
+			run(row.since)
 			if row.resultSince {
 				closedPeriod()
-			}
-			var records int
-			var after bool
-			if err := store.Pool.QueryRow(ctx, `
-				select count(*), coalesce(bool_and(noted.closed_at > (select max(created_at) from check_results where commit_sha = $1)), false)
-				from pull_request_heads_closes noted where noted.number = 70`, closedPeriodH4).Scan(&records, &after); err != nil || records != 1 || after == row.counts {
-				t.Fatalf("Dispatch holds %d records of #70's close, after the result at 4444… %v (%v), want one, after it %v: this test holds no such close", records, after, err, !row.counts)
 			}
 			if err := store.Migrate(ctx); err != nil {
 				t.Fatalf("migrate: %v", err)
@@ -354,7 +410,7 @@ func TestAPullRequestClosedBeforeDispatchRecordedClosesKeepsOutEveryResultRecord
 				exec("record a result at 6666… while #70 is closed, after the install", installResult("check_results"), "CORE-1", "CORE-1", documents["CORE-1"], afterInstallH6)
 			}
 			if heads := reopenedFormerHeads(t, store, exec); !slices.Equal(heads, row.want) {
-				t.Fatalf("after the reopen #70 holds the former heads %v, want %v: a result no record on Dispatch's clock places after the close is taken as before it, and one recorded since is after it", heads, row.want)
+				t.Fatalf("after the reopen #70 holds the former heads %v, want %v: of a pull request whose closed period began before Dispatch recorded closes, every result recorded before the install stays out, and one recorded after a close Dispatch recorded since counts", heads, row.want)
 			}
 		})
 	}
@@ -471,6 +527,170 @@ func TestACloseAndAReopenBeforeTheInstallEndTheLifecycleTheyClosed(t *testing.T)
 				drainCandidates(t, store, "CORE-1")
 				if heads, _ := formerHeadsAndOwed(t, store); !slices.Equal(heads, row.want) {
 					t.Fatalf("after the install #70 holds the former heads %v, want %v: a close before the install ends the lifecycle it closed, whatever reopen followed it", heads, row.want)
+				}
+				var ended bool
+				if err := store.Pool.QueryRow(ctx, `
+					select ended is not null from pull_request_former_heads_pulls where pull = pull_request_former_heads_pull_of('acme/widgets', 70)`).Scan(&ended); err != nil {
+					t.Fatalf("read #70's lifecycle: %v", err)
+				}
+				if ended != row.ended {
+					t.Fatalf("#70's lifecycle reads ended %v after the install, want %v", ended, row.ended)
+				}
+			})
+		}
+	}
+}
+
+// closeStep is one write of the schedules below: a statement, or, where record names a commit, a
+// result recorded there against CORE-1's check, in check_results where recordIn says so and else
+// in the table the subtest names.
+type closeStep struct {
+	what, sql string
+	args      []any
+	record    string
+	recordIn  string
+}
+
+// TestAClosedPeriodBeginsAtTheFirstCloseAfterTheLastReopen: CORE-1's #70, open at 3333…, holds a
+// result at 1111… recorded while it is open, and then closes; writes of the closed pull request
+// follow before the install, the install runs, #70 reopens at 3333… and moves on to 7777…, and
+// CORE-1's settle drains what is owed. The result at 1111… is of the lifecycle the close ended and
+// stays out. The closed period begins at the first close Dispatch recorded after the last write
+// that opened a row of the pull request, so a result recorded since that close counts after the
+// reopen, whatever write of the closed pull request follows it: a second closed row of it under
+// its canonical name (the canonical-name writer's first write of a pull request it reads closed,
+// which then deletes the row of its old name), a re-key of the closed row, an edit, a rewrite of
+// it as merged. A close, a reopen and a second close begin it at the second close. A close of a
+// row of its old name while the row of its canonical name stays open ends the lifecycle there,
+// and a close of the canonical row after it ends it again, there, since a row of the pull request
+// was open until then. The named limit: a close and a reopen both before Dispatch records closes
+// are in no record, so the result from before that close comes back as a candidate.
+func TestAClosedPeriodBeginsAtTheFirstCloseAfterTheLastReopen(t *testing.T) {
+	ctx := context.Background()
+	const (
+		between        = "2222222222222222222222222222222222222222"
+		secondClosedH6 = "6666666666666666666666666666666666666666"
+	)
+	rename := closeStep{what: "record the repository's old name", sql: `
+		insert into repo_projects (repo, project, created_by, is_default, renamed_to)
+		values ('acme/old-widgets', 'CORE', '{"kind":"system","id":"store-test"}', false, 'acme/widgets')`}
+	toOldName := closeStep{what: "store #70 under the old name at 4444…",
+		sql: `update pull_request_heads set repo = 'acme/old-widgets', head_sha = $1 where number = 70`, args: []any{closedPeriodH4}}
+	closeOldName := closeStep{what: "close #70's row under the old name",
+		sql: `update pull_request_heads set state = 'closed' where repo = 'acme/old-widgets' and number = 70`}
+	closeCanonical := closeStep{what: "close #70's row under the canonical name",
+		sql: `update pull_request_heads set state = 'closed' where repo = 'acme/widgets' and number = 70`}
+	reKey := closeStep{what: "re-key #70's closed row to the canonical name",
+		sql: `update pull_request_heads set repo = 'acme/widgets' where repo = 'acme/old-widgets' and number = 70`}
+	openFirst := closeStep{what: "record a result at 1111… while #70 is open", record: installH1, recordIn: "check_results"}
+	closedPeriod := closeStep{what: "record a result at 4444… while #70 is closed", record: closedPeriodH4}
+	for _, table := range []string{"check_results", "ci_check_results"} {
+		for _, row := range []struct {
+			name string
+			// beforeRecording runs the story before the migration that records closes;
+			// openAtInstall leaves #70 open at the install, so after it #70 only moves on.
+			beforeRecording, openAtInstall bool
+			story                          []closeStep
+			// rows is #70's rows at the install: name, state and the first four of the head.
+			rows  string
+			want  []string
+			ended bool
+		}{
+			{name: "its old name's row closes and the pull request is then written closed under its canonical name",
+				story: []closeStep{rename, toOldName, openFirst, closeOldName, closedPeriod,
+					{what: "write #70 closed under its canonical name, as the canonical-name writer does", sql: `
+						insert into pull_request_heads (repo, number, head_sha, state, issue_key) values ('acme/widgets', 70, $1, 'closed', 'CORE-1')`,
+						args: []any{closedPeriodH4}},
+					{what: "delete #70's row under the old name", sql: `delete from pull_request_heads where repo = 'acme/old-widgets' and number = 70`}},
+				rows: "acme/widgets closed 4444", ended: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
+			{name: "its old name's row closes and is then re-keyed to its canonical name",
+				story: []closeStep{rename, toOldName, openFirst, closeOldName, closedPeriod, reKey},
+				rows:  "acme/widgets closed 4444", ended: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
+			{name: "its old name's row closes and is then edited and re-keyed to its canonical name",
+				story: []closeStep{rename, toOldName, openFirst, closeOldName, closedPeriod,
+					{what: "edit #70's closed row", sql: `update pull_request_heads set title = 'Edited while closed', event_at = clock_timestamp() where number = 70`},
+					reKey},
+				rows: "acme/widgets closed 4444", ended: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
+			{name: "it closes, reopens and closes again, with a result in each closed period and one in the lifecycle between",
+				story: []closeStep{openFirst, closeCanonical, closedPeriod,
+					{what: "reopen #70 at 2222…", sql: `update pull_request_heads set state = 'open', head_sha = $1 where repo = 'acme/widgets' and number = 70`, args: []any{between}},
+					{what: "record a result at 2222… while #70 is open again", record: between},
+					closeCanonical,
+					{what: "record a result at 6666… while #70 is closed again", record: secondClosedH6}},
+				rows: "acme/widgets closed 2222", ended: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@6666 unverified"}},
+			{name: "it closes and its closed row is then rewritten merged",
+				story: []closeStep{openFirst, closeCanonical, closedPeriod,
+					{what: "rewrite #70's closed row merged", sql: `update pull_request_heads set state = 'merged' where repo = 'acme/widgets' and number = 70`}},
+				rows: "acme/widgets merged 3333", ended: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@4444 unverified"}},
+			{name: "its old name's row closes while its canonical row stays open", openAtInstall: true,
+				story: []closeStep{rename,
+					{what: "store #70 open under the old name too, at 2222…", sql: `
+						insert into pull_request_heads (repo, number, head_sha, state, issue_key) values ('acme/old-widgets', 70, $1, 'open', 'CORE-1')`,
+						args: []any{between}},
+					openFirst, closeOldName,
+					{what: "record a result at 4444… after the old name's row closed", record: closedPeriodH4}},
+				rows: "acme/old-widgets closed 2222, acme/widgets open 3333", ended: true, want: []string{"acme/widgets#70@4444 unverified"}},
+			{name: "its old name's row closes while its canonical row stays open, and the canonical row closes after a result",
+				story: []closeStep{rename,
+					{what: "store #70 open under the old name too, at 2222…", sql: `
+						insert into pull_request_heads (repo, number, head_sha, state, issue_key) values ('acme/old-widgets', 70, $1, 'open', 'CORE-1')`,
+						args: []any{between}},
+					openFirst, closeOldName,
+					{what: "record a result at 4444… while the canonical row is open", record: closedPeriodH4},
+					closeCanonical},
+				rows: "acme/old-widgets closed 2222, acme/widgets closed 3333", ended: true, want: []string{"acme/widgets#70@3333"}},
+			{name: "the limit: it closes and reopens before Dispatch records closes", beforeRecording: true, openAtInstall: true,
+				story: []closeStep{openFirst, closeCanonical,
+					{what: "reopen #70 at 2222…", sql: `update pull_request_heads set state = 'open', head_sha = $1 where repo = 'acme/widgets' and number = 70`, args: []any{between}}},
+				rows: "acme/widgets open 2222", want: []string{"acme/widgets#70@1111 unverified", "acme/widgets#70@2222"}},
+		} {
+			t.Run(table+"/"+row.name, func(t *testing.T) {
+				store := openEmptyTestStore(t)
+				through := formerHeadsInstall(t) - 1
+				if row.beforeRecording {
+					through = closesRecordedSince(t) - 1
+				}
+				documents := installFixtureThrough(t, store, through)
+				exec := func(what, sql string, args ...any) {
+					t.Helper()
+					if _, err := store.Pool.Exec(ctx, sql, args...); err != nil {
+						t.Fatalf("%s: %v", what, err)
+					}
+				}
+				for _, step := range row.story {
+					if step.record == "" {
+						exec(step.what, step.sql, step.args...)
+						continue
+					}
+					in := table
+					if step.recordIn != "" {
+						in = step.recordIn
+					}
+					exec(step.what, installResult(in), "CORE-1", "CORE-1", documents["CORE-1"], step.record)
+				}
+				if row.beforeRecording {
+					if err := store.migrate(ctx, migrationsThrough(t, formerHeadsInstall(t)-1)); err != nil {
+						t.Fatalf("migrate through the version before the install: %v", err)
+					}
+				}
+				var rows string
+				if err := store.Pool.QueryRow(ctx, `
+					select string_agg(repo || ' ' || state || ' ' || left(head_sha, 4), ', ' order by repo) from pull_request_heads where number = 70`).Scan(&rows); err != nil {
+					t.Fatalf("read #70's rows: %v", err)
+				}
+				if rows != row.rows {
+					t.Fatalf("#70's rows read %q before the install, want %q: this test holds no such schedule", rows, row.rows)
+				}
+				if err := store.Migrate(ctx); err != nil {
+					t.Fatalf("migrate: %v", err)
+				}
+				if !row.openAtInstall {
+					exec("reopen #70 at 3333…", `update pull_request_heads set state = 'open', head_sha = $1 where repo = 'acme/widgets' and number = 70`, installH3)
+				}
+				exec("move #70 on to 7777…", `update pull_request_heads set head_sha = $1 where repo = 'acme/widgets' and number = 70`, reopenedH7)
+				drainCandidates(t, store, "CORE-1")
+				if heads, _ := formerHeadsAndOwed(t, store); !slices.Equal(heads, row.want) {
+					t.Fatalf("after the install #70 holds the former heads %v, want %v: the closed period begins at the first close Dispatch recorded after the last write that opened a row of the pull request, and no later write of the closed pull request moves it past a result", heads, row.want)
 				}
 				var ended bool
 				if err := store.Pool.QueryRow(ctx, `

@@ -37,9 +37,9 @@ func formerHeadsInstall(t *testing.T) int {
 	return 0
 }
 
-// closesRecordedSince is the version of the migration that has Dispatch record each close of a
-// pull request it stores (pull_request_heads_closes), and each pull request closed when it runs:
-// a close and a reopen before it are in no record.
+// closesRecordedSince is the version of the migration that has Dispatch record each write that
+// opens or closes a row of a pull request it stores (pull_request_heads_lifecycle), and each pull
+// request closed when it runs, undated: a close and a reopen before it are in no record.
 func closesRecordedSince(t *testing.T) int {
 	t.Helper()
 	entries, err := fs.ReadDir(migrationFiles, "migrations")
@@ -47,7 +47,7 @@ func closesRecordedSince(t *testing.T) int {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if digits, name, _ := strings.Cut(entry.Name(), "_"); name == "pull_request_heads_closes.up.sql" {
+		if digits, name, _ := strings.Cut(entry.Name(), "_"); name == "pull_request_heads_lifecycle.up.sql" {
 			version, err := strconv.Atoi(digits)
 			if err != nil {
 				t.Fatalf("%s: %v", entry.Name(), err)
@@ -715,8 +715,8 @@ func TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit(t *testing.T) {
 // such a lock while another writer, holding a lock the first needs next, waits for it closes a
 // cycle with the owner locks and the rows the writers take in their own orders, and Postgres breaks
 // it by failing one writer (TestAResultAndAHeadWriteInTheirOwnLockOrdersBothCommit is one such
-// pair). So each function a former heads trigger, or a trigger of the record of closes
-// (pull_request_heads_closes), on pull_request_heads, check_results or ci_check_results runs only
+// pair). So each function a former heads trigger, or a trigger of the record of opens and closes
+// (pull_request_heads_lifecycle), on pull_request_heads, check_results or ci_check_results runs only
 // reads and appends: its body names no row lock, no table lock and no call of a function whose
 // name holds "lock", updates and deletes nothing, inserts with no on conflict, and calls none of
 // the functions the settler folds, drains or leaves candidates with; and each table it inserts
@@ -735,7 +735,7 @@ func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T)
 		join pg_class watched on watched.oid = fired.tgrelid
 		join pg_proc run on run.oid = fired.tgfoid
 		where not fired.tgisinternal and watched.relname in ('pull_request_heads', 'check_results', 'ci_check_results')
-			and (run.proname like 'pull\_request\_former\_heads\_%' or run.proname like 'pull\_request\_heads\_closes\_%')
+			and (run.proname like 'pull\_request\_former\_heads\_%' or run.proname like 'pull\_request\_heads\_lifecycle\_%')
 		order by 1, 2`)
 	if err != nil {
 		t.Fatalf("read the former heads triggers: %v", err)
@@ -752,10 +752,10 @@ func TestEveryFormerHeadsTriggerOnAWritersTableOnlyReadsAndAppends(t *testing.T)
 	closes := false
 	for _, f := range functions {
 		watched[f.table] = true
-		closes = closes || f.name == "pull_request_heads_closes_keep"
+		closes = closes || f.name == "pull_request_heads_lifecycle_keep"
 	}
 	if !closes {
-		t.Error("found no trigger of the record of closes on pull_request_heads, so this test holds it to nothing")
+		t.Error("found no trigger of the record of opens and closes on pull_request_heads, so this test holds it to nothing")
 	}
 	for _, table := range []string{"pull_request_heads", "check_results", "ci_check_results"} {
 		if !watched[table] {

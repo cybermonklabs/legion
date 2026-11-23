@@ -103,21 +103,26 @@ body: |-
     close no update of an open row shows ends it too: a row written closed or merged, by its insert
     or its re-key, such as the canonical-name writer's first write of a pull request it finds
     closed, which then deletes the open row of its old name, is recorded as a close where the pull
-    request is open under another name or no close of it is known, and the install records the
-    latest close of each pull request before it, whether the pull request is closed when the
-    install runs or was reopened since, among the results recorded before it by one clock, the
-    database's: each close at the time Dispatch recorded it (`pull_request_heads_closes`, a new
-    table two triggers append to on each write that closes or merges a row, which no reopen,
-    re-key or delete of the row removes, and which migration `20261122070959` seeds with each pull
-    request closed when it runs, by its canonical name's row, at that time, so an open pull request
-    whose old name's row reads closed from before keeps its results), each result at the time it
-    was recorded, a result first at an equal time; so a close and a reopen that a writer of the
-    release before makes between the two migrations end the lifecycle as a close after them does;
-    no time GitHub gave (`pull_request_heads.event_at`) orders anything, so a result from before
-    the close never crosses a reopen, and a result recorded while the pull request was closed
-    counts after it reopens where it was recorded after the install or Dispatch's records place it
-    after the close, while one they cannot place there stays out, and its head waits for a new
-    result; and
+    request is open under another name or no close of it is known, and the install records where
+    the last closed period of each pull request before it began, whether the pull request is closed
+    when the install runs or was reopened since, among the results recorded before it by one clock,
+    the database's: Dispatch's record of each write that opens or closes a row
+    (`pull_request_heads_lifecycle`, a new table two triggers append to on each insert, each update
+    that closes an open row or opens a closed one, and each re-key of an open row, which no reopen,
+    re-key or delete of the row removes, and which migration `20261122070959` seeds, undated, with
+    each pull request closed when it runs, by its canonical name's row, so an open pull request
+    whose old name's row reads closed from before keeps its results) shows the period begin at the
+    first close after the last write that opened a row of any name of it, or at a later close in it
+    of a row that was open, the latest such, so a second closed row of the closed pull request, as
+    the canonical-name writer writes, and a write that leaves a closed row closed or merged move it
+    nowhere, and a close, a reopen and a second close begin it at the second; each result goes at
+    the time it was recorded, a result first at an equal time; so a close and a reopen that a writer
+    of the release before makes between the two migrations end the lifecycle as a close after them
+    does; no time GitHub gave (`pull_request_heads.event_at`) orders anything, so a result from
+    before the close never crosses a reopen, and a result recorded while the pull request was
+    closed counts after it reopens where it was recorded after the install or after a close
+    Dispatch recorded, while where the period began undated every result recorded before the
+    install stays out, and its head waits for a new result; and
     ended provenance stays ended: the drain keeps the place of each result
     (`pull_request_former_heads_results`), the install gives each result recorded before it its
     place in that order, and a result's commit becomes a candidate only where a
