@@ -324,9 +324,11 @@ def check_called_jobs(documents: dict, problems: list[Annotation]) -> None:
     callers is read as that caller's alone (called_job_owners), so the rules that hold a job's go
     commands, its environment and its gated steps to its own gate hold it to that caller's. That
     reading is sound only while the job really runs under that caller alone: its `if:` must be
-    exactly `inputs.job == '<its id>'`, and every caller named for a job of the file must pass
-    `job: <its own id>`. A job that ran under a second caller would run go commands and read
-    files that caller's filter is never held to."""
+    exactly `inputs.job == '<its id>'`, every caller named for a job of the file must pass
+    `job: <its own id>`, and, once one caller has a job of the file named for it, every caller
+    must, or a caller with none runs no job of the file this check can hold to its gate. A job that
+    ran under a second caller would run go commands and read files that caller's filter is never
+    held to."""
     for path, callers in workflow_callers(documents[WORKFLOW]).items():
         if len(callers) < 2:
             continue

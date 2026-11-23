@@ -217,7 +217,7 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # why: .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
+      # why (these six outputs): .github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request
       # why: .github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_go_race_api')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
