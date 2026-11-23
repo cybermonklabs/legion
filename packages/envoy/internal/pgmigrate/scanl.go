@@ -707,9 +707,10 @@ func matchSelf(l *lexer, i int) int {
 // reported from measureOpRun, because a count that function kept of its own extent loop would be
 // a claim about which of its branches ran; what the count does and does not reach is stated where
 // it is read, in TestOperatorRunLexingIsLinear's header. The test gives both and adds the two
-// together. They belong to the one reading (lexer.hooks), not to the package, so the count holds
-// that reading's work alone and no other test's reading beside it. Every other reading has none,
-// and the cost is one comparison where each would be called.
+// together; either may be nil, and a nil one is not called. They belong to the one reading
+// (lexer.hooks), not to the package, so the count holds that reading's work alone and no other
+// test's reading beside it. Every other reading has none, and the cost is one comparison where
+// each would be called.
 type lexHooks struct {
 	opCharRead   func()
 	opRunScanned func(run opRun, slash, dash int)
@@ -717,7 +718,7 @@ type lexHooks struct {
 
 // op_chars [\~\!\@\#\^\&\|\`\?\+\-\*\/\%\<\>\=]
 func (l *lexer) isOpChar(c byte) bool {
-	if l.hooks != nil {
+	if l.hooks != nil && l.hooks.opCharRead != nil {
 		l.hooks.opCharRead()
 	}
 	return strings.IndexByte("~!@#^&|`?+-*/%<>=", c) >= 0
@@ -806,7 +807,7 @@ func (l *lexer) measureOpRun(i int) opRun {
 			break
 		}
 	}
-	if l.hooks != nil {
+	if l.hooks != nil && l.hooks.opRunScanned != nil {
 		l.hooks.opRunScanned(run, slash, dash)
 	}
 	return run

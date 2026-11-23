@@ -107,3 +107,32 @@ func lexingWork(text string) int {
 	redactedQueryWith(text, hooks)
 	return scanned
 }
+
+// A reading given one hook and not the other calls the one it was given, and reads as a reading
+// given none: a nil hook is not called. The text holds an operator run and a comment inside it,
+// so both hooks' call sites are reached. Control: drop the nil check on either hook in scanl.go
+// and the row given only the other one panics with a nil func.
+func TestALexingGivenOneHookCallsItAndSkipsTheOther(t *testing.T) {
+	t.Parallel()
+	const text = "select 1 +/* a comment */- 2 -- and a line comment"
+	want := redactedQueryWith(text, nil)
+	for _, c := range []struct {
+		name  string
+		hooks func(called *int) *lexHooks
+	}{
+		{"opCharRead alone", func(called *int) *lexHooks { return &lexHooks{opCharRead: func() { *called++ }} }},
+		{"opRunScanned alone", func(called *int) *lexHooks {
+			return &lexHooks{opRunScanned: func(opRun, int, int) { *called++ }}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			called := 0
+			if got := redactedQueryWith(text, c.hooks(&called)); got != want {
+				t.Errorf("the reading with %s answers %q; want %q, as with no hooks", c.name, got, want)
+			}
+			if called == 0 {
+				t.Errorf("the reading with %s never called it: the text reaches no call site, so the test is blind", c.name)
+			}
+		})
+	}
+}

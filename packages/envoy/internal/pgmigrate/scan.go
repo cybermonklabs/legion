@@ -206,7 +206,7 @@ func hiddenSpans(text string, onFailure int, hooks *lexHooks) []sqlToken {
 func redactedQuery(text string) string { return redactedQueryWith(text, nil) }
 
 // redactedQueryWith is redactedQuery with hooks told the work of both its readings (lexHooks),
-// nil but in TestOperatorRunLexingIsLinear.
+// nil but in the lexing tests.
 func redactedQueryWith(text string, hooks *lexHooks) string {
 	var tokens []sqlToken
 	onFailure := lexSQL(text, true, func(token sqlToken) { tokens = append(tokens, token) }, hooks)

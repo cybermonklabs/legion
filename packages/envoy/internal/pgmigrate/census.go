@@ -77,9 +77,10 @@ const (
 	queryCanceled   = "57014"
 )
 
-// CensusOptions are the census's bounds. A zero field takes its package constant
-// (CensusTableLimit, CensusLongTransaction, CensusStatementTimeout) or list (reviewedTriggers);
-// tests set smaller ones.
+// CensusOptions are the census's bounds and the triggers it has reviewed. A zero TableLimit,
+// LongTransaction or StatementTimeout takes its package constant (CensusTableLimit,
+// CensusLongTransaction, CensusStatementTimeout), and tests set smaller ones; a nil
+// reviewedTriggers takes the package's list, and a test can give a longer one.
 type CensusOptions struct {
 	TableLimit       int64
 	LongTransaction  time.Duration
