@@ -1564,7 +1564,7 @@ export class DispatchClient {
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "outcomes"],
       undefined,
-      Object.fromEntries(Object.entries(filter).filter(([, value]) => value !== undefined))
+      filter
     );
   }
 
@@ -1578,7 +1578,7 @@ export class DispatchClient {
       "GET",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "change-request"],
       undefined,
-      Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined))
+      query
     );
   }
 

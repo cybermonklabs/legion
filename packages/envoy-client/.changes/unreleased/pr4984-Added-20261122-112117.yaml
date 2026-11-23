@@ -1,5 +1,5 @@
 kind: Added
-body: '`dispatch outcomes` records one list of outcomes of a pull request head, one outcome per line of `--body-file`. The list is the author''s, the reviewer''s own or the reviewer''s final list. Without `--body-file`, the command prints the lists recorded for the issue. `dispatch spec-ending --issue <KEY> --head <sha>` prints ready or waiting, then each reason the change waits. It exits 0 for both answers, and `--json` prints the answer that Dispatch gave.'
+body: '`dispatch outcomes` records one list of outcomes of a pull request head, one outcome per line of `--body-file`. The list is the author''s, the reviewer''s own or the reviewer''s final list. Without `--body-file`, the command prints the lists recorded for the issue. `dispatch spec-ending --issue <KEY> --head <sha>` prints ready or waiting, then each reason the change waits, then each reason of the judgment of the conclusion. It exits 0 for both answers, and `--json` prints the answer that Dispatch gave.'
 time: 2026-11-22T11:21:17.607697368Z
 custom:
     Issue: pr4984
