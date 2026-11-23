@@ -1,6 +1,7 @@
 import { DispatchEventSchema, SubscriptionRemovedEventPayloadSchema } from "@legion/contracts";
 import { commandLine } from "./dispatch-command";
 import { documentTopicOf, issueTopic, type OwnerTopic } from "./dispatch-owner";
+import { parseFrameJSON } from "./frame-json";
 
 /**
  * The ask a result's `details.follows.ask` says the calling session now follows (it opened it,
@@ -95,7 +96,7 @@ export function subscriptionRemovedTopics(
 
   let event: unknown;
   try {
-    event = JSON.parse(payload);
+    event = parseFrameJSON(payload);
   } catch {
     return undefined;
   }

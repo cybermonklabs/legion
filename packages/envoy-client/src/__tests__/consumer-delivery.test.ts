@@ -14,6 +14,7 @@ import {
   type RelayMessage,
   type RelayReply,
 } from "../consumer-delivery";
+import { renderInbound } from "../delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
 import type { DeliveryAnswer } from "../transport";
 
@@ -482,6 +483,30 @@ describe("replies", () => {
       "consumer delivery: frame 1 could not be read to report it; it goes back to the stream"
     );
     expect(delivery.resumePoint()).toEqual({ stream_id: STREAM, seq: 0 });
+  });
+
+  // A frame whose JSON spells half a surrogate pair alone made the card's TOON encoder throw, in
+  // the host's render and in the give-up's alike, so the frame went back to the stream on every
+  // delivery and nobody was ever told of it. The renderer reads the half as U+FFFD
+  // (`parseFrameJSON`), so a host that renders the frame as every host does takes it at once.
+  test("a frame whose text spells half a surrogate pair is taken, not sent again for ever", async () => {
+    const { delivery, replies, state, settled } = setup();
+    state.deliver = (frame) => {
+      renderInbound(frame.data, SESSION, frame.subject);
+      frame.done();
+    };
+    const payload = String.raw`{"event_id":"evt-1","source":"agent","payload":"\ud800"}`;
+    const answers: Array<RelayReply | undefined> = [];
+
+    for (const delivered of [1, 2, 3, 4]) {
+      const reply = `_INBOX.half-${delivered}`;
+      delivery.receive(relay({ seq: 1, delivered, reply, payload }));
+      await settled();
+      answers.push(repliesTo(replies, reply).at(-1));
+      if (answers.at(-1) === "done") break;
+    }
+
+    expect(answers).toEqual(["done"]);
   });
 
   // A ledger of this repository never rejects, and a host may pass one of its own: a notice this
