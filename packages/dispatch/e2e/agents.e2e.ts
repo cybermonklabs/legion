@@ -693,6 +693,48 @@ test("opening a row marks read the newer of two replies written in one milliseco
   }
 });
 
+// INFRA-5200: the compact top bar's counts are one group - Peek, the Inbox and the new replies -
+// that moves under the title whole when it does not fit beside it, never one count alone; the
+// replies count is still the link that opens the Agents page. Two replies make the count.
+test("on a phone the top bar keeps its counts on one line, and New replies opens the Agents page @phone @phone-only", async ({
+  browser,
+}) => {
+  await setLiveSessions([planner]);
+  const plannerActor = { id: planner.session_id, kind: "session" as const };
+  for (const body of ["Question A", "Question B"]) {
+    const ask = await createAgentMessage(planner.session_id, { body, delivery: "aside" });
+    await replyToMessageDelivery(ask.id, { attempt: 1, body: `Answer to ${body}` }, plannerActor);
+  }
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto("/settings");
+    const bar = page.locator("header").first();
+    const replies = bar.getByRole("link", { exact: true, name: "New replies 2" });
+    await expect(replies).toBeVisible();
+    const counts = [
+      bar.getByRole("button", { name: "Peek at the inbox without leaving this page" }),
+      bar.getByRole("link", { name: /^Inbox/ }),
+      replies,
+    ];
+    const tops: number[] = [];
+    for (const count of counts) {
+      // The wait above drew the bar, and each count is drawn with it.
+      const box = await count.boundingBox();
+      if (box === null) throw new Error("a count of the top bar has no box");
+      tops.push(Math.round(box.y));
+    }
+    expect(new Set(tops).size, `the counts' tops: ${tops.join(", ")}`).toBe(1);
+    await assertPageFits(page);
+
+    await replies.click();
+    await expect(page).toHaveURL(/\/agents$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
 test("the header checkbox selects and clears only the rows the filters match, by pointer and by Space", async ({
   browser,
 }) => {
