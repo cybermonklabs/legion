@@ -8,6 +8,7 @@ import { mkdir, open, rm, symlink, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { connectionRows, socketOwner } from "./socket-owner"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const makeDirectory = temporaryDirectories("claude-envoy-socket-owner")
 
@@ -317,7 +318,7 @@ test.skipIf(process.platform !== "linux")(
       socket.end()
     `
     const client = Bun.spawn([process.execPath, "-e", lookup], {
-      env: { PATH: "/nonexistent" },
+      env: { PATH: "/nonexistent", ...NO_TRANSPILER_CACHE },
       stdout: "pipe",
       stderr: "inherit",
     })
