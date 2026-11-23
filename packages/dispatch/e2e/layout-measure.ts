@@ -13,11 +13,11 @@
  *    itself, so the box scrolls sideways. It is exempt only when everything that runs past its
  *    edges is, or sits in, a code block (`pre`; a `code` in a line of prose is none), a data table
  *    (`table`, `role=table`, `role=grid`), a board's lanes (a box marked
- *    `data-layout-scroll="board"`) or one picture (`img`, `picture`, `video`, `canvas`) that is
- *    alone wider than the box, or when the box is a code block scrolling its own lines, a data
- *    table's own box or the board box. Anything else that overflows - a row of chips next to a
- *    table, a strip of pictures narrow or wide, an icon's `svg`, the box's own text - makes it a
- *    breach.
+ *    `data-layout-scroll="board"`) or one picture (`img`, `picture`, `video`, `canvas`) the box
+ *    scrolls no further than (with its own padding), or when the box is a code block scrolling its
+ *    own lines, a data table's own box or the board box. Anything else that overflows - a row of
+ *    chips next to a table, a strip of pictures narrow or wide, a picture pushed past the box by
+ *    what stands beside it, an icon's `svg`, the box's own text - makes it a breach.
  *  - `clipped`: something is cut off at a side with no sign of it, in one of four ways.
  *    - An element runs past the left or right edge of the ancestor that clips it (`overflow-x`
  *      `hidden` or `clip`): only the outermost such element is reported, since its children are
@@ -324,22 +324,18 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
         textRunsPast(inner)
     );
     const ownText = textRunsPast(el);
-    // The pictures the overflow comes from: one alone may be what the box scrolls for.
-    const pictures = new Set(
-      sources.map((inner) => inner.closest(PICTURE)).filter((picture) => picture !== null)
-    );
     /** Whether this source of the overflow is one the box may scroll for: a code block, a data
-     *  table or a board's lanes it sits in, or the one picture among the sources when that picture
-     *  alone is wider than the box. A strip of pictures, narrow or wide, is a row, and scrolls as
-     *  one. */
+     *  table or a board's lanes it sits in, or a picture when the box scrolls no further than that
+     *  picture and its own padding need. A strip of pictures, narrow or wide, is a row, and so is a
+     *  picture pushed past the box by what stands beside it or by its margin: the box scrolls
+     *  further than the picture, for the row. */
     const exempt = (inner: Element): boolean => {
       if (inner.closest(SCROLLS_FOR) !== null) return true;
       const picture = inner.closest(PICTURE);
-      return (
-        picture !== null &&
-        pictures.size === 1 &&
-        picture.getBoundingClientRect().width > el.clientWidth + SLACK
-      );
+      if (picture === null) return false;
+      const style = styleOf(el);
+      const padding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+      return el.scrollWidth <= picture.getBoundingClientRect().width + padding + SLACK;
     };
     const forItsTables = !ownText && sources.length > 0 && sources.every(exempt);
     if (forItsTables) continue;
@@ -428,10 +424,15 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     const holder = holderOf(el);
     if (typeof holder !== "string") continue;
     const box = el.getBoundingClientRect();
-    if (box.width === 0 || box.right <= 0 || box.left >= viewport) continue;
-    // The page scrolls sideways under an element it holds, so its left edge is read in the
-    // document; a fixed layer does not scroll, so its edges are read in the viewport.
-    const pastLeft = box.left + (holder === "page" ? window.scrollX : 0) < -SLACK;
+    // The page scrolls sideways under an element it holds, so its edges are read in the document,
+    // and it is partly on the page if any of it lies between the page's two edges; a fixed layer
+    // does not scroll, so its edges are read in the viewport.
+    const shift = holder === "page" ? window.scrollX : 0;
+    const left = box.left + shift;
+    const right = box.right + shift;
+    const extent = holder === "page" ? pageWidth : viewport;
+    if (box.width === 0 || right <= 0 || left >= extent) continue;
+    const pastLeft = left < -SLACK;
     const pastRight = holder === "fixed" && box.right > viewport + SLACK;
     if (!pastLeft && !pastRight) continue;
     cutAtViewport.add(el);

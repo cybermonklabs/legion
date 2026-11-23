@@ -6,7 +6,8 @@
  *  the judgement the rows make and not a copy of it.
  *
  *  It reaches no harness: its imports are Playwright's types, the breach list, the measure, the
- *  route list and the settle wait, so a stubbed row imports it in a run with no stack at all. */
+ *  route list and the settle wait, and it reads the pinned faces' files under `e2e/fonts/` with
+ *  `node:fs`, so a stubbed row imports it in a run with no stack at all. */
 import { readFileSync } from "node:fs";
 
 import { expect, type Page } from "@playwright/test";
@@ -82,7 +83,7 @@ export const PINNED_FACE_SHEET = [
 ].join("\n");
 
 /** Answers the page's requests for the pinned faces from `e2e/fonts/`. */
-async function servePinnedFaces(page: Page): Promise<void> {
+export async function servePinnedFaces(page: Page): Promise<void> {
   await page.route(`**${PINNED_FACE_PATH}**`, async (route) => {
     const asked = new URL(route.request().url()).pathname.slice(PINNED_FACE_PATH.length);
     const face = PINNED_FACES.find((candidate) => `${candidate.dir}/${candidate.file}` === asked);
@@ -95,6 +96,31 @@ async function servePinnedFaces(page: Page): Promise<void> {
       contentType: "font/ttf",
     });
   });
+}
+
+/** Fails unless every pinned face loaded in the page: a font route that stopped answering, or a
+ *  sheet that was never added, would leave the text in the host's own faces, which only a host
+ *  with other fonts than CI's would show. `document.fonts.ready` resolves either way, so each face
+ *  is asked for by its family and weight. */
+export async function expectPinnedFacesLoaded(page: Page): Promise<void> {
+  const wanted = PINNED_FACES.map(({ family, weight }) => ({ family, weight }));
+  const unloaded = await page.evaluate(async (faces) => {
+    const missing: string[] = [];
+    for (const { family, weight } of faces) {
+      try {
+        const loaded = await document.fonts.load(`${weight} 16px ${JSON.stringify(family)}`);
+        if (loaded.length === 0 || loaded.some((face) => face.status !== "loaded")) {
+          missing.push(`${family} ${weight}`);
+        }
+      } catch {
+        missing.push(`${family} ${weight} (load rejected)`);
+      }
+    }
+    return missing;
+  }, wanted);
+  expect(unloaded, "pinned faces that did not load: the font route or the sheet is broken").toEqual(
+    []
+  );
 }
 
 /** One reading: a route, in one of its states or as it loads, at one width. */
@@ -263,6 +289,7 @@ async function loadSettled(page: Page, route: LayoutRoute, address: string): Pro
 async function measureSettledPage(page: Page, place: ReadingPlace): Promise<LayoutReading> {
   // A web font that lands after the wait widens every line it sets.
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  await expectPinnedFacesLoaded(page);
   return await page.evaluate(
     measureLayout,
     entriesAt(place, layoutBreaches).map((entry) => entry.element)

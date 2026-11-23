@@ -1167,9 +1167,13 @@ group the route must mark (`requiredGroups`) that no element marks. The rows are
 `e2e/layout-rule.stub.e2e.ts`, in the stubbed layer on every pull request: their HTTP answers are
 recorded as every stubbed row's are, and the document and live sockets beside the HAR
 (`e2e/layout-sockets.ts`); `bun run e2e:stub:record -- layout-rule.stub` records them again after
-a change to the stress layer. The rows draw the root's first family, `Inter`, in the DejaVu Sans
-faces under `e2e/fonts/dejavu/`, in `en-US` and UTC, so a run on any machine measures the text CI
-measures. `e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
+a change to the stress layer. The rows draw the app's font stacks in faces committed under
+`e2e/fonts/` (each directory holds its licence), the faces CI resolves for them: the root's
+`Inter` in DejaVu Sans, Tailwind's `--font-mono` and `--font-sans` (opened with them for the rows)
+in Liberation Mono and Liberation Sans, and the editor's `SF Mono` and the diagrams'
+`JetBrains Mono` in DejaVu Sans Mono. A reading fails if any of them does not load. The rows run
+in `en-US` and UTC, so a run on any machine measures the text CI measures.
+`e2e/layout-measure.stub.e2e.ts` draws each defect and each allowed
 case, and holds the instrument to reporting the one and not the other. A row fails on each breach
 no entry of `e2e/layout-breaches.ts` accepts - an entry accepts exactly its `count` - on a page
 whose own region drew fewer than 100 elements (or the route's own `minElements`), and on an entry

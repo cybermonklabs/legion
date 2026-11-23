@@ -14,7 +14,14 @@ import { fileURLToPath } from "node:url";
 import { expect, type Page } from "@playwright/test";
 
 import type { KnownLayoutBreach } from "./layout-breaches";
-import { judgeReading, PINNED_FACE_SHEET, PINNED_FAMILIES, staleEntries } from "./layout-check";
+import {
+  expectPinnedFacesLoaded,
+  judgeReading,
+  PINNED_FACE_SHEET,
+  PINNED_FAMILIES,
+  servePinnedFaces,
+  staleEntries,
+} from "./layout-check";
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
 import { openCappedGroups } from "./layout-routes";
 import { stubbed } from "./stub/stub-test";
@@ -222,6 +229,35 @@ const defects: readonly {
     name: "one picture narrower than the box, pushed past its edge",
   },
   {
+    // A chip, then a picture wider than the box: the box scrolls for the row the chip begins.
+    body:
+      '<div data-testid="chip-then-picture" style="display: flex; overflow-x: auto; width: 200px">' +
+      '<span style="flex-shrink: 0; width: 150px">a chip</span>' +
+      `<img alt="" height="10" src="${PIXEL}" style="flex-shrink: 0" width="250"></div>`,
+    kind: "box-scroll",
+    locator: '[data-testid="chip-then-picture"]',
+    name: "a chip, then a picture wider than the box",
+  },
+  {
+    // A narrow picture, then a wide one: only the wide one runs past, but the box scrolls for both.
+    body:
+      '<div data-testid="narrow-then-wide" style="display: flex; overflow-x: auto; width: 200px">' +
+      `<img alt="" height="10" src="${PIXEL}" style="flex-shrink: 0" width="50">` +
+      `<img alt="" height="10" src="${PIXEL}" style="flex-shrink: 0" width="250"></div>`,
+    kind: "box-scroll",
+    locator: '[data-testid="narrow-then-wide"]',
+    name: "a narrow picture, then a wide one",
+  },
+  {
+    // A wide picture pushed further by a large margin: the box scrolls past what the picture needs.
+    body:
+      '<div data-testid="wide-pushed" style="display: flex; overflow-x: auto; width: 200px">' +
+      `<img alt="" height="10" src="${PIXEL}" style="flex-shrink: 0; margin-left: 300px" width="250"></div>`,
+    kind: "box-scroll",
+    locator: '[data-testid="wide-pushed"]',
+    name: "a wide picture pushed further by its margin",
+  },
+  {
     body: `<div data-layout-group="labels">${entries(11)}<button data-layout-more type="button">+1</button></div>`,
     kind: "group-over-cap",
     locator: '[data-layout-group="labels"]',
@@ -305,11 +341,79 @@ test("the layout measure reports nothing of what the rule allows @pr", async ({ 
   expect([...reading.groups].sort()).toEqual(["components", "labels"]);
 });
 
-// Every font stack the app's built sheets give an element opens with a family the layout rows
-// declare a pinned face for, so no browser - a Mac's included, which resolves a keyword such as
-// `ui-monospace` or `-apple-system` itself - draws a reading's text in a face of its own: the
-// root's, Tailwind's `font-mono` and `font-sans`, the `code` that takes `font-mono`, the editor's
-// code and a document's words. The sheets are the build the rows load (`web/dist/assets`).
+/** The rules of the built sheets that set a font stack the pin does not open, each with why the
+ *  page never draws in it: the stack is overridden, or it is a face the build ships itself. */
+const OVERRIDDEN_STACKS: readonly { selector: string; property: string; why: string }[] = [
+  {
+    property: "--font-sans",
+    selector: ":root, :host",
+    why: "Tailwind's theme; the pin sheet's :root sets it",
+  },
+  {
+    property: "--font-mono",
+    selector: ":root, :host",
+    why: "Tailwind's theme; the pin sheet's :root sets it",
+  },
+  {
+    property: "--font-family",
+    selector: ".proof-editor",
+    why: "the editor's own; .dispatch-doc .proof-editor sets it to inherit, and both editor hosts are .dispatch-doc",
+  },
+  {
+    property: "--font-sans",
+    selector: "html:has([data-issue-page])",
+    why: "the new issue page's, which opens with the Inter the build ships (Dispatch Inter)",
+  },
+];
+
+/** Every font stack the style rules of the page's sheets set - `font-family`, and the custom
+ *  properties that hold a stack (`--font-*`, `--default-*font-family`) - whose first family is
+ *  not one of `pinned`, written as `selector { property: value }`. A value that is a keyword
+ *  (`inherit`, `revert-layer`, ...) or a `var()` names no family of its own. The walk goes into
+ *  `@layer`, `@media`, `@supports` and nested rules. Runs in the page. */
+function unpinnedStacks(pinned: readonly string[]): string[] {
+  const found: string[] = [];
+  const keyword = /^(inherit|initial|unset|revert|revert-layer)$/;
+  const read = (rule: CSSStyleRule, property: string): void => {
+    const value = rule.style.getPropertyValue(property).trim();
+    if (value === "" || keyword.test(value) || value.startsWith("var(")) return;
+    const first =
+      value
+        .split(",")[0]
+        ?.trim()
+        .replace(/^["']|["']$/g, "") ?? "";
+    if (!pinned.includes(first)) found.push(`${rule.selectorText} { ${property}: ${value} }`);
+  };
+  const walk = (rules: CSSRuleList): void => {
+    for (const rule of rules) {
+      if (rule instanceof CSSStyleRule) {
+        read(rule, "font-family");
+        for (const property of rule.style) {
+          // A family variable (`--font-sans`, `--font-family`, `--default-mono-font-family`), not
+          // a size, a weight (`--font-weight-bold`) or a style.
+          if (
+            /^--(font-(?!size$|weight$|style$|stretch$)[a-z]+|default-(mono-)?font-family)$/.test(
+              property
+            )
+          ) {
+            read(rule, property);
+          }
+        }
+      }
+      if ("cssRules" in rule && rule.cssRules instanceof CSSRuleList) walk(rule.cssRules);
+    }
+  };
+  for (const sheet of document.styleSheets) walk(sheet.cssRules);
+  return found;
+}
+
+// Every font stack the app's built sheets set opens with a family the layout rows declare a
+// pinned face for, or is one of the overridden rules named above, so no browser - a Mac's
+// included, which resolves a keyword such as `ui-monospace` or `-apple-system` itself - draws a
+// reading's text in a face of its own. The row walks every rule of the sheets the rows load
+// (`web/dist/assets`), reads the computed stack of the root's text, Tailwind's `font-mono` and
+// `font-sans`, the `code` that takes `font-mono`, the editor's code and a document's words, and
+// shows that a sheet that adds an unpinned stack fails it.
 test("every font stack the app sets opens with a pinned face @pr", async ({ page }) => {
   const assets = fileURLToPath(new URL("../web/dist/assets/", import.meta.url));
   const sheets = readdirSync(assets).filter((name) => name.endsWith(".css"));
@@ -324,6 +428,15 @@ test("every font stack the app sets opens with a pinned face @pr", async ({ page
   );
   for (const sheet of sheets) await page.addStyleTag({ path: `${assets}${sheet}` });
   await page.addStyleTag({ content: PINNED_FACE_SHEET });
+  const overridden = OVERRIDDEN_STACKS.map(
+    ({ selector, property }) => `${selector} { ${property}: `
+  );
+  const unexplained = (found: readonly string[]) =>
+    found.filter((stack) => !overridden.some((rule) => stack.startsWith(rule)));
+  const found = await page.evaluate(unpinnedStacks, [...PINNED_FAMILIES]);
+  expect(unexplained(found)).toEqual([]);
+  // Each overridden rule named above is still in the sheets: one that left them goes from the list.
+  expect(overridden.filter((rule) => !found.some((stack) => stack.startsWith(rule)))).toEqual([]);
   const firsts = await page.evaluate(() =>
     [...document.querySelectorAll("[data-font]")].map((element) => [
       element.getAttribute("data-font"),
@@ -332,22 +445,50 @@ test("every font stack the app sets opens with a pinned face @pr", async ({ page
   );
   expect(firsts).toHaveLength(6);
   expect(firsts.filter(([, first]) => !PINNED_FAMILIES.includes(first ?? ""))).toEqual([]);
+  // A sheet that adds a stack of its own, as a new library's would, is read and refused.
+  await page.addStyleTag({
+    content: "@layer extra { .new-stack { font-family: Georgia, serif; } }",
+  });
+  expect(unexplained(await page.evaluate(unpinnedStacks, [...PINNED_FAMILIES]))).toEqual([
+    ".new-stack { font-family: Georgia, serif }",
+  ]);
 });
 
 // A page that scrolls sideways reads the same scrolled as not: the measure reads the elements
 // the page holds in the document, so a window a state left scrolled to the right reports the one
-// page-scroll breach and no cut at the left edge.
+// page-scroll breach and the same cut at the page's left edge.
 test("a window scrolled sideways reads as it does unscrolled @pr", async ({ page }) => {
   const row =
+    '<div data-testid="left-cut" style="height: 10px; margin-left: -60px; width: 100px"></div>' +
     '<div data-testid="row" style="display: flex; justify-content: space-between; width: 900px">' +
     `<span>near</span><span data-testid="far">far</span></div>${entries(120)}`;
   const said = (reading: LayoutReading) =>
     reading.breaches.map((breach) => `${breach.kind} ${breach.locator}`);
+  const expected = ['page-scroll [data-testid="far"]', 'clipped [data-testid="left-cut"]'];
   const unscrolled = await measure(page, row);
-  expect(said(unscrolled)).toEqual(['page-scroll [data-testid="far"]']);
+  expect(said(unscrolled)).toEqual(expected);
   await page.evaluate(() => window.scrollTo(540, 0));
   expect(await page.evaluate(() => window.scrollX)).toBe(540);
-  expect(said(await page.evaluate(measureLayout, []))).toEqual(['page-scroll [data-testid="far"]']);
+  expect(said(await page.evaluate(measureLayout, []))).toEqual(expected);
+});
+
+// The rows require each pinned face to load: a face the route answers with a 404 fails the
+// reading, as a sheet that never reached the page would.
+test("a layout reading fails when a pinned face does not load @pr", async ({ page }) => {
+  const origin = "http://layout-fonts.test";
+  await page.route(`${origin}/`, (route) =>
+    route.fulfill({ body: "<!doctype html><p>words</p>", contentType: "text/html" })
+  );
+  await servePinnedFaces(page);
+  await page.goto(`${origin}/`);
+  await page.addStyleTag({ content: PINNED_FACE_SHEET });
+  await expectPinnedFacesLoaded(page);
+  await page.route("**/__layout-fonts/liberation/LiberationSans-Bold.ttf", (route) =>
+    route.fulfill({ body: "gone", status: 404 })
+  );
+  await page.goto(`${origin}/`);
+  await page.addStyleTag({ content: PINNED_FACE_SHEET });
+  await expect(expectPinnedFacesLoaded(page)).rejects.toThrow("Liberation Sans 700");
 });
 
 test("a layout reading fails on a blank page and keeps a stale entry @pr", async ({ page }) => {
