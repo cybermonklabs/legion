@@ -12,10 +12,12 @@ import (
 
 // plantedUser and plantedQuery are what the cut tests write into a URL as its user name and its
 // query (plantedURL): a user name with no password, which the push's leak check reads as no
-// credential, and a query value of no real token's shape.
+// credential, and a token parameter whose value, plantedValue, is of no real token's shape. The
+// rule keeps the parameter's name and "=", and removes plantedValue.
 const (
 	plantedUser  = "legion-reader"
-	plantedQuery = "token=planted-query-token-1"
+	plantedValue = "planted-query-value-1"
+	plantedQuery = "token=" + plantedValue
 	plantedURL   = "https://" + plantedUser + "@h.example/p?" + plantedQuery
 )
 
@@ -60,9 +62,9 @@ func TestRunesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 		{
 			name:    "a bound inside a URL's query",
 			text:    strings.Repeat("w", 10) + " https://h.example/p?" + plantedQuery + " " + strings.Repeat("z", 30),
-			n:       40,
-			planted: plantedQuery,
-			want:    strings.Repeat("w", 10) + " https://h.example/p " + strings.Repeat("z", 8) + "…",
+			n:       45,
+			planted: plantedValue,
+			want:    strings.Repeat("w", 10) + " https://h.example/p?token= " + strings.Repeat("z", 6) + "…",
 		},
 		{
 			name: "a text one rune past the bound",
@@ -115,9 +117,9 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 		{
 			name:    "a bound inside a URL's query",
 			text:    strings.Repeat("w", 10) + " https://h.example/p?" + plantedQuery + " " + strings.Repeat("z", 30),
-			n:       40,
-			planted: plantedQuery,
-			want:    strings.Repeat("w", 10) + " https://h.example/p " + strings.Repeat("z", 9),
+			n:       45,
+			planted: plantedValue,
+			want:    strings.Repeat("w", 10) + " https://h.example/p?token= " + strings.Repeat("z", 7),
 			wantCut: true,
 		},
 		{
@@ -173,9 +175,9 @@ func TestTailKeepsTheEndOfWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			name:    "a window that starts inside a URL's query",
 			text:    "start https://" + plantedUser + "@h.example/" + path + "?" + plantedQuery + " end",
 			n:       20,
-			planted: plantedQuery,
-			want:    strings.Repeat("p", 16) + " end",
-			wantCut: len("start https://h.example/") + 14,
+			planted: plantedValue,
+			want:    strings.Repeat("p", 9) + "?token= end",
+			wantCut: len("start https://h.example/") + 21,
 		},
 		{
 			name:    "a window that starts inside a URL's user name",
@@ -209,7 +211,7 @@ func TestTailKeepsTheEndOfWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fallsInside(t, tc.text[max(0, len(tc.text)-tc.n):], tc.planted)
 			got, cut := Tail(tc.text, tc.n)
-			for _, planted := range []string{plantedUser, plantedQuery} {
+			for _, planted := range []string{plantedUser, plantedValue} {
 				if part := partOf(got, planted); part != "" {
 					t.Fatalf("Tail = %q, which holds %q of %q", got, part, planted)
 				}
@@ -245,7 +247,7 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 			name:    "a read that stopped inside a URL's query",
 			text:    "moved to https://h.example/p?" + plantedQuery[:len("token=planted-qu")],
 			cut:     true,
-			planted: plantedQuery,
+			planted: plantedValue,
 			want:    "moved to ",
 		},
 		{
@@ -258,7 +260,7 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 			name: "a read that stopped inside a run with no \"://\" after a URL",
 			text: "moved to " + plantedURL + " unfinish",
 			cut:  true,
-			want: "moved to https://h.example/p unfinish",
+			want: "moved to https://h.example/p?token= unfinish",
 		},
 		{
 			name: "a read that stopped inside a run with no end that holds \"://\"",
@@ -275,7 +277,7 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 		{
 			name: "a read its bound did not cut",
 			text: "moved to " + plantedURL,
-			want: "moved to https://h.example/p",
+			want: "moved to https://h.example/p?token=",
 		},
 		{
 			name: "a read its bound did not cut, with no end",
@@ -299,18 +301,18 @@ func TestReadDropsTheRunABoundedReadStoppedInside(t *testing.T) {
 }
 
 // Read of a text cut at any point, as a read its bound cut there, keeps no part of a user name or
-// a query that the URL rule removes from the whole text, and of a text the rule leaves alone it
-// keeps a start of that text: for 2000 texts built under a fixed seed from words, white space,
-// quotes, "https://", a bare "://", "@", "?", a URL's user name, host, path, query and fragment
-// with and without an "https://" before it, and bytes that start no character, at each of their
-// cut points. The rule alone after such a cut keeps the start of a user name as a host, or the end
-// of a query as a path, and the test fails where no cut of the texts meets that.
+// a credential's value that the URL rule removes from the whole text, and of a text the rule
+// leaves alone it keeps a start of that text: for 2000 texts built under a fixed seed from words,
+// white space, quotes, "https://", a bare "://", "@", "?", a URL's user name, host, path, query and
+// fragment with and without an "https://" before it, and bytes that start no character, at each
+// of their cut points. The rule alone after such a cut keeps the start of a user name as a host,
+// and the test fails where no cut of the texts meets that.
 func TestReadOfAnyCutKeepsNoPartOfWhatTheURLRuleRemovesFromTheWholeText(t *testing.T) {
 	random := rand.New(rand.NewPCG(4193, 4463))
 	leaks := 0
 	for n := range 2000 {
-		query := fmt.Sprintf("token=planted-query-token-%d", n)
-		rest := plantedUser + "@h.example/p?" + query + "#frag"
+		value := fmt.Sprintf("planted-query-value-%d", n)
+		rest := plantedUser + "@h.example/p?token=" + value + "#frag"
 		pieces := []string{"moved", "to", " ", "\n", "\u00a0", `"`, "'", "<", ">", "https://", "://", "@", "?",
 			"é", "\xff", "\x80", rest, "https://" + rest, "https://" + rest}
 		var text strings.Builder
@@ -320,7 +322,7 @@ func TestReadOfAnyCutKeepsNoPartOfWhatTheURLRuleRemovesFromTheWholeText(t *testi
 		whole := text.String()
 		ruled := URLCredentials(whole)
 		var removed []string
-		for _, planted := range []string{plantedUser, query} {
+		for _, planted := range []string{plantedUser, value} {
 			if partOf(ruled, planted) == "" {
 				removed = append(removed, planted)
 			}

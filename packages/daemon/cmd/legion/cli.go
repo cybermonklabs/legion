@@ -17,17 +17,20 @@ import (
 // else: every error is run's to print, so a command that fails prints one line in one shape.
 //
 // What a command writes to stderr itself passes the URL rule (redact.Writer), so every URL in it
-// keeps no userinfo and no query: no command can print a credential a URL carries, such as a
-// remote's URL `git remote -v` lists, a flag's value or an error quoting either. Standard output
-// stays as written, since it carries what a caller parses (`legion gh`'s answer, `legion
-// git-credential`'s token to git). Three commands get stderr as it is, because they hand it to a
-// child process as that child's own stream, which the rule must not touch: the launcher hands its
-// streams to each role's shim, `legion claude-bridge` hands its stderr to Claude Code, and
-// `legion controller start` hands it to its Oh My Pi probe's foreground attempts, where a launch
-// prefix writes its prompt. Each of the three passes its own lines through the rule itself (the
-// launcher's roleLog, the bridge's log and printRefusal, and the controller's lines through this
-// writer). `legion gh` and `legion git` give their child this process's own os.Stderr, never
-// this writer.
+// keeps no userinfo and no credential-named query value: no command can print a credential a URL
+// carries, such as a remote's URL `git remote -v` lists, a flag's value or an error quoting
+// either. Standard output stays as written, since it carries what a caller parses (`legion gh`'s
+// answer, `legion git-credential`'s token to git). Three commands get stderr as it is as well,
+// because they hand it to a child process as that child's own stream, which the rule must not
+// touch: the launcher hands its streams to each role's shim (launcher.RoleInitConfig.Stderr),
+// `legion claude-bridge` hands its stderr to Claude Code, and `legion controller start` hands it
+// to its Oh My Pi probe's foreground attempts, where a launch prefix writes its prompt. Each of the
+// three passes its own lines through the rule itself (the launcher's roleLog and its subcommands'
+// writers, the bridge's log and printRefusal, and the controller's lines through this writer).
+// Other streams that go to a child untouched: `legion gh` and `legion git` give their child this
+// process's own os.Stdout and os.Stderr; `legion worker-shim` gives Oh My Pi its os.Stderr
+// (internal/shim) and agent-secrets the same os.Stderr for both of its streams; and `legion
+// controller start` gives its foreground Oh My Pi session os.Stdin, os.Stdout and os.Stderr.
 func newRoot(stdout, stderr io.Writer) *cobra.Command {
 	own := redact.Writer(stderr)
 	root := group(&cobra.Command{

@@ -192,7 +192,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	})
 	p.hangUp()
 	logged := p.logged()
-	if want := `Post "http://` + daemon + `/daemon"`; !strings.Contains(logged, want) {
+	if want := `Post "http://` + daemon + `/daemon?token="`; !strings.Contains(logged, want) {
 		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {
