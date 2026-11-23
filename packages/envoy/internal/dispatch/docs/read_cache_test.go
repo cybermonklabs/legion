@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proofHistory writes a document's stored history as a room stores one: each write is the update
@@ -270,7 +271,8 @@ func TestALoadedDocumentIsTheLoadedStateDecoded(t *testing.T) {
 func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 	// Not parallel: under the race detector this test grows the binary by about 4.4 GB
 	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
-	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB. It also
+	// lets the cold read's fold run past coldReadTimeout (letTheColdFoldFinish).
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	versioned := NewPgVersioned(database)
@@ -280,9 +282,26 @@ func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 	}
 	service := newSchemaRepairService(database)
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
+	letTheColdFoldFinish(t)
 	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("read an over-cap history: %v, want ErrDocumentUnloadable and not ErrServiceUnavailable", err)
 	}
+}
+
+// letTheColdFoldFinish lets a cold read's fold of the stored history run until the test binary's
+// deadline, less a margin to fail in, rather than coldReadTimeout's minute, until t ends. The fold
+// of oversizedHistory replays eleven rows of 100,000 items each and merges them before ygo's item
+// cap refuses the result (documentThrough, mergedThrough): CPU work that took 20 s under the race
+// detector alone and more than the minute on a runner whose cores other work was taking
+// (envoy-go-race-docs at 12 busy loops), where the read then answered a timeout instead of the
+// refusal it is asked for. A test that reads such a history waits on that fold's end, which is its
+// subject, and not on how fast the machine is. It writes a package variable, so its caller does
+// not run in parallel.
+func letTheColdFoldFinish(t *testing.T) {
+	t.Helper()
+	old := coldReadTimeout
+	coldReadTimeout = testwait.Remaining(t, 30*time.Second)
+	testcleanup.Add(t, func() { coldReadTimeout = old })
 }
 
 type loadCountingStore struct {

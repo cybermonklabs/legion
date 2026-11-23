@@ -78,7 +78,8 @@ func rebuildDocument(t *testing.T, service *Service, artifactID string, markdown
 func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
 	// Not parallel: under the race detector this test grows the binary by about 1.3 GB
 	// (envoy-go-race-docs job 137302424274, whose memory sampler ran it alone), and beside
-	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB.
+	// the package's other tests that took the binary past the step's RACE_MEM_LIMIT_KB. It also
+	// lets the cold read's fold run past coldReadTimeout (letTheColdFoldFinish).
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before\n")
 	persistence := NewPgVersioned(database)
@@ -94,6 +95,7 @@ func TestRebuildDocumentRestoresDocumentThatCannotLoad(t *testing.T) {
 			t.Errorf("shutdown rebuilt service: %v", err)
 		}
 	})
+	letTheColdFoldFinish(t)
 	// The read meets the history that does not decode itself, the state a rebuild repairs.
 	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) {
 		t.Fatalf("read over-cap history: %v, want ErrDocumentUnloadable", err)
