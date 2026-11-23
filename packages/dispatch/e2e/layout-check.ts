@@ -24,20 +24,26 @@ export const MIN_ELEMENTS = 100;
  *  rows the rule governs are, at every width. */
 const HEIGHT = 900;
 
-/** The faces the rows draw the app's font stacks in, by the first family of each stack the page
- *  names, from the files committed under `e2e/fonts/` (each directory holds its licence). The
- *  pages load no font file for these stacks, so each machine draws them in what it holds, and the
- *  list's exact counts follow the text's width. Declared under those names here, these faces win
- *  over any installed font of the name, so every run measures the text CI measures, in the faces
- *  CI's Chromium resolves today (read with `CSS.getPlatformFontsForNode`):
- *  - `Inter`, the root's first family (`web/src/styles.css`; every page but the new issue page,
- *    which ships its own): DejaVu Sans 2.37.
- *  - `SFMono-Regular`, the first family Chromium on Linux looks up in Tailwind's `font-mono`
- *    stack, which `code`, `kbd`, `samp` and `pre` take too: Liberation Mono 2.1.5. The stack opens
- *    with `ui-monospace`, which Chromium on Linux skips; it is declared as well, for a browser
- *    that looks it up by name.
- *  - `SF Mono`, the first family of the document editor's code stack (`.milkdown code`), and
- *    `JetBrains Mono`, the diagram's (`.mono` in a Mermaid picture): DejaVu Sans Mono 2.37.
+/** The faces the rows draw the app's font stacks in, from the files committed under `e2e/fonts/`
+ *  (each directory holds its licence), in the faces CI's Chromium resolves today (read with
+ *  `CSS.getPlatformFontsForNode`). The pages load no font file for these stacks, so each machine
+ *  draws them in what it holds, and the list's exact counts follow the text's width. Each face is
+ *  declared under the first family its stack names, and an installed font of that name loses to
+ *  it on any browser. A stack whose first family is a keyword some browser resolves itself
+ *  (`ui-monospace`, `-apple-system`) cannot be won that way, since `@font-face` does not override
+ *  a keyword, so the two stacks that open with one, which are Tailwind's variables, are set below
+ *  to open with their pinned face:
+ *  - `Inter`, the root's first family, written on `:root` in `web/src/styles.css` (every page but
+ *    the new issue page, which ships its own face): DejaVu Sans 2.37.
+ *  - `--font-mono`, Tailwind's `font-mono`, which `code`, `kbd`, `samp` and `pre` take through
+ *    `--default-mono-font-family`: set to open with `Liberation Mono`, Liberation Mono 2.1.5, the
+ *    face its `"Liberation Mono"` gives on Linux.
+ *  - `--font-sans`, Tailwind's `font-sans`: set to open with `Liberation Sans`, Liberation Sans
+ *    2.1.5, the face its `Arial` gives on Linux. The new issue page sets its own `--font-sans` on
+ *    `html:has([data-issue-page])`, which outranks this sheet's `:root`.
+ *  - `SF Mono`, the first family of the document editor's code stack (`.milkdown code`, in the
+ *    editor's own sheet), and `JetBrains Mono`, the diagrams' (`.mono` in a Mermaid picture):
+ *    DejaVu Sans Mono 2.37.
  *  Each is a Book and a Bold face. A weight between is matched to them as the browser matches it
  *  to the installed fonts, and italic is drawn slanted from Book; a monospace face's advances do
  *  not change with its slant, and that machine holds no DejaVu Sans Oblique. */
@@ -46,21 +52,34 @@ const PINNED_FACES = [
     { dir: "dejavu", family, file: "DejaVuSans.ttf", weight: 400 },
     { dir: "dejavu", family, file: "DejaVuSans-Bold.ttf", weight: 700 },
   ]),
-  ...["ui-monospace", "SFMono-Regular"].flatMap((family) => [
+  ...["Liberation Mono"].flatMap((family) => [
     { dir: "liberation", family, file: "LiberationMono-Regular.ttf", weight: 400 },
     { dir: "liberation", family, file: "LiberationMono-Bold.ttf", weight: 700 },
+  ]),
+  ...["Liberation Sans"].flatMap((family) => [
+    { dir: "liberation", family, file: "LiberationSans-Regular.ttf", weight: 400 },
+    { dir: "liberation", family, file: "LiberationSans-Bold.ttf", weight: 700 },
   ]),
   ...["SF Mono", "JetBrains Mono"].flatMap((family) => [
     { dir: "dejavu", family, file: "DejaVuSansMono.ttf", weight: 400 },
     { dir: "dejavu", family, file: "DejaVuSansMono-Bold.ttf", weight: 700 },
   ]),
 ];
+/** The family names those faces are declared under, which every stack a row reads opens with
+ *  (`e2e/layout-measure.stub.e2e.ts` holds the app's stacks to it). */
+export const PINNED_FAMILIES: readonly string[] = [
+  ...new Set(PINNED_FACES.map((face) => face.family)),
+];
 /** Where the page asks for those faces; the row answers it from the committed files. */
 const PINNED_FACE_PATH = "/__layout-fonts/";
-const PINNED_FACE_SHEET = PINNED_FACES.map(
-  ({ dir, family, file, weight }) =>
-    `@font-face { font-family: ${JSON.stringify(family)}; font-style: normal; font-weight: ${weight}; src: url("${PINNED_FACE_PATH}${dir}/${file}") format("truetype"); }`
-).join("\n");
+/** The faces, and Tailwind's two font variables opened with their pinned face. */
+export const PINNED_FACE_SHEET = [
+  ...PINNED_FACES.map(
+    ({ dir, family, file, weight }) =>
+      `@font-face { font-family: ${JSON.stringify(family)}; font-style: normal; font-weight: ${weight}; src: url("${PINNED_FACE_PATH}${dir}/${file}") format("truetype"); }`
+  ),
+  ':root { --font-mono: "Liberation Mono", monospace; --font-sans: "Liberation Sans", sans-serif; }',
+].join("\n");
 
 /** Answers the page's requests for the pinned faces from `e2e/fonts/`. */
 async function servePinnedFaces(page: Page): Promise<void> {

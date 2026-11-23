@@ -8,10 +8,13 @@
  *  its floor and its stale entries. An instrument whose clean reading has never been seen to fail
  *  proves nothing, and these are the failures it is seen to report: each part below fails one of
  *  these rows when it is broken. */
+import { readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { expect, type Page } from "@playwright/test";
 
 import type { KnownLayoutBreach } from "./layout-breaches";
-import { judgeReading, staleEntries } from "./layout-check";
+import { judgeReading, PINNED_FACE_SHEET, PINNED_FAMILIES, staleEntries } from "./layout-check";
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
 import { openCappedGroups } from "./layout-routes";
 import { stubbed } from "./stub/stub-test";
@@ -300,6 +303,35 @@ test("the layout measure reports nothing of what the rule allows @pr", async ({ 
     reading.breaches.map((breach) => `${breach.kind} ${breach.where}: ${breach.detail}`)
   ).toEqual([]);
   expect([...reading.groups].sort()).toEqual(["components", "labels"]);
+});
+
+// Every font stack the app's built sheets give an element opens with a family the layout rows
+// declare a pinned face for, so no browser - a Mac's included, which resolves a keyword such as
+// `ui-monospace` or `-apple-system` itself - draws a reading's text in a face of its own: the
+// root's, Tailwind's `font-mono` and `font-sans`, the `code` that takes `font-mono`, the editor's
+// code and a document's words. The sheets are the build the rows load (`web/dist/assets`).
+test("every font stack the app sets opens with a pinned face @pr", async ({ page }) => {
+  const assets = fileURLToPath(new URL("../web/dist/assets/", import.meta.url));
+  const sheets = readdirSync(assets).filter((name) => name.endsWith(".css"));
+  expect(sheets.length, `no built sheet under ${assets}: build the SPA first`).toBeGreaterThan(0);
+  await page.setContent(
+    '<!doctype html><html><body><p data-font="root">words</p>' +
+      '<p class="font-mono" data-font="font-mono">mono</p><code data-font="code">code</code>' +
+      '<p class="font-sans" data-font="font-sans">sans</p>' +
+      '<div class="milkdown"><code data-font="editor code">code</code></div>' +
+      '<div class="dispatch-doc"><div class="proof-editor"><p data-font="document">words</p></div></div>' +
+      "</body></html>"
+  );
+  for (const sheet of sheets) await page.addStyleTag({ path: `${assets}${sheet}` });
+  await page.addStyleTag({ content: PINNED_FACE_SHEET });
+  const firsts = await page.evaluate(() =>
+    [...document.querySelectorAll("[data-font]")].map((element) => [
+      element.getAttribute("data-font"),
+      getComputedStyle(element).fontFamily.split(",")[0]?.trim().replace(/^"|"$/g, ""),
+    ])
+  );
+  expect(firsts).toHaveLength(6);
+  expect(firsts.filter(([, first]) => !PINNED_FAMILIES.includes(first ?? ""))).toEqual([]);
 });
 
 // A page that scrolls sideways reads the same scrolled as not: the measure reads the elements

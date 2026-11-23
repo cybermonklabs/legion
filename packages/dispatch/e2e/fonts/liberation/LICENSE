@@ -1,8 +1,9 @@
-LiberationMono-Regular.ttf and LiberationMono-Bold.ttf are Liberation Mono 2.1.5, unmodified, as
-Debian's fonts-liberation ships them (https://github.com/liberationfonts). The layout rows
-(packages/dispatch/e2e/layout-check.ts) draw the app's monospace stack (`font-mono`, and the code,
-kbd, samp and pre that take it) in them, so a run on any machine measures the text CI measures.
-Their licence, from that package's copyright file:
+LiberationMono-Regular.ttf, LiberationMono-Bold.ttf, LiberationSans-Regular.ttf and
+LiberationSans-Bold.ttf are Liberation Mono and Liberation Sans 2.1.5, unmodified, as Debian's
+fonts-liberation ships them (https://github.com/liberationfonts). The layout rows
+(packages/dispatch/e2e/layout-check.ts) draw Tailwind's `font-mono` stack (and the code, kbd, samp
+and pre that take it) and its `font-sans` stack in them, so a run on any machine measures the text
+CI measures. Their licence, from that package's copyright file:
 
 Files: *
 Copyright:
