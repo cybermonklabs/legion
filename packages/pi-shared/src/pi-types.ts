@@ -696,6 +696,14 @@ export interface HostSlashCommand {
   readonly description?: string;
   readonly source: "extension" | "prompt" | "skill";
 }
+
+/**
+ * Where input came from, for a host that tells them apart: `"outside"` is input a person sent (a
+ * person's turn from Dispatch). After an OpenAI `cyber_policy` refusal the host holds every OpenAI
+ * route until input from outside the session arrives, so only a person's own input carries it, never
+ * another session's message or a card. A host without the option ignores the field.
+ */
+export type InputOrigin = "outside" | "inside";
 export interface PiApi {
   readonly zod: PiZod;
   readonly agents?: ExtensionAgentsApi;
@@ -718,10 +726,11 @@ export interface PiApi {
    * it steers. `deliverAs: "aside"` lands it at the next step without interrupting the running
    * tool batch; `deliverAs: "followUp"` queues it behind the running turn without starting one.
    * The host queues the send, so the prompt's `message_start` comes after this returns.
+   * `origin: "outside"` marks input a person sent (see {@link InputOrigin}).
    */
   readonly sendUserMessage: (
     content: string | readonly ContentBlock[],
-    options?: { readonly deliverAs: "aside" | "followUp" }
+    options?: { readonly deliverAs?: "aside" | "followUp"; readonly origin?: InputOrigin }
   ) => void;
   /**
    * Runs text as if typed at the session's own terminal: a built-in its host can run headless, an
@@ -729,11 +738,12 @@ export interface PiApi {
    * text goes to the model as a prompt. `tag` is recorded on the message the input submits and
    * seen again on its `message_start`. Our Oh My Pi fork carries it (can1357/oh-my-pi#14323); a host
    * without it has no such member. On an idle session it resolves only once the run it started
-   * ends, so a caller that must keep taking messages never awaits it in line.
+   * ends, so a caller that must keep taking messages never awaits it in line. `origin: "outside"`
+   * marks input a person sent (see {@link InputOrigin}).
    */
   readonly sendUserInput?: (
     text: string,
-    options?: { readonly deliverAs?: "aside"; readonly tag?: string }
+    options?: { readonly deliverAs?: "aside"; readonly tag?: string; readonly origin?: InputOrigin }
   ) => Promise<UserInputResult>;
   /** The session's extension, custom and skill slash commands (`skill:<name>`), never its
    *  built-ins. Every Oh My Pi build has it; Legion's own test hosts leave it out. */

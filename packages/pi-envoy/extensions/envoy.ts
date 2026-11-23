@@ -1911,6 +1911,8 @@ export default function envoyExtension(hostApi: PiApi): void {
         sendUserInput(turn.body, {
           ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
           tag: turn.messageId,
+          // A person's own accepted turn: input from outside the session (`InputOrigin`).
+          origin: "outside",
         })
       )
       .then(
@@ -2366,10 +2368,11 @@ export default function envoyExtension(hostApi: PiApi): void {
             const injectionSessionID = sessionID;
             noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
             notedSessionIDs.add(injectionSessionID);
-            pi.sendUserMessage(
-              delivery.content,
-              turn.mode === "aside" ? { deliverAs: "aside" } : undefined
-            );
+            pi.sendUserMessage(delivery.content, {
+              ...(turn.mode === "aside" && { deliverAs: "aside" as const }),
+              // A person's own accepted turn: input from outside the session (`InputOrigin`).
+              origin: "outside",
+            });
             markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
             // Done once the host writes the user message its text is found as, or at the run's
             // end, which stops that search (`endInjectedUserTurns`).

@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  A person's accepted Send or Aside from Dispatch is sent with `origin: "outside"`, on
+  `pi.sendUserInput` and on `pi.sendUserMessage`. After an OpenAI `cyber_policy` refusal, an Oh My
+  Pi that reads the option holds the session tree's OpenAI routes until input from outside the
+  session arrives, and a person's turn is such input. Envoy messages from other sessions, cards and
+  the session's own messages carry no origin and keep the hold. An Oh My Pi without the option
+  ignores the field.
+time: 2026-11-21T15:17:12Z
+custom:
+    Issue: pr4856
