@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  The interest reaper and the role claim reaper now ask the session bucket stream's leader whether a
+  session the listener's cache does not hold is gone, not a direct get. On a bucket with three
+  copies a copy that had not applied a registration made a moment before answered that the session
+  had no record, and the reaper deleted that live session's interest, or released the role its
+  claim held.
+time: 2026-11-23T07:25:19Z
+custom:
+    Issue: pr5132

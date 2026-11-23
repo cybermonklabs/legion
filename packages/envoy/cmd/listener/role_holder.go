@@ -94,17 +94,18 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 }
 
 // liveSessionEntry is sessionID's record and the state that record puts its session in, for a
-// decision that turns on whether that session is still answering: a soft claim, the reapers, a
-// session lookup, a session-addressed send and an agent delivery. accept is the caller's rule
-// about that state.
+// decision that turns on whether that session is still answering: a soft claim, a session lookup,
+// a session-addressed send and an agent delivery. accept is the caller's rule about that state.
+// The reapers ask sessionMayBeLive instead, which makes the same two reads with the second one
+// the stream leader's.
 //
 // A caller that may act on a session which merely stopped answering passes notGone: the send
-// route, whose message is stored for such a session; the agent delivery path; both reapers
-// (sessionMayBeLive); and GET /v1/registry/<id> asked with include=unresponsive. The two that
-// may act only on a session answering now pass sessionIsLive: that same lookup asked without
-// include, and a soft claim weighing the holder it found (roleSupersessionVerdict). A
-// role-holder resolution reads its holder through roleHolderSessions.Holder instead, which asks
-// the same two reads in the same order and leaves the judgement to internal/roles.
+// route, whose message is stored for such a session; the agent delivery path; and GET
+// /v1/registry/<id> asked with include=unresponsive. The two that may act only on a session
+// answering now pass sessionIsLive: that same lookup asked without include, and a soft claim
+// weighing the holder it found (roleSupersessionVerdict). A role-holder resolution reads its
+// holder through roleHolderSessions.Holder instead, which asks the same two reads in the same
+// order and leaves the judgement to internal/roles.
 //
 // The cache answers when it holds a record accept takes (session.SessionRegistry.Lookup, which
 // judges the record's own age and never its membership of the cache); otherwise the session is
