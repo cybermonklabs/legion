@@ -74,11 +74,8 @@ func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIs
 			rig.subscribe(t, consumerRegistration(next, "epoch-1"))
 			rig.claim(t, next, role, "")
 
-			copyBehind := &staleClaimKV{role: role, stale: stale}
-			rig.harness.registry.WrapRoleBucket(func(kv natsgo.KeyValue) natsgo.KeyValue {
-				copyBehind.KeyValue = kv
-				return copyBehind
-			})
+			copyBehind := &staleClaimKV{KeyValue: registryRoleKV(t, rig.harness.registry), role: role, stale: stale}
+			setRegistryRoleKV(t, rig.harness.registry, copyBehind)
 			copyBehind.behind.Store(tc.behind)
 			want := map[bool]string{true: previous, false: next}[tc.behind]
 			if claim, err := rig.harness.registry.RoleClaim(context.Background(), role); err != nil || claim.HolderSessionID != want {

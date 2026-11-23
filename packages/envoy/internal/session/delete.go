@@ -43,6 +43,16 @@ func (r *SessionRegistry) Delete(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+// recordOf is whether a value is a record of sessionID (DecodeEntry), the test a read fenced on a
+// revision takes (bus.KeyValue.ReadStored): a value it refuses is read again from the stream's
+// leader, whose revision is the one the value is stored at.
+func (r *SessionRegistry) recordOf(sessionID string) func(value []byte) bool {
+	return func(value []byte) bool {
+		_, err := DecodeEntry(sessionID, value)
+		return err == nil
+	}
+}
+
 // DeleteOutcome is what a conditional delete (DeleteIf) did with the entry it was asked to
 // remove, and what DELETE /v1/sessions/<session_id> words for the client that named a condition.
 // The outcomes that keep the entry are told apart because they are separate facts: one says
@@ -151,7 +161,7 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 	fence := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
 	for attempt := 0; ; attempt++ {
-		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.GetFromLeader(ctx, sessionID) })
+		entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return r.readForStop(ctx, kv, sessionID) })
 		if !answered {
 			return EntryUnanswered, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 		}
@@ -162,14 +172,12 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return EntryUnanswered, err
 		}
 		revision := entry.Revision()
-		// The read is the stream leader's (GetFromLeader), never a copy's: a copy that has not
-		// applied the registration made a moment ago answers that the entry is absent, and the stop
-		// would answer EntryDeleted over an entry the bucket still holds. A server-written record
-		// that does not decode as sessionID's registration is read as no record here (DecodeEntry
-		// refuses it) and deleted at the sequence the leader reports it stored at. One that does
-		// decode as the registration is read like the registration it looks like, and no reader
-		// trusts it: every reader confirms a session by the leader read (StoredByWriter), which reads
-		// such a record as absent.
+		// A server-written record that does not decode as sessionID's registration is read as no
+		// record here (DecodeEntry refuses it) and, where the delete runs, deleted at the fenced
+		// delete's leader read (DeleteAt below). One that does decode as the registration
+		// is read like the registration it looks like - a leader read would be needed to tell it
+		// from one, which this delete does not make - and no reader trusts it: every reader confirms
+		// a session by the leader read (StoredByWriter), which reads such a record as absent.
 		stored, err := DecodeEntry(sessionID, entry.Value())
 		if err != nil {
 			// A value this build cannot read names no instance and no moment, so it belongs
@@ -183,10 +191,10 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			// fills every field it could read, wherever the bad field sits, so a value
 			// carrying a client instance id or a heartbeat would otherwise be compared against
 			// the caller's and kept — the opposite of what this branch decides. Its revision
-			// is the one the stream's leader reports, the sequence the value is stored at: a
-			// copy the server stored carries its source's Nats-Sequence header ahead of its own,
-			// and a delete fenced on the revision a direct get reports for it is refused at every
-			// attempt.
+			// is the one the stream's leader reports (ReadStored), the sequence the value is
+			// stored at: a copy the server stored carries its source's Nats-Sequence header
+			// ahead of its own, and a delete fenced on the revision a direct get reports for it
+			// is refused at every attempt.
 			stored = SessionEntry{}
 			r.logger().Warn("session registry deleting a malformed value under a conditional delete",
 				slog.String("key", entry.Key()),
@@ -220,6 +228,22 @@ func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, condit
 			return EntryUnanswered, err
 		}
 	}
+}
+
+// readForStop is the read a conditional stop (DeleteIf) judges sessionID's entry by: the entry as
+// bus.KeyValue.ReadStored reads it, a value that is no record of sessionID read again from the
+// stream's leader (recordOf), and an entry the direct get answered absent read again from the
+// leader too (GetFromLeader). On a replicated bucket a copy that has not applied the registration
+// made a moment ago answers that the entry is absent, and the stop would answer EntryDeleted over
+// an entry the bucket still holds. An entry the direct get answered is judged as read: a copy
+// behind answers an older entry, whose fenced delete the bucket refuses, and the next attempt
+// reads again.
+func (r *SessionRegistry) readForStop(ctx context.Context, kv bus.KeyValue, sessionID string) (nats.KeyValueEntry, error) {
+	entry, err := kv.ReadStored(ctx, sessionID, r.recordOf(sessionID))
+	if errors.Is(err, nats.ErrKeyNotFound) {
+		return kv.GetFromLeader(ctx, sessionID)
+	}
+	return entry, err
 }
 
 // reconcileDeleted brings the cache up to what the bucket holds for sessionID after a delete this
