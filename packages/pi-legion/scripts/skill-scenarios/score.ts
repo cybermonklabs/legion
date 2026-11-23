@@ -695,76 +695,62 @@ function bunWords(command: string): string[] | undefined {
   if (words[0] !== "bun") return undefined;
   return words.slice(1);
 }
-/** A table of the words `list` names, space-separated. */
-const wordTable = (list: string): Record<string, true> =>
-  Object.fromEntries(list.split(" ").map((word) => [word, true]));
-/** The options of `bun test` that take a value and leave the tests it runs as they are
- * (`bun test --help`): each is dropped with its value, the next word where no `=` joins it. */
-const TEST_VALUE_OPTIONS = wordTable(
-  "--timeout --rerun-each --retry --seed --coverage-reporter --coverage-dir --reporter --reporter-outfile --max-concurrency --parallel --parallel-delay --timings --preload -r --env-file"
-);
-/** The options of `bun test` that change which tests run, with a value and without one: each is
- * kept in what a call runs, so a call that names one runs a check only where the check names it. */
-const TEST_SELECTION_OPTIONS = wordTable(
-  "-t --test-name-pattern --path-ignore-patterns --changed --shard --cwd"
-);
-const TEST_SELECTION_FLAGS = wordTable("--only --todo");
-/** The options of `bun` and `bun run` before a script that take a value and leave the script and
- * its arguments as they are, and those that change which script runs or where, which are kept. */
-const RUN_VALUE_OPTIONS = wordTable("--env-file --preload -r --config -c");
-const RUN_SELECTION_OPTIONS = wordTable("--cwd --filter -F");
+/** The options of `bun test` that leave which tests run, and whether they run, as they are, each
+ * with a value (`bun test --help`): a call that adds one runs what the call without it runs, so
+ * each is dropped with its value, the next word where no `=` joins it. */
+const TEST_EQUIVALENT_OPTIONS: Record<string, true> = {
+  "--timeout": true,
+  "--reporter": true,
+  "--reporter-outfile": true,
+};
+/** The options of `bun test` that choose tests by name, with a value: kept in what a call runs, so
+ * a call that names one runs a check only where the check names the same pattern. */
+const TEST_NAME_OPTIONS: Record<string, true> = { "-t": true, "--test-name-pattern": true };
 /** What the bun command line `words` (its words after `bun`) runs, as one string, so two command
- * lines that run the same thing read alike: `bun test` as its targets (each leading `./` dropped,
- * in byte order) and the options that choose tests, every other option and its value dropped, so
- * `bun test --timeout 60000 ./limits.test.ts` runs what `bun test limits.test.ts` runs; or a
- * script, after an optional `run` and the options before the script, as the script (its leading
- * `./` dropped) and its arguments as given, so `bun run greet.ts Grace` runs what
- * `bun greet.ts Grace` runs. Another target, another argument or another selection is another run,
- * and so is `bun run test`, which runs a package script. */
-function bunRuns(words: string[]): string {
-  const test = words[0] === "test";
-  const valued = test
-    ? { ...TEST_VALUE_OPTIONS, ...TEST_SELECTION_OPTIONS }
-    : { ...RUN_VALUE_OPTIONS, ...RUN_SELECTION_OPTIONS };
-  const kept = test
-    ? { ...TEST_SELECTION_OPTIONS, ...TEST_SELECTION_FLAGS }
-    : RUN_SELECTION_OPTIONS;
+ * lines that run the same thing read alike, or undefined where it holds an option no table above
+ * names. `bun test` reads as its targets (each leading `./` dropped, in byte order) and its test
+ * name pattern, each option of TEST_EQUIVALENT_OPTIONS dropped with its value, so
+ * `bun test --timeout 60000 ./limits.test.ts` runs what `bun test limits.test.ts` runs. A script
+ * reads, after an optional `run`, as the script (its leading `./` dropped) and its arguments as
+ * given, so `bun run greet.ts Grace` runs what `bun greet.ts Grace` runs. Any other option, among
+ * a test's targets or before a script, can change what runs or whether anything runs (`--help`
+ * prints help and runs no test; `--eval` runs its argument as code, never as a file), so such a
+ * command line runs nothing a check names. Another target, another argument or another name
+ * pattern is another run, and so is `bun run test`, which runs a package script. */
+function bunRuns(words: string[]): string | undefined {
+  if (words[0] !== "test") {
+    const [script = "", ...args] = words.slice(words[0] === "run" ? 1 : 0);
+    return script.startsWith("-")
+      ? undefined
+      : JSON.stringify({ script: withoutDot(script), args });
+  }
   const targets: string[] = [];
-  const selection: string[] = [];
-  let index = test || words[0] === "run" ? 1 : 0;
-  // `bun test` reads options anywhere among its targets; `bun` and `bun run` only before the
-  // script, whose own arguments follow it as given.
-  for (; index < words.length; index++) {
+  let pattern: string | undefined;
+  for (let index = 1; index < words.length; index++) {
     const word = words[index] ?? "";
-    if (word === "--" && test) {
+    if (word === "--") {
       targets.push(...words.slice(index + 1));
       break;
     }
     if (!word.startsWith("-")) {
-      if (!test) break;
       targets.push(word);
       continue;
     }
     const eq = word.indexOf("=");
     const name = eq < 0 ? word : word.slice(0, eq);
-    let value = eq < 0 ? "" : word.slice(eq + 1);
-    if (eq < 0 && valued[name] === true) value = words[++index] ?? "";
-    if (kept[name] === true)
-      selection.push(`${name === "-t" ? "--test-name-pattern" : name}=${value}`);
+    if (TEST_EQUIVALENT_OPTIONS[name] !== true && TEST_NAME_OPTIONS[name] !== true)
+      return undefined;
+    const value = eq < 0 ? (words[++index] ?? "") : word.slice(eq + 1);
+    if (TEST_NAME_OPTIONS[name] === true) pattern = value;
   }
-  const [script = "", ...args] = words.slice(index);
-  return JSON.stringify(
-    test
-      ? { test: targets.map(withoutDot).sort(), selection: selection.sort() }
-      : { script: withoutDot(script), args, selection: selection.sort() }
-  );
+  return JSON.stringify({ test: targets.map(withoutDot).sort(), pattern });
 }
 /** The bun stand-in's calls of `command`: each whose command line runs what the command's does
- * (bunRuns). A call of any other command line is no run of it. */
+ * (bunRuns). A call of any other command line, or of one bunRuns cannot read, is no run of it. */
 function runsOf(calls: z.infer<typeof Call>[], command: string): z.infer<typeof Call>[] {
   const words = bunWords(command);
-  if (words === undefined) return [];
-  const runs = bunRuns(words);
+  const runs = words === undefined ? undefined : bunRuns(words);
+  if (runs === undefined) return [];
   return calls.filter((call) => call.as === "bun" && bunRuns(call.argv) === runs);
 }
 

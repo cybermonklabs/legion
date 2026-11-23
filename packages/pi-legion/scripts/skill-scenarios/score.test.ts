@@ -413,6 +413,16 @@ recordRun("tester-proof-fail-8", {
   "calls.jsonl": calls([ranGreet, { ...ranCUse(1), argv: ["other.ts", "Grace"] }, bodyEdit(head)]),
   "results.json": checkResults(cUse(cUseFail())),
 });
+// Recorded a fail on c-use after `bun --eval greet.ts Grace`, which evaluates `greet.ts` as code
+// (a ReferenceError, exit 1) and runs no file: no run of c-use's command stands behind it.
+recordRun("tester-proof-fail-9", {
+  "calls.jsonl": calls([
+    ranGreet,
+    { ...ranCUse(1), argv: ["--eval", "greet.ts", "Grace"] },
+    bodyEdit(head),
+  ]),
+  "results.json": checkResults(cUse(cUseFail())),
+});
 // Followed the rule, but its record still holds `failures`, a field the handoff no longer carries.
 recordRun("tester-proof-fields-1", {
   "handoffs.json": handoffs({
@@ -606,6 +616,20 @@ rerunsRun(
 );
 // Ran another test target at H1, and recorded a pass of c1 with c1's output.
 rerunsRun("clean-push", 7, [passedAtH1], [ranC1(0, undefined, ["test", "other.test.ts"])]);
+// Printed `bun test`'s help, with the option before c1's target and after it (exit 0, no test
+// run), and recorded a pass of c1 with c1's output.
+rerunsRun(
+  "clean-push",
+  8,
+  [passedAtH1],
+  [ranC1(0, undefined, ["test", "--help", "limits.test.ts"])]
+);
+rerunsRun(
+  "clean-push",
+  9,
+  [passedAtH1],
+  [ranC1(0, undefined, ["test", "limits.test.ts", "--help"])]
+);
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
 function measured(name: string, question: string, labels: string[]) {
@@ -3596,6 +3620,12 @@ test("a tester that finds a defect no check covers records no fail result for it
   expect(row).not.toContain("proofProblems");
 });
 
+test("a tester fail result counts no run of bun --eval, which runs its argument as code and no file", () => {
+  const row = rowOf("tester-proof-fail-9");
+  expect(row).toMatch(/^tester-proof-fail-9\tpass=false\t.* proof=false .* fails=\[c-use\] /);
+  expect(row).toContain("the fail on c-use follows no failing run of `bun greet.ts Grace`");
+});
+
 test("a tester fail result counts a failing run of its check's command in another form that runs the same, and not a run of another script", () => {
   expect(rowOf("tester-proof-fail-7")).toMatch(
     /^tester-proof-fail-7\tpass=true\t.* proof=true .* fails=\[c-use\] /
@@ -3668,10 +3698,17 @@ test("tester-reruns: a run of c1 at H1 in another form that runs the same counts
   );
 });
 
+test("tester-reruns: a bun test call that prints help, the option before c1's target or after it, is no run of c1", () => {
+  for (const n of [8, 9])
+    expect(rowOf(`tester-reruns-clean-push-rr-${n}`)).toMatch(
+      new RegExp(`^tester-reruns-clean-push-rr-${n}\\tpass=false\\t.* kept=false .* runs=0 atH1=0 `)
+    );
+});
+
 test("tester-reruns: the counts are per case and label", () => {
   expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("tester-reruns:carried-own-pass\trr\t1/3\t0/3\t0\t0\n");
-  expect(out).toContain("tester-reruns:clean-push\trr\t2/7\t0/7\t0\t0\n");
+  expect(out).toContain("tester-reruns:clean-push\trr\t2/9\t0/9\t0\t0\n");
 });
 
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {
