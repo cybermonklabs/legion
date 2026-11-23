@@ -1,5 +1,10 @@
 package main
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // The negative controls of the Go census's reading of every build (census.go) and of the answer
 // census's rules for the ways out of an answer a type shows (answers_reach.go). They are added to
 // controls in init, so runControls runs them with the rest.
@@ -156,4 +161,32 @@ func controlConstant() string {
 }
 `)
 		}},
+	{id: "31", what: "a read of an answer's body planted in a file only windows builds, in a new directory that holds no other file, for which go list names no package and no error", stage: 2,
+		each: [][]string{
+			{"UNKNOWN", windowsOnlyDir + "answer_windows.go", "no CI build compiles it", "imports net/http", "selects .Body"},
+		},
+		plant: func(c *controlRun) error {
+			if err := os.MkdirAll(filepath.Join(c.wt, windowsOnlyDir), 0o755); err != nil {
+				return err
+			}
+			return c.write(windowsOnlyDir+"answer_windows.go", `//go:build windows
+
+package controlwindows
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+)
+
+// controlWindowsOnlyBody is control (31)'s planted raw read in a directory no CI build lists.
+func controlWindowsOnlyBody(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("the server answered %s", body)
 }
+`)
+		}},
+}
+
+// windowsOnlyDir is control (31)'s new directory, whose one file only windows builds compile.
+const windowsOnlyDir = plantDir + "controlwindows/"

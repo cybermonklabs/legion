@@ -99,8 +99,9 @@ func fileExists(path string) bool {
 // packages is parsed and type-checked, as each build CI makes reads it: each module is listed
 // once for each of ciTargets and each tag list its CI vet passes (ciTagSets), and each package is
 // type-checked for every set of files one of those builds compiles it from, so a file built for
-// one target or tag list only is read like any other. A file no such build compiles is read by
-// its syntax alone (untargeted). A file that cannot be read is UNKNOWN.
+// one target or tag list only is read like any other. A file no such build compiles, found by
+// walking the module's directories (sourceFiles), is read by its syntax alone (untargeted). A file
+// that cannot be read is UNKNOWN.
 func (g *gate) goCensus(dir string) census {
 	c := census{}
 	files, err := g.changed(dir, func(n string) bool {
@@ -125,11 +126,44 @@ func (g *gate) goCensus(dir string) census {
 
 // goListed is one package as go list -json answers it.
 type goListed struct {
-	ImportPath, Dir, Export           string
-	GoFiles, CgoFiles, IgnoredGoFiles []string
-	Deps                              []string // every package it imports, directly or not
-	Standard, DepOnly                 bool
-	Error                             *struct{ Err string }
+	ImportPath, Dir, Export string
+	GoFiles, CgoFiles       []string
+	Deps                    []string // every package it imports, directly or not
+	Standard, DepOnly       bool
+	Error                   *struct{ Err string }
+}
+
+// sourceFiles are the production Go files of the module at modDir, found on disk as go's ./...
+// pattern walks it (cmd/go's matchPackages): every .go file that is not a test's, outside a
+// testdata directory, a directory or file whose name starts with "." or "_", a directory below a
+// vendor directory (a vendor directory's own files go reads as a package), and a directory that
+// holds a go.mod of its own (another module, which goModules lists). go list names no package for
+// a directory whose every file the build excludes, and no error, so the files go list names are
+// not all a module's: this walk is what the census holds every file it read against. go.mod's
+// ignore directive, which no module here uses, is not read: a directory it names is walked.
+func sourceFiles(modDir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(modDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if path == modDir {
+				return nil
+			}
+			parent := filepath.Dir(path)
+			if name == "testdata" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") || (parent != modDir && filepath.Base(parent) == "vendor") || fileExists(filepath.Join(path, "go.mod")) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") && !strings.HasPrefix(name, ".") && !strings.HasPrefix(name, "_") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	return files, err
 }
 
 // goList lists patterns in the module at modDir for target and tags, with -export -deps where
@@ -178,8 +212,9 @@ func targetEnv(target string) []string {
 
 // goModuleCensus is goCensus over the module at mod: listed for each target and tag list,
 // type-checked once for each set of files a package is compiled from, and its files no build
-// compiles read by syntax. It reports, for each target and tag list, how many packages and files
-// the build compiles and how many packages it type-checked that no build before it had.
+// compiles (sourceFiles less the ones a build compiled) read by syntax. It reports, for each
+// target and tag list, how many packages and files the build compiles and how many packages it
+// type-checked that no build before it had.
 func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[int]bool, rule, printers map[string]bool) {
 	modDir := filepath.Join(dir, mod)
 	tagSets, err := ciTagSets(dir, mod)
@@ -189,7 +224,6 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 	}
 	checked := map[string]bool{} // a package's import path and the files one build compiles it from
 	built := map[string]bool{}   // every file some build compiles
-	present := map[string]bool{} // every production file go list names, built or not
 	for _, target := range ciTargets {
 		for _, tags := range tagSets {
 			listed, err := goList(modDir, target, tags, false, "./...")
@@ -205,13 +239,7 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 				}
 				packages++
 				compiled += len(p.GoFiles)
-				for _, name := range p.IgnoredGoFiles {
-					if !strings.HasSuffix(name, "_test.go") {
-						present[filepath.Join(p.Dir, name)] = true
-					}
-				}
 				for _, name := range p.GoFiles {
-					present[filepath.Join(p.Dir, name)] = true
 					built[filepath.Join(p.Dir, name)] = true
 				}
 				if len(p.CgoFiles) > 0 {
@@ -246,8 +274,21 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 			}
 		}
 	}
+	present, err := sourceFiles(modDir)
+	if err != nil {
+		c.Unknown = append(c.Unknown, fmt.Sprintf("Go: the files of %s cannot be walked: %v", mod, err))
+		return
+	}
+	// Control of the walk: every file a build compiled is one it found, so a walk that names files
+	// otherwise than go list does, or finds none, is UNKNOWN rather than a module of untargeted files.
+	walked := set(present)
+	for file := range built {
+		if !walked[file] {
+			c.Unknown = append(c.Unknown, fmt.Sprintf("Go: a build of %s compiles %s, which the walk of its files did not find", mod, file))
+		}
+	}
 	var untargeted []string
-	for file := range present {
+	for _, file := range present {
 		if !built[file] {
 			untargeted = append(untargeted, file)
 		}
@@ -263,9 +304,9 @@ func (g *gate) goModuleCensus(c *census, dir, mod string, files map[string]map[i
 var untargetedImports = []string{"net/http", "net/http/httputil", "github.com/sjawhar/envoy/internal/redact", "github.com/sjawhar/envoy/oauth2call"}
 
 // untargeted reads file, a production file no build of ciTargets and the CI tag lists compiles
-// (a Windows-only file, a race-only one), by its syntax alone, since no one type-check can read
-// it: it is listed as such where it imports none of untargetedImports and selects no Body or
-// Status, and is UNKNOWN otherwise.
+// (a Windows-only file, a race-only one, one in a directory no such build lists), by its syntax
+// alone, since no one type-check can read it: it is listed as such where it imports none of
+// untargetedImports and selects no Body or Status, and is UNKNOWN otherwise.
 func (g *gate) untargeted(c *census, dir, file string) {
 	rel, _ := filepath.Rel(dir, file)
 	rel = filepath.ToSlash(rel)
