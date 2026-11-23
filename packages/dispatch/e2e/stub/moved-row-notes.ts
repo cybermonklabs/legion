@@ -40,7 +40,7 @@ const newInTheStubbedLayer: Record<string, string> = Object.fromEntries(
     "layout-measure.stub.e2e.ts › every font stack the app sets opens with a pinned face @pr",
     "layout-measure.stub.e2e.ts › a window scrolled sideways reads as it does unscrolled @pr",
     "layout-measure.stub.e2e.ts › a layout reading fails when a pinned face does not load @pr",
-    "layout-measure.stub.e2e.ts › a layout reading fails on a blank page and keeps a stale entry @pr",
+    "layout-measure.stub.e2e.ts › a layout reading fails on a blank page and on an entry its reading did not match @pr",
     "layout-measure.stub.e2e.ts › a layout entry accepts its own count of breaches and no new one in its region @pr",
     "layout-measure.stub.e2e.ts › a layout entry names a required group no element marks, and a page-scroll breach takes its own entry first @pr",
     "layout-measure.stub.e2e.ts › openCappedGroups opens every closed group, one press each, and stops at its bound @pr",

@@ -11,7 +11,8 @@
  *  keeps the entry chunk's hash distinct for every build, so a recording that answered `/assets`
  *  would serve for ever the build it was recorded from, and a pull request's own front-end change
  *  would never be loaded. The layer would then prove nothing about the code under test. The
- *  recordings answer `/api/v1/**` and `/auth/whoami` and nothing else (e2e/stub/stub-test.ts).
+ *  recordings answer `/api/v1/**`, `/api/github/**` and `/auth/whoami` and nothing else
+ *  (e2e/stub/stub-test.ts).
  *
  *  It serves no API route at all: a stub row's API answers come from its recording, and a request
  *  the recording has none of is aborted by the fixture rather than answered here. */

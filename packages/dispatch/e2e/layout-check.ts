@@ -134,15 +134,35 @@ function entryKey(entry: KnownLayoutBreach): string {
   return `${placeKey(entry)} ${entry.kind} ${entry.element}`;
 }
 
+/** One failure of a reading, with the fields that name it and the message a row prints. */
+export type LayoutFailure = { readonly message: string } & (
+  | {
+      /** The viewport was not the width asked for, or the page's own region drew too little. */
+      readonly type: "viewport" | "too-few-elements";
+      readonly place: ReadingPlace;
+    }
+  | {
+      /** A breach no entry accepts, or one past its entry's count: the entry that would list it. */
+      readonly type: "unaccepted";
+      readonly place: ReadingPlace;
+      readonly kind: LayoutBreachKind;
+      readonly element: string;
+      readonly count: number;
+    }
+  | {
+      /** An entry at the place whose reading matched fewer or more breaches than its count. */
+      readonly type: "entry-mismatch";
+      readonly entry: KnownLayoutBreach;
+      readonly matched: number;
+    }
+);
+
 function entriesAt(
   place: ReadingPlace,
   entries: readonly KnownLayoutBreach[]
 ): KnownLayoutBreach[] {
   return entries.filter((entry) => placeKey(entry) === placeKey(place));
 }
-
-const measuredHere = new Set<string>();
-const matchedHere = new Set<string>();
 
 /** What a reading must hold beyond its breaches: the groups the page must mark, and the fewest
  *  elements its own region holds (`MIN_ELEMENTS` unless the route says why it draws fewer). */
@@ -158,27 +178,33 @@ interface Found {
   readonly said: string;
 }
 
-/** Judges one reading of `place`. Failures: a page whose own region drew too little, a breach no
- *  entry of `entries` accepts or one past its entry's count - each written as the entry that would
- *  list it - and an entry at `place` that matched fewer breaches than its count. Records the
- *  place as measured and the entries it matched in full. */
+/** Judges one reading of `place`. Failures, in this order: a viewport of another width, a page
+ *  whose own region drew too little, a breach no entry of `entries` accepts or one past its
+ *  entry's count - each written as the entry that would list it - and an entry at `place` that
+ *  matched fewer breaches than its count. */
 export function judgeReading(
   place: ReadingPlace,
   reading: LayoutReading,
   { groups = [], minElements = MIN_ELEMENTS }: ReadingNeeds = {},
   entries: readonly KnownLayoutBreach[] = layoutBreaches
-): string[] {
+): LayoutFailure[] {
   const where = `${place.route}${place.state === undefined ? "" : ` in ${place.state}`} at ${place.width}`;
-  const failures: string[] = [];
-  measuredHere.add(placeKey(place));
+  const failures: LayoutFailure[] = [];
   if (reading.viewport !== place.width) {
-    failures.push(`${where}: the page read a ${reading.viewport}px viewport`);
+    failures.push({
+      message: `${where}: the page read a ${reading.viewport}px viewport`,
+      place,
+      type: "viewport",
+    });
   }
   if (reading.contentElements < minElements) {
-    failures.push(
-      `${where}: the page's own region drew ${reading.contentElements} elements, fewer than ` +
-        `${minElements}, so it is blank, a sign-in page or a skeleton, and reads as no pass`
-    );
+    failures.push({
+      message:
+        `${where}: the page's own region drew ${reading.contentElements} elements, fewer than ` +
+        `${minElements}, so it is blank, a sign-in page or a skeleton, and reads as no pass`,
+      place,
+      type: "too-few-elements",
+    });
   }
   const found: Found[] = [
     ...reading.breaches.map((breach) => ({
@@ -199,7 +225,10 @@ export function judgeReading(
   const listed = entriesAt(place, entries);
   const taken = new Map<KnownLayoutBreach, number>();
   const room = (entry: KnownLayoutBreach) => (taken.get(entry) ?? 0) < (entry.count ?? 1);
-  const unlisted = new Map<string, { count: number; said: string }>();
+  const unlisted = new Map<
+    string,
+    { count: number; kind: LayoutBreachKind; element: string; said: string }
+  >();
   for (const breach of found) {
     const ofKind = listed.filter((candidate) => candidate.kind === breach.kind);
     const entry =
@@ -213,20 +242,33 @@ export function judgeReading(
       `{ route: "${place.route}", ${place.state === undefined ? "" : `state: "${place.state}", `}` +
       `width: ${place.width}, kind: "${breach.kind}", element: ${JSON.stringify(breach.locator)}`;
     const held = unlisted.get(key);
-    unlisted.set(key, { count: (held?.count ?? 0) + 1, said: held?.said ?? breach.said });
+    unlisted.set(key, {
+      count: (held?.count ?? 0) + 1,
+      element: breach.locator,
+      kind: breach.kind,
+      said: held?.said ?? breach.said,
+    });
   }
-  for (const [key, { count, said }] of unlisted) {
-    failures.push(`${key}${count === 1 ? "" : `, count: ${count}`} } ${said}`);
+  for (const [key, { count, element, kind, said }] of unlisted) {
+    failures.push({
+      count,
+      element,
+      kind,
+      message: `${key}${count === 1 ? "" : `, count: ${count}`} } ${said}`,
+      place,
+      type: "unaccepted",
+    });
   }
   for (const entry of listed) {
     const matched = taken.get(entry) ?? 0;
     const count = entry.count ?? 1;
-    if (matched === count) {
-      matchedHere.add(entryKey(entry));
-    } else {
-      failures.push(
-        `${entryKey(entry)}: the entry accepts ${count}, and this reading had ${matched}`
-      );
+    if (matched !== count) {
+      failures.push({
+        entry,
+        matched,
+        message: `${entryKey(entry)}: the entry accepts ${count}, and this reading had ${matched}`,
+        type: "entry-mismatch",
+      });
     }
   }
   console.log(
@@ -237,31 +279,13 @@ export function judgeReading(
   return failures;
 }
 
-/** The entries whose place this worker measured and which its readings did not match in full. */
-export function staleEntries(entries: readonly KnownLayoutBreach[] = layoutBreaches): string[] {
-  return entries
-    .filter((entry) => measuredHere.has(placeKey(entry)) && !matchedHere.has(entryKey(entry)))
-    .map(entryKey);
-}
-
-async function settle(page: Page, route: LayoutRoute, address: string): Promise<void> {
-  await waitForRouteSettled(page, {
-    kind: "reviewed",
-    layers: [],
-    name: route.name,
-    path: () => address,
-    pattern: route.pattern,
-    ready: route.ready,
-  });
-}
-
 async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
   await page.goto(address);
   // A width transition would be read part-way, as `e2e/accessibility.e2e.ts` says of colours:
   // the sheet makes the first frame after the load the settled one.
   await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; }" });
   await pinFontFaces(page);
-  await settle(page, route, address);
+  await waitForRouteSettled(page, route);
 }
 
 async function measureSettledPage(page: Page, place: ReadingPlace): Promise<LayoutReading> {
@@ -285,7 +309,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
   await page.clock.setFixedTime(new Date(Date.parse(seed.seededAt) + 60_000));
   const address = route.path(seed);
   const minElements = route.minElements?.count;
-  const failures: string[] = [];
+  const failures: LayoutFailure[] = [];
   for (const width of LAYOUT_WIDTHS) {
     await page.setViewportSize({ height: HEIGHT, width });
     await loadSettled(page, route, address);
@@ -299,7 +323,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
     for (const state of route.states ?? []) {
       await loadSettled(page, route, address);
       await state.act(page);
-      await settle(page, route, address);
+      await waitForRouteSettled(page, route);
       const acted = { route: route.name, state: state.name, width };
       failures.push(
         ...judgeReading(acted, await measureSettledPage(page, acted), {
@@ -310,7 +334,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
     }
   }
   expect(
-    failures,
+    failures.map((failure) => failure.message),
     "layout breaches no entry of e2e/layout-breaches.ts accepts, entries their readings did not match, and pages that drew too little"
   ).toEqual([]);
 }

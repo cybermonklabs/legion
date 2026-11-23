@@ -161,10 +161,13 @@ function withoutFields<T extends Record<string, unknown>>(
  *  the first matching entry, and reversing them would answer the first read with the second
  *  answer.
  *
- *  And an entry that repeats an earlier one's method, URL, body and headers is dropped: Playwright
+ *  And of the entries that repeat one request's method, URL, body and headers, one is kept: the
+ *  first that was answered (a status above 0), or the first of them when none was. Playwright
  *  picks among a URL's entries the one whose request headers match the most, the first of equals
- *  (`_harFindResponse`, playwright-core 1.64.1 coreBundle.js), so such an entry can never be
- *  served. A row that loads one page at five widths would otherwise keep every read five times. */
+ *  (`_harFindResponse`, playwright-core 1.64.1 coreBundle.js), so a later repeat can never be
+ *  served, and a read the page cancelled (status -1, which the router passes over without an
+ *  answer) would hide the answered one behind it. A row that loads one page at five widths would
+ *  otherwise keep every read five times. */
 export function normalise(har: Har, from: string): Har {
   const entries = har.log.entries.map((entry, index) => ({ entry, index }));
   entries.sort((a, b) => {
@@ -174,7 +177,6 @@ export function normalise(har: Har, from: string): Har {
     if (url !== 0) return url;
     return a.index - b.index;
   });
-  const served = new Set<string>();
   const normalised: Har = {
     log: {
       ...withoutFields(har.log, ["browser", "creator", "pages"]),
@@ -205,17 +207,24 @@ export function normalise(har: Har, from: string): Har {
       }),
     },
   };
-  normalised.log.entries = normalised.log.entries.filter(({ request }) => {
-    const key = JSON.stringify([
+  const keyOf = ({ request }: HarEntry) =>
+    JSON.stringify([
       request.method,
       request.url,
       request.postData?.text ?? "",
       request.headers.map(({ name, value }) => `${name.toLowerCase()}: ${value}`).sort(),
     ]);
-    if (served.has(key)) return false;
-    served.add(key);
-    return true;
-  });
+  const kept = new Map<string, HarEntry>();
+  for (const entry of normalised.log.entries) {
+    const key = keyOf(entry);
+    const held = kept.get(key);
+    if (held === undefined || (held.response.status <= 0 && entry.response.status > 0)) {
+      kept.set(key, entry);
+    }
+  }
+  normalised.log.entries = normalised.log.entries.filter(
+    (entry) => kept.get(keyOf(entry)) === entry
+  );
   refuseACredential(normalised);
   return normalised;
 }

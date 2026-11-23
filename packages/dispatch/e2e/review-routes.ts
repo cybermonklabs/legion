@@ -634,7 +634,10 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  half-resolved page reports findings about a page no reader sees - the contrast of a
  *  skeleton, the name of a chip that is about to be replaced - and misses the findings of the
  *  page a reader does read. */
-export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Promise<void> {
+export async function waitForRouteSettled(
+  page: Page,
+  route: Pick<ReviewedRoute, "ready">
+): Promise<void> {
   for (const locator of route.ready(page)) {
     await expect(locator).toBeVisible();
   }

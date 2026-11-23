@@ -7,14 +7,11 @@
  *  `e2e/layout-sockets.ts` answers the sockets from the frames the recording run kept.
  *
  *  A row fails on a breach `e2e/layout-breaches.ts` does not accept, on an entry its readings did
- *  not match exactly, and on a page that drew too little; after the worker's rows, on an entry
- *  whose place it measured and which it did not match in full. Each reading prints one `LAYOUT …`
- *  line to stdout. Re-record after a change to the stress layer or to what a page reads:
+ *  not match exactly, and on a page that drew too little. Each reading prints one `LAYOUT …` line
+ *  to stdout. Re-record after a change to the stress layer or to what a page reads:
  *  `bun run e2e:stub:record -- layout-rule.stub`. */
-import { expect } from "@playwright/test";
-
 import { expectTimeout } from "./expect-timeout";
-import { checkLayout, staleEntries } from "./layout-check";
+import { checkLayout } from "./layout-check";
 import { layoutRoutes } from "./layout-routes";
 import { seedLayoutStress } from "./layout-seed";
 import { routeLayoutSockets } from "./layout-sockets";
@@ -46,10 +43,3 @@ for (const route of layoutRoutes) {
     }
   });
 }
-
-test.afterAll(() => {
-  expect(
-    staleEntries(),
-    "entries of e2e/layout-breaches.ts whose route, state and width were measured and which matched nothing"
-  ).toEqual([]);
-});

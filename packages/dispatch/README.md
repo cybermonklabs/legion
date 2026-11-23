@@ -1177,9 +1177,10 @@ in `en-US` and UTC, so a run on any machine measures the text CI measures.
 case, and holds the instrument to reporting the one and not the other. A row fails on each breach
 no entry of `e2e/layout-breaches.ts` accepts - an entry accepts exactly its `count` - on a page
 whose own region drew fewer than 100 elements (or the route's own `minElements`), and on an entry
-whose route, state and width it measured and which its readings did not match exactly. That list
-holds the breaches main still has, each naming the INFRA-5200 slice that removes it; a slice
-deletes its entries, and the list and its use go once it is empty.
+whose route, state and width it measured and which its reading did not match exactly; and
+`e2e/__tests__/layout-routes.test.ts` refuses an entry that names a route, a state or a width the
+rows never read. That list holds the breaches main still has, each naming the INFRA-5200 slice
+that removes it; a slice deletes its entries, and the list and its use go once it is empty.
 
 ## Phone check
 

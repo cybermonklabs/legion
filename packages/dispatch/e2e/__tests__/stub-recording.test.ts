@@ -120,6 +120,24 @@ describe("a committed recording", () => {
     ]);
   });
 
+  test("keeps the answered entry of a request over a cancelled one recorded before it", () => {
+    // The router passes over a status -1 entry without an answer, so a cancelled first read kept
+    // in front of an answered one would leave every replayed read of it unanswered.
+    const statusesKept = (statuses: number[]) => {
+      const har = recorded({});
+      har.log.entries = statuses.flatMap(
+        (status, index) =>
+          recorded({ body: `{"read":${index}}`, status, time: 1000 + index }).log.entries
+      );
+      return normalise(har, from).log.entries.map((entry) => entry.response.status);
+    };
+    expect(statusesKept([-1, 200])).toEqual([200]);
+    expect(statusesKept([-1, 200, 200])).toEqual([200]);
+    expect(statusesKept([200, -1])).toEqual([200]);
+    // With no answered entry, the cancelled one stays, so a reader of the recording sees the race.
+    expect(statusesKept([-1, -1])).toEqual([-1]);
+  });
+
   test("names no encoding of a body it holds decoded", () => {
     // A reader who trusted the recorded `Content-Encoding` would look for gzip in a body stored
     // as text, and the `Content-Length` beside it counts the compressed form the file replaced.

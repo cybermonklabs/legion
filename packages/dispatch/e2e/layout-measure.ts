@@ -39,9 +39,11 @@
  *    own content, and an element whose containing block is outside the ancestor, which does not
  *    clip it (an absolutely positioned element above its positioned ancestor, a fixed one).
  *  - `group-over-cap`: a group marked `data-layout-group` shows more entries than its
- *    `data-layout-max` (10 when unset), not counting the one control marked `data-layout-more`
- *    that opens the rest, unless the reader opened it (`data-layout-open`); or it declares a cap
- *    that is not a whole number from 1 to 10, which is a breach however many it shows.
+ *    `data-layout-max` (10 when unset), unless the reader opened it (`data-layout-open`). Each
+ *    direct child the group draws is one entry, but for the one control marked
+ *    `data-layout-more` that opens the rest. It is a breach too, however many it shows, when it
+ *    declares a cap that is not a whole number from 1 to 10, or when more than one of its children
+ *    is marked `data-layout-more`.
  *
  *  An element is read only where it draws (`checkVisibility`): the content of a closed
  *  `<details>` keeps a box in Chromium, and is no breach.
@@ -353,8 +355,8 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     // excused by one. A chip (`inline-flex`), an `inline-block` or a block that runs past the box
     // is an element pushed out of its row (point 2 of the rule), whether the browser cuts it or
     // hides it behind the box's ellipsis, and an element's own ellipsis is cut away with the
-    // rest. A line clamp draws its ellipsis on its last visible line only, so it excuses an
-    // inline element only where that element is not cut on a line above it.
+    // rest. A line clamp excuses an inline element only where `clampCutsBare` finds no line of it
+    // cut bare.
     const inline = styleOf(el).display === "inline";
     const clipStyle = styleOf(clipper);
     const markedByClipper =
@@ -371,8 +373,8 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   }
 
   // A box that clips its own text, with no ellipsis to say so. A box whose cut elements were
-  // judged above is not read again: the cut is theirs. A line-clamped box is cut bare only on a
-  // line above its last visible one.
+  // judged above is not read again: the cut is theirs. A line-clamped box is cut bare only where
+  // `clampCutsBare` says so.
   for (const el of all) {
     const style = styleOf(el);
     if (style.overflowX !== "hidden" && style.overflowX !== "clip") continue;
@@ -435,7 +437,8 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   // group itself may draw no box (`display: contents`), so only its entries are asked whether
   // they are shown. A cap is a whole number from 1 to 10: a group that declares any other
   // (`data-layout-max="11"`, "0", "abc") has raised or dropped the rule's cap, and is a breach
-  // however many entries it shows, opened or not.
+  // however many entries it shows, opened or not. A group has one "+N" control: more children
+  // marked `data-layout-more` would each go uncounted, so the group is a breach for them too.
   const groups = new Set<string>();
   for (const group of document.querySelectorAll("[data-layout-group]")) {
     groups.add(group.getAttribute("data-layout-group") ?? "");
@@ -445,6 +448,18 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     if (declared !== null && !(/^\d+$/.test(declared) && max >= 1 && max <= 10)) {
       breaches.push({
         detail: `declares the cap ${JSON.stringify(declared)}; a cap is a whole number from 1 to 10`,
+        kind: "group-over-cap",
+        listed: listedFor([group]),
+        locator: locatorOf(group),
+        text: textOf(group),
+        where: path(group),
+      });
+      continue;
+    }
+    const marked = [...group.children].filter((child) => child.hasAttribute("data-layout-more"));
+    if (marked.length > 1) {
+      breaches.push({
+        detail: `marks ${marked.length} children data-layout-more; a group has one "+N" control`,
         kind: "group-over-cap",
         listed: listedFor([group]),
         locator: locatorOf(group),

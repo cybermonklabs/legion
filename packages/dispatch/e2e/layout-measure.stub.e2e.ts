@@ -4,8 +4,8 @@
  *  run on every pull request with the stubbed layer (packages/dispatch/README.md, "The stubbed
  *  layer"). Each defect the layout rule names is drawn once and must be reported, by kind and by
  *  the locator a breach list entry would name; each case the rule allows is drawn beside the
- *  others and must report nothing; and the judgement is held to its counts, its required groups,
- *  its floor and its stale entries. An instrument whose clean reading has never been seen to fail
+ *  others and must report nothing; and the judgement is held to its counts, its required groups
+ *  and its floor. An instrument whose clean reading has never been seen to fail
  *  proves nothing, and these are the failures it is seen to report: each part below fails one of
  *  these rows when it is broken. */
 import { readdirSync } from "node:fs";
@@ -16,10 +16,10 @@ import { expect, type Page } from "@playwright/test";
 import type { KnownLayoutBreach } from "./layout-breaches";
 import {
   judgeReading,
+  type LayoutFailure,
   PINNED_FACE_SHEET,
   PINNED_FAMILIES,
   pinFontFaces,
-  staleEntries,
 } from "./layout-check";
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
 import { openCappedGroups } from "./layout-routes";
@@ -47,18 +47,35 @@ function entries(count: number): string {
   return Array.from({ length: count }, (_, index) => `<span>entry ${index + 1}</span>`).join(" ");
 }
 
-/** What each failure of `judgeReading` names, so a row holds the judgement and not its wording:
- *  `unaccepted` and the place, kind and locator of the entry that would accept a breach no entry
- *  accepts, or `entry` and the key of an entry its reading did not match exactly. */
-function failureKeys(failures: readonly string[]): string[] {
+/** What names each failure of `judgeReading`, without its message: its type and its place, and
+ *  for a breach no entry accepts its kind, locator and count, or for an entry its reading did not
+ *  match the entry's own place, kind and locator and how many it matched. */
+function failureIdentities(failures: readonly LayoutFailure[]): unknown[] {
   return failures.map((failure) => {
-    const unlisted =
-      /^\{ route: "([^"]+)", (?:state: "([^"]+)", )?width: (\d+), kind: "([^"]+)", element: ("(?:[^"\\]|\\.)*")/.exec(
-        failure
-      );
-    if (unlisted === null) return `entry ${failure.slice(0, failure.indexOf(": "))}`;
-    const [, route, state, width, kind, element] = unlisted;
-    return `unaccepted ${route}${state === undefined ? "" : `#${state}`} ${width} ${kind} ${JSON.parse(element ?? '""')}`;
+    switch (failure.type) {
+      case "unaccepted":
+        return {
+          count: failure.count,
+          element: failure.element,
+          kind: failure.kind,
+          place: failure.place,
+          type: failure.type,
+        };
+      case "entry-mismatch":
+        return {
+          element: failure.entry.element,
+          kind: failure.entry.kind,
+          matched: failure.matched,
+          place: {
+            route: failure.entry.route,
+            state: failure.entry.state,
+            width: failure.entry.width,
+          },
+          type: failure.type,
+        };
+      default:
+        return { place: failure.place, type: failure.type };
+    }
   });
 }
 
@@ -287,6 +304,20 @@ const defects: readonly {
     locator: '[data-layout-group="options"]',
     name: "a group declaring a cap of nought",
   },
+  {
+    // Three entries, each marked as a "+N" control as a copied list item would be: none of them
+    // is counted, so the group would show any number while closed and pass.
+    body:
+      '<div data-layout-group="links">' +
+      Array.from(
+        { length: 3 },
+        (_, index) => `<span data-layout-more>link ${index + 1}</span>`
+      ).join("") +
+      "</div>",
+    kind: "group-over-cap",
+    locator: '[data-layout-group="links"]',
+    name: "a group with more than one child marked data-layout-more",
+  },
 ];
 
 /** Every case the rule allows, on one page: none of them may be reported. */
@@ -490,22 +521,28 @@ test("a layout reading fails when a pinned face does not load @pr", async ({ pag
   await expect(pinFontFaces(page)).rejects.toThrow("Liberation Sans 700");
 });
 
-test("a layout reading fails on a blank page and keeps a stale entry @pr", async ({ page }) => {
+test("a layout reading fails on a blank page and on an entry its reading did not match @pr", async ({
+  page,
+}) => {
   const place = { route: "control", width: 360 } as const;
   const blank = await measure(page, "<p>Loading…</p>");
-  expect(judgeReading(place, blank).join("\n")).toContain("fewer than 100");
+  expect(failureIdentities(judgeReading(place, blank))).toEqual([
+    { place, type: "too-few-elements" },
+  ]);
+  expect(judgeReading(place, blank)[0]?.message).toContain("fewer than 100");
   // A route that names a lower floor for itself is still refused below it.
-  expect(judgeReading(place, blank, { minElements: 40 }).join("\n")).toContain("fewer than 40");
+  expect(judgeReading(place, blank, { minElements: 40 })[0]?.message).toContain("fewer than 40");
   // The shell does not count: a blank region inside a shell of 200 elements is still blank.
   await page.evaluate(() => {
     document.body.insertAdjacentHTML(
       "afterbegin",
-      `<nav>${"<span>shell</span>".repeat(200)}</nav>`
+      // Spaced, so the shell's 200 words wrap and the one failure is the blank region's.
+      `<nav>${"<span>shell</span> ".repeat(200)}</nav>`
     );
   });
-  expect(judgeReading(place, await page.evaluate(measureLayout, [])).join("\n")).toContain(
-    "fewer than 100"
-  );
+  expect(failureIdentities(judgeReading(place, await page.evaluate(measureLayout, [])))).toEqual([
+    { place, type: "too-few-elements" },
+  ]);
 
   const drawn = await measure(page, entries(120));
   expect(judgeReading(place, drawn)).toEqual([]);
@@ -521,10 +558,15 @@ test("a layout reading fails on a blank page and keeps a stale entry @pr", async
     width: 360,
   };
   const elsewhere: KnownLayoutBreach = { ...entry, element: '[data-testid="gone"]' };
-  const failures = judgeReading(place, scrolled, {}, [entry, elsewhere]);
-  expect(failures).toHaveLength(1);
-  expect(failureKeys(failures)).toEqual(['entry control 360 box-scroll [data-testid="gone"]']);
-  expect(staleEntries([entry, elsewhere])).toEqual(['control 360 box-scroll [data-testid="gone"]']);
+  expect(failureIdentities(judgeReading(place, scrolled, {}, [entry, elsewhere]))).toEqual([
+    {
+      element: '[data-testid="gone"]',
+      kind: "box-scroll",
+      matched: 0,
+      place: { route: "control", state: undefined, width: 360 },
+      type: "entry-mismatch",
+    },
+  ]);
 });
 
 test("a layout entry accepts its own count of breaches and no new one in its region @pr", async ({
@@ -546,15 +588,19 @@ test("a layout entry accepts its own count of breaches and no new one in its reg
   expect(judgeReading(place, two, {}, [{ ...entry, count: 2 }])).toEqual([]);
   // A new breach in the listed region fails, and so does an entry with fewer breaches than its
   // count: each entry is one breach, or the number it says.
-  const unaccepted = judgeReading(place, two, {}, [entry]);
-  expect(unaccepted).toHaveLength(1);
-  expect(failureKeys(unaccepted)).toEqual([
-    'unaccepted counted 360 clipped [data-testid="region"]',
+  expect(failureIdentities(judgeReading(place, two, {}, [entry]))).toEqual([
+    { count: 1, element: '[data-testid="region"]', kind: "clipped", place, type: "unaccepted" },
   ]);
   const one = await measure(page, region(1));
-  const short = judgeReading(place, one, {}, [{ ...entry, count: 2 }]);
-  expect(short).toHaveLength(1);
-  expect(failureKeys(short)).toEqual(['entry counted 360 clipped [data-testid="region"]']);
+  expect(failureIdentities(judgeReading(place, one, {}, [{ ...entry, count: 2 }]))).toEqual([
+    {
+      element: '[data-testid="region"]',
+      kind: "clipped",
+      matched: 1,
+      place: { route: "counted", state: undefined, width: 360 },
+      type: "entry-mismatch",
+    },
+  ]);
 });
 
 test("a layout entry names a required group no element marks, and a page-scroll breach takes its own entry first @pr", async ({
@@ -569,17 +615,25 @@ test("a layout entry names a required group no element marks, and a page-scroll 
     route: "grouped",
     width: 360,
   };
-  const unmarked = judgeReading(place, drawn, { groups: ["labels"] });
-  expect(unmarked).toHaveLength(1);
-  expect(failureKeys(unmarked)).toEqual(["unaccepted grouped 360 group-missing labels"]);
+  expect(failureIdentities(judgeReading(place, drawn, { groups: ["labels"] }))).toEqual([
+    { count: 1, element: "labels", kind: "group-missing", place, type: "unaccepted" },
+  ]);
   expect(judgeReading(place, drawn, { groups: ["labels"] }, [missing])).toEqual([]);
   const marked = await measure(
     page,
     `<div data-layout-group="labels">${entries(3)}</div>${entries(120)}`
   );
-  const unused = judgeReading(place, marked, { groups: ["labels"] }, [missing]);
-  expect(unused).toHaveLength(1);
-  expect(failureKeys(unused)).toEqual(["entry grouped 360 group-missing labels"]);
+  expect(failureIdentities(judgeReading(place, marked, { groups: ["labels"] }, [missing]))).toEqual(
+    [
+      {
+        element: "labels",
+        kind: "group-missing",
+        matched: 0,
+        place: { route: "grouped", state: undefined, width: 360 },
+        type: "entry-mismatch",
+      },
+    ]
+  );
 
   // Two elements past the viewport inside one region: one named for itself, one named for the
   // region. With the region's entry listed first, the named one must still take its own entry.
