@@ -176,19 +176,39 @@ type reviewedTrigger struct {
 	table, trigger, bounded string
 }
 
-// reviewedTriggers is the one place a reviewed trigger is named: the enabled triggers
-// boundedWrites admits a table above the limit beside. A trigger runs for each row a write writes
-// and can read any table, and the census does not read its body, so a trigger is admitted only
-// once a person has read that body and written here why it is bounded: what it reads, by which
-// key, and what it writes, for each row. A table with an enabled trigger that is not here is
-// refused, and its trigger is reviewed and added before the migration can pass. An entry names a
-// trigger as the table holds it when the entry is written: a later migration that replaces the
-// trigger's function changes the body the entry reviewed, so that migration reads the entry
-// again. The store's census tests meet no shipped migration the census admits for bounded writes
-// of a table with an enabled trigger, so the list holds none, and the triggers an admitted
-// table's report names (boundedVerdict.triggers, Table.Triggers) are none until an entry is added
-// here; the list and that plumbing stay so a reviewed trigger needs one entry and no new code.
-var reviewedTriggers = []reviewedTrigger{}
+// reviewedTriggers are the enabled triggers boundedWrites admits a table above the limit beside.
+// A trigger runs for each row a write writes and can read any table, and the census does not read
+// its body, so a trigger is admitted only once a person has read that body and written here why
+// it is bounded: what it reads, by which key, and what it writes, for each row. A table with an
+// enabled trigger that is not here is refused, and its trigger is reviewed and added before the
+// migration can pass. An entry names a trigger as the table holds it when the entry is written:
+// a later migration that replaces the trigger's function changes the body the entry reviewed, so
+// that migration reads the entry again.
+//
+// graph_nodes' two are Dispatch's: the first type migration written after the store's backfill
+// (20261123080000_graph_supertags_plan_task_steps) writes graph_nodes by bounded writes alone, and
+// the census admits it above the limit only beside them. Both run block_schema_changed, as
+// 20261109051232_graph_supertags created it and no later migration replaced it.
+var reviewedTriggers = []reviewedTrigger{
+	{table: "graph_nodes", trigger: "graph_nodes_block_schema_written",
+		bounded: "it runs, after an insert or update of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
+	{table: "graph_nodes", trigger: "graph_nodes_block_schema_removed",
+		bounded: "it runs, after a delete of a supertag or attribute node alone (its when clause), block_schema_changed, which reads no table and calls pg_notify('dispatch_block_schema', ''); Postgres folds the notifications of one channel and payload into one per transaction"},
+}
+
+// ReviewedTriggerNames is the names of the enabled triggers of table that reviewedTriggers holds,
+// in its order: the triggers a store's own test holds to the definitions their entries reviewed
+// (dispatch store's TestTheReviewedTriggersAreTheOnesTheStoreHolds), since this list names a
+// trigger and not its body.
+func ReviewedTriggerNames(table string) []string {
+	var names []string
+	for _, reviewed := range reviewedTriggers {
+		if reviewed.table == table {
+			names = append(names, reviewed.trigger)
+		}
+	}
+	return names
+}
 
 // unreviewedTriggers says why table, whose enabled triggers are triggers, is refused for the
 // triggers that are not on reviewedTriggers, in words that follow "and"; "" where every one is.

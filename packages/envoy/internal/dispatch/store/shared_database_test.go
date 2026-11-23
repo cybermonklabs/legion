@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -12,18 +11,6 @@ import (
 	brokerstore "github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
-
-// adminDatabaseURL is the test server's maintenance database, on which a test makes databases of
-// its own.
-func adminDatabaseURL(t *testing.T) string {
-	t.Helper()
-	admin, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	admin.Path = "/postgres"
-	return admin.String()
-}
 
 // TestTheBrokerAndDispatchSchemasShareOneDatabase: CI runs the broker's and Dispatch's tests
 // against one database (ci-job-envoy-go.yaml sets BROKER_TEST_DATABASE_URL and
@@ -39,7 +26,8 @@ func adminDatabaseURL(t *testing.T) string {
 // 20261118041916's drop of it named so too (both orders fail, SQLSTATE 42723).
 func TestTheBrokerAndDispatchSchemasShareOneDatabase(t *testing.T) {
 	ctx := context.Background()
-	admin := adminDatabaseURL(t)
+	adminURL := adminDatabaseURL(t)
+	admin := adminURL.String()
 	for _, order := range []string{"broker first", "Dispatch first"} {
 		t.Run(order, func(t *testing.T) {
 			dsn := testdb.DatabaseOn(t, admin, "dispatch_shared")
@@ -83,7 +71,8 @@ func TestTheBrokerAndDispatchSchemasShareOneDatabase(t *testing.T) {
 // and the comparison names it.
 func TestTheBrokerAndDispatchMigrationsCreateNoNameInCommon(t *testing.T) {
 	ctx := context.Background()
-	admin := adminDatabaseURL(t)
+	adminURL := adminDatabaseURL(t)
+	admin := adminURL.String()
 	dispatch, err := Open(ctx, testdb.DatabaseOn(t, admin, "dispatch_names"))
 	if err != nil {
 		t.Fatalf("open Dispatch's database: %v", err)

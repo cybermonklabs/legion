@@ -101,14 +101,6 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The pre-handler check held the result's own issue to a scoped caller's project, and the
-	// check's issue, which the retraction is appended to, can be of another project, reached
-	// through a parent of another project. Such a caller is refused it here, before it takes that
-	// issue's owner lock.
-	if err := refuseCheckOutsideCallerProject(r.Context(), tx, callerProject, result.CheckIssueKey); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	if err := store.LockOwner(r.Context(), tx, store.IssueOwner(result.CheckIssueKey)); err != nil {
 		s.writeHandlerError(w, err)
 		return

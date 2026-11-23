@@ -1352,6 +1352,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	// routes; any other value, `1` included, answers as without the parameter. `blocks` reads the
 	// same way here.
 	download := r.URL.Query().Get("download") == "true"
+	withBlocks := r.URL.Query().Get("blocks") == "true"
 	who, ok := s.artifactReaderOf(w, r)
 	if !ok {
 		return
