@@ -79,6 +79,7 @@ import {
   type ReviewedRoute,
   type ReviewSeed,
   railInboxLink,
+  type SeededReadMarks,
   shotRoutes,
   topBarInboxBadge,
   type VisualSeed,
@@ -90,6 +91,7 @@ import {
   guardSharedCorpus,
   UNLISTED_READ_MESSAGE,
   unlistedShotReads,
+  unlistedShotViews,
 } from "./visual-guard";
 import { workspaceSessions } from "./workspace";
 
@@ -124,10 +126,13 @@ test.beforeAll(async () => {
  *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
  *  always writes the field, so a file that lacks it did not come from it. */
 function readVisualSeed(path: string): VisualSeed {
-  const seed = JSON.parse(readFileSync(path, "utf8")) as ReviewSeed & {
+  // The file as e2e/visual-seed.ts writes it, read without trusting the two fields every row
+  // needs, which the checks below hold.
+  const seed = JSON.parse(readFileSync(path, "utf8")) as Omit<ReviewSeed, "readMarks"> & {
+    readonly readMarks?: SeededReadMarks;
     readonly seededAt?: string;
   };
-  const { seededAt } = seed;
+  const { readMarks, seededAt } = seed;
   if (seededAt === undefined) {
     throw new Error(
       `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`seededAt\`, so this row ` +
@@ -135,7 +140,14 @@ function readVisualSeed(path: string): VisualSeed {
         "pace. `e2e/visual-seed.ts` writes that field on every seed."
     );
   }
-  return { ...seed, seededAt };
+  if (readMarks === undefined) {
+    throw new Error(
+      `${path}, which DISPATCH_E2E_VISUAL_SEED names, carries no \`readMarks\`, so this row's ` +
+        "guard would let its page write no read mark again and fail it on the seed's own. " +
+        "`e2e/visual-seed.ts` writes that field on every seed."
+    );
+  }
+  return { ...seed, readMarks, seededAt };
 }
 
 /** One row's work, which the desktop and the phone rows share: the project they run in is the
@@ -149,7 +161,7 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
   const seed = readVisualSeed(seedPath);
   await withAlice(browser, async (page) => {
     // Before the first navigation, so every write the page tries is stopped and named.
-    const writes = await guardSharedCorpus(page);
+    const writes = await guardSharedCorpus(page, seed.readMarks);
     // The page's clock, pinned a minute after the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
     // label's own time against `Date.now()`, so without this a row read "just now" in a run
@@ -306,10 +318,13 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         maxDiffPixels: 20,
       });
     }
-    // The server answers the page's reads itself, so a write it made while answering one is
-    // outside what the guard stops; the Go test that holds those reads to their caches sends the
-    // routes its list names, and a read of any other route fails the row here, by name.
-    expect(unlistedShotReads(writes.reads), UNLISTED_READ_MESSAGE).toEqual([]);
+    // The server answers the page's reads and live views itself, so a write it made while
+    // answering one is outside what the guard stops; the Go test that holds those writes sends
+    // the routes and view kinds its list names, and any other fails the row here, by name.
+    expect(
+      [...unlistedShotReads(writes.reads), ...unlistedShotViews(writes.views)],
+      UNLISTED_READ_MESSAGE
+    ).toEqual([]);
     expect(writes.stopped, CORPUS_WRITE_MESSAGE).toEqual([]);
   });
 }

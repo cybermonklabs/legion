@@ -15,9 +15,8 @@ import { fileURLToPath } from "node:url";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // What e2e/visual-run.sh tells a reader of a failed run: where a failed row's shots are, if a row
-// ran and failed, and, for a run in reverse order, that a row failing there alone needs a seed
-// mark and not a new baseline; that it never says shots exist, since it cannot tell that a row
-// ran; and that however the run ends, the stack it started is stopped. The script runs
+// ran and failed; that it never says shots exist, since it cannot tell that a row ran; and that
+// however the run ends, the stack it started is stopped. The script runs
 // whole, as CI runs it, with `bun` and `docker` standing in on PATH: the stand-in `bun` prints
 // the stack's last variable for `e2e/harness-up.ts` and holds the stack up as the real one does,
 // writing its pid to `STUB_STACK_PID` where that is set, and the stand-in `docker` exits with the

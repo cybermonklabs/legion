@@ -1619,8 +1619,10 @@ dispatch_browser:
   - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
-  # The routes a visual row's page may read (e2e/visual-guard.ts reads it at module load).
+  # The routes a visual row's page may read, and the route table's GET routes it resolves each
+  # read to (e2e/visual-guard.ts reads both at module load).
   - 'packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json'
+  - 'packages/contracts/schemas/dispatch-openapi.json'
   - 'scripts/third-party-notices.ts'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-workflow-that-holds-every-browser-step-which-this-job
   - '.github/workflows/dispatch-browser.yaml'

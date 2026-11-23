@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createDecoder, readVarUint } from "lib0/decoding";
 import {
   createEncoder,
   toUint8Array,
@@ -8,13 +9,22 @@ import {
 } from "lib0/encoding";
 import * as Y from "yjs";
 
-import { documentWrite, followServer, isSeededReadMark, unlistedShotReads } from "../visual-guard";
+import {
+  documentWrite,
+  followServer,
+  isSeededReadMark,
+  liveFrame,
+  routeOf,
+  unlistedShotReads,
+  unlistedShotViews,
+} from "../visual-guard";
 
 // The visual review's write guard (e2e/visual-guard.ts) decides from a request's method, path and
-// body, and from a document frame's bytes read against the server's document, which writes it
-// stops. These rows hold those decisions on frames and requests built the way the page builds
-// them, and the controls that a write passes for nothing: a read mark with any other field, a
-// sync reply carrying structs, and an edit beside a derived attribute.
+// body, from a document frame's bytes read against the server's document, and from a live socket
+// frame, which writes it stops; and which route a read is, against the route table. These rows
+// hold those decisions on frames and requests built the way the page builds them, and the controls
+// that a write passes for nothing: a read mark the seed never wrote, a sync reply that changes the
+// document, an edit beside a derived attribute, and a path a broader route would match.
 
 /** A frame as the page's Hocuspocus provider and the server send it: the document's name, the
  *  message type, then a y-protocols sync message of `subtype` carrying `payload`. */
@@ -51,6 +61,11 @@ function loaded(server: Y.Doc): { page: Y.Doc; shadow: Y.Doc } {
   return { page, shadow };
 }
 
+/** How many clients' structs a Yjs v1 update holds: its first number. */
+function readClients(update: Uint8Array): number {
+  return readVarUint(createDecoder(update));
+}
+
 /** What the page sends for `change`: the update its own transaction makes. */
 function updateOf(page: Y.Doc, change: (fragment: Y.XmlFragment) => void): Uint8Array {
   const before = Y.encodeStateVector(page);
@@ -58,26 +73,60 @@ function updateOf(page: Y.Doc, change: (fragment: Y.XmlFragment) => void): Uint8
   return Y.encodeStateAsUpdate(page, before);
 }
 
-test("the two read marks the seed writes pass, and nothing else on their routes", () => {
-  expect(isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", { read_replies: ["r-1"] })).toBe(
+test("a read mark passes only exactly as the seed wrote it", () => {
+  const seeded = { agents: { "s-1": ["r-1", "r-2"] }, documents: { "d-1": 3 } };
+  expect(
+    isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", { read_replies: ["r-1"] }, seeded)
+  ).toBe(true);
+  expect(
+    isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", { read_replies: ["r-2", "r-1"] }, seeded)
+  ).toBe(true);
+  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-1/read", { version: 3 }, seeded)).toBe(
     true
   );
-  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-1/read", { version: 3 })).toBe(true);
 
-  // A pin, a clear or a read-through on the same route is a write the seed never made.
-  expect(isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", { pinned: true })).toBe(false);
+  // A version the seed did not write: one back moves the read back, one ahead moves it on.
+  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-1/read", { version: 0 }, seeded)).toBe(
+    false
+  );
+  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-1/read", { version: 4 }, seeded)).toBe(
+    false
+  );
+  // A reply the seed did not mark, a session or a document it marked nothing of.
   expect(
-    isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", {
-      read_replies: ["r-1"],
-      read_through: "2026-11-23T00:00:00Z",
-    })
+    isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", { read_replies: ["r-1", "r-9"] }, seeded)
   ).toBe(false);
-  expect(isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", {})).toBe(false);
+  expect(
+    isSeededReadMark("PUT", "/api/v1/me/agents/s-2/state", { read_replies: ["r-1"] }, seeded)
+  ).toBe(false);
+  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-2/read", { version: 3 }, seeded)).toBe(
+    false
+  );
+  // A pin, a clear, a read-through or nothing at all on the same route.
+  expect(isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", { pinned: true }, seeded)).toBe(
+    false
+  );
+  expect(
+    isSeededReadMark(
+      "PUT",
+      "/api/v1/me/agents/s-1/state",
+      { read_replies: ["r-1"], read_through: "2026-11-23T00:00:00Z" },
+      seeded
+    )
+  ).toBe(false);
+  expect(isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", { read_replies: [] }, seeded)).toBe(
+    false
+  );
+  expect(isSeededReadMark("PUT", "/api/v1/me/agents/s-1/state", {}, seeded)).toBe(false);
   // Another method, another route, or a body that is no object.
-  expect(isSeededReadMark("POST", "/api/v1/me/documents/d-1/read", { version: 3 })).toBe(false);
-  expect(isSeededReadMark("PUT", "/api/v1/me/threads/t-1/read", { read_through: "x" })).toBe(false);
-  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-1/read", undefined)).toBe(false);
-  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-1/read", [3])).toBe(false);
+  expect(isSeededReadMark("POST", "/api/v1/me/documents/d-1/read", { version: 3 }, seeded)).toBe(
+    false
+  );
+  expect(
+    isSeededReadMark("PUT", "/api/v1/me/threads/t-1/read", { read_through: "x" }, seeded)
+  ).toBe(false);
+  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-1/read", undefined, seeded)).toBe(false);
+  expect(isSeededReadMark("PUT", "/api/v1/me/documents/d-1/read", [3], seeded)).toBe(false);
 });
 
 test("a typed edit is a write, as an update and inside a sync reply", () => {
@@ -89,7 +138,7 @@ test("a typed edit is a write, as an update and inside a sync reply", () => {
     write: `a Yjs update to document spec (${typed.length} bytes)`,
   });
   expect(documentWrite(frame("spec", 0, 1, typed), shadow)).toEqual({
-    write: "a sync reply to document spec that carries structs of 1 client(s)",
+    write: `a sync reply to document spec that changes it (${typed.length} bytes, structs of 1 client(s))`,
   });
 });
 
@@ -146,6 +195,15 @@ test("a bare sync reply, the page's reads and the rest of the protocol pass", ()
   expect(reply.length).toBeGreaterThan(2);
   expect(documentWrite(frame("spec", 0, 1, reply), shadow)).toBeUndefined();
 
+  // A reply with no struct whose delete set deletes what the server holds is a write.
+  const deleting = updateOf(page, (fragment) => {
+    ((fragment.get(1) as Y.XmlElement).get(0) as Y.XmlText).delete(0, 2);
+  });
+  expect(readClients(deleting)).toBe(0);
+  expect(documentWrite(frame("spec", 0, 1, deleting), shadow)).toMatchObject({
+    write: expect.stringMatching(/^a sync reply to document spec that changes it/u),
+  });
+
   // Its state vector (sync step 1), awareness (type 1) and authentication (type 2).
   expect(documentWrite(frame("spec", 0, 0, Y.encodeStateVector(page)), shadow)).toBeUndefined();
   expect(documentWrite(frame("spec", 1, 0, new Uint8Array([1, 2, 3])), shadow)).toBeUndefined();
@@ -158,7 +216,15 @@ test("a document frame the guard cannot read is reported rather than let through
   });
 });
 
-test("a read is listed only where a listed route matches its whole path, a wildcard one segment", () => {
+test("a read's route is the table's most specific, a literal segment over a wildcard", () => {
+  expect(routeOf("/api/v1/asks/open")).toBe("/api/v1/asks/open");
+  expect(routeOf("/api/v1/asks/a1f68ce1-f7c0-4951-8b84-f1971debb00e")).toBe("/api/v1/asks/{id}");
+  expect(routeOf("/api/v1/issues/resolve")).toBe("/api/v1/issues/resolve");
+  expect(routeOf("/api/v1/issues/CORE-1")).toBe("/api/v1/issues/{key}");
+  expect(routeOf("/api/v1/issuesX")).toBeUndefined();
+});
+
+test("a read is listed only where the list names the route the table serves it by", () => {
   expect(
     unlistedShotReads(
       new Set([
@@ -169,19 +235,43 @@ test("a read is listed only where a listed route matches its whole path, a wildc
       ])
     )
   ).toEqual([]);
+  // A route the list does not name, though a listed wildcard would match its path, and a path no
+  // route of the table serves.
   expect(
     unlistedShotReads(
       new Set([
+        "/api/v1/asks/open",
+        "/api/v1/issues/resolve",
         "/api/v1/search",
         "/api/v1/issues/CORE-1/asks/extra",
-        "/api/v1/projects/CORE/artifacts/runbook/text",
         "/api/v1/issuesX",
       ])
     )
   ).toEqual([
-    "/api/v1/issues/CORE-1/asks/extra",
-    "/api/v1/issuesX",
-    "/api/v1/projects/CORE/artifacts/runbook/text",
-    "/api/v1/search",
+    "/api/v1/asks/open (/api/v1/asks/open)",
+    "/api/v1/issues/CORE-1/asks/extra (no route)",
+    "/api/v1/issues/resolve (/api/v1/issues/resolve)",
+    "/api/v1/issuesX (no route)",
+    "/api/v1/search (/api/v1/search)",
+  ]);
+});
+
+test("a live frame passes as a subscribe of a listed view or an unsubscribe, and nothing else", () => {
+  const subscribe = (view: object) => JSON.stringify({ type: "subscribe", sub: "s", view });
+  expect(liveFrame(subscribe({ kind: "events" }))).toEqual({ pass: true, view: "events" });
+  expect(liveFrame(subscribe({ kind: "timeline", window: { preset: 7 }, query: "" }))).toEqual({
+    pass: true,
+    view: "timeline",
+  });
+  expect(liveFrame(JSON.stringify({ type: "unsubscribe", sub: "s" }))).toEqual({ pass: true });
+  expect(liveFrame(subscribe({ kind: "agent", session_id: "s-1" }))).toEqual({ unlisted: "agent" });
+  expect(liveFrame(JSON.stringify({ type: "ack", sub: "s" }))).toMatchObject({
+    write: expect.stringMatching(/^a live socket frame that is no subscribe or unsubscribe/u),
+  });
+  expect(liveFrame("not json")).toMatchObject({ write: expect.any(String) });
+  expect(liveFrame(Buffer.from([1, 2]))).toEqual({ write: "a binary live socket frame (2 bytes)" });
+  expect(unlistedShotViews(new Set(["events", "pipeline", "agent", "legion"]))).toEqual([
+    "agent",
+    "legion",
   ]);
 });

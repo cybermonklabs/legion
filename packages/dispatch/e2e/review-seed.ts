@@ -29,7 +29,7 @@ import {
 import { blockId } from "./editor";
 import { awaitFact } from "./local-instance-support";
 import { sql } from "./psql";
-import type { ReviewSeed } from "./review-routes";
+import type { ReviewSeed, SeededReadMarks } from "./review-routes";
 import { seedWorkspace, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
@@ -101,16 +101,18 @@ function createReviewPriority() {
  *  the broadcast page's read of the replies its recipients wrote (`BroadcastPage.tsx`,
  *  `useMarkShownRepliesRead`), and the Spec tab's read of the issue's spec at its newest version,
  *  in the desktop row and again in the phone row (`useSpecMarks`). These are those writes, the same
- *  requests the pages send; after them each page's own write changes nothing. A page of the shot
- *  set that comes to write a mark as it draws needs that mark written here, and its route and
- *  field in `SEEDED_READ_MARKS` (e2e/visual-guard.ts): until they are, the guard stops the write
- *  and fails the row that made it, by name. */
+ *  requests the pages send; after them each page's own write changes nothing. It answers the marks
+ *  it wrote, which the visual rows' guard lets a page write again only exactly as they stand
+ *  (`isSeededReadMark`, e2e/visual-guard.ts): a page of the shot set that comes to write another
+ *  mark as it draws needs that mark written here, and until it is, the guard stops the write and
+ *  fails the row that made it, by name. */
 async function markWhatTheShotPagesRead(
   broadcastId: string,
   issue: string,
   specId: string
-): Promise<void> {
+): Promise<SeededReadMarks> {
   const broadcast = await getBroadcast(broadcastId);
+  const agents: Record<string, readonly string[]> = {};
   let replies = 0;
   for (const recipient of broadcast.recipients ?? []) {
     // The page's own filter: a reply its session wrote, by kind and id, which is what the server
@@ -122,6 +124,7 @@ async function markWhatTheShotPagesRead(
       .map((reply) => reply.id);
     if (shown.length > 0) {
       await putAgentState(recipient.session_id, { read_replies: shown });
+      agents[recipient.session_id] = [...(agents[recipient.session_id] ?? []), ...shown];
       replies += shown.length;
     }
   }
@@ -141,7 +144,9 @@ async function markWhatTheShotPagesRead(
   if (numbers.length === 0) {
     throw new Error(`seedReviewRoutes: ${issue}'s spec has no version for its Spec tab to read`);
   }
-  await putDocumentRead(specId, Math.max(...numbers));
+  const version = Math.max(...numbers);
+  await putDocumentRead(specId, version);
+  return { agents, documents: { [specId]: version } };
 }
 
 /** Waits, within `boundMs`, until the document service owes no document a settlement, then holds
@@ -285,7 +290,7 @@ Each page is read once it is drawn.
   await awaitNothingOwed(boundMs);
 
   // Last, so the spec's newest version is the one its tab will show.
-  await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);
+  const readMarks = await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);
 
   return {
     broadcast: workspace.broadcast.id,
@@ -297,6 +302,7 @@ Each page is read once it is drawn.
     machine: firstMachine(),
     person: PERSON,
     pipelineAt: PIPELINE_AT,
+    readMarks,
     // The id the create answered, which is this title written as a slug: read back rather than
     // spelled again here, so the rule that derives it stays the server's.
     priority: priority.id,

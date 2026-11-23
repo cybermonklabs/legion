@@ -23,51 +23,69 @@ import (
 	"testing"
 	"time"
 
+	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// shotReadCaches is every table a read of the visual review's pages may write while it answers,
-// each with what makes it no write a page draws. A read writes nothing else: not a document
-// version or an event (a settlement a room owed), not pull_request_heads or the attribution events
-// beside it (GET /issues/{key}/results asking GitHub which pull request holds a commit), and not
-// route_roster (the suite's server stores no copy of the listener's sessions).
-var shotReadCaches = map[string]string{
-	"text_trees":            "the display-tree cache a read with Dispatch-Trees: 1 fills, built from what Dispatch holds",
-	"people":                "the signed-in person's own row, written once (identity.HeaderIdentity, the suite's dev sign-in)",
-	"user_sessions":         "the sign-in's session row (the suite's dev sign-in)",
-	"event_horizon":         "the event log's shared safe horizon, persisted at most once an interval",
-	"search_term_totals":    "the related-item check's word statistics, rebuilt from what Dispatch holds",
-	"search_term_stats":     "the related-item check's word statistics, rebuilt from what Dispatch holds",
-	"search_term_queue":     "the related-item check's word statistics' queue, drained by the rebuild",
-	"delivery_run_warnings": "the once-a-run log bookkeeping of a delivery read, which no page draws",
+// shotWriteChannels are the three ways a visual row's page reaches the server without writing
+// itself - a read of the API, a view of the live socket, a document's room - each with every table
+// the server may write while it answers that way, and what makes that write no change a later
+// shot draws. Each table is one this test sees written on that channel; a write to any other
+// table fails it. None of them holds a document version or an event (a settlement a room owed),
+// pull_request_heads or the attribution events beside it (GET /issues/{key}/results asking GitHub
+// which pull request holds a commit), or route_roster (the suite's server stores no copy of the
+// listener's sessions).
+var shotWriteChannels = map[string]map[string]string{
+	shotReadChannel: {
+		"text_trees": "the display-tree cache a read with Dispatch-Trees: 1 fills, built from what Dispatch holds",
+	},
+	shotLiveChannel: {
+		"event_horizon":         "the event log's shared safe horizon the event feed reads up to, persisted at most once an interval: a cursor, which no page draws",
+		"delivery_run_warnings": "the once-a-run record that a deploy run held no production job, which decides which process logs it: no page draws it",
+	},
+	shotRoomChannel: {},
 }
+
+const (
+	shotReadChannel = "read"
+	shotLiveChannel = "live view"
+	shotRoomChannel = "room"
+)
 
 // visualShotReadsFile is the list of the routes the visual review's pages read, which a visual row
 // matches every read of its page against.
 var visualShotReadsFile = filepath.Join("testdata", "visual-shot-reads.json")
 
-// visualShotReads reads the route patterns the list names.
-func visualShotReads(t *testing.T) []string {
+// visualShotList is the list's two parts: the route patterns of the API reads the shot pages make,
+// and the kinds of the live views they subscribe on GET /ws/live.
+type visualShotList struct {
+	Reads []string `json:"reads"`
+	Live  []string `json:"live"`
+}
+
+// visualShotReads reads the list.
+func visualShotReads(t *testing.T) visualShotList {
 	t.Helper()
 	data, err := os.ReadFile(visualShotReadsFile)
 	if err != nil {
 		t.Fatalf("read %s: %v", visualShotReadsFile, err)
 	}
-	var list struct {
-		Reads []string `json:"reads"`
-	}
+	var list visualShotList
 	if err := json.Unmarshal(data, &list); err != nil {
 		t.Fatalf("decode %s: %v", visualShotReadsFile, err)
 	}
-	if len(list.Reads) == 0 {
-		t.Fatalf("%s names no read: the test would hold nothing", visualShotReadsFile)
+	if len(list.Reads) == 0 || len(list.Live) == 0 {
+		t.Fatalf("%s names %d reads and %d live views: the test would hold nothing of a part it names none of", visualShotReadsFile, len(list.Reads), len(list.Live))
 	}
-	return list.Reads
+	return list
 }
 
 // shotStatements is markedStatements, which records the statements a request the test marked runs
@@ -122,24 +140,26 @@ func (s *shotStatements) stop() []string {
 	return watched
 }
 
-// shotWriteViolations names each write of statements, run while what answered, that is to no
-// table of shotReadCaches, as "<what> wrote <table>: <statement>", and each write it cannot read
-// a table for. It answers too whether a statement stored a display tree.
-func shotWriteViolations(what string, statements []string) (violations []string, treeStored bool) {
+// shotWriteViolations names each write of statements, run while what answered on channel, that is
+// to no table shotWriteChannels allows that channel, as "<what> wrote <table>: <statement>", and
+// each write it cannot read a table for. It answers too the tables it saw written.
+func shotWriteViolations(channel, what string, statements []string) (violations []string, written map[string]bool) {
+	allowed := shotWriteChannels[channel]
+	written = map[string]bool{}
 	for _, statement := range statements {
 		writes, readable := writesOf(statement)
 		if !readable {
 			violations = append(violations, what+" ran a write this test cannot read a table for: "+statementLine(statement))
 		}
 		for _, write := range writes {
-			verb, table, _ := strings.Cut(write, " ")
-			if _, cached := shotReadCaches[table]; !cached {
+			_, table, _ := strings.Cut(write, " ")
+			written[table] = true
+			if _, cached := allowed[table]; !cached {
 				violations = append(violations, what+" wrote "+table+": "+statementLine(statement))
 			}
-			treeStored = treeStored || (verb == "insert" && table == "text_trees")
 		}
 	}
-	return violations, treeStored
+	return violations, written
 }
 
 func statementLine(statement string) string {
@@ -161,6 +181,7 @@ type shotCorpus struct {
 // shotReadPaths is the path this test sends each route of the list at, in its corpus, with the
 // query the dashboard sends it with where the route reads one.
 func shotReadPaths(c shotCorpus) map[string]string {
+	// The person page of the signed-in person, as the visual seed's person row opens it.
 	return map[string]string{
 		"/api/v1/agents":                              "/api/v1/agents",
 		"/api/v1/agents/{session_id}/messages":        "/api/v1/agents/planner/messages",
@@ -194,7 +215,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/me/documents/{id}/read":              "/api/v1/me/documents/" + c.spec + "/read",
 		"/api/v1/me/replies":                          "/api/v1/me/replies",
 		"/api/v1/me/state":                            "/api/v1/me/state",
-		"/api/v1/people/{login}/nodes":                "/api/v1/people/alice/nodes?limit=50&offset=0",
+		"/api/v1/people/{login}/nodes":                "/api/v1/people/" + shotPerson + "/nodes?limit=50&offset=0",
 		"/api/v1/priorities":                          "/api/v1/priorities",
 		"/api/v1/priorities/{id}/history":             "/api/v1/priorities/" + c.priority + "/history",
 		"/api/v1/projects":                            "/api/v1/projects",
@@ -210,19 +231,21 @@ func shotReadPaths(c shotCorpus) map[string]string {
 	}
 }
 
-// shotRead reads target as the dashboard does, the person signed in and the display trees asked
-// for, on a request the tracer records, and waits out the work it detached before it answers, so
-// the statements it took are this read's alone.
-func shotRead(t *testing.T, handler http.Handler, served *server, statements *shotStatements, target string) (*httptest.ResponseRecorder, []string) {
+// shotRead reads target as the dashboard does, the person signed in with a session cookie as the
+// suite's dev sign-in signs in and the display trees asked for, on a request the tracer records, and waits out the work it detached before it answers, so
+// the statements it took are this read's alone. It waits for the detached work alone: the server's
+// whole background wait (waitBackground) is its shutdown's, after which it closes every live socket
+// that opens with 1012.
+func shotRead(t *testing.T, handler http.Handler, served *server, statements *shotStatements, cookie *http.Cookie, target string) (*httptest.ResponseRecorder, []string) {
 	t.Helper()
 	statements.take()
 	ctx := context.WithValue(context.Background(), countedRead{}, true)
 	request := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
-	request.Header.Set("X-Dispatch-User", "alice")
+	request.AddCookie(cookie)
 	request.Header.Set(displayTreesHeader, "1")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	served.waitBackground()
+	served.detached.wait()
 	return response, statements.take()
 }
 
@@ -245,6 +268,46 @@ func nothingOwed(t *testing.T, database *store.Store) {
 	if !testwait.Holds(10*time.Second, 20*time.Millisecond, read) {
 		t.Fatalf("the document service still owes %s a settlement after 10s", strings.Join(owed, ", "))
 	}
+}
+
+// shotPerson is the person the shot pages are drawn for, signed in with a session cookie.
+const shotPerson = "alice@d.example"
+
+// shotSignIn makes shotPerson somebody who has signed in, as the suite's dev sign-in does - a
+// session and a people row - and answers the session cookie, which every read, socket and room of
+// the test presents. The suite's server resolves a cookie (identity.CookieIdentity), which writes
+// nothing on a request; the package's header identity records the person it names on every one,
+// which would be no write of a read's.
+func shotSignIn(t *testing.T, database *store.Store) (identity.CookieIdentity, *http.Cookie) {
+	t.Helper()
+	sessions := store.NewPgSessionStore(database.Pool)
+	generation, err := sessions.EnsureSession(context.Background(), shotPerson)
+	if err != nil {
+		t.Fatalf("establish %s's session: %v", shotPerson, err)
+	}
+	seedPeople(t, database, shotPerson)
+	cookie, err := http.ParseSetCookie(auth.IssueSessionCookie(shotPerson, generation, testSigningKey, true))
+	if err != nil {
+		t.Fatalf("parse the session cookie: %v", err)
+	}
+	return identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions}, cookie
+}
+
+// asShotPerson is handler for the corpus's own writes, which the package's helpers send as the
+// person "alice" names (X-Dispatch-User): each is sent with the session cookie instead, since the
+// server resolves cookies alone. A request naming anybody else fails the test.
+func asShotPerson(t *testing.T, handler http.Handler, cookie *http.Cookie) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch login := r.Header.Get("X-Dispatch-User"); login {
+		case "":
+		case "alice":
+			r.Header.Del("X-Dispatch-User")
+			r.AddCookie(cookie)
+		default:
+			t.Errorf("the corpus wrote as %s, whom the test signs in no session for", login)
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 // buildShotCorpus writes, through the API alone, the corpus the reads are sent at.
@@ -282,14 +345,57 @@ func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 	return corpus
 }
 
-// TestTheVisualShotReadsWriteOnlyTheirCaches sends every route the visual review's pages read
-// (testdata/visual-shot-reads.json) at a corpus of the shape the visual seed writes, as the
-// dashboard sends it - signed in, with Dispatch-Trees: 1, on a server whose listener roster is
-// read uncached as the suite's is - and holds every write each read makes, and every write the
-// work it detaches makes, to shotReadCaches. It then opens the spec's room as a page does and
-// closes it, once the service owes no settlement, and holds the room to writing nothing.
+// shotLiveViews is the view this test subscribes for each live view kind the list names, over
+// its pipeline fixture, in the shape the shot pages send it: the Delivery page's timeline and
+// measures over the custom window its URL names and no facet, the Pipeline page pinned to an at,
+// and the event feed every page of the shell subscribes, from its start.
+func shotLiveViews() map[string]LiveView {
+	from, to := pipelineFixtureTime(26, 0, 0), pipelineFixtureTime(33, 0, 0)
+	at := pipelineFixtureTime(32, 12, 0)
+	return map[string]LiveView{
+		deliveryLiveTimeline: {DeliveryLiveView: timelineRange(from, to, "")},
+		deliveryLiveMeasures: {DeliveryLiveView: measuresRange(from, to, "")},
+		deliveryLivePipeline: {DeliveryLiveView: livePipelineView(&at)},
+		liveEventsView:       eventsView(),
+	}
+}
+
+// liveAnswer reads client's frames until sub's first answer - a delivery view's snapshot, the event
+// feed's start - and fails on a refusal of sub or on no answer within ten seconds.
+func liveAnswer(t *testing.T, client *socketClient, sub string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		switch frame := client.next(t, time.Until(deadline), "the first answer of "+sub).(type) {
+		case DeliveryLiveSnapshot:
+			if frame.Sub == sub {
+				return
+			}
+		case LiveEventsStart:
+			if frame.Sub == sub {
+				return
+			}
+		case LiveError:
+			if frame.Sub == sub || frame.Sub == "" {
+				t.Fatalf("the live view %s was refused: %s %s", sub, frame.Code, frame.Message)
+			}
+		}
+	}
+}
+
+// TestTheVisualShotReadsWriteOnlyTheirCaches holds what the server writes while it answers the
+// visual review's pages, on each way they reach it, to the tables shotWriteChannels allows that
+// way. It sends every route the list names (testdata/visual-shot-reads.json) at a corpus of the
+// shape the visual seed writes, as the dashboard sends it - signed in, with Dispatch-Trees: 1, on a
+// server whose listener roster is read uncached as the suite's is - and reads every statement each
+// read runs and every statement the work it detaches runs. It subscribes each live view kind the
+// list names on GET /ws/live, one at a time over the pipeline fixture, and reads every statement
+// the pool runs from the subscribe to the view's first answer. It opens the spec's room as a page
+// does and closes it, once the service owes no settlement, and reads every statement the pool runs
+// meanwhile.
 //
-// Its positive controls: every read answers 200, the reads store a display tree between them,
+// Its positive controls: every read answers 200 and the reads store a display tree between them;
+// every live view answers, and the delivery views read the deploy runs; the room's load is seen;
 // and two planted writes are named - a write run inside one listed read, by that read and its
 // table, and a person's edit in the room, by the room and the table it appends to - so a tracer
 // that saw nothing, or a check that names nothing, cannot pass.
@@ -306,24 +412,37 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		return true
 	})
 	broker := newFakeBrokerRig(t)
+	cookies, cookie := shotSignIn(t, database)
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
 		store:                  traced,
 		envoyURL:               listener.URL,
 		agentSecretsURL:        broker.server.URL,
 		listenerRosterUncached: true,
+		identity:               cookies,
 	})
-	corpus := buildShotCorpus(t, handler)
+	corpus := buildShotCorpus(t, asShotPerson(t, handler, cookie))
 	paths := shotReadPaths(corpus)
+	views := shotLiveViews()
 
 	listed := visualShotReads(t)
-	for _, pattern := range listed {
+	for _, pattern := range listed.Reads {
 		if _, held := paths[pattern]; !held {
-			t.Errorf("%s names %s, which this test sends no read to: add its path to shotReadPaths", visualShotReadsFile, pattern)
+			t.Errorf("%s names the read %s, which this test sends no read to: add its path to shotReadPaths", visualShotReadsFile, pattern)
 		}
 	}
 	for pattern := range paths {
-		if !slices.Contains(listed, pattern) {
+		if !slices.Contains(listed.Reads, pattern) {
 			t.Errorf("shotReadPaths sends a read to %s, which %s does not name", pattern, visualShotReadsFile)
+		}
+	}
+	for _, kind := range listed.Live {
+		if _, held := views[kind]; !held {
+			t.Errorf("%s names the live view %s, which this test subscribes no view of: add it to shotLiveViews", visualShotReadsFile, kind)
+		}
+	}
+	for kind := range views {
+		if !slices.Contains(listed.Live, kind) {
+			t.Errorf("shotLiveViews subscribes a %s view, which %s does not name", kind, visualShotReadsFile)
 		}
 	}
 	nothingOwed(t, database)
@@ -333,24 +452,32 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		t.Fatalf("empty the display-tree cache: %v", err)
 	}
 
-	var treeStored bool
-	for _, pattern := range listed {
+	written := map[string]map[string]bool{}
+	record := func(channel string, seen map[string]bool) {
+		if written[channel] == nil {
+			written[channel] = map[string]bool{}
+		}
+		for table := range seen {
+			written[channel][table] = true
+		}
+	}
+	for _, pattern := range listed.Reads {
 		target, held := paths[pattern]
 		if !held {
 			continue
 		}
-		response, ran := shotRead(t, handler, served, statements, target)
+		response, ran := shotRead(t, handler, served, statements, cookie, target)
 		if response.Code != http.StatusOK {
 			t.Errorf("GET %s: status=%d body=%s, want 200: the read must answer for its statements to be its handler's", target, response.Code, response.Body.String())
 			continue
 		}
-		violations, stored := shotWriteViolations("GET "+pattern, ran)
+		violations, seen := shotWriteViolations(shotReadChannel, "GET "+pattern, ran)
 		for _, violation := range violations {
 			t.Error(violation)
 		}
-		treeStored = treeStored || stored
+		record(shotReadChannel, seen)
 	}
-	if !treeStored {
+	if !written[shotReadChannel]["text_trees"] {
 		t.Error("no read stored a display tree: the tracer saw none of the detached writes it exists to see")
 	}
 
@@ -361,8 +488,8 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		}
 		handler.ServeHTTP(w, r)
 	})
-	if _, ran := shotRead(t, planted, served, statements, "/api/v1/projects"); !slices.ContainsFunc(
-		violationsOnly(shotWriteViolations("GET /api/v1/projects", ran)),
+	if _, ran := shotRead(t, planted, served, statements, cookie, "/api/v1/projects"); !slices.ContainsFunc(
+		violationsOnly(shotWriteViolations(shotReadChannel, "GET /api/v1/projects", ran)),
 		func(violation string) bool {
 			return strings.HasPrefix(violation, "GET /api/v1/projects wrote projects: ")
 		},
@@ -370,41 +497,94 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 		t.Errorf("a write planted in GET /api/v1/projects was not named by the read and its table among %d statements: %v", len(ran), ran)
 	}
 
+	// The live views, each on the socket a page opens, over the deploy runs and the merged pull
+	// request the Delivery and Pipeline pages draw, written beside the tracer so the fixture's own
+	// writes are no view's.
+	seedPipelineFixture(t, database, pipelineSettings())
+	upsertPR(t, database, hubPR(1, pipelineFixtureTime(32, 10, 0)))
+	socketServer := httptest.NewServer(handler)
+	t.Cleanup(socketServer.Close)
+	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(socketServer.URL, "http")+"/ws/live", http.Header{"Cookie": {cookie.String()}}).servedBy(database).read()
+	runsRead := false
+	for _, kind := range listed.Live {
+		view, held := views[kind]
+		if !held {
+			continue
+		}
+		statements.watch()
+		client.send(t, LiveSubscribe{Type: "subscribe", Sub: kind, View: view})
+		liveAnswer(t, client, kind)
+		served.detached.wait()
+		ran := statements.stop()
+		violations, seen := shotWriteViolations(shotLiveChannel, "the live view "+kind, ran)
+		for _, violation := range violations {
+			t.Error(violation)
+		}
+		record(shotLiveChannel, seen)
+		runsRead = runsRead || slices.ContainsFunc(ran, func(statement string) bool {
+			return strings.Contains(statement, "delivery_runs")
+		})
+		client.send(t, LiveUnsubscribe{Type: "unsubscribe", Sub: kind})
+	}
+	if !runsRead {
+		t.Error("no live view read delivery_runs: the tracer saw none of the delivery views' work")
+	}
+
 	// The room: a page opens the spec and leaves it, and the room writes nothing.
-	// The room is served as a page's socket reaches it, signed in, on the traced pool, by a
-	// document service of the test's own: the test server's names no identity for its sockets.
-	documents := docs.New(docs.Deps{Store: traced, Identity: headerIdentity(traced), Settle: 20 * time.Millisecond})
+	// The room is served as a page's socket reaches it, signed in with the cookie, on the traced
+	// pool, by a document service of the test's own: the test server's names no identity for its
+	// sockets.
+	documents := docs.New(docs.Deps{Store: traced, Identity: cookies, Settle: 20 * time.Millisecond})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+	sockets := &servedSockets{finished: make(map[string]chan struct{})}
+	roomServer := httptest.NewServer(sockets.serve(documents.ServeHTTP))
+	t.Cleanup(roomServer.Close)
 	statements.watch()
-	page := connectBrowserPeer(t, documents, corpus.spec)
+	page := &syncedPeer{
+		wsURL: "ws" + strings.TrimPrefix(roomServer.URL, "http") + "/ws/doc/" + corpus.spec, sockets: sockets,
+		headers: http.Header{"Cookie": {cookie.String()}}, artifactID: corpus.spec, doc: crdt.New(),
+	}
+	page.connect(t)
 	page.closeAndWait(t)
-	served.waitBackground()
+	served.detached.wait()
 	nothingOwed(t, database)
 	watched := statements.stop()
 	if len(watched) == 0 {
 		t.Error("the tracer saw no statement while the room loaded: it did not see the room")
 	}
-	violations, _ := shotWriteViolations("the spec's room", watched)
+	violations, seen := shotWriteViolations(shotRoomChannel, "the spec's room", watched)
 	for _, violation := range violations {
 		t.Error(violation)
 	}
+	record(shotRoomChannel, seen)
 
 	// The planted edit: a person's keystroke in the room is named by the room and its table.
 	statements.watch()
 	page.connect(t)
 	page.appendParagraph(t, "A keystroke the visual guard would have stopped.")
 	page.closeAndWait(t)
-	served.waitBackground()
+	served.detached.wait()
 	nothingOwed(t, database)
 	edited := statements.stop()
-	if !slices.ContainsFunc(violationsOnly(shotWriteViolations("the spec's room", edited)), func(violation string) bool {
+	if !slices.ContainsFunc(violationsOnly(shotWriteViolations(shotRoomChannel, "the spec's room", edited)), func(violation string) bool {
 		return strings.HasPrefix(violation, "the spec's room wrote doc_updates: ")
 	}) {
 		t.Errorf("a person's edit in the room was not named by the room and doc_updates among %d statements", len(edited))
 	}
+
+	// Each allowance is one this test sees written on its channel: an allowance nothing here
+	// writes is one nothing holds, and goes.
+	for channel, allowed := range shotWriteChannels {
+		for table := range allowed {
+			if !written[channel][table] {
+				t.Errorf("shotWriteChannels allows the %s channel %s, which no %s of this test wrote: drop the allowance", channel, table, channel)
+			}
+		}
+	}
+	t.Logf("tables written, by channel: %v", written)
 }
 
 // violationsOnly answers a check's violations, for a control that reads only them.
-func violationsOnly(violations []string, _ bool) []string {
+func violationsOnly(violations []string, _ map[string]bool) []string {
 	return violations
 }
