@@ -11,6 +11,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   type LegionPane,
   messageStream,
   ompNatsGuard,
@@ -368,6 +369,9 @@ async function fallbackPane(options: {
             whileUp: async (rpc: Rpc) => {
               const nc = await connect({ servers: nats });
               cleanup.push(() => nc.close());
+              // No stream another suite left on this server may answer the frames
+              // (`deleteRelayCapturingStreams`).
+              await deleteRelayCapturingStreams(nc);
               await whileUp(idleLife(rpc, nc));
             },
           }),

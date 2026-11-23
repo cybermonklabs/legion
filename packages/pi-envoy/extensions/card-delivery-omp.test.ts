@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   deliveryFor,
   isSummarization,
   messageStream,
@@ -362,6 +363,9 @@ async function startSession(
   );
   const connection: NatsConnection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   // The subject the stream stored a message on, which every frame carries: the session's own
   // inbox, where the listener's role lane forwards a role card and Dispatch addresses a Send. A

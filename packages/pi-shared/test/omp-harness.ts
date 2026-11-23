@@ -326,8 +326,10 @@ async function relayCapturingStreams(connection: RelayConnection): Promise<strin
 
 /**
  * Deletes every JetStream stream on the server `connection` reaches that captures a session's
- * relay subject (`deliverSubject`), and answers their names. Call it once a case holds its
- * connection and before its first `sendRelayFrame`.
+ * relay subject (`deliverSubject`), and answers their names. Every case that sends frames with
+ * `sendRelayFrame` calls it once it holds its connection, before its first frame. The
+ * connection's `request` rejects a request nobody answers with an error whose `code` is "503", as
+ * nats.js does: a server without JetStream holds no stream, and nothing is deleted there.
  *
  * A stream whose subjects take a relay subject answers each frame itself, with its publish ack
  * (`{"stream":"ENVOY_NOTIFICATIONS","seq":2}`), beside the session that holds the subject, and a
@@ -335,11 +337,10 @@ async function relayCapturingStreams(connection: RelayConnection): Promise<strin
  * not hold", and a frame to a subject nobody holds is answered where it should meet no responder.
  * Envoy's own stream never takes one (`DeliverSubjectPrefix`, packages/envoy/internal/bus/stream.go:
  * a relay frame travels over core NATS). The daemon's Go tests make ENVOY_NOTIFICATIONS on all of
- * `notifications.>`, and testnats.URL empties the server at the start of each of its tests, not at
- * the end, so the last test's stream stays on a server both suites share: LEGION_TEST_NATS_URL in a
- * pod with no Docker. Deleting it is what testnats.URL does at the start of every Go test on that
- * server; this deletes only the streams that capture a relay subject, and fails naming any it
- * could not.
+ * `notifications.>`, and on a server both suites share (LEGION_TEST_NATS_URL in a pod with no
+ * Docker) a stream a Go test leaves there stays for the Bun tests that run next. Deleting it is
+ * what testnats.URL does to every stream on that server for each Go test; this deletes only the
+ * streams that capture a relay subject, and fails naming any it could not.
  */
 export async function deleteRelayCapturingStreams(
   connection: RelayConnection

@@ -943,6 +943,9 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
   let noticeFault: Error | undefined;
   const connection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   const noticeSubject = legionControllerNoticeSubject(PROJECT);
   // The stream's sequence: one stream for the whole case, so every frame of it is ordered by the
