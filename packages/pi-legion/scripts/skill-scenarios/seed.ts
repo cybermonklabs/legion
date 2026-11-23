@@ -24,8 +24,18 @@
 //                                          its Verification document in document order, with the
 //                                          check's run and its results newest first, each with
 //                                          session, commit, verdict, run, observed and created_at,
-//                                          as score.ts's testerProof reads them (results.json in
-//                                          <run dir>)
+//                                          as score.ts's testerProof and testerReruns read them
+//                                          (results.json in <run dir>)
+//   seed.ts tester-reruns <file> <case> <repository dir> <epoch seconds>
+//                                          the project ACME and one run's own issue in it, the
+//                                          tester-reruns world of <case>, and that case's fixture
+//                                          repository in <repository dir>; writes {issue, case,
+//                                          base, h0, h1, filesChanged, h1Output} to <file>
+//                                          (tester-reruns-world.ts)
+//   seed.ts tester-reruns-results <file>   records the case's results of check c1 and the
+//                                          implement handoff, under sessions never the run's, and
+//                                          adds the record's {id, version} and the pull request's
+//                                          body to <file> (tester-reruns-world.ts)
 //   seed.ts ask-on-message <file>          one run's own issue and the owner's message posting its
 //                                          plan; writes {issue, message} to <file>
 //   seed.ts measure-before-ask <file>      one run's own issue and the owner's message naming three
@@ -119,6 +129,7 @@ import {
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 import { parseInstant } from "./production-dispatch";
+import { RERUNS_CASES, rerunsIssue, rerunsResults } from "./tester-reruns-world";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -932,13 +943,13 @@ async function captureBrainstorm(runDir: string): Promise<void> {
 }
 
 const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | capture-results <file> <run dir>";
+  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | capture-results <file> <run dir> | tester-reruns <file> <case> <repository dir> <epoch seconds> | tester-reruns-results <file>";
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its
  * own. */
 async function main(argv: string[]): Promise<boolean> {
-  const [command, file, second, third] = argv;
+  const [command, file, second, third, fourth] = argv;
   const n = argv.length;
   if (command === "project") await seedProject();
   else if (command === "ask-on-message" && file !== undefined) await askOnMessage(file);
@@ -977,6 +988,12 @@ async function main(argv: string[]): Promise<boolean> {
     await captureHandoffs(file, second);
   else if (command === "capture-results" && file !== undefined && second !== undefined && n === 3)
     await captureResults(file, second);
+  else if (command === "tester-reruns" && file !== undefined && fourth !== undefined && n === 5) {
+    const rerunsCase = RERUNS_CASES.find((known) => known === second);
+    if (rerunsCase === undefined || third === undefined || !/^[0-9]+$/.test(fourth)) return false;
+    await rerunsIssue(file, rerunsCase, third, Number(fourth));
+  } else if (command === "tester-reruns-results" && file !== undefined && n === 2)
+    await rerunsResults(file);
   else return false;
   return true;
 }

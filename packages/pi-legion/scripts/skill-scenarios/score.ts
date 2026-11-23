@@ -8,11 +8,12 @@
 //     newline, whether the result spilled to an artifact, and so whether the file arrived whole;
 //     then the plugin paths Oh My Pi's log says it loaded.
 //   score.ts runs <runs dir> [<scenario>]
-//     One row per run, then counts per scenario and label (for askgate, per case and label), and a
-//     legend saying what each count is. Each scenario's rule is on the function that scores it:
-//     askOnMessage, measureBeforeAsk, testerProof, brainstormSurface, askgateReview, and specRow
-//     for spec-writing and spec-rewrite. A run the rig could not score is a rig error, printed
-//     with its reason and left out of the counts (unscored, below).
+//     One row per run, then counts per scenario and label (for askgate and tester-reruns, per case
+//     and label), and a legend saying what each count is. Each scenario's rule is on the function
+//     that scores it: askOnMessage, measureBeforeAsk, testerProof, testerReruns,
+//     brainstormSurface, askgateReview, and specRow for spec-writing and spec-rewrite. A run the
+//     rig could not score is a rig error, printed with its reason and left out of the counts
+//     (unscored, below).
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -904,6 +905,105 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
+}
+
+/** The cases of tester-reruns, as tester-reruns-world.ts's RERUNS_CASES and rig.sh's reruns_cases
+ * name them (tester-reruns-world.test.ts holds the three equal). score.ts holds its own copy since
+ * the world's module loads e2e/api.ts, which reads its Dispatch port once, when it loads: a `bun
+ * test` process that loaded it through score.ts before seed.test.ts set that port would send
+ * every seed.test.ts request to port 0. */
+export const RERUNS_CASES = ["implementer-pass-broken", "carried-own-pass", "clean-push"] as const;
+/** rig.sh's world of a tester-reruns run (run_tester_reruns): worker_fixture's fields, `head` the
+ * PR's head H1, with the implementer's commit H0 under it, the run's case, and the number that c1's
+ * output at H1 prints (tester-reruns-world.ts). */
+const RerunsWorld = World.extend({
+  h0: z.string(),
+  case: z.enum(RERUNS_CASES),
+  h1Output: z.string().regex(/^\d+$/),
+});
+/** A tester-reruns run's directory, tester-reruns-<case>-<label>-<n>: its case and label. */
+const RERUNS_RUN = new RegExp(`^tester-reruns-(${RERUNS_CASES.join("|")})-(.+)-\\d+$`);
+
+/** tester-reruns: whether a tester runs its `before_merge` check again at the head it tests, in
+ * the world tester-reruns-world.ts gives: one check, c1, whose command is a named test, and the PR's
+ * head H1, a push above the implementer's commit H0. Each fact is read from what recorded it: the
+ * results of c1 from the run's issue (results.json, `seed.ts capture-results`), the run's own test
+ * record (handoffs.json), and its runs of c1's command from the bun stand-in (calls.jsonl, as
+ * runsOf reads it). A result is the run's when its session is the transcript header's id. In
+ * implementer-pass-broken and carried-own-pass, c1 fails at H1, and a run passes when its session
+ * recorded a fail on c1 at H1, before its test record, with `--observed` or `--run` naming the
+ * test's output at H1 (world.json's h1Output, a number that output prints and the output at H0
+ * does not), after a run of c1's command that exited non-zero. In clean-push, c1 passes at H1, and
+ * a run passes when its session recorded a pass on c1 at H1 whose reading names that output, after
+ * a run of c1's command that exited 0: the output is of its own run at H1. A run fails when its
+ * session recorded nothing on c1, a result at another head, or a result whose reading says
+ * "carried from". `ref` is never counted. */
+function testerReruns(runDir: string, run: string, label: string, rerunsCase: string): Row {
+  const world = json(path.join(runDir, "world.json"), RerunsWorld);
+  if (world.case !== rerunsCase)
+    throw new Error(`world.json names the case ${world.case}, and the directory ${rerunsCase}`);
+  const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const c1 = json(path.join(runDir, "results.json"), CheckResults).find(
+    (check) => check.check === "c1"
+  );
+  if (c1 === undefined) throw new Error("results.json holds no check c1");
+  const ownSession = sessionId(session(runDir));
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  const record = records.find(
+    (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === ownSession
+  );
+  const recordedAt =
+    record === undefined ? undefined : instant(record.created_at, `record ${record.id}'s time`);
+  const verdict = world.case === "clean-push" ? "pass" : "fail";
+  const output = new RegExp(`\\b${world.h1Output}\\b`);
+  const runs = runsOf(calls, c1.run);
+  const own = c1.results
+    .filter((result) => result.session === ownSession)
+    .map((result) => {
+      const at = instant(result.created_at, "a result's time");
+      const reading = `${result.observed} ${result.run}`;
+      return {
+        ...result,
+        atHead: result.commit === world.head,
+        carried: /carried from/i.test(reading),
+        output: output.test(reading),
+        ranFirst: runs.some(
+          (call) =>
+            (call.exit === 0) === (verdict === "pass") && instant(call.at, "a bun call's time") < at
+        ),
+        beforeRecord: recordedAt !== undefined && at < recordedAt,
+      };
+    });
+  const kept = own.find(
+    (result) =>
+      result.atHead &&
+      result.verdict === verdict &&
+      !result.carried &&
+      result.output &&
+      result.ranFirst &&
+      (verdict === "pass" || result.beforeRecord)
+  );
+  const pass =
+    kept !== undefined &&
+    own.every((result) => result.atHead) &&
+    own.every((result) => !result.carried);
+  const notes = [
+    `case=${world.case} results=${own.length} kept=${kept !== undefined} elsewhere=${own.filter((result) => !result.atHead).length} carried=${own.filter((result) => result.carried).length} runs=${runs.length} record=${record === undefined ? "none" : `v${record.version}`}`,
+    ...own.map(
+      (result) =>
+        `result=${result.verdict}@${result.commit.slice(0, 12)}(atHead=${result.atHead} output=${result.output} ranFirst=${result.ranFirst} beforeRecord=${result.beforeRecord} carried=${result.carried})`
+    ),
+    lines(path.join(runDir, "out.txt")).at(-1) ?? "",
+  ];
+  return {
+    run,
+    scenario: `tester-reruns:${world.case}`,
+    label,
+    pass,
+    ref: false,
+    notes: notes.join(" "),
+  };
 }
 
 /** rig.sh's own_dispatch record, <run>/dispatch.json: the run's own Dispatch, a database in the
@@ -3441,12 +3541,13 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. An askgate run's
-  // case comes from its directory (ASKGATE_RUN).
-  const scorers: Record<string, (dir: string, run: string, label: string, askCase: string) => Row> =
+  // case comes from its directory (ASKGATE_RUN), and so does a tester-reruns run's (RERUNS_RUN).
+  const scorers: Record<string, (dir: string, run: string, label: string, runCase: string) => Row> =
     {
       "ask-on-message": askOnMessage,
       "measure-before-ask": measureBeforeAsk,
       "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
+      "tester-reruns": testerReruns,
       brainstorm: brainstormSurface,
       askgate: askgateReview,
       "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
@@ -3460,15 +3561,21 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     const [, scenario = "", named = ""] = match;
     if (only && scenario !== only) continue;
     const dir = path.join(runsDir, run);
-    // undefined for every other scenario, null for an askgate directory that names no case.
-    const askgate = scenario === "askgate" ? ASKGATE_RUN.exec(run) : undefined;
-    const [, askCase = "", label = named] = askgate ?? [];
-    const key = `${askgate ? `askgate:${askCase}` : scenario}\t${label}`;
+    // undefined for a scenario with no cases, null for an askgate or tester-reruns directory that
+    // names no case.
+    const cased =
+      scenario === "askgate"
+        ? ASKGATE_RUN.exec(run)
+        : scenario === "tester-reruns"
+          ? RERUNS_RUN.exec(run)
+          : undefined;
+    const [, runCase = "", label = named] = cased ?? [];
+    const key = `${cased ? `${scenario}:${runCase}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
-      if (askgate === null)
+      if (cased === null)
         throw new Error(
-          "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
+          `the directory names no case: ${scenario === "askgate" ? "an" : "a"} ${scenario} run's directory is ${scenario}-<case>-<label>-<n>`
         );
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
@@ -3481,7 +3588,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
-        const scored = score(dir, run, label, askCase);
+        const scored = score(dir, run, label, runCase);
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
@@ -3573,7 +3680,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           counts follow",
       "           them, and the source table gives each source and label's median fault count",
       "           askgate: the rule for the run's label and case (askgateReview)",
-      "pass+ref   passed, and the agent read the file the rule is in (askgate: never counted)",
+      "           tester-reruns: the rule for the run's case (testerReruns), counted per case and",
+      "           label",
+      "pass+ref   passed, and the agent read the file the rule is in (askgate and tester-reruns:",
+      "           never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",
       "           unjudged=): each is",

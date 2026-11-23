@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  A skill scenario, `tester-reruns`, shows whether a tester runs its check again at the head it
+  tests: `rig.sh batch tester-reruns <runs> <label>...` runs the cases implementer-pass-broken,
+  carried-own-pass and clean-push in the world of `tester-reruns-world.ts`, and `rig.sh score
+  tester-reruns` passes a run that recorded its own result of the test at the new head, with that
+  run's output, and fails one that recorded nothing, a result at another head, or a result
+  carried from the old head.
+time: 2026-11-23T11:28:45Z
+custom:
+    Issue: tester-reruns-scenario

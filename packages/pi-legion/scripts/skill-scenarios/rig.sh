@@ -23,9 +23,10 @@
 #                                                  <dir>/sessions), output to <dir>/out.txt, the
 #                                                  model and thinking level to <dir>/judge-model.txt
 #
-# A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>`, which needs that
-# batch's services: <index> is the run's place in the batch and <start> the batch's start in epoch
-# seconds. One run on its own is `rig.sh batch <scenario> 1 <label>`.
+# A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start>` (a tester-reruns run
+# with its case after <start>), which needs that batch's services: <index> is the run's place in
+# the batch and <start> the batch's start in epoch seconds. One run on its own is
+# `rig.sh batch <scenario> 1 <label>`.
 #
 # The tools of this directory (each one's header has its own usage):
 #   seed.ts               seeds a batch's scratch Dispatch and each run's issue, and reads back what
@@ -58,6 +59,17 @@
 #                   implement-handoff). After the run, seed.ts capture-handoffs reads back every
 #                   handoff record of the issue, and seed.ts capture-results every result recorded
 #                   against its checks. Scored by testerProof.
+#   tester-reruns   The same tester phase worker, told the implementer has finished at H1, a push
+#                   above an earlier head H0, on an issue whose one check c1 is a named test of the
+#                   fixture repository (tester-reruns-world.ts, through seed.ts tester-reruns and
+#                   tester-reruns-results). A batch runs each case <runs> times per label:
+#                   implementer-pass-broken (the implementer's pass of c1 stands at H1, which holds
+#                   a defect c1 fails on), carried-own-pass (the tester's own pass stands at H0, and
+#                   H1 changes a file c1 reads, so c1 fails at H1) and clean-push (passes stand at
+#                   H0, H1 changes only README.md, and c1 passes at H1). The case is in the run's
+#                   name, tester-reruns-<case>-<label>-<n>. After the run, seed.ts capture-handoffs
+#                   and capture-results read back the issue. Scored by testerReruns, counted per
+#                   case and label.
 #   measure-before-ask
 #                   A plain session is told to ask Sami which of three ways to finish an owner
 #                   session posted, with the export the message names in its working directory;
@@ -1337,6 +1349,54 @@ cmd_judge() {
   SKILL_SCENARIOS_WORK=$work exec bun "$here/judge.ts" run "$@"
 }
 
+# fixture_remote makes $R/remote.git, the run's bare remote, whose post-receive hook logs each push
+# to $R/pushes.log as `<time> <ref> <old> <new>`.
+fixture_remote() {
+  git init -q --bare -b main "$R/remote.git"
+  cat >"$R/remote.git/hooks/post-receive" <<EOF
+#!/bin/sh
+while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
+EOF
+  chmod +x "$R/remote.git/hooks/post-receive"
+}
+
+# fixture_workspace KEY clones the run's remote into $R/ws, the issue workspace, with jj, and starts
+# a new change on legion/KEY.
+fixture_workspace() {
+  local jj_setup_config=$R/jj-setup.toml
+  # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
+  # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
+  # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
+  # registers this run's workspace with the operator's long-running watchman.
+  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
+  JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
+  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$1" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$1") >/dev/null 2>&1
+}
+
+# fixture_routes HEAD BODY NUMBER TITLE writes $R/fixtures.json, what the gh stand-in serves: the
+# open PR #NUMBER of $worker_repo from legion/$worker_key into main, at HEAD, with TITLE and BODY,
+# its checks green and no review thread.
+fixture_routes() {
+  jq -n --arg head "$1" --arg body "$2" --arg url "https://github.com/$worker_repo/pull/$3" \
+    --arg ref "legion/$worker_key" --arg title "$4" --argjson number "$3" '
+    {number:$number, url:$url, html_url:$url, title:$title, state:"OPEN", isDraft:false,
+     headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
+     reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:"main"},
+     statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
+                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
+    | {routes:[
+      {match:"^gh pr view", stdout:$pr},
+      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
+      {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
+      {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
+      {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
+      {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
+      {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
+      {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
+      {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
+    ]}' >"$R/fixtures.json"
+}
+
 # The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
 # run_tester_proof files first): a bare remote whose post-receive hook logs every push, the issue
 # workspace cloned from it, the implementer's commit on legion/<key>, the PR the gh stand-in serves,
@@ -1352,16 +1412,10 @@ cmd_judge() {
 # test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
 # fixture turns correct testing into a fail.
 worker_fixture() {
-  local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config
+  local index=$1 start=$2 src C1 body when worker_pr
   worker_pr=$((1000 + index))
-  worker_pr_url=https://github.com/$worker_repo/pull/$worker_pr
   when="@$((start + index)) +0000"
-  git init -q --bare -b main "$R/remote.git"
-  cat >"$R/remote.git/hooks/post-receive" <<EOF
-#!/bin/sh
-while read old new ref; do echo "\$(date -u +%FT%T.%3NZ) \$ref \$old \$new" >>$(printf %q "$R/pushes.log"); done
-EOF
-  chmod +x "$R/remote.git/hooks/post-receive"
+  fixture_remote
   src=$R/src
   git init -q -b main "$src"
   g() {
@@ -1410,14 +1464,7 @@ EOF
   jq -n --arg key "$worker_key" '
     {schemaVersion:1, phase:"implement", issue:$key,
      filesChanged:["greet.ts","greet.test.ts"]}' >"$R/implement.json"
-  # Isolated from the operator's own jj configuration (fsmonitor.backend = "watchman" on a devbox
-  # that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this fixture's own
-  # identity, so jj falls back to its built-in defaults and `jj new`'s working-copy snapshot never
-  # registers this run's workspace with the operator's long-running watchman.
-  jj_setup_config=$R/jj-setup.toml
-  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
-  JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
-  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
+  fixture_workspace "$worker_key"
   body="Dispatch: $worker_key
 
 Adds \`greet(name)\` and \`bun greet.ts <name>\`.
@@ -1432,40 +1479,18 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 **Fast-follow:** none.
 
 **Chain:** not stacked."
-  jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
-    --arg key "$worker_key" --argjson number "$worker_pr" '
-    {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
-     headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
-     reviewDecision:"", head:{sha:$head, ref:$ref}, base:{ref:"main"},
-     statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
-                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
-    | {routes:[
-      {match:"^gh pr view", stdout:$pr},
-      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
-      {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
-      {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
-      {match:"^gh api .*(-X|--method) ?(POST|PATCH|PUT)", stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
-      {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
-      {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
-      {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
-      {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
-    ]}' >"$R/fixtures.json"
+  fixture_routes "$C1" "$body" "$worker_pr" "feat: greet() ($worker_key)"
   # The world the scorer reads: head is the PR's head, the implementer's code commit.
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
 }
 
-run_tester_proof() {
-  local name=$1 n=$2 index=$3 start=$4 state project port pr head version
-  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
-  # reads and whose newest test record it writes.
-  own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
-  worker_key=$(jq -r .issue "$R/fixture.json")
-  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
-  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
-  version=$(jq -r .implement.version "$R/fixture.json")
-  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+# tester_session NAME N PR HEAD VERSION runs the tester phase worker of the run's issue
+# $worker_key, as run_tester_proof and run_tester_reruns give it: the architect's assignment of PR
+# #PR at HEAD with the implement record VERSION, a daemon stand-in for the worker's `legion` tool,
+# and the pane the label's checkout's daemon would give the tester.
+tester_session() {
+  local name=$1 n=$2 pr=$3 head=$4 version=$5 state project port
   # The architect's assignment, with the Handoff line the daemon's task names the predecessor's
   # record in (packages/daemon/internal/workflow/effects.go).
   printf 'Architect → tester, %s. The implementer has finished: PR #%s (%s, repository %s) is at %s. Handoff: implement version %s (dispatch handoff-read --issue %s --phase implement --version %s). Test it and finish your phase.\n' \
@@ -1501,15 +1526,69 @@ run_tester_proof() {
     echo "GH_REPO=$worker_repo"
   } >"$R/pane.env"
   launch "$name"
+}
+
+run_tester_proof() {
+  local name=$1 n=$2 index=$3 start=$4 pr head version
+  # The run's own Dispatch, and its own issue on it, whose newest implement record the tester
+  # reads and whose newest test record it writes.
+  own_dispatch project
+  seed_ts tester-proof "$R/fixture.json"
+  worker_key=$(jq -r .issue "$R/fixture.json")
+  worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
+  seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
+  version=$(jq -r .implement.version "$R/fixture.json")
+  read -r pr head < <(jq -r '"\(.pr) \(.head)"' "$R/world.json")
+  tester_session "$name" "$n" "$pr" "$head" "$version"
   # What the run left on its issue: every handoff record, each with its body, and every result of
   # its checks, for testerProof.
   seed_ts capture-handoffs "$R/fixture.json" "$R"
   seed_ts capture-results "$R/fixture.json" "$R"
 }
 
+# The tester-reruns world of CASE under $R (tester-reruns-world.ts, through seed.ts): the run's own
+# issue, the first of project ACME on its own Dispatch, with one `before_merge` check c1 whose run
+# is a named test of the fixture repository; that repository, which `seed.ts tester-reruns` makes
+# in $R/src (main, and on legion/<key> the implementer's commit H0 and the case's push H1), pushed
+# to the run's remote; the issue workspace cloned from it; the results the case records at H0 and
+# H1 and the implementer's handoff record (`seed.ts tester-reruns-results`); and the PR at H1 the gh
+# stand-in serves, whose body carries the line of c1 Dispatch answered last. The PR number and the
+# commits' date follow worker_fixture's rule. Then the tester runs as in tester-proof, and what it
+# left on its issue is read back for testerReruns.
+run_tester_reruns() {
+  local name=$1 n=$2 index=$3 start=$4 reruns_case=$5 pr head version
+  pr=$((1000 + index))
+  own_dispatch project
+  seed_ts tester-reruns "$R/fixture.json" "$reruns_case" "$R/src" "$((start + index))"
+  worker_key=$(jq -r .issue "$R/fixture.json")
+  head=$(jq -r .h1 "$R/fixture.json")
+  {
+    fixture_remote &&
+      git -C "$R/src" push -q "$R/remote.git" main "legion/$worker_key" &&
+      : >"$R/pushes.log" &&
+      fixture_workspace "$worker_key"
+  } >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
+  seed_ts tester-reruns-results "$R/fixture.json"
+  fixture_routes "$head" "$(jq -r .body "$R/fixture.json")" "$pr" "feat: a name limit for widgets ($worker_key)"
+  # The world the scorer reads: head is the PR's head, H1, over the implementer's H0.
+  jq --arg repo "$worker_repo" --argjson pr "$pr" \
+    '{key:.issue, repo:$repo, pr:$pr, branch:("legion/" + .issue), head:.h1, h0, case, h1Output}' \
+    "$R/fixture.json" >"$R/world.json"
+  version=$(jq -r .implement.version "$R/fixture.json")
+  tester_session "$name" "$n" "$pr" "$head" "$version"
+  # What the run left on its issue: every handoff record, each with its body, and every result of
+  # c1, for testerReruns.
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
+  seed_ts capture-results "$R/fixture.json" "$R"
+}
+
+# The cases of tester-reruns, each its own world (tester-reruns-world.ts's RERUNS_CASES).
+reruns_cases=(implementer-pass-broken carried-own-pass clean-push)
+
 cmd_run() {
-  [ $# = 5 ] || fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <label> <n> <index> <start>"
-  local scenario=$1 n=$3 index=$4 start=$5 name
+  [ $# = 5 ] || { [ $# = 6 ] && [ "$1" = tester-reruns ]; } ||
+    fail "usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <label> <n> <index> <start>, or rig.sh run tester-reruns <label> <n> <index> <start> <case>"
+  local scenario=$1 n=$3 index=$4 start=$5 reruns_case=${6:-} name
   load_label "$2"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
@@ -1523,6 +1602,11 @@ cmd_run() {
       ;;
     *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
     esac
+  elif [ "$scenario" = tester-reruns ]; then
+    # A tester-reruns run's name carries its case too, and every case runs in one batch.
+    [[ " ${reruns_cases[*]} " == *" $reruns_case "* ]] ||
+      fail "a tester-reruns run's case is '$reruns_case', not one of ${reruns_cases[*]}"
+    name=$scenario-$reruns_case-${P##*/}-$n
   else
     name=$scenario-${P##*/}-$n
   fi
@@ -1536,6 +1620,7 @@ cmd_run() {
   ask-on-message) run_ask_on_message "$name" ;;
   measure-before-ask) run_measure_before_ask "$name" ;;
   tester-proof) run_tester_proof "$name" "$n" "$index" "$start" ;;
+  tester-reruns) run_tester_reruns "$name" "$n" "$index" "$start" "$reruns_case" ;;
   brainstorm) run_brainstorm "$name" ;;
   askgate) run_askgate "$name" ;;
   spec-writing | spec-rewrite) run_spec "$scenario" "$name" ;;
@@ -1559,10 +1644,10 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
-  local runs=$2 label n index=0 start
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|tester-reruns|brainstorm|askgate|spec-writing|spec-rewrite> <runs> <label>..."
+  local runs=$2 label n index=0 start reruns_case
   batch_scenario=$1
-  case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite) ;; *) fail "unknown scenario $batch_scenario" ;; esac
+  case $batch_scenario in ask-on-message | measure-before-ask | tester-proof | tester-reruns | brainstorm | askgate | spec-writing | spec-rewrite) ;; *) fail "unknown scenario $batch_scenario" ;; esac
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
     facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
     *) fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')" ;;
@@ -1595,10 +1680,18 @@ cmd_batch() {
   on_exit stop_batch
   services_up
   start=$(date +%s)
+  # A tester-reruns batch runs each of its cases <runs> times for each label.
   for label in "$@"; do
     for n in $(seq "$first" $((first + runs - 1))); do
-      index=$((index + 1))
-      printf '%s %s %s %s %s\n' "$batch_scenario" "$label" "$n" "$index" "$start"
+      if [ "$batch_scenario" = tester-reruns ]; then
+        for reruns_case in "${reruns_cases[@]}"; do
+          index=$((index + 1))
+          printf '%s %s %s %s %s %s\n' "$batch_scenario" "$label" "$n" "$index" "$start" "$reruns_case"
+        done
+      else
+        index=$((index + 1))
+        printf '%s %s %s %s %s\n' "$batch_scenario" "$label" "$n" "$index" "$start"
+      fi
     done
   done | xargs -r -P "${SKILL_SCENARIOS_PARALLEL:-5}" -L 1 bash "$here/rig.sh" run &
   runs_pid=$!

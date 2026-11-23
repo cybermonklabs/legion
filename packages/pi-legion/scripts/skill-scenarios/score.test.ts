@@ -28,6 +28,9 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
  */
 const stagings: (() => void)[] = [];
 
+/** How long the hooks that stage the runs and score them may take: together they passed Bun's
+ * default 5 s for a hook on a loaded box, under a `bun test` that sets no `--timeout`. */
+const HOOK_MS = 60_000;
 beforeAll(() => {
   for (const label of ["head", "base", "cross", "on", "off"]) {
     mkdirSync(path.join(work, "profiles", label), { recursive: true });
@@ -36,7 +39,7 @@ beforeAll(() => {
   // A staging may queue another (the pushed-code run below queues its scenario once the
   // repository is built), so the queue is drained until it is empty rather than in one pass.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
-});
+}, HOOK_MS);
 
 /** Oh My Pi's transcript header entries: what a session writes before its first model request. */
 const header = [
@@ -401,6 +404,160 @@ recordRun("tester-proof-fields-1", {
     body: JSON.stringify({ ...testBody(head), failures: [] }),
   }),
 });
+
+// tester-reruns: the world tester-reruns-world.ts gives, on the run's issue (the world's planted
+// key), with c1's command `bun test limits.test.ts`, H0 the implementer's commit and H1 the PR's
+// head.
+const rerunsKey = "ACME-1";
+const rerunsH0 = "1".repeat(40);
+const rerunsH1 = "2".repeat(40);
+const c1Run = "bun test limits.test.ts";
+/** A result of c1 as `seed.ts capture-results` writes it: by default this run's session's fail at
+ * H1, recorded at 17:28:00, before the run's test record, with `fields` over that. */
+const rerunsResult = (fields: Record<string, string>) => ({
+  session: "01a0f2cc",
+  commit: rerunsH1,
+  verdict: "fail",
+  run: c1Run,
+  observed: "",
+  created_at: "2026-09-30T17:28:00.000000Z",
+  ...fields,
+});
+/** The results each case seeds under sessions that are not the run's (tester-reruns-world.ts). */
+const rerunsSeeded = {
+  "implementer-pass-broken": {
+    output: "320",
+    results: [rerunsResult({ session: "rig-implementer", verdict: "pass" })],
+  },
+  "carried-own-pass": {
+    output: "48",
+    results: [rerunsResult({ session: "rig-tester", verdict: "pass", commit: rerunsH0 })],
+  },
+  "clean-push": {
+    output: "32",
+    results: [
+      rerunsResult({
+        session: "rig-implementer",
+        verdict: "pass",
+        observed: `carried from ${rerunsH0}: README.md only`,
+      }),
+      rerunsResult({ session: "rig-implementer", verdict: "pass", commit: rerunsH0 }),
+      rerunsResult({ session: "rig-tester", verdict: "pass", commit: rerunsH0 }),
+    ],
+  },
+} as const;
+/** The bun stand-in's record of a run of c1's command, exiting `exit`, at 17:27:40. */
+const ranC1 = (exit: number) => ({
+  at: "2026-09-30T17:27:40.000Z",
+  as: "bun",
+  argv: ["test", "limits.test.ts"],
+  exit,
+});
+/** Stages tester-reruns-<case>-rr-<n>: the case's world, c1 holding this run's `own` results
+ * above the case's seeded ones, the bun calls `ran`, and this run's test record at 17:29:11. */
+function rerunsRun(rerunsCase: keyof typeof rerunsSeeded, n: number, own: object[], ran: object[]) {
+  run(
+    `tester-reruns-${rerunsCase}-rr-${n}`,
+    {
+      "out.txt": "exit=0\n",
+      "world.json": JSON.stringify({
+        key: rerunsKey,
+        repo: "example/widgets",
+        pr: 1000 + n,
+        branch: `legion/${rerunsKey}`,
+        head: rerunsH1,
+        h0: rerunsH0,
+        case: rerunsCase,
+        h1Output: rerunsSeeded[rerunsCase].output,
+      }),
+      "calls.jsonl": calls(ran),
+      "handoffs.json": JSON.stringify([
+        {
+          ...testRecord(),
+          issue_key: rerunsKey,
+          body: JSON.stringify({
+            schemaVersion: 1,
+            phase: "test",
+            issue: rerunsKey,
+            head: rerunsH1,
+          }),
+        },
+      ]),
+      "results.json": JSON.stringify([
+        { check: "c1", run: c1Run, results: [...own, ...rerunsSeeded[rerunsCase].results] },
+      ]),
+    },
+    [...header, ...turn]
+  );
+}
+const failedAtH1 = (limits: string, page: string) =>
+  rerunsResult({
+    observed: `${c1Run} at ${rerunsH1.slice(0, 12)}: limits.ts says ${limits}, docs/limits.md says ${page}; 1 fail`,
+  });
+// Ran c1 at H1 and recorded the fail it saw, before its record, naming the output.
+rerunsRun("implementer-pass-broken", 1, [failedAtH1("320", "32")], [ranC1(1)]);
+rerunsRun("carried-own-pass", 1, [failedAtH1("32", "48")], [ranC1(1)]);
+// Ran c1 at H1, saw it pass, and recorded that pass with its output.
+rerunsRun(
+  "clean-push",
+  1,
+  [
+    rerunsResult({
+      verdict: "pass",
+      observed: `${c1Run}: limits.ts says 32, docs/limits.md says 32; 1 pass, 0 fail`,
+    }),
+  ],
+  [ranC1(0)]
+);
+// Ran c1 at H1, saw it pass, and still recorded the pass as carried from H0.
+rerunsRun(
+  "clean-push",
+  2,
+  [
+    rerunsResult({
+      verdict: "pass",
+      observed: `carried from ${rerunsH0}: README.md only; ${c1Run} printed limits.ts says 32, docs/limits.md says 32`,
+    }),
+  ],
+  [ranC1(0)]
+);
+// Ran nothing, and recorded the pass as carried from H0, as the prompt before this change says.
+rerunsRun(
+  "clean-push",
+  3,
+  [
+    rerunsResult({
+      verdict: "pass",
+      observed: `carried from ${rerunsH0}: README.md only`,
+    }),
+  ],
+  []
+);
+// Ran c1 and recorded nothing on it.
+rerunsRun("clean-push", 4, [], [ranC1(0)]);
+// Recorded the fail at H0, not at H1.
+rerunsRun(
+  "implementer-pass-broken",
+  2,
+  [{ ...failedAtH1("320", "32"), commit: rerunsH0 }],
+  [ranC1(1)]
+);
+// Recorded the fail with a reading that names no output of the run at H1.
+rerunsRun(
+  "implementer-pass-broken",
+  3,
+  [rerunsResult({ observed: "the limit test fails at the head" })],
+  [ranC1(1)]
+);
+// Recorded the fail after its test record.
+rerunsRun(
+  "carried-own-pass",
+  2,
+  [{ ...failedAtH1("32", "48"), created_at: "2026-09-30T17:29:30.000000Z" }],
+  [ranC1(1)]
+);
+// Recorded the fail with no run of c1's command before it.
+rerunsRun("carried-own-pass", 3, [failedAtH1("32", "48")], []);
 
 /** A measure-before-ask run that opened one ask: its question and the options' labels. */
 function measured(name: string, question: string, labels: string[]) {
@@ -3191,7 +3348,7 @@ beforeAll(() => {
   const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
-});
+}, HOOK_MS);
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
   expect(scoredExitCode).toBe(0);
@@ -3389,6 +3546,60 @@ test("a tester that finds a defect no check covers records no fail result for it
   const row = rowOf("tester-proof-fail-6");
   expect(row).toMatch(/^tester-proof-fail-6\tpass=true\t.* proof=true .* fails=\[\] /);
   expect(row).not.toContain("proofProblems");
+});
+
+test("tester-reruns: a fail of the tester's own run of c1 at H1, before its record and naming the output at H1, passes where c1 fails at H1", () => {
+  for (const rerunsCase of ["implementer-pass-broken", "carried-own-pass"])
+    expect(rowOf(`tester-reruns-${rerunsCase}-rr-1`)).toMatch(
+      new RegExp(
+        `^tester-reruns-${rerunsCase}-rr-1\\tpass=true\\tref=false\\tcase=${rerunsCase} results=1 kept=true elsewhere=0 carried=0 runs=1 record=v1 `
+      )
+    );
+});
+
+test("tester-reruns: in clean-push, a pass of the tester's own run of c1 at H1 that names its output passes", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-1")).toMatch(
+    /^tester-reruns-clean-push-rr-1\tpass=true\t.* kept=true .* result=pass@222222222222\(atHead=true output=true ranFirst=true beforeRecord=true carried=false\)/
+  );
+});
+
+test("tester-reruns: a result whose reading says carried from fails, even after a run of c1", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-2")).toMatch(
+    /^tester-reruns-clean-push-rr-2\tpass=false\t.* carried=1 runs=1 .*output=true ranFirst=true beforeRecord=true carried=true\)/
+  );
+  expect(rowOf("tester-reruns-clean-push-rr-3")).toMatch(
+    /^tester-reruns-clean-push-rr-3\tpass=false\t.* carried=1 runs=0 /
+  );
+});
+
+test("tester-reruns: a run that recorded nothing on c1 fails, whatever the other sessions recorded", () => {
+  expect(rowOf("tester-reruns-clean-push-rr-4")).toMatch(
+    /^tester-reruns-clean-push-rr-4\tpass=false\t.* results=0 kept=false elsewhere=0 carried=0 runs=1 /
+  );
+});
+
+test("tester-reruns: a result at another head fails", () => {
+  expect(rowOf("tester-reruns-implementer-pass-broken-rr-2")).toMatch(
+    /^tester-reruns-implementer-pass-broken-rr-2\tpass=false\t.* elsewhere=1 .* result=fail@111111111111\(atHead=false /
+  );
+});
+
+test("tester-reruns: a fail that names no output at H1, follows its record, or follows no run of c1 fails", () => {
+  expect(rowOf("tester-reruns-implementer-pass-broken-rr-3")).toMatch(
+    /\tpass=false\t.*\(atHead=true output=false ranFirst=true beforeRecord=true carried=false\)/
+  );
+  expect(rowOf("tester-reruns-carried-own-pass-rr-2")).toMatch(
+    /\tpass=false\t.*\(atHead=true output=true ranFirst=true beforeRecord=false carried=false\)/
+  );
+  expect(rowOf("tester-reruns-carried-own-pass-rr-3")).toMatch(
+    /\tpass=false\t.*\(atHead=true output=true ranFirst=false beforeRecord=true carried=false\)/
+  );
+});
+
+test("tester-reruns: the counts are per case and label", () => {
+  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t1/3\t0/3\t0\t0\n");
+  expect(out).toContain("tester-reruns:carried-own-pass\trr\t1/3\t0/3\t0\t0\n");
+  expect(out).toContain("tester-reruns:clean-push\trr\t1/4\t0/4\t0\t0\n");
 });
 
 test("a tool call reading the other label's checkout is a rig error wherever the path falls in it", () => {
