@@ -732,7 +732,7 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ ...call, body: `{"a":"${filler}x"}` }).success).toBe(true);
     for (const body of ["[1]", '"text"', "null", "{not json", "{} {}"]) {
       expect(refusals({ ...call, body }), body).toEqual([
-        'body is not one JSON object: a handoff body is a JSON object such as {"schemaVersion":1}',
+        'body is not one JSON object: a handoff body is a JSON object such as {"head":"<the commit your phase ended at>","note":"<one paragraph for the next role>"}',
       ]);
     }
     for (const phase of ["Implement", "1plan", "", "a".repeat(33), "plan/x"]) {

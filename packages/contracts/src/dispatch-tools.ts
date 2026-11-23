@@ -674,7 +674,7 @@ function handoffProblem(value: unknown): string | undefined {
   if (typeof phase === "string" && !HANDOFF_PHASE_PATTERN.test(phase)) return HANDOFF_PHASE_RULE;
   if (typeof body !== "string") return undefined;
   if (!isJsonObjectText(body)) {
-    return 'body is not one JSON object: a handoff body is a JSON object such as {"schemaVersion":1}';
+    return 'body is not one JSON object: a handoff body is a JSON object such as {"head":"<the commit your phase ended at>","note":"<one paragraph for the next role>"}';
   }
   return undefined;
 }
@@ -2425,7 +2425,7 @@ export const dispatchToolSpecs = [
     example: {
       issue: "DSP-1",
       phase: "implement",
-      body: '{"schemaVersion":1,"phase":"implement","issue":"DSP-1"}',
+      body: '{"head":"0123456789abcdef0123456789abcdef01234567","note":"Run the checks with bun test src/x.test.ts in packages/x."}',
     },
     description:
       "Record this session's handoff for one phase of an issue: the body, one JSON object, is " +

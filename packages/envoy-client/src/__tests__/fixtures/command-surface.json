@@ -759,7 +759,7 @@
       "tool": "dispatch_handoff_write",
       "call": "valid",
       "args": {
-        "body": "{\"schemaVersion\":1,\"phase\":\"implement\",\"issue\":\"DSP-1\"}",
+        "body": "{\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"note\":\"Run the checks with bun test src/x.test.ts in packages/x.\"}",
         "issue": "DSP-1",
         "phase": "implement"
       },
@@ -783,7 +783,7 @@
                 "session_title": "Record the command surface"
               }
             },
-            "body": "{\"schemaVersion\":1,\"phase\":\"implement\",\"issue\":\"DSP-1\"}"
+            "body": "{\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"note\":\"Run the checks with bun test src/x.test.ts in packages/x.\"}"
           }
         }
       ],

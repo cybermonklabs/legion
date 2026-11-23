@@ -477,7 +477,7 @@ var DispatchTools = []DispatchTool{
 			{Name: "phase", Kind: ToolFieldString, Required: true, Description: "The phase the handoff ends: a lowercase slug such as plan, implement, test or review."},
 			{Name: "body", Kind: ToolFieldString, Required: true, Description: "The handoff: one JSON object, at most 262144 bytes, stored and read back exactly as sent."},
 		},
-		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"phase\":\"implement\",\"body\":\"{\\\"schemaVersion\\\":1,\\\"phase\\\":\\\"implement\\\",\\\"issue\\\":\\\"DSP-1\\\"}\"}"),
+		Example: json.RawMessage("{\"issue\":\"DSP-1\",\"phase\":\"implement\",\"body\":\"{\\\"head\\\":\\\"0123456789abcdef0123456789abcdef01234567\\\",\\\"note\\\":\\\"Run the checks with bun test src/x.test.ts in packages/x.\\\"}\"}"),
 	},
 	{
 		Name:        "dispatch_handoff_read",
