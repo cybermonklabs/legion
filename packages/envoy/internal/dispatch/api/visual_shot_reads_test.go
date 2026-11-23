@@ -194,6 +194,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/me/documents/{id}/read":              "/api/v1/me/documents/" + c.spec + "/read",
 		"/api/v1/me/replies":                          "/api/v1/me/replies",
 		"/api/v1/me/state":                            "/api/v1/me/state",
+		"/api/v1/people/{login}/nodes":                "/api/v1/people/alice/nodes?limit=50&offset=0",
 		"/api/v1/priorities":                          "/api/v1/priorities",
 		"/api/v1/priorities/{id}/history":             "/api/v1/priorities/" + c.priority + "/history",
 		"/api/v1/projects":                            "/api/v1/projects",
