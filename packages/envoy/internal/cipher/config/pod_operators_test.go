@@ -177,6 +177,22 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			names: []string{"BROKER_EXCHANGE_ACCOUNTS maps it to grace@example.com"},
 		},
 		{
+			name: "a BROKER_EXCHANGE_ACCOUNTS entry lists it with no person",
+			env: func() map[string]string {
+				e := withK8sIssuer()
+				e["BROKER_SERVICE_LOGINS"] = adaLoginService + "=" + adaAccount
+				e["BROKER_EXCHANGE_K8S_AUDIENCE"] = "dispatch"
+				e["BROKER_EXCHANGE_ACCOUNTS"] = adaAccount + "=="
+				return e
+			},
+			reachable: func(cfg Config) (string, bool) {
+				entries := cfg.ExchangeAccounts
+				return "BROKER_EXCHANGE_ACCOUNTS lists " + adaAccount + " with no person and no project",
+					len(entries) == 1 && entries[0].Account == adaAccount && entries[0].Person == "" && entries[0].Project == ""
+			},
+			names: []string{"BROKER_EXCHANGE_ACCOUNTS lists it with no person, so its tokens act as the account itself"},
+		},
+		{
 			name: "a BROKER_NATS_SERVICES entry names it",
 			env: func() map[string]string {
 				e := withK8sIssuer()

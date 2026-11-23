@@ -709,7 +709,8 @@ const DispatchLoginChanged = ${JSON.stringify(DISPATCH_LOGIN_CHANGED)}
 const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
-// names a session and a service but no person: the machine holding it has signed nobody in.
+// names a session and a service but no person under the project scope person: the machine
+// holding it has signed nobody in.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
