@@ -4,7 +4,7 @@ import { delimiter, join } from "node:path";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
-import { handOverMessage } from "../local-instance-support";
+import { handOverMessage } from "../local-instance-hand-over";
 import { DatabaseUrlRefused, splitDatabaseUrl } from "../pg-url";
 import { resetSession, sql, sqlAt } from "../psql";
 

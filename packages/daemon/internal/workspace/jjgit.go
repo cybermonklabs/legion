@@ -156,10 +156,35 @@ func RunCommand(ctx context.Context, start procgroup.Starter, budget time.Durati
 }
 
 // gitLockReports are the ways a git or jj failure names the lock file it could not take: jj's git
-// backend (gitoxide), and git's own lockfile API, which every git jj runs reports through.
-var gitLockReports = []*regexp.Regexp{
-	regexp.MustCompile(`The lockfile at '([^']+)' might need manual deletion`),
-	regexp.MustCompile(`Unable to create '([^']+)': File exists`),
+// backend (gitoxide), and git's own lockfile API, which every git jj runs reports through. Each
+// writes the path between single quotes and escapes nothing in it, so the path runs to the
+// message's fixed text after it, not to the next quote, and may hold any byte a path can, a `'`
+// or a line break among them. git writes `Unable to create '<path>': <strerror>` for every errno,
+// and only EEXIST's ends `': File exists`, so a match can run from an earlier report's opening,
+// closed by another errno's text, to this one's close: the path is what follows the last opening
+// inside it.
+var gitLockReports = []gitLockReport{
+	lockReport("The lockfile at '", "' might need manual deletion"),
+	lockReport("Unable to create '", "': File exists"),
+}
+
+// gitLockReport is one way a failure names a lock: the text before the path, and the pattern that
+// captures the path up to the report's fixed text after it.
+type gitLockReport struct {
+	opening string
+	pattern *regexp.Regexp
+}
+
+func lockReport(opening, closing string) gitLockReport {
+	return gitLockReport{opening, regexp.MustCompile(regexp.QuoteMeta(opening) + `((?s:.+?))` + regexp.QuoteMeta(closing))}
+}
+
+// path is the lock a match's capture names: the text after the last opening inside it.
+func (report gitLockReport) path(capture string) string {
+	if at := strings.LastIndex(capture, report.opening); at >= 0 {
+		return capture[at+len(report.opening):]
+	}
+	return capture
 }
 
 // staleGitLockNoteFile is the note's wording, held in a data file beside this one rather than in
@@ -199,9 +224,9 @@ var staleGitLockNoteText = strings.TrimSuffix(staleGitLockNoteFile, "\n")
 func StaleGitLockNote(output string, now time.Time) string {
 	var locks, notes []string
 	for _, report := range gitLockReports {
-		for _, match := range report.FindAllStringSubmatch(output, -1) {
-			if !slices.Contains(locks, match[1]) {
-				locks = append(locks, match[1])
+		for _, match := range report.pattern.FindAllStringSubmatch(output, -1) {
+			if lock := report.path(match[1]); !slices.Contains(locks, lock) {
+				locks = append(locks, lock)
 			}
 		}
 	}

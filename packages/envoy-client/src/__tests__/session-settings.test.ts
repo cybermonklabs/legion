@@ -13,6 +13,7 @@ import {
   sessionEnvoySettings,
   sessionSettings,
 } from "../session-settings";
+import { shellQuote } from "../shell-quote";
 
 // Each section resolves one `credential` object. What this file is about is which file and which
 // variable a section reads, so a resolution is compared with that credential flattened to the
@@ -39,11 +40,6 @@ function withToken(
 }
 
 const tempDir = temporaryDirectories("session-settings");
-
-/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 function writeFile(file: string, contents: unknown): string {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -403,7 +399,7 @@ describe("sessionDispatchSettings", () => {
     expect({ ...read, dispatch: withToken(read.dispatch) }).toEqual({
       dispatch: { enabled: true, url: "https://dispatch.example", token: FILE_TOKEN },
       warnings: [
-        `${old} is not read: mkdir -p ${path.join(cwd, ".envoy")} && mv ${old} ${path.join(cwd, ".envoy", "envoy.json")}`,
+        `${old} is not read: mkdir -p ${shellQuote(path.join(cwd, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(path.join(cwd, ".envoy", "envoy.json"))}`,
       ],
       missing: null,
     });
@@ -551,7 +547,7 @@ describe("the OpenCode-era file", () => {
       token: FILE_TOKEN,
     });
     expect(settings.notice).toBe(
-      `${old} is not read: mkdir -p ${path.join(cwd, ".envoy")} && mv ${old} ${path.join(cwd, ".envoy", "envoy.json")}`
+      `${old} is not read: mkdir -p ${shellQuote(path.join(cwd, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(path.join(cwd, ".envoy", "envoy.json"))}`
     );
   });
 

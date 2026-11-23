@@ -10,6 +10,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/shellquote"
 )
 
 // The parts of a Tailscale Service host: two or more pods, each its own tailnet node registered
@@ -333,7 +334,7 @@ func tailnetAdvertiserScript(h tailnetServiceHost) string {
 	}
 	var b strings.Builder
 	for _, v := range vars {
-		fmt.Fprintf(&b, "%s=%s\n", v.name, core.ShellQuote(v.value))
+		fmt.Fprintf(&b, "%s=%s\n", v.name, shellquote.Quote(v.value))
 	}
 	return b.String() + tailnetAdvertiserBody
 }
@@ -565,7 +566,7 @@ const (
 // logging out. With no node id file (tailscaled never ran as a node) it writes no draining file:
 // there is no node to keep from being advertised.
 func tailnetPreStopScript(h tailnetServiceHost) string {
-	q := core.ShellQuote
+	q := shellquote.Quote
 	socket, draining := q("--socket="+h.paths.socket()), q(h.paths.draining())
 	return fmt.Sprintf(`read -r id _ 2>/dev/null <%[1]s && printf '%%s %%s\n' "$id" "$(date -u +%%s)" >%[2]s.tmp && mv %[2]s.tmp %[2]s; rm -f %[3]s
 timeout %[4]d tailscale %[5]s serve drain %[6]s
@@ -605,7 +606,7 @@ func tailnetServiceStartup(h tailnetServiceHost) *corev1.ProbeArgs {
 func tailnetServiceReadiness(h tailnetServiceHost) *corev1.ProbeArgs {
 	return &corev1.ProbeArgs{
 		Exec: &corev1.ExecActionArgs{Command: pulumi.StringArray{
-			pulumi.String("/bin/sh"), pulumi.String("-c"), pulumi.String("test -e " + core.ShellQuote(h.paths.ready())),
+			pulumi.String("/bin/sh"), pulumi.String("-c"), pulumi.String("test -e " + shellquote.Quote(h.paths.ready())),
 		}},
 		PeriodSeconds:    pulumi.Int(5),
 		FailureThreshold: pulumi.Int(1),

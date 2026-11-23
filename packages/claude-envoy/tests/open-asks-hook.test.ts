@@ -2,8 +2,11 @@ import { expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { shellQuote } from "@legion/envoy-client/shell-quote"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
-import { shellQuote } from "./channel-session-harness"
+// The hook writes each export's value between single quotes, always (the harness's shellQuote);
+// the move notice quotes a path only when a shell needs it (envoy-client's shellQuote).
+import { shellQuote as singleQuoted } from "./channel-session-harness"
 import { unresolvedNames } from "./unresolved-names"
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
@@ -345,7 +348,7 @@ test("names a checkout's unread .opencode/envoy.json and still summarises the as
       dispatch: { enabled: true, serverUrl: "http://127.0.0.1:1", token: checkoutToken },
     }),
   )
-  const rename = `envoy: ${old} is not read: mkdir -p ${join(checkout, ".envoy")} && mv ${old} ${join(checkout, ".envoy", "envoy.json")}\n`
+  const rename = `envoy: ${old} is not read: mkdir -p ${shellQuote(join(checkout, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(join(checkout, ".envoy", "envoy.json"))}\n`
   try {
     const result = await runHook(
       { ...hookInput, cwd: checkout },
@@ -393,7 +396,7 @@ test("names Claude Code as the dispatch host and hands on the session's envoy.js
       [
         "export FROM_ANOTHER_HOOK=1",
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
+        `export ENVOY_CONFIG_FILE=${singleQuoted(`${scratch}/.config/legion/envoy.json`)}`,
         "",
       ].join("\n"),
     )
@@ -484,7 +487,7 @@ test("reads and hands on Claude Code's own envoy.json, never the ENVOY_CONFIG_FI
     expect(result.exitCode).toBe(0)
     expect(requests).toEqual([`Bearer ${DISPATCH_TOKEN} /api/v1/asks/open?author_session=s-1`])
     expect(await readFile(envFile, "utf8")).toContain(
-      `export ENVOY_CONFIG_FILE=${shellQuote(join(configDirectory, "envoy.json"))}`,
+      `export ENVOY_CONFIG_FILE=${singleQuoted(join(configDirectory, "envoy.json"))}`,
     )
   } finally {
     server.stop(true)
@@ -530,7 +533,7 @@ test("writes the host and envoy.json lines once however many SessionStarts write
       [
         "export FROM_ANOTHER_HOOK=1",
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
+        `export ENVOY_CONFIG_FILE=${singleQuoted(`${scratch}/.config/legion/envoy.json`)}`,
         "",
       ].join("\n"),
     )
@@ -657,8 +660,8 @@ test("writes the pane's attribution overlay and exports the chain layering it ov
     expect(await readFile(envFile, "utf8")).toBe(
       [
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
-        `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}`,
+        `export ENVOY_CONFIG_FILE=${singleQuoted(`${scratch}/.config/legion/envoy.json`)}`,
+        `export JJ_CONFIG=${singleQuoted(`${userConfig}:${overlay}`)}`,
         "",
       ].join("\n"),
     )
@@ -698,7 +701,7 @@ test("writes the pane's role after the session line, in the unscoped table and t
     expect(result.exitCode).toBe(0)
     const overlay = join(stateDir, "omp-attribution-s-1.toml")
     expect(await readFile(envFile, "utf8")).toContain(
-      `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}\n`,
+      `export JJ_CONFIG=${singleQuoted(`${userConfig}:${overlay}`)}\n`,
     )
     expect(await readFile(overlay, "utf8")).toBe(
       unscopedTable("implementer") +
@@ -755,7 +758,7 @@ test("writes the session line alone when the daemon named no issue key", async (
     expect(result.exitCode).toBe(0)
     const overlay = join(stateDir, "omp-attribution-s-1.toml")
     expect(await readFile(envFile, "utf8")).toContain(
-      `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}\n`,
+      `export JJ_CONFIG=${singleQuoted(`${userConfig}:${overlay}`)}\n`,
     )
     expect(await readFile(overlay, "utf8")).toBe(unscopedTable())
   } finally {
@@ -788,7 +791,7 @@ test("writes no overlay and no JJ_CONFIG for a session that is no Legion pane", 
     expect(await readFile(envFile, "utf8")).toBe(
       [
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
+        `export ENVOY_CONFIG_FILE=${singleQuoted(`${scratch}/.config/legion/envoy.json`)}`,
         "",
       ].join("\n"),
     )
@@ -837,8 +840,8 @@ test("keeps one JJ_CONFIG export, naming the chain this run resolved, when the s
       [
         "export FROM_ANOTHER_HOOK=1",
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
-        `export JJ_CONFIG=${shellQuote(`${laterConfig}:${join(stateDir, `omp-attribution-${hookInput.session_id}.toml`)}`)}`,
+        `export ENVOY_CONFIG_FILE=${singleQuoted(`${scratch}/.config/legion/envoy.json`)}`,
+        `export JJ_CONFIG=${singleQuoted(`${laterConfig}:${join(stateDir, `omp-attribution-${hookInput.session_id}.toml`)}`)}`,
         "",
       ].join("\n"),
     )
@@ -902,7 +905,7 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
     expect(await readFile(envFile, "utf8")).toBe(
       [
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
+        `export ENVOY_CONFIG_FILE=${singleQuoted(`${scratch}/.config/legion/envoy.json`)}`,
         "",
       ].join("\n"),
     )
@@ -943,7 +946,7 @@ test("keeps the session's own export when a later run of the same id has no jj t
     )
     expect((await runHook(hookInput, env(working))).exitCode).toBe(0)
     expect(await readFile(envFile, "utf8")).toContain(
-      `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}\n`,
+      `export JJ_CONFIG=${singleQuoted(`${userConfig}:${overlay}`)}\n`,
     )
 
     // The resume: same session id, same file, and a jj that never answers.
@@ -953,8 +956,8 @@ test("keeps the session's own export when a later run of the same id has no jj t
     expect(await readFile(envFile, "utf8")).toBe(
       [
         "export DISPATCH_HOST=claude",
-        `export ENVOY_CONFIG_FILE=${shellQuote(`${scratch}/.config/legion/envoy.json`)}`,
-        `export JJ_CONFIG=${shellQuote(`${userConfig}:${overlay}`)}`,
+        `export ENVOY_CONFIG_FILE=${singleQuoted(`${scratch}/.config/legion/envoy.json`)}`,
+        `export JJ_CONFIG=${singleQuoted(`${userConfig}:${overlay}`)}`,
         "",
       ].join("\n"),
     )

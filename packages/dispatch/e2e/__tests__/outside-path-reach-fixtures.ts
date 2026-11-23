@@ -40,10 +40,10 @@ import { mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { shellQuote } from "@legion/envoy-client/shell-quote";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { udp } from "bun";
-import { shellQuote } from "../local-instance-support";
 import type { Answers, Seen } from "./outside-path-reach-origin";
 
 export const script = fileURLToPath(

@@ -381,7 +381,7 @@ trap 'exit 143' TERM
 # instance_log_tail: the last ten lines the instance logged before its hand-over message, which a
 # failed start prints. That message is the one place the instance writes DATABASE_URL (the
 # hand-over e2e/local-instance.ts prints in `main`, which `handOverMessage` of
-# packages/dispatch/e2e/local-instance-support.ts builds and opens with "Dispatch local instance
+# packages/dispatch/e2e/local-instance-hand-over.ts builds and opens with "Dispatch local instance
 # is up.": its `Database` line, and the `DATABASE_URL=` prefix of the command it hands over, both
 # without the password a run gave, which it prints nowhere), and it writes the signed-in line in
 # the same message, so a start that fails after it is a race this run can lose: the line read

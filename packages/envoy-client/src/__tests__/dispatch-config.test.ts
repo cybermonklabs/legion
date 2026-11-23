@@ -15,6 +15,7 @@ import {
   sessionDispatchSettings,
   sessionDispatchUrl,
 } from "../session-settings";
+import { shellQuote } from "../shell-quote";
 
 const tempDir = temporaryDirectories("dispatch-config");
 
@@ -30,10 +31,6 @@ const PROFILE_TOKEN = fixtureSecret("profile");
 const USER_TOKEN = fixtureSecret("user");
 /** The Dispatch bearer a checkout's `.envoy/envoy.json` names. */
 const REPO_TOKEN = fixtureSecret("repo");
-/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 /** Writes the neutral file, `$HOME/.config/legion/envoy.json`, which a command reads when it is
  * handed no file and runs under no harness. Returns its path. */

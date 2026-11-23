@@ -9,11 +9,11 @@ import { fileURLToPath } from "node:url";
 import { harnessVariables } from "./harness-ports";
 import { harnessProcessCount } from "./harness-processes";
 import { type Harness, startHarness } from "./harness-start";
+import { handOverMessage } from "./local-instance-hand-over";
 import {
   agentViewRefusal,
   awaitPostgres,
   databaseUrlRefusal,
-  handOverMessage,
   Interrupted,
   type PostgresProbe,
   Supervisor,

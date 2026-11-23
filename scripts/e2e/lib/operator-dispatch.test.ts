@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { shellQuote } from "../../../packages/envoy-client/src/shell-quote.ts";
 import { operatorDispatch } from "./operator-dispatch";
 
 const dir = temporaryDirectory("operator-dispatch-test");
@@ -211,7 +212,7 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
   test("a checkout's .opencode/envoy.json is named on stderr with its rename, and the user file's server is used", () => {
     expect(inOldCheckout.exitCode).toBe(0);
     expect(inOldCheckout.stderr.toString()).toBe(
-      `dispatch: ${old} is not read: mkdir -p ${join(oldCheckout, ".envoy")} && mv ${old} ${join(oldCheckout, ".envoy", "envoy.json")}\n`
+      `dispatch: ${old} is not read: mkdir -p ${shellQuote(join(oldCheckout, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(join(oldCheckout, ".envoy", "envoy.json"))}\n`
     );
     expect(inOldCheckout.stdout.toString()).toBe(
       `${join(home, ".config", "legion", "envoy.json")}|https://dispatch.internal.example|neutral-1|\n`

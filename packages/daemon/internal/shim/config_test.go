@@ -11,12 +11,18 @@ import (
 )
 
 // --connect names the daemon's worker stream in one of its two address families. Anything else
-// is refused naming the flag and the value, before the shim dials anything.
+// is refused naming the flag and the value, before the shim dials anything. A unix address is the
+// path after `unix://` as written, as the listener binds it: a '?', '#', '%' or space in the
+// state directory's path, which a URL would read as a query, a fragment or an escape, stays in it.
 func TestParseAddressAcceptsTheListenersTwoFamiliesOnly(t *testing.T) {
 	for _, tc := range []struct {
 		value, network, address string
 	}{
 		{"unix:///run/legion/worker-stream.sock", "unix", "/run/legion/worker-stream.sock"},
+		{"unix:///run/s.sock?x=1", "unix", "/run/s.sock?x=1"},
+		{"unix:///tmp/tmp-q?x/state/worker-stream.sock", "unix", "/tmp/tmp-q?x/state/worker-stream.sock"},
+		{"unix:///tmp/a#b/worker-stream.sock", "unix", "/tmp/a#b/worker-stream.sock"},
+		{"unix:///tmp/100%25 done/worker-stream.sock", "unix", "/tmp/100%25 done/worker-stream.sock"},
 		{"tcp://legion-daemon.legion.svc:13371", "tcp", "legion-daemon.legion.svc:13371"},
 		{"tcp://127.0.0.1:1/", "tcp", "127.0.0.1:1"},
 		{"tcp://[::1]:65535", "tcp", "[::1]:65535"},
@@ -33,7 +39,7 @@ func TestParseAddressAcceptsTheListenersTwoFamiliesOnly(t *testing.T) {
 		"unix:/run/legion/worker-stream.sock",
 		"unix:///",
 		"unix:///run/legion/",
-		"unix:///run/s.sock?x=1",
+		"unix://",
 		"tcp://127.0.0.1",
 		"tcp://127.0.0.1:",
 		"tcp://127.0.0.1:0",

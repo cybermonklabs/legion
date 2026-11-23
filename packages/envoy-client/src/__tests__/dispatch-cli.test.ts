@@ -8,6 +8,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetShownPictures } from "../dispatch-picture-tools";
+import { shellQuote } from "../shell-quote";
 
 interface Recorded {
   readonly method: string;
@@ -19,10 +20,6 @@ const makeDirectory = temporaryDirectories("dispatch-cli");
 
 /** The Dispatch bearer each command is handed. */
 const TOKEN = fixtureSecret("dsp");
-/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
@@ -2080,7 +2077,7 @@ describe("the dispatch CLI's envoy.json", () => {
     const { code, stdout } = await run(["projects"], fromFile);
 
     expect(stdout).toBe(
-      `dispatch: ${old} is not read: mkdir -p ${join(stateDir, ".envoy")} && mv ${old} ${join(stateDir, ".envoy", "envoy.json")}\nCORE Core\nSMOKE684 Smoke\n`
+      `dispatch: ${old} is not read: mkdir -p ${shellQuote(join(stateDir, ".envoy"))} && mv ${shellQuote(old)} ${shellQuote(join(stateDir, ".envoy", "envoy.json"))}\nCORE Core\nSMOKE684 Smoke\n`
     );
     expect(code).toBe(0);
   });
@@ -2402,6 +2399,28 @@ describe("cliRefusals", () => {
     expect(requests).toEqual([]);
   });
 
+  // A usage refusal can end with the OpenCode-era user file's notice, `<file> is not read: mkdir -p
+  // …`, after its own reason: it is still one refusal, for a missing chosen file and for
+  // DISPATCH_TOKEN_FILE set with no DISPATCH_URL alike.
+  test("a usage refusal that ends with the OpenCode-era file's notice is still a refusal (exit 2)", async () => {
+    const old = join(stateDir, ".config", "opencode", "envoy.json");
+    mkdirSync(join(stateDir, ".config", "opencode"), { recursive: true });
+    writeFileSync(old, JSON.stringify({ dispatch: { enabled: true } }));
+    const tokenFile = join(stateDir, "token");
+    writeFileSync(tokenFile, "t\n");
+    const cases: [string, Record<string, string | undefined>][] = [
+      ["no envoy.json", fromFile],
+      ["DISPATCH_TOKEN_FILE with no DISPATCH_URL", { ...fromFile, DISPATCH_TOKEN_FILE: tokenFile }],
+    ];
+    for (const [name, env] of cases) {
+      const { code, stdout } = await run(["projects"], env);
+      expect(code, name).toBe(2);
+      expect(stdout, name).toContain(`; ${old} is not read: mkdir -p `);
+      expect(cliRefusals(stdout), name).toEqual(refusal(stdout, null));
+    }
+    expect(requests).toEqual([]);
+  });
+
   // The whole line is pinned, not its `dispatch: ` prefix: `opencode` was an accepted host until
   // it was removed, so the refusal naming it, and naming omp, claude and codex as the ones accepted, is the
   // user-visible behaviour that removal produces. A prefix-only assertion passes again the moment
@@ -2460,6 +2479,19 @@ describe("cliRefusals", () => {
     expect(moved.code).toBe(0);
     expect(moved.stdout).toStartWith("dispatch: ");
     expect(cliRefusals(moved.stdout)).toEqual([]);
+  });
+
+  // The moved file's notice names checkout paths, which may hold a space or a quote: each notice
+  // still reads as no refusal, and a refusal printed after it, naming such a path, still reads as one.
+  test("a moved file's notice refuses nothing whatever its paths hold", () => {
+    for (const name of ["x y", "sq'x", "q?x", "a b/it's here"]) {
+      const old = `/work/${name}/.opencode/envoy.json`;
+      const notice = `dispatch: ${old} is not read: mkdir -p ${shellQuote(`/work/${name}/.envoy`)} && mv ${shellQuote(old)} ${shellQuote(`/work/${name}/.envoy/envoy.json`)}`;
+      const across = `dispatch: ${old} is not read, and is on another filesystem than /x (a mount): create /x, and move ${old} on the machine that owns it`;
+      expect(cliRefusals(`${notice}\n${across}\n`)).toEqual([]);
+      const refused = `dispatch: /work/${name}/envoy.json: the top-level natsUrls is not read; move it to envoy.natsUrls`;
+      expect(cliRefusals(`${notice}\n${refused}\n`)).toEqual([{ line: refused, command: null }]);
+    }
   });
 
   // A refusal the CLI prints before it reaches Dispatch is logged too, whenever the call knows its

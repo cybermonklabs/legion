@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The OpenCode-era config file's notice, the old user file's refusal and the checkout file's `fix` field `envoy-dispatch` logs, writes each path in its `mkdir -p … && mv …` command as one shell word, so a home or checkout whose path holds a space or a quote gets a command that pastes as it reads. The quoting is the new `internal/shellquote` package, which `envoy-infra`'s generated scripts and env files now use in place of `core.ShellQuote` and `core.ShellJoin`, byte for byte as before.
+time: 2026-11-19T18:56:03Z
+custom:
+    Issue: fix-product-paths-with-glob-and-url-characters

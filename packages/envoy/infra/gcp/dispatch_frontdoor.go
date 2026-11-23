@@ -12,6 +12,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/shellquote"
 )
 
 // Dispatch's front door is a Tailscale Service host (tailnet_service.go): frontDoorReplicas pods
@@ -129,7 +130,7 @@ func dispatchFrontDoorPaths(namespace, tlsSecret string) dispatchCertPaths {
 func dispatchScriptVars(vars [][2]string) string {
 	var b strings.Builder
 	for _, v := range vars {
-		fmt.Fprintf(&b, "%s=%s\n", v[0], core.ShellQuote(v[1]))
+		fmt.Fprintf(&b, "%s=%s\n", v[0], shellquote.Quote(v[1]))
 	}
 	return b.String()
 }

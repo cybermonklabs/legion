@@ -140,33 +140,3 @@ func writePyString(b *strings.Builder, s string, ensureASCII bool) {
 	}
 	b.WriteByte('"')
 }
-
-// ShellQuote quotes s for a POSIX shell as Python's shlex.quote does: an empty pair of single
-// quotes for an empty string, s unchanged when every character is in [A-Za-z0-9_@%+=:,./-], and
-// otherwise s in single quotes, each ' in it written as '"'"'.
-func ShellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if strings.IndexFunc(s, unsafeInShell) < 0 {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
-}
-
-func unsafeInShell(r rune) bool {
-	switch {
-	case 'a' <= r && r <= 'z', 'A' <= r && r <= 'Z', '0' <= r && r <= '9':
-		return false
-	}
-	return !strings.ContainsRune("_@%+=:,./-", r)
-}
-
-// ShellJoin is Python's shlex.join: ShellQuote over each argument, joined by single spaces.
-func ShellJoin(args []string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		quoted[i] = ShellQuote(arg)
-	}
-	return strings.Join(quoted, " ")
-}

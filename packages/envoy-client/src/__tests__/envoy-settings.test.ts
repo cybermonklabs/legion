@@ -14,6 +14,7 @@ import {
   heartbeatRetryDelayMs,
 } from "../envoy-settings";
 import { sessionSettings } from "../session-settings";
+import { shellQuote } from "../shell-quote";
 
 /** Envoy as these tests compare it: an enabled resolution's credential flattened to the bearer
  * it presents, so a comparison names the token a request would carry rather than the object that
@@ -45,10 +46,6 @@ const ENVIRONMENT_TOKEN = fixtureSecret("envoy");
 const FILE_TOKEN = fixtureSecret("file");
 /** The listener's bearer an ENVOY_TOKEN_FILE holds. */
 const POINTER_TOKEN = fixtureSecret("pointer");
-/** `value` as one single-quoted shell word, each `'` in it closed, escaped and reopened. */
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 /** The configuration read from a file holding `contents`, with no checkout file beside it. */
 function configFrom(contents: unknown) {

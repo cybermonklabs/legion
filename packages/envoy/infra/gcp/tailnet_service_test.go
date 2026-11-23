@@ -16,7 +16,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/internal/shellquote"
 )
 
 // These tests sit inside the package because the pieces they run are unexported; they reach the
@@ -143,7 +143,7 @@ func newTailnetRig(t *testing.T, selfID string, configure ...func(*tailnetServic
 		require.NoError(t, os.MkdirAll(d, 0o755))
 	}
 	// The paths go in as shell words: the test's directory may hold a space or a quote.
-	q := core.ShellQuote
+	q := shellquote.Quote
 	fill := strings.NewReplacer("FAKE", q(r.fake), "READY", q(r.host.paths.ready()), "REALDATE", q(realDate),
 		"SVC", r.host.service(), "CERT", tailnetRigCertificate)
 	for name, body := range map[string]string{
@@ -293,7 +293,7 @@ func TestTailnetServiceAdvertiserExitsOnSIGTERM(t *testing.T) {
 	// the advertiser's output, so Wait does not wait for it once the advertiser is gone, and
 	// records its PID, so the test ends it.
 	sleep := "#!/bin/sh\necho \"$(cat FAKE/clock) sleep $1\" >>FAKE/calls\necho $$ >FAKE/sleep-pid\nexec REALSLEEP 30 >/dev/null 2>&1\n"
-	sleep = strings.NewReplacer("FAKE", core.ShellQuote(r.fake), "REALSLEEP", core.ShellQuote(realSleep)).Replace(sleep)
+	sleep = strings.NewReplacer("FAKE", shellquote.Quote(r.fake), "REALSLEEP", shellquote.Quote(realSleep)).Replace(sleep)
 	require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(r.fake), "bin", "sleep"), []byte(sleep), 0o755))
 	t.Cleanup(func() {
 		if b, err := os.ReadFile(filepath.Join(r.fake, "sleep-pid")); err == nil {
@@ -409,7 +409,7 @@ func TestTailnetServiceFollowsANewNode(t *testing.T) {
 	r.set(t, "approved", "")
 	r.hook(t, fmt.Sprintf(`if [ -e %s ] && [ ! -e "$d/switched" ]; then
   echo nBBBBCNTRL >"$d/self-id"; rm -f "$d/advertised"; touch "$d/switched"; echo "$now new node" >>"$d/calls"
-fi`, core.ShellQuote(r.host.paths.ready())))
+fi`, shellquote.Quote(r.host.paths.ready())))
 	ev, out := r.run(t, 120)
 	switched := tailnetIndexOf(ev, 0, "new node")
 	advertise := tailnetIndexOf(ev, switched, tailnetAdvertiseCall)

@@ -12,8 +12,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
+import { shellQuote } from "@legion/envoy-client/shell-quote";
 import { hostTool } from "@legion/test-fixtures/host-tools";
-import { shellQuote } from "../local-instance-support";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import type { Route } from "./outside-edge-refusals-edge";
 import {

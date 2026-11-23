@@ -9,7 +9,7 @@ import { describe, expect } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { shellQuote } from "../local-instance-support";
+import { shellQuote } from "@legion/envoy-client/shell-quote";
 import {
   blackhole,
   curl,

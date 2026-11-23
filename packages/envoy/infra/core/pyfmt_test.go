@@ -144,24 +144,3 @@ func requirePanicNaming(t *testing.T, want string, f func()) {
 	}()
 	f()
 }
-
-func TestShellQuote(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"", "''"},
-		{"a-b_c", "a-b_c"},
-		{"@%+=:,./-", "@%+=:,./-"},
-		{"a b", "'a b'"},
-		{"it's", `'it'"'"'s'`},
-		{"line\nbreak", "'line\nbreak'"},
-		{"caf\u00e9", "'caf\u00e9'"},
-		{"$JS", "'$JS'"},
-	}
-	for _, c := range cases {
-		require.Equal(t, c.want, core.ShellQuote(c.in), "ShellQuote(%q)", c.in)
-	}
-}
-
-func TestShellJoin(t *testing.T) {
-	require.Equal(t, `nats-server --config '/tmp/x y' -js ''`,
-		core.ShellJoin([]string{"nats-server", "--config", "/tmp/x y", "-js", ""}))
-}
