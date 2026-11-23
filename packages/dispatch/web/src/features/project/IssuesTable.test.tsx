@@ -245,6 +245,17 @@ test("opening a Labels facet does not pass its values through another column's f
   expect(screen.getByRole("option", { name: "frontend, 1 issue" })).toBeDefined();
 });
 
+// INFRA-5200's rule, point 2: a label with no break in it shortens inside its own pill, with the
+// whole label as its title, rather than running past the Labels cell.
+test("a long label shortens to an ellipsis inside its pill, with the whole label as its title", async () => {
+  const long = "dispatchlayoutruleaverylonglabelnobreak1";
+  table([issue("CORE-1", { labels: [long] })]);
+  const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const words = within(row).getByText(long);
+  expect(words).toHaveAttribute("title", long);
+  expect(words.className).toContain("truncate");
+});
+
 test("Created sorts RFC3339 fractional timestamps by instant, not by text", async () => {
   table(
     [

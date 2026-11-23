@@ -240,10 +240,16 @@ const renderings = (
   labels: {
     header: "Labels",
     accessorFn: (item) => (item.issue.labels ?? []).join(", "),
+    // A label as long as its author typed, with no break in it, shortens to an ellipsis inside
+    // its own pill, with the whole label as its title, rather than running past the cell.
     cell: ({ row }) => (
-      <span className="flex flex-wrap gap-1">
+      <span className="flex min-w-0 flex-wrap gap-1 [&>span]:min-w-0 [&>span]:max-w-full">
         {(row.original.issue.labels ?? []).map((label) => (
-          <LabelPill key={label}>{label}</LabelPill>
+          <LabelPill key={label}>
+            <TruncatedText className="min-w-0" title={label}>
+              {label}
+            </TruncatedText>
+          </LabelPill>
         ))}
       </span>
     ),
