@@ -44,6 +44,7 @@ const newInTheStubbedLayer: Record<string, string> = Object.fromEntries(
     "layout-measure.stub.e2e.ts › a layout reading fails on a blank page and keeps a stale entry @pr",
     "layout-measure.stub.e2e.ts › a layout entry accepts its own count of breaches and no new one in its region @pr",
     "layout-measure.stub.e2e.ts › a layout entry names a required group no element marks, and a page-scroll breach takes its own entry first @pr",
+    "layout-measure.stub.e2e.ts › openCappedGroups opens every closed group, one press each, and stops at its bound @pr",
   ].map((key) => [key, NEW_IN_THE_STUBBED_LAYER])
 );
 

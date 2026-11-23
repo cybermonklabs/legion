@@ -24,6 +24,11 @@ import { stubbed } from "./stub/stub-test";
 // scene that run wrote.
 const test = stubbed(() => seedLayoutStress({ boundMs: expectTimeout }));
 
+// The pages format dates and numbers in the browser's language and time zone, so the text widths
+// the list is exact about would move with the host's; these pin them, as `going-operators.e2e.ts`
+// pins its time zone.
+test.use({ locale: "en-US", timezoneId: "UTC" });
+
 for (const route of layoutRoutes) {
   // SLOW(>=2s): a load of a drawn page at each of five widths, and again for each of its states,
   // each settled and measured.

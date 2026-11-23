@@ -1,6 +1,6 @@
 /** The layout rule's breaches the layout layer accepts on main, until the slice of
  *  dispatch://INFRA-5200 that removes them lands. `e2e/layout-check.ts` judges every reading of
- *  `e2e/layout-routes.ts`'s routes against it, for the stubbed rows and the real-stack ones alike.
+ *  `e2e/layout-routes.ts`'s routes against it, in every layout row.
  *
  *  A breach the layer lets through is an entry here, never a skipped route or a narrowed width.
  *  An entry accepts exactly `count` breaches (1 unless given) of its `kind`, on `route` - in its
@@ -11,11 +11,12 @@
  *  `group-missing` entry names a group the route must mark (`requiredGroups`) and does not.
  *
  *  A reading fails on a breach no entry accepts, a breach past its entry's count, and an entry
- *  whose place it measured and which matched fewer breaches than its count. So a new breach fails
- *  even inside a region an entry names, and a fixed breach must leave this list in the change that
- *  fixes it. A slice proves its fix by deleting its entries: with them gone, the test fails at the
- *  slice's base and passes at its head. The list is empty once the last slice lands, and this file
- *  and its use go then. */
+ *  whose place it measured and which matched fewer breaches than its count. So a new box that
+ *  breaks the rule fails even inside a region an entry names; more overflow inside a box an entry
+ *  already names does not, since that box is still one breach. A fixed breach must leave this
+ *  list in the change that fixes it. A slice proves its fix by deleting its entries: with them
+ *  gone, the test fails at the slice's base and passes at its head. The list is empty once the
+ *  last slice lands, and this file and its use go then. */
 import type { LayoutBreach, LayoutWidth } from "./layout-measure";
 
 /** The slice of dispatch://INFRA-5200 that removes a breach: B owns today's issue page

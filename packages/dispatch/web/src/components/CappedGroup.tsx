@@ -21,8 +21,9 @@ export const LAYOUT_GROUP_MAX = 10;
  * Each child is one entry and draws one element: the group element's direct children are what
  * `e2e/layout-measure.ts` counts against the cap, leaving out the control marked
  * `data-layout-more`. The group element carries `data-layout-group={name}`, and
- * `data-layout-max` when its cap is below 10; while the reader has it open it carries
- * `data-layout-open` too, since then it shows more than its cap by the reader's own choice.
+ * `data-layout-max` whenever its cap is not 10, so the measure sees a cap above the rule's too;
+ * while the reader has it open it carries `data-layout-open` too, since then it shows more than
+ * its cap by the reader's own choice.
  *
  * `label` is the group in words, a plural noun ("labels"), which ends the button's name: "Show 3
  * more labels", and "Show fewer labels" while open. `className` lays the group out; `contents`
@@ -73,7 +74,7 @@ export function CappedGroup({
   const attributes = {
     className,
     "data-layout-group": name,
-    "data-layout-max": max < LAYOUT_GROUP_MAX ? max : undefined,
+    "data-layout-max": max === LAYOUT_GROUP_MAX ? undefined : max,
     "data-layout-open": open && hidden > 0 ? "" : undefined,
     id: groupId,
   };

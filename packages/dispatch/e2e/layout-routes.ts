@@ -55,6 +55,47 @@ export const STRESS_LABELS = [
   "priority-escalation",
 ];
 
+/** Opens every closed `CappedGroup` in `scope`, one "+N" press at a time, until none is closed,
+ *  and answers how many presses that took. It reads the component's own contract: a closed group
+ *  is `[data-layout-group]` with no `data-layout-open`, and its "+N" control is the button marked
+ *  `data-layout-more` (or the one inside the `li` so marked, for a named list), which reads
+ *  `aria-expanded="false"` while the group is closed and names the group in `aria-controls`.
+ *  Each press waits for its own group to open before the next is read, and a press may draw
+ *  groups that were folded inside the one it opened, which the next round finds. `group` keeps
+ *  it to the groups of that name. Past `maxPresses` presses it throws, since a group that never
+ *  stays open would otherwise be pressed for ever. */
+export async function openCappedGroups(
+  scope: Page | Locator,
+  { group, maxPresses = 50 }: { readonly group?: string; readonly maxPresses?: number } = {}
+): Promise<number> {
+  const groups =
+    group === undefined
+      ? "[data-layout-group]:not([data-layout-open])"
+      : `[data-layout-group=${JSON.stringify(group)}]:not([data-layout-open])`;
+  const closed = scope
+    .locator(
+      `${groups} :is(button[data-layout-more], [data-layout-more] > button)[aria-expanded="false"]`
+    )
+    .filter({ visible: true });
+  for (let presses = 0; ; presses += 1) {
+    // The caller settled the page, and each press below waits for its own group to open.
+    const left = await closed.count();
+    if (left === 0) return presses;
+    if (presses >= maxPresses) {
+      throw new Error(
+        `openCappedGroups: ${left} group(s) still closed after ${maxPresses} presses of "+N"`
+      );
+    }
+    const control = closed.first();
+    // The control's own attribute, read once to find the group this one press opens.
+    const opened = await control.getAttribute("aria-controls");
+    await control.click();
+    await scope
+      .locator(`[id=${JSON.stringify(opened ?? "")}][data-layout-open]`)
+      .waitFor({ state: "attached" });
+  }
+}
+
 /** What the page draws once the reader has acted on it: a drawer open, rows selected, a group
  *  expanded. `act` runs on the settled page and returns once what it opened is drawn. */
 export interface LayoutState {

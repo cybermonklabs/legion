@@ -13,6 +13,7 @@ import { expect, type Page } from "@playwright/test";
 import type { KnownLayoutBreach } from "./layout-breaches";
 import { judgeReading, staleEntries } from "./layout-check";
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
+import { openCappedGroups } from "./layout-routes";
 import { stubbed } from "./stub/stub-test";
 
 // No row takes a `scene`, so no seed ever runs and no recording is read or written.
@@ -21,6 +22,9 @@ const test = stubbed(async () => ({}));
 /** Words enough to run past any box below. */
 const LONG = "a line of words much wider than the box it is drawn in, with no place to break it";
 
+/** An 80-character path with no space, which no line of a narrow box can hold or break. */
+const PATH = "packages/dispatch/e2e/acceptance/converted-verification-check-with-a-long-path.sh";
+
 /** A one-pixel picture, drawn as wide as an `img` is told to be. */
 const PIXEL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -28,6 +32,21 @@ const PIXEL =
 /** `count` spans, each one entry of a group. */
 function entries(count: number): string {
   return Array.from({ length: count }, (_, index) => `<span>entry ${index + 1}</span>`).join(" ");
+}
+
+/** What each failure of `judgeReading` names, so a row holds the judgement and not its wording:
+ *  `unaccepted` and the place, kind and locator of the entry that would accept a breach no entry
+ *  accepts, or `entry` and the key of an entry its reading did not match exactly. */
+function failureKeys(failures: readonly string[]): string[] {
+  return failures.map((failure) => {
+    const unlisted =
+      /^\{ route: "([^"]+)", (?:state: "([^"]+)", )?width: (\d+), kind: "([^"]+)", element: ("(?:[^"\\]|\\.)*")/.exec(
+        failure
+      );
+    if (unlisted === null) return `entry ${failure.slice(0, failure.indexOf(": "))}`;
+    const [, route, state, width, kind, element] = unlisted;
+    return `unaccepted ${route}${state === undefined ? "" : `#${state}`} ${width} ${kind} ${JSON.parse(element ?? '""')}`;
+  });
 }
 
 /** Draws `body` as a page's own region at a phone's width, and reads it as a layout row reads a
@@ -116,15 +135,54 @@ const defects: readonly {
     name: "a line of text its own box cuts with no ellipsis",
   },
   {
-    // The Inbox card row's reply chip on production at 400 px: a pill inside a truncating span,
-    // cut at the span's edge with no ellipsis, since an ellipsis stands in for text alone.
+    // The Inbox card row's reply chip on production at 400 px: a pill that starts its truncating
+    // span's line and is wider than the span, so it is pushed out of its row (point 2 of the
+    // rule); the span's ellipsis stands in for text, not for a control.
     body:
       '<span style="display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; width: 150px">' +
-      'Reply <span data-testid="chip" style="border-radius: 9999px; display: inline-flex">' +
+      '<span data-testid="chip" style="border-radius: 9999px; display: inline-flex">' +
       "Legion architect · INFRA-2969 replied</span></span>",
     kind: "clipped",
     locator: '[data-testid="chip"]',
-    name: "a chip a truncating box cuts, which shows no ellipsis",
+    name: "a chip wider than the truncating box whose line it starts",
+  },
+  {
+    // A row laid out from its end: the first of two 300 px buttons ends up left of the viewport,
+    // where no scroll reaches, and the document is no wider than the viewport.
+    body:
+      '<div style="display: flex; justify-content: flex-end; width: 340px">' +
+      '<button data-testid="first" style="flex-shrink: 0; width: 300px" type="button">first</button>' +
+      '<button style="flex-shrink: 0; width: 300px" type="button">second</button></div>',
+    kind: "clipped",
+    locator: '[data-testid="first"]',
+    name: "an element left of the viewport, which no scroll reaches",
+  },
+  {
+    // A fixed box that runs past the viewport's right edge only: it is cut there, and a fixed
+    // layer adds nothing to the page's width, so no page scroll reaches it.
+    body: '<div data-testid="layer-box" style="height: 20px; left: 100px; position: fixed; top: 0; width: 400px"></div>',
+    kind: "clipped",
+    locator: '[data-testid="layer-box"]',
+    name: "a box on a fixed layer past the viewport's right edge",
+  },
+  {
+    // A two-line clamp whose first line is an 80-character path: the clamp draws its ellipsis
+    // on its last line only, so the path is cut bare.
+    body:
+      '<p data-testid="clamp" style="-webkit-box-orient: vertical; -webkit-line-clamp: 2; display: -webkit-box; overflow: hidden; width: 200px">' +
+      `${PATH} and the words of a second line that the clamp ends with its ellipsis</p>`,
+    kind: "clipped",
+    locator: '[data-testid="clamp"]',
+    name: "a line-clamped box that cuts a line above its last",
+  },
+  {
+    // A strip of pictures each narrower than the box: a row, which scrolls as one.
+    body:
+      '<div data-testid="thumbs" style="display: flex; overflow-x: auto; width: 200px">' +
+      `${`<img alt="" height="40" src="${PIXEL}" style="flex-shrink: 0" width="40">`.repeat(12)}</div>`,
+    kind: "box-scroll",
+    locator: '[data-testid="thumbs"]',
+    name: "a strip of pictures each narrower than the box that scrolls for them",
   },
   {
     body: `<div data-layout-group="labels">${entries(11)}<button data-layout-more type="button">+1</button></div>`,
@@ -178,6 +236,11 @@ const allowed = [
   `<a href="#main-content" style="clip-path: inset(50%); height: 44px; overflow: hidden; position: absolute; white-space: nowrap; width: 44px">Skip to content, ${LONG}</a>`,
   `<div style="overflow: hidden; width: 200px"><details><summary>More</summary><div style="width: 400px">${LONG}</div></details></div>`,
   `<p style="-webkit-box-orient: vertical; -webkit-line-clamp: 2; display: -webkit-box; overflow: hidden; width: 200px">${LONG} ${LONG}</p>`,
+  // A clamp whose cut long word is on its last visible line, where it draws its ellipsis.
+  `<p style="-webkit-box-orient: vertical; -webkit-line-clamp: 2; display: -webkit-box; overflow: hidden; width: 200px">The first line, then ${PATH}</p>`,
+  // A fixed layer inside the viewport, and one wholly left of it as a closed drawer is.
+  '<div style="left: 20px; position: fixed; top: 20px; width: 300px">A dialog inside the viewport</div>',
+  '<div style="left: 0; position: fixed; top: 0; transform: translateX(-100%); width: 300px">A closed drawer</div>',
   `<div style="display: flex; flex-wrap: wrap; gap: 4px; width: 200px">${entries(12)}</div>`,
   entries(120),
 ].join("");
@@ -235,9 +298,9 @@ test("a layout reading fails on a blank page and keeps a stale entry @pr", async
     width: 360,
   };
   const elsewhere: KnownLayoutBreach = { ...entry, element: '[data-testid="gone"]' };
-  expect(judgeReading(place, scrolled, {}, [entry, elsewhere])).toEqual([
-    'control 360 box-scroll [data-testid="gone"]: the entry accepts 1, and this reading had 0',
-  ]);
+  const failures = judgeReading(place, scrolled, {}, [entry, elsewhere]);
+  expect(failures).toHaveLength(1);
+  expect(failureKeys(failures)).toEqual(['entry control 360 box-scroll [data-testid="gone"]']);
   expect(staleEntries([entry, elsewhere])).toEqual(['control 360 box-scroll [data-testid="gone"]']);
 });
 
@@ -260,13 +323,15 @@ test("a layout entry accepts its own count of breaches and no new one in its reg
   expect(judgeReading(place, two, {}, [{ ...entry, count: 2 }])).toEqual([]);
   // A new breach in the listed region fails, and so does an entry with fewer breaches than its
   // count: each entry is one breach, or the number it says.
-  expect(judgeReading(place, two, {}, [entry]).join("\n")).toContain(
-    'kind: "clipped", element: "[data-testid=\\"region\\"]" }'
-  );
-  const one = await measure(page, region(1));
-  expect(judgeReading(place, one, {}, [{ ...entry, count: 2 }])).toEqual([
-    'counted 360 clipped [data-testid="region"]: the entry accepts 2, and this reading had 1',
+  const unaccepted = judgeReading(place, two, {}, [entry]);
+  expect(unaccepted).toHaveLength(1);
+  expect(failureKeys(unaccepted)).toEqual([
+    'unaccepted counted 360 clipped [data-testid="region"]',
   ]);
+  const one = await measure(page, region(1));
+  const short = judgeReading(place, one, {}, [{ ...entry, count: 2 }]);
+  expect(short).toHaveLength(1);
+  expect(failureKeys(short)).toEqual(['entry counted 360 clipped [data-testid="region"]']);
 });
 
 test("a layout entry names a required group no element marks, and a page-scroll breach takes its own entry first @pr", async ({
@@ -281,17 +346,17 @@ test("a layout entry names a required group no element marks, and a page-scroll 
     route: "grouped",
     width: 360,
   };
-  expect(judgeReading(place, drawn, { groups: ["labels"] }).join("\n")).toContain(
-    'kind: "group-missing", element: "labels" } no element carries data-layout-group="labels"'
-  );
+  const unmarked = judgeReading(place, drawn, { groups: ["labels"] });
+  expect(unmarked).toHaveLength(1);
+  expect(failureKeys(unmarked)).toEqual(["unaccepted grouped 360 group-missing labels"]);
   expect(judgeReading(place, drawn, { groups: ["labels"] }, [missing])).toEqual([]);
   const marked = await measure(
     page,
     `<div data-layout-group="labels">${entries(3)}</div>${entries(120)}`
   );
-  expect(judgeReading(place, marked, { groups: ["labels"] }, [missing])).toEqual([
-    "grouped 360 group-missing labels: the entry accepts 1, and this reading had 0",
-  ]);
+  const unused = judgeReading(place, marked, { groups: ["labels"] }, [missing]);
+  expect(unused).toHaveLength(1);
+  expect(failureKeys(unused)).toEqual(["entry grouped 360 group-missing labels"]);
 
   // Two elements past the viewport inside one region: one named for itself, one named for the
   // region. With the region's entry listed first, the named one must still take its own entry.
@@ -313,4 +378,34 @@ test("a layout entry names a required group no element marks, and a page-scroll 
     })
   );
   expect(judgeReading(place, scrolled, {}, both)).toEqual([]);
+});
+
+/** `count` closed groups of eleven, each with a "+1" control as `CappedGroup` draws it: it reads
+ *  `aria-expanded="false"`, names its group in `aria-controls`, and opens it when pressed. */
+function closedGroups(count: number): string {
+  return Array.from(
+    { length: count },
+    (_, index) =>
+      `<div data-layout-group="g${index + 1}" id="group-${index + 1}">${entries(11)}` +
+      `<button aria-controls="group-${index + 1}" aria-expanded="false" data-layout-more type="button" ` +
+      `onclick="this.parentElement.setAttribute('data-layout-open', ''); this.setAttribute('aria-expanded', 'true')">+1</button></div>`
+  ).join("");
+}
+
+test("openCappedGroups opens every closed group, one press each, and stops at its bound @pr", async ({
+  page,
+}) => {
+  await measure(page, closedGroups(3));
+  expect(await openCappedGroups(page)).toBe(3);
+  expect(await page.locator("[data-layout-group]:not([data-layout-open])").count()).toBe(0);
+  expect(await openCappedGroups(page)).toBe(0);
+
+  // Kept to one group by name, it leaves the others closed.
+  await measure(page, closedGroups(3));
+  expect(await openCappedGroups(page, { group: "g2" })).toBe(1);
+  expect(await page.locator("[data-layout-group]:not([data-layout-open])").count()).toBe(2);
+
+  // Past its bound it throws rather than pressing on.
+  await measure(page, closedGroups(3));
+  await expect(openCappedGroups(page, { maxPresses: 2 })).rejects.toThrow("still closed");
 });

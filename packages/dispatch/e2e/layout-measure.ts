@@ -7,27 +7,36 @@
  *  It reports four kinds of breach:
  *  - `page-scroll`: the document is wider than the viewport, so the page scrolls sideways. One
  *    breach for each outermost element that runs past the viewport's right edge with no ancestor
- *    to hold it - an element inside a box that clips or scrolls is that box's, never the page's.
+ *    to hold it - an element inside a box that clips or scrolls is that box's, never the page's,
+ *    and one on a fixed layer adds nothing to the page's width.
  *  - `box-scroll`: a box whose `overflow-x` is `auto` or `scroll` holds content wider than
  *    itself, so the box scrolls sideways. It is exempt only when everything that runs past its
- *    edges is, or sits in, a code block (`pre`; a `code` in a line of prose is none), a picture
- *    (`img`, `picture`, `video`, `canvas`), a data table (`table`, `role=table`, `role=grid`) or a
- *    board's lanes (a box marked `data-layout-scroll="board"`), or when the box is one of those
- *    itself: a code block scrolling its own lines, a data table's own box, the board box.
- *    Anything else that overflows beside them - a row of chips next to a table, an icon's `svg`,
- *    the box's own text - makes it a breach.
- *  - `clipped`: something is cut off at a side with no sign of it, in either of two ways. An
- *    element runs past the left or right edge of the ancestor that clips it (`overflow-x`
- *    `hidden` or `clip`): only the outermost such element is reported, since its children are cut
- *    because it is. An ellipsis or a line clamp of that ancestor excuses a plain `inline`
- *    element, whose text it stands in for, and nothing else: a cut atomic box (`inline-flex`,
- *    `inline-block`, `inline-grid`) or block shows no ellipsis, and an element that carries its
- *    own has it cut away with the rest. Or a box that clips holds more than its width of its own
- *    content (`scrollWidth` past `clientWidth`), which is how a line of text is cut, with no
- *    `text-overflow: ellipsis` and no line clamp. Skipped: a screen-reader-only element (a box
- *    of a pixel, an empty `clip`, `clip-path: inset(50%)`), what a code block or a picture cuts of
- *    its own content, and an element whose containing block is outside the ancestor, which does
- *    not clip it (an absolutely positioned element above its positioned ancestor, a fixed one).
+ *    edges is, or sits in, a code block (`pre`; a `code` in a line of prose is none), a data table
+ *    (`table`, `role=table`, `role=grid`), a board's lanes (a box marked
+ *    `data-layout-scroll="board"`) or a picture (`img`, `picture`, `video`, `canvas`) that is
+ *    itself wider than the box, or when the box is a code block scrolling its own lines, a data
+ *    table's own box or the board box. Anything else that overflows - a row of chips next to a
+ *    table, a strip of pictures each narrower than the box, an icon's `svg`, the box's own text -
+ *    makes it a breach.
+ *  - `clipped`: something is cut off at a side with no sign of it, in one of four ways.
+ *    - An element runs past the left or right edge of the ancestor that clips it (`overflow-x`
+ *      `hidden` or `clip`): only the outermost such element is reported, since its children are
+ *      cut because it is. That ancestor's ellipsis excuses a plain `inline` element, whose text
+ *      it stands in for, and nothing else: a chip (`inline-flex`), an `inline-block` or a block
+ *      that runs past is pushed out of its row (point 2 of the rule), and an element's own
+ *      ellipsis is cut away with the rest. A line clamp excuses only its last visible line, the
+ *      one it draws its ellipsis on.
+ *    - A box that clips holds more than its width of its own content (`scrollWidth` past
+ *      `clientWidth`), which is how a line of text is cut, with no `text-overflow: ellipsis`; or,
+ *      for a line-clamped box, a line above its last visible one runs past its side.
+ *    - An element that no ancestor clips starts left of the viewport, where no scroll reaches.
+ *    - An element on a fixed layer, which no ancestor clips, runs past either side of the
+ *      viewport: a fixed layer adds nothing to the page's width, so it is cut, not scrolled.
+ *    Only the outermost element cut at the viewport is reported, and only one partly in view:
+ *    one wholly outside it is not drawn at all. Skipped: a screen-reader-only element (a box of a
+ *    pixel, an empty `clip`, `clip-path: inset(50%)`), what a code block or a picture cuts of its
+ *    own content, and an element whose containing block is outside the ancestor, which does not
+ *    clip it (an absolutely positioned element above its positioned ancestor, a fixed one).
  *  - `group-over-cap`: a group marked `data-layout-group` shows more entries than its
  *    `data-layout-max` (10 when unset), not counting the one control marked `data-layout-more`
  *    that opens the rest, unless the reader opened it (`data-layout-open`); or it declares a cap
@@ -86,10 +95,12 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   /** A code block or a picture: its own width is its content's, and it may be cut. A `code` in a
    *  line of prose is no code block. */
   const CODE_OR_PICTURE = "pre, img, picture, svg, canvas, video";
-  /** What a box may scroll sideways for: a code block, a picture, a data table, a board's lanes.
+  /** What a box may scroll sideways for whatever its width: a code block, a data table, a board's
+   *  lanes. */
+  const SCROLLS_FOR = "pre, table, [role='table'], [role='grid'], [data-layout-scroll='board']";
+  /** A picture, which a box may scroll sideways for only when the picture is wider than the box.
    *  An `svg` is no picture here: inline, it is an icon in a row of controls. */
-  const SCROLLS_FOR =
-    "pre, img, picture, video, canvas, table, [role='table'], [role='grid'], [data-layout-scroll='board']";
+  const PICTURE = "img, picture, video, canvas";
   /** One pixel of slack on every edge: a box's edges are fractional, its scroll sizes whole. */
   const SLACK = 1;
 
@@ -157,17 +168,18 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
       styleOf(el).clipPath === "inset(50%)"
     );
   };
-  /** Whether a cut of `el`'s own content shows: an ellipsis or a line clamp. */
-  const marksItsCut = (style: CSSStyleDeclaration): boolean =>
-    style.textOverflow === "ellipsis" ||
-    (style.webkitLineClamp !== "none" && style.webkitLineClamp !== "");
-  /** The nearest ancestor that clips `el` sideways (`overflow-x` other than `visible`), read
-   *  along `el`'s containing blocks: an ancestor between an absolutely positioned element and
-   *  its containing block - the nearest positioned, transformed, filtered or contained one -
-   *  does not clip it, and nothing above a fixed one does. `null` when nothing clips it. */
-  const clipperOf = (el: Element): Element | null => {
+  /** Whether `style` clamps its box's lines (`-webkit-line-clamp`), which draws its ellipsis on
+   *  the last visible line only. */
+  const clamps = (style: CSSStyleDeclaration): boolean =>
+    style.webkitLineClamp !== "none" && style.webkitLineClamp !== "";
+  /** What holds `el` sideways, read along its containing blocks: the nearest ancestor that clips
+   *  it (`overflow-x` other than `visible`), else `"fixed"` when it is, or sits on, a fixed layer,
+   *  else `"page"`. An ancestor between an absolutely positioned element and its containing block
+   *  - the nearest positioned, transformed, filtered or contained one - does not clip it, and
+   *  nothing above a fixed one does. */
+  const holderOf = (el: Element): Element | "fixed" | "page" => {
     let style = styleOf(el);
-    if (style.position === "fixed") return null;
+    if (style.position === "fixed") return "fixed";
     let needsContainingBlock = style.position === "absolute";
     for (let at = el.parentElement; at !== null && at !== document.body; at = at.parentElement) {
       style = styleOf(at);
@@ -182,10 +194,37 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
         needsContainingBlock = false;
       }
       if (style.overflowX !== "visible") return at;
-      if (style.position === "fixed") return null;
+      if (style.position === "fixed") return "fixed";
       if (style.position === "absolute") needsContainingBlock = true;
     }
-    return null;
+    return "page";
+  };
+  /** The nearest ancestor that clips `el` sideways, or `null` when nothing does. */
+  const clipperOf = (el: Element): Element | null => {
+    const holder = holderOf(el);
+    return typeof holder === "string" ? null : holder;
+  };
+  /** Whether line-clamped `box` cuts `node`'s text on a line above its last visible one, with no
+   *  sign: the clamp draws its ellipsis on its last visible line only, so a line above it that
+   *  runs past the box's side is cut bare. A line is read off the text's own rects (a `Range`),
+   *  and one below the box's bottom edge is the clamp's to hide, not a sideways cut. */
+  const cutAboveLastLine = (box: Element, node: Node): boolean => {
+    const edge = box.getBoundingClientRect();
+    const visibleRects = (of: Node): DOMRect[] => {
+      const range = document.createRange();
+      range.selectNodeContents(of);
+      return [...range.getClientRects()].filter(
+        (rect) => rect.width > 0 && rect.top < edge.bottom - SLACK && rect.bottom > edge.top + SLACK
+      );
+    };
+    const lines = visibleRects(box);
+    if (lines.length === 0) return false;
+    const lastTop = Math.max(...lines.map((rect) => rect.top));
+    return visibleRects(node).some(
+      (rect) =>
+        rect.bottom <= lastTop + SLACK &&
+        (rect.right > edge.right + SLACK || rect.left < edge.left - SLACK)
+    );
   };
   /** The outermost of `elements`: those whose parent is not among them. */
   const outermostOf = (elements: readonly Element[]): Element[] => {
@@ -195,12 +234,13 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
 
   const breaches: LayoutBreach[] = [];
 
-  // A page that scrolls sideways: the outermost elements past the viewport that no box holds.
+  // A page that scrolls sideways: the outermost elements past the viewport that no box holds. An
+  // element on a fixed layer adds nothing to the page's width; the viewport pass below reads it.
   const pageWidth = Math.max(root.scrollWidth, document.body.scrollWidth);
   if (pageWidth > viewport + SLACK) {
     const past = all.filter(
       (el) =>
-        shown(el) && el.getBoundingClientRect().right > viewport + SLACK && clipperOf(el) === null
+        shown(el) && el.getBoundingClientRect().right > viewport + SLACK && holderOf(el) === "page"
     );
     const outermost = outermostOf(past);
     for (const el of outermost) {
@@ -235,8 +275,8 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     }
   }
 
-  // A box that scrolls sideways for anything but a code block, a picture, a data table or a
-  // board's lanes running past its edges.
+  // A box that scrolls sideways for anything but a code block, a data table, a board's lanes or a
+  // picture wider than itself running past its edges.
   const scrollers = new Set<Element>();
   for (const el of all) {
     const style = styleOf(el);
@@ -278,12 +318,17 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
         textRunsPast(inner)
     );
     const ownText = textRunsPast(el);
-    const forItsTables =
-      !ownText &&
-      sources.length > 0 &&
-      sources.every((inner) => inner.closest(SCROLLS_FOR) !== null);
+    /** Whether this source of the overflow is one the box may scroll for: a code block, a data
+     *  table or a board's lanes it sits in, or a picture it sits in that is wider than the box. A
+     *  strip of pictures each narrower than the box is a row, and scrolls as one. */
+    const exempt = (inner: Element): boolean => {
+      if (inner.closest(SCROLLS_FOR) !== null) return true;
+      const picture = inner.closest(PICTURE);
+      return picture !== null && picture.getBoundingClientRect().width > el.clientWidth + SLACK;
+    };
+    const forItsTables = !ownText && sources.length > 0 && sources.every(exempt);
     if (forItsTables) continue;
-    const causes = sources.filter((inner) => inner.closest(SCROLLS_FOR) === null);
+    const causes = sources.filter((inner) => !exempt(inner));
     breaches.push({
       detail:
         `holds ${el.scrollWidth}px in a ${el.clientWidth}px box; past its edges: ` +
@@ -314,12 +359,18 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     const parent = el.parentElement;
     if (parent !== null && parent !== clipper && cut.has(parent)) continue;
     cutInside.add(clipper);
-    // An ellipsis stands in for inline text its box cuts: a chip (`inline-flex`), an
-    // `inline-block` or a block the box cuts shows no ellipsis, and nor does an element that
-    // carries its own, since the box cuts that ellipsis away with the rest. So only a plain
-    // `inline` element inside a box that draws one is excused.
+    // An ellipsis stands in for inline text its box cuts, so only a plain `inline` element is
+    // excused by one. A chip (`inline-flex`), an `inline-block` or a block that runs past the box
+    // is an element pushed out of its row (point 2 of the rule), whether the browser cuts it or
+    // hides it behind the box's ellipsis, and an element's own ellipsis is cut away with the
+    // rest. A line clamp draws its ellipsis on its last visible line only, so it excuses an
+    // inline element only where that element is not cut on a line above it.
     const inline = styleOf(el).display === "inline";
-    if (inline && marksItsCut(styleOf(clipper))) continue;
+    const clipStyle = styleOf(clipper);
+    const markedByClipper =
+      clipStyle.textOverflow === "ellipsis" ||
+      (clamps(clipStyle) && !cutAboveLastLine(clipper, el));
+    if (inline && markedByClipper) continue;
     breaches.push({
       detail: `spans ${Math.round(box.left)}-${Math.round(box.right)}px inside ${path(clipper)} at ${Math.round(edge.left)}-${Math.round(edge.right)}px`,
       kind: "clipped",
@@ -331,15 +382,51 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   }
 
   // A box that clips its own text, with no ellipsis to say so. A box whose cut elements were
-  // judged above is not read again: the cut is theirs.
+  // judged above is not read again: the cut is theirs. A line-clamped box is cut bare only on a
+  // line above its last visible one.
   for (const el of all) {
     const style = styleOf(el);
     if (style.overflowX !== "hidden" && style.overflowX !== "clip") continue;
-    if (cutInside.has(el) || !shown(el) || visuallyHidden(el) || marksItsCut(style)) continue;
-    if (el.closest(CODE_OR_PICTURE) !== null) continue;
+    if (cutInside.has(el) || !shown(el) || visuallyHidden(el)) continue;
+    if (style.textOverflow === "ellipsis" || el.closest(CODE_OR_PICTURE) !== null) continue;
     if (el.scrollWidth <= el.clientWidth + SLACK) continue;
+    if (clamps(style) && !cutAboveLastLine(el, el)) continue;
     breaches.push({
       detail: `its content is ${el.scrollWidth}px in a ${el.clientWidth}px box`,
+      kind: "clipped",
+      listed: listedFor([el]),
+      locator: locatorOf(el),
+      text: textOf(el),
+      where: path(el),
+    });
+  }
+
+  // An element cut at the viewport, which no ancestor clips: one that starts left of it, where no
+  // scroll reaches, and one on a fixed layer that runs past either side, since a fixed layer adds
+  // nothing to the page's width. Only the outermost such element, and only one partly in view:
+  // one wholly outside the viewport is not drawn at all.
+  const cutAtViewport = new Set<Element>();
+  for (const el of all) {
+    if (!shown(el) || visuallyHidden(el)) continue;
+    // What a code block or a picture holds is its own to cut; the block or picture itself is not.
+    const holderOfContent = el.parentElement?.closest(CODE_OR_PICTURE);
+    if (holderOfContent !== null && holderOfContent !== undefined) continue;
+    const holder = holderOf(el);
+    if (typeof holder !== "string") continue;
+    const box = el.getBoundingClientRect();
+    if (box.width === 0 || box.right <= 0 || box.left >= viewport) continue;
+    const pastLeft = box.left < -SLACK;
+    const pastRight = holder === "fixed" && box.right > viewport + SLACK;
+    if (!pastLeft && !pastRight) continue;
+    cutAtViewport.add(el);
+    const parent = el.parentElement;
+    if (parent !== null && cutAtViewport.has(parent)) continue;
+    breaches.push({
+      detail:
+        `spans ${Math.round(box.left)}-${Math.round(box.right)}px in a ${viewport}px viewport` +
+        (holder === "fixed" ? ", on a fixed layer" : "") +
+        (pastLeft ? "; it starts left of the viewport, where no scroll reaches" : "") +
+        (pastRight ? "; it runs past the viewport's right edge" : ""),
       kind: "clipped",
       listed: listedFor([el]),
       locator: locatorOf(el),

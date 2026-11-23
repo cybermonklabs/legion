@@ -84,6 +84,19 @@ test("a cap below ten is the group's own, and the measure is told it", () => {
   }
 });
 
+// A cap above ten breaks the rule's cap, so the group declares it and the layout measure, which
+// reads a declared cap outside 1-10 as a breach, sees it.
+test("a cap above ten is declared to the measure too", () => {
+  const view = render(<Labels count={12} max={11} />);
+  try {
+    const group = view.container.querySelector<HTMLElement>('[data-layout-group="labels"]');
+    expect(group).toHaveAttribute("data-layout-max", "11");
+    expect(drawn(group as HTMLElement)).toEqual(labels(11));
+  } finally {
+    view.unmount();
+  }
+});
+
 test("given a list name, the group is a named list whose control sits in an item of its own", async () => {
   const user = userEvent.setup();
   const view = render(

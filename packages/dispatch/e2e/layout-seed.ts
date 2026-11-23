@@ -13,17 +13,19 @@
  *  (dispatch://INFRA-5200/spec, "Problem"):
  *  - on the issue the issue routes open: a 170-character title, twelve labels, a `role:` route
  *    nobody holds, a claim by a session with a 64-character title, a parent, two priorities,
- *    fifteen GitHub pull requests with checks, five subscribers, thirteen components of a
- *    fifteen-component architecture source, four more children of four pull requests each, a
- *    recorded result whose run command is 200 characters with no space, and a check whose words
- *    hold an 80-character path (the header, its state row, the Children tab, the Verification
- *    tab);
+ *    fifteen GitHub pull requests with checks, twelve links that are no pull request, five
+ *    subscribers, thirteen components of a fifteen-component architecture source, four more
+ *    children of four pull requests each (the first with eight plain links beside them, twelve
+ *    links in all), a recorded result whose run command is 200 characters with no space, and a
+ *    check whose words hold an 80-character path (the header, its state row, the Children tab,
+ *    the Verification tab);
  *  - an answered ask whose three options are 160 characters each (`/answers`);
  *  - six open asks for the reader with long questions and long options, two of them replied to
  *    by an agent (the Inbox's reply chip), and a mention reply from a session with a long title;
  *  - a project with an 80-character name, the server's cap (the Settings forms' project pickers);
- *  - twelve sessions on the machine `/machines/:machine` opens, each in a tmux window of its own
- *    (the machine page's window strip, the Agents page's rows and its chosen agents);
+ *  - twelve sessions on the machine `/machines/:machine` opens, each in a tmux window of its own,
+ *    the first holding fourteen roles (the machine page's window strip, the Agents page's rows,
+ *    its roles list and its chosen agents);
  *  - a live session with a replayed conversation and an uploaded picture, for the two agent
  *    pages the review layers exclude (`agentSession`, `agentArtifactSlug`).
  *
@@ -75,6 +77,18 @@ const PULLS_REPO = "acme/layout-stress";
 const PULLS = 15;
 const CHILDREN = 4;
 const CHILD_PULLS = 4;
+/** How many links that are no pull request the issue holds, and the first child beside its four
+ *  pull requests: each past the rule's cap of ten, so the `links` and `child-links` lists can
+ *  break it (R3 of dispatch://INFRA-5200/spec; INFRA-3862 holds 36 links). */
+const PLAIN_LINKS = 12;
+const FIRST_CHILD_PLAIN_LINKS = 8;
+/** `count` plain links under one path, so no two issues hold the same address. */
+function plainLinks(owner: string, count: number): { kind: string; url: string }[] {
+  return Array.from({ length: count }, (_, index) => ({
+    kind: "url",
+    url: `https://docs.example.com/dispatch/${owner}/the-layout-rule-and-its-browser-test-${index + 1}`,
+  }));
+}
 /** A pull request's head commit: 40 hex digits, one commit per pull request. */
 const headOf = (pull: number): string => pull.toString(16).padStart(40, "a");
 
@@ -134,12 +148,19 @@ const MACHINE = workspaceSessions[0]?.machine_id ?? "";
 
 /** Twelve sessions on that machine, each in a tmux window of its own, with titles of the length
  *  a Legion lane writes. The first holds the claim, the next five subscribe to the issue, the
- *  seventh replies in the Inbox, and the eighth is the live session the agent pages open. */
+ *  seventh replies in the Inbox, and the eighth is the live session the agent pages open. The
+ *  first also holds thirteen roles no other session holds, fourteen in all, past the Agents row's
+ *  cap of ten, so the layout rows read that group folded behind its "+4" and opened. */
 const stressSessions: FakeSession[] = Array.from({ length: 12 }, (_, index) => ({
   capabilities: ["aside", "btw", "steer"],
   dir: `/workspaces/legion/INFRA-5200-layout-rule-worktree-${index + 1}`,
   machine_id: MACHINE,
-  roles: [`legion-architect-core-${index + 1}`],
+  roles: [
+    `legion-architect-core-${index + 1}`,
+    ...(index === 0
+      ? Array.from({ length: 13 }, (_, role) => `legion-layout-stress-${role + 1}`)
+      : []),
+  ],
   session_id: stressSessionId(index + 1),
   title:
     index === 0
@@ -279,12 +300,9 @@ export async function seedLayoutStress({
         kind: "github_pr",
         url: pullUrl(index + 1),
       })),
-      // A link that is no pull request, which today's header draws beside them and the
-      // redrawn Details lists apart (`links`).
-      {
-        kind: "url",
-        url: "https://docs.example.com/dispatch/the-layout-rule-and-its-browser-test",
-      },
+      // Links that are no pull request, which today's header draws beside them and the
+      // redrawn Details lists apart (`links`): more than the rule's cap.
+      ...plainLinks("stress-issue", PLAIN_LINKS),
     ],
     labels: LABELS,
     parent: parent.key,
@@ -312,10 +330,14 @@ export async function seedLayoutStress({
       title: prose(`Child ${child}: one surface of the layout rule`, 110),
     });
     await patchIssue(created.key, {
-      external_links: Array.from({ length: CHILD_PULLS }, (_, index) => ({
-        kind: "github_pr",
-        url: pullUrl(PULLS + (child - 1) * CHILD_PULLS + index + 1),
-      })),
+      external_links: [
+        ...Array.from({ length: CHILD_PULLS }, (_, index) => ({
+          kind: "github_pr",
+          url: pullUrl(PULLS + (child - 1) * CHILD_PULLS + index + 1),
+        })),
+        // The first child's links run past the cap of its `child-links` list.
+        ...plainLinks(`child-${child}`, child === 1 ? FIRST_CHILD_PLAIN_LINKS : 0),
+      ],
       status: child % 2 === 0 ? "in_progress" : "todo",
     });
   }
