@@ -82,8 +82,14 @@ export const PINNED_FACE_SHEET = [
   ':root { --font-mono: "Liberation Mono", monospace; --font-sans: "Liberation Sans", sans-serif; }',
 ].join("\n");
 
-/** Answers the page's requests for the pinned faces from `e2e/fonts/`. */
-export async function servePinnedFaces(page: Page): Promise<void> {
+/** The pages whose font requests `servePinnedFaces` already answers, so a second call adds no
+ *  second handler. */
+const servedPages = new WeakSet<Page>();
+
+/** Answers the page's requests for the pinned faces from `e2e/fonts/`, once per page. */
+async function servePinnedFaces(page: Page): Promise<void> {
+  if (servedPages.has(page)) return;
+  servedPages.add(page);
   await page.route(`**${PINNED_FACE_PATH}**`, async (route) => {
     const asked = new URL(route.request().url()).pathname.slice(PINNED_FACE_PATH.length);
     const face = PINNED_FACES.find((candidate) => `${candidate.dir}/${candidate.file}` === asked);
@@ -98,11 +104,17 @@ export async function servePinnedFaces(page: Page): Promise<void> {
   });
 }
 
-/** Fails unless every pinned face loaded in the page: a font route that stopped answering, or a
- *  sheet that was never added, would leave the text in the host's own faces, which only a host
- *  with other fonts than CI's would show. `document.fonts.ready` resolves either way, so each face
- *  is asked for by its family and weight. */
-export async function expectPinnedFacesLoaded(page: Page): Promise<void> {
+/** Draws the page's text in the pinned faces, and waits until each has loaded: answers their
+ *  requests from `e2e/fonts/`, adds their sheet (with Tailwind's two font variables opened with
+ *  them) to the current document, and fails unless every face loaded. A route that stopped
+ *  answering, or a sheet that never reached the page, would leave the text in the host's own
+ *  faces, which only a host with other fonts than CI's would show; `document.fonts.ready`
+ *  resolves either way, so each face is asked for by its family and weight. A navigation drops
+ *  the sheet, so call it after each load, before reading anything whose size follows its text:
+ *  the layout rows do, and so may any row that measures text, such as a header's height. */
+export async function pinFontFaces(page: Page): Promise<void> {
+  await servePinnedFaces(page);
+  await page.addStyleTag({ content: PINNED_FACE_SHEET });
   const wanted = PINNED_FACES.map(({ family, weight }) => ({ family, weight }));
   const unloaded = await page.evaluate(async (faces) => {
     const missing: string[] = [];
@@ -276,11 +288,9 @@ async function settle(page: Page, route: LayoutRoute, address: string): Promise<
 async function loadSettled(page: Page, route: LayoutRoute, address: string): Promise<void> {
   await page.goto(address);
   // A width transition would be read part-way, as `e2e/accessibility.e2e.ts` says of colours:
-  // the sheet makes the first frame after the load the settled one. The pinned faces go in with
-  // it, and `document.fonts.ready` waits for them before the page is read.
-  await page.addStyleTag({
-    content: `*, *::before, *::after { transition: none !important; }\n${PINNED_FACE_SHEET}`,
-  });
+  // the sheet makes the first frame after the load the settled one.
+  await page.addStyleTag({ content: "*, *::before, *::after { transition: none !important; }" });
+  await pinFontFaces(page);
   await settle(page, route, address);
 }
 
@@ -289,7 +299,6 @@ async function loadSettled(page: Page, route: LayoutRoute, address: string): Pro
 async function measureSettledPage(page: Page, place: ReadingPlace): Promise<LayoutReading> {
   // A web font that lands after the wait widens every line it sets.
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
-  await expectPinnedFacesLoaded(page);
   return await page.evaluate(
     measureLayout,
     entriesAt(place, layoutBreaches).map((entry) => entry.element)
@@ -301,7 +310,6 @@ async function measureSettledPage(page: Page, place: ReadingPlace): Promise<Layo
  *  after every reading, with every failure `judgeReading` found. */
 export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSeed): Promise<void> {
   await route.prepare?.(page.context());
-  await servePinnedFaces(page);
   // A minute after the seed, held there: a relative time ("just now", "2 minutes ago", "3 weeks
   // ago") widens its column with the gap between the seed and the read, which moves with the
   // run's pace on the stack and with the recording's age in a replay. `setFixedTime` keeps the

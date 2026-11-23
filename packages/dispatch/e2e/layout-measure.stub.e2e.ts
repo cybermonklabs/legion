@@ -15,11 +15,10 @@ import { expect, type Page } from "@playwright/test";
 
 import type { KnownLayoutBreach } from "./layout-breaches";
 import {
-  expectPinnedFacesLoaded,
   judgeReading,
   PINNED_FACE_SHEET,
   PINNED_FAMILIES,
-  servePinnedFaces,
+  pinFontFaces,
   staleEntries,
 } from "./layout-check";
 import { type LayoutBreach, type LayoutReading, measureLayout } from "./layout-measure";
@@ -472,23 +471,23 @@ test("a window scrolled sideways reads as it does unscrolled @pr", async ({ page
   expect(said(await page.evaluate(measureLayout, []))).toEqual(expected);
 });
 
-// The rows require each pinned face to load: a face the route answers with a 404 fails the
-// reading, as a sheet that never reached the page would.
+// The rows require each pinned face to load (`pinFontFaces`, which any row that measures text may
+// call): it passes once the faces load, and again after the next load, and a face the route
+// answers with a 404 fails it, as a sheet that never reached the page would.
 test("a layout reading fails when a pinned face does not load @pr", async ({ page }) => {
   const origin = "http://layout-fonts.test";
   await page.route(`${origin}/`, (route) =>
     route.fulfill({ body: "<!doctype html><p>words</p>", contentType: "text/html" })
   );
-  await servePinnedFaces(page);
   await page.goto(`${origin}/`);
-  await page.addStyleTag({ content: PINNED_FACE_SHEET });
-  await expectPinnedFacesLoaded(page);
+  await pinFontFaces(page);
+  await page.goto(`${origin}/`);
+  await pinFontFaces(page);
   await page.route("**/__layout-fonts/liberation/LiberationSans-Bold.ttf", (route) =>
     route.fulfill({ body: "gone", status: 404 })
   );
   await page.goto(`${origin}/`);
-  await page.addStyleTag({ content: PINNED_FACE_SHEET });
-  await expect(expectPinnedFacesLoaded(page)).rejects.toThrow("Liberation Sans 700");
+  await expect(pinFontFaces(page)).rejects.toThrow("Liberation Sans 700");
 });
 
 test("a layout reading fails on a blank page and keeps a stale entry @pr", async ({ page }) => {
