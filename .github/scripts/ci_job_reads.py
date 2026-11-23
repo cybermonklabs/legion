@@ -2699,11 +2699,13 @@ GATES = [
         darwin_vet("typecheck", DAEMON_DARWIN_VET, DAEMON),
     ], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON)),
 
-    # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
+    # The Go daemon's own suite, in a file of its own (.github/workflows/ci-job-daemon-go.yaml):
     # the plain step over every package of the module but the five concurrent ones and the text
-    # checks, the race step over those five, and the Stage 1 proof, which builds ./cmd/legion
-    # and boots it. The filter is daemon_go_tests, the list that already stood for exactly this
-    # closure while it was aliased into the test filter and gated nothing of its own. The tests
+    # checks, and the Stage 1 proof, which builds ./cmd/legion and boots it, in its job
+    # daemon-go, and the race step over those five in its job daemon-go-race, which runs at the
+    # same time; ci.yaml's daemon-go calls both, so one gate holds both. The filter is
+    # daemon_go_tests, the list that already stood for exactly this closure while it was aliased
+    # into the test filter and gated nothing of its own. The tests
     # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS), whose gate is
     # below: with them goes the Bun install, which no other test of this module needs, and with
     # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
@@ -2740,11 +2742,12 @@ GATES = [
         # its script is pinned too. What it compiles is every test file of the five packages,
         # the skipped tests' included: -skip leaves a test out of the run, never out of the
         # build, so the closure here is the step's whole closure and only those tests' own reads
-        # (the plugin-pack gate below) leave this job.
-        pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
+        # (the plugin-pack gate below) leave this gate. The step is in the file's second job,
+        # daemon-go-race, which the citation names.
+        pinned_step("daemon-go-race", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
             (DAEMON, DAEMON_RACE_PKGS, "go test -race over the five concurrent packages, the plugin-pack tests "
                                        "skipped by name", {"race": True}),
-        ]),
+        ], workflow=job_file("daemon-go")),
         pinned_step("daemon-go", DAEMON_RACE_IMPOSSIBLE_STEP, DAEMON, DAEMON_RACE_IMPOSSIBLE_SCRIPT, [
             (DAEMON, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
             for under in DAEMON_RACE_IMPOSSIBLE_PACKAGES
@@ -2766,8 +2769,11 @@ GATES = [
         (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
                                         "reads the uv row's two sources"),
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
-        (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
-        (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
+        (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image, "
+                                                f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
+                                                f"consts Image, SkippingImage"),
+        (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go-race', 'Pull the NATS test container images', job_file('daemon-go'))} "
+                                               f"const HubImage"),
     ) + forced_order_reads("daemon-go", DAEMON_FORCED_ORDER_STEP)
       + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
