@@ -219,6 +219,14 @@ type relaySockets struct {
 	// relaySocketCheckEvery is how often an open socket pings its client and asks the broker
 	// about its token: relaySocketCheckDefault, which only a test lowers.
 	relaySocketCheckEvery time.Duration
+	// closeGrace is how long a socket the server closed waits for its close frame to be written
+	// and its client's answer before it drops the connection: relaySocketCloseGrace, which only a
+	// test raises, so a row can read the order of a close and a data frame on the wire with no
+	// deadline deciding it.
+	closeGrace time.Duration
+	// writeWait bounds one data frame's write and one ping's: relaySocketWriteWait, which only a
+	// test raises, so a row that holds its client's reads decides nothing by this deadline.
+	writeWait time.Duration
 	// maxSockets is how many sockets the replica holds open (relaySocketMaxPerListener),
 	// pendingMsgs and pendingBytes what one socket holds for its client
 	// (relaySocketPendingMsgs, relaySocketPendingBytes), budget what all of them hold together
@@ -259,6 +267,8 @@ func newRelaySockets(client *bus.Client, brokers *brokerTokens, logger *logging.
 			// today; it keeps the socket safe should a cookie ever admit it.
 		},
 		relaySocketCheckEvery: relaySocketCheckInterval(),
+		closeGrace:            relaySocketCloseGrace,
+		writeWait:             relaySocketWriteWait,
 		maxSockets:            relaySocketMaxPerListener,
 		pendingMsgs:           relaySocketPendingMsgs,
 		pendingBytes:          relaySocketPendingBytes,
@@ -817,7 +827,7 @@ func (socket *relaySocket) write(frame any) error {
 	if socket.ended.Load() {
 		return errRelaySocketEnded
 	}
-	if err := socket.conn.SetWriteDeadline(time.Now().Add(relaySocketWriteWait)); err != nil {
+	if err := socket.conn.SetWriteDeadline(time.Now().Add(socket.sockets.writeWait)); err != nil {
 		return err
 	}
 	if err := socket.conn.WriteJSON(frame); err != nil {
@@ -875,7 +885,7 @@ func (socket *relaySocket) end(code int, reason string) {
 		// once a frame being written has ended, waiting for that until the deadline at most, and
 		// refuses every frame after the close (ErrCloseSent). A close frame it could not write by
 		// then goes to a client that reads nothing, which is dropped at once.
-		deadline := time.Now().Add(relaySocketCloseGrace)
+		deadline := time.Now().Add(socket.sockets.closeGrace)
 		if err := socket.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), deadline); err != nil {
 			_ = socket.conn.Close()
 			return
@@ -934,7 +944,7 @@ func (socket *relaySocket) ping() {
 	}
 	go func() {
 		defer socket.pinging.Store(false)
-		if err := socket.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(relaySocketWriteWait)); err != nil && !socket.ended.Load() {
+		if err := socket.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(socket.sockets.writeWait)); err != nil && !socket.ended.Load() {
 			socket.end(0, "")
 		}
 	}()
