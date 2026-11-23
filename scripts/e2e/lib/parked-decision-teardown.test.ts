@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -405,31 +405,35 @@ jq.test(
 // exited 0, which its caller takes for a run that left no broker session; it fails with 2 instead,
 // naming jq, and signals nothing. The stand-in broker is a sleep leading a session of its own with
 // the runtime directory in its environment, and the same call with jq on PATH then ends it, so the
-// refusal is the missing jq's and not a broker the walk could not have stopped.
-test("stop_agent_daemons on a PATH without jq fails with 2 naming jq and signals nothing", async () => {
-  const work = join(dir, "no-jq");
-  const runtime = join(work, "state", "omp-daemon");
-  mkdirSync(runtime, { recursive: true });
-  const broker = detached(["sleep", "305"], work, {
-    PATH: process.env.PATH ?? "",
-    OMP_DAEMON_RUNTIME_DIR: runtime,
-  });
-  started.push(broker);
-  await until(
-    "the stand-in broker to lead a session of its own",
-    () => alive(broker) && sessionOf(broker) === broker
-  );
-  writeFileSync(join(runtime, "broker.pid"), JSON.stringify({ pid: broker, domain: "test" }));
-  const procRoot = procRootOf(dir, [broker]);
-  const refused = harness(work, "stop_agent_daemons", { procRoot, path: pathWithout("jq") });
-  expect(refused).toEqual({
-    code: 2,
-    stdout: "",
-    stderr:
-      "stop_agent_daemons: jq is not on PATH, so no broker.pid was read and no broker session was stopped\n",
-  });
-  expect(alive(broker)).toBe(true);
-  const stopped = harness(work, "stop_agent_daemons", { procRoot });
-  expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
-  await until("the broker to end", () => !alive(broker));
-});
+// refusal is the missing jq's and not a broker the walk could not have stopped. That second call
+// needs the host's jq, so the row is gated on jq as the newline row is.
+jq.test(
+  "stop_agent_daemons on a PATH without jq fails with 2 naming jq and signals nothing",
+  async () => {
+    const work = join(dir, "no-jq");
+    const runtime = join(work, "state", "omp-daemon");
+    mkdirSync(runtime, { recursive: true });
+    const broker = detached(["sleep", "305"], work, {
+      PATH: process.env.PATH ?? "",
+      OMP_DAEMON_RUNTIME_DIR: runtime,
+    });
+    started.push(broker);
+    await until(
+      "the stand-in broker to lead a session of its own",
+      () => alive(broker) && sessionOf(broker) === broker
+    );
+    writeFileSync(join(runtime, "broker.pid"), JSON.stringify({ pid: broker, domain: "test" }));
+    const procRoot = procRootOf(dir, [broker]);
+    const refused = harness(work, "stop_agent_daemons", { procRoot, path: pathWithout("jq") });
+    expect(refused).toEqual({
+      code: 2,
+      stdout: "",
+      stderr:
+        "stop_agent_daemons: jq is not on PATH, so no broker.pid was read and no broker session was stopped\n",
+    });
+    expect(alive(broker)).toBe(true);
+    const stopped = harness(work, "stop_agent_daemons", { procRoot });
+    expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
+    await until("the broker to end", () => !alive(broker));
+  }
+);
