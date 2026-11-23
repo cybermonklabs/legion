@@ -14,7 +14,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -184,6 +186,30 @@ func (s *Store) Close() {
 
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
+}
+
+// MigrationsDigest is the SHA-256, in hex, of every embedded migration file's path, length and
+// bytes, in path order: the same set Migrate applies digests the same, and any edit to it moves
+// the digest. storetest names the database it migrates once and clones for each test by it, so a
+// tree with other migrations never clones a database migrated by a different set.
+func MigrationsDigest() (string, error) {
+	h := sha256.New()
+	err := fs.WalkDir(migrationFiles, "migrations", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, err := migrationFiles.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(h, "%s\x00%d\x00", path, len(data))
+		h.Write(data)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("digest the embedded migrations: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // versionTable is the table this runner records each applied migration in.

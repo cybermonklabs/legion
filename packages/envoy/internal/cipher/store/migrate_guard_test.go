@@ -267,11 +267,10 @@ func TestMigrateBoundsTheWaitOfItsFirstVersionTableStatement(t *testing.T) {
 // A guard row that makes migrate wait out a lock timeout holds the broker's migration lock
 // (lockAndPin's pg_advisory_xact_lock(8330001)) for all of that wait, and an advisory lock's key
 // is database-wide. So such a row migrates in a database of its own (emptySchemaStore), and a
-// broker migration on the shared database, which storetest.URL runs for every broker test and
-// every broker boot runs, does not queue behind it. Here a holder takes that lock in an open
-// transaction on the database emptySchemaStore gives, and a migration of a fresh schema of the
-// shared database, made and migrated as storetest.URL makes and migrates one, must return while
-// the holder still holds the lock. The row fails as soon as it reads the migration's backend
+// broker migration on the shared database, which this package's other tests run (testDatabaseURL),
+// does not queue behind it. Here a holder takes that lock in an open transaction on the database
+// emptySchemaStore gives, and a migration of a fresh schema of the shared database must return
+// while the holder still holds the lock. The row fails as soon as it reads the migration's backend
 // waiting on a lock behind the holder. The control holds the lock on the shared database itself:
 // there the migration is read waiting behind the holder, and returns once the holder ends, so the
 // reading sees a wait where there is one.
@@ -355,9 +354,8 @@ type sharedMigration struct {
 }
 
 // migrateASharedSchema creates a fresh schema on the BROKER_TEST_DATABASE_URL database, opens a
-// store whose search_path is that schema, and starts its Migrate in a goroutine, as storetest.URL
-// creates and migrates the schema of every broker test. The store is closed and the schema dropped
-// when t ends; the close waits for the migration to return.
+// store whose search_path is that schema, and starts its Migrate in a goroutine. The store is
+// closed and the schema dropped when t ends; the close waits for the migration to return.
 func migrateASharedSchema(t *testing.T) sharedMigration {
 	t.Helper()
 	raw := testDatabaseURL(t)
@@ -556,8 +554,8 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 // test. And the test needs a database of its own because migrate holds the broker's migration
 // lock (lockAndPin's pg_advisory_xact_lock(8330001)) to the end of each of its transactions, and
 // an advisory lock's key is database-wide: on the shared database, a row that makes migrate wait
-// out a lock timeout would hold every other broker test's migration and every broker boot there
-// behind it for that long (TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration).
+// out a lock timeout would hold every other migration there behind it for that long
+// (TestAGuardRowsLockWaitHoldsUpNoOtherBrokersMigration).
 func emptySchemaStore(t *testing.T, params ...string) *Store {
 	t.Helper()
 	databaseURL := testdb.DatabaseOn(t, testDatabaseURL(t), "broker_migrate_test")
