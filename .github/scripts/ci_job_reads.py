@@ -2665,6 +2665,10 @@ SCRIPT_TEST_GATES = [
     harness("disk_watch_test", "Test the machine watch", f"{SCRIPTS}/disk_watch.test.sh", [
         (f"{SCRIPTS}/disk_watch.py", "the module under test"),
     ]),
+    harness("go_cache_working_set_test", "Test the build cache prune of the cache fills",
+            f"{SCRIPTS}/go-cache-working-set.test.sh", [
+        (f"{SCRIPTS}/go-cache-working-set.sh", "the script under test"),
+    ]),
     # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
     harness("priorities_seed_check_test", "Test the priorities seed check (a stand-in Dispatch)",
             "scripts/priorities-seed-check.test.sh", [

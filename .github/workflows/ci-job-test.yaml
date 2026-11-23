@@ -270,6 +270,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
         required: false
+      go_cache_working_set_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.go_cache_working_set_test:
+          go-cache-working-set.test.sh and what it tests.
+        type: string
+        required: false
       priorities_seed_check_test:
         description: >-
           ci.yaml's needs.changes.outputs.priorities_seed_check_test:
@@ -603,6 +609,12 @@ jobs:
       - name: Test the CI filter check
         if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
         run: .github/scripts/check-ci-filters.test.sh
+
+      # After setup-go: its first cases build a scratch module with the real go, the one that
+      # marks the cache entries a build uses, which the script under test reads.
+      - name: Test the build cache prune of the cache fills
+        if: inputs.changes-result != 'success' || inputs.go_cache_working_set_test == 'true'
+        run: .github/scripts/go-cache-working-set.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.

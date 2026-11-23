@@ -1018,6 +1018,13 @@ disk_watch_test: &disk_watch_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/disk_watch.test.sh'
   - '.github/scripts/disk_watch.py'
+go_cache_working_set_test: &go_cache_working_set_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/go-cache-working-set.test.sh'
+  - '.github/scripts/go-cache-working-set.sh'
 # why: .github/ci-notes/ci.md#priorities_seed_check_test-the-one-harness-of-the-job-outside-githubscripts
 priorities_seed_check_test: &priorities_seed_check_test
   - *ci_router
@@ -1129,6 +1136,7 @@ test:
   - *dispatch_browser_samples_test
   - *race_memory_test
   - *disk_watch_test
+  - *go_cache_working_set_test
   - *priorities_seed_check_test
   - *architecture_check_test
   - *check_ci_filters_test

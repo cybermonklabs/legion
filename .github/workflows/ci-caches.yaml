@@ -71,12 +71,17 @@ name: CI caches
 # listed, so each family keeps one entry per runner, as it did before. A job that is downloading
 # a deleted entry at that moment gets a cache miss: actions/cache/restore warns and the job goes
 # on, compiling what the entry would have given it, so it is slower, not failed.
-# The build cache in an entry does not grow with each fill: Go deletes the objects no build has
-# used for five days (trimLimit in Go's cmd/go/internal/cache), and a restore keeps each file's
-# modification time, which is the time of last use Go reads. The module cache keeps every module
-# version it has downloaded (Go removes none by itself), until a Go bump starts the family again:
-# after a bump the fill finds no entry of the new Go (unless an older version's text starts with
-# the new one's, as the prefix note above says) and builds from nothing.
+# Each fill keeps in the build cache only what its own build used: a step before the build marks
+# every restored entry unused, the build marks what it reads or writes, and a step after it deletes
+# the rest (.github/scripts/go-cache-working-set.sh). Without that, an entry grew with each fill:
+# a build adds the objects of every package that changed and nothing takes the replaced ones out,
+# since Go's own trim deletes only what no build has used for five days and every fill was within
+# that. go-envoy-test grew from 690 MB on 2026-11-22 to 2,039 MB by 19:18Z on 2026-11-23, and its
+# restore in dispatch-browser's binaries job from 15.5 s to 59 s at the median. The module cache
+# keeps every module version it has downloaded (Go removes none by itself), so it grows only with
+# a change to a module file, until a Go bump starts the family again: after a bump the fill finds
+# no entry of the new Go (unless an older version's text starts with the new one's, as the prefix
+# note above says) and builds from nothing.
 #
 # go-envoy-infra and elan are still looked up first (`lookup-only`, and no `restore-keys`: the
 # question is whether that exact key exists, and the answer downloads nothing), and only a miss
@@ -208,6 +213,14 @@ jobs:
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
+      # Every entry of the restored build cache is marked unused here, the builds below mark what
+      # they use, and the step after them deletes the rest, so the entry saved holds this commit's
+      # build and not every build since the family was last filled from nothing
+      # (.github/scripts/go-cache-working-set.sh says how, and what that growth cost).
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: '"$GITHUB_WORKSPACE/.github/scripts/go-cache-working-set.sh" begin "$RUNNER_TEMP/go-daemon-working-set"'
+        working-directory: packages/daemon
+
       # What typecheck builds: the vet behind the e2e tag. It is the one build of this family an
       # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
       # typecheck's darwin vet is the one build left out: its darwin objects, about 1.65 GB of build
@@ -232,6 +245,10 @@ jobs:
         run: |
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -race ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/ ./internal/intake/ ./internal/shimwire/
+        working-directory: packages/daemon
+
+      - name: Delete the build cache's entries the builds did not use
+        run: '"$GITHUB_WORKSPACE/.github/scripts/go-cache-working-set.sh" end "$RUNNER_TEMP/go-daemon-working-set"'
         working-directory: packages/daemon
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -288,6 +305,10 @@ jobs:
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-
 
+      # As the daemon job's step of this name: the script's builds mark what they use.
+      - name: Mark the restored build cache's entries unused until the builds use them
+        run: .github/scripts/go-cache-working-set.sh begin "$RUNNER_TEMP/go-notices-working-set"
+
       # The very script lint's notices step runs, .github/scripts/go-release-notices.sh: the
       # same loops over .github/go-release-targets.json, .github/agent-secrets-client-targets.json
       # and .github/envoy-infra-targets.json, with the same GOOS, GOARCH and CGO_ENABLED per
@@ -299,6 +320,9 @@ jobs:
       # the day lint gains one, and nothing fails: lint just builds those objects cold on every run.
       - name: Write every Go release archive's third-party notices and cross-build the commands
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
+
+      - name: Delete the build cache's entries the builds did not use
+        run: .github/scripts/go-cache-working-set.sh end "$RUNNER_TEMP/go-notices-working-set"
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -359,6 +383,11 @@ jobs:
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
+      # As the daemon job's step of this name, for go-envoy's build.
+      - name: Mark the restored build cache's entries unused until the go-envoy build uses them
+        run: '"$GITHUB_WORKSPACE/.github/scripts/go-cache-working-set.sh" begin "$RUNNER_TEMP/go-envoy-working-set"'
+        working-directory: packages/envoy
+
       # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
       # listener and the in-process NATS server's natsd. An -o ending in a separator names a
@@ -368,6 +397,10 @@ jobs:
       # family of their own, go-envoy-darwin-vet, which the envoy-darwin-vet job fills.
       - name: Build the listener and natsd of the envoy module
         run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
+        working-directory: packages/envoy
+
+      - name: Delete the build cache's entries the go-envoy build did not use
+        run: '"$GITHUB_WORKSPACE/.github/scripts/go-cache-working-set.sh" end "$RUNNER_TEMP/go-envoy-working-set"'
         working-directory: packages/envoy
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -401,6 +434,15 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
+      # As above, for go-envoy-test's build, and naming go-envoy's kept entries as used: the entry
+      # saved below holds go-envoy's objects too, and the restore above can have put an older time
+      # on files the go-envoy build used.
+      - name: Mark the restored build cache's entries unused until the go-envoy-test build uses them
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/go-cache-working-set.sh" begin \
+            "$RUNNER_TEMP/go-envoy-test-working-set" "$RUNNER_TEMP/go-envoy-working-set"
+        working-directory: packages/envoy
+
       # envoy-go's set: the test binary of every package of the envoy module, the integration
       # package's and the natslive build of internal/testnats among them. `go test -c` links each
       # package's test binary and `-o /dev/null` writes none of them, so every object the restored
@@ -410,6 +452,10 @@ jobs:
         run: |
           go test -c -o /dev/null ./...
           go test -c -o /dev/null -tags natslive ./internal/testnats/
+        working-directory: packages/envoy
+
+      - name: Delete the build cache's entries neither envoy build used
+        run: '"$GITHUB_WORKSPACE/.github/scripts/go-cache-working-set.sh" end "$RUNNER_TEMP/go-envoy-test-working-set"'
         working-directory: packages/envoy
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -474,6 +520,13 @@ jobs:
           key: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-darwin-vet-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
+      # As the daemon job's step of this name, over the vet's own build cache.
+      - name: Mark the restored darwin build cache's entries unused until the vet uses them
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-darwin
+        run: '"$GITHUB_WORKSPACE/.github/scripts/go-cache-working-set.sh" begin "$RUNNER_TEMP/go-envoy-darwin-vet-working-set"'
+        working-directory: packages/envoy
+
       # envoy-go-build's vet, its env and its script as that step has them (ci_job_reads.py's
       # darwin_vet_script is the text check-ci-filters.sh holds that step to), so the entry holds
       # each tag set it vets.
@@ -486,6 +539,12 @@ jobs:
             echo "Vetting for darwin with $flag"
             GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
           done <<< "$flags"
+        working-directory: packages/envoy
+
+      - name: Delete the darwin build cache's entries the vet did not use
+        env:
+          GOCACHE: ${{ runner.temp }}/go-build-darwin
+        run: '"$GITHUB_WORKSPACE/.github/scripts/go-cache-working-set.sh" end "$RUNNER_TEMP/go-envoy-darwin-vet-working-set"'
         working-directory: packages/envoy
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
