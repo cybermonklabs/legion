@@ -38,7 +38,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -141,10 +143,15 @@ type specGateIssue struct {
 
 // specGateRig is stepRecordsRig's walk over a scratch Dispatch whose events reach the daemon, a
 // project that names liveRepo a spec source with an approved spec, and a GitHub whose heads move.
+// apply applies one fact with the booted daemon's own handlers (overrides.supervising), as its
+// consumers, its API and its outbox apply each fact: the seam a test delivers a fact late through,
+// in the order no live timing can be made to give it.
 type specGateRig struct {
 	*stepRecordsRig
-	gh     *specGateGitHub
-	issues map[string]specGateIssue
+	gh      *specGateGitHub
+	issues  map[string]specGateIssue
+	applyMu sync.Mutex
+	apply   func(ctx context.Context, source, eventID string, fact intake.Fact) (intake.Result, error)
 }
 
 // newSpecGateRig starts the NATS server, the daemon's store in a database of its own and the
@@ -280,7 +287,7 @@ func (r *specGateRig) seedRoot(fixture specGateFixture, issue specGateIssue, cre
 }
 
 // boot starts the whole daemon on the store as it stands, over a fake runtime of its own, with
-// specGateGitHub as GitHub.
+// specGateGitHub as GitHub, and keeps the function that applies a fact with its handlers (apply).
 func (r *specGateRig) boot() {
 	r.t.Helper()
 	r.rt, r.built = fake.NewRuntime(), &built{}
@@ -288,7 +295,27 @@ func (r *specGateRig) boot() {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.gh.url
+	o.supervising = func(_ *supervisor, apply func(context.Context, string, string, intake.Fact) (intake.Result, error)) {
+		r.applyMu.Lock()
+		defer r.applyMu.Unlock()
+		r.apply = apply
+	}
 	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), stepRecordsWait)
+}
+
+// applyLate applies fact under eventID with the booted daemon's own handlers (apply), failing
+// unless it applies.
+func (r *specGateRig) applyLate(eventID string, fact intake.Fact) {
+	r.t.Helper()
+	r.applyMu.Lock()
+	apply := r.apply
+	r.applyMu.Unlock()
+	if apply == nil {
+		r.t.Fatalf("the daemon handed the test no function that applies a fact")
+	}
+	if result, err := apply(context.Background(), "test", eventID, fact); err != nil || result.Refusal != nil || result.Duplicate {
+		r.t.Fatalf("apply %s = %+v, %v; want it applied", eventID, result, err)
+	}
 }
 
 // agentCall sends one request to Dispatch as session, through the agent bearer with the session
@@ -382,7 +409,9 @@ type specGateView struct {
 	ExemptVersion       *int   `json:"exemptVersion"`
 	Rule                string `json:"rule"`
 	VerificationVersion int    `json:"verificationVersion"`
+	ApprovedSpecMark    int64  `json:"approvedSpecMark"`
 	ChecksUnapproved    bool   `json:"checksUnapproved"`
+	ProposesUnapproved  bool   `json:"proposesUnapproved"`
 }
 
 func (r *specGateRig) gate(key string) (specGateView, string) {
@@ -569,12 +598,15 @@ func (r *specGateRig) ending(key, head string) specGateEnding {
 
 // specGateChangeRequest is Dispatch's read of an issue's change request.
 type specGateChangeRequest struct {
-	Version             int  `json:"version"`
-	VerificationVersion int  `json:"verification_version"`
-	SpecSource          bool `json:"spec_source"`
-	Proposes            bool `json:"proposes"`
-	ChangesChecks       bool `json:"changes_checks"`
-	Conclusion          *struct {
+	Version                 int   `json:"version"`
+	VerificationVersion     int   `json:"verification_version"`
+	SpecSource              bool  `json:"spec_source"`
+	Proposes                bool  `json:"proposes"`
+	ChangesChecks           bool  `json:"changes_checks"`
+	ProposesUnapproved      bool  `json:"proposes_unapproved"`
+	ChangesChecksUnapproved bool  `json:"changes_checks_unapproved"`
+	ApprovedSpecMark        int64 `json:"approved_spec_mark"`
+	Conclusion              *struct {
 		Block   string `json:"block"`
 		Answers []struct {
 			Body string `json:"body"`
@@ -1483,6 +1515,210 @@ func TestAVerificationEditOfAnApprovedCheckClosesAPersonsApproval(t *testing.T) 
 	}
 	if gate, _ := r.gate(plainKey); gate.Rule != "approval" || gate.VerificationVersion != 0 || gate.ChecksUnapproved {
 		t.Fatalf("the design gate of %s is %+v, want today's gate, which reads no Verification document", plainKey, gate)
+	}
+}
+
+// TestAnApprovalElsewhereClosesTheGateItsChangeRequestReads is R22 and R25 for the one input of a
+// change request that no event of its own issue moves: the approved spec of its repository, which
+// another issue's approval writes. Two roots stand open in merging, each merger running with its
+// head queued: one opened by exemption (its request proposes nothing and holds the approved check
+// as context), one by a person's approval (its request proposes a statement and holds the same
+// check as context). An approval elsewhere that writes a statement neither request reads moves the
+// approved spec: the daemon reads both requests again, and both gates stay open with their mergers
+// told nothing. An approval elsewhere that changes the approved check both requests hold closes
+// both gates under the running mergers: each merger is told, takes its head out of the queue and
+// enqueues nothing, each root's architect is told why, the person's approval is kept, and a fresh
+// registration at the same two document versions holds the gate too. Then a read taken before that
+// approval and applied after it — a registration whose read raced the approval's event — opens
+// neither gate again: a read of an older approved spec never overwrites a newer one.
+func TestAnApprovalElsewhereClosesTheGateItsChangeRequestReads(t *testing.T) {
+	exempt := specGateFixture{title: "Receipt printer repair", repo: liveRepo, legion: true,
+		spec: specGateConcluded("The receipt printer is repaired."), checks: specGateCheckBlock("1", "A second charge of one order fails.")}
+	person := specGateFixture{title: "Invoice order reference", repo: liveRepo, legion: true,
+		spec:   specGateConcluded(":::requirement{#an-invoice-shows-its-order kind=\"behavior\"}\nAn invoice shows its order.\n:::"),
+		checks: specGateCheckBlock("1", "A second charge of one order fails.")}
+	unrelated := specGateFixture{title: "Refund naming policy", repo: liveRepo,
+		spec: specGateConcluded(":::requirement{#a-refund-names-its-order kind=\"behavior\"}\nA refund names its order.\n:::")}
+	changing := specGateFixture{title: "Settlement delay notice", repo: liveRepo,
+		spec: specGateConcluded("The settlement worker states the delay."), checks: specGateCheckBlock("1", "A second charge of one order fails within a day.")}
+	r := newSpecGateRig(t, exempt, person, unrelated, changing)
+	ctx := context.Background()
+	// Each root walks to merging with its three lists at the head, its merger runs and enqueues the
+	// head: the first with no person, the second once the person approves its spec with its
+	// Verification document.
+	walk := func(fixture specGateFixture) (string, *specGateMerger) {
+		key := r.issues[fixture.title].key
+		if status, body := r.register(key, 1); status != http.StatusOK {
+			t.Fatalf("the registration of %q = %d %s, want 200", fixture.title, status, body)
+		}
+		if fixture.title == exempt.title {
+			r.requireExempt(key, fixture.title+" at its registration")
+		} else {
+			r.approve(r.issues[fixture.title], r.session(key, claim.RoleArchitect), true)
+			testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, fmt.Sprintf("the gate of %q to open by the person's approval", fixture.title), func() bool {
+				gate, _ := r.gate(key)
+				return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.CurrentVersion && !gate.ChecksUnapproved
+			})
+		}
+		r.walkToMerging(key)
+		r.recordOutcomes(key, r.session(key, claim.RoleImplementer), "author", stepRecordsHead)
+		reviewer := r.session(key, claim.RoleReviewer)
+		r.recordOutcomes(key, reviewer, "reviewer", stepRecordsHead)
+		r.recordOutcomes(key, reviewer, "final", stepRecordsHead)
+		r.awaitLaunch(r.tokenOf(key, claim.RoleMerger))
+		m := r.merger(key)
+		if !m.enqueue(stepRecordsHead) {
+			t.Fatalf("the merger of %q could not enqueue its head while its gate stands open", fixture.title)
+		}
+		return key, m
+	}
+	exemptKey, exemptMerger := walk(exempt)
+	personKey, personMerger := walk(person)
+	roots := []struct {
+		key    string
+		merger *specGateMerger
+	}{{exemptKey, exemptMerger}, {personKey, personMerger}}
+	open := func(key string, gate specGateView) bool {
+		if gate.ChecksUnapproved || gate.ProposesUnapproved {
+			return false
+		}
+		if key == exemptKey {
+			return gate.ExemptVersion != nil && *gate.ExemptVersion == gate.CurrentVersion
+		}
+		return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.CurrentVersion
+	}
+	closedToArchitect := func(key string) []string {
+		var closed []string
+		for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(r.tokenOf(key, claim.RoleArchitect))) {
+			if strings.HasPrefix(published.Message, "The design gate of "+key+" closed:") {
+				closed = append(closed, published.Message)
+			}
+		}
+		return closed
+	}
+	toldBefore := map[string]int{}
+	marks := map[string]int64{}
+	for _, root := range roots {
+		gate, _ := r.gate(root.key)
+		if !open(root.key, gate) || gate.VerificationVersion != 1 {
+			t.Fatalf("the design gate of %s before any approval elsewhere is %+v, want it open at Verification version 1", root.key, gate)
+		}
+		marks[root.key], toldBefore[root.key] = gate.ApprovedSpecMark, len(closedToArchitect(root.key))
+	}
+
+	// An approval elsewhere that writes a statement neither request reads: the approved spec moves,
+	// the daemon reads each request again (each gate's approved-spec mark moves), and both gates
+	// stay open, their mergers told nothing.
+	r.approve(r.issues[unrelated.title], "session-elsewhere", false)
+	r.requireApproved("a-refund-names-its-order")
+	for _, root := range roots {
+		if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
+			gate, _ := r.gate(root.key)
+			return gate.ApprovedSpecMark > marks[root.key]
+		}) {
+			gate, _ := r.gate(root.key)
+			t.Errorf("after an approval elsewhere the design gate of %s is %+v, read at approved-spec mark %d still; want the daemon to read its change request again",
+				root.key, gate, marks[root.key])
+		}
+	}
+	time.Sleep(liveSettle)
+	for _, root := range roots {
+		if gate, stands := r.gate(root.key); !open(root.key, gate) || stands != string(phase.Merging) {
+			t.Fatalf("the design gate of %s after an approval elsewhere that its request does not read is %+v in %s, want it open in merging", root.key, gate, stands)
+		}
+		if closed := root.merger.messages("closed"); len(closed) != 0 {
+			t.Fatalf("the merger of %s was told %q after an approval elsewhere that its request does not read; want nothing", root.key, closed)
+		}
+	}
+
+	// The reads a registration racing the next approval takes: each root's change request and the
+	// place of the issue's event log it was read at, both before that approval.
+	client := dispatch.New(r.dispatch.base, r.dispatch.token)
+	early := map[string]*intake.ChangeRequestRead{}
+	since := map[string]int64{}
+	for _, root := range roots {
+		read, err := client.ChangeRequest(ctx, root.key, 1)
+		if err != nil || read.ChangesChecksUnapproved {
+			t.Fatalf("the change request of %s before the approval elsewhere = %+v, %v; want it read, holding no unapproved check", root.key, read, err)
+		}
+		early[root.key] = intake.ChangeRequestReadOf(read)
+		var issue createdIssue
+		r.read("/api/v1/issues/"+root.key, &issue)
+		if issue.LastSeq <= 0 {
+			t.Fatalf("Dispatch answers %s with no place in its event log (%+v); the raced registration below needs one", root.key, issue)
+		}
+		since[root.key] = issue.LastSeq
+	}
+
+	// An approval elsewhere that changes the approved check both requests hold as context. Neither
+	// issue's documents move, and Dispatch reads each request as changing an approved check that no
+	// person approved.
+	r.approve(r.issues[changing.title], "session-elsewhere", true)
+	for _, root := range roots {
+		read := r.changeRequest(root.key)
+		if read.Version != 1 || read.VerificationVersion != 1 || !read.ChangesChecksUnapproved {
+			t.Fatalf("the change request of %s after the approval elsewhere reads %+v; want versions 1 and 1 and a changed check no person approved", root.key, read)
+		}
+		if codes := r.ending(root.key, stepRecordsHead).codes(); !slices.Equal(codes, []string{"changes_checks_without_approval"}) {
+			t.Fatalf("the ending of %s after the approval elsewhere gives %v, want [changes_checks_without_approval]", root.key, codes)
+		}
+	}
+	for _, root := range roots {
+		if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool { return len(root.merger.messages("closed")) > 0 }) {
+			t.Errorf("the merger of %s was told nothing after the approval elsewhere changed the approved check its request holds; queue actions %v",
+				root.key, root.merger.actions)
+		} else if closed := root.merger.messages("closed"); len(closed) != 1 || !strings.Contains(closed[0], "approved spec") {
+			t.Errorf("the merger of %s was told %q; want one closed gate that names the approved spec", root.key, closed)
+		}
+		gate, stands := r.gate(root.key)
+		if open(root.key, gate) || !gate.ChecksUnapproved || stands != string(phase.Merging) {
+			t.Errorf("the design gate of %s after the approval elsewhere is %+v in %s; want it closed in merging, held by the changed check", root.key, gate, stands)
+		}
+		if root.key == personKey && (gate.ApprovedVersion == nil || *gate.ApprovedVersion != gate.CurrentVersion) {
+			t.Errorf("the design gate of %s after the approval elsewhere is %+v; want the person's approval kept", root.key, gate)
+		}
+		if root.merger.enqueue(stepRecordsHead) {
+			t.Errorf("the merger of %s enqueued its head after the approval elsewhere changed the approved check", root.key)
+		}
+		if want := []string{"enqueue " + stepRecordsHead, "dequeue " + stepRecordsHead}; !slices.Equal(root.merger.actions, want) {
+			t.Errorf("the merger's queue actions on %s are %v, want %v", root.key, root.merger.actions, want)
+		}
+		if told := closedToArchitect(root.key)[toldBefore[root.key]:]; len(told) != 1 || !strings.Contains(told[0], "approved spec") {
+			t.Errorf("the architect of %s was told %q after the approval elsewhere; want one closed gate that names the approved spec", root.key, told)
+		}
+	}
+
+	// A fresh registration at the same two document versions reads the newer approved spec and
+	// keeps the hold.
+	for _, root := range roots {
+		if status, body := r.register(root.key, 1); status != http.StatusOK {
+			t.Fatalf("the registration of %s again = %d %s, want 200", root.key, status, body)
+		}
+		if gate, _ := r.gate(root.key); open(root.key, gate) || !gate.ChecksUnapproved {
+			t.Errorf("the design gate of %s after a registration again at versions 1 and 1 is %+v; want it held by the changed check", root.key, gate)
+		}
+	}
+
+	// A registration whose read was taken before the approval elsewhere, applied after it: the read
+	// is of the older approved spec, so it changes neither gate, and neither merger is told it
+	// opened.
+	for _, root := range roots {
+		gate, _ := r.gate(root.key)
+		raced := intake.GateRegistered{Issue: root.key, Step: record.DesignStepSpec, ArtifactID: gate.ArtifactID, Version: 1, DispatchVersion: 1,
+			Since: record.EventMark{Seq: since[root.key]}, ChangeRequest: early[root.key]}
+		if root.key == personKey {
+			raced.ApprovedVersion, raced.ReviewedBy = 1, dispatch.Actor{Kind: "user", ID: "step-records"}
+		}
+		r.applyLate("raced-registration-"+root.key, raced)
+	}
+	time.Sleep(liveSettle)
+	for _, root := range roots {
+		if gate, _ := r.gate(root.key); open(root.key, gate) || !gate.ChecksUnapproved {
+			t.Errorf("the design gate of %s after a registration whose read predates the approval elsewhere is %+v; want it held as the newer read left it", root.key, gate)
+		}
+		if opened := root.merger.messages("opened"); len(opened) != 0 {
+			t.Errorf("the merger of %s was told %q after a read of the older approved spec; want nothing", root.key, opened)
+		}
 	}
 }
 
