@@ -622,6 +622,35 @@ func TestTheStepATestersCompletionNamesIsTakenOnlyOnAFail(t *testing.T) {
 	})
 }
 
+// A pass that the check states decide and that moves nothing says nothing of the step the
+// tester's completion named: the line that the step is not used is written by the pass's move out
+// of testing, so each later state event that decides the same pass again and moves nothing again
+// says nothing either. No production path stands an issue in testing on a line with no testing
+// step, since a running task's steps cannot change (versionRefusal, plan_given.go), so the store is
+// written that way here: LEGION-208 in testing, its task's steps `implementer reviewer`, which give
+// the testing move no row (TableOf), and its tester's completion at headOne naming returnTo 1.
+// Control: the pass subtest of TestTheStepATestersCompletionNamesIsTakenOnlyOnAFail, whose pass
+// moves the issue and says so once.
+func TestAPassThatMovesNothingSaysNothingOfTheStepNamed(t *testing.T) {
+	pool := migratedPool(t)
+	engine, logged := loggedEngine()
+	root := stepRoot(t, pool, phase.Testing)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleTester, Claim: "test-claim", HandoffCommit: headOne,
+		HandoffRecord: "test-1", HandoffVersion: 1, ReturnTo: 1})
+
+	for range 2 {
+		testedAs(t, pool, engine, root.Key, headOne, true)
+	}
+
+	if got := issueOf(t, pool, engine, root.Key); got.Phase != phase.Testing {
+		t.Fatalf("%s stands in %s after the passing states, want testing: its line has no testing row to move by", root.Key, got.Phase)
+	}
+	if n := strings.Count(logged.String(), returnNotUsed); n != 0 {
+		t.Fatalf("the log says %d times that the step named is not used, want never: no move took the pass:\n%s", n, logged)
+	}
+}
+
 // A tester's fail can arrive after a later version of the plan took its step off the task's line:
 // the owner stopped task a in testing and gave version 3, `implementer reviewer`, which started
 // the task again at its implementer. The fail is a report of a run the daemon ended without it
