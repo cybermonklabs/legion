@@ -102,14 +102,17 @@ const calloutPingLines = "# a replica of the auth service that answers nothing i
 //
 // The lines are part of CalloutLines, so the clustered hub rolls its pods when the tag comes or
 // goes (CalloutLines says why). nats-server also reloads server_tags (server/reload.go:360-366,
-// :1698-1699), so a change of the tag alone reaches a running server whose file is reloaded, as
-// the clustered hub's reloader does, before any restart. Each reload, whatever it changes, decides
-// every callout connection again: it always reloads the users (reload.go:1651-1654, :1706-1707,
-// :2091-2093). A client the auth service named carries that name and no nkey
-// (auth_callout.go:326-333), so it names no configured user, and the reload closes it; it
-// reconnects through the callout (reload.go:2291-2299, :2349-2352, :2398-2432). Envoy's auth
-// service names each client it admits. An unnamed client that presented no user name or nkey goes
-// through the callout again on its live connection (reload.go:2354-2358).
+// :1698-1699), so a change of these lines alone would reach a running server whose file is
+// reloaded, as the clustered hub's reloader does, before any restart. Setting or removing
+// PrivateProjects is never such a change: it brings or takes the accounts block and the callout's
+// account with the tag, a change of the callout no reload takes, so the tag reaches a server only
+// as it restarts. Each reload, whatever it changes, decides every callout connection again: it
+// always reloads the users (reload.go:1651-1654, :1706-1707, :2091-2093). A client the auth
+// service named carries that name and no nkey (auth_callout.go:326-333), so it names no configured
+// user, and the reload closes it; it reconnects through the callout (reload.go:2291-2299,
+// :2349-2352, :2398-2432). Envoy's auth service names each client it admits. An unnamed client that
+// presented no user name or nkey goes through the callout again on its live connection
+// (reload.go:2354-2358).
 const privateProjectsTagLines = "# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service\n" +
 	"server_tags: [\"" + natsgrant.PrivateProjectsServerTag + "\"]\n"
 

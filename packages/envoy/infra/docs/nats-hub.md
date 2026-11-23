@@ -1094,16 +1094,21 @@ annotation `envoy-infra.sjawhar.dev/auth-callout` (absent without `authCallout`)
 pods, by the same depends-on order as the session user's roll, on a change of any of them: a pod
 restarted on the old `auth.conf` would keep the old callout, and the reload that later brings the
 new one would be refused. nats-server also reloads `server_tags` (`server/reload.go:360-366`,
-`:1698-1699`), so a change of the tag alone reaches a pod by its reloader before the roll restarts
-it, and that reload, like every reload, decides each callout connection again (above). The roll
+`:1698-1699`), so a change of the tag's lines alone would reach a pod by its reloader before the
+roll restarts it, and that reload, like every reload, decides each callout connection again
+(above). Setting or removing `privateProjects` is never such a change: the `accounts` block and the
+callout's `account` come and go with the tag, so nats-server refuses that reload and the tag
+arrives only with the roll. The roll
 is there so that every server takes a change of these lines at one known moment, its pod's restart,
 after the ConfigMap is applied; a reload comes when the kubelet updates the mounted file, which
 nothing orders. The ping lines are in the digest so that every server applies an edit of them at
 that moment, with every connection's timer started fresh. The routes' own ping in
 `nats.conf`'s `cluster` block
 ([below](#two-ports-guarded-by-the-networkpolicy-alone)) appears and goes with the callout, so it
-always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods
-as they were, and the reloader applies it. A
+always arrives with a roll. Without `privateProjects` a change of a user's grant or name alone
+leaves the lines and the pods as they were, and the reloader applies it; beside it, the `accounts`
+block, which holds each user's name and grant, is among the lines, so such a change rolls the pods
+too. A
 `gcp:NatsHub` needs none of this: its configuration is the instance template's `user-data`
 (`gcp/natshub.go:807`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
 `RECREATE`: `gcp/natshub.go:834-840`), so any configuration change restarts its server already.
