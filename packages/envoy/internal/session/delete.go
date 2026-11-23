@@ -141,20 +141,22 @@ func (c DeleteConditions) keeps(stored SessionEntry) DeleteOutcome {
 // revision together, and the delete names that revision (nats.LastRevision), so a registration
 // that landed in between is kept rather than deleted on the strength of a value that is no longer
 // stored. JetStream refuses that delete with wrong last sequence (10071, which nats.go names
-// nats.ErrKeyExists), and the whole sequence runs once more, reading the entry from the bucket
-// stream's leader this time (readForStop): the common cause is the deleting instance's own
-// heartbeat landing between the read and the delete, and answering "kept" for it would leave the
-// predecessor's entry alive and turn the role claim that follows into a 409 for no reason; the
-// other is a copy of a replicated bucket one write behind the leader, whose older entry's revision
-// the bucket refuses at every attempt that reads that copy again. A second lost compare-and-swap
-// answers EntryKeptAfterLostRace and no error, the outcome that says the entry stayed without
-// claiming whose registration it is now.
+// nats.ErrKeyExists), and the whole sequence runs once more: the common cause is the deleting
+// instance's own heartbeat landing between the read and the delete, and answering "kept" for it
+// would leave the predecessor's entry alive and turn the role claim that follows into a 409 for
+// no reason. A second lost compare-and-swap answers EntryKeptAfterLostRace and no error, the
+// outcome that says the entry stayed without claiming whose registration it is now.
 //
 // EntryDeleted and no error means the entry is gone; any kept outcome and no error means the
 // entry stayed, and the caller keeps whatever it names; an error means the bucket did not answer,
 // ctx's end among them, and the outcome is EntryUnanswered. The cache follows the bucket
 // afterwards exactly as it does after Delete. A delete ctx abandoned may still land after this
 // answer, and that is safe: it deletes only the revision it compared.
+//
+// The run after a refused delete reads the entry from the bucket stream's leader (readForStop): a
+// copy of a replicated bucket one write behind the leader answers the entry as it stood before
+// that write, and a delete fenced on that copy's revision is refused at every attempt that reads
+// the copy again.
 func (r *SessionRegistry) DeleteIf(ctx context.Context, sessionID string, conditions DeleteConditions) (DeleteOutcome, error) {
 	// The handle and the fence are read together before the bucket calls, as Delete reads them:
 	// the fence is the bucket's this handle reaches only when the read under way began in its
