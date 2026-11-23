@@ -655,7 +655,8 @@ matches no file (its rule 9).
 envoy's script tests (envoy-go-checks): each step runs a bash harness under packages/envoy
 (scripts/, loadtest/ and deploy/scripts/) over fakes, and the harness runs, sources and reads
 the scripts, fixtures and compose files beside it, so the filter names that tree whole, with the
-workspace install the job's Bun step reads. No step's `run:` starts a go command, so the
+workspace install the job's Bun step reads and .github/actions/install-helm, the helm the
+cluster suite's render of nats.yaml runs. No step's `run:` starts a go command, so the
 workspace's module files are not on it.
 
 ## text_checks: The text checks of the three Go modules, the Dispatch
@@ -1783,11 +1784,11 @@ takes a `job` input: each of its jobs carries exactly `if: inputs.job == '<its i
 caller passes `job: <its own id>`, and each job ends with the ci-ok-report step under its own
 id. A call runs the one job named for its caller, and the other reads `skipped` under it.
 
-.github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): each caller of a
-file two ci.yaml jobs call must have a job of it named for itself, which must carry that `if:`,
-and must pass its own id, since a job that ran under a second caller would read files that
-caller's filter is never held to, and a caller with no job of its own there runs nothing its
-filter is held to.
+.github/scripts/ci_filter_coverage.py holds that shape (check_called_jobs): once a file two
+ci.yaml jobs call holds a job named for any of its callers, each caller must have a job of it
+named for itself, which must carry that `if:`, and must pass its own id, since a job that ran
+under a second caller would read files that caller's filter is never held to, and a caller with
+no job of its own there runs nothing its filter is held to.
 .github/scripts/ci_job_reads.py's SHARED_FILE maps each new half to the file it shares, so its
 gates find their steps there. Each half keeps a filter of its own, and both name the shared
 file, so a change to it selects both. dispatch-browser.yaml has two callers too,

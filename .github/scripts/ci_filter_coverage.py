@@ -305,7 +305,7 @@ def called_workflows(document: dict) -> dict:
 # The input a workflow several jobs of ci.yaml call reads to run, under each caller, the job of it
 # named for that caller and no other: ci-job-test.yaml holds `test` and `tooling-checks`, the
 # two halves of what was one job, and ci.yaml's job of each id passes its own id. A file that
-# several jobs call and that holds no job named for one of them (dispatch-browser.yaml, which
+# several jobs call and that holds no job named for any of them (dispatch-browser.yaml, which
 # dispatch-browser and dispatch-browser-pr call with a lane each) runs every job under every
 # caller.
 CALLER_INPUT = "job"
@@ -323,12 +323,12 @@ def check_called_jobs(documents: dict, problems: list[Annotation]) -> None:
     """A workflow several ci.yaml jobs call is read job by job: each job named for one of its
     callers is read as that caller's alone (called_job_owners), so the rules that hold a job's go
     commands, its environment and its gated steps to its own gate hold it to that caller's. That
-    reading is sound only while the job really runs under that caller alone: its `if:` must be
-    exactly `inputs.job == '<its id>'`, every caller named for a job of the file must pass
-    `job: <its own id>`, and, once one caller has a job of the file named for it, every caller
-    must, or a caller with none runs no job of the file this check can hold to its gate. A job that
-    ran under a second caller would run go commands and read files that caller's filter is never
-    held to."""
+    reading is sound only while the job really runs under that caller alone. So, once the file
+    holds a job named for any of its callers: each caller must have a job of the file named for
+    it, else no job of the file runs under that caller for this check to hold to its gate; that
+    job's `if:` must be exactly `inputs.job == '<its id>'`; and the caller must pass
+    `job: <its own id>`. A job that ran under a second caller would run go commands and read files
+    that caller's filter is never held to."""
     for path, callers in workflow_callers(documents[WORKFLOW]).items():
         if len(callers) < 2:
             continue
