@@ -23,7 +23,9 @@ export const settingsTableRow = `border-b last:border-0 ${borderDefault}`;
  *  - a select's longest option sets its natural width - never pushes the form's last control past
  *  the viewport (Settings scrolled sideways at 1280 px on a long project name). */
 export const settingsFieldLabel = `grid min-w-0 grid-cols-[minmax(0,1fr)] gap-1 text-sm font-medium ${textSecondaryOnCanvas}`;
-export const settingsMonoInput = `rounded-md px-3 py-2 font-mono ${inputClasses(false)} ${textPrimaryOnSurface}`;
+/** A one-line field of a value: a value or a placeholder longer than the box ends in an ellipsis
+ *  while the reader is not in it, rather than being cut at the box's edge with no sign. */
+export const settingsMonoInput = `rounded-md px-3 py-2 font-mono text-ellipsis ${inputClasses(false)} ${textPrimaryOnSurface}`;
 export const settingsSubmitButton = `min-h-11 rounded-md px-4 py-2 font-medium disabled:cursor-not-allowed disabled:opacity-50 md:min-h-9 ${primaryButtonBg} ${primaryButtonHoverBg}`;
 /** An `owner/repo` field's `pattern`: one slash between an owner and a name that hold neither a
  *  slash nor whitespace. Its slashes are escaped because browsers compile a `pattern` with the `v`

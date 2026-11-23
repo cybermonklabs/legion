@@ -449,9 +449,11 @@ export function InPlaceField({
   // until the reader hovers it. Opened from a chip it is as tall as the chip it stands for, 44 px
   // on a phone and 28 px from `sm`, so the row keeps its height.
   const field = (
+    // A value longer than the field ends in an ellipsis while the reader is not in it, rather
+    // than being cut at the field's edge with no sign; in the field the whole text scrolls.
     <input
       {...typing}
-      className={`${closed === undefined ? "w-full py-1" : "min-h-11 w-48 max-w-full py-0.5 sm:min-h-7"} rounded-md border px-2 text-sm outline-none focus-visible:ring-2 ${inputClasses(true)} ${focusVisibleRing} ${textPrimaryOnSurface}`}
+      className={`${closed === undefined ? "w-full py-1" : "min-h-11 w-48 max-w-full py-0.5 sm:min-h-7"} rounded-md border px-2 text-sm text-ellipsis outline-none focus-visible:ring-2 ${inputClasses(true)} ${focusVisibleRing} ${textPrimaryOnSurface}`}
       id={fieldId}
       list={listId}
       type="text"
