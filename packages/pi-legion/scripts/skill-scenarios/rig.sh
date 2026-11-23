@@ -814,8 +814,9 @@ given_services() {
 }
 
 # safe_url URL prints URL without the password of its userinfo, for a note, a failure message and a
-# run's dispatch.json: a server the operator gave can carry one in its URL.
-safe_url() { printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^@]*@,\1@,'; }
+# run's dispatch.json: a server the operator gave can carry one in its URL. The password runs to the
+# last `@` before the path, the query or the fragment, so a raw `@` in it goes too.
+safe_url() { printf '%s\n' "$1" | sed -E 's,^([a-z]+://[^:/@]+):[^/?#]*@,\1@,'; }
 
 # pg_sql URL SQL runs SQL on URL and prints each row's values, one row a line, tabs between them.
 # It speaks to Postgres through the bun every command here already runs on, rather than a psql an
@@ -833,16 +834,23 @@ try {
 }' -- "$2"
 }
 
-# pg_database_url URL NAME prints URL with NAME as its database and its query kept: where a run's
-# own Dispatch server reaches the database own_dispatch made for it.
+# pg_database_url URL NAME prints URL with NAME as its database and its query kept, less each
+# `dbname=` parameter: libpq and pgx take a `dbname` in the query over the path, so a kept one would
+# send every run's Dispatch to the database it names. The other parameters stay in their order, and
+# a URL whose query keeps none prints no `?`. This is where a run's own Dispatch server reaches the
+# database own_dispatch made for it.
 pg_database_url() {
-  local scheme=${1%%://*} rest=${1#*://} query=''
+  local scheme=${1%%://*} rest=${1#*://} kept='' param
+  local -a params=()
   case $rest in *\?*)
-    query="?${rest#*\?}"
+    IFS='&' read -ra params <<<"${rest#*\?}"
     rest=${rest%%\?*}
     ;;
   esac
-  printf '%s://%s/%s%s\n' "$scheme" "${rest%%/*}" "$2" "$query"
+  for param in "${params[@]}"; do
+    case $param in dbname=*) ;; *) kept+="&$param" ;; esac
+  done
+  printf '%s://%s/%s%s\n' "$scheme" "${rest%%/*}" "$2" "${kept:+?${kept#&}}"
 }
 
 # nats_ready URL succeeds when a server answers on URL's host and port with the INFO line every

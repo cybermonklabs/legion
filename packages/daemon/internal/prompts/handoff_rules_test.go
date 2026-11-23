@@ -43,11 +43,7 @@ func TestEachRolesHandoffBodyIsItsHeadAndANote(t *testing.T) {
 		t.Run(tc.part, func(t *testing.T) {
 			ruleIn(t, tc.part, tc.marker, tc.want...)
 			for _, paragraph := range ruleParagraphs(partText(t, tc.part), tc.marker) {
-				for _, field := range tc.gone {
-					if strings.Contains(paragraph, field) {
-						t.Errorf("%s's paragraph that says %q still asks for %q, which the handoff no longer holds", tc.part, tc.marker, field)
-					}
-				}
+				holdsAndRetires(t, tc.part+"'s handoff paragraph", paragraph, nil, tc.gone)
 			}
 		})
 	}

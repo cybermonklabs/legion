@@ -17,6 +17,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
+import { RECORD_HEAD } from "@legion/pi-shared/handoff-record";
 import { z } from "zod";
 // The gate's own names for its rules and the line its refusal opens with, read from the module
 // that writes them, so this rig scores what AskGate actually says. The rigs are not shipped
@@ -116,19 +117,20 @@ const DaemonLine = z.looseObject({
   handoffVersion: z.number().optional(),
 });
 const nonEmpty = z.string().min(1);
-/** The keys a test handoff holds, as the tester role's prompt gives them: `head`, a `note` where
- * the tester has one, and, until dispatch://INFRA-4930 moves them to results on the issue's checks,
- * `implementerProof`, `failures` and `failed`. */
-const TEST_HANDOFF_KEYS: Record<string, true> = {
-  head: true,
-  note: true,
-  implementerProof: true,
-  failures: true,
-  failed: true,
+/** The keys a test handoff holds, as the tester role's prompt gives them, each with the shape the
+ * score reads (TestHandoff): `head`, a `note` where the tester has one, and, until
+ * dispatch://INFRA-4930 moves them to results on the issue's checks, `implementerProof`, `failures`
+ * and `failed`. */
+const TEST_HANDOFF_KEYS = {
+  head: z.string().regex(RECORD_HEAD),
+  note: z.string().optional(),
+  implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
+  failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
+  failed: z.number().int().nonnegative().optional(),
 };
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: `head`, the commit the tester tested, as
- * 40 lower-case hexadecimal characters (as pi-shared's handoff-record.ts `recordHead` reads it); a
+ * 40 lower-case hexadecimal characters (pi-shared's `RECORD_HEAD`, as `recordHead` reads it); a
  * `note`, whose length the score does not read; the verdict on the implementer's recorded
  * results; and the failures, each naming the check it is against, with their count. What the
  * tester ran is no part of the handoff: it is a result recorded against a `check` block of the
@@ -145,23 +147,15 @@ const TEST_HANDOFF_KEYS: Record<string, true> = {
  * `d-scenario` check reads.
  * Nothing stamps a handoff for the tester: it writes the whole body and records it with
  * `dispatch handoff-write`. */
-export const TestHandoff = z
-  .looseObject({
-    head: z.string().regex(/^[0-9a-f]{40}$/),
-    note: z.string().optional(),
-    implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
-    failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
-    failed: z.number().int().nonnegative().optional(),
-  })
-  .superRefine((body, context) => {
-    for (const key of Object.keys(body))
-      if (TEST_HANDOFF_KEYS[key] !== true)
-        context.addIssue({
-          code: "custom",
-          path: [key],
-          message: `a test handoff holds no ${key}`,
-        });
-  });
+export const TestHandoff = z.looseObject(TEST_HANDOFF_KEYS).superRefine((body, context) => {
+  for (const key of Object.keys(body))
+    if (!Object.hasOwn(TEST_HANDOFF_KEYS, key))
+      context.addIssue({
+        code: "custom",
+        path: [key],
+        message: `a test handoff holds no ${key}`,
+      });
+});
 
 function lines(file: string): string[] {
   if (!existsSync(file)) return [];
@@ -3063,9 +3057,9 @@ function median(values: number[]): number {
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
- *     in the same Postgres container (`sharing`, each Dispatch's runs). A `dispatch search`
- *     searches every project of its server, so runs that share one can read each other's issue
- *     and asks, and one run's answer can be another's;
+ *     in the same Postgres (the container's id or the given server's URL) (`sharing`, each
+ *     Dispatch's runs). A `dispatch search` searches every project of its server, so runs that
+ *     share one can read each other's issue and asks, and one run's answer can be another's;
  *   - it never finished: out.txt has no `exit=` line;
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
@@ -3351,7 +3345,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       return [];
     }
   });
-  // Every run's own Dispatch, keyed by its Postgres container and database, with the runs that
+  // Every run's own Dispatch, keyed by its Postgres and database, with the runs that
   // name it. A run that records none is scored or not by unscored, below; a dispatch.json that does
   // not parse is its own run's rig error, below.
   const sharing = new Map<string, string[]>();
