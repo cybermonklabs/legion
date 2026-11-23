@@ -33,7 +33,7 @@ import (
 const podStopBound = time.Second
 
 // cutShortLine is the line a launch writes when something takes its start out of the pod's gate
-// before it ran (supervise's dropPodPark).
+// before it ran (supervise's endPodPark).
 const cutShortLine = "supervise: launch cut short while it waited for its issue pod's start"
 
 // waitsAtGateLine is the line a launch writes when its start parks at the pod's gate behind
@@ -53,15 +53,16 @@ func podGated(sup *supervisor) *testlog.Buffer {
 }
 
 // podPair is LEGION-208's implementer, whose process the gate let start and whose session load
-// holds the pod for as long as the test runs, and its tester, suspended by the daemon over a
-// session of its own, whose launch a test makes wait at the gate behind that load.
+// holds the pod for as long as the test runs, and its tester, suspended by the daemon or failed
+// over a session of its own, whose launch a test makes wait at the gate behind that load.
 type podPair struct {
 	loading, waiting           *supervise.Machine
 	loadingToken, waitingToken claim.Token
 }
 
-// loadingPair makes the pair's two claims in sup and starts the implementer's process.
-func loadingPair(t *testing.T, sup *supervisor) podPair {
+// loadingPair makes the pair's two claims in sup, the tester in waiting (suspended by the daemon,
+// or failed), and starts the implementer's process.
+func loadingPair(t *testing.T, sup *supervisor, waiting supervise.ClaimState) podPair {
 	t.Helper()
 	ctx := context.Background()
 	p := podPair{loadingToken: mustClaimToken(t, pauseIssue, claim.RoleImplementer), waitingToken: mustClaimToken(t, pauseIssue, claim.RoleTester)}
@@ -77,24 +78,36 @@ func loadingPair(t *testing.T, sup *supervisor) podPair {
 	if c := p.loading.View().Claim; c.State != supervise.StateLaunching || c.Locator == nil {
 		t.Fatalf("the implementer is %s recording %+v, want its process started and loading", c.State, c.Locator)
 	}
-	p.waiting, _, err = sup.Create(ctx, supervise.Claim{Token: p.waitingToken, Project: "legion", Tree: pauseIssue, Issue: pauseIssue,
-		Role: claim.RoleTester, Generation: 1, ServingGeneration: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
-		Session: "ses-tester", SessionFile: t.TempDir() + "/session.jsonl"}, "")
+	tester := supervise.Claim{Token: p.waitingToken, Project: "legion", Tree: pauseIssue, Issue: pauseIssue, Role: claim.RoleTester,
+		Generation: 1, ServingGeneration: 1, State: waiting, Session: "ses-tester", SessionFile: t.TempDir() + "/session.jsonl"}
+	switch waiting {
+	case supervise.StateSuspended:
+		tester.SuspendedBy = supervise.SuspendedByDaemon
+	case supervise.StateFailed:
+		tester.Failure = "launch failures ran out: the runtime refused the start"
+	}
+	p.waiting, _, err = sup.Create(ctx, tester, "")
 	if err != nil {
 		t.Fatalf("create the tester: %v", err)
 	}
 	return p
 }
 
-// parkedBehindALoad is loadingPair with the tester's resume by rule asked of its machine, as the
-// outbox's start asks it: the tester's launch waits at the gate behind the implementer's load and
-// parks on its claim (supervise's askPod), so the resume returns with the claim written launching
-// with no process, the line that the launch waits for its pod's start written once, and its
-// process asked of no runtime.
+// parkedBehindALoad is loadingPair with the tester suspended and its resume by rule asked of its
+// machine, as the outbox's start asks it: the tester's launch waits at the gate behind the
+// implementer's load and parks on its claim (supervise's askPod), so the resume returns with the
+// claim written launching with no process, the line that the launch waits for its pod's start
+// written once, and its process asked of no runtime. The resume is asked on a goroutine of its own
+// and answered within podStopBound (actsPromptly), so a decision that waits at the gate fails the
+// test there rather than holding it until go test's own deadline.
 func parkedBehindALoad(t *testing.T, sup *supervisor, rt *fake.Runtime, logs *testlog.Buffer) podPair {
 	t.Helper()
-	p := loadingPair(t, sup)
-	if err := p.waiting.Handle(context.Background(), supervise.RequestRuleResume{Claim: p.waitingToken, Reason: "its issue's phase starts"}); err != nil {
+	p := loadingPair(t, sup, supervise.StateSuspended)
+	resumed := make(chan error, 1)
+	go func() {
+		resumed <- p.waiting.Handle(context.Background(), supervise.RequestRuleResume{Claim: p.waitingToken, Reason: "its issue's phase starts"})
+	}()
+	if err := actsPromptly(t, "the tester's resume by rule", resumed); err != nil {
 		t.Fatalf("resume the tester by rule: %v", err)
 	}
 	if c := p.waiting.View().Claim; c.State != supervise.StateLaunching || c.Locator != nil {
@@ -198,6 +211,43 @@ func podIssueRecord() record.Issue {
 		Tree: pauseIssue, Title: "Workflow", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 }
 
+// testerSuspendRow is the outbox's suspend row of the tester, as a park of its tree makes it.
+func testerSuspendRow(t *testing.T, _ *podStopRig) record.OutboxRow {
+	return mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "suspend", Tree: pauseIssue, Role: claim.RoleTester,
+		Generation: 1, Reason: "the tree was parked"}, time.Now())
+}
+
+// testerReleaseRow is the tester's role stop of the idle release of the pod, marked with its rows
+// as the idle tick marks it (idleReleaseRows): the tester's role stop is its boundary.
+func testerReleaseRow(t *testing.T, r *podStopRig) record.OutboxRow {
+	t.Helper()
+	marked, err := r.st.ReleaseIdleIssue(context.Background(), "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
+		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Roles: []claim.Role{claim.RoleTester}}, time.Now())
+	})
+	if err != nil || !marked {
+		t.Fatalf("mark the release of %s = %t, %v", pauseIssue, marked, err)
+	}
+	row := record.OutboxRow{Kind: record.OutboxKindSupervise}
+	if err := r.pool.QueryRow(context.Background(), `select id, issue, payload from outbox where kind = 'supervise'
+		and payload->>'op' = 'release'`).Scan(&row.ID, &row.Issue, &row.Payload); err != nil {
+		t.Fatalf("read the release's role stop: %v", err)
+	}
+	return row
+}
+
+// testerPauseStopRow is pause's stop row of the tester, as the pause service writes it.
+func testerPauseStopRow(t *testing.T, pause int64) record.OutboxRow {
+	return mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "pause_stop", Tree: pauseIssue, Role: claim.RoleTester,
+		Generation: 1, Pause: pause, Reason: "project LEGION is paused"}, time.Now())
+}
+
+// podPauseRunner is the outbox runner a pause's stop row runs through on p's database, its machines
+// sup's.
+func podPauseRunner(p *pauseRig, sup *supervisor) *outbox {
+	return &outbox{pool: p.pool, records: record.NewStore(), supervisor: sup, trees: p.st, project: "legion",
+		dispatchProject: "LEGION", log: quietLogger(), now: time.Now}
+}
+
 // TestAPodStartsItsRolesOneLoadAtATime is the daemon's half of the check of the same name
 // (dispatch://INFRA-5297 c-one-load-at-a-time): every stop the daemon makes of a claim waiting at
 // its pod's gate acts within a second while another role of the pod loads, through the executor
@@ -212,28 +262,8 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		state supervise.ClaimState
 		by    supervise.SuspendSource
 	}{
-		{name: "the outbox's suspend row", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon,
-			row: func(t *testing.T, _ *podStopRig) record.OutboxRow {
-				return mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "suspend", Tree: pauseIssue, Role: claim.RoleTester,
-					Generation: 1, Reason: "the tree was parked"}, time.Now())
-			}},
-		{name: "the outbox's release row", state: supervise.StateSuspended, by: supervise.SuspendedByReleased,
-			row: func(t *testing.T, r *podStopRig) record.OutboxRow {
-				// The idle release of the pod, marked with its rows as the idle tick marks it
-				// (idleReleaseRows): the tester's role stop is its boundary.
-				marked, err := r.st.ReleaseIdleIssue(context.Background(), "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-					return idleReleaseRows(view, workflow.IdleDecision{Release: true, Roles: []claim.Role{claim.RoleTester}}, time.Now())
-				})
-				if err != nil || !marked {
-					t.Fatalf("mark the release of %s = %t, %v", pauseIssue, marked, err)
-				}
-				row := record.OutboxRow{Kind: record.OutboxKindSupervise}
-				if err := r.pool.QueryRow(context.Background(), `select id, issue, payload from outbox where kind = 'supervise'
-					and payload->>'op' = 'release'`).Scan(&row.ID, &row.Issue, &row.Payload); err != nil {
-					t.Fatalf("read the release's role stop: %v", err)
-				}
-				return row
-			}},
+		{name: "the outbox's suspend row", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon, row: testerSuspendRow},
+		{name: "the outbox's release row", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, row: testerReleaseRow},
 		{name: "the outbox's issue_close row", state: supervise.StateRetired,
 			row: func(t *testing.T, _ *podStopRig) record.OutboxRow {
 				return mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "issue_close", Tree: pauseIssue, Role: claim.RoleTester,
@@ -271,11 +301,9 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		// is paused is held by the pause's own gate instead (supervise's pauseGate).
 		pair := parkedBehindALoad(t, sup, rt, logs)
 		held := p.pauseLegion()
-		runner := &outbox{pool: p.pool, records: record.NewStore(), supervisor: sup, trees: p.st, project: "legion",
-			dispatchProject: "LEGION", log: quietLogger(), now: time.Now}
+		runner := podPauseRunner(p, sup)
 
-		if err := runsPromptly(t, runner, "the pause's stop", mustOutboxRow(t, pauseIssue, record.SuperviseRequest{Op: "pause_stop",
-			Tree: pauseIssue, Role: claim.RoleTester, Generation: 1, Pause: held.ID, Reason: "project LEGION is paused"}, time.Now())); err != nil {
+		if err := runsPromptly(t, runner, "the pause's stop", testerPauseStopRow(t, held.ID)); err != nil {
 			t.Fatalf("the pause's stop: %v", err)
 		}
 		pair.wantStopped(t, rt, logs, supervise.StateSuspended, supervise.SuspendedByReleased)
@@ -286,7 +314,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 
 	t.Run("a stop row behind a start row whose launch waits, on the issue's lifecycle lane", func(t *testing.T) {
 		r := newPodStopRig(t, podIssueRecord(), true)
-		pair := loadingPair(t, r.sup)
+		pair := loadingPair(t, r.sup, supervise.StateSuspended)
 		// The tester's start, then its stop: two rows of the issue's lifecycle lane, which runs them
 		// one at a time in the order they were queued.
 		for _, row := range []record.OutboxRow{

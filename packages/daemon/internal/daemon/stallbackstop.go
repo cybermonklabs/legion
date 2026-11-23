@@ -469,11 +469,11 @@ func stallChargeClause(stop supervise.StallBackstopStop) string {
 // queued and what can end the claim before that work runs, since nothing writes this owner a
 // second notice when it does: a suspension already waiting ends the wake's turn in a stop
 // (supervise's wakeNow, endHeld), a suspension or a close takes a launch out of the pod's gate
-// (dropPodPark), a lifecycle recheck refuses the launch and leaves the process as it stands
-// (runWake, relaunchRefused), a tree's close drops the queued launch with the process (letGo),
-// and a retry of a launch can run the claim's budget out and fail it (launchTries, fail). Where
-// nothing is queued — suspended, failed — the row says so and names what can bring the claim back
-// or end it, rather than promising a resume or a retry that may never come.
+// (supervise's endPodPark), a lifecycle recheck refuses the launch and leaves the process as it
+// stands (runWake, relaunchRefused), a tree's close drops the queued launch with the process
+// (letGo), and a retry of a launch can run the claim's budget out and fail it (launchTries, fail).
+// Where nothing is queued — suspended, failed — the row says so and names what can bring the
+// claim back or end it, rather than promising a resume or a retry that may never come.
 //
 // No row names the stalled process or the stalled turn — not to say the
 // process was stopped, however plainly its end let that process go, and not that the turn was
