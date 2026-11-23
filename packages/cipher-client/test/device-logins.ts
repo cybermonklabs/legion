@@ -141,7 +141,7 @@ function part(compact: string, at: number): Record<string, unknown> | null {
 async function recorded(request: Request): Promise<DeviceLoginRequest> {
   const proof = request.headers.get("DPoP") ?? "";
   const proofHeader = proof === "" ? null : part(proof, 0);
-  const jwk = proofHeader?.jwk as JWK | undefined;
+  const jwk = proofHeader?.["jwk"] as JWK | undefined;
   return {
     form: new URLSearchParams(await request.text()),
     proofHeader,

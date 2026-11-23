@@ -174,7 +174,6 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	if omp == "" {
 		t.Skipf("%s is unset, so there is no Oh My Pi for a pane to run; scripts/e2e/claim-compaction.sh requires it", liveOmpPathEnv)
 	}
-	takeOwnDatabase(t)
 	proof := newLiveProof(t, "scripts/e2e/claim-compaction.sh")
 	r := &claimCompactionLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},

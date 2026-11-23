@@ -28,7 +28,7 @@ func TestADecisionChecksTheProjectsOfBothEnrollments(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 			nameProjects(t, m, enr, c.asked...)
-			req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "rotate the shared key", "SHARED_KEY"), "", nil)
+			req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "rotate the shared key", "SHARED_KEY"), "")
 			if err != nil || req.State != "pending" || req.RecordID == nil {
 				t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending for anyone to decide", req, err)
 			}

@@ -702,7 +702,8 @@ export function IssueHeader({
           {/* The repository is where the work goes, like the parent, so it sits in this rail,
               which scrolls rather than wrapping: a repository name can be long, and the state
               row above must keep every control on one row at a phone width. Every issue has an
-              item here, since every issue takes a repository whatever its project maps. */}
+              item here: an issue resolves to its own repository, an ancestor's, or its
+              project's default repository, and any issue can take a repository of its own. */}
           <RepoControl
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}

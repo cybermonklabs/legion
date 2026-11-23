@@ -264,8 +264,8 @@ func newPersonHandoverRig(t *testing.T, admissionCap int) *personHandoverRig {
 	}
 	dispatchCall(t, baseURL, http.MethodPost, "/api/v1/projects",
 		map[string]string{"key": cfg.Project, "name": "A person's handover"}, nil)
-	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets",
-		map[string]any{"project": cfg.Project, "default": true}, nil)
+	dispatchCall(t, baseURL, http.MethodPut, "/api/v1/projects/"+cfg.Project+"/default-repository",
+		map[string]any{"repo": "acme/widgets"}, nil)
 	raw, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)

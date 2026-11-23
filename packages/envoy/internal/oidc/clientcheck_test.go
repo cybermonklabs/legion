@@ -2,9 +2,11 @@ package oidc
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -80,6 +82,96 @@ func TestCheckClientReadsTheIssuersAnswerAboutTheClient(t *testing.T) {
 				check, err, ClientCheckIssuerUnreachable)
 		}
 	})
+}
+
+// TestCheckClientReadsTheOAuthErrorOnlyFromARefusal pins that a check reads the OAuth error of the
+// token endpoint's answer only under a status that is a refusal (oauthrefusal.Refusal: every 4xx
+// but 408 and 429, RFC 6749 section 5.2 giving 400 "unless specified otherwise"): invalid_grant
+// there is ready, and invalid_client client_rejected. A 408, a 429 or a 5xx is an issuer that
+// cannot answer now, whatever its body names, so the check is issuer_unreachable, with an error
+// naming the status, and says nothing about the client.
+func TestCheckClientReadsTheOAuthErrorOnlyFromARefusal(t *testing.T) {
+	issuer := oidctest.New(t)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
+	for _, c := range []struct {
+		status int
+		code   string
+		want   ClientCheck
+	}{
+		{http.StatusBadRequest, "invalid_grant", ClientCheckReady},
+		{http.StatusUnauthorized, "invalid_grant", ClientCheckReady},
+		{http.StatusBadRequest, "invalid_client", ClientCheckRejected},
+		{http.StatusUnauthorized, "invalid_client", ClientCheckRejected},
+		{http.StatusForbidden, "invalid_grant", ClientCheckReady},
+		{http.StatusForbidden, "invalid_client", ClientCheckRejected},
+		{http.StatusNotFound, "invalid_client", ClientCheckRejected},
+		{http.StatusRequestTimeout, "invalid_grant", ClientCheckIssuerUnreachable},
+		{http.StatusRequestTimeout, "invalid_client", ClientCheckIssuerUnreachable},
+		{http.StatusTooManyRequests, "invalid_grant", ClientCheckIssuerUnreachable},
+		{http.StatusTooManyRequests, "invalid_client", ClientCheckIssuerUnreachable},
+		{http.StatusInternalServerError, "invalid_grant", ClientCheckIssuerUnreachable},
+		{http.StatusInternalServerError, "invalid_client", ClientCheckIssuerUnreachable},
+		{http.StatusServiceUnavailable, "invalid_grant", ClientCheckIssuerUnreachable},
+		{http.StatusServiceUnavailable, "invalid_client", ClientCheckIssuerUnreachable},
+	} {
+		t.Run(fmt.Sprintf("%d %s", c.status, c.code), func(t *testing.T) {
+			issuer.FailToken(c.status, c.code)
+			t.Cleanup(func() { issuer.FailToken(0, "") })
+			check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, checkClientSecret)
+			if check != c.want || (err == nil) != (c.want == ClientCheckReady) {
+				t.Fatalf("CheckClient against a token endpoint answering %d %s = (%q, %v), want %q with an error: %t",
+					c.status, c.code, check, err, c.want, c.want != ClientCheckReady)
+			}
+			if c.want == ClientCheckIssuerUnreachable && !strings.Contains(err.Error(), strconv.Itoa(c.status)) {
+				t.Fatalf("the check's error for a token endpoint answering %d does not name the status: %v", c.status, err)
+			}
+		})
+	}
+}
+
+// TestCheckClientReadsARefusalByItsStatusAlone pins what a check says of an answer that names
+// neither invalid_grant nor invalid_client. The status alone decides (oauthrefusal): a refusal, a
+// 4xx that is no 408 or 429, is the provider refusing the client whatever its body names or leaves
+// out, so it is client_rejected; a 5xx, a 408 or a 429 is the provider unable to answer,
+// issuer_unreachable; and a 2xx naming an error or a 3xx is an answer that is no verdict on the
+// client, issuer_unreachable too, whose error says the provider answered. Each error names the
+// status.
+func TestCheckClientReadsARefusalByItsStatusAlone(t *testing.T) {
+	issuer := oidctest.New(t)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), checkClientID, checkClientSecret)
+	for _, c := range []struct {
+		status int
+		code   string
+		want   ClientCheck
+		// down is whether the error says the provider could not answer.
+		down bool
+	}{
+		{http.StatusBadRequest, "", ClientCheckRejected, false},
+		{http.StatusUnauthorized, "", ClientCheckRejected, false},
+		{http.StatusForbidden, "", ClientCheckRejected, false},
+		{http.StatusNotFound, "", ClientCheckRejected, false},
+		{http.StatusBadRequest, "unauthorized_client", ClientCheckRejected, false},
+		{http.StatusForbidden, "unauthorized_client", ClientCheckRejected, false},
+		{http.StatusOK, "invalid_grant", ClientCheckIssuerUnreachable, false},
+		{http.StatusFound, "", ClientCheckIssuerUnreachable, false},
+		{http.StatusServiceUnavailable, "", ClientCheckIssuerUnreachable, true},
+		{http.StatusRequestTimeout, "invalid_client", ClientCheckIssuerUnreachable, true},
+		{http.StatusTooManyRequests, "invalid_grant", ClientCheckIssuerUnreachable, true},
+	} {
+		t.Run(fmt.Sprintf("%d %s", c.status, c.code), func(t *testing.T) {
+			issuer.FailToken(c.status, c.code)
+			t.Cleanup(func() { issuer.FailToken(0, "") })
+			check, err := CheckClient(context.Background(), issuer.URL(), checkClientID, checkClientSecret)
+			if check != c.want || err == nil || !strings.Contains(err.Error(), strconv.Itoa(c.status)) {
+				t.Fatalf("CheckClient against a token endpoint answering %d %q = (%q, %v), want %q with an error naming the status",
+					c.status, c.code, check, err, c.want)
+			}
+			if said := strings.Contains(err.Error(), "could not answer"); said != c.down {
+				t.Fatalf("CheckClient against a token endpoint answering %d %q: %v; saying the issuer could not answer is %t, want %t",
+					c.status, c.code, err, said, c.down)
+			}
+		})
+	}
 }
 
 // TestCheckClientIsOneTokenRequest pins that a check asks the token endpoint once, the way the

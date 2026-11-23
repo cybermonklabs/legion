@@ -210,7 +210,7 @@ interface Stubs {
   readonly listIssues: Mock<typeof api.listIssues>;
   readonly listPriorities: Mock<typeof api.listPriorities>;
   readonly listProjectArchitectureSources: Mock<typeof api.listProjectArchitectureSources>;
-  readonly listRepoProjects: Mock<typeof api.listRepoProjects>;
+  readonly listProjects: Mock<typeof api.listProjects>;
   readonly listUsers: Mock<typeof api.listUsers>;
   readonly putDocumentRead: Mock<typeof api.putDocumentRead>;
   readonly whoAmI: Mock<typeof api.whoAmI>;
@@ -235,7 +235,7 @@ beforeEach(() => {
     listIssues: spyOn(api, "listIssues"),
     listPriorities: spyOn(api, "listPriorities"),
     listProjectArchitectureSources: spyOn(api, "listProjectArchitectureSources"),
-    listRepoProjects: spyOn(api, "listRepoProjects"),
+    listProjects: spyOn(api, "listProjects"),
     listUsers: spyOn(api, "listUsers"),
     putDocumentRead: spyOn(api, "putDocumentRead"),
     whoAmI: spyOn(api, "whoAmI"),
@@ -313,7 +313,7 @@ function answerDefaults(): void {
   stubs.listIssues.mockResolvedValue([]);
   stubs.listPriorities.mockResolvedValue(priorities);
   stubs.listProjectArchitectureSources.mockResolvedValue([]);
-  stubs.listRepoProjects.mockResolvedValue([]);
+  stubs.listProjects.mockResolvedValue([]);
   stubs.listUsers.mockResolvedValue([]);
   stubs.putDocumentRead.mockImplementation(async (id, version) => ({
     artifact_id: id,
@@ -1203,16 +1203,16 @@ const priorityLineLoading: Mount = {
 };
 
 const repoNothingResolved: Mount = {
-  name: "RepoControl, nothing resolved in a project that maps a repository",
+  name: "RepoControl, nothing resolved in a project with a default repository",
   node: () => {
-    stubs.listRepoProjects.mockResolvedValue([
+    stubs.listProjects.mockResolvedValue([
       {
         created_at: "2026-10-01T00:00:00Z",
-        created_by: { id: "alice", kind: "user" },
-        default: true,
-        project: "CORE",
-        renamed_to: null,
-        repo: "acme/api",
+        default_repo: "acme/api",
+        gated_steps: [],
+        key: "CORE",
+        name: "Core",
+        open_asks: 0,
       },
     ]);
     return <RepoControl issueKey="CORE-5" project="CORE" repo={null} resolvedRepo={null} />;
@@ -2733,9 +2733,7 @@ test("inside NoTooltips the repository's clear control is described by what its 
         expect(description).toBeNull();
       }
 
-      // The focus starts the mappings' read, which lands before the refusal is read.
       await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
-      await settleReads();
       const refusal = scope.getByRole("alert");
       expect(refusal.textContent).toBe("Write the repository as owner/name.");
       if (surface === "inside") {

@@ -9,8 +9,11 @@ The gate must pass before the deployment names a real person from outside on any
 | File | What it is |
 | --- | --- |
 | `outside-agent-tailnet.sh` | The one command. It runs on a developer box on the private network, runs rows T1-T4 there, starts the public leg and prints the gate. |
-| `outside-agent-public.sh` | The public leg, rows P1-P10. A workflow on a runner on the public internet runs it, after that workflow's browser signs the test person in. |
-| `outside-agent-lib.sh` | What both legs share, sourced from beside them: input and tool checks, the text and JSON reads, the real-tool links, and `reap`, which stops and waits for every background child a leg started. |
+| `outside-agent-public.sh` | The public leg, rows P1-P10 and the Codex leg's C0-C7. A workflow on a runner on the public internet runs it, after that workflow's browser signs the test person in. |
+| `outside-agent-codex.sh` | The Codex leg, rows C0-C7: the outside person's Codex CLI with the codex-envoy plugin's npm release, under row P2's device login, and that release's provenance. The public leg runs it after P10. |
+| `outside-agent-codex-model.ts` | The Codex leg's keyless stand-in model, which speaks the Responses API and plays one scripted turn per run. It binds a port of the kernel's choosing and answers `/_ready` with the leg's nonce. |
+| `outside-agent-codex-provenance.ts` | The Codex leg's reads of row C0: the registry's record and provenance attestation of the plugin's release, and the byte comparison of two builds' bundles. |
+| `outside-agent-lib.sh` | What the legs share, sourced from beside them: input and tool checks, the text and JSON reads, the real-tool links, the scratch issue's title, and `reap`, which stops and waits for every background child a leg started. |
 | `outside-agent-peer.sh` | The tailnet leg's peer of row P4 and its session outside the project of row P6. |
 | `outside-agent-sweep.sh` | The tailnet leg's half of the read sweep and its two controls. |
 | `outside-agent-pins.sh` | The tailnet leg's reads of the deployed pins and of the build Dispatch serves, for rows pins and pins-end. |
@@ -18,9 +21,10 @@ The gate must pass before the deployment names a real person from outside on any
 | `outside-path-reach.sh` | The TCP reach check that row P9 runs. |
 | `../__tests__/outside-agent-acceptance.test.ts` | The test that each leg prints UNKNOWN, never PASS, for a row whose target is absent, with its control; that `reap` stops each child shape the legs use and no other process; and that the tailnet leg's own judgments hold against stand-ins. |
 | `../__tests__/outside-agent-public.test.ts` | The test that the public leg's own judgments (P6, P7, P10 and T5's agent part) hold against stand-ins. |
-| `../__tests__/outside-agent-fixture.ts` | What the two test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
+| `../__tests__/outside-agent-codex.test.ts` | The test that the Codex leg's rows hold against stand-ins, each beside the change that makes it fail, and that its stand-in model answers the requests Codex sends as the rows need. |
+| `../__tests__/outside-agent-fixture.ts` | What the test files share: where the legs are, the rows each prints, and the helpers that copy a leg and read its TSV. |
 | `../__tests__/outside-agent-tailnet-stand-ins.ts` | The stand-ins the tailnet leg's tests run it against: the checkout, the deployment repository and workflow behind a stand-in `gh`, the broker's tools, Dispatch, the sweep and the public leg. |
-| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. |
+| `../__tests__/outside-agent-stand-in-dispatch.ts` | The stand-in Dispatch those tests run in a process of its own, so no test worker's busy event loop holds its answers. It binds a port of the kernel's choosing and writes it to its state directory, and answers `/_ready` with a nonce the test passed it, so no other process can take its port first and no other run's stand-in passes for it. The closed ports the tests name come from the reserved range of `outside-path-reach-fixtures.ts`'s `closedPort`. |
 
 ## What each leg prints
 
@@ -31,9 +35,11 @@ that did not answer, or a row it needs that did not pass. A row never reads `PAS
 not run, and a verdict that is none of the three, copied from another file, counts as `UNKNOWN`.
 Each leg exits 0 when every row passed, 1 when a row failed, and 2 otherwise.
 
-The public leg ends with a `verdict` row. The tailnet leg prints its own rows, then rows P1-P10 as
-the public leg's TSV has them, then a `public` row (the public leg's own verdict, revocations and
-end), the sweep, `pins-end` (the pins and Dispatch's serving build read again) and a `gate` row.
+The public leg ends with a `verdict` row. The tailnet leg prints its own rows, then rows P1-P10 and
+C0-C7 as the public leg's TSV has them, then a `public` row (the public leg's own verdict,
+revocations and end), the sweep, `pins-end` (the pins and Dispatch's serving build read again) and
+a `gate` row. The gate passes only when every row reads PASS; its `got` names each row that did not,
+with its verdict, so a C row that reads UNKNOWN holds the gate as a FAIL does.
 
 No row prints a token, a proof or a secret value. Rows T2 and T3 read the canary secret's length
 alone. A row quotes no output of an operator's command (the approve, revoke and browser commands,
@@ -140,18 +146,27 @@ The tailnet leg does these steps, in this order:
    GitHub proxy; without `OUTSIDE_FULL_COOKIE_FILE` the sweep does not run and its row reads
    UNKNOWN), and starts its writer. Every 15 s until the public leg ends, when the leg stops it, the
    writer comments on the scratch issue `OUTSIDE_SWEEP_WRITE_ISSUE` and sends a direct message to
-   the fills' session of that project, and prints `write <UTC> <comment id> <message id>
-   delivered`, or `... not delivered` when the full member's own feed was not sent both; only a
-   delivered write counts. No full member's credential goes to the runner: the fills file holds
-   none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at `cd8a041312`,
-   fills version 3 (`restricted-sweep-fills<TAB>3`), which name the SHA-256 of the `routes.txt`
-   they were made from (`routes`) and of the member's own projects' keys and creation times
-   (`deployment`). Fills mode writes no file that lacks a fill, nor one where the member's project
-   list gives a project no creation time, and the leg sends no fills of another version (each, the
-   sweep row UNKNOWN on the box). A runner refuses, before its first request, fills of another
-   `routes.txt` than its own checkout's, of another deployment, or older than 55 minutes, and a
-   `SWEEP_LIVE_SECONDS` below 30; so the workflow's checkout must hold this checkout's `routes.txt`,
-   the workflow sets no shorter window, and the leg starts the public leg right after the fills.
+   the fills' session of that project, and prints `write <began> <ended> <comment id> <message id>
+   delivered` (`began` read before the comment's POST, `ended` after the message's POST answered),
+   `... not delivered` when the full member's own feed was not sent both, or `write <began> <ended>
+   - not written`. A write is inside the runner's live window when it began after the window opened
+   and ended before it closed. As #4608's own join reads them, every write the writer printed must
+   be delivered, inside the window or not: one not delivered or not written anywhere reads UNKNOWN;
+   then one delivered write inside the window is the control. A line whose stamps are not of the
+   form `date -u +%Y-%m-%dT%H:%M:%SZ` prints, that began after it ended, or that is delivered with
+   ids not of Dispatch's lowercase 8-4-4-4-12 form, reads UNKNOWN too. No full member's credential
+   goes to the runner: the
+   fills file holds none, and is at most 40 KiB so that it fits one input. Its contract is #4608's at
+   `ca10a682ba`, fills version 4 (`restricted-sweep-fills<TAB>4`), which name the SHA-256 of the
+   origin they were made at (`origin_sha256`), of the `routes.txt` they were made from (`routes`)
+   and of the member's own projects' keys and creation times (`deployment`). Fills mode writes no
+   file that lacks a fill,
+   nor one where the member's project list gives a project no creation time, and the leg sends no
+   fills of another version (each, the sweep row UNKNOWN on the box). A runner refuses, before its
+   first request, fills of another `routes.txt` than its own checkout's, of another deployment, or
+   older than 55 minutes, and a `SWEEP_LIVE_SECONDS` below 45; so the workflow's checkout must hold
+   this checkout's `routes.txt`, the workflow sets no shorter window, and the leg starts the public
+   leg right after the fills.
    Each refusal is the runner's UNKNOWN, and the sweep row's. The runner's own control of the
    member's feed is the member's direct message to `SWEEP_MEMBER_SESSION`, their own session in the
    scratch project. The runner is the workflow's sweep step, not a leg, so the workflow sets it, to the
@@ -169,7 +184,8 @@ The tailnet leg does these steps, in this order:
 6. It starts the public leg, within the code's 15 minutes, and only in a private or internal
    repository (`gh repo view` reads `PRIVATE` or `INTERNAL`), since a run's inputs are as readable
    as its repository and an internal one is readable by the owning enterprise's members alone; a
-   public repository, or a visibility not read, reads UNKNOWN and starts no run: `gh workflow run
+   public repository, or a visibility not read (a `gh repo view` that exits non-zero reads nothing,
+   whatever it printed), reads UNKNOWN and starts no run: `gh workflow run
    --json` of `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, its inputs
    `checks=all`, `project`, `peer_session`, `tailnet_user_code`, `sweep_project`, `sweep_fills`
    (the fills file, base64, when fills mode made one) and `OUTSIDE_WORKFLOW_INPUTS` on stdin. With
@@ -193,9 +209,9 @@ The tailnet leg does these steps, in this order:
    a run not ended by then reads as no end, and the public row UNKNOWN), downloads its artifacts
    `outside-agent-public`, `outside-edge-revocations` and `restricted-sweep`, stops the sweep's
    writer, and runs row T4. The wait for the T5 window to open is held to an hour alike.
-10. It judges T5 from the public leg's T5 rows and the removal's two clocks, prints rows P1-P10,
-    the public leg's own last word and the sweep, reads the pins and Dispatch's serving build again
-    (row `pins-end`), and prints the gate.
+10. It judges T5 from the public leg's T5 rows and the removal's two clocks, prints rows P1-P10
+    and C0-C7, the public leg's own last word and the sweep, reads the pins and Dispatch's serving
+    build again (row `pins-end`), and prints the gate.
 11. It stops every child it started and waits for each, stops the peer's tmux server and waits
     for the peer to exit, and removes its scratch directory.
 
@@ -215,6 +231,9 @@ The workflow runs `outside-agent-public.sh` after its own sign-in, with:
 | `OUTSIDE_T5_COMMAND` | The workflow's browser for the T5 window: a command line, run in the background with `OUTSIDE_T5_DEADLINE` (Unix seconds) and `OUTSIDE_T5_TSV` (a file). It polls the test person's cookie at most every 5 s until it gets 401, then tries the passkey sign-in, and writes rows `T5-cookie` and `T5-passkey` (`row want got verdict`), each `got` holding `at=<Unix seconds>` of the 401 and of the refused sign-in, before the deadline. |
 | `OUTSIDE_T5_SECONDS` | How long the T5 window stays open, at most (default 1200). |
 | `OUTSIDE_REVOKE_COMMAND` | The workflow's revoke step, a command line the leg runs after P10 and before the T5 window, while the person's cookie still reads their own list. It gets `OUTSIDE_EDGE_REVOKE_KEEP`, P2's user code, and revokes every other device login the run approved, the scratch helper's included, writing the `revoke-<credential id>` rows of `outside-edge-revocations`. Exit 0, 1 or 2 is the leg's `revocations` row. P2's login stays live into the window, where the removal stops it; its key lives only in the leg's scratch HOME, which the leg removes. |
+| `OUTSIDE_INSIDE_DISPATCH_URL` | Dispatch's private origin, `https://<host>`, which C2's control points the Codex plugin's `DISPATCH_URL` at. It has no default, and no host is written in this repository: the workflow passes it from its own secrets or inputs, as it passes the edge origins. Without it C2 reads UNKNOWN, and so the gate does not pass. |
+| `OUTSIDE_CODEX_ENVOY_VERSION` | The exact `@sjawhar/codex-envoy` release the Codex leg installs from npm, as the outside person installs it (`5.0.1`, never a range or a dist-tag). No default; without it every C row reads UNKNOWN. |
+| `OUTSIDE_CODEX_ENVOY_COMMIT`, `OUTSIDE_DEVICE_LOGIN_COMMIT` | Row C0: the commit the release's provenance must name, and the device login's merge commit, which that commit must hold. Whole 40-character commit ids; without either, C0 reads UNKNOWN. The workflow's checkout must hold the history between them (a checkout with its whole history; a shallow one reads UNKNOWN). |
 
 No model credential goes on the runner: the leg's two sends in P4 are scripted, and the model turn
 is the peer's, on the developer box. The public Oh My Pi session still runs on a model, because an
@@ -223,9 +242,11 @@ nothing: the leg runs it on `outside-agent-probe.ts model`, a keyless OpenAI-com
 on 127.0.0.1 that answers every turn with one fixed line (`--model outside-e2e/scripted`) and
 reads a request body of at most 4 MiB.
 
-Programs on PATH: bash, curl, tmux, bun and `omp`. The step needs about 40 minutes: P5 waits up to
-15 minutes for a GitHub event, beside P4 and P8, P8 waits for a token to expire (300 s), and the T5
-window lasts up to 20 minutes.
+Programs on PATH: bash, curl, tmux, bun, `omp`, git and tar, and npm (with node), which the Codex
+leg installs `@openai/codex@0.171.0` and verifies the plugin's release with. The step needs about 50
+minutes: P5 waits up to 15 minutes for a GitHub event, beside P4 and P8, P8 waits for a token to
+expire (300 s), the Codex leg takes a few minutes (two npm installs and three interactive Codex
+runs, each bounded), and the T5 window lasts up to 20 minutes.
 
 After P10 and the revocations the leg opens the T5 window. It tells the peer
 `outside-e2e t5-open <nonce> at <ms>`, starts `OUTSIDE_T5_COMMAND`, trades P2's device login afresh
@@ -264,6 +285,73 @@ shim finds its program through the caller's HOME.
 | P10 | No live view of the outside session reaches Dispatch. A session's live view is its `agentstream` frames, which Dispatch reads for its own people's sessions. As the Oh My Pi session's own session id at the edge, a publish of `agentstream.<session>.frames` is refused 403 `topic_not_published`, an interest in `agentstream.>` 403 `topic_not_in_project`, and a relay-socket `sub` of `agentstream.<session>.>` `subject_not_granted`. Another answer reads FAIL; a 5xx or no readable answer reads UNKNOWN. It runs after P8, because its interest and its socket, made as that session, replace the session's own. |
 | T5-agent | After the first refused trade, every later trade is refused too, and the socket open at that refusal closes with the edge's own code, 4401 or 4403. A trade answered later reads FAIL; a later trade with no readable answer reads UNKNOWN, since whether it was refused is not read. With no socket open at the refusal (the removal came before one opened), or a close with another code, the socket part reads UNKNOWN. |
 
+## The Codex leg's rows
+
+After P10 the public leg runs `outside-agent-codex.sh` with its own HOME, where P2's device login
+is, so the Codex agent trades the same login and no second one is approved. The Codex leg:
+
+- installs one exact Codex release, `npm install @openai/codex@0.171.0`, into its own scratch
+  directory, checks that the integrity npm recorded for it and for its Linux x64 binary package is
+  the one the leg pins (else every row reads UNKNOWN), and runs that native binary;
+- installs the plugin as the outside person does: a local marketplace named `outside-e2e` whose
+  plugin source is `{"source": "npm", "package": "@sjawhar/codex-envoy", "version":
+  "<OUTSIDE_CODEX_ENVOY_VERSION>"}`, then `codex plugin marketplace add <dir>` and `codex plugin add
+  codex-envoy@outside-e2e`, into a `CODEX_HOME` of its own. Codex names the root it installed at,
+  `$CODEX_HOME/plugins/cache/outside-e2e/codex-envoy/<version>` on 0.171.0; the leg reads the
+  release's version there and its integrity at the registry. `OUTSIDE_CODEX_ENVOY_SOURCE=checkout`
+  builds the plugin from the checkout instead (`packages/claude-envoy/scripts/build.ts
+  --codex-out`), for a development run, whose C0 reads UNKNOWN, so it never passes the gate;
+- runs the command the outside person is told to run, `codex --no-daemon -m gpt-5.5 "<prompt>"`,
+  three times, each in a tmux pane of its own as P4 runs Oh My Pi, with no hook-trust bypass and
+  never `codex exec`, in a folder that is a git repository, with no approval policy, sandbox mode
+  or folder trust of the leg's own (its `config.toml` names the stand-in model's provider alone),
+  under `env -i`, that HOME, the `CODEX_HOME` and the outside person's settings alone: the main run
+  (C1-C5), a run with `ENVOY_URL` at `http://127.0.0.1:1`, a port no process but root's can listen
+  on, read to refuse a connection before and after the run (C6), and a run with `DISPATCH_URL` at
+  `OUTSIDE_INSIDE_DISPATCH_URL` (C2's control). It reads each screen and answers those the outside
+  person is told how to answer: "Trust this folder?" (the folder's first start) with "Trust and
+  continue", "Hooks need review" with "Trust all and continue", "Meet GPT-6 Sol" with "Use
+  existing model", and, at the model's first `envoy_send`, `Allow the envoy MCP server to run tool
+  "envoy_send"?` with "Always allow". It moves the menu one entry at a time toward the entry that
+  reads so, each move once the screen shows the last one, takes it, and waits for the screen to
+  go. Codex keeps each answer in `config.toml`, so no later run asks it again. Any other screen
+  that holds the start for `OUTSIDE_CODEX_START_SECONDS` (default 90) makes the run's rows
+  UNKNOWN, naming the screen's text. `OUTSIDE_CODEX_FIRST_START=no-trust` or
+  `new-model` is a control run that answers "Continue without trusting" or "Try new model" instead:
+  with the hooks untrusted no session record, registration or delivery comes, so C1, C4 and C5 do
+  not pass; with the new model the session lists no plugin tool, so C2 and C3 do not pass. Each
+  row's evidence names the screens and the answers, and a control run. Each run is stopped once
+  the model's log holds the lines its rows read (the main run's `sent` or `wait-ended`, the other
+  two runs' `whoami`), or once its turn lists no plugin tool, within its bound; no other line ends
+  it;
+- runs the installed release's own entry from a terminal, `bun <root>/dist/dispatch.js whoami`,
+  with the host `codex` and a terminal session of its own, under that HOME and those settings (C7).
+
+Codex runs against `outside-agent-codex-model.ts`, a keyless stand-in model on 127.0.0.1 that
+speaks the Responses API and plays a scripted turn, so no model credential goes on the runner. It
+binds a port of the kernel's choosing and prints it, and the leg points Codex at it only once it
+answers `/_ready` with the run's nonce: a line that names another run's stand-in is never used.
+Codex 0.171.0 with `gpt-6.2-sol` runs no tool at all; with `-m gpt-5.5` it lists the plugin's tools
+behind `tool_search`, and the stand-in finds them there. `--no-daemon` runs the session in its own
+process, outside Codex's shared app server, where the plugin registers no session. In the main run
+the model calls `dispatch whoami`, then `dispatch comment` on the scratch issue (the tailnet leg's,
+found by its title), then `sleep 2` until a request carries the probe's message (at most 60 times),
+then `envoy_send` to the probe's receiver. It logs each answer, and the leg judges the log.
+
+Each row's `got` ends with what ran: `codex --version`, the npm package and version, the model
+name, and the plugin's version, its integrity at the registry and the root Codex installed it at.
+
+| Row | It passes when |
+| --- | --- |
+| C0 | The release's provenance holds, and Codex installed the attested tarball. At npm's registry (`https://registry.npmjs.org`; the leg names no other to any npm call), the release has a SLSA provenance attestation, which `npm publish --provenance` writes, naming `https://github.com/cybermonklabs/legion`'s `.github/workflows/release.yaml`, the ref `refs/heads/main` and `OUTSIDE_CODEX_ENVOY_COMMIT`, and attesting the tarball whose integrity the registry names. The attestation's signing certificate names the same repository, workflow, ref and commit in its Fulcio extensions as its payload does: `npm audit signatures` verifies that certificate's chain and the signature, and the leg holds the payload to the certificate. The tarball the registry serves is the bytes that integrity names, and every file of the tree Codex installed is that tarball's, with none more or fewer, a link holding the same target and no entry another type; `npm audit signatures`, in a project of its own that holds the release alone, verifies that attestation; and the commit holds `OUTSIDE_DEVICE_LOGIN_COMMIT` (`git merge-base --is-ancestor`). A release with no provenance (one published by hand), another workflow, ref, commit or tarball, a certificate whose extensions differ from the payload or lack one of them, an installed tree that differs from the tarball (the row names each differing file), or a commit without the device login reads FAIL; a certificate that cannot be read reads UNKNOWN. |
+| C1 | The session id the plugin's SessionStart hook recorded for the Codex process is on the edge's session list within 30 s (`OUTSIDE_CODEX_LIST_SECONDS`) while Codex runs. Not listed in that time while it runs reads FAIL, and the run is stopped. |
+| C2 | `dispatch whoami` through the plugin's `dispatch` tool names the Codex session, the test person as owner and the scratch project, and no other session for the credential; and the same call with `DISPATCH_URL` at `OUTSIDE_INSIDE_DISPATCH_URL` is refused: the command itself exits 1 or more. The plugin refusing its own configuration (`dispatch config: ...`, as a release without the device login refuses `AGENT_SECRETS_MACHINE_IDENTITY=device-login`) reads FAIL. Without the input, or where the control's call answers (exit 0) or ends with no exit of the command (a timeout, a cancel or a kill, which the model's log reads as -1), C2 reads UNKNOWN: its PASS would not tell the edge from the inside origin. The command's whoami prints no scopes; P3 reads them on the same login's token. |
+| C3 | `dispatch comment` through the tool on the scratch issue exits 0, and the probe reads that comment on the issue with its author as Dispatch records a broker-issued token's write: kind `session`, its id the Codex session, proven by the credential, the test person as owner and the scratch project as project. Each must equal what the leg expects; an absent field never matches. The outside person is a restricted member, whose machine-login trade is named with the one project, so the project is on the author; against a broker that mints a restricted member's token as acting for the person, with no project, C3 reads FAIL by design. A refusal (exit 1), or exit 0 with no such comment or another author, reads FAIL; with no session record from Codex there is no session to hold the author to, and C3 reads UNKNOWN. |
+| C4 | The probe sends the session `outside-e2e codex-in <nonce>` through the edge, and a model request holds it within 20 s: the plugin's PostToolUse hook puts it there. The control: before that the probe sends `<peer>-foreign`, the session outside the project of row P6, another message, which the edge answers 404 and which no request ever holds. That message reaching the session reads FAIL, and so does the session's own message never reaching it; a control send answered otherwise than 404 reads UNKNOWN. The tailnet leg holds C4's PASS as it holds P6's: where that session outside the project was not set up (its `foreign_problem`), C4 reads UNKNOWN. |
+| C5 | The model's `envoy_send` reaches the probe's receiver, a session of the project that opened its relay socket first, within 10 s, sent as the Codex session. The 10 s count from the model's send, or from the leg's "Always allow" at Codex's approval prompt where that came later, as the send waits for the outside person there. An error from the tool, nothing received, or another sender reads FAIL. |
+| C6 | With `ENVOY_URL` at `http://127.0.0.1:1`, which refuses a connection before and after the run, `dispatch whoami` through the tool still names the test person and the project: the `dispatch` tool works while Envoy cannot be reached. It is read only once C2's whoami passed; a port that did not refuse reads UNKNOWN. |
+| C7 | The installed release's own entry, `bun <root>/dist/dispatch.js whoami`, run from a terminal under P2's login with the outside person's settings, the host `codex` and a terminal session of its own, names the test person and the scratch project: the entry the outside person's install text logs in with. A release with no such entry, one whose entry refuses its configuration, or one that names another person or project reads FAIL. |
+
 ## The tailnet leg's rows
 
 | Row | It passes when |
@@ -276,7 +364,7 @@ shim finds its program through the caller's HOME.
 | T4 | The public leg's revoke step, before the T5 window, revokes the scratch login: its `revoke-<credential id>` row, the only row read for it, passes. `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`, a reading beside the row and no proof of the revoke alone, since an expired or skewed proof is refused so too. A revoke row whose verdict is none of PASS, FAIL and UNKNOWN reads UNKNOWN. |
 | T5 | The owner's removal, made during the public run's T5 window between the two clocks the leg read around it; before it, the test person is on the project's access list (the control, read with the full member's browser session at `OUTSIDE_TAILNET_DISPATCH_URL`), and after the run the list no longer names them (else UNKNOWN). From the public leg's rows, each part stopped at or after the first clock: the cookie got 401 within 30 s of it, and the passkey sign-in, a fresh trade of the person's device login, and the relay socket open then each stopped within 325 s of it. A part that stopped more than its bound after the second clock reads FAIL, and so does a trade answered more than 325 s after the second clock (`last_answered_at`), refused trade or not, once the list confirms the removal; a part between the two bounds reads UNKNOWN, as does one that stopped before the first clock. The socket part counts only for a socket opened before the first clock. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, no peer to open the window to, or a part not read, reads UNKNOWN. |
 | public | The public leg's own `verdict` row and `revocations` row pass, and it ended well: exit 0 for a local command, or the run's conclusion `success`. A run concludes `failure` for an exit 1 and an exit 2 alike, so its verdict row says which. A public leg that failed, or left no verdict, never lets the gate pass. |
-| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
+| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and two controls of this box hold: at least one of the writer's writes was delivered to the full member's own feed, and began after the sweep's `live window` opened and ended before it closed, so its finding that nothing reached the test person's feed means something; and the proxy control held (a `can_fail` line in the fills for each of the five proxy reads, and the full member's browser answered 200 by the proxy), so the runner's finding that the GitHub proxy answers the test person as for a repository the App is not installed on means something. Without either, or without `OUTSIDE_FULL_COOKIE_FILE`, it reads UNKNOWN; a FAIL of the sweep stands. |
 | pins-end | The pins read again at the end, from `OUTSIDE_PINS_REPO`'s main, are those read at the start, and Dispatch still serves the build it served at the start, on every process. A pin that moved between the legs, or a Dispatch build that changed, reads UNKNOWN: the rows ran against builds the start did not check. Without `OUTSIDE_PINS_REPO` it reads UNKNOWN. |
 | gate | Every row above passes. |
 
@@ -327,6 +415,10 @@ P10 pass on the edge's own refusals and fail on an accepted send or another refu
 agent part passes on refused trades and a 4401 close, fails on a trade answered after the refusal,
 and reads UNKNOWN for a later trade with no readable answer, a removal before any socket opened
 and a 1006 close.
+
+The stand-in Dispatch's port is its own: under a squat that takes over any port a listener of the
+test process closes, a prepared run's origin still serves that run's stand-in, and the squat
+takes nothing (its control: the squat does take a port a listener closed there).
 
 It runs the tailnet leg against stand-ins of the broker's helper, Dispatch, the deployment
 repository, the workflow, the sweep and the public leg: with the full member's browser answered,

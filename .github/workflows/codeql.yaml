@@ -21,8 +21,8 @@ name: CodeQL
 #   * actions - every workflow under .github/workflows and the 11 composite `action.yml` files,
 #     which run with this repository's tokens.
 # The repository's shell scripts (179 .sh) and SQL migrations (403 .sql) have no CodeQL language,
-# so no analysis here covers them. Build modes are the starter workflow's: `autobuild` for go,
-# which CodeQL has no `none` mode for, and `none` for the three others.
+# so no analysis here covers them. All four are analysed in one job (the job's comment says why
+# and how each language's results still land in a configuration of their own).
 #
 # Every pull request starts an analysis, documentation-only ones included, and that is why this
 # trigger carries no `paths-ignore`. The code-scanning rule on the ruleset of `main` holds a pull
@@ -64,11 +64,19 @@ concurrency:
 permissions: {}
 
 jobs:
+  # One job for all four languages, where there was one job for each. Every CodeQL job pays the
+  # action's own REST requests to this repository's GITHUB_TOKEN budget whatever it analyses:
+  # feature flags, the run and its workflow, repository properties, the Actions caches, the pull
+  # request's diff, and a status report from each step. One job pays them once. Each language's
+  # results still go up as an analysis of their own: analyze writes one SARIF file per language
+  # and uploads none, and an upload-sarif step per language sends that file with the category and
+  # the matrix value the language's own job sent, so main's alerts stay in the four
+  # configurations they are in. A failed step now stops the languages after it, where a failed
+  # language job left the other three uploaded.
   analyze:
-    name: Analyze (${{ matrix.language }})
+    name: Analyze
     runs-on: ubuntu-24.04-arm
-    # The whole default setup took about 13.6 minutes per pull-request push for every language at
-    # once, so this bounds a hung extractor, not an analysis.
+    # The four analyses run one after another in this job, where they ran side by side.
     timeout-minutes: 60
     # The starter workflow's least permissions: security-events: write uploads the results,
     # packages: read fetches CodeQL packs, actions: read and contents: read let the action read
@@ -78,40 +86,65 @@ jobs:
       packages: read
       actions: read
       contents: read
-    strategy:
-      # One language's failure leaves the others' alerts uploaded.
-      fail-fast: false
-      matrix:
-        include:
-          - language: actions
-            build-mode: none
-          - language: go
-            build-mode: autobuild
-          - language: javascript-typescript
-            build-mode: none
-          - language: python
-            build-mode: none
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Before init, as the starter workflow's comment says setup steps go: go.work asks for a Go
-      # the runner image does not carry, and autobuild builds both modules of the workspace with
-      # whatever `go` is on the PATH. cache: false, as in every other Go job here: this workflow
-      # fills no Actions cache entry (INFRA-490's budget).
+      # the runner image does not carry, and the autobuild step builds both modules of the
+      # workspace with whatever `go` is on the PATH. cache: false, as in every other Go job here:
+      # this workflow fills no Actions cache entry (INFRA-490's budget).
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        if: matrix.language == 'go'
         with:
           go-version-file: go.work
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # No build-mode: one value would apply to all four languages, and go cannot take the `none`
+      # the three others take. Left unset, the three are extracted from source at analyze time, as
+      # `none` extracts them, and go is built by the autobuild step.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          languages: actions, go, javascript-typescript, python
+      - name: Build the Go modules for CodeQL
+        uses: github/codeql-action/autobuild@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        # It writes one SARIF file a language to its default output, ../results, and sends none.
         with:
-          category: "/language:${{ matrix.language }}"
+          upload: never
+      # One upload a language, each with the category and the matrix value its own job sent
+      # (upload-sarif sends `matrix` as the analysis's environment), so each lands in the
+      # configuration main already holds for it. The file names are CodeQL's language names.
+      # wait-for-processing: false, because the wait is a poll of the SARIF's status on this
+      # repository's token, and the code-scanning rule of main's ruleset already waits for the
+      # processed results before a pull request can merge.
+      - name: Upload the actions results
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: ../results/actions.sarif
+          category: /language:actions
+          matrix: ${{ toJSON(fromJSON('{"language":"actions","build-mode":"none"}')) }}
+          wait-for-processing: false
+      - name: Upload the go results
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: ../results/go.sarif
+          category: /language:go
+          matrix: ${{ toJSON(fromJSON('{"language":"go","build-mode":"autobuild"}')) }}
+          wait-for-processing: false
+      - name: Upload the javascript-typescript results
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: ../results/javascript.sarif
+          category: /language:javascript-typescript
+          matrix: ${{ toJSON(fromJSON('{"language":"javascript-typescript","build-mode":"none"}')) }}
+          wait-for-processing: false
+      - name: Upload the python results
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          sarif_file: ../results/python.sarif
+          category: /language:python
+          matrix: ${{ toJSON(fromJSON('{"language":"python","build-mode":"none"}')) }}
+          wait-for-processing: false

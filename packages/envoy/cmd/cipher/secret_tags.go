@@ -124,7 +124,7 @@ func checkGitHubOwners(owners string, orNone bool) (string, error) {
 func checkGitHubOwnersFor(secretType, owners string, named bool) error {
 	if !policy.TypeNeedsGitHubOwners(secretType) {
 		if named {
-			return usageErr{fmt.Errorf("--github-owners is read only on a %s secret, and this one's type is %q", policy.TypeGitHubApp, secretType)}
+			return usageErr{fmt.Errorf("--github-owners is read only on a %s or %s secret, and this one's type is %q", policy.TypeGitHubApp, policy.TypeGitHubInstallations, secretType)}
 		}
 		return nil
 	}

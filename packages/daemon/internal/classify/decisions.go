@@ -1190,9 +1190,9 @@ func withoutDeletions(pushes []record.ClassifiedPush) []record.ClassifiedPush {
 //
 // It does not hold for a head the record holds in a confirmed conflict: that approval ends the
 // round whatever the merge state (workflow's reviewRound), since nothing GitHub answers about the
-// head will change until the implementer merges the base forward, and the issue's move into
-// accepting is what asks for that merge (dispatch://INFRA-4374 R0, record.ConflictMergeNext). Read
-// here, the state build shows no mergeWait for the round the engine has just ended.
+// head will change until the base is merged forward, and the issue's move into merging is what
+// asks the merger for that merge (cybermonklabs/legion#4979, record.ConflictMergeNext). Read here, the
+// state build shows no mergeWait for the round the engine has just ended.
 //
 // It holds only for an open pull request. A merged one has nothing left to merge. GitHub answers
 // `unknown` for it for good, and the daemon never reads its state after the merge: workflow's
@@ -1237,9 +1237,10 @@ const (
 //     of the two reads that confirm a conflict (R2).
 //   - The fact is a push to the base, and the issue stands in testing, reviewing, accepting, retro
 //     or merging. GitHub sends no event of the pull request while it computes whether the head
-//     still merges into the moved base. Past the review the merge is next
-//     (record.ConflictMergeNext), so a conflict there is acted on at once (R0). In testing and
-//     reviewing the record otherwise keeps the state the read before the push left: a record read
+//     still merges into the moved base. In merging the merge is next (record.ConflictMergeNext),
+//     so a conflict there is acted on at once (R0); in accepting and retro it is recorded for the
+//     move into merging (cybermonklabs/legion#4979). In testing and reviewing the record otherwise
+//     keeps the state the read before the push left: a record read
 //     `blocked` while GitHub answered DIRTY, because no read followed the base push (INFRA-4315,
 //     dispatch://INFRA-4374/spec#b-r4). A base push reads nothing for an issue in implementing or
 //     before it: there the head the implementer pushes next is read, by the reason above.
@@ -1266,9 +1267,14 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 // and the conflict is recorded and nothing else is done. The reasons are read in this order, and
 // the first that holds is the answer:
 //
-//   - record.ConflictMergeNext: the issue stands past its review, in accepting, retro or merging,
-//     or is held from one of them (record.PastReview). Its next step is the merge, and GitHub
-//     merges no head that conflicts with its base.
+//   - record.ConflictMergeNext: the issue stands in merging, or is held from it. The merge is the
+//     merger's next step, GitHub merges no head that conflicts with its base, and the merger merges
+//     the base forward itself (record.MergeForwardAsker, cybermonklabs/legion#4979).
+//   - "": the issue stands in accepting or retro, or is held from one of them. The work is
+//     reviewed and the merge comes next, so the conflict waits for merging, where the merger
+//     resolves it (workflow's mergeForwardOnEntry), rather than going back to the implementer
+//     (cybermonklabs/legion#4979). Neither the architect's acceptance nor retro needs a head that
+//     merges, so nothing there waits on the merge forward.
 //   - record.ConflictRulesUnread: the daemon could not read the base's rules (rules nil, or
 //     rules.Unread set). It cannot tell whether every check the base requires passed, so it acts
 //     at once, which is never later than a daemon that acted on every conflicting read. GitHub's
@@ -1286,15 +1292,17 @@ func MergeStateReadOwed(issue record.Issue, fact MergeStateFact) bool {
 //
 // Otherwise every check the base requires is green on the head and no rule requires the head to
 // be current: the tester and the reviewer go on at that head, and the merge forward waits for the
-// step that needs it, the issue's move past its review, where record.ConflictMergeNext holds.
+// step that needs it, the issue's move into merging, where record.ConflictMergeNext holds.
 //
 // It is pure, so the engine, which acts on the answer (workflow's mergeability and mergeForward),
 // and any reader of the record decide alike. green is the caller's, so the engine, which logs the
 // contexts green on the head when nothing needs a merge yet, reads them once.
 func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []string) record.ConflictWhy {
 	switch {
-	case record.PastReview(issue):
+	case record.StandsIn(issue, phase.Merging):
 		return record.ConflictMergeNext
+	case record.PastReview(issue):
+		return ""
 	case rules == nil || rules.Unread != "":
 		return record.ConflictRulesUnread
 	case rules.Strict:
@@ -1478,6 +1486,21 @@ func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark)
 	return approved > version || approved == version && !mark.After(gate.ApprovedMark)
 }
 
+// DesignApprovalStands reports whether the approval a news item names, of version to of the
+// document artifact, is still the person's current word: the gate's row for the item's step holds
+// that document, and its approved version is to. It is the approval case of the question
+// ApprovalFollows answers for a review — is this recorded decision still the person's current
+// word — asked when a task that names the decision is sent, not when it was composed. Where the
+// step now records another document (a registration that named one since), a later approval has
+// replaced the one the item names, or a changes request has cleared it (ApplyDesignGateEvent), the
+// item would tell the holder of a version that is no longer the person's word. A new version that
+// closed the gate since leaves it standing: the gate keeps that approval as the version a person
+// approved below the latest. It is named for the design gate because ApprovalStands already
+// answers the pull request's question of a review.
+func DesignApprovalStands(gate record.DesignGate, artifact string, to int) bool {
+	return gate.ArtifactID == artifact && gate.ApprovedVersion != nil && *gate.ApprovedVersion == to
+}
+
 // DesignGateOpen reports whether a human approved the gate's current document version. It
 // answers one step's question; the deployment's whole list is DesignGatesOpen. It is
 // record.GateOpen, where the rule lives because the record package needs it too and may not read
@@ -1487,20 +1510,32 @@ func DesignGateOpen(gate record.DesignGate) bool {
 }
 
 // RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
-// the deployment gates, in the order it names them, or the single step spec when it gates none.
-// It is record.RequiredSteps, where the rule lives because the record package needs it too and
-// may not read this one, and it keeps its name here because every reader of a step list in this
-// file reads it through this name.
+// it is given, in their order, or the single step spec when it is given none. It is
+// record.RequiredSteps, where the rule lives because the record package needs it too and may not
+// read this one, and it keeps its name here because every reader of a step list in this file
+// reads it through this name. It takes no rows, so a caller that holds a root's rows gives it
+// TreeSteps' answer.
 func RequiredSteps(configured []record.DesignStep) []record.DesignStep {
 	return record.RequiredSteps(configured)
 }
 
+// TreeSteps is the steps one tree is gated on: the steps the deployment gates, and criteria
+// after them when the root holds a criteria row and the deployment gates spec but not criteria.
+// `gates.design` names the steps every root must register, any step a root registers holds its
+// tree, a criteria row exists only by the architect's registration, and a row kept after a switch
+// to `gates.design: off` gates nothing. It is record.TreeSteps, where the rule lives because the
+// record package needs it too and may not read this one, and it keeps its name here as
+// RequiredSteps does.
+func TreeSteps(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []record.DesignStep {
+	return record.TreeSteps(configured, gates)
+}
+
 // DesignGatesOpen reports whether gates, every design gate an issue holds by its step, lets the
-// tree's work run: no required step (RequiredSteps) holds the work. A required step with no row
-// holds the work, as an unregistered gate always has, and since a root always requires at least
-// one step, an issue holding no row at all is held too. A row of a step the deployment does not
-// require is read by nothing here: it is kept as the record of a step gated before, and holds
-// nothing.
+// tree's work run: no required step (RequiredSteps over TreeSteps) holds the work. A required
+// step with no row holds the work, as an unregistered gate always has, and since a root always
+// requires at least one step, an issue holding no row at all is held too. A row of a step the
+// tree is not gated on is read by nothing here: it is kept as the record of a step gated before,
+// and holds nothing.
 //
 // It is record.TreeGate.Open over the same steps and rows, where the rule lives because the
 // record package needs it too and may not read this one, and it keeps its name here because
@@ -1510,16 +1545,17 @@ func DesignGatesOpen(configured []record.DesignStep, gates map[record.DesignStep
 	return record.TreeGate{Steps: configured, Rows: gates}.Open()
 }
 
-// FirstClosedStep is the first required step (RequiredSteps) whose gate is not open, in the
-// configured order, with the row it holds — the zero row when it holds none, which is the step
-// nobody has registered. ok is false when every required step is open, which is DesignGatesOpen.
+// FirstClosedStep is the first required step (RequiredSteps over TreeSteps) whose gate is not
+// open, in the configured order with a registered criteria row after the deployment's steps,
+// with the row it holds — the zero row when it holds none, which is the step nobody has
+// registered. ok is false when every required step is open, which is DesignGatesOpen.
 //
 // It answers which step holds the work now, and so which step a refusal or a hold is about: a
 // step nobody has registered holds it, because nobody has said the document exists. Which step a
 // person is being asked about is another question, since nobody can be asked about a document
 // the record does not know, and the wait reads its own rule for it (StandingGate).
 func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignStep, record.DesignGate, bool) {
-	for _, step := range RequiredSteps(configured) {
+	for _, step := range RequiredSteps(TreeSteps(configured, gates)) {
 		if gate, ok := gates[step]; !ok || !DesignGateOpen(gate) {
 			return step, gate, true
 		}
@@ -1528,12 +1564,18 @@ func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep
 }
 
 // StandingGate is the gate a person is being asked about: the row of the first required step
-// (RequiredSteps), in the configured order, that is closed and has a row. That is a different
-// question from which step holds the tree's work (FirstClosedStep), which a step nobody has
-// registered also holds: such a step names no document, so nobody can be asked about it, and the
-// wait it raised would be a wait on nothing. So the wait skips it and names the first registered
-// unapproved step after it, while the work stays held. ok is false when no required step holds a
-// closed row, which is every required step open or every closed one unregistered.
+// (RequiredSteps over TreeSteps), in the configured order with a registered criteria row after
+// the deployment's steps, that is closed and has a row. That is a different question from which
+// step holds the tree's work (FirstClosedStep), which a step nobody has registered also holds:
+// such a step names no document, so nobody can be asked about it, and the wait it raised would
+// be a wait on nothing. So the wait skips it and names the first registered unapproved step after
+// it, while the work stays held. ok is false when no required step holds a closed row, which is
+// every required step open or every closed one unregistered.
+//
+// A criteria row comes after the spec, so a root whose spec and Verification document are both
+// with the person stands on its spec, the document one approval request names when it asks for
+// both (`dispatch request-approval --include-verification`), and on its Verification document
+// once the spec is open.
 //
 // A deployment that gates no step asks no person about anything, so the empty list stands on no
 // gate: ok is false whatever rows the root holds. The empty list still holds the tree's work
@@ -1546,7 +1588,7 @@ func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]re
 	if len(configured) == 0 {
 		return record.DesignGate{}, false
 	}
-	for _, step := range RequiredSteps(configured) {
+	for _, step := range RequiredSteps(TreeSteps(configured, gates)) {
 		if gate, ok := gates[step]; ok && !DesignGateOpen(gate) {
 			return gate, true
 		}
