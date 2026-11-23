@@ -257,9 +257,8 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 		return m.pauseGate(ctx, &wake{reserved: m.deps.Clock.Now(), kind: kind, state: m.claim.State, run: run, again: again,
 			pluginMark: m.takePluginRelaunch()}, pause)
 	}
-	exempt = exempt || claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
-	reserve := m.deps.WakePace.Reserve
-	if exempt || reserve == nil {
+	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
+	if exempt || !gatePaces(&m.deps, controller) {
 		// The operator counts the paced wakes of a minute against the rate and the burst this line
 		// names (R6), so a wake no pacing could have held — the pacing off, or this wake let
 		// through — says so rather than swelling that count.
@@ -270,6 +269,7 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 	// pacing could have held it: the daemon hands a Reserve only while the operator's rate is
 	// above 0 (the daemon's run), which is why nothing here reads WakePace.Rate, whose doc says
 	// it is read for the line alone.
+	reserve := m.deps.WakePace.Reserve
 	now := m.deps.Clock.Now()
 	// A caller that reserved this launch's turn already, in an order of its own
 	// (RequestSpawn.Turn), was charged that moment, and a second reservation would charge it twice.
@@ -292,6 +292,27 @@ func (m *Machine) reserveWake(ctx context.Context, exempt bool, run, again func(
 	// machine, where the launch itself commits it (launchNow, commitPluginRelaunch).
 	return m.parkWake(ctx, &wake{at: at, reserved: now, kind: kind, state: m.claim.State, run: run, again: again,
 		pluginMark: m.takePluginRelaunch()}, at.Sub(now))
+}
+
+// gatePaces is the gate's rule for a launch no request exempts and no project pause holds
+// (reserveWake): the pacing paces it where the daemon has one (WakePace.Reserve) and the claim is
+// not the project controller's, the one claim it never holds.
+func gatePaces(deps *Deps, controller bool) bool {
+	return deps.WakePace.Reserve != nil && !controller
+}
+
+// PacedLaunch is whether the wake gate would hold a launch of c that no request exempts, under
+// deps: no project pause holds c's launches (pauseHolding) and the gate paces it (gatePaces). It is
+// the gate's own rule, read by the one caller that reserves turns itself, the boot that relaunches
+// the launches the previous daemon left waiting (RequestSpawn.Turn, internal/daemon's
+// launchUnfinished), so that caller reserves a turn for exactly the launches the gate would have
+// reserved one for.
+func PacedLaunch(deps *Deps, c *Claim) bool {
+	controller := claim.IsController(c.Role, c.Issue, c.Tree)
+	if _, held := pauseHolding(deps.Paused, controller); held {
+		return false
+	}
+	return gatePaces(deps, controller)
 }
 
 // parkWake is the park the gate and the re-park share (reserveWake, reparkWake): TimerWake is
@@ -753,14 +774,19 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 // runs it, so that launch runs here, unpaced, exactly as its turn would have run it: the claim is
 // put back launching, where the park wrote it (waitOnMachine), and the wake goes through runWake,
 // lifecycle recheck and all. ran is false, and nothing is done, for every other request, for a
-// claim whose gate-found state a retry row decides (failed, retired), and for a launch the
-// project pause's gate holds, which the operator's retry is refused for before it gets here (the
-// API's refusedWhilePaused) and which nothing but the controller may run while the pause holds.
+// claim whose gate-found state a retry row decides (failed, retired), for a launch the project
+// pause's gate holds, and for any launch while a project pause holds the claim (pauseHolds): the
+// API refuses the operator's retry while the project is paused (refusedWhilePaused), and a pause
+// that opened after that refusal was read holds this launch as it holds every other, so the retry
+// is refused and the wake parked again, for its turn to hand the pause's gate (wakeNow).
 //
 // The launch takes no second token, as an operator's task over a parked launch takes none
 // (runParkedLaunchNow): the wakes behind it keep the turns they already hold.
 func (m *Machine) runDroppedLaunchForRetry(ctx context.Context, ev Event, dropped *wake) (ran bool, err error) {
 	if _, retry := ev.(RequestOperatorRetry); !retry || dropped == nil || dropped.pause != 0 || m.held != nil {
+		return false, nil
+	}
+	if _, paused := m.pauseHolds(); paused {
 		return false, nil
 	}
 	m.log.Info("supervise: an operator's retry reached a claim whose paced launch waits over no process; that launch runs now",

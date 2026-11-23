@@ -856,10 +856,11 @@ waiting its turn. One wake has its session read its whole context again, which t
 as uncached input — a mean of 576,083 tokens, a median of 493,636 and a ninetieth percentile of
 1,327,888 — and the pacing is what spreads that over the minutes after a restart. A wave sustains
 about two thirds of the rate, about 5 a minute at the default, so a hundred claims take about
-twenty minutes. A restart forgets each waiting wake's moment and rebuilds the queue in the order
-the waiting claims' tasks were queued, the oldest first, so a claim that waited before the restart
-goes ahead of work owed after it. Read what the pacing still holds before you act on anything
-below:
+twenty minutes. A restart forgets each waiting wake's moment. The launches it finds unfinished, a
+claim launching with no process, go back into the pacing in the order their tasks were queued, the
+oldest first, so a claim that waited before the restart goes ahead of work owed after it; while
+the project is paused they wait for the resume instead. Read what the pacing still holds before
+you act on anything below:
 
 ```sh
 legion state --config legion.yaml --json | jq '.wakesWaiting'
@@ -876,9 +877,10 @@ An empty array says the wave has
 gone out; the last `dueAt` in it says when the last of the wave goes.
 A claim on that list needs
 nothing from you: its wake is reserved and it runs at the moment named.
-Your own requests are what
-drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
-back, so nothing you ask for waits for a turn.
+To run one now: `legion claims retry --claim <token>` runs the launch of a claim that runs no
+process, `legion claims resume` that of a suspended one, and a task you send runs the launch over
+a process the claim still records. Each takes the reserved wake back, and the wakes behind it keep
+their turns.
 
 After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
 lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -444,6 +445,71 @@ func TestAnOperatorsRetryOfAClaimWaitingFromSuspendedResumesItAtOnce(t *testing.
 	h.clock.Advance(wakeInterval + wakePart)
 	second.Wait()
 	h.wantStarts(secondToken, 1)
+}
+
+// The operator's retry runs no parked launch while a project pause holds the claim: the API refuses
+// a retry while the project is paused, and a pause that opened after that refusal was read holds
+// this launch as it holds every other. The retry is refused naming the state the gate found, and
+// the wake keeps the turn it held, for that turn to hand the launch to the pause's gate.
+func TestAnOperatorsRetryOfAWaitingClaimAPauseHoldsLaunchesNothing(t *testing.T) {
+	var paused atomic.Bool
+	h := pacedHarness(t, wakeRate, func(d *Deps) {
+		d.Paused = func() (int64, bool) {
+			if paused.Load() {
+				return 7, true
+			}
+			return 0, false
+		}
+	})
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	held := second.View().WakeWaiting
+	if held == nil {
+		t.Fatal("the second claim's launch is not waiting its turn")
+	}
+	paused.Store(true)
+
+	err := h.postTo(second, RequestOperatorRetry{Claim: secondToken})
+
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateQueued {
+		t.Fatalf("the operator's retry under the pause answered %v, want a refusal naming %s", err, StateQueued)
+	}
+	h.wantStarts(secondToken, 0)
+	if again := second.View().WakeWaiting; again == nil || *again != *held {
+		t.Fatalf("the claim holds wake %+v, want the one it held, %+v", again, held)
+	}
+}
+
+// An operator's request no row of the state the gate found decides, and that is no retry, is
+// refused as that state refuses it — a queued claim is spawned, not resumed — and the refusal costs
+// the claim nothing: the wake it dropped is taken up again and runs at the moment it already held.
+func TestAnOperatorsResumeRefusedByTheParkedClaimLeavesItsWakeItsTurn(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	second := h.machineFor(wakeClaim(secondToken, StateQueued))
+
+	h.must(RequestSpawn{Claim: h.token})
+	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
+	h.clock.Advance(wakeInterval / 4)
+	second.Wait()
+
+	err := h.postTo(second, RequestResume{Claim: secondToken})
+
+	var refused *RefusedError
+	if !errors.As(err, &refused) || refused.State != StateQueued {
+		t.Fatalf("the operator's resume answered %v, want a refusal naming %s", err, StateQueued)
+	}
+	h.clock.Advance(wakeInterval + wakePart - wakeInterval/4 - time.Nanosecond)
+	second.Wait()
+	h.wantStarts(secondToken, 0)
+
+	h.clock.Advance(time.Nanosecond)
+	second.Wait()
+
+	h.wantStarts(secondToken, 1)
+	h.wantWakeLine(secondToken, "waited=true", "waitedFor="+(wakeInterval+wakePart).String())
 }
 
 // A wake over a claim whose process still runs leaves the claim exactly as it was — its state and

@@ -2554,51 +2554,54 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 // uncertain; its hello changes the state before a later retry, and it must never be joined by a
 // second pane. It returns the claims whose release the store did not take, outside the daemon's
 // stop: each is still launch_uncertain, in memory as in the store, and nothing else in this boot
-// releases it, so the caller retries it (relaunchUnfinished). ctx is the relaunches' context; each
-// relaunch derives a context of its own from it.
+// releases it, so the caller retries it (relaunchUnfinished), with the turns it was reserved left
+// in turns for that retry. ctx is the relaunches' context; each relaunch derives a context of its
+// own from it.
 //
 // It runs in three steps. Every claim's uncertain launch is released first, each on a goroutine of
-// its own. Then the turns of the released ones are reserved in the wake pacing one at a time, in
-// the order their work was owed (unfinishedTurns), and only then is every launch posted at once,
-// each carrying its turn (supervise.RequestSpawn.Turn). Most of these claims were waiting in the
-// previous daemon's pacing when it stopped, and a wake is memory only, so this is the queue that
-// daemon was draining, rebuilt: reserved instead as each goroutine reached the gate, its order was
-// chance, and a claim that had waited most of an hour went back to a random place behind hundreds
-// at each restart (dispatch://INFRA-5482).
-func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token) []claim.Token {
+// its own. Then the waiting claims' turns are reserved in the wake pacing one at a time, in the
+// order their work was owed (reserveUnfinishedTurns), and only then is every released launch
+// posted at once, each carrying its turn (supervise.RequestSpawn.Turn). Most of these claims were
+// waiting in the previous daemon's pacing when it stopped, and a wake is memory only, so this is
+// the queue that daemon was draining, rebuilt: reserved instead as each goroutine reached the
+// gate, its order was chance, and a claim that had waited most of an hour went back to a random
+// place behind hundreds at each restart (dispatch://INFRA-5482).
+func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token, turns map[claim.Token]time.Time) []claim.Token {
 	refused := make([]bool, len(tokens))
-	released := make([]*supervise.Machine, len(tokens))
+	spawnable := make([]bool, len(tokens))
+	machines := make([]*supervise.Machine, len(tokens))
 	var releasing sync.WaitGroup
 	for i, token := range tokens {
 		m, ok := s.supervisor.Machine(token)
 		if !ok {
 			continue
 		}
+		machines[i] = m
 		releasing.Add(1)
 		go func() {
 			defer releasing.Done()
 			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
 			// hold mark of its own rather than ctx's.
-			var spawnable bool
-			spawnable, refused[i] = s.releaseUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
-			if spawnable {
-				released[i] = m
-			}
+			spawnable[i], refused[i] = s.releaseUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
 		}()
 	}
 	releasing.Wait()
-	turns := s.unfinishedTurns(released)
+	s.reserveUnfinishedTurns(tokens, machines, func(i int) bool { return spawnable[i] || refused[i] }, turns)
 	var launching sync.WaitGroup
 	for i, token := range tokens {
-		m := released[i]
-		if m == nil {
+		turn := turns[token]
+		if !refused[i] {
+			delete(turns, token)
+		}
+		if !spawnable[i] {
 			continue
 		}
+		m := machines[i]
 		launching.Add(1)
 		go func() {
 			defer launching.Done()
 			s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
-			spawn := supervise.RequestSpawn{Claim: token, Turn: turns[i]}
+			spawn := supervise.RequestSpawn{Claim: token, Turn: turn}
 			if err := m.Handle(store.ForConcurrentWorker(ctx), spawn); err != nil {
 				s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
 			}
@@ -2631,43 +2634,40 @@ func (s *supervision) releaseUnfinishedClaim(ctx context.Context, token claim.To
 	return true, false
 }
 
-// unfinishedTurns reserves a turn in the wake pacing for each claim of released that the pacing
-// would hold, one at a time, the claim whose work was owed longest first (owedSince), and answers
-// each claim's turn at its index, the zero time for one it reserved nothing for. That is every
-// claim while the pacing is off or the project is paused — the pause's gate holds those launches
-// and takes no turn of them (supervise's pauseGate) — and the project controller's claim, which
-// the pacing never holds (claim.IsController): each of those launches as its gate decides.
-func (s *supervision) unfinishedTurns(released []*supervise.Machine) []time.Time {
-	turns := make([]time.Time, len(released))
-	deps := s.supervisor.deps
-	if deps.WakePace.Reserve == nil {
-		return turns
-	}
-	if deps.Paused != nil {
-		if _, paused := deps.Paused(); paused {
-			return turns
-		}
-	}
+// reserveUnfinishedTurns reserves a turn in the wake pacing, into turns, for each claim of tokens
+// (its machine at the same index) that waits — the release left it to launch, or refused it for
+// a later sweep — holds no turn there yet, and whose launch the gate would hold
+// (supervise.PacedLaunch): one at a time, the claim whose work was owed longest first
+// (owedSince). A claim the gate would not hold — the pacing off, a project pause holding it (the
+// pause's gate takes no turn), the project controller's — is reserved nothing, and launches as its
+// gate decides. A claim whose release the store refused keeps its turn in turns for the sweep
+// that retries it (relaunchUnfinished), so a transient refusal costs it no place behind the
+// claims released before it; its turn may have passed by then, and it then launches at once.
+func (s *supervision) reserveUnfinishedTurns(tokens []claim.Token, machines []*supervise.Machine, waits func(int) bool,
+	turns map[claim.Token]time.Time) {
+	deps := &s.supervisor.deps
 	type owed struct {
-		index int
-		claim supervise.Claim
+		token claim.Token
+		since time.Time
 	}
 	var queue []owed
-	for i, m := range released {
-		if m == nil {
+	for i, m := range machines {
+		if m == nil || !waits(i) {
 			continue
 		}
-		if c := m.View().Claim; !claim.IsController(c.Role, c.Issue, c.Tree) {
-			queue = append(queue, owed{index: i, claim: c})
+		if _, held := turns[tokens[i]]; held {
+			continue
+		}
+		if c := m.View().Claim; supervise.PacedLaunch(deps, &c) {
+			queue = append(queue, owed{token: tokens[i], since: owedSince(c)})
 		}
 	}
 	slices.SortStableFunc(queue, func(a, b owed) int {
-		return cmp.Or(compareOwed(owedSince(a.claim), owedSince(b.claim)), cmp.Compare(a.claim.Token, b.claim.Token))
+		return cmp.Or(compareOwed(a.since, b.since), cmp.Compare(a.token, b.token))
 	})
 	for _, waiting := range queue {
-		turns[waiting.index] = deps.WakePace.Reserve(deps.Clock.Now())
+		turns[waiting.token] = deps.WakePace.Reserve(deps.Clock.Now())
 	}
-	return turns
 }
 
 // owedSince is when the work an unfinished launch is for was first owed: the moment the task the
@@ -2720,8 +2720,11 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 		// The relaunches run on a goroutine of their own beside the machines and the orphan sweep,
 		// so this goroutine takes a hold mark of its own.
 		relaunching := store.ForConcurrentWorker(s.supervisor.ctx)
+		// The turns a sweep reserved for claims whose release the store refused, kept for the
+		// sweep that retries them (reserveUnfinishedTurns).
+		turns := map[claim.Token]time.Time{}
 		if reconciled {
-			tokens = s.launchUnfinished(relaunching, tokens)
+			tokens = s.launchUnfinished(relaunching, tokens, turns)
 		}
 		ticker := time.NewTicker(s.plan.orphanSweep)
 		defer ticker.Stop()
@@ -2736,7 +2739,7 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 					continue
 				}
 			}
-			tokens = s.launchUnfinished(relaunching, tokens)
+			tokens = s.launchUnfinished(relaunching, tokens, turns)
 		}
 	}()
 }
