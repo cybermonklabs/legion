@@ -5675,8 +5675,8 @@
       "capture": "workspace.status-line/token-refused",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "path, oauth2call.StatusLine(response.StatusCode))",
-        "replacement": "path, response.Status)"
+        "preimage": "whose token this pod holds\", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "whose token this pod holds\", request.CacheURL, cache, path, response.Status"
       }
     },
     {
@@ -5698,14 +5698,42 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/workspace",
       "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/tar-refused",
-      "production": "workspace unpackCache: a refused tar names the status by its code and standard phrase (oauth2call.StatusLine)",
+      "production": "workspace unpackCache: a refused tar names the URL it asked and the status by its code and standard phrase (oauth2call.StatusLine)",
       "function": "github.com/sjawhar/legion/daemon/internal/workspace.unpackCache",
       "capture": "workspace.status-line/tar-refused",
       "mutation": {
         "file": "packages/daemon/internal/workspace/fetch.go",
-        "preimage": "response.Request.URL, oauth2call.StatusLine(response.StatusCode)",
-        "replacement": "response.Request.URL, response.Status"
+        "preimage": "strings.TrimSuffix(request.CacheURL, \"/\"), oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "strings.TrimSuffix(request.CacheURL, \"/\"), response.Status"
       }
+    },
+    {
+      "id": "workspace-status-line-tar-redirected",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/tar-redirected",
+      "production": "workspace askCache: a redirect of the tar is refused unfollowed, naming the URL asked and the status by its code and standard phrase (oauth2call.StatusLine), never its Location (cacheClient follows no redirect)",
+      "function": "github.com/sjawhar/legion/daemon/internal/workspace.askCache",
+      "capture": "workspace.status-line/tar-redirected",
+      "mutation": {
+        "file": "packages/daemon/internal/workspace/fetch.go",
+        "preimage": "which this pod never follows\", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode)",
+        "replacement": "which this pod never follows\", request.CacheURL, cache, path, response.Status"
+      }
+    },
+    {
+      "id": "workspace-status-line-health-redirected",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/health-redirected",
+      "production": "workspace askCache: a redirect of the health, naming the cache's repository, is a refusal that ends the wait, its target asked nothing (cacheClient follows no redirect)"
+    },
+    {
+      "id": "workspace-status-line-health-redirect-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/workspace",
+      "test": "TestACacheAnswerNamesItsStatusAndRepositoryAsTheRuleReadsThem/health-redirect-unanswered",
+      "production": "workspace cacheClient: follows no redirect, so no transport failure net/http names by a Location (its user name and query) becomes the health's not-ready reason"
     },
     {
       "id": "sandbox-status-line-repository-status",
@@ -8864,6 +8892,16 @@
       "site": "a listener send's target_session, expects_reply, message and payload redacted as credentials from the listener's words (no live session [redacted], message is [redacted], and every run of eight characters the reason shares with the message), which broke five of main's delivery tests",
       "source": "the merge of main into the pull request",
       "guard": "redact-listener-send-names-public"
+    },
+    {
+      "site": "workspace unpackCache: a refused tar named response.Request.URL, which cacheClient's followed redirect made the Location the cache's stand-in wrote, its user information and query included",
+      "source": "round 6's security review",
+      "guard": "workspace-status-line-tar-redirected"
+    },
+    {
+      "site": "workspace askCache: after a followed redirect, net/http's url.Error named the Location (its user name and query), returned as the health's not-ready reason that the wait logs",
+      "source": "the class search of round 6's redirect finding",
+      "guard": "workspace-status-line-health-redirect-unanswered"
     }
   ]
 }

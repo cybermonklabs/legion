@@ -560,8 +560,14 @@ func objectsSize(gitDir string) (int64, error) {
 
 // cacheClient reaches the repository cache directly, at the address it is given, the cache's
 // Service: no proxy the container's environment names stands between an issue pod and a pod of its
-// own namespace.
-var cacheClient = &http.Client{Transport: &http.Transport{Proxy: nil, ForceAttemptHTTP2: false}}
+// own namespace. It follows no redirect: the cache answers none, and a Location is the answering
+// party's own words, which a followed redirect makes the URL of the answer and of net/http's
+// error, user information and query included. A redirect is the answer itself, which askCache
+// refuses by its status.
+var cacheClient = &http.Client{
+	Transport:     &http.Transport{Proxy: nil, ForceAttemptHTTP2: false},
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 // CachePoll is how long Fetch waits between two asks of a repository cache that is not ready.
 const CachePoll = 10 * time.Second
@@ -600,9 +606,9 @@ const FetchBudget = CacheWaitTimeout + FetchTimeout + FetchTimeout
 // waitForCache asks the repository cache's GET <cache>/healthz every CachePoll until it answers
 // 200 ready, logging what it answered whenever that changes and at least once a minute, and fails
 // with the last answer once a further ask would start past CacheWaitTimeout. Each ask is bounded
-// by cacheAsk, and by what remains of the wait, so the wait ends within it. An answer that names
-// another repository (askCache) fails it at once: no wait makes that right. The asks carry no
-// credential (cacheNotReady).
+// by cacheAsk, and by what remains of the wait, so the wait ends within it. An answer askCache
+// refuses, a redirect or one that names another repository, fails it at once: no wait makes that
+// right. The asks carry no credential (cacheNotReady).
 func waitForCache(ctx context.Context, request FetchRequest) error {
 	deadline := request.Clock.Now().Add(CacheWaitTimeout)
 	var logged string
@@ -669,9 +675,9 @@ func cacheNotReady(ctx context.Context, request FetchRequest, timeout time.Durat
 
 // askCache is GET <cache><path>, with the cache's bearer token when withToken is set. It answers
 // (nil, the transport's failure) when the cache could not be reached, which is worth another ask.
-// An answer that refuses the token (401) to a request that carried it, or whose
-// CacheRepositoryHeader is not the request's repository, comes back with the refusal as its error:
-// the caller closes the body and takes nothing it carries.
+// An answer that refuses the token (401) to a request that carried it, a redirect (3xx), or one
+// whose CacheRepositoryHeader is not the request's repository, comes back with the refusal as its
+// error: the caller closes the body and takes nothing it carries.
 func askCache(ctx context.Context, request FetchRequest, path string, withToken bool) (*http.Response, error) {
 	cache := strings.TrimSuffix(request.CacheURL, "/")
 	ask, err := http.NewRequestWithContext(ctx, http.MethodGet, cache+path, nil)
@@ -687,6 +693,12 @@ func askCache(ctx context.Context, request FetchRequest, path string, withToken 
 	}
 	if withToken && response.StatusCode == http.StatusUnauthorized {
 		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s: it is not the cache whose token this pod holds", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
+	}
+	// cacheClient follows no redirect, so a 3xx is the answer itself: refused by its status, and
+	// its Location, the answering party's own words, is neither asked nor printed. The cache
+	// answers no redirect, whatever repository the answer names.
+	if response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest {
+		return response, fmt.Errorf("ask the repository cache %s: GET %s%s answered %s, a redirect, which this pod never follows", request.CacheURL, cache, path, oauth2call.StatusLine(response.StatusCode))
 	}
 	// The repository the answer names is its own words, so it is compared as it came and printed
 	// as the rule reads it (oauth2call.Header).
@@ -730,8 +742,10 @@ func unpackCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return 0, OutsideVolume(stream.stalledBy(err))
 	}
+	// The URL this pod asked, never the answer's own (response.Request.URL), which a redirect
+	// would have named.
 	if response.StatusCode != http.StatusOK {
-		return 0, OutsideVolume(fmt.Errorf("GET %s answered %s", response.Request.URL, oauth2call.StatusLine(response.StatusCode)))
+		return 0, OutsideVolume(fmt.Errorf("GET %s/tar answered %s", strings.TrimSuffix(request.CacheURL, "/"), oauth2call.StatusLine(response.StatusCode)))
 	}
 	// The tar is data unpacked as it arrives (oauth2call.StreamAnswer), as long as the
 	// repository needs; FeedEntry bounds what it writes.
