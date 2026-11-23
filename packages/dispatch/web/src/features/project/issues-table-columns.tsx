@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
+import { TruncatedText } from "../../components/TruncatedText";
 import { issueProject } from "../../lib/issue-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
@@ -190,7 +191,20 @@ const renderings = (
     sortingFn: (a, b) =>
       issueStatuses.indexOf(a.original.issue.status as IssueStatus) -
       issueStatuses.indexOf(b.original.issue.status as IssueStatus),
-    cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
+    // A column the reader narrows below the widest pill cuts the label inside the pill, with an
+    // ellipsis and the whole label as its title, rather than the pill at the cell's edge.
+    cell: ({ getValue }) => {
+      const label = statusLabel(getValue<IssueStatus>());
+      return (
+        <span className="flex min-w-0 [&>span]:min-w-0 [&>span]:max-w-full">
+          <StatusPill>
+            <TruncatedText className="min-w-0" title={label}>
+              {label}
+            </TruncatedText>
+          </StatusPill>
+        </span>
+      );
+    },
   },
   epic: {
     header: "Epic",
