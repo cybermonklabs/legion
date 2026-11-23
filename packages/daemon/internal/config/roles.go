@@ -95,7 +95,7 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 			return nil, fmt.Errorf("%s is %d characters, and a role's name has at most %d: Dispatch's step record takes no longer one", field, len(name), maxRoleWord)
 		case legionName(name):
 			return nil, fmt.Errorf("%s names a role of Legion's own: a deployment defines roles of its own names", field)
-		case false && record.IsSubOwnerAgent(claim.Agent(name)):
+		case record.IsSubOwnerAgent(claim.Agent(name)):
 			return nil, fmt.Errorf("%s starts with %s-, as the agent of a task's sub-owner is named: a step of the role would take that agent's claim", field, claim.RoleSubOwner)
 		case slices.ContainsFunc(roles, func(r Role) bool { return string(r.Name) == name }):
 			return nil, fmt.Errorf("%s names %s twice", key, name)

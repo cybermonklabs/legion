@@ -21,8 +21,9 @@ const subOwnerPrefix = string(claim.RoleSubOwner) + "-"
 // SubOwnerAgent is the name of the agent of task's sub-owner, the last part of its claim token:
 // `sub-owner-` and the task's slug (plan.TaskSlug) where that is at most maxAgentName bytes, else
 // `sub-owner-t-` and the first 12 lower-case hexadecimal characters of the SHA-256 of the id, 24
-// bytes. So one task has one sub-owner, in one session, for every version and generation of its
-// issue. The name is derived, never stored. No step's agent has such a name (IsSubOwnerAgent).
+// bytes, as TaskSlug hashes an id. So the sub-owner of one task has one claim token for every
+// version and generation of its issue. The name is derived, never stored, and no step's agent has
+// such a name (IsSubOwnerAgent).
 func SubOwnerAgent(task string) claim.Agent {
 	if name := subOwnerPrefix + plan.TaskSlug(task); len(name) <= maxAgentName {
 		return claim.Agent(name)
