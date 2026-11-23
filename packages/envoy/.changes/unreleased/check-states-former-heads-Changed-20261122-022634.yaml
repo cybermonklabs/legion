@@ -113,12 +113,14 @@ body: |-
     the database's: Dispatch's record of each write that opens or closes a row
     (`pull_request_heads_lifecycle`, a new table two triggers append to on each insert, each update
     that closes an open row or opens a closed one, and each re-key of an open row, which no reopen,
-    re-key or delete of the row removes, and which migration `20261122070959` seeds, undated, with
+    re-key or delete of the row removes, which migration `20261122070959` seeds, undated, with
     each pull request closed when it runs, by its canonical name's row, so an open pull request
-    whose old name's row reads closed from before keeps its results) shows the period begin at the
-    first close after the last write that opened a row of any name of it, or at a later close in it
-    of a row that was open, the latest such, so a second closed row of the closed pull request, as
-    the canonical-name writer writes, and a write that leaves a closed row closed or merged move it
+    whose old name's row reads closed from before keeps its results, and which the install alone
+    reads, so migration `20261122071002` drops it, its triggers and its function after the install)
+    shows the period begin at the first close after the last write that opened a row of any name of
+    it, or at a later close in it of a row that was open, the latest such, so a second closed row of
+    the closed pull request, as the canonical-name writer writes, and a write that leaves a closed
+    row closed or merged move it
     nowhere, and a close, a reopen and a second close begin it at the second; each result goes at
     the time it was recorded, a result first at an equal time; so a close and a reopen that a writer
     of the release before makes between the two migrations end the lifecycle as a close after them

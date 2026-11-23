@@ -218,12 +218,14 @@
 -- place yet, only where no end of the pull request is known. The install places each result
 -- recorded before it, and the start of the last closed period of each pull request before it, the
 -- pull request closed when the install runs or reopened since, in the order of their times
--- (below). So a reopen, whose start leaves the issue's whole population, never brings back a
--- result of the lifecycle its close ended, however healthy the read that would confirm it, and
--- neither does a reopen before the install, which finds the pull request open; while a result
--- recorded after the install, or before it since a close Dispatch recorded, while the pull
--- request was closed included, is a candidate of the new lifecycle; and a head the reopened pull
--- request truly visits is its former head by its own record.
+-- (below), which it reads from Dispatch's record of each write that opened or closed a row
+-- (pull_request_heads_lifecycle); the migration after this one drops that record, which nothing
+-- reads once this one has. So a reopen, whose start leaves the issue's whole population, never
+-- brings back a result of the lifecycle its close ended, however healthy the read that would
+-- confirm it, and neither does a reopen before the install, which finds the pull request open;
+-- while a result recorded after the install, or before it since a close Dispatch recorded, while
+-- the pull request was closed included, is a candidate of the new lifecycle; and a head the
+-- reopened pull request truly visits is its former head by its own record.
 -- A head an open pull request left since this release has its row once applied, verified, so a
 -- result there leaves nothing to read. They draw from one population through those functions, so
 -- they cannot drift apart. A result and a row's start written at once in two transactions are
@@ -923,11 +925,13 @@ create trigger pull_request_former_heads_of_ci_check_results after insert on ci_
 --
 -- The end is where the pull request's last closed period began, as Dispatch's record of each
 -- write that opened or closed a row of it shows (pull_request_heads_lifecycle, migration
--- 20261122070959), the writes of every name the rename rule maps to it at its canonical name, in
--- the order of their times. Each write that opened a row starts a new period; the last closed
--- period is the closes after the last such write before the last close. It begins at its first
--- close, or, where a later close in it closed a row that was open, as a pull request open under
--- another name can, at the latest of those, since a row of the pull request was open until then.
+-- 20261122070959), which this install is the one reader of: the migration after it,
+-- 20261122071002, drops the record, its triggers and its function. The writes are those of every
+-- name the rename rule maps to the pull request at its canonical name, in the order of their
+-- times. Each write that opened a row starts a new period; the last closed period is the closes
+-- after the last such write before the last close. It begins at its first close, or, where a later
+-- close in it closed a row that was open, as a pull request open under another name can, at the
+-- latest of those, since a row of the pull request was open until then.
 -- Any other write in that period, a row of the pull request written closed while it was closed
 -- already, such as the canonical-name writer's first write of a pull request it reads closed,
 -- which then deletes the row of its old name, is the closed pull request written again, and moves

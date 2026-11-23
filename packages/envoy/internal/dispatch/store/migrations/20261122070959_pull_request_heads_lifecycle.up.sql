@@ -1,25 +1,28 @@
 -- 20261122070959_pull_request_heads_lifecycle.up.sql
 --
 -- Every write that opens or closes a row of pull_request_heads, on the database's own clock, kept
--- for good (pull_request_heads_lifecycle): one row for each insert of a row, open, closed or
--- merged, and for each update that makes an open row closed or merged, makes a closed or merged
--- row open, or keys an open row anew, whichever writer and whichever build wrote it, under the
--- name of the row written (lowercased). Each row says whether the write left the row open (open)
--- and whether the row it wrote was open before it (from_open: false for an insert), with the
--- clock's time at that write (at, clock_timestamp()), which comes after Dispatch read the state
--- from GitHub. No write of pull_request_heads changes or deletes a row of it: a reopen, a re-key
--- and a delete of the pull request's row leave every write recorded before them. A write that
--- leaves a closed row closed or merged (an edit, a read that finds it closed still, a rewrite as
--- merged, a re-key of a closed row) opens and closes nothing, and is not recorded.
+-- until the former heads install has read it (pull_request_heads_lifecycle): one row for each
+-- insert of a row, open, closed or merged, and for each update that makes an open row closed or
+-- merged, makes a closed or merged row open, or keys an open row anew, whichever writer and
+-- whichever build wrote it, under the name of the row written (lowercased). Each row says whether
+-- the write left the row open (open) and whether the row it wrote was open before it (from_open:
+-- false for an insert), with the clock's time at that write (at, clock_timestamp()), which comes
+-- after Dispatch read the state from GitHub. No write of pull_request_heads changes or deletes a
+-- row of it: a reopen, a re-key and a delete of the pull request's row leave every write recorded
+-- before them. A write that leaves a closed row closed or merged (an edit, a read that finds it
+-- closed still, a rewrite as merged, a re-key of a closed row) opens and closes nothing, and is not
+-- recorded.
 -- pull_request_heads.event_at is not a time of this record: it is the pull request's updated_at
 -- on GitHub's clock, which each later edit of the closed pull request moves, and a write that
 -- names none keeps an earlier one.
 --
--- The former heads install (migration 20261122071001) commits in a transaction of its own after
--- this one, and a writer of the release before it can close a pull request and reopen it between
--- the two, which leaves its row open. So the install reads this record, not the rows' states
--- alone, and finds in it where each pull request's last closed period began, by the writes of
--- every name of it (that migration says how): at a close recorded after the last write recorded
+-- The former heads install (migration 20261122071001) is the record's one reader, and the
+-- migration after it (20261122071002) drops the table, its triggers and its function, so no write
+-- appends to it once the install has read it. The install commits in a transaction of its own
+-- after this one, and a writer of the release before it can close a pull request and reopen it
+-- between the two, which leaves its row open. So the install reads this record, not the rows'
+-- states alone, and finds in it where each pull request's last closed period began, by the writes
+-- of every name of it (that migration says how): at a close recorded after the last write recorded
 -- that opened a row of it, never at a write of the pull request closed already that closes no
 -- open row, such as the canonical-name writer's first write of a pull request it reads closed,
 -- which then deletes the row of its old name. So no later write of the closed pull request moves
