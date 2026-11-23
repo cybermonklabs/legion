@@ -3,7 +3,6 @@ package embed
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -124,8 +123,8 @@ func (s *EntraTokenSource) Token(ctx context.Context) (string, error) {
 }
 
 type entraTokenResponse struct {
-	AccessToken string          `json:"access_token"`
-	ExpiresIn   json.RawMessage `json:"expires_in"`
+	AccessToken string       `json:"access_token"`
+	ExpiresIn   entraSeconds `json:"expires_in"`
 }
 
 // exchange makes one client-credentials request. Its errors name the token file's path, the HTTP
@@ -179,21 +178,25 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 	if decoded.AccessToken == "" {
 		return "", 0, errors.New("embed: entra answered no access_token")
 	}
-	lifetime, err := entraLifetime(decoded.ExpiresIn)
-	if err != nil {
-		return "", 0, err
+	if decoded.ExpiresIn <= 0 {
+		return "", 0, errors.New("embed: entra answered an expires_in that is no positive number of seconds")
 	}
-	return decoded.AccessToken, lifetime, nil
+	return decoded.AccessToken, time.Duration(decoded.ExpiresIn) * time.Second, nil
 }
 
-// entraLifetime reads expires_in, the token's lifetime in seconds, which may arrive as a JSON
-// number or as a string; both are accepted. A value it cannot read is refused without quoting it:
-// an answer in Entra's place can put the assertion the exchange carried there.
-func entraLifetime(raw json.RawMessage) (time.Duration, error) {
-	value := strings.Trim(string(raw), `"`)
-	seconds, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || seconds <= 0 {
-		return 0, errors.New("embed: entra answered an expires_in that is no positive number of seconds")
+// entraSeconds is expires_in, the token's lifetime in seconds, which may arrive as a JSON number
+// or as a string; both are read. It keeps nothing of the value but the number, and a value it
+// cannot read is zero, which exchange refuses with any other that is not positive, without quoting
+// it: an answer in Entra's place can put the assertion the exchange carried there.
+type entraSeconds int64
+
+// UnmarshalJSON reads data, a JSON number or a JSON string of digits, as a number of seconds, and
+// anything else as zero. It returns no error, so no part of data reaches one.
+func (s *entraSeconds) UnmarshalJSON(data []byte) error {
+	seconds, err := strconv.ParseInt(strings.Trim(string(data), `"`), 10, 64)
+	if err != nil {
+		seconds = 0
 	}
-	return time.Duration(seconds) * time.Second, nil
+	*s = entraSeconds(seconds)
+	return nil
 }
