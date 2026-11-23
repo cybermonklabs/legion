@@ -1768,8 +1768,9 @@ func TestArtifactSlugsDisambiguateNormalizedNameCollisions(t *testing.T) {
 }
 
 func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
-	// The seeded specs' settlement locks the child row this test holds; the hour keeps it off
-	// that row, so the two status patches are the only writes queued there.
+	// The seeded specs' settlement takes the child's owner lock this test holds: the hour keeps its
+	// timer from firing during the race, and the row settles the child's documents itself before it
+	// takes the lock (below).
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
@@ -1792,6 +1793,16 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 		t.Fatalf("create parent and child: parent=%d child=%d", parentResponse.Code, childResponse.Code)
 	}
 
+	// A close settles each document of its issue before it opens its transaction
+	// (settleIssueBeforeClose, issue_patch.go), through the server's document service, whose
+	// transaction takes the issue's owner lock on that service's own pool: with the child's
+	// documents still owing their settlement, the patch to done would queue behind this test's
+	// lock on the server's backend and never on its own. They are settled here, by the same call
+	// that close makes, so its settlement finds nothing owed and takes no lock, and the one wait the
+	// patch to done makes behind the lock is its own transaction's.
+	if err := deps.Docs.SettleIssueDocuments(context.Background(), child.Key); err != nil {
+		t.Fatalf("settle the child's documents before the patches: %v", err)
+	}
 	lock, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin status lock: %v", err)
@@ -1802,7 +1813,8 @@ func TestConcurrentStatusPatchesUseCommittedPreimage(t *testing.T) {
 	}
 	// Each patch runs on a connection of its own, and each wait below watches that patch's backend
 	// (storetest.WaitForQueuedBehind): the second patch is sent only once the first has queued
-	// behind the child's owner lock, and no other session queued there is taken for either.
+	// behind the child's owner lock, so the first takes it first and the second reads what the
+	// first committed, and no other session queued there is taken for either.
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	firstHandler, firstPID := oneConnectionHandler(t, deps)
 	go func() {
