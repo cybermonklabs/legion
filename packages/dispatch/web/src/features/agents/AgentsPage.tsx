@@ -129,7 +129,8 @@ const composerLine = `${composerLineLayout} ${dangerText}`;
 const COMPACT_COMPOSER_QUERY = "(max-width: 767px), (max-height: 500px)";
 /** How many recipients the compact composer shows before its "+N": one chip, its state mark and
  *  live link, held to `max-w-40`, and the control fit on one line of a 360 px screen, so the
- *  composer's height does not grow with the selection. A chip's words wrap inside it. */
+ *  composer's height does not grow with the selection: its name and reason stay on one line,
+ *  ending in an ellipsis, until the reader opens the recipients, and then every chip wraps. */
 const COMPACT_RECIPIENTS_SHOWN = 1;
 
 /**
@@ -1173,10 +1174,15 @@ function BroadcastComposer({
   const sectionRef = useRef<HTMLElement>(null);
   useFootInset(sectionRef, true, "page");
   const compact = useMediaQuery(COMPACT_COMPOSER_QUERY);
+  // Whether the reader opened the recipients past their "+N". The compact composer's one chip
+  // is one line while they are closed, and every chip wraps whole once the reader opens them.
+  const [chosenOpen, setChosenOpen] = useState(false);
+  const chipOnOneLine = compact && !chosenOpen;
 
   // On a narrow or short screen (`narrow-or-short`, styles.css) the composer is a compact grid,
   // so it takes about a third of a phone screen: the heading on one line, the recipients on one
-  // line (the first, its name shortened to an ellipsis, then "+N" for the rest), the
+  // line (the first chip, its name and reason on one line that ends in an ellipsis with the
+  // whole as its title, then "+N" for the rest; the notice names every exclusion whole), the
   // message sized to its text (`field-sizing`) from two rows up to `max-h-32`, and the mode
   // beside Send. A short screen (a phone in landscape) folds that into two lines - heading beside
   // the recipients, then the message beside the mode and Send - with the message held at two
@@ -1200,15 +1206,17 @@ function BroadcastComposer({
       >
         Broadcast to {recipients.length} of {selected.size} selected
       </h2>
-      {/* Each chip shrinks to the list's width and its words wrap inside it, the excluded or
-          unchecked agent's reason with them, so no chip is cut and none scrolls the composer
-          sideways, however long the session's title. */}
+      {/* Each chip shrinks to the list's width and, except the compact composer's closed chip,
+          its words wrap inside it, the excluded or unchecked agent's reason with them, so no
+          chip scrolls the composer sideways, however long the session's title. */}
       <CappedGroup
         className="mt-2 flex flex-wrap items-center gap-2 narrow-or-short:col-span-full narrow-or-short:mt-0 short:col-span-3 [&>li]:min-w-0 [&>li]:max-w-full"
         label="agents"
         list="Selected agents"
         max={compact ? COMPACT_RECIPIENTS_SHOWN : LAYOUT_GROUP_MAX}
         name="chosen-agents"
+        onOpenChange={setChosenOpen}
+        open={chosenOpen}
       >
         {[...selected].map((sessionID) => {
           const agent = agents.find((candidate) => candidate.session_id === sessionID);
@@ -1226,7 +1234,16 @@ function BroadcastComposer({
                   title={`Remove ${text.sessionText(sessionID, agent?.title)} from this broadcast`}
                   type="button"
                 >
-                  <span className="min-w-0 [overflow-wrap:anywhere]">
+                  <span
+                    className={
+                      chipOnOneLine ? "min-w-0 truncate" : "min-w-0 [overflow-wrap:anywhere]"
+                    }
+                    title={
+                      chipOnOneLine
+                        ? `${text.sessionText(sessionID, agent?.title)}${noteText}`
+                        : undefined
+                    }
+                  >
                     {name}
                     {/* not stored prose: the dashboard's own word for why it gets none */}
                     {noteText}

@@ -1379,6 +1379,32 @@ test("with half the recipients unable to take the mode, the compact composer kee
   }
 });
 
+// The closed compact composer shows one chip, the first chosen agent's, and a session's real
+// title runs past seventy characters ("Legion architect · INFRA-5201 · …"), where every other
+// budget row names its sessions `Planner NN`. That chip, here an excluded one that carries its
+// reason too, stays one line, so the composer keeps its budget at every compact size.
+test("on a phone the closed composer keeps its budget and its one chip one line when the first chosen agent's title is seventy characters", async ({
+  browser,
+}) => {
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const long = "Planner 01 · Legion architect · INFRA-5201 · Dispatch layout rule and its seed";
+    const sessions = planners(40, 20).map((session, index) =>
+      index === 0 ? { ...session, capabilities: ["aside"], title: long } : session
+    );
+    const fixture = await openNoticeFixture(page, sessions);
+    const first = fixture.excludedChip(long);
+    await expect(first).toBeVisible();
+    await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
+      // One line of a chip is its 44 px touch target; a wrapped title would be two or more.
+      expect.soft((await first.boundingBox())?.height ?? Infinity, at).toBeLessThanOrEqual(44.5);
+    });
+  } finally {
+    await alice.close();
+  }
+});
+
 test.describe("the composer's notices share one slot, highest first, within budget on compact screens", () => {
   test("the limit alone: 120 recipients", async ({ browser }) => {
     const alice = await asUser(browser, "alice");
