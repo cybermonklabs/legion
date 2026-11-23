@@ -17,9 +17,10 @@ import { scriptFunctions } from "./script-functions";
 // the pane and leaves all three alive, as the brokers outlived cleanup-is-complete in the devbox
 // run at 6512c7fc. The pane the stand-in broker starts is a real tmux pane, and the teardown this
 // test is about is tmux kill-server's, so a host with no tmux runs nothing here and says what is
-// missing. CI is not such a host: its `test` job runs `bun test scripts/e2e/lib` before its
-// `Install tmux` step (.github/workflows/ci.yaml), and the row runs there anyway, because the
-// ubuntu-24.04 image the job runs on already carries tmux.
+// missing. CI is not such a host: its `test` job runs `bun test scripts/e2e/lib` on the
+// ubuntu-24.04-arm runner image, which carries tmux, so the row runs there with no install step
+// (it passed in job 136078633986 of run 44673073324). The jobs whose own steps need tmux name it
+// to .github/scripts/apt-install.sh, which makes no apt call for a package the image carries.
 const e2e = join(import.meta.dir, "..");
 const root = join(e2e, "..", "..");
 const scriptPath = join(e2e, "parked-decision-devbox.sh");

@@ -182,7 +182,7 @@ jobs:
       # the other shell they run under, is Ubuntu's /bin/sh).
       - name: Install zsh
         if: matrix.lane == 'harness'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+        run: .github/scripts/apt-install.sh --budget 300 zsh
       # The harness rows that ci-job-dispatch-ui.yaml skips for want of a database repeat here,
       # as they run in a pod: e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts's "psql
       # reads its own stack's database", and the rows of replace-blocks-guard.test.ts that need a
