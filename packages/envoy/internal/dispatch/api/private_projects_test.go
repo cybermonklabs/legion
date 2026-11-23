@@ -192,6 +192,7 @@ func requireAnIncompleteStoreRefusesTheSwitch(t *testing.T, options testServerOp
 // makes no other bus call: not after a commit that failed, and not for public, whose key is the
 // writer's own pass to delete.
 func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
+	t.Parallel()
 	private := map[string]string{"visibility": model.ProjectPrivate}
 	public := map[string]string{"visibility": model.ProjectPublic}
 	refusal := errors.New(`nats: permissions violation for publish to "$KV.envoy_private_projects.PRIV"`)
@@ -365,6 +366,7 @@ func TestTheMaintenanceSweepNamesARowAPrivateProjectWouldAnswerWrongly(t *testin
 // private is refused; the owner's switch to public is the one visibility write it takes, after
 // which alice reads the issue.
 func TestAnUnprovisionedPrivateProjectFailsClosed(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		list    []string
 		refusal string

@@ -367,6 +367,7 @@ func (r *recoveryRig) personalToken(t *testing.T, email, account string) string 
 // comparison (the alias's account is cleared and approves); and the first block without its
 // settlement (the owedrow@ holder is refused again and its sign-in ends).
 func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const unapplied, noAccount, takeback, owed, kept, alias, outside = "unapplied@example.com", "noaccount@example.com", "takeback@example.com", "owedrow@example.com", "kept@example.com", "alias@example.com", "outside@example.com"
@@ -549,6 +550,7 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 // answer a refusal to leave alone. The block must say that the read is unknown, name its status
 // and fail, rather than call an unavailable directory account no account.
 func TestTheResetDirectoryBlockReportsEveryUnusableStatus(t *testing.T) {
+	t.Parallel()
 	r := newRecoveryRig(t)
 	cases := []struct {
 		email  string
@@ -596,6 +598,7 @@ func TestTheResetDirectoryBlockReportsEveryUnusableStatus(t *testing.T) {
 //
 // Control in the runbook: the clear's psql without its failure arm lets the block exit 0.
 func TestTheResetDirectoryBlockFailsWhenTheBrokerRefusesAClear(t *testing.T) {
+	t.Parallel()
 	r := newRecoveryRig(t)
 	const email = "clear-refused@example.com"
 	r.revoke(t, email, "refused-holder", "other-account", 1)
@@ -636,6 +639,7 @@ const handClearLead = "A refusal an operator lifted by hand with the broker clea
 // Control in the runbook: the block listing every refusal, without Dispatch's side (other@'s
 // refusal is named too).
 func TestTheRefusalsOfAnAddressesRecordedAccountAreFound(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const holder, other = "holder-cleared@example.com", "other-refused@example.com"
@@ -679,6 +683,7 @@ func TestTheRefusalsOfAnAddressesRecordedAccountAreFound(t *testing.T) {
 // Controls in the runbook: the read's `|| { ...; exit 1; }` dropped, and the parse's dropped; each
 // block then exits 0.
 func TestTheResetDirectoryBlockFailsOnAnUnreadableBrokerOrAnUnparseableAnswer(t *testing.T) {
+	t.Parallel()
 	t.Run("the broker's database cannot be read", func(t *testing.T) {
 		r := newRecoveryRig(t)
 		const email = "broker-unread@example.com"
@@ -781,6 +786,7 @@ const unreadableDatabase = "postgres://nobody@127.0.0.1:1/nothing?connect_timeou
 // dropped. Step 1 then fails without its line, the credentials block exits 0 having read nothing,
 // and the close records the reset's end over a broker it never read.
 func TestTheResetsBlocksChangeNothingWhenADatabaseCannotBeRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	floors := func(t *testing.T, r *recoveryRig) int {
 		t.Helper()
@@ -943,6 +949,7 @@ func (r *recoveryRig) resetDeployment(t *testing.T, directory map[string]directo
 // read of the broker (it closes over the live sign-in), the close's read without its cutoff
 // (STILL LIVE names the holder's sign-in), and the first run waiting the hour (the steps' text).
 func TestTheResetClosesOnlyAnHourAfterItsStartOnACleanRead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "close@example.com"
@@ -1004,6 +1011,7 @@ func TestTheResetClosesOnlyAnHourAfterItsStartOnACleanRead(t *testing.T) {
 // Control in the runbook: the close without its empty-insert arm (it prints `the reset ended at`
 // with no moment and exits 0).
 func TestTheResetCloseRecordsNoEndWhenStepOneRunsAgainDuringIt(t *testing.T) {
+	t.Parallel()
 	realPsql, err := exec.LookPath("psql")
 	if err != nil {
 		t.Skipf("psql is not installed, so the close cannot be run here: %v", err)
@@ -1049,6 +1057,7 @@ exec "$REAL_PSQL" "$@"
 // reset ended at` while step 1 is open, and the newest mark is then its end). Either lock alone
 // orders the two, so dropping one of them passes.
 func TestTheResetCloseWaitsForAStepOneStillOpen(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	r.resetSessions(t)
@@ -1119,6 +1128,7 @@ func TestTheResetCloseWaitsForAStepOneStillOpen(t *testing.T) {
 // Control in the runbook: the close's catch-all arm taking the answer as a moment (it fails on the
 // broker's read instead, naming the broker).
 func TestTheResetCloseRefusesAWaitAnswerItCannotRead(t *testing.T) {
+	t.Parallel()
 	realPsql, err := exec.LookPath("psql")
 	if err != nil {
 		t.Skipf("psql is not installed, so the close cannot be run here: %v", err)
@@ -1159,6 +1169,7 @@ exec "$REAL_PSQL" "$@"
 //
 // Control in the runbook: the close reading the broker first (it answers UNKNOWN for the broker).
 func TestTheResetCloseChecksItsWaitBeforeItReadsTheBroker(t *testing.T) {
+	t.Parallel()
 	r := newRecoveryRig(t)
 	output, err := r.closeReset(t)
 	if err == nil || !strings.Contains(output, "NOT CLOSED: no reset is open") {
@@ -1186,6 +1197,7 @@ func TestTheResetCloseChecksItsWaitBeforeItReadsTheBroker(t *testing.T) {
 // Controls in the migration: the guard's tg_op branch off (the update to now() succeeds), and its
 // end arm off (each early or unopened end succeeds).
 func TestTheResetMarksRefuseEveryWriteButTheResetsOwn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	refused := func(t *testing.T, statement string) {
@@ -1236,6 +1248,7 @@ func TestTheResetMarksRefuseEveryWriteButTheResetsOwn(t *testing.T) {
 //
 // Control in the runbook: each reader picking the last mark by max(at) (each row fails).
 func TestTheResetsBoundsFollowTheMarksOrderNotTheirClock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "clock-back@example.com"
@@ -1296,6 +1309,7 @@ func TestTheResetsBoundsFollowTheMarksOrderNotTheirClock(t *testing.T) {
 // /dev/null it ends every listed login; without the redirect its first run consumes the remaining
 // logins from the loop.
 func TestTheResetCredentialsPageLoopGivesBrokerRunNoStdin(t *testing.T) {
+	t.Parallel()
 	for _, tool := range []string{"bash"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not installed, so the page-session loop cannot be run here: %v", tool, err)

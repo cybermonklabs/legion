@@ -18,6 +18,7 @@ import (
 // Control: privateProjectIncomplete wrapping a failed marker read as errPrivateProjectsIncomplete,
 // as it did before the switch read the store report's own marker check: the switch answers 409.
 func TestASwitchWhoseMarkerReadFailsAnswersTheDatabasesError(t *testing.T) {
+	t.Parallel()
 	bus := &recordingBus{}
 	handler, database := newPrivateProjectsServer(t, testServerOptions{privateProjects: []string{"PRIV"}}, bus)
 	if _, err := database.Pool.Exec(context.Background(), `alter table session_projects_filled rename to session_projects_filled_unreadable`); err != nil {

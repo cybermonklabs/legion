@@ -28,6 +28,7 @@ import (
 // Control: the client built without WithPrivateProjects; the read-through follows the redirect
 // while PRIV is private, stores acme/new's pull request under acme/old, and the test fails.
 func TestAResultReadsNoRepositoryGitHubRedirectsAnIssuesRepositoryTo(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	asked := map[string]int{}
 	mux := http.NewServeMux()

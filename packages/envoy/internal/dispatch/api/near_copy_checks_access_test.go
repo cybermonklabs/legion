@@ -16,6 +16,7 @@ import (
 //
 // Control: the page and the row read with no project clause, and alice reads PRIV's row.
 func TestTheNearCopyChecksOfAPrivateProjectAnswerAsAProjectNobodyHolds(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	var id string
 	if err := seed.database.Pool.QueryRow(context.Background(), `

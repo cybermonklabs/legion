@@ -84,6 +84,7 @@ func seedSessionWork(t *testing.T, seed privateSeed) {
 // private. A session's open asks count only the asks of the projects the caller sees, and a person
 // the caller may not see answers exactly as a login nobody holds.
 func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
@@ -196,6 +197,7 @@ const listedRoster = `[
 // Control: drop agentResponse's own Projects field (plan C's t-c-28); the embedded session's list
 // is served, every row carries it, and the test fails naming each.
 func TestAFilteredAgentRowNamesNoProject(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, listedRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
@@ -249,6 +251,7 @@ const newSessionsRoster = `[
 // with no pair to an open viewer), under which alice lists session-new-priv; and the uncached read
 // storing nothing, under which alice, in that mode, lists no session-new-none.
 func TestAnOpenViewerListsNoNewSessionOfAPrivateProjectItCannotSee(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []struct {
 		name     string
 		uncached bool
@@ -296,6 +299,7 @@ func TestAnOpenViewerListsNoNewSessionOfAPrivateProjectItCannotSee(t *testing.T)
 // Control: answer the passes to every viewer (the route's class without deployment); bob then
 // reads a pass, and the test fails naming it.
 func TestCIRepairPassesGoToAnOpenViewerOnly(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	if _, err := seed.database.Pool.Exec(t.Context(), `
 		insert into repo_projects (repo, project, created_by) values ('acme/priv', 'PRIV', '{"kind":"user","id":"operator"}')
@@ -346,6 +350,7 @@ func TestCIRepairPassesGoToAnOpenViewerOnly(t *testing.T) {
 // Control: the route answering every cursor as stored (leaveOutHiddenCursors returning at once):
 // alice reads acme/priv in a cursor, and the test fails naming her.
 func TestACIPassCursorInAHiddenRepositoryReadsAsTheStartOfTheOrder(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	instance := seedServerProcess(t, seed.database, 0)
 	passes := map[string]int64{}
@@ -397,6 +402,7 @@ func TestACIPassCursorInAHiddenRepositoryReadsAsTheStartOfTheOrder(t *testing.T)
 // carol's token that lists no project) does not see session-priv or session-both at all, each
 // having acted in PRIV (access.SessionClause), and reads session-pub's comment on PUB.
 func TestASessionsLastActivityCountsOnlyWhatTheCallerSees(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
@@ -447,6 +453,7 @@ func TestASessionsLastActivityCountsOnlyWhatTheCallerSees(t *testing.T) {
 // the newest event of the session he reads, and carol's, an open viewer that sees every project
 // carol sees, is the answer's.
 func TestALastActivityCountsTheConversationItsReaderReads(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
@@ -493,6 +500,7 @@ func TestALastActivityCountsTheConversationItsReaderReads(t *testing.T) {
 // shown both; an open reader that sees no project is shown only the one that names no issue, and
 // not the one whose issue is HID's.
 func TestEachReaderIsToldTheUnfetchableCountOfWhatItSees(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HID")
@@ -548,6 +556,7 @@ func TestEachReaderIsToldTheUnfetchableCountOfWhatItSees(t *testing.T) {
 // commits, the page is sent a snapshot read for the new reader, which counts none, so the rows of a
 // project the caller lost leave the page.
 func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
+	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "HID")
@@ -599,6 +608,7 @@ func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
 // (TestADeliveryReadShowsOnlyThePullRequestsItsViewerSees), and so do the CI reconcile passes
 // (TestCIRepairPassesGoToAnOpenViewerOnly).
 func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	// One priority each project's work advances, and each project's seed issue in flight under no
 	// priority.
@@ -664,6 +674,7 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 // (readClasses), so a viewer that is not open, a restricted member and his token, is refused them
 // whole, the same bytes for a broadcast it wrote, one it could not see and an id nobody holds.
 func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
@@ -774,6 +785,7 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 // private, and while none is answers it as project alone, as it did before lists existed (R9); a
 // broker token acting as its person answers its list only while a project is private.
 func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
+	t.Parallel()
 	carol := seedCarol
 	project := seedPublic
 	// A list as a write may hold it, unsorted.
@@ -869,6 +881,7 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 // reads every person in both states. bob's token holds no scope (a restricted member's token,
 // R16), so it reads no people list in either state: 403 OAUTH_SCOPE_REQUIRED.
 func TestTheUsersOfAPublicListedProjectAreEveryFullMember(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	const driverAlice = "alice@example.com"
 	seedPeople(t, seed.database, driverAlice)
@@ -907,6 +920,7 @@ func TestTheUsersOfAPublicListedProjectAreEveryFullMember(t *testing.T) {
 // private project, every caller that sees the page today reads it byte for byte as it did: alice
 // then reads bob's page exactly as carol does.
 func TestAPersonPageOfOnlyHiddenActivityAnswersAsMissing(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.mustRequest(t, callerBob, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
 		map[string]any{"body": "bob was here."}, http.StatusCreated)

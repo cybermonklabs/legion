@@ -16,6 +16,7 @@ import (
 // CAP_EXCEEDED; the owner's write is stored sorted and deduplicated and appends one
 // project.access_changed with change slack_channels.
 func TestOnlyTheOwnerNamesTheProjectsSlackChannels(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	before := allEvents(t, database)
 	wantRefusal(t, dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/ACC/access",
@@ -63,6 +64,7 @@ func TestOnlyTheOwnerNamesTheProjectsSlackChannels(t *testing.T) {
 // reads carries the owner's list, [] before any write and the stored list after it, and names no
 // repositories: its JSON has no `repositories` key (GitHub events carry no project).
 func TestTheAccessAnswerCarriesTheProjectsSlackChannels(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	seedPeople(t, database, accessCarol)

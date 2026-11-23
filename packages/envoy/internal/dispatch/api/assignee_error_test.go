@@ -11,6 +11,7 @@ import (
 //
 // Control: the login back in the error's text; the test fails naming it.
 func TestAnAssigneeReadFailureNamesNoPerson(t *testing.T) {
+	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	database.Pool.Close()
 	const login = "dana@example.com"

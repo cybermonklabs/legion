@@ -48,6 +48,7 @@ func wantChannelsUnwritten(t *testing.T, database *store.Store, key string, befo
 // check, and the first row's write lands and the test fails naming the channel; drop the channel
 // lock, and both racing writes land and the race row fails naming the race.
 func TestASharedSlackChannelIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	createAccessProject(t, handler, "PRIV", "alice")
 	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/PRIV/access/people/"+accessDave, nil, "alice"); response.Code != http.StatusOK {
@@ -181,6 +182,7 @@ func TestASharedSlackChannelIsRefused(t *testing.T) {
 // Controls: name PRIV whenever the credential's person sees it, or read the person's viewer in
 // place of the request's, and the personal token's row fails naming the token.
 func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	// alice owns both, so she sees PRIV.
 	createAccessProject(t, rig.handler, "PRIV", "alice")
@@ -240,6 +242,7 @@ func TestTheSharedChannelRefusalReadsTheCallersCredential(t *testing.T) {
 // break it catches: SharedSlackChannel losing `key <> $1`, which refuses every later write of a
 // private project's own list with "C0OWN000001 is listed by PRIV, a private project", its own name.
 func TestAPrivateProjectKeepsItsOwnSlackChannels(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	createAccessProject(t, handler, "PRIV", "alice")
 	makePrivate(t, database, "PRIV", "C0OWN000001")

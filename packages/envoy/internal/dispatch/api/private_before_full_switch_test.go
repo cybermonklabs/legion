@@ -66,6 +66,7 @@ func requireBeforeFullSwitch(t *testing.T, database *store.Store, response *http
 // before its full switch, and the incomplete rows fail; drop NewDeps' refusal, and the row of a
 // project on both lists fails.
 func TestAProjectBecomesPrivateBeforeItsFullSwitch(t *testing.T) {
+	t.Parallel()
 	private := map[string]string{"visibility": model.ProjectPrivate}
 	public := map[string]string{"visibility": model.ProjectPublic}
 	beforeFullSwitch := []string{"PRIV"}
@@ -158,6 +159,7 @@ const beforeFullSwitchRoster = `[
 // Control: the same reads with PRIV still public find PRIV's objects and session for alice, so
 // each read can see what it is looking for.
 func TestAProjectPrivateBeforeItsFullSwitchIsHiddenAsAnyPrivateProject(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []struct {
 		name    string
 		options testServerOptions

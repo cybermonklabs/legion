@@ -64,6 +64,7 @@ func carolsWordsCarried(t *testing.T, seed privateSeed, carols string) (replies,
 // conversation's rule keeps carol's message from him. His token is no writer here: a restricted
 // member's token holds no scope (R16), and the route needs the person scope.
 func TestAReplyToADirectMessageItsWriterMayNotReadAnswersAsAMissingParent(t *testing.T) {
+	t.Parallel()
 	seed, carols := replySeed(t)
 	seed.asSession(t, replySession, seedPrivate, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
 		map[string]any{"body": "s-reply works on PRIV too."}, http.StatusCreated)
@@ -90,6 +91,7 @@ func TestAReplyToADirectMessageItsWriterMayNotReadAnswersAsAMissingParent(t *tes
 // message to the session, and carol replying to hers, are taken: the read binds who may read the
 // parent, a party of its conversation among them, and refuses no reply for being one.
 func TestAReplyToADirectMessageItsWriterMayReadIsTaken(t *testing.T) {
+	t.Parallel()
 	seed, carols := replySeed(t)
 	own := createdID(t, seed.request(t, callerAlicePubToken, http.MethodPost, "/api/v1/agents/"+replySession+"/messages",
 		map[string]any{"body": "Alice's token's own word to s-reply.", "delivery": "btw"}))
@@ -112,6 +114,7 @@ func TestAReplyToADirectMessageItsWriterMayReadIsTaken(t *testing.T) {
 // carol's direct message to the session and is taken, as at 99e11cdd50: an open viewer reads every
 // conversation whose sessions it may read (access.PartyClause).
 func TestAnOpenViewerRepliesToADirectMessageAsBeforeWithNoPrivateProject(t *testing.T) {
+	t.Parallel()
 	seed, carols := replySeed(t)
 	seed.setVisibility(t, seedPrivate, "public")
 	if response := directReply(t, seed, callerAlice, carols); response.Code != http.StatusCreated {

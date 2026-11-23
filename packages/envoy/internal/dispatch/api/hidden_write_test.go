@@ -49,6 +49,7 @@ import (
 // PRIV for alice's broker token, its refusal names PRIV where an object nobody holds is refused
 // naming no project, and the walk fails naming each row of a project's object.
 func TestNoWriteReachesAHiddenObject(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	rows := objectWriteRows()
 	if problems := writeProbeProblems(rows); len(problems) > 0 {
@@ -167,6 +168,7 @@ var bodyReferences = []struct {
 // alice and to her token that lists PUB, an open viewer that sees PUB alone and names its session
 // (probeActor). An object nobody holds is refused there, and PRIV's alike.
 func TestNoBodyReachesAHiddenObject(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	if walk.issue[seedPublic] != "PUB-1" {
 		t.Fatalf("PUB's issue is %s; the walk's paths name PUB-1", walk.issue[seedPublic])
@@ -206,6 +208,7 @@ func TestNoBodyReachesAHiddenObject(t *testing.T) {
 // removed only while nothing links to it, so a removal of one only PRIV's comment cites is refused
 // naming nothing that cites it.
 func TestARefusalOfAHiddenObjectNamesNone(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	both := []privateCaller{callerAlice, callerAlicePubToken}
 	newPublicIssue := func(title string) string {
@@ -290,6 +293,7 @@ func TestARefusalOfAHiddenObjectNamesNone(t *testing.T) {
 // asked of a project its asker saw is held to what the asker sees afterwards
 // (TestADocumentOfAPrivateProjectAnswersAsMissing).
 func TestAGoingRunOfAHiddenProjectAnswersAsOneOfNoProject(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	run := func(project string) (string, *httptest.ResponseRecorder, *httptest.ResponseRecorder, []string) {
 		t.Helper()
@@ -395,6 +399,7 @@ var personAndSessionReferences = []struct {
 // An open viewer is answered as before: alice's message to s-pub and to the role it holds are
 // delivered, which also shows the walk's listener holds both, and she assigns dana.
 func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	type walker struct {
 		who     privateCaller
@@ -483,6 +488,7 @@ func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
 // as before. What makes that check able to fail: while PRIV is private, her write to a session's
 // own row (withinSessionScope) issues the first, and her read of PUB's subscribers the second.
 func TestWithNoPrivateProjectASessionWriteAnswersAsToday(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	reads := func(statements []string) bool {
 		return slices.ContainsFunc(statements, sessionVisibilityRead.MatchString)
@@ -536,6 +542,7 @@ func TestWithNoPrivateProjectASessionWriteAnswersAsToday(t *testing.T) {
 // session hidden from her does, and nothing is queued on its subject. With no private project (R9)
 // she sees every session, and the same message is queued on s-nobody's own subject, as before.
 func TestAMessageToASessionNobodyHoldsIsQueuedOnlyWithNoPrivateProject(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	const nobody = "s-nobody"
 	send := func() string {
@@ -575,6 +582,7 @@ func TestAMessageToASessionNobodyHoldsIsQueuedOnlyWithNoPrivateProject(t *testin
 // edit removing it from carol's group each answer as the same write naming s-nobody does: a refusal
 // of a session another group holds would name carol's group, and a removal would empty it.
 func TestASessionGroupWriteAnswersASessionItsWriterMayNotSeeAsOneNobodyHolds(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	carols := createdID(t, walk.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/delivery/session-groups",
 		map[string]any{"name": "PRIV workers", "sessions": []string{privateSession}}, http.StatusCreated))
@@ -600,6 +608,7 @@ func TestASessionGroupWriteAnswersASessionItsWriterMayNotSeeAsOneNobodyHolds(t *
 // session it names (sessionVisibilityRead): her group of privateSession, which carol's group holds,
 // is refused naming carol's group, and her group of a session no group holds is made.
 func TestWithNoPrivateProjectASessionGroupWriteAnswersAsToday(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	walk.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/delivery/session-groups",
 		map[string]any{"name": "PRIV workers", "sessions": []string{privateSession}}, http.StatusCreated)
@@ -639,6 +648,7 @@ func TestWithNoPrivateProjectASessionGroupWriteAnswersAsToday(t *testing.T) {
 // as her rename to a title no session holds: 200, the same bytes but for the name and the times,
 // and the same statements.
 func TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	stampSessionTitle(t, walk, walk.issue[seedPublic], privateSession, "priv worker")
 	stampSessionTitle(t, walk, walk.issue[seedPrivate], "s-pub", "pub codename")
@@ -675,6 +685,7 @@ func TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees(t *testing.T) {
 // the seed's group to each title of TestAGroupNameIsHeldOnlyToTheSessionsAndTitlesItsWriterSees is
 // refused naming the session that holds it.
 func TestWithNoPrivateProjectAGroupNameIsHeldToEveryTitleAsToday(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	stampSessionTitle(t, walk, walk.issue[seedPublic], privateSession, "priv worker")
 	stampSessionTitle(t, walk, walk.issue[seedPrivate], "s-pub", "pub codename")
@@ -702,6 +713,7 @@ func TestWithNoPrivateProjectAGroupNameIsHeldToEveryTitleAsToday(t *testing.T) {
 // route's own refusal of an id that is no id (400 <KIND>_ID_INPUT, which reads nothing), and never
 // by a 500: a value Postgres will not read as a uuid is never the database's error.
 func TestAnIDThatIsNoUUIDAnswersAsAnIDNobodyHolds(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	const notAUUID = "not-a-uuid"
 	var walked int
@@ -760,6 +772,7 @@ func TestAnIDThatIsNoUUIDAnswersAsAnIDNobodyHolds(t *testing.T) {
 // A refusal that named PRIV-1's title as well, which the caller never sent, still differs from
 // NOPE-1's: the walk fails it.
 func TestTheWalkExcusesAHiddenKeysOwnProjectAlone(t *testing.T) {
+	t.Parallel()
 	written := map[string]string{"NOPE-1": "PRIV-1"}
 	refusal := func(key, more string) string {
 		project, _, _ := strings.Cut(key, "-")

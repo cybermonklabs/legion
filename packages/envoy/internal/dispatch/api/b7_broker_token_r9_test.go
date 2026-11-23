@@ -34,6 +34,7 @@ func requireB7Answer(t *testing.T, what string, response *httptest.ResponseRecor
 // target of another project are each 403 in the words they were answered then; its write to its
 // own project's issue lands.
 func TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-named-token-of-one-project"
@@ -70,6 +71,7 @@ func TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate(t 
 // project and no list, and it comments on another project's issue, files an issue there and
 // names a blocked_by target there.
 func TestABrokerTokenActingAsItsPersonAnswersAsBeforeWhileNoProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-person-token-whose-trade-named-one-project"

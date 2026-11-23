@@ -20,6 +20,7 @@ import (
 // Control: roleHolderHidden judging the holder alone; alice's resolve then reaches session-pub and
 // the row fails naming it.
 func TestM10ARoleOfAHiddenProjectReachesNoSenderWhoCannotSeeIt(t *testing.T) {
+	t.Parallel()
 	counter := &contextStatements{}
 	seed := seedHiddenHolders(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
 	reader := func(login string) model.Actor {

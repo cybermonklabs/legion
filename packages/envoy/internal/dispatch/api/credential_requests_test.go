@@ -347,6 +347,7 @@ func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 // generation the row holds once it does, followed as it moves; the broker refuses an approve whose
 // generation is below the one a revocation of the address recorded. A deny carries none.
 func TestAnApproveCarriesTheSessionGenerationItsCheckRead(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	database := storetest.Open(t)
 	seedPeople(t, database, "alice")

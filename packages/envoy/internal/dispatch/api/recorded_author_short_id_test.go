@@ -33,6 +33,7 @@ const (
 // Control: RecordedViewer reading such an author as an agent credential naming no list; the short
 // id names nothing, and the comment stores it as it wrote it.
 func TestAnAgentsShortIDResolvesAmongWhatItsPersonSees(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	issue := seed.issue[seedPrivate]
 	target := createdID(t, seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+issue+"/comments",

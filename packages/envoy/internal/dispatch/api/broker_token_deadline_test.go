@@ -32,6 +32,7 @@ const brokerUnavailableText = "whether this token's person may still act could n
 // and the test fails naming it); callerStillResolves without the deadline check (the socket stays
 // open, and the test fails naming it).
 func TestABrokerTokenPastItsDeadlineIsUnavailable(t *testing.T) {
+	t.Parallel()
 	clock := &heldClock{at: time.Now()}
 	rig := newBrokerTokenRig(t, func(o *ciphertoken.Options) { o.Now = clock.now })
 	seedPeople(t, rig.database, accessCarol, accessDave)

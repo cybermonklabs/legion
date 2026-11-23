@@ -22,6 +22,7 @@ import (
 // Control: register starts no access re-check on the heartbeat; the cookie's heartbeat keeps the
 // socket open and the row fails at its wait.
 func TestADocumentSocketClosesOnItsHeartbeatOnceItsPersonLosesTheRoomBySQLAlone(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 200 * time.Millisecond
 	rig := newDocumentSocketTokenRig(t, heartbeat)
 	peer := rig.openDocument(t, nil)

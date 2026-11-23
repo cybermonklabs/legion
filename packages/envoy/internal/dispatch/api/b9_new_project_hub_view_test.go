@@ -23,6 +23,7 @@ import (
 // The view keeps the reader it was made for; NEW's issue never reaches the timeline, and the test
 // fails at its deadline.
 func TestWithNoPrivateProjectANewProjectReSnapshotsNoDeliveryOrLegionPage(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/legion/daemon",

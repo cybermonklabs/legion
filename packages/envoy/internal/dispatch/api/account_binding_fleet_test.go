@@ -32,6 +32,7 @@ import (
 // fleet holds the binding, so the first half's admissions are the fence's, not checks that never
 // refuse.
 func TestAReplacedAccountsCredentialsActOnlyWhileABuildWithoutTheBindingIsInTheFleet(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	handler, database, deps := newTestServer(t, testServerOptions{signInIssuer: google})
 	ctx := context.Background()
@@ -120,6 +121,7 @@ func TestAReplacedAccountsCredentialsActOnlyWhileABuildWithoutTheBindingIsInTheF
 // Control, run by hand: with the pass's SettleHeld step removed, the pass revokes account-a at the
 // broker (it is refused and its sign-in ended).
 func TestARevocationOfAnAccountThatTookItsAddressBackThroughABuildWithoutTheBindingIsSettledNotPaid(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "takeback-unbound@example.com"
@@ -205,6 +207,7 @@ func clearUnboundFleet(t *testing.T, database *store.Store) {
 // update-from-none arm of keep_account_binding_replacement returning at once), the minted token
 // acts once the binding holds, and the row fails.
 func TestATokenMintedAfterAFirstRecordingTheBindingMissedIsRefusedAndRevokedOnceItHolds(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	handler, database, _ := newTestServer(t, testServerOptions{signInIssuer: google})
 	ctx := context.Background()
@@ -267,6 +270,7 @@ func TestATokenMintedAfterAFirstRecordingTheBindingMissedIsRefusedAndRevokedOnce
 // Control, in the test: with the kept replacement deleted, the same token acts again, so the
 // refusal is the kept replacement's and not the recording time's.
 func TestATokenMadeAfterAReplacementTheBindingMissedIsRefusedOnceItHolds(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	handler, database, _ := newTestServer(t, testServerOptions{signInIssuer: google})
 	ctx := context.Background()
@@ -308,6 +312,7 @@ func TestATokenMadeAfterAReplacementTheBindingMissedIsRefusedOnceItHolds(t *test
 //
 // Control, run by hand: with the pass's catch-up removed, account-a's broker sign-in stays live.
 func TestTheRevocationPassCatchesUpAReplacementOnceTheBindingHolds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	r.served.deps.SignInIssuer = recoveryIssuer
@@ -386,6 +391,7 @@ func arrivalWaitsOnTheGate(t *testing.T, database *store.Store, pid uint32) bool
 // in a transaction of its own, committed at once), no transaction holds the gate while the mint
 // waits, and the row fails.
 func TestTheMintAndTheDecisionHoldTheBindingsGateToTheirCommit(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	handler, database, deps := newTestServer(t, testServerOptions{signInIssuer: google})
 	ctx := context.Background()

@@ -25,6 +25,7 @@ import (
 // graphcensus.ProjectComplete answers it, with its own cure, and the report adds no cure of its
 // own: an orphaned issue node no build removes names no in-band cure, never the backfill.
 func TestTheStoreReportNamesEveryBackfillNotRun(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for _, row := range []struct {
 		name, seed string

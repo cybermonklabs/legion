@@ -33,6 +33,7 @@ func m13Team(t *testing.T, seed privateSeed, dave string) privateCaller {
 // Control: lostSightSQL leaves out a group taken off a list; the resumes of dave and his token are
 // complete, and the test fails.
 func TestAResumeAcrossAGroupTakenOffAListOwesARefreshToItsMembers(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
 	daveToken := m13Team(t, seed, dave)
@@ -59,6 +60,7 @@ func TestAResumeAcrossAGroupTakenOffAListOwesARefreshToItsMembers(t *testing.T) 
 // Control: lostSightSQL's group arm counting every member of the removed group, a restricted one
 // included (the rule before); erin's resume is not complete, and the test fails naming her.
 func TestAResumeAcrossAGroupTakenOffAListOwesNothingToARestrictedMemberInIt(t *testing.T) {
+	t.Parallel()
 	const dave, erin = "dave@example.com", "erin@outside.example"
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, dave)
@@ -103,6 +105,7 @@ func TestAResumeAcrossAGroupTakenOffAListOwesNothingToARestrictedMemberInIt(t *t
 // before, unreadGroupWriteSQL), under which bob's token's resume is not complete. Each fails the
 // test naming that caller.
 func TestAResumeAcrossItsPersonLeavingAGroupOwesARefreshToAListingToken(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
 	daveToken := m13Team(t, seed, dave)

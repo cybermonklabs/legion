@@ -30,6 +30,7 @@ type censusGapsR9Read struct {
 // blanked, beside its sha256, for the report's comparison of the two commits; each must hold the
 // rows the seed wrote, so a read that lost them fails here and does not pass by matching.
 func TestCensusGapsWithNoPrivateProjectEveryChangedReadAnswersAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	ctx := context.Background()

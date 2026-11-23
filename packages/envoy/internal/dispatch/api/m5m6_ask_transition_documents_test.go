@@ -130,23 +130,34 @@ func checkAskWrite(t *testing.T, write askWrite) {
 // through the unbound askRowFrom again; every row then fails naming PRIV's document.
 
 // TestM5M6AnAskEditNamesNoDocumentItsWriterMayNotSee: PATCH /api/v1/asks/{id} (checkAskWrite).
-func TestM5M6AnAskEditNamesNoDocumentItsWriterMayNotSee(t *testing.T) { checkAskWrite(t, askEdit) }
+func TestM5M6AnAskEditNamesNoDocumentItsWriterMayNotSee(t *testing.T) {
+	t.Parallel()
+	checkAskWrite(t, askEdit)
+}
 
 // TestM5M6AnAnswerNamesNoDocumentItsWriterMayNotSee: POST /api/v1/asks/{id}/answer (checkAskWrite).
-func TestM5M6AnAnswerNamesNoDocumentItsWriterMayNotSee(t *testing.T) { checkAskWrite(t, askAnswer) }
+func TestM5M6AnAnswerNamesNoDocumentItsWriterMayNotSee(t *testing.T) {
+	t.Parallel()
+	checkAskWrite(t, askAnswer)
+}
 
 // TestM5M6AQuestionsResolutionNamesNoDocumentItsWriterMayNotSee: POST /api/v1/asks/{id}/resolve on
 // a question (checkAskWrite).
 func TestM5M6AQuestionsResolutionNamesNoDocumentItsWriterMayNotSee(t *testing.T) {
+	t.Parallel()
 	checkAskWrite(t, askQuestionResolution)
 }
 
 // TestM5M6ADeclineNamesNoDocumentItsWriterMayNotSee: POST /api/v1/asks/{id}/decline (checkAskWrite).
-func TestM5M6ADeclineNamesNoDocumentItsWriterMayNotSee(t *testing.T) { checkAskWrite(t, askDecline) }
+func TestM5M6ADeclineNamesNoDocumentItsWriterMayNotSee(t *testing.T) {
+	t.Parallel()
+	checkAskWrite(t, askDecline)
+}
 
 // TestM5M6AnApprovalsResolutionNamesNoDocumentItsWriterMayNotSee: POST /api/v1/asks/{id}/resolve on
 // an approval request (checkAskWrite).
 func TestM5M6AnApprovalsResolutionNamesNoDocumentItsWriterMayNotSee(t *testing.T) {
+	t.Parallel()
 	checkAskWrite(t, askApprovalResolution)
 }
 
@@ -158,6 +169,7 @@ func TestM5M6AnApprovalsResolutionNamesNoDocumentItsWriterMayNotSee(t *testing.T
 // not a row a fix turns green. carol, who sees PRIV, approves her own request and reads the
 // document beside it in the 200.
 func TestM5M6AnApprovalsAnswerNamesNoDocumentItsWriterMayNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedAskDocuments(t)
 	answer := func(caller privateCaller, ask string) (int, []byte) {
 		t.Helper()
@@ -197,6 +209,7 @@ func TestM5M6AnApprovalsAnswerNamesNoDocumentItsWriterMayNotSee(t *testing.T) {
 // Control: askRowFromSeenBy's anchor clause made false for every reader; alice then reads no
 // anchor document in the question writes and the row fails.
 func TestM5M6WithNoPrivateProjectAnAskWriteNamesItsDocumentsAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedAskDocuments(t)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	for _, write := range []askWrite{askEdit, askAnswer, askQuestionResolution, askDecline, askApprovalResolution} {

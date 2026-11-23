@@ -264,6 +264,7 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 // project could be private (R9); bob, who is not open and sees PRIV alone, keeps his own, filed
 // apart by the viewer part of the key (commentListViewOf).
 func TestTwoReadersWhoSeeTheSameShareAKeptCommentListOnlyWhileNoProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, hiddenPerson)
 	issue := seed.issue[seedPublic]

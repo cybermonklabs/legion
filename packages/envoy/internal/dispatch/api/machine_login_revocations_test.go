@@ -126,6 +126,7 @@ func holdOwnerLock(t *testing.T, database *store.Store, key string) pgx.Tx {
 //
 // Control: send with no check, and the stopped pass revokes all four, named.
 func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	client := cipher.New(rig.server.URL, accountTokenFile(t, credentialTestAccountToken))
 	removal := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
@@ -175,6 +176,7 @@ func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testi
 // Control: revoke only the logins issued before the removal's recorded_at, as the head before this
 // row did, and the pass revokes nothing, named.
 func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -217,6 +219,7 @@ func TestARemovalRevokesALoginTheBrokersClockStampsAfterIt(t *testing.T) {
 // Control: revokeMachineLoginsOf listing memberMachineLogins in place of ownMachineLogins, and the
 // pass revokes the pod's login too, named.
 func TestARemovalRevokesTheMembersOwnLoginAndNotTheirPodsLogin(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -256,6 +259,7 @@ func TestARemovalRevokesTheMembersOwnLoginAndNotTheirPodsLogin(t *testing.T) {
 // approval holding it, and the removal answers while the approval is in flight, named; with the
 // record's own lock dropped too, it answers 200 then, named.
 func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -310,6 +314,7 @@ func TestALoginApprovedInFlightAsTheRemovalCommitsIsRevoked(t *testing.T) {
 // Control: revokeOwedMachineLogins' mayCall answering true whatever the claim's age, and the pass
 // revokes erin's login, named.
 func TestAClaimedMachineLoginRevocationPastItsSendWindowSendsNoRevoke(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -359,6 +364,7 @@ func erinsLoginListed(id string) string {
 // Control: settle at any claim, whatever its age (Settle's bound dropped), and the pass at once
 // settles on its empty list, so the late login is never revoked, named.
 func TestALoginTheBrokerCommitsAfterTheRelayTimedOutIsRevoked(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -406,6 +412,7 @@ func TestALoginTheBrokerCommitsAfterTheRelayTimedOutIsRevoked(t *testing.T) {
 // Control: settle at any claim, whatever its age (Settle's bound dropped), and the pass at once
 // settles, named.
 func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -468,6 +475,7 @@ func TestAPassBeforeTheBrokersDecisionBoundLeavesTheRevocationOwed(t *testing.T)
 // and the block commits while the approve is in flight, named; the block keeping the debt's
 // recorded_at, and the pass at once settles the debt, named.
 func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -555,6 +563,7 @@ func TestAnApproveInFlightDuringTheBrokerRestoredBlockIsRevoked(t *testing.T) {
 // Control: take the approval lock shared and waiting, as the head before this row did, and the
 // second approve reaches the broker and is answered 200, named.
 func TestASecondApproveOfThePersonWhileOneIsInFlightIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, _, _ := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -595,6 +604,7 @@ func TestASecondApproveOfThePersonWhileOneIsInFlightIsRefused(t *testing.T) {
 // Control: access.LockForAccessWrite taking the approval lock of the person it removes after the
 // project's owner lock, and carol's addition waits behind the removal, named.
 func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -656,6 +666,7 @@ func TestARemovalWaitingOnAnApprovalHoldsUpNoOtherWriteOfTheProject(t *testing.T
 // head before this row did, and carol's removal holds erin's approval lock while it waits on ACC's
 // owner lock, so erin's approve is 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT, named.
 func TestARefusedRemovalHoldsUpNoApproveOfThePerson(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -700,6 +711,7 @@ func TestARefusedRemovalHoldsUpNoApproveOfThePerson(t *testing.T) {
 // Control: ownerWrite not checking the owner LockForAccessWrite read under the locks, and alice's
 // removal answers 200 and takes erin off a project that is no longer hers, named.
 func TestAnOwnerWhoLosesTheProjectBeforeTheLocksIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -762,6 +774,7 @@ func ownCreated(t *testing.T, served http.Handler) {
 // approval lock while it waits on OWN's owner lock, so erin's approve is 409
 // MACHINE_LOGIN_APPROVAL_IN_FLIGHT, named.
 func TestARemovalOfAPersonTheListDoesNotNameHoldsUpNoApproveOfThePerson(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,
@@ -815,6 +828,7 @@ func TestARemovalOfAPersonTheListDoesNotNameHoldsUpNoApproveOfThePerson(t *testi
 // Control: store.RecordMachineLoginRevocation taking no lock, and carol's removal records while
 // erin's approve is in flight and answers 200, named.
 func TestARemovalThatFindsThePersonListedOnlyUnderItsLocksIsRefusedWhileTheirApproveIsInFlight(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,

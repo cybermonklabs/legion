@@ -20,6 +20,7 @@ import (
 // project.created it sees the second project too, which that event does not explain, and each feed
 // ends (behind) where the test reads an event.
 func TestWithNoPrivateProjectTwoProjectsMadeTogetherEndNoEventsFeed(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	if reader, err := seed.server.readerFor(t.Context(), model.BrowserActor(seedAlice)); err != nil || !seesEveryObject(reader) {

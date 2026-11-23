@@ -118,6 +118,7 @@ func hideFromBrokerPerson(t *testing.T, rig *brokerTokenRig, key string) {
 //     A v86, t-a-19: a list decides reads of private projects, and a write of the whole deployment
 //     stays a person's or an unlisted credential's).
 func TestAFullMembersTokenListDecidesOnlyPrivateProjects(t *testing.T) {
+	t.Parallel()
 	rig := newTokenListsRig(t, true)
 	token := mintListed(t, rig.handler, brokerTestPerson, "alpha", []string{listedAlpha})
 	const nobody = "NOPE-404"
@@ -177,6 +178,7 @@ func TestAFullMembersTokenListDecidesOnlyPrivateProjects(t *testing.T) {
 // each of its reads is 403 RESTRICTED_MEMBER. Each holds in a deployment where GAMMA is private, and
 // in one where every project is public.
 func TestARestrictedMembersTokenStaysHeldToItsList(t *testing.T) {
+	t.Parallel()
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while every project is public", true: "once GAMMA is private"}[private], func(t *testing.T) {
 			rig := newTokenListsRig(t, private)
@@ -205,6 +207,7 @@ func TestARestrictedMembersTokenStaysHeldToItsList(t *testing.T) {
 // PROJECT_SCOPE_DEPLOYMENT naming its list. main holds no personal token that lists a project,
 // so that refusal changes no answer main gives.
 func TestWithNoPrivateProjectAFullMembersListDecidesNoRead(t *testing.T) {
+	t.Parallel()
 	rig := newTokenListsRig(t, false)
 	listed := mintListed(t, rig.handler, brokerTestPerson, "alpha", []string{listedAlpha}).Token
 	unlisted := mintListed(t, rig.handler, brokerTestPerson, "none", nil).Token
@@ -231,6 +234,7 @@ func TestWithNoPrivateProjectAFullMembersListDecidesNoRead(t *testing.T) {
 // one 403 PROJECT_SCOPE_DEPLOYMENT naming BRK once a project is private, as every credential that
 // lists a project then is (t-a-19).
 func TestAPersonTokensTradedListHoldsNoDeploymentWriteWhileNoProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while no project is private", true: "once a project is private"}[private], func(t *testing.T) {
 			rig := newBrokerTokenRig(t)
@@ -261,6 +265,7 @@ func TestAPersonTokensTradedListHoldsNoDeploymentWriteWhileNoProjectIsPrivate(t 
 // answered it (506395beea, going_routes.go's refuseWriteOutsideProjectScope with an empty project),
 // and nothing is recorded.
 func TestANamedTokensQuestionOverEveryProjectAnswersAsBefore(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-named-token-asking-of-every-project"

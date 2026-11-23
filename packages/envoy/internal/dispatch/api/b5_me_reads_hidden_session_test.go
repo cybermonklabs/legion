@@ -23,6 +23,7 @@ import (
 // lists no project see every object and read both, as every caller did before a project could be
 // private (R9).
 func TestTheMeReadsHoldNoConversationOfAHiddenSession(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, privateRosterListed)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)

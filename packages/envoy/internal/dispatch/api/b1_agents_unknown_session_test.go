@@ -35,6 +35,7 @@ const unknownSessionsRoster = `[
 // lists session-unknown; and visibleRosterSessions passing a session whose list meets what the
 // caller sees without asking SessionClause (M4), under which alice and bob list session-mixed.
 func TestAnAgentsListHidesASessionWhoseProjectsAreUnknownOrUnseen(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, unknownSessionsRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	every := []string{"session-mixed", "session-listed-pub", "session-empty", "session-unknown"}

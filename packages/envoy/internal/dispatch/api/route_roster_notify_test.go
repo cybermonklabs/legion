@@ -20,6 +20,7 @@ import (
 // Postgres delivers notifications in commit order. The first store is the control: the listener
 // hears it, so the silence after it is a silence.
 func TestAStoredListenerAnswerAnnouncesItself(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	conn, err := database.Pool.Listener(ctx)

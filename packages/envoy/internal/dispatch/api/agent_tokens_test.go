@@ -283,6 +283,7 @@ const erinsTokenWhoami = `{"kind":"agent","owner":"erin@other.example","member_k
 // write, which appends nothing. Once no project names the owner it is refused with the same code,
 // saying so, and once one names them again it acts again: nothing revoked it.
 func TestARestrictedOwnersTokenActsOnlyWhileTheDeploymentAdmitsThem(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideTokenRig(t)
 	whoami := func(handler http.Handler) *httptest.ResponseRecorder {
 		t.Helper()
@@ -329,6 +330,7 @@ func TestARestrictedOwnersTokenActsOnlyWhileTheDeploymentAdmitsThem(t *testing.T
 // IDENTITY_UNAVAILABLE, never an accept. The lists are made unreadable by renaming the table of
 // access lists, which leaves the token's row and the owner's people row readable.
 func TestARestrictedOwnersTokenIsRefusedWhenTheListsCannotBeRead(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideTokenRig(t)
 	rename := func(from, to string) {
 		t.Helper()
@@ -351,6 +353,7 @@ func TestARestrictedOwnersTokenIsRefusedWhenTheListsCannotBeRead(t *testing.T) {
 // restricted members are not admitted, acting where they are and ACC lists her, and refused again
 // once no project names her.
 func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverTheCaseOfItsOwner(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideTokenRig(t)
 	const spelled = "Erin@Other.Example"
 	if spelled == accessErin || model.CanonicalLogin(spelled) != accessErin {
@@ -386,6 +389,7 @@ func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverTheCaseOfItsOwner(t *testi
 // names her. The same token acts under the rule that lists no such domain, which shows the token
 // reaches the restricted owner's check rather than being refused for another reason.
 func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverSpacesSurroundItsOwner(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideTokenRig(t)
 	const spelled = "  erin@other.example  "
 	if spelled == accessErin || model.CanonicalLogin(spelled) != accessErin {
@@ -412,6 +416,7 @@ func TestARestrictedOwnersTokenIsHeldToTheRuleWhateverSpacesSurroundItsOwner(t *
 // seeing a list read in the same run: a restricted owner's token, which must read one, resolves in
 // three.
 func TestAFullMembersTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideTokenRig(t)
 	minted := dispatchRequest(t, rig.off, http.MethodPost, "/api/v1/me/agent-tokens", map[string]string{"name": "alice's agent"}, "alice")
 	if minted.Code != http.StatusCreated {

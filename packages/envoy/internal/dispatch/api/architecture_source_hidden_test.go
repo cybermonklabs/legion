@@ -33,6 +33,7 @@ import (
 // Control: the source write and sync with no hiddenSourceRefusal. bob's write of acme/internal
 // answers 200 and the row fails naming it.
 func TestAnArchitectureSourceHoldsItsRepositoryToTheProxysRule(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"acme/internal": "read", "acme/priv": "read", "acme/pub": "read"},
 		repos: map[string]*fakeArchitectureRepo{
@@ -178,6 +179,7 @@ func TestAnArchitectureSourceHoldsItsRepositoryToTheProxysRule(t *testing.T) {
 // the importer's reads not held (heldToItsRepository), under which the sync imports PRIV's commit.
 // Each fails the row.
 func TestAnArchitectureSourceFollowsNoRenameIntoAHiddenRepository(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"acme/privnew": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"acme/privnew": {commit: shaArch, files: archFiles()}},
@@ -272,6 +274,7 @@ func TestAnArchitectureSourceFollowsNoRenameIntoAHiddenRepository(t *testing.T) 
 // Control: the importer with no repository-rule check (repositoryRuleHides); the sync imports
 // PRIV's prose into PUB, and the test fails.
 func TestTheServersImportHoldsAStoredSourceToTheRepositoryRule(t *testing.T) {
+	t.Parallel()
 	fake := &fakeGitHubApp{
 		installations: map[string]string{"acme/priv": "read"},
 		repos:         map[string]*fakeArchitectureRepo{"acme/priv": {commit: shaArch, files: archFiles()}},

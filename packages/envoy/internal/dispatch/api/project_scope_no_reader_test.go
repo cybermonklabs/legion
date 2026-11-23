@@ -22,6 +22,7 @@ import (
 // Control: any one check answering a context with no reader as it did before - not hidden, or
 // the group's name held to every title (events.EveryEvent) - fails the row naming that check.
 func TestTheHiddenFromReaderChecksAnswerAContextWithNoReaderHidden(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	stampSessionTitle(t, walk, walk.issue[seedPublic], "s-pub", "pub codename")
 	request := walk.readerRequest(t, callerCarol)
@@ -105,6 +106,7 @@ func TestTheHiddenFromReaderChecksAnswerAContextWithNoReaderHidden(t *testing.T)
 // check reads a context with no reader, leaves the listener with no send for s1, and the row fails
 // naming it.
 func TestASweepResumeOfASessionRouteWithNoReaderStillDelivers(t *testing.T) {
+	t.Parallel()
 	for _, deployment := range []struct {
 		name    string
 		private bool

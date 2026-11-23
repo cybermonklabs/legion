@@ -32,6 +32,7 @@ import (
 // is sent to privateSession; openHiddenCommentDeliveryAttempt off, and the Retry commits its attempt
 // pending and unresolved.
 func TestACommentMentionOfAHiddenSessionNeverLeavesAnAttemptOwed(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	ctx := context.Background()
 	target := "session:" + privateSession
@@ -160,6 +161,7 @@ func TestACommentMentionOfAHiddenSessionNeverLeavesAnAttemptOwed(t *testing.T) {
 // author; the sweep then answers the attempt "no live session" and sends nothing, and the row
 // fails.
 func TestWithNoPrivateProjectTheSweepResolvesAMentionAsBefore(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	ctx := context.Background()
 	walk.setVisibility(t, seedPrivate, model.ProjectPublic)
@@ -211,6 +213,7 @@ func TestWithNoPrivateProjectTheSweepResolvesAMentionAsBefore(t *testing.T) {
 // Control: claimCommentDeliveryAttempt's unbound read taking a pending attempt whatever session
 // it is pinned to; alice's Retry answers attempt 1, failed, "no live session" privateSession.
 func TestARetryResumesNoAttemptPinnedToASessionItsCallerMayNotSee(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	ctx := context.Background()
 	target := "role:" + walkedRole

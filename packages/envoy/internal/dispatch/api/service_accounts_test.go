@@ -26,6 +26,7 @@ const (
 // SERVICE_ACCOUNT_NOT_ADMITTED naming the subject, and the events table does not move under the
 // refused write.
 func TestOnlyListedServiceAccountsSignIn(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	token := func(subject string) string {
 		return issuer.Mint(t, issuer.signing, issuer.Claims(subject, serviceTokenAudience))
@@ -103,6 +104,7 @@ func TestOnlyListedServiceAccountsSignIn(t *testing.T) {
 // every route refuses it. A listed account's token beside the cookie is served, and so is any
 // account's where the deployment names none.
 func TestTheDocumentSocketRefusesAnUnlistedServiceAccount(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	token := func(subject string) string {
 		return issuer.Mint(t, issuer.signing, issuer.Claims(subject, serviceTokenAudience))

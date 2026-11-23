@@ -35,6 +35,7 @@ var mergeBaseSentences = map[string][]string{
 // signed-in full member ...; a restricted member is 403 RESTRICTED_MEMBER"), which the check
 // fails as a changed sentence; the refusal is documented by adding a sentence instead.
 func TestExistingRouteDescriptionsKeepEverySentenceOfTheMergeBase(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1", nil, "alice")
 	if response.Code != http.StatusOK {

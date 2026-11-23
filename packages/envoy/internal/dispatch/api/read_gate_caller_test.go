@@ -98,6 +98,7 @@ func gateWalkTarget(t *testing.T, objects censusObjects, name, pattern string) s
 // artifactReaderOf) to verify the credential a second or third time, and the walk fails naming
 // each such row.
 func TestEveryGETRowResolvesItsCallerOnce(t *testing.T) {
+	t.Parallel()
 	census := &fragmentCensus{}
 	fixture := seedFragmentCensus(t, census)
 	callers := []struct {
@@ -190,6 +191,7 @@ func (e *everyResolution) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQue
 // Control: an upgrade that resolves the caller for the heartbeat on a request of its own and
 // leaves the handler to resolve it again verifies the credential twice.
 func TestTheLiveSocketResolvesItsCallerOnceAtOpen(t *testing.T) {
+	t.Parallel()
 	counted := &everyResolution{}
 	seed := seedPrivateProjectWith(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counted)})
 	url := liveURLOf(t, seed.handler)

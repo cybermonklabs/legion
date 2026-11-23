@@ -23,6 +23,7 @@ import (
 // Control: privateProjectIncomplete without its read of conversationsNamingNoParty; each refused
 // switch answers 200.
 func TestASwitchToPrivateCountsADirectConversationThatNamesNoParty(t *testing.T) {
+	t.Parallel()
 	private := map[string]string{"visibility": model.ProjectPrivate}
 	for _, broken := range []struct {
 		name string

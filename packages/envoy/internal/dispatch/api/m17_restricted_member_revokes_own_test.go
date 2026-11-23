@@ -180,6 +180,7 @@ func revokePath(row, id string) string {
 // projects is refused them as every deployment row, and TestNoWriteReachesAHiddenObject holds them
 // to that refusal as before.
 func TestThePersonsOwnRowsAreTheTwoRevokesOfTheDeployment(t *testing.T) {
+	t.Parallel()
 	if len(personsOwnAtTheBroker) != 2 || !personsOwnAtTheBroker[ownGrantRevoke] || !personsOwnAtTheBroker[ownSignInRevoke] {
 		t.Fatalf("personsOwnAtTheBroker = %v, want %s and %s alone", personsOwnAtTheBroker, ownGrantRevoke, ownSignInRevoke)
 	}
@@ -198,6 +199,7 @@ func TestThePersonsOwnRowsAreTheTwoRevokesOfTheDeployment(t *testing.T) {
 // (memberGrants): 403 RESTRICTED_MEMBER where carol is answered the broker's 403 NOT_APPROVER, and
 // no revoke of hers reaches the broker. Both of alice's stay held.
 func TestARestrictedMemberEndsTheirOwnGrantsAndSignIns(t *testing.T) {
+	t.Parallel()
 	broker := newOwnRevokeBroker(t)
 	handler, _ := newOwnRevokeServer(t, broker.server.URL)
 
@@ -249,6 +251,7 @@ func TestARestrictedMemberEndsTheirOwnGrantsAndSignIns(t *testing.T) {
 // scope gate refuses it first, 403 OAUTH_SCOPE_REQUIRED. Neither reaches the broker. alice at a
 // browser revokes her own grant and sign-in as before.
 func TestACredentialThatListsProjectsRevokesNoGrantOrSignIn(t *testing.T) {
+	t.Parallel()
 	broker := newOwnRevokeBroker(t)
 	handler, tokens := newOwnRevokeServer(t, broker.server.URL)
 

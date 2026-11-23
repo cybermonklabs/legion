@@ -17,6 +17,7 @@ import (
 // row counts live anchors. With PRIV public, no project is private, and alice reads the two as
 // before (R9).
 func TestABlocksCountsNameNoHiddenCommentOrAsk(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	document := decodeBody[artifactUploadResponse](t, seed.mustRequest(t, callerCarol, http.MethodPost,
 		"/api/v1/projects/"+seedPublic+"/artifacts",

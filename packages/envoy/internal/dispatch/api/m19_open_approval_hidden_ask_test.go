@@ -17,6 +17,7 @@ import (
 // names nothing on PUB's document to alice: neither its id, nor who asked, nor whose turn it is.
 // With PRIV public, alice reads that request on PUB's document as before (R9).
 func TestM19AnOpenApprovalOfAHiddenProjectNamesNothingOnAVisibleDocument(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	upload := func(target string) string {
 		return decodeBody[artifactUploadResponse](t, seed.mustRequest(t, callerCarol, http.MethodPost, target,

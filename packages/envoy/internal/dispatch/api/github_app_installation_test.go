@@ -40,6 +40,7 @@ import (
 // Control: the route answering every caller alike (GitHub asked for every repository, whoever
 // asks): alice reads acme/priv as installed, and the test fails naming her.
 func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
+	t.Parallel()
 	const uninstalled = "acme/elsewhere"
 	installed := []string{"acme/priv", "acme/pub", "acme/unowned"}
 	var mu sync.Mutex
@@ -163,6 +164,7 @@ func TestAppInstallationAnswersAHiddenRepositoryAsNotInstalled(t *testing.T) {
 // Control: the lookup not held to its repository; alice reads acme/moved as installed while PRIV
 // is private, and the test fails.
 func TestAppInstallationFollowsNoRedirectToAnotherRepositoryWhileAProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProjectWith(t, testServerOptions{
 		app: fakeGitHubAppConfig(t),
 		githubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {

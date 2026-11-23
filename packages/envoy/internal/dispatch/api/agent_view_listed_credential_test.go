@@ -130,6 +130,7 @@ func (rig *listedCredentialRig) watched(t *testing.T, state, who string, header 
 // Control: let a restricted owner's token act whatever it lists (personalTokenActor not refusing a
 // list of other than one project), and its first read answers 200 and the row fails.
 func TestARestrictedMembersNoListTokenWatchesNoSessionThatReadAProjectMadePrivate(t *testing.T) {
+	t.Parallel()
 	rig := newListedCredentialRig(t)
 	// bob is named on PUB and P2 alone, so a credential of his that lists nothing would see what he
 	// sees while P2 is public.
@@ -170,6 +171,7 @@ func TestARestrictedMembersNoListTokenWatchesNoSessionThatReadAProjectMadePrivat
 // Control: the credential tested on private projects alone (every private project the viewer's
 // person sees is one it sees), and the PRIV token reads the session's file.
 func TestARestrictedMembersTokenThatListsFewerProjectsWatchesNoUnlistedSessionOfHis(t *testing.T) {
+	t.Parallel()
 	rig := newListedCredentialRig(t)
 	rig.seed.asSessionOf(t, seedBob, listedCredentialSession, seedPrivate, http.MethodPost, "/api/v1/issues/"+rig.seed.issue[seedPrivate]+"/comments",
 		map[string]any{"body": "Done on PRIV."}, http.StatusCreated)

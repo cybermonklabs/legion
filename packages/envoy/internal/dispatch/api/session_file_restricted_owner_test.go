@@ -27,6 +27,7 @@ const restrictedOwnSession = "5c0e7e17-3a1b-4c2d-9e8f-0a1b2c3d4e61"
 // the session to the content rule. Found by the tester's drive of the agent view as its users
 // (Tester4177, round 4: carol, restricted on PUB, could not read the file of her own session).
 func TestARestrictedMemberReadsTheFilesOfASessionTiedToHimAlone(t *testing.T) {
+	t.Parallel()
 	listener, _ := newBroadcastListener(t, `[
 		{"session_id":"`+restrictedOwnSession+`","title":"bob's, no list","capabilities":["btw"],"last_seen":100}
 	]`)

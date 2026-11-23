@@ -19,6 +19,7 @@ import (
 // decision to is the one the broker writes on a machine login's record, which Dispatch names
 // rather than importing (machineLoginKind).
 func TestTheMachineLoginKindIsTheBrokers(t *testing.T) {
+	t.Parallel()
 	if machineLoginKind != record.KindLauncherCredential {
 		t.Fatalf("machineLoginKind = %q, want the broker's record.KindLauncherCredential %q", machineLoginKind, record.KindLauncherCredential)
 	}
@@ -112,6 +113,7 @@ func heldScopes(t *testing.T, whoami *httptest.ResponseRecorder) []string {
 // the token none), and the row fails naming the scopes her personal token holds; drop the refusal
 // of a decision that carries no code, and the code-less rows fail.
 func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	stub := ciphertokentest.NewStubBroker(t)
 	served, _ := newAccessServerWith(t, testServerOptions{
@@ -238,6 +240,7 @@ func TestARestrictedMemberNeverDecidesACredentialRequest(t *testing.T) {
 // Control: brokerTokenActor giving a person-scope token the person's scopes whatever their member
 // kind, and erin's token holds person and approve and reads her inbox, named.
 func TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope(t *testing.T) {
+	t.Parallel()
 	stub := ciphertokentest.NewStubBroker(t)
 	served, _ := newAccessServerWith(t, testServerOptions{admitsRestricted: true, brokerTokens: stubBrokerTokens(t, stub)})
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
@@ -291,6 +294,7 @@ func TestARestrictedMembersPersonScopeBrokerTokenHoldsNoScope(t *testing.T) {
 // Control: refuse the removal while the broker is down, as the head before this row did, and the
 // first row fails naming the 503.
 func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
 		admitsRestricted: true,

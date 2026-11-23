@@ -129,6 +129,7 @@ func (s repoWriteSeed) repoWritesOf(repository string) []repoWrite {
 // no project owns, and clearing PUB-1's repository; and carol, who sees PRIV, makes the three
 // writes naming PRIV's repositories.
 func TestAnIssueWriteCannotTakeAHiddenPrivateRepository(t *testing.T) {
+	t.Parallel()
 	seed := seedRepoWrite(t, testServerOptions{})
 	public := "/api/v1/issues/" + seed.issue[seedPublic]
 	keys := []string{seedPublic, seedPrivate, seed.issue[seedPublic], seed.issue[seedPrivate], seed.sharedPublic, seed.sharedPrivate}
@@ -218,6 +219,7 @@ func TestAnIssueWriteCannotTakeAHiddenPrivateRepository(t *testing.T) {
 // PRIV, a restricted member's, names no issue's repository at all (403 RESTRICTED_MEMBER), as bob
 // does not.
 func TestAListingCredentialNamesOnlyARepositoryItReads(t *testing.T) {
+	t.Parallel()
 	seed := seedRepoWrite(t, testServerOptions{})
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues",
 		map[string]any{"project": seedPublic, "title": "Works in a repository of PUB alone", "repo": "acme/pubonly", "force": true}, http.StatusCreated)
@@ -263,6 +265,7 @@ func TestAListingCredentialNamesOnlyARepositoryItReads(t *testing.T) {
 // before its update, as main wrote it (the update first, then the project read), under which
 // alice's PUT of PRIV's default is the repository's refusal rather than the missing project's.
 func TestARepositoryWriteAtAHiddenObjectAnswersAsAtAMissingOne(t *testing.T) {
+	t.Parallel()
 	seed := seedRepoWrite(t, testServerOptions{})
 	hiddenIssue, missingIssue := seed.issue[seedPrivate], seedPrivate+"-999"
 	for _, write := range []struct {
@@ -301,6 +304,7 @@ func TestARepositoryWriteAtAHiddenObjectAnswersAsAtAMissingOne(t *testing.T) {
 // with no private project the check reads nothing. Each answer is logged masked (maskedAnswer), so
 // two builds' runs compare byte for byte.
 func TestRepositoryWritesAnswerAsBeforeWithNoPrivateProject(t *testing.T) {
+	t.Parallel()
 	recorder := &statementRecorder{}
 	seed := seedRepoWrite(t, testServerOptions{tracer: recorder})
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)

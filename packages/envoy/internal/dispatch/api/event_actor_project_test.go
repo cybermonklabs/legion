@@ -15,6 +15,7 @@ import (
 // only a reader talking to an older server (version skew) can be handed an actor `project`, and
 // the contract's ActorSchema keeps the field optional for that case alone.
 func TestAStoredActorsProjectIsNotAnswered(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CORE", "An older server's write", "A spec")
 	var id int64

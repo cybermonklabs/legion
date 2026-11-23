@@ -12,6 +12,7 @@ import (
 // answers as it would were the blocker an issue nobody holds. A deployment may instead refuse the
 // link itself; then nothing joins the two projects and the reads have nothing to hide.
 func TestAVisibleIssueNamesNoHiddenIssueThatBlocksIt(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	makePrivate(t, database, privateProject)

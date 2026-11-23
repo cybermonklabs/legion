@@ -13,6 +13,7 @@ import (
 // issue never advanced the priority. carol, who sees PRIV, reads the act, so the history the test
 // reads is one that holds it.
 func TestAPrioritysHistoryNamesNoIssueOfAHiddenProject(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	makePrivate(t, database, privateProject)

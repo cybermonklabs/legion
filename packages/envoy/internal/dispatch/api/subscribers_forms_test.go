@@ -76,6 +76,7 @@ func TestASubscriberFollowingTheNewIssueFormIsListedAndRemovable(t *testing.T) {
 // /api/v1/issues/NOPE-1/subscribers answers her: only the subscriber of a broader wildcard, which
 // delivers both keys' events. carol, who sees PRIV, reads all three subscribers of PRIV-1.
 func TestAHiddenIssuesSubscriberInEitherFormAnswersAsAKeyNobodyHolds(t *testing.T) {
+	t.Parallel()
 	envoyURL, _ := newFakeListener(t, map[string][]string{
 		"old-form": {"notifications.dispatch.issue.PRIV-1.>"},
 		"new-form": {"notifications.dispatch.issue.PRIV.PRIV-1.>"},

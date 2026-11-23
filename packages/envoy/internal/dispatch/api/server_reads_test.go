@@ -22,6 +22,7 @@ import (
 // request's context is answered as it is, with no second resolution; and a credential that does
 // not resolve is refused as every gate refuses one.
 func TestReaderOfAnswersEachCallersViewer(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	carol := seedCarol
 	for _, want := range []struct {
@@ -145,6 +146,7 @@ var serverReads = map[string]string{
 // were private. So every read that binds it answers nothing, and no write reaches an object its
 // caller may not see, while the caller itself is still the one its credential names.
 func TestAServerWithNoStoreResolvesTheClosedViewer(t *testing.T) {
+	t.Parallel()
 	served := directServer(Deps{Identity: &endableIdentity{}, AgentTokens: sharedAgentTokens(t, "agent-token")})
 	cookie := httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil)
 	bearer := httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil)
@@ -180,6 +182,7 @@ func TestAServerWithNoStoreResolvesTheClosedViewer(t *testing.T) {
 // package's own source, so a use added later and left out of the table fails here, named, and so
 // does an entry of the table that names no use.
 func TestEveryServerReadIsNamed(t *testing.T) {
+	t.Parallel()
 	if everyReader.Viewer != model.ServerViewer {
 		t.Fatalf("everyReader reads with the viewer %+v, want model.ServerViewer", everyReader.Viewer)
 	}

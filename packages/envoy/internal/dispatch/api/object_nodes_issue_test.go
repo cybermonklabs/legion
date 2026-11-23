@@ -106,6 +106,7 @@ func eventOf(t *testing.T, database *store.Store, eventType, ownerColumn, owner 
 // and its spec's node before the rows that hold them, in the issue's project, caused by the
 // issue.created event the create appends.
 func TestAnIssueCreateStoresItsNodeBeforeItsRow(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	requireNodeBeforeRow(t, database, "issues", graphstore.KindIssue, "key")
 	requireNodeBeforeRow(t, database, "artifacts", graphstore.KindArtifact, "ref_key")
@@ -122,6 +123,7 @@ func TestAnIssueCreateStoresItsNodeBeforeItsRow(t *testing.T) {
 // which no project owns, between the parties of that conversation and at the sentinel, since such
 // an upload appends no event (agentArtifactTarget.ownsEvents).
 func TestEveryUploadStoresItsDocumentsNode(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	requireNodeBeforeRow(t, database, "artifacts", graphstore.KindArtifact, "ref_key")
 	issue := createInteractionIssue(t, handler, "UPL", "Uploads name their project", "The spec.\n")
@@ -189,6 +191,7 @@ func TestEveryUploadStoresItsDocumentsNode(t *testing.T) {
 // spec and of a project's document, and the blocks a later version adds, changes or drops. A
 // conversation holds no document, so no block of one is written (agentOwnsFilesOnly).
 func TestABlockNodeCarriesItsDocumentsProject(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "BLK", "Blocks name their project", "First paragraph.\n\nSecond paragraph.\n")
 	runbook := createProjectDocument(t, handler, "BLK", "Runbook.md", "# Runbook\n\nStep one.\n")

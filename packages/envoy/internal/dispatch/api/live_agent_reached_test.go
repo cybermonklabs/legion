@@ -154,6 +154,7 @@ func (rig contentAgentRig) hidden(t *testing.T, state string, caller privateCall
 // Control: the reached pairs left unwritten; alice is relayed each session's replay, which holds
 // PRIV's issue's text, and the test fails.
 func TestAPersonsLostProjectStaysOnTheSessionsThatReadIt(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name   string
 		person string
@@ -398,6 +399,7 @@ func reachedGroupOnPRIV(t *testing.T, rig contentAgentRig) {
 // Control: the roster trigger writing no reached pair; alice is relayed the session's replay,
 // which holds PRIV's issue's text, and the test fails.
 func TestANarrowedListenerListKeepsTheSessionsPastReach(t *testing.T) {
+	t.Parallel()
 	listed := func(projects string) string {
 		return `[{"session_id":"` + reachedListedSession + `","title":"Narrowed","capabilities":["btw"],"last_seen":900,"projects":` + projects + `}]`
 	}

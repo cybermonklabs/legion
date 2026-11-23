@@ -44,6 +44,7 @@ var issueReads = []string{
 // a decisions.md, and a session subscribed to the issue's own topic beside one subscribed to every
 // topic, on a stand-in listener.
 func TestAnIssueOfAPrivateProjectAnswersAsMissing(t *testing.T) {
+	t.Parallel()
 	// The listener names each issue's key before the seed creates it: a project's first issue is
 	// its number 1.
 	listener := issueSubscribersListener(t, seedPublic+"-1", seedPrivate+"-1")

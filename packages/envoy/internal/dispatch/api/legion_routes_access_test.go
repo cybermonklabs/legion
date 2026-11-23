@@ -15,6 +15,7 @@ import (
 // Controls: legionProject reads its project as the server, and alice reads PRIV's daemon setting
 // and board; readIssueRoleHolders binds the server's reader, and alice reads PRIV's issue's holders.
 func TestThePrivateProjectsLegionReadsAnswerAsWhatNobodyHolds(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/legion/daemon",
 		map[string]any{"state_url": "http://legion-priv.internal:8080"}, http.StatusOK)

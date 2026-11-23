@@ -98,6 +98,7 @@ func readsProjectRows(class readclass.Class) bool {
 //
 // The walk is a read: the events the seed wrote are held, and the count must be what it was.
 func TestEveryProjectReadBindsTheFragmentPerStatement(t *testing.T) {
+	t.Parallel()
 	census := &fragmentCensus{}
 	fixture := seedFragmentCensus(t, census)
 	schema := m19ProjectSchema(t, fixture.database)

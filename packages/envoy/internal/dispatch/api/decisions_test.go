@@ -521,6 +521,7 @@ func TestDocumentReadRecordsEachPersonsLastReadVersion(t *testing.T) {
 // rule the document's own read and the mark's write both hold it to, so a party of the
 // conversation who records version 1 reads version 1 back rather than no mark at all.
 func TestAReadMarkOnAnAgentsFileReadsBackAsRecorded(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
 	uploaded := multipartRequest(t, handler, "/api/v1/agents/"+agentSession+"/artifacts", map[string]string{"name": "shot.png"},
 		"shot.png", "image/png", pngBytes("pixels"), "alice")

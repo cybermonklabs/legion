@@ -171,6 +171,7 @@ func (s askDocumentSeed) wantDocuments(ask string) []string {
 // Control: one of askRowFromSeenBy's two clauses dropped; the families then name PRIV's document
 // beside the asks that join it, and the row fails naming each.
 func TestM5M6AnAskNamesNoDocumentItsReaderMayNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedAskDocuments(t)
 	for _, read := range seed.reads() {
 		t.Run(read.family, func(t *testing.T) {
@@ -206,6 +207,7 @@ func TestM5M6AnAskNamesNoDocumentItsReaderMayNotSee(t *testing.T) {
 // Control: askRowFromSeenBy's anchor clause made false for every reader; alice then reads no
 // anchor document and the row fails.
 func TestM5M6WithNoPrivateProjectAnAskNamesItsDocumentsAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedAskDocuments(t)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	for _, read := range seed.reads() {

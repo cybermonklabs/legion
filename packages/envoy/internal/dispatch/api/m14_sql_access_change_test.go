@@ -37,6 +37,7 @@ func m14MakePUBPrivate(t *testing.T, seed privateSeed) {
 // Control: the feed resolves its caller only at an event that can move what it sees; alice's feed
 // never ends, and the test fails waiting for its end.
 func TestAProjectMadePrivateBySQLAloneEndsTheFeedOfWhoLostIt(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProjectWith(t, testServerOptions{streamHeartbeat: m14Heartbeat})
 	client := seed.dialLive(t, liveURLOf(t, seed.handler), asUser(seedAlice))
 	subscribeEvents(t, client, "feed", nil)
@@ -66,6 +67,7 @@ func TestAProjectMadePrivateBySQLAloneEndsTheFeedOfWhoLostIt(t *testing.T) {
 // can move them, or its listener's connection; no snapshot comes, and the test fails at its
 // deadline.
 func TestAnAccessChangeBySQLAloneReadsADeliveryViewAgain(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	for _, change := range []struct {
 		name, login, project string

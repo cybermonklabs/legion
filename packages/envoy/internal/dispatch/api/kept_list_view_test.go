@@ -28,6 +28,7 @@ import (
 // Control: the kept answer handed to every reader, as before, and alice's second read names
 // session-moved.
 func TestAKeptListServesNoReaderWhoseViewMovedUnderIt(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	const moved = "session-moved"
 	ctx := context.Background()

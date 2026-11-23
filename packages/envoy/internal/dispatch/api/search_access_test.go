@@ -105,6 +105,7 @@ func searchFirstHit(response model.SearchResponse) string {
 // total and the reachable count are of those objects alone. A project the caller does not see, named
 // by ?project=, by ?number_project= or by an issue key, answers exactly as a key no row holds.
 func TestSearchOfAPrivateProjectFindsNothing(t *testing.T) {
+	t.Parallel()
 	// searchAccessWord's own vector is near nothing, the seed's unmapped texts included, so a
 	// search for it finds what its keyword legs find and nothing by meaning.
 	embedder := &fakeEmbedder{vectors: map[string][]float32{searchAccessMeaning: queryVector(), searchAccessWord: angledVector(0, 3)}}
@@ -203,6 +204,7 @@ func TestSearchOfAPrivateProjectFindsNothing(t *testing.T) {
 // PRIV counts the five rare and the sixth common, so a fallback weighing PRIV's counts too drops the
 // sixth word and finds nothing.
 func TestTheSearchFallbackWeighsWordsByTheProjectsTheCallerSees(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	words := []string{"zorbalite", "quintexa", "plumbagor", "vexillum", "moraine", "corundum"}
 	comment := decodeBody[model.Comment](t, seed.mustRequest(t, callerCarol, http.MethodPost,
@@ -239,6 +241,7 @@ func TestTheSearchFallbackWeighsWordsByTheProjectsTheCallerSees(t *testing.T) {
 // and PRIV's report are each non-zero in every count and add up to the report of carol, who sees
 // both; a report that counted a project its caller does not see would add up to more.
 func TestSearchCoverageCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{searchAccessMeaning: queryVector()}}
 	seed := seedPrivateProjectWith(t, testServerOptions{embedder: embedder})
 	objects := writeSearchableObjects(t, seed, embedder)

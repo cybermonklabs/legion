@@ -47,6 +47,7 @@ func credentialIDs(t *testing.T, response *httptest.ResponseRecorder) []string {
 // Control: answer a restricted member as every other caller (the filter removed), and erin lists
 // all four and her revoke of a service's login reaches the broker, each named.
 func TestARestrictedMemberListsAndRevokesOnlyTheirOwnMachineLogins(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, _ := newAccessServerWith(t, testServerOptions{
 		admitsRestricted: true,
@@ -116,6 +117,7 @@ const machineLoginsWithAPod = `{"credentials":[
 // ownMachineLogins, in place of memberMachineLogins in listMachineLogins and revokeMachineLogin),
 // the pod's login is neither listed nor revocable, and this test fails on both.
 func TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	served, _ := newAccessServerWith(t, testServerOptions{
 		admitsRestricted: true,
@@ -159,6 +161,7 @@ func TestARestrictedMemberListsAndRevokesThePodLoginsTheBrokerMapsToThem(t *test
 // scopes) and let any credential of a restricted member through (restrictedOwnLoginAtBrowser
 // answering allowed true), and her personal token is answered, named.
 func TestARestrictedMembersTokensListAndRevokeNoMachineLogin(t *testing.T) {
+	t.Parallel()
 	rig := newFakeBrokerRig(t)
 	stub := ciphertokentest.NewStubBroker(t)
 	served, _ := newAccessServerWith(t, testServerOptions{

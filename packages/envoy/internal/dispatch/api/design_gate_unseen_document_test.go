@@ -24,6 +24,7 @@ import (
 // carol, who does not see every object while PRIV is private, reads the decisions gate, whose id
 // names no document.
 func TestADesignGateNamingNoDocumentItsReaderSeesIsLeftOutWhateverItNames(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	primary := func(project string) string {
 		t.Helper()

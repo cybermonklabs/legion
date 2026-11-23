@@ -18,6 +18,7 @@ import (
 // reads the act naming PRIV's issue, so the row reads a live tuple. With PRIV public, no project is
 // private, and alice reads the act as before (R9).
 func TestAPrioritysRelationToAHiddenIssueIsNoAct(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/priorities", map[string]string{"id": "probe", "title": "Probe"}, http.StatusCreated)
 	history := func(t *testing.T, caller privateCaller) string {

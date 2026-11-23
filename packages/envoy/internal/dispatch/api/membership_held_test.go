@@ -177,6 +177,7 @@ func heldPersonToken(jkt, person string, held bool) ciphertoken.Introspection {
 // Where no Google rule signs people in (Standing nil) a recorded hold holds nobody, and the owner's
 // next sign-in releases it.
 func TestAPersonalTokenOfAHeldPersonIsRefused(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	signInFor(t, database, accessCarol, "carol-account", "carol-refresh", model.MemberFull, time.Minute)
 	token := personalTokenOwnedBy(t, database, accessCarol, model.ScopePerson)
@@ -243,6 +244,7 @@ func TestAPersonalTokenOfAHeldPersonIsRefused(t *testing.T) {
 // reads no row for the address the token spells, erin's first request is served, and the test
 // fails naming the owner the token spells.
 func TestAPersonalTokenOfASpelledOwnerIsHeld(t *testing.T) {
+	t.Parallel()
 	for _, spelled := range []string{"Erin@Other.Example", "  erin@other.example  "} {
 		t.Run(strings.TrimSpace(spelled), func(t *testing.T) {
 			if spelled == accessErin || model.CanonicalLogin(spelled) != accessErin {
@@ -284,6 +286,7 @@ func TestAPersonalTokenOfASpelledOwnerIsHeld(t *testing.T) {
 // a recorded hold's words; where none does it holds nobody. A broker token asks Standing nothing,
 // and the person's next sign-in releases the recorded hold.
 func TestABrokerTokenOfAHeldPersonIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	seedPeople(t, rig.database, accessCarol)
 	signInFor(t, rig.database, accessCarol, "carol-account", "carol-refresh", model.MemberFull, time.Minute)
@@ -328,6 +331,7 @@ func TestABrokerTokenOfAHeldPersonIsRefused(t *testing.T) {
 // always did, the token's lookup and the record of its use; at 61 minutes it asks Standing once,
 // about the owner.
 func TestAFreshConfirmationCostsNoStandingCall(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	signInFor(t, database, accessCarol, "carol-account", "carol-refresh", model.MemberFull, 59*time.Minute)
@@ -389,6 +393,7 @@ func openHeldSocket(t *testing.T, served *server, request *http.Request) <-chan 
 // Control: callerStillResolves without its Held check; the broker token's socket stays open and
 // the test fails naming it.
 func TestALiveSocketOfAHeldPersonCloses(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 50 * time.Millisecond
 	t.Run("a personal token", func(t *testing.T) {
 		_, database, deps := newTestServer(t, testServerOptions{})
@@ -439,6 +444,7 @@ func TestALiveSocketOfAHeldPersonCloses(t *testing.T) {
 // token answers MEMBERSHIP_HELD, and the test fails naming it); the recorded hold read before
 // restrictedOwnerAdmitted (the delisted erin answers MEMBERSHIP_HELD, and the test fails naming her).
 func TestABrokerTokenOfAReplacedAccountAnswersRevokedNotHeld(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	rig := newOutsideBrokerRig(t)
 	ctx := context.Background()
@@ -576,6 +582,7 @@ func serveWithBodyHeld(t *testing.T, handler http.Handler, request *http.Request
 // person held the hold Dispatch records refuses them first, at the token's admission
 // (brokerPersonAdmitted), 401 MEMBERSHIP_HELD. Neither reaches the broker.
 func TestAHeldApproverRelaysNoApproval(t *testing.T) {
+	t.Parallel()
 	relay := newFakeBrokerRig(t)
 	introspection := ciphertokentest.NewStubBroker(t)
 	_, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, introspection)})
@@ -684,6 +691,7 @@ func personAnswerOf(t *testing.T, handler http.Handler, bearer, person string) (
 // database's now(); and a Standing that fails leaves held out, keeps member_kind and as_of, and
 // answers 200.
 func TestThePersonAnswerCarriesHeld(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	_, database, deps := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	bearer := issuer.Mint(t, issuer.signing, issuer.Claims(listedServiceAccount, serviceTokenAudience))

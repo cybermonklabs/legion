@@ -21,6 +21,7 @@ import (
 // Control: the roles served as the listener sent them, and alice and rhea read
 // legion-priv-architect on session-pub.
 func TestTheAgentsListNamesNoRoleOfAPrivateProjectItsReaderDoesNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	const rhea = "rhea@outside.example"
 	seedPeople(t, seed.database, rhea)
@@ -83,6 +84,7 @@ func TestTheAgentsListNamesNoRoleOfAPrivateProjectItsReaderDoesNotSee(t *testing
 // Control: rhea's roles read through access.RoleProjectClause alone, as an open viewer's are, and
 // rhea reads legion-core-architect and legion-zzz-architect.
 func TestARestrictedMemberReadsNoRoleOfAProjectItDoesNotSee(t *testing.T) {
+	t.Parallel()
 	const session = "session-roles"
 	const (
 		coreRole   = "legion-core-architect"

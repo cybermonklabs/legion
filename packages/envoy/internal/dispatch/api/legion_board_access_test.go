@@ -21,6 +21,7 @@ import (
 // Control: the board read keeps every key (leaveOutHiddenIssues returning at once), and alice's
 // card names PRIV's issue.
 func TestALegionBoardLeavesOutABlockerItsReaderCannotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPublic+"/legion/daemon",
 		map[string]any{"state_url": "http://legion-pub.internal:8080"}, http.StatusOK)
@@ -66,6 +67,7 @@ func TestALegionBoardLeavesOutABlockerItsReaderCannotSee(t *testing.T) {
 // Control: the board read keeps every key (leaveOutHiddenIssues returning at once), and alice's
 // board names PRIV's issues, their slots and roles.
 func TestALegionBoardShowsNoIssueItsReaderCannotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.mustRequest(t, callerAlice, http.MethodPut, "/api/v1/projects/"+seedPublic+"/legion/daemon",
 		map[string]any{"state_url": "http://legion-priv.internal:8080"}, http.StatusOK)

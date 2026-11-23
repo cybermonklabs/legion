@@ -40,6 +40,7 @@ func b8AccessWrites(dave string) []b8AccessWrite {
 // across the group write, and dave's across his addition to PUB's list, says replay_complete false
 // and is replayed nothing, and the test fails.
 func TestWithNoPrivateProjectAResumeAcrossAnAccessWriteIsComplete(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	for _, write := range b8AccessWrites(dave) {
 		t.Run(write.name, func(t *testing.T) {
@@ -89,6 +90,7 @@ func TestWithNoPrivateProjectAResumeAcrossAnAccessWriteIsComplete(t *testing.T) 
 // Control: resolveAgain takes every access change at or below through as one that moved what the
 // reader sees, whatever the reader; alice's feed ends (behind) at the write, and the test fails.
 func TestWithNoPrivateProjectAnAccessWriteBehindTheHorizonEndsNoFeed(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	for _, write := range b8AccessWrites(dave) {
 		t.Run(write.name, func(t *testing.T) {
@@ -117,6 +119,7 @@ func TestWithNoPrivateProjectAnAccessWriteBehindTheHorizonEndsNoFeed(t *testing.
 // Control: the resume check asks nothing of a reader that sees every object; each resume is
 // complete and the test fails.
 func TestAResumeAcrossTheLastPrivateProjectMadePublicIsNotComplete(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	since := eventHead(t, seed.database)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
@@ -141,6 +144,7 @@ func TestAResumeAcrossTheLastPrivateProjectMadePublicIsNotComplete(t *testing.T)
 // below through, a project made public among them; alice's feed goes on past the change, and the
 // test fails.
 func TestAFeedBehindTheHorizonOfTheLastPrivateProjectMadePublicEnds(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	url := liveURLOf(t, seed.handler)
 	subscribeEvents(t, seed.dialLive(t, url, seed.liveHeader(t, callerSharedToken)), "first", nil)

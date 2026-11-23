@@ -25,6 +25,7 @@ import (
 // under Tip answers 500 INTERNAL and the reparent 409 DEPENDENCY_CYCLE ("the dependency graph is
 // deeper than 32 links"), not PARENT_INPUT; the test fails naming each.
 func TestAParentPastTheDepthCapIsRefusedAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DEEP", "name": "Deep"}, "alice")

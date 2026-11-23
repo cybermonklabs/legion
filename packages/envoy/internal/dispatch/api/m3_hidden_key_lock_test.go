@@ -232,7 +232,7 @@ func awaitAnswerOrWait(t *testing.T, seed privateSeed, held heldLock, answered <
 		}
 		var waiting *string
 		err := seed.database.Pool.QueryRow(context.Background(), `
-			select query from pg_stat_activity where $1::int = any(pg_blocking_pids(pid)) limit 1
+			select query from pg_stat_activity where datname = current_database() and $1::int = any(pg_blocking_pids(pid)) limit 1
 		`, held.pid).Scan(&waiting)
 		if err == nil {
 			return nil, deref(waiting)
@@ -273,6 +273,7 @@ var missingAsHidden = strings.NewReplacer(missingLockKeys.issue, hiddenLockKeys.
 // waited would tell its caller that a writer of a hidden object is at work. Its answer is the
 // answer to an object nobody holds, the id written as PRIV's.
 func TestAWriteNamingAHiddenKeyNeverWaitsOnItsLock(t *testing.T) {
+	t.Parallel()
 	seed, second := lockSeed(t)
 	for _, row := range lockRows(second, uuid.NewString()) {
 		t.Run(row.name, func(t *testing.T) {
@@ -297,6 +298,7 @@ func TestAWriteNamingAHiddenKeyNeverWaitsOnItsLock(t *testing.T) {
 // once it lets go - so the read each makes before its lock moves no write of a visible object out
 // of the order its lock keeps.
 func TestAWriteNamingAKeyItSeesStillWaitsOnItsLock(t *testing.T) {
+	t.Parallel()
 	seed, second := lockSeed(t)
 	for _, row := range lockRows(second, uuid.NewString()) {
 		t.Run(row.name, func(t *testing.T) {
@@ -319,6 +321,7 @@ func TestAWriteNamingAKeyItSeesStillWaitsOnItsLock(t *testing.T) {
 // the bytes 99e11cdd50 answered it with (lockRow.missing), so the read each now makes before its
 // lock changes no answer there.
 func TestALockWriteAnswersAMissingKeyAsBeforeWithNoPrivateProject(t *testing.T) {
+	t.Parallel()
 	seed, second := lockSeed(t)
 	seed.setVisibility(t, seedPrivate, "public")
 	var private bool

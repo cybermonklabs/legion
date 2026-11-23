@@ -28,6 +28,7 @@ import (
 // reaches alice, and the view ends only on the next heartbeat (15 s by default). Found by the
 // tester's drive of the agent view over /ws/live (Tester4177, round 3).
 func TestANewTieOrPairEndsAnAgentViewBeforeItsNextFrame(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, session, project string
 	}{

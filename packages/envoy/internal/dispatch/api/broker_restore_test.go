@@ -45,6 +45,7 @@ const (
 // directory read to the form that check asks for: its token written to a file the step makes,
 // and read with -H @"$header".
 func TestTheRunbookPassesNoBearerTokenOnACommandLine(t *testing.T) {
+	t.Parallel()
 	directory := strings.Join(runbookBlockAfter(t, resetDirectoryLead).lines, "\n")
 	if !strings.Contains(directory, `-H @"$header"`) || !strings.Contains(directory, `printf 'Authorization: Bearer %s\n' "$DIRECTORY_TOKEN" >"$header"`) {
 		t.Errorf("the runbook's directory read is %q; want its token written to a file and read with -H @\"$header\"", directory)
@@ -83,6 +84,7 @@ var runbookPsqlPages = append(append([]string{}, runbookPaths...), "../store/REA
 // "$DATABASE_URL", twice each); the step as it stood at 74a730474c, without its two refusals (the
 // keyword/value string and the unencoded / keep their passwords).
 func TestTheRunbookPassesNoDatabasePasswordOnACommandLine(t *testing.T) {
+	t.Parallel()
 	calls := 0
 	for _, path := range runbookPsqlPages {
 		text, err := os.ReadFile(path)

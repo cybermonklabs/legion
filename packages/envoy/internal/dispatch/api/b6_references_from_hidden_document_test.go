@@ -19,6 +19,7 @@ import (
 // and the same statements, so neither the document's existence nor its id can be read off the
 // answer or its cost. carol, who sees PRIV, reads the document's node.
 func TestAReferenceFromAHiddenDocumentAnswersAsAMissingOne(t *testing.T) {
+	t.Parallel()
 	census := &fragmentCensus{}
 	seed := seedPrivateProjectWith(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), census)})
 	upload := func(target string) (id, slug string) {

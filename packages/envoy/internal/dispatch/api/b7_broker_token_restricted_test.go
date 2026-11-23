@@ -28,6 +28,7 @@ import (
 // full member's R9 row (TestABrokerTokenScopedToOneProjectAnswersAsBeforeWhileNoProjectIsPrivate)
 // fails and this one passes.
 func TestARestrictedMembersBrokerTokenSeesOnlyItsListWhateverTheDeploymentHolds(t *testing.T) {
+	t.Parallel()
 	for _, private := range []bool{false, true} {
 		t.Run(map[bool]string{false: "while every project is public", true: "once a project is private"}[private], func(t *testing.T) {
 			rig := newBrokerTokenRigOn(t, testServerOptions{admitsRestricted: true})

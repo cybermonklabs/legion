@@ -15,6 +15,7 @@ import (
 // that only the owner writes it, gives it to another full member, or deletes it. A restricted
 // member makes none: 403 RESTRICTED_MEMBER, the refusal of a deployment write (withinProjectScope).
 func TestAGroupOnlyItsOwnerEdits(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	made := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew", map[string]any{"members": []string{accessCarol}}, "alice")
 	if group := decodeBody[model.AccessGroup](t, made); made.Code != http.StatusOK || group.Owner != "alice" || !slices.Equal(group.Members, []string{accessCarol}) {
@@ -57,6 +58,7 @@ func TestAGroupOnlyItsOwnerEdits(t *testing.T) {
 // routes exactly as on the five list writes, and its member add admits nobody; the owner's
 // credential that holds `approve` as well writes, and the admission follows.
 func TestTheGroupWritesNeedTheApproveScope(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	if made := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew", map[string]any{"members": []string{accessCarol}}, "alice"); made.Code != http.StatusOK {
 		t.Fatalf("alice makes crew: %d %s", made.Code, made.Body.String())
@@ -132,6 +134,7 @@ func TestTheGroupWritesNeedTheApproveScope(t *testing.T) {
 // TestAGroupRefusesARestrictedMember (v24 R2): a group holds full members only, so a write naming a
 // restricted member is 400 GROUP_MEMBER_RESTRICTED, naming them, and stores no member at all.
 func TestAGroupRefusesARestrictedMember(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/mixed", map[string]any{"members": []string{accessCarol, accessErin}}, "alice")
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"GROUP_MEMBER_RESTRICTED"`) ||

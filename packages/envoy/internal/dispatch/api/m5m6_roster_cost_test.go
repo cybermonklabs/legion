@@ -98,6 +98,7 @@ func seedRosterCostIssues(t *testing.T, seed hiddenHolderSeed) rosterCostIssues 
 // nothing (seenReferences' read made only when named holds something), and the role holders' likewise.
 // The order itself - visibility before the roster - is what the base lacks, so the row is red there.
 func TestM5M6AHiddenClaimOrRoleRouteCostsWhatNoneCosts(t *testing.T) {
+	t.Parallel()
 	counter := &requestStatements{}
 	seed := seedHiddenHolders(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
 	issues := seedRosterCostIssues(t, seed)
@@ -135,6 +136,7 @@ func TestM5M6AHiddenClaimOrRoleRouteCostsWhatNoneCosts(t *testing.T) {
 // the control drops both; alice's issue reads then make the rule of references' statement and the
 // row fails naming each. Dropping one alone leaves the row green, the other guard holding.
 func TestM5M6WithNoPrivateProjectTheReachReadsCostAsBefore(t *testing.T) {
+	t.Parallel()
 	counter := &requestStatements{}
 	seed := seedHiddenHolders(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
 	issues := seedRosterCostIssues(t, seed)

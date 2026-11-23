@@ -46,6 +46,7 @@ const listedTokenSession = "5f2e7a5c-9d6b-4ebf-8a7c-5b6c7d8e9fa1"
 // Control: the tie recording no listed project; alice is relayed the session, whose list holds
 // only PUB, which she sees.
 func TestATokensListedPrivateProjectStaysOnItsSession(t *testing.T) {
+	t.Parallel()
 	rig := newReachedRigOf(t, `[
 		{"session_id":"`+listedTokenSession+`","title":"Lists PUB","capabilities":["btw"],"last_seen":900,"projects":["PUB"]}
 	]`, listedTokenSession)

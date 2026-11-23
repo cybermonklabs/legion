@@ -128,6 +128,7 @@ func requireNoEventOf(t *testing.T, who, sub, project string, events []liveEvent
 // since alice does not see PRIV; every caller that sees PRIV is sent carol's first comment before
 // her second.
 func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	url := liveURLOf(t, seed.handler)
 	since := eventHead(t, seed.database)
@@ -172,6 +173,7 @@ func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
 // sent the project's events, as every feed was before a project could be private, and goes on
 // without ending: a project that has just been made holds nothing the page read before.
 func TestAnOpenSocketIsSentTheEventsOfAProjectMadeAfterItSubscribed(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	client := seed.dialLive(t, liveURLOf(t, seed.handler), seed.liveHeader(t, callerAlice))
 	subscribeEvents(t, client, "feed", nil)
@@ -186,6 +188,7 @@ func TestAnOpenSocketIsSentTheEventsOfAProjectMadeAfterItSubscribed(t *testing.T
 // its replay is not complete, the frame on which the page refreshes everything it read of PRIV. From
 // then on the socket sends nothing of PRIV.
 func TestARemovedPersonsSocketRefreshesWithoutTheProject(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	for _, removal := range []struct {
 		name   string
@@ -256,6 +259,7 @@ func TestARemovedPersonsSocketRefreshesWithoutTheProject(t *testing.T) {
 // Every caller that does not see PRIV is asked, carol's token that lists no project among them,
 // though PRIV's list names carol: an addition, and another's removal, take nothing from her.
 func TestAResumeOverEventsTheCallerMayNotReadIsComplete(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, dave)
@@ -290,6 +294,7 @@ func requireResumeComplete(t *testing.T, seed privateSeed, url string, caller pr
 // credential being open whatever it lists. A caller that never saw PUB - bob, a restricted member
 // PUB's list does not name, and bob's token that lists PRIV - resumes complete.
 func TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToWhoLostIt(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	since := eventHead(t, seed.database)
 	seed.makePrivate(t, seedPublic)
@@ -307,6 +312,7 @@ func TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToWhoLostIt(t *testing.T)
 // not complete, though she may not read the change itself; alice, who never read PRIV while it was
 // private, resumes complete.
 func TestAResumeAcrossAnOwnerChangeOwesARefreshToThePreviousOwner(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, dave)
@@ -325,6 +331,7 @@ func TestAResumeAcrossAnOwnerChangeOwesARefreshToThePreviousOwner(t *testing.T) 
 // lists PRIV too, and PRIV's list names carol, so the token reads PRIV before the change and after:
 // it reads the change, which moved nothing it sees, and its resume is complete.
 func TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToATokenThatListedIt(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	since := eventHead(t, seed.database)
@@ -339,6 +346,7 @@ func TestAResumeAcrossAProjectTurnedPrivateOwesARefreshToATokenThatListedIt(t *t
 // carol, and her token that lists PRIV, read the addition and read PRIV before it and after it, so
 // their resumes are complete: an access change is a gap only for a caller whose projects it moved.
 func TestAResumeAcrossAnAccessChangeOwesARefreshOnlyToWhomItMoved(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, dave)

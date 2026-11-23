@@ -36,6 +36,7 @@ $$`}
 // join on no key, through a reference that is not the row's owner (issue_links.target_key) and
 // through a function's body are the reads a census that looks for a marker anywhere passes.
 func TestM19TheCensusNamesEveryUnboundProjectReadOfAStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	for _, function := range m19ControlFunctions {
 		if _, err := database.Pool.Exec(context.Background(), function); err != nil {
@@ -328,6 +329,7 @@ func TestM19TheCensusNamesEveryUnboundProjectReadOfAStatement(t *testing.T) {
 // that the registry holds no rule for. An entry the registry does not hold, and is not named as
 // one it does not, is a kind the census excuses by hand.
 func TestM19EveryKindOfNoProjectIsTheRegistrys(t *testing.T) {
+	t.Parallel()
 	registry := map[string]bool{}
 	for _, kind := range refs.VisibilityKinds() {
 		registry[kind] = true

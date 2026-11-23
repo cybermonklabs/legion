@@ -68,6 +68,7 @@ func hnswHiddenCounts(t *testing.T) []int {
 // shared graph's reach, not the scan's budget. Run it as
 // env DISPATCH_HNSW_HIDDEN_VECTORS=100,1000,5000 go test -v -run TestMeasureAMeaningSearchBesideNearerHiddenVectors ./internal/dispatch/api/
 func TestMeasureAMeaningSearchBesideNearerHiddenVectors(t *testing.T) {
+	t.Parallel()
 	without := hnswSearch(t, hnswSeed(t, 0), nil)
 	if len(without.Results) == 0 {
 		t.Fatalf("alice's search of the seed without hidden vectors holds no hit of PUB's %d: the measurement measures nothing", hnswVisible)

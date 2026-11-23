@@ -165,6 +165,7 @@ func carolsApprove(t *testing.T, broker *capabilityBroker) (http.Handler, Deps, 
 // four unread rows (each is sent the approver and the code, and approves); reading approver_fields
 // with json.Unmarshal into a bool fails the null row alone, since that reads null as false.
 func TestTheApproveNamesTheApproverFieldsOnlyToABrokerThatSaysItTakesThem(t *testing.T) {
+	t.Parallel()
 	const todays = `/v1/credential-requests/rec1/approve {"approver":"carol@example.com","code":"ABCD-1234"}`
 	for _, row := range []struct {
 		name           string
@@ -245,6 +246,7 @@ func (d *deadlineRecorder) RoundTrip(request *http.Request) (*http.Response, err
 // Control: client.Approve run on the request's context in place of relay fails here: its deadline
 // is the client's window after the approve was sent, after the settings read.
 func TestTheSettingsReadAndTheRelayShareOneDeadline(t *testing.T) {
+	t.Parallel()
 	broker := newCapabilityBroker(t, true)
 	handler, deps, token, _ := carolsApprove(t, broker)
 	recorder := &deadlineRecorder{}

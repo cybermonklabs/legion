@@ -44,6 +44,7 @@ esac
 // user is signed out; and the done line comes only when every call succeeded. The stand-in's
 // sign-out reads stdin, so a loop that fed it the list on stdin would sign out only the first user.
 func TestThePoolSignOutBlockReportsAnUnlistedPoolAndEveryFailedSignOut(t *testing.T) {
+	t.Parallel()
 	for _, tool := range []string{"bash", "tr"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%s is not installed, so the pool's sign-out block cannot be run here: %v", tool, err)

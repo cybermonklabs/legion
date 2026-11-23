@@ -33,6 +33,7 @@ func requireAnsweredAsMissing(t *testing.T, what string, hidden, missing *httpte
 // Control: VisibleProjectsSQL with a list covering only the listed projects (the rule before):
 // both tokens read OTHER's issue as missing, and the test fails naming each.
 func TestABrokerTokensListHoldsItOnceAProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const named, person = "a-named-token-of-one-project", "a-person-token-whose-trade-named-one-project"

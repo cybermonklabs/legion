@@ -21,6 +21,7 @@ const privateProjectsPath = "/api/v1/access/private-projects"
 // browser are 403 ACCESS_ACCOUNT_REQUIRED, and a caller with no credential is 401 NO_IDENTITY.
 // Control: admit any token, and the dsp_ token's 200 fails the test naming it.
 func TestTheBrokerListsThePrivateProjectsChannels(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	for _, key := range []string{"PUB", "PRIV", "ALPHA"} {
@@ -73,6 +74,7 @@ func TestTheBrokerListsThePrivateProjectsChannels(t *testing.T) {
 // answer being down. Control: start the list from a nil slice, and the body reads
 // {"projects":null}, and the test fails naming projects.
 func TestThePrivateProjectsListIsAnEmptyArrayWhenNoneIsPrivate(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, _, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	createAccessProject(t, handler, "PUB", "alice")
@@ -93,6 +95,7 @@ func TestThePrivateProjectsListIsAnEmptyArrayWhenNoneIsPrivate(t *testing.T) {
 // and a read in the table's own order answers ZED first. The break it catches: PrivateProjects
 // losing `order by key`.
 func TestTheBrokersListIsSortedByKey(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	for _, key := range []string{"ZED", "MID", "ALPHA"} {
@@ -121,6 +124,7 @@ func TestTheBrokersListIsSortedByKey(t *testing.T) {
 // than the listed one. TestTheAccessAnswerAdmitsOnlyItsAccounts walks the other two K3 routes only,
 // and TestTheBrokerListsThePrivateProjectsChannels sends no service account but the listed one.
 func TestTheBrokersListAdmitsOnlyTheListedAccount(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	createAccessProject(t, handler, "PRIV", "alice")

@@ -39,6 +39,7 @@ import (
 // Control: tokenAccountReplaced and brokerAccountReplaced without the time arm (a no-account
 // credential never replaced); A's credentials made before the recording act.
 func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
 	deps.SignInIssuer = "https://accounts.google.com"

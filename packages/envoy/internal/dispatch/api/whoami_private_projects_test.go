@@ -23,6 +23,7 @@ import (
 // carol's row answers no projects; private_projects computed from visibility alone, and bob's row
 // answers no private_projects.
 func TestWhoamiAnswersAListedCredentialsProjectsAndWhichArePrivate(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProjectWith(t, testServerOptions{admitsRestricted: true})
 	whoami := func(who, token string) (string, map[string]json.RawMessage) {
 		t.Helper()

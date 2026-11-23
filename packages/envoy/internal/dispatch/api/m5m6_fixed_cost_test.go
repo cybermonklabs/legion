@@ -203,6 +203,7 @@ func fixedCosts(t *testing.T, seed fixedCostSeed, counter *requestStatements) ma
 // something); every pair but the ask's persons then costs one statement more for its hidden
 // target, and the row fails naming each.
 func TestM5M6EveryVisibilityReadCostsWhatNamingNothingCosts(t *testing.T) {
+	t.Parallel()
 	counter := &requestStatements{}
 	seed := seedFixedCost(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
 	for read, cost := range fixedCosts(t, seed, counter) {
@@ -224,6 +225,7 @@ func TestM5M6EveryVisibilityReadCostsWhatNamingNothingCosts(t *testing.T) {
 // in its way (leaveOutHiddenCommentSessions' first test and seenReferences'), so the control drops
 // both; alice's comment reads then make the statement and the row fails naming them.
 func TestM5M6WithNoPrivateProjectEveryVisibilityReadCostsAsBefore(t *testing.T) {
+	t.Parallel()
 	counter := &requestStatements{}
 	seed := seedFixedCost(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)

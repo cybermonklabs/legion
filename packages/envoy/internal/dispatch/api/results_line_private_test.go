@@ -21,6 +21,7 @@ import (
 // Control: readLineWords reading every project's key for every reader (the rule as the base merge
 // brought it); bob's line keeps SECRET-1 until SECRET exists and then drops it, and the test fails.
 func TestAResultsLineTellsAReaderNothingOfAProjectItDoesNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	for _, project := range []string{seedPublic, seedPrivate} {
 		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.issue[project]+"/artifacts",
@@ -64,6 +65,7 @@ func TestAResultsLineTellsAReaderNothingOfAProjectItDoesNotSee(t *testing.T) {
 // Control: the rule chosen by whether some project is hidden from the reader (the round before);
 // carol's first line keeps UTF-8 and NOPE-1, her second drops them, and the test fails.
 func TestAResultsLineRuleTellsNoReaderWhetherAHiddenProjectExists(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/artifacts",
 		map[string]any{"name": "verification.md", "content": twoChecks}, http.StatusCreated)

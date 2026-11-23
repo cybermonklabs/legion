@@ -47,6 +47,7 @@ func newIssueRepoAccessServer(t *testing.T) (http.Handler, *store.Store) {
 // handler: her clear ({"repo": null}) then changes ACC's default, and her acme/gadgets is 403
 // REPOSITORY_NOT_AVAILABLE rather than RESTRICTED_MEMBER.
 func TestARestrictedMemberSetsNoProjectsDefaultRepository(t *testing.T) {
+	t.Parallel()
 	handler, database := newIssueRepoAccessServer(t)
 	stored := func() string {
 		t.Helper()
@@ -124,6 +125,7 @@ func proxyShows(t *testing.T, database *store.Store, login, repository string) b
 // them, and the GitHub proxy still shows them none such. The same writes naming no repo are theirs
 // to make.
 func TestARestrictedMemberNamesNoIssuesRepo(t *testing.T) {
+	t.Parallel()
 	handler, database := newIssueRepoAccessServer(t)
 	ownRepo := createdIssueKey(t, handler, "alice", map[string]any{"project": "ACC", "title": "Alice names its repository", "repo": "acme/gadgets", "force": true})
 	noRepo := createdIssueKey(t, handler, "alice", map[string]any{"project": "ACC", "title": "Alice names no repository", "force": true})
@@ -239,6 +241,7 @@ func maskedAnswer(response *httptest.ResponseRecorder) string {
 // the base answers them. Each answer is logged masked (maskedAnswer), so two builds' runs compare
 // byte for byte.
 func TestAFullMembersIssueRepoAnswersAsBefore(t *testing.T) {
+	t.Parallel()
 	handler, database := newIssueRepoAccessServer(t)
 	carolsToken := mintListed(t, handler, accessCarol, "carol's laptop", nil).Token
 	for _, caller := range []struct {

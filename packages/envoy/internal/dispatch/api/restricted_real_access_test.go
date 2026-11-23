@@ -86,6 +86,7 @@ func newRealAccessRig(t *testing.T) (restrictedTokenRig, *realAccess) {
 // Control: the broker's projectAccess letting a named machine trade through unchecked, and erin's
 // trades naming OTH and NOPE are answered 200, named.
 func TestARestrictedMembersTradeAsksTheRealDispatch(t *testing.T) {
+	t.Parallel()
 	r, _ := newRealAccessRig(t)
 	erins, erinsDevice, _ := r.approvedLogin(t, accessErin, "erin-laptop")
 	status, body := r.exchange(t, erins, erinsDevice.AccessToken, "erin-agent", "ACC")
@@ -132,6 +133,7 @@ func TestARestrictedMembersTradeAsksTheRealDispatch(t *testing.T) {
 // Control: the broker's projectAccess letting a named machine trade through unchecked, and erin's
 // trade naming ACC after her removal is answered 200, its token named and active, named.
 func TestARemovalEndsARestrictedMembersTradeWithNoRevoke(t *testing.T) {
+	t.Parallel()
 	r, access := newRealAccessRig(t)
 	erins, erinsDevice, _ := r.approvedLogin(t, accessErin, "erin-laptop")
 	_ = r.sessionToken(t, erins, erinsDevice, "erin-agent", "ACC")

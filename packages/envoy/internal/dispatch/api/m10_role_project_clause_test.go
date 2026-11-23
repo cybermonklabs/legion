@@ -17,6 +17,7 @@ import (
 // Control: roleReachesReaderSQL splicing the term over `$3` rather than `$3::text`; its row then
 // fails.
 func TestM10TheAPISplicesTheRoleRulesNameHalf(t *testing.T) {
+	t.Parallel()
 	for name, read := range map[string]struct{ statement, term string }{
 		"seenReferencesSQL":    {seenReferencesSQL, access.RoleProjectClause("named.id", "$6")},
 		"roleReachesReaderSQL": {roleReachesReaderSQL, access.RoleProjectClause("$3::text", "$2")},

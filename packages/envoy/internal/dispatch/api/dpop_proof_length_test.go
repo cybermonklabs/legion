@@ -19,6 +19,7 @@ import (
 // Control in store/dpop_proofs.go: the length arm dropped (the 3,000-character key answers 503
 // BROKER_UNAVAILABLE).
 func TestADPoPProofForAPathTooLongToRecordIsTheCallersRefusal(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-token-whose-requests-name-long-paths"

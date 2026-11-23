@@ -13,6 +13,7 @@ import (
 // handing an ask nobody holds to a person, or setting the default assignee of a key no project
 // holds, is answered as a missing object, 404 NOT_FOUND, and never as the server's error.
 func TestAnAbsentAskOrProjectIsNoServerError(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	const caller privateCaller = "carol's token that lists PUB"
 	mintListingToken(t, seed, caller, seedCarol, []string{seedPublic})

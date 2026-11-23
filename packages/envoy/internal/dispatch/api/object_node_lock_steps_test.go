@@ -42,6 +42,7 @@ import (
 // no lock of its node; and the removal's gone statement moved after the row's delete
 // (api/artifact_removal.go), which fails the same two ways.
 func TestEveryObjectNodeWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newStoreWriterRig(t)
 	for _, writer := range []storeWriter{

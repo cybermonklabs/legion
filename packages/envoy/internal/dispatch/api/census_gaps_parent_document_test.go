@@ -108,6 +108,7 @@ func (s parentDocumentSeed) reads(t *testing.T, caller privateCaller, kind, id s
 // so the row reads a live anchor. With PRIV public, no project is private, and alice reads the
 // document as the parent, as before (R9).
 func TestACommentOrAnAskNamesNoHiddenDocumentAsItsParent(t *testing.T) {
+	t.Parallel()
 	seed := seedParentDocuments(t)
 	parentIsTheDocument := func(t *testing.T, caller privateCaller, kind, id string) {
 		t.Helper()

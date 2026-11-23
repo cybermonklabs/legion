@@ -29,6 +29,7 @@ import (
 // address (store.CatchUpAccountBindingOf, what the revocation loop's pass runs): the refusal and the
 // revocation are of what a refused token could have minted, not of every token minted in an overlap.
 func TestATokenOfAReplacedAccountMintsNothingThatActsOnceTheBindingHoldsAgain(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	handler, database, _ := newTestServer(t, testServerOptions{signInIssuer: google})
 	ctx := context.Background()

@@ -35,6 +35,7 @@ import (
 // written, alice is relayed both sessions' replays, which hold PRIV's issue's text, gina is
 // relayed hers, and both rows fail.
 func TestAFullMemberTheSignInRuleRestrictsKeepsWhatTheyLostOnTheirSessions(t *testing.T) {
+	t.Parallel()
 	const account = "gina-account"
 	for _, row := range []struct {
 		name     string

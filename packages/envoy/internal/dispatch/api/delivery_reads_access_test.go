@@ -304,6 +304,7 @@ func readShownDelivery(t *testing.T, seed privateSeed, caller privateCaller) sho
 // before attribution (her timeline holds R3, and her production_apply counts it); keep every
 // component in derive() (her components hold K2).
 func TestADeliveryReadShowsOnlyThePullRequestsItsViewerSees(t *testing.T) {
+	t.Parallel()
 	whole := seedDeliveryReads(t, true, true)
 	publicOnly := seedDeliveryReads(t, true, false)
 	privateOnly := seedDeliveryReads(t, false, true)
@@ -491,6 +492,7 @@ func (s privateSeed) belowTheReadGate(t *testing.T, caller privateCaller, handle
 // it to no viewer in either (alice's timeline, deploy_run_success, production_apply and read of run
 // 702 lose it).
 func TestAViewerThatIsNotOpenSeesOnlyTheRunsThatShippedAPullRequestItSees(t *testing.T) {
+	t.Parallel()
 	carried := seedRunThatShippedNothing(t, true)
 	without := seedRunThatShippedNothing(t, false)
 	failedRun := strconv.FormatInt(deliveryRunFailed, 10)
@@ -560,6 +562,7 @@ func TestAViewerThatIsNotOpenSeesOnlyTheRunsThatShippedAPullRequestItSees(t *tes
 // Control: the hub does not mark a Pipeline view for a change to a pull request with no merge
 // time (touchedBy); no frame comes, and the test fails.
 func TestAnUnmergedPullRequestsChangeMovesThePipelineView(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seedHubSettings(t, seed.database)
 	clock := newNoonHubClock()

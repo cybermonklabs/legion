@@ -315,6 +315,7 @@ func TestALiveBrokerTokenWithASoundProofIsAccepted(t *testing.T) {
 // Control: brokerTokenActor granting a named-scope token the person and approve scopes; the mint
 // reaches the project check and answers 400, and the approve answers another 403.
 func TestAnEntryTokenMintsAndApprovesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "an-entry-token-the-broker-issued"
@@ -1256,6 +1257,7 @@ func wantAPIError(t *testing.T, err error, status int, code, what string) {
 // names the owner it is refused with the same code, saying so; once one names them again it acts
 // again; and lists that cannot be read are 503 IDENTITY_UNAVAILABLE, never an accept.
 func TestARestrictedOwnersBrokerTokenActsOnlyWhileTheDeploymentAdmitsThem(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	const token = "erins-broker-token"
 	rig.broker.Says(token, rig.personTokenListing(accessErin, "ACC"))
@@ -1345,6 +1347,7 @@ func TestARestrictedOwnersBrokerTokenActsOnlyWhileTheDeploymentAdmitsThem(t *tes
 // Control: callerStillResolves answers no person for a broker token, as it did. The heartbeat then
 // reads no member kind, the connection outlives the window, and the test fails saying so.
 func TestABrokerTokensConnectionClosesOnceItsPersonsMemberKindChanges(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	const token = "erins-broker-token-holding-a-socket"
 	rig.broker.Says(token, rig.personTokenListing(accessErin, "ACC"))
@@ -1389,6 +1392,7 @@ func TestABrokerTokensConnectionClosesOnceItsPersonsMemberKindChanges(t *testing
 // closes as the row appears); have the heartbeat read the kind beside the admission (two reads of
 // people a heartbeat).
 func TestABrokerTokensConnectionKeepsAFirstPeopleRowAndReadsTheKindOnceABeat(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	const newcomer, token = "newcomer@example.com", "a-newcomers-broker-token"
 	rig.broker.Says(token, rig.personToken(newcomer))
@@ -1429,6 +1433,7 @@ func TestABrokerTokensConnectionKeepsAFirstPeopleRowAndReadsTheKindOnceABeat(t *
 //
 // Control: the refusal answers BROKER_TOKEN_NOT_ACTIVE for both, as it did.
 func TestABrokerTokenOfAnAccountNotSignedInIsToldToSignIn(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
 	deps.SignInIssuer = "https://accounts.google.com"
@@ -1484,6 +1489,7 @@ func TestABrokerTokenOfAnAccountNotSignedInIsToldToSignIn(t *testing.T) {
 // Control: brokerAccountReplaced turned off (the predicate false); the replaced account's and the
 // no-account tokens are then admitted, owed and settled.
 func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
 	deps.SignInIssuer = "https://accounts.google.com"
@@ -1548,6 +1554,7 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 // which writes none here), and the tie, and holds no scope (brokerTokenActor gives a restricted
 // member's broker token none, whatever scope the broker answered).
 func TestAFullMembersBrokerTokenAnswersAsBeforeWhereNoRestrictedMemberIsAdmitted(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	const nobody = "nobody@example.com"
 	if rows := countRows(t, rig.database, `select count(*) from people where email = $1`, nobody); rows != 0 {

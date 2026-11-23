@@ -111,6 +111,7 @@ func retryBodies(hidden string) map[string]map[string]any {
 // restored); alice's Retry then answers 201 naming role:legion-priv-architect and session-priv, and
 // 400 for a target nobody mentions, and each row fails naming the target.
 func TestARetryNamesNoMentionItsCallerDoesNotRead(t *testing.T) {
+	t.Parallel()
 	counter := &contextStatements{}
 	seed := seedHiddenHolders(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
 	items := writeRetriedItems(t, seed)
@@ -179,6 +180,7 @@ func TestARetryNamesNoMentionItsCallerDoesNotRead(t *testing.T) {
 // alice's Retry then answers 201, its error naming role:legion-priv-architect and its session
 // session-priv, and the row fails naming each.
 func TestARetryOfAMessageNamesNoTargetItsCallerDoesNotRead(t *testing.T) {
+	t.Parallel()
 	counter := &contextStatements{}
 	seed := seedHiddenHolders(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
 	items := writeRetriedItems(t, seed)
@@ -224,6 +226,7 @@ func TestARetryOfAMessageNamesNoTargetItsCallerDoesNotRead(t *testing.T) {
 // message as one with no target; alice's Retries of the comments, then of the messages, answer 404
 // and the row fails.
 func TestWithNoPrivateProjectARetryAnswersAsBefore(t *testing.T) {
+	t.Parallel()
 	counter := &contextStatements{}
 	seed := seedHiddenHolders(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
 	items := writeRetriedItems(t, seed)
@@ -310,6 +313,7 @@ func attemptRows(t *testing.T, seed hiddenHolderSeed, id string) []string {
 // unfiltered resume restored); alice's Retry then resumes carol's attempt 1, answers it naming
 // session-priv and settles it failed, and the row fails.
 func TestARetryLeavesAnAttemptPinnedToASessionItsCallerDoesNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	send := func() string {
 		t.Helper()
@@ -377,6 +381,7 @@ func TestARetryLeavesAnAttemptPinnedToASessionItsCallerDoesNotSee(t *testing.T) 
 // first cases then leave attempt 1 pending and fail. And the rule without its arm for a later
 // attempt in another mode that may have landed; the fourth case then sends attempt 1 and fails.
 func TestTheSweepSendsAMessageAttemptNoLaterAttemptStandsInThePlaceOf(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	const refusal = "no holder for role reviewer"
 	cases := []struct {
@@ -475,6 +480,7 @@ func replyAs(t *testing.T, seed hiddenHolderSeed, caller privateCaller, session,
 // restored); the shared token's reply with no target or naming the target is then posted, 201, and
 // the row fails naming the target.
 func TestAReplyAnswersAMentionItsCallerDoesNotReadAsOneTheCommentDoesNotHave(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	ids := writeRepliedComments(t, seed)
 	for name, mention := range map[string]struct{ session, target string }{
@@ -506,6 +512,7 @@ func TestAReplyAnswersAMentionItsCallerDoesNotReadAsOneTheCommentDoesNotHave(t *
 //
 // Control: mentionsReadBy leaving every mention out; the replies then answer 400 and the row fails.
 func TestWithNoPrivateProjectAReplyAnswersAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	ids := writeRepliedComments(t, seed)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
@@ -562,6 +569,7 @@ func replyToMessageAs(t *testing.T, seed hiddenHolderSeed, caller privateCaller,
 // Control: replyMessage reading the target as the server's reader (the unfiltered reads restored);
 // the shared token's replies are then posted, 201, and the row fails naming the target.
 func TestAReplyToAMessageWhoseTargetItsCallerDoesNotReadAnswersAsNoTarget(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	ids := writeRepliedMessages(t, seed)
 	for name, session := range map[string]string{privateRoleMention: sessionOfPublic, hiddenSession: sessionOfPrivate} {
@@ -588,6 +596,7 @@ func TestAReplyToAMessageWhoseTargetItsCallerDoesNotReadAnswersAsNoTarget(t *tes
 //
 // Control: replyMessage reading every target as none; the replies then answer 404 and the row fails.
 func TestWithNoPrivateProjectAReplyToAMessageAnswersAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	ids := writeRepliedMessages(t, seed)
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)

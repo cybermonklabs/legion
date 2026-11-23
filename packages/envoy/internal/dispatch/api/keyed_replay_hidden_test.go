@@ -23,6 +23,7 @@ import (
 // Control: heldAnswerHidden answering false, under which the repeat replays the stored 200 with
 // PRIV's issue in it, and the test fails.
 func TestAKeyedRepeatReplaysNoAnswerItsCallerNoLongerSees(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	path := "/api/v1/issues/" + seed.issue[seedPrivate]
 	const title = "Renamed by bob under a key"

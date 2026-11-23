@@ -33,6 +33,7 @@ import (
 // listener nothing; the refresh made whatever the reader sees, and her read with every project
 // public asks the listener once.
 func TestAReadRefreshesAnExpiredListenerAnswerBeforeItsContentRule(t *testing.T) {
+	t.Parallel()
 	const refreshedListed = "ses-refreshed-listed"
 	var fetches atomic.Int64
 	listener, _ := newBroadcastListener(t,

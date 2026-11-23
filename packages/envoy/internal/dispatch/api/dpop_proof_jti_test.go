@@ -32,6 +32,7 @@ import (
 //
 // At a47015a75c the control passes and the NUL row fails: 503 BROKER_UNAVAILABLE.
 func TestADPoPProofWhoseJTIHoldsNULIsTheCallersRefusal(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

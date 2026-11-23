@@ -46,6 +46,7 @@ import (
 // after it fails; with MintedWhileRefusedLiveSQL reading only live refused tokens (its arm for one
 // revoked after the token's creation removed), dave's minted token stays live.
 func TestARefusedTokenThatOutlivedItsRecordingIsRevokedWithWhatItMintedOnceTheBindingHolds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	r.served.deps.SignInIssuer = recoveryIssuer
@@ -222,6 +223,7 @@ func refusedParentAndOverlapChild(t *testing.T, handler http.Handler, database *
 // mint answers 201 with a grandchild recording account-b, and the approve's re-read stands naming
 // account-b.
 func TestATokenMintedWhileARefusedTokenWasLiveMintsAndApprovesNothingOnceTheBindingHolds(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	handler, database, deps := newTestServer(t, testServerOptions{signInIssuer: google})
 	ctx := context.Background()
@@ -269,6 +271,7 @@ func TestATokenMintedWhileARefusedTokenWasLiveMintsAndApprovesNothingOnceTheBind
 // key column `owner`", a read of the whole index. Without the index that arm costs a request of
 // such a token about 30 ms over 10,000 tokens and 290 ms over 100,000; with it, about 0.02 ms.
 func TestTheArmForATokenMintedWhileARefusedTokenWasLiveReadsOnlyTheAddresssTokens(t *testing.T) {
+	t.Parallel()
 	_, database, _ := newTestServer(t, testServerOptions{signInIssuer: "https://accounts.google.com"})
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
@@ -304,6 +307,7 @@ func TestTheArmForATokenMintedWhileARefusedTokenWasLiveReadsOnlyTheAddresssToken
 // Control, run by hand: with the trigger announcing only a change it keeps, no announcement comes,
 // and the row fails at "announced".
 func TestAChangeOfTheAccountNoRowKeepsStillWakesTheRevocationLoop(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	handler, database, deps := newTestServer(t, testServerOptions{signInIssuer: google})
 	ctx := context.Background()

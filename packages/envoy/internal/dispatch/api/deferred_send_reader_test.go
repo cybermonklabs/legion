@@ -28,6 +28,7 @@ import (
 // refused), and a resolve with no reader that asks nothing (it reaches session-priv); the test
 // fails naming each.
 func TestADeferredSendResolvesARoleAsItsAuthorMay(t *testing.T) {
+	t.Parallel()
 	const sessions = `[{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"last_seen":300}]`
 	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

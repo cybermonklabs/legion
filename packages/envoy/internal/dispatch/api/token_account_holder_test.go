@@ -25,6 +25,7 @@ import (
 // Control: tokenAccountReplaced answering false (the account check removed); A's token then
 // answers 200, its approve stands, and its mint inserts.
 func TestAPersonalTokenOfAnAccountPeopleNoLongerRecordsActsOnNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{signInIssuer: "https://accounts.google.com"})
 	ctx := context.Background()
 	const carol = "carol@example.com"

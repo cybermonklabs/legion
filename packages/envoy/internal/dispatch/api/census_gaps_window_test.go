@@ -241,6 +241,7 @@ func (s *gapSeed) windowReads() []gapWindowRead {
 // Control: one keyed read's clause dropped; it then answers the hidden object's rows and its row
 // fails, naming them, and in alice's answer what they carry.
 func TestCensusGapsAKeyedReadHoldsItsObjectOnItsOwn(t *testing.T) {
+	t.Parallel()
 	seed := seedGapWindow(t)
 	for _, read := range seed.windowReads() {
 		t.Run(read.name, func(t *testing.T) {
@@ -271,6 +272,7 @@ func TestCensusGapsAKeyedReadHoldsItsObjectOnItsOwn(t *testing.T) {
 // as the base answered them. Each answer is logged with its times and ids blanked, beside its
 // sha256, for the report's comparison of the two commits.
 func TestCensusGapsWithTheObjectInViewTheKeyedReadsAnswerAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedGapWindow(t)
 	check := func(t *testing.T, label string) {
 		for _, read := range seed.windowReads() {

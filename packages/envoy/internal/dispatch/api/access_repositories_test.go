@@ -47,6 +47,7 @@ func seedAnswerProject(t *testing.T, database *store.Store, key string, reposito
 // refusal and not a credential that resolves nowhere. Control: the listed account is answered 200
 // with the project's repositories.
 func TestTheRepositoryAnswerAdmitsOnlyTheAccessAccounts(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	database := storetest.Open(t)
 	sessions := store.NewPgSessionStore(database.Pool)
@@ -183,6 +184,7 @@ func TestADeepChainIsUnresolvedNotShort(t *testing.T) {
 // PROJECT_NOT_FOUND. The names are ones a collation that skips punctuation orders otherwise
 // (acme/aa before acme/a-b), so only a byte-wise order passes.
 func TestTheRepositoryAnswerIsSortedOnceAndNeverNull(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	seedAnswerProject(t, database, "SHAPE", "acme/aa", "acme/a_b", "acme/aa", "acme/a-b", "acme/a.b", "")

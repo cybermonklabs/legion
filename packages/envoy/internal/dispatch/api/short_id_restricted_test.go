@@ -20,6 +20,7 @@ import (
 // Control: seenBy resolving every writer as the server's reader, which sees every node; bob's
 // comment then stores the whole id, and the test fails naming him.
 func TestARestrictedWritersShortIDResolvesOnlyAmongTheNodesOfProjectsTheySee(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	target := decodeBody[struct {
 		ID string `json:"id"`

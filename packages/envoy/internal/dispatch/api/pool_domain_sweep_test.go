@@ -96,6 +96,7 @@ func testerR26RunSweep(t *testing.T, r *recoveryRig, dropRevoke bool) (string, e
 // is read revoked; TESTER_R26_DROP_REVOKE=1 is its red run: the block's revoke call is a no-op, so
 // the login stays live, the block prints STILL LIVE and fails, and this test fails three ways.
 func TestTesterR26TheSweepBlockEndsEveryLoginRecordingNoApprover(t *testing.T) {
+	t.Parallel()
 	r := newRecoveryRig(t)
 	login := testerR26PoolLogin(t, r, "sweep@example.com")
 	output, err := testerR26RunSweep(t, r, os.Getenv("TESTER_R26_DROP_REVOKE") == "1")
@@ -214,6 +215,7 @@ func testerR26Restore(t *testing.T, r *recoveryRig, backup map[string][]string) 
 // the test runs no sweep and fails, naming the login (as it did at 762114d9c9). Its last step runs
 // the sweep once more and shows that ends nothing new.
 func TestABrokerRestoredFromBeforeThePoolSweepIsSweptAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	login := testerR26PoolLogin(t, r, "pool-era@example.com")

@@ -32,6 +32,7 @@ import (
 // resolves optionalActor's actor, a session, so the token cannot give another token PRIV either,
 // while carol's own browser can.
 func TestATokenIsNeverReadAsABrowser(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	makePrivate(t, database, privateProject)
@@ -88,6 +89,7 @@ var resolveCallers = map[string][]string{
 // its file, line and function. Every row of the table must be found, so a scan that read nothing
 // cannot pass.
 func TestEveryResolveTakesTheResolvedCredential(t *testing.T) {
+	t.Parallel()
 	var functions []declaredFunction
 	for _, source := range moduleSources(t) {
 		for _, declaration := range source.file.Decls {
@@ -256,6 +258,7 @@ func shapeOf(expression ast.Expr) string {
 // of carol listing nothing it would see PUB alone and lose the answer (R3), and Resolve now
 // refuses it, which would leave the item no ask state at all.
 func TestARelatedCheckKeepsTheTokensList(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	asked := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -311,6 +314,7 @@ func TestARelatedCheckKeepsTheTokensList(t *testing.T) {
 // an owner is a full member, as R1's owner transfer holds one. Naming bob, a restricted member, is
 // 400 OWNER_NOT_ALLOWED and writes no project; naming carol, a full member, makes her the owner.
 func TestACreateCannotMakeARestrictedMemberTheOwner(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessCarol)
 	markRestricted(t, database, "bob")
@@ -383,6 +387,7 @@ func putGroup(t *testing.T, handler http.Handler, login, name string, body map[s
 //     counted without the owner's lock would both find 99; with it, the second counts after the
 //     first commits. Exactly one answers 200 and the other 400 CAP_EXCEEDED.
 func TestAnOwnerHoldsAtMostMaxGroups(t *testing.T) {
+	t.Parallel()
 	const frank = "frank@example.com"
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessCarol, accessDave, frank)
@@ -495,6 +500,7 @@ func raceTwoGroupCreates(t *testing.T, handler http.Handler, database *store.Sto
 // an integer from 1 to 100, and an after that is no group name, are 400 INVALID_QUERY naming the
 // parameter.
 func TestTheGroupListPages(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessCarol)
 	seedGroups(t, database, accessCarol, "g", 5)
@@ -551,6 +557,7 @@ func TestTheGroupListPages(t *testing.T) {
 // access change is replayed nothing), and through GET /api/v1/events/log, and neither answer holds
 // carol's email.
 func TestTheAccessChangedEventCarriesNoAccessList(t *testing.T) {
+	t.Parallel()
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	seedPeople(t, rig.database, accessCarol, accessDave)
 	if created := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": privateProject, "name": privateProject}, accessDave); created.Code != http.StatusCreated {

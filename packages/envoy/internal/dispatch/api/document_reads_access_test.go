@@ -101,6 +101,7 @@ var documentReads = []documentRead{
 // lists hold only what the caller sees; and a write's related-item check offers nothing of a
 // project its writer does not see. Each caller of verification v16's seed reads it.
 func TestADocumentOfAPrivateProjectAnswersAsMissing(t *testing.T) {
+	t.Parallel()
 	embedder := newCrossProjectEmbedder()
 	for _, text := range crossProjectQueryTexts() {
 		embedder.vectors[text] = queryVector()

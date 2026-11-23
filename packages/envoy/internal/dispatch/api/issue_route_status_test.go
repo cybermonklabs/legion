@@ -621,6 +621,7 @@ func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) 
 // with cascade, take the projection with it, and a truncate of route_roster alone is refused with
 // both rows kept, so no session keeps a listener record the roster no longer holds.
 func TestTheSessionProjectsSnapshotFollowsTheStoredRoster(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	held := func(after string) int {

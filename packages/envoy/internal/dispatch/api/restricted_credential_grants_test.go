@@ -73,6 +73,7 @@ func newRestrictedGrantsServer(t *testing.T) (http.Handler, *fakeBrokerRig) {
 // Control: answer a restricted member's list as a full member's (the handler before this change)
 // and erin is answered all six, each named.
 func TestARestrictedMembersGrantListHoldsTheirOwnSessionsGrantsAlone(t *testing.T) {
+	t.Parallel()
 	served, rig := newRestrictedGrantsServer(t)
 
 	listed := dispatchRequest(t, served, http.MethodGet, "/api/v1/credential-grants?approver=me", nil, accessErin)
@@ -100,6 +101,7 @@ func TestARestrictedMembersGrantListHoldsTheirOwnSessionsGrantsAlone(t *testing.
 // Control: relay a restricted member's revoke as a full member's (the handler before this change),
 // and each revoke reaches the broker, named.
 func TestARestrictedMembersRevokeOfAGrantNotTheirsReachesNoBroker(t *testing.T) {
+	t.Parallel()
 	served, rig := newRestrictedGrantsServer(t)
 
 	for _, other := range grantsOfOthers {
@@ -121,6 +123,7 @@ func TestARestrictedMembersRevokeOfAGrantNotTheirsReachesNoBroker(t *testing.T) 
 // Control: the handler before this change sends the unknown id's revoke to the broker, whose
 // answer is relayed, and this row fails naming it.
 func TestARestrictedMembersRevokeOfAnUnknownGrantAnswersAsAForeignOne(t *testing.T) {
+	t.Parallel()
 	served, rig := newRestrictedGrantsServer(t)
 
 	foreign := dispatchRequest(t, served, http.MethodPost, "/api/v1/credential-grants/grant-judged/revoke", nil, accessErin)
@@ -144,6 +147,7 @@ func TestARestrictedMembersRevokeOfAnUnknownGrantAnswersAsAForeignOne(t *testing
 // Control: the handler before this change relays the revoke without reading her list, and this row
 // fails naming the calls the broker was sent.
 func TestARestrictedMemberRevokesTheirOwnSessionsGrant(t *testing.T) {
+	t.Parallel()
 	served, rig := newRestrictedGrantsServer(t)
 	rig.bodyByRoute["POST /v1/grants/grant-erin/revoke-by-approver"] = `{"state":"revoked"}`
 
@@ -169,6 +173,7 @@ func TestARestrictedMemberRevokesTheirOwnSessionsGrant(t *testing.T) {
 // Control: the handler before this change relays the revoke whatever the list, and this row fails
 // naming the revoke the broker was sent.
 func TestARestrictedMembersGrantRevokeFailsClosedWhileTheBrokersListCannotBeRead(t *testing.T) {
+	t.Parallel()
 	for _, broken := range []struct {
 		name               string
 		status             int
@@ -210,6 +215,7 @@ func TestARestrictedMembersGrantRevokeFailsClosedWhileTheBrokersListCannotBeRead
 // refusal of a grant not hers is relayed byte for byte. This row passes with and without the
 // change: it is the control the restricted rows must leave standing.
 func TestAFullMembersGrantListAndRevokeAreTheBrokers(t *testing.T) {
+	t.Parallel()
 	served, rig := newRestrictedGrantsServer(t)
 	refusal := `{"code":"NOT_APPROVER","error":"only the grant's approver or the person its session acts for may revoke it"}`
 	rig.statusByRoute["POST /v1/grants/grant-erin-approved/revoke-by-approver"] = http.StatusForbidden

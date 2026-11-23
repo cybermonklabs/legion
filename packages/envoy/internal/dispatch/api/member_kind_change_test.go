@@ -168,6 +168,7 @@ func (rig *restrictableRig) requireStillSignedInRestricted(t *testing.T) {
 // Control: the write of the member kind announces nothing. The socket stays open past the window,
 // and the test fails saying so.
 func TestADocumentSocketClosesOnceItsPersonIsRestricted(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	rig := newRestrictableRig(t, heartbeat)
 	encoded, err := json.Marshal(map[string]string{"project": "PUB", "title": "A public document", "spec": "The spec."})
@@ -229,6 +230,7 @@ func TestADocumentSocketClosesOnceItsPersonIsRestricted(t *testing.T) {
 // Control: the heartbeat compares no member kind. The socket stays open, carrying the full
 // member's reader, and the test fails waiting for the close.
 func TestALiveSocketClosesOnceItsPersonIsRestricted(t *testing.T) {
+	t.Parallel()
 	rig := newRestrictableRig(t, time.Second)
 	header := http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}}
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(rig.server.URL, "http")+"/ws/live", header).servedBy(rig.database).read()
@@ -259,6 +261,7 @@ func TestALiveSocketClosesOnceItsPersonIsRestricted(t *testing.T) {
 // window. The earlier form of this test presented no credential, so its open took the request's
 // resolution, which failed for want of an identity provider, and it passed under this control.
 func TestALiveConnectionWhoseOpenResolutionFailedClosesAtItsFirstHeartbeat(t *testing.T) {
+	t.Parallel()
 	var resolutions atomic.Int32
 	resolves := func(*http.Request) (model.Actor, bool, error) {
 		if resolutions.Add(1) == 1 {
@@ -298,6 +301,7 @@ func TestALiveConnectionWhoseOpenResolutionFailedClosesAtItsFirstHeartbeat(t *te
 // Control: the open's error dropped for these callers (admitted, _, _ = s.optionalActor). The
 // connection then reads no member kind, compares nil grants, and outlives the window.
 func TestALiveConnectionWhoseCookieOrTokenOpenFailedClosesAtItsFirstHeartbeat(t *testing.T) {
+	t.Parallel()
 	resolves := func(*http.Request) (model.Actor, bool, error) {
 		return model.Actor{Kind: "user", ID: kindChangeEmail}, false, nil
 	}
@@ -372,6 +376,7 @@ func (f *failingOnceIdentity) Login(*http.Request) (string, error) {
 // Control: the write announces nothing. The hub keeps the full member's reader it had, and the
 // next delta sends dave acme/widgets#7, which the test names.
 func TestADeliveryViewStopsCarryingAProjectOnceItsReaderIsRestricted(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	ctx := context.Background()
 	seed := seedPrivateProject(t)

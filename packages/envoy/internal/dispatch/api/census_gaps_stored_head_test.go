@@ -140,6 +140,7 @@ func historyLoad(sql string) bool {
 // public, no project is private and the session stays hers to read: the same blocks as a read
 // with no window (R9).
 func TestADocumentMadeHiddenAfterItsReadAnswersNoBlocks(t *testing.T) {
+	t.Parallel()
 	window := &headWindow{}
 	seed := seedPrivateProjectWith(t, testServerOptions{tracer: window, settle: time.Hour})
 	ctx := context.Background()

@@ -233,6 +233,7 @@ type priorityFaults struct {
 // Control: leaveOutHiddenIssueReferences keeping the claim it reads; the issue read, the children
 // and the listing then name session-priv to alice, and those rows fail naming it.
 func TestM5AClaimNamesNoHolderItsReaderMayNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	issueOf := func(caller privateCaller, key string) (claimRow, string) {
 		t.Helper()
@@ -394,6 +395,7 @@ var timestampsAndIDs = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\
 // Control: leaveOutHiddenIssueReferences hiding every claim whatever the reader; alice's issue read
 // then names no claim and the row fails.
 func TestM5M6WithNoPrivateProjectTheReadsAnswerAsBefore(t *testing.T) {
+	t.Parallel()
 	seed := seedHiddenHolders(t, testServerOptions{})
 	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
 	logged := func(name, body string) {

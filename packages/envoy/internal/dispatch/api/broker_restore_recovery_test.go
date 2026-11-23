@@ -132,6 +132,7 @@ func (r *recoveryRig) ageClaims(t *testing.T) {
 // without its exclusion of a revocation whose account holds its address again fails, since it
 // would record that account as its own holder's replaced account.
 func TestABrokerRestoredAloneIsRecoveredByTellingItAgainWhatWasSettledSince(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email, takeback = "lostbroker@example.com", "takeback@example.com"
@@ -256,6 +257,7 @@ func (r *recoveryRig) resetBlocksAgain(t *testing.T, backup any, directory map[s
 // Control in the runbook: the read answering anything but `run the reset's blocks again` for a
 // backup from before the reset leaves A's sign-in live before Dispatch starts.
 func TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBlocks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "reset-then-broker@example.com"
@@ -312,6 +314,7 @@ func TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBl
 // Control in the runbook: the read without its hour (the backup's moment compared with the end as
 // written) answers that the backup holds the reset, and A's sign-in stays live.
 func TestABrokerBackupWrittenWithinTheHourAfterTheResetRepeatsItsBlocks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "late-backup@example.com"
@@ -356,6 +359,7 @@ func TestABrokerBackupWrittenWithinTheHourAfterTheResetRepeatsItsBlocks(t *testi
 // Control in the runbook: the read comparing the backup with the last reset's start answers that
 // the backup holds the reset, and the traded sign-in stays live.
 func TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "during-reset@example.com"
@@ -402,6 +406,7 @@ func TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks(t *testing.T) {
 // Control in the runbook: an unclosed reset counted as closed long ago (`'-infinity'` for its end)
 // answers `the backup holds the last reset`.
 func TestABrokerBackupAfterAnUnclosedResetRepeatsItsBlocks(t *testing.T) {
+	t.Parallel()
 	r := newRecoveryRig(t)
 	r.resetSessions(t)
 	starts := r.resetMarks(t, "start")
@@ -428,6 +433,7 @@ func TestABrokerBackupAfterAnUnclosedResetRepeatsItsBlocks(t *testing.T) {
 // Control in the runbook: the block's bound as the backup's moment less an hour alone records the
 // row again, and the pass refuses X and ends X's sign-in.
 func TestABrokerRestoredBeforeTheResetLeavesTheDirectorysHolderCleared(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "holder-after-reset@example.com"
@@ -486,6 +492,7 @@ func TestABrokerRestoredBeforeTheResetLeavesTheDirectorysHolderCleared(t *testin
 // the reset-settled row again; the pass then refuses X (its approve APPROVER_REPLACED) and lifts
 // T's refusal.
 func TestAResetsSettledRevocationIsNotRecordedAgainByALaterBrokerRestore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("owedrow", func(t *testing.T) {
 		r := newRecoveryRig(t)
@@ -563,6 +570,7 @@ func TestAResetsSettledRevocationIsNotRecordedAgainByALaterBrokerRestore(t *test
 // Control, in the test: the same empty broker with a restore's own kind of moment, now(), records
 // nothing again, since every settlement here is older.
 func TestABrokerDatabaseMadeAgainIsToldEveryRevocationSettled(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "madeagain@example.com"
@@ -635,6 +643,7 @@ func TestABrokerDatabaseMadeAgainIsToldEveryRevocationSettled(t *testing.T) {
 // Control: drop the `for update` from the runbook's lock statement, and the sign-out no longer
 // waits.
 func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "lockedrows@example.com"
@@ -708,6 +717,7 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 // change), and the block holds the row while it waits for the approval lock the write holds, the
 // write waits for the row, and PostgreSQL fails one of them (40P01), and the row fails.
 func TestTheBrokerRestoredBlockTakesTheApprovalLockBeforeTheSessionRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "member@other.example"
@@ -793,6 +803,7 @@ func runBlockIn(pool *store.Pool, statements []string, args pgx.NamedArgs) error
 // Control: drop the block's machine_login_revocations statement, and the revocation settled since
 // the backup stays settled, named.
 func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	revocations := store.NewMachineLoginRevocations(database.Pool)

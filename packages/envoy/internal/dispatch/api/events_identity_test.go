@@ -192,6 +192,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 // socket open once the cookie's session has ended, and one that resolves to nobody does not close
 // it while that session holds.
 func TestDocumentSocketHeartbeatResolvesTheCookieItWasOpenedBy(t *testing.T) {
+	t.Parallel()
 	const heartbeat = 250 * time.Millisecond
 	for _, test := range []struct {
 		name     string

@@ -31,6 +31,7 @@ import (
 // Control: the admission answering the recorded hold in the sign-in's words whatever the identity,
 // as it did before this row; its row fails naming the words.
 func TestAnIAPDirectoryHoldRefusesBrokerCallersInTheDirectorysWords(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []struct {
 		name      string
 		directory bool
@@ -120,6 +121,7 @@ func TestAnIAPDirectoryHoldRefusesBrokerCallersInTheDirectorysWords(t *testing.T
 // fast path for an owner with no refresh token, asks Standing nothing and is served, and the test
 // fails naming the row.
 func TestAnIAPPersonalTokenAsksStandingFirst(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessDave)
 	daveToken := personalTokenOwnedBy(t, database, accessDave, model.ScopePerson)
@@ -194,6 +196,7 @@ func TestAnIAPPersonalTokenAsksStandingFirst(t *testing.T) {
 // Controls: the hold asked for every caller with no credential whatever the identity fails the
 // cookie identity's rows; asked for every caller under IAP, it fails the personal token's count.
 func TestABrowserMintAndScopeChangeAskStandingUnderIAPAlone(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessDave)
 	directory := &standingFake{directory: true}
@@ -289,6 +292,7 @@ func TestABrowserMintAndScopeChangeAskStandingUnderIAPAlone(t *testing.T) {
 // not_held_until on a not-held answer under IAP identity; an unavailable answer is held false with
 // not_held_until equal to as_of; and a held answer, and every answer outside IAP, leave it out.
 func TestThePersonAnswerCarriesNotHeldUntil(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	_, database, deps := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	bearer := issuer.Mint(t, issuer.signing, issuer.Claims(listedServiceAccount, serviceTokenAudience))

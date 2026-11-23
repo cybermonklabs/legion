@@ -167,6 +167,7 @@ func tokenListIn(t *testing.T, call string, answer *httptest.ResponseRecorder, i
 // list holds it from. A token minted with none answers as every token did before lists, with no
 // projects field, and sees the public projects its person sees.
 func TestAPersonalTokenUsesOnlyItsProjects(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	makePrivate(t, database, privateProject)
@@ -241,6 +242,7 @@ func TestAPersonalTokenUsesOnlyItsProjects(t *testing.T) {
 // cannot see is refused exactly as a key no project holds, so the refusal says nothing of it. A
 // restricted member sees no public project it is not named on, so it cannot list one either.
 func TestATokenCannotListAProjectItsPersonCannotSee(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	makePrivate(t, database, privateProject)
@@ -291,6 +293,7 @@ func TestATokenCannotListAProjectItsPersonCannotSee(t *testing.T) {
 // PRIV is private it sees PUB alone, an open viewer whose list is PRIV. It passes nothing of PRIV
 // on, and alice's own token list no longer names PRIV to her, a key she no longer sees.
 func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	token := mintListed(t, handler, "alice", "priv", []string{privateProject})
@@ -324,6 +327,7 @@ func TestATokenListedBeforeItsPersonLostTheProjectSeesNothingOfIt(t *testing.T) 
 // its viewer does not see PRIV), and is refused 403 OAUTH_SCOPE_REQUIRED on GET /api/v1/inbox: a
 // named token holds no OAuth scope (namedTokenReads).
 func TestANamedTokenUsesTheProjectItNames(t *testing.T) {
+	t.Parallel()
 	namedTokenReads(t, []string{publicProject})
 }
 
@@ -336,6 +340,7 @@ func TestANamedTokenUsesTheProjectItNames(t *testing.T) {
 // broker verifier admits such a token since #4119; before it, it was refused as no session's
 // credential, and this test could not run.
 func TestANamedTokenNamingNoProjectReadsPublicProjectsOnly(t *testing.T) {
+	t.Parallel()
 	namedTokenReads(t, nil)
 }
 
@@ -404,6 +409,7 @@ func namedTokenReads(t *testing.T, projects []string) {
 // name included; what a token lists is unchanged by who reads it. With no private project, a token
 // reads the list byte for byte as the browser does (R9).
 func TestATokenListShowsOnlyTheProjectsItsReaderSees(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	first := mintListed(t, handler, accessCarol, "first", []string{privateProject})
@@ -545,6 +551,7 @@ func hiddenFlagOf(t *testing.T, call, body, id string) (hidden, present bool) {
 // list is never told, since that would say a project exists it cannot see (R3). And with no private
 // project, every answer is byte for byte the answer before the field (R9).
 func TestABrowserIsToldItsTokenListsProjectsItCannotSee(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedCredentialProjects(t, handler, database)
 	// alice's tokens, minted while PRIV is public and she sees it.

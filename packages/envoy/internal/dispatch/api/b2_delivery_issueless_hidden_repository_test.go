@@ -17,6 +17,7 @@ import (
 // can no longer be fetched, which #12 is one of. She is still shown acme/other#3, which names no
 // issue and is in a repository no project owns; carol, who sees PRIV, is shown #12.
 func TestADeliveryReadHidesAnIssuelessPullRequestOfAHiddenRepository(t *testing.T) {
+	t.Parallel()
 	const hiddenPR = "acme/privrepo#12"
 	seeded := func(withPR bool) privateSeed {
 		seed := seedDeliveryReads(t, true, true)

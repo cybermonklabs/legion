@@ -18,6 +18,7 @@ import (
 // Control: leaveLocked drops a view and keeps its reader's entries; carol's stay once her sub has
 // ended, and the test fails naming them.
 func TestTheHubForgetsAReaderWhoseLastViewHasGone(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seedHubSettings(t, seed.database)
 	rig := hubOn(t, seed.handler, seed.database, seed.deps, newNoonHubClock(), nil)

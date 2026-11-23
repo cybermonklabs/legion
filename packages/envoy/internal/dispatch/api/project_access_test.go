@@ -86,6 +86,7 @@ func wantRefusal(t *testing.T, response *httptest.ResponseRecorder, status int, 
 // them off; anyone else is 403 PROJECT_OWNER_REQUIRED and nothing is written; a project cannot be
 // made private where the deployment does not let one be.
 func TestOnlyTheOwnerChangesTheAccessList(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	if got := readAccess(t, handler, "bob"); got.Owner != "alice" || got.Visibility != model.ProjectPublic || len(got.People) != 0 || got.People == nil || got.Groups == nil {
 		t.Fatalf("ACC's access = %+v, want alice's public project with two empty lists", got)
@@ -143,6 +144,7 @@ func TestOnlyTheOwnerChangesTheAccessList(t *testing.T) {
 // who see PRIV, read its list. The control is the read made without the caller's viewer: alice then
 // reads PRIV's list, and the test fails naming her.
 func TestAHiddenProjectsAccessListAnswersAsAnUnknownKey(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	for _, caller := range []privateCaller{callerAlice, callerAlicePrivToken, callerCarolToken} {
 		hidden := seed.request(t, caller, http.MethodGet, "/api/v1/projects/"+seedPrivate+"/access", nil)
@@ -165,6 +167,7 @@ func TestAHiddenProjectsAccessListAnswersAsAnUnknownKey(t *testing.T) {
 // any time, and from then on only that person changes its access; a restricted member or a login
 // nobody has signed in with cannot be given it.
 func TestTheOwnerGivesTheProjectToAFullMember(t *testing.T) {
+	t.Parallel()
 	handler, _ := newAccessServer(t)
 	for _, refused := range []string{accessErin, "nobody@example.com"} {
 		wantRefusal(t, dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/ACC/access", map[string]string{"owner": refused}, "alice"),
@@ -188,6 +191,7 @@ func TestTheOwnerGivesTheProjectToAFullMember(t *testing.T) {
 // and nothing is written. The owner's credential that holds `approve` as well makes each change,
 // and reading the access list still needs `person` alone.
 func TestTheAccessListWritesNeedTheApproveScope(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	if made := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew", map[string]any{"members": []string{accessCarol}}, "alice"); made.Code != http.StatusOK {
 		t.Fatalf("alice makes crew: %d %s", made.Code, made.Body.String())
@@ -248,6 +252,7 @@ func wantApproveRefusal(t *testing.T, response *httptest.ResponseRecorder, call 
 // member's create answers as it always did, and the creator owns the project; a create by a
 // credential that acts for nobody gives the project its default assignee as owner.
 func TestARestrictedMemberCannotCreateAProject(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessErin, accessCarol)
 	markRestricted(t, database, accessErin)
@@ -313,6 +318,7 @@ func projectOwnerOf(t *testing.T, database *store.Store, key string) string {
 // 400 ASSIGNEE_NOT_ALLOWED, since that person is the default and has not signed in. Every owner a
 // create sets is one SetOwner takes.
 func TestACreateSetsOnlyAnOwnerSetOwnerWouldTake(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	seedPeople(t, rig.database, accessCarol, accessErin)
@@ -373,6 +379,7 @@ func TestACreateSetsOnlyAnOwnerSetOwnerWouldTake(t *testing.T) {
 // token byte for byte as before member kinds existed, and adds member_kind for a restricted member
 // alone.
 func TestWhoamiOfAFullMemberIsUnchanged(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	seedPeople(t, database, accessErin)
 	markRestricted(t, database, accessErin)

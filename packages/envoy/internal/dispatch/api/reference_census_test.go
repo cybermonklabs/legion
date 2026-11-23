@@ -511,6 +511,7 @@ func (h hiddenObjects) leaksOf(value any, path string) []leak {
 // (payloadReferenceKeys), and the seed must have written one under each key that names an object of
 // another project.
 func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
+	t.Parallel()
 	census := &fragmentCensus{}
 	fixture := seedFragmentCensus(t, census)
 	mintListingToken(t, fixture.privateSeed, callerAlicePubToken, seedAlice, []string{seedPublic})
@@ -686,6 +687,7 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 // reads it, and alice's answer still names the PRIV objects PUB's rows name. A reader that sees
 // every object takes the filters' short path (seesEveryObject), which reads nothing more.
 func TestWithNoPrivateProjectAReferenceReadsAsToday(t *testing.T) {
+	t.Parallel()
 	census := &fragmentCensus{}
 	fixture := seedFragmentCensus(t, census)
 	seedCrossReferences(t, fixture)

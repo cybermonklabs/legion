@@ -502,6 +502,7 @@ func TestAnAcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
 // Control: the check's read with its project clause taken out, as main writes it, fails the second
 // case: alice is refused, and the 409 names PRIV's child.
 func TestAnAcceptanceWriteCountsOnlyTheChildrenItsWriterSees(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	seedCredentialProjects(t, handler, database)
 	parent := issueIn(t, handler, accessCarol, publicProject)

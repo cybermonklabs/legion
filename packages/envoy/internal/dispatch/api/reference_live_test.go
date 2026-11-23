@@ -16,6 +16,7 @@ import (
 // PRIV issue and the ask.edited counting the backlinks she reads over HTTP (none); carol is sent
 // the PRIV issue and the backlink she sees, so each half of the test reads a frame that can fail.
 func TestALiveFrameNamesNoObjectItsReaderCannotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	url := liveURLOf(t, seed.handler)
 	public, private := seed.issue[seedPublic], seed.issue[seedPrivate]

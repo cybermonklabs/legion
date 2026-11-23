@@ -21,6 +21,7 @@ import (
 // crew holds it while it sweeps; each list write naming crew must wait for that lock, and land
 // once it is released.
 func TestAListWriteNamingAGroupWaitsForTheGroupsLock(t *testing.T) {
+	t.Parallel()
 	handler, database := newAccessServer(t)
 	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/access-groups/crew",
 		map[string]any{"members": []string{accessCarol}}, "alice"); response.Code != http.StatusOK {

@@ -20,6 +20,7 @@ import (
 // reads s-priv-gone's registry record, finds it gone and takes the claim (200), while her claim of
 // the second is refused, and the row fails naming both.
 func TestAClaimOverAHolderItsCallerMayNotSeeAsksTheListenerNothing(t *testing.T) {
+	t.Parallel()
 	walk := seedHiddenWrites(t)
 	const goneSession = "s-priv-gone"
 	// s-priv-gone acts in PRIV under the credential that proves it, which gives it a

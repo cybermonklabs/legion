@@ -69,6 +69,7 @@ func recordPasskeyAccount(t *testing.T, database *store.Store, email, subject st
 // Control: relay every account under the sign-in issuer (approve ignoring
 // credentialAccount.issuer), and the login records Google's issuer and the row fails naming it.
 func TestPasskeyApprovalRelaysTheOutsideOriginAsTheApproversIssuer(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t, withPasskeys)
 	r.server.deps.Identity = browserSessions{HeaderIdentity: r.server.deps.Identity.(identity.HeaderIdentity), sessions: store.NewPgSessionStore(r.database.Pool)}
 	const subject = "cGFzc2tleS1zdWJqZWN0IQ"
@@ -94,6 +95,7 @@ func TestPasskeyApprovalRelaysTheOutsideOriginAsTheApproversIssuer(t *testing.T)
 // Control: owe nothing on a Reset (resetProjectAccessPerson not calling
 // recordMachineLoginRevocation), and the row fails naming the revocation not owed.
 func TestAResetRevokesTheMembersDeviceLogins(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t, withPasskeys)
 	ctx := t.Context()
 	recordPasskeyAccount(t, r.database, accessErin, "cmVzZXQtc3ViamVjdC0xIQ")
@@ -161,6 +163,7 @@ func TestAResetsRevocationIsLoggedAsTheResets(t *testing.T) {
 // Control: the Reset keeps the address's account (store.PgPasskeys.EndAccountTx recording no new
 // subject), and the late approve mints the login and the row fails naming its credential.
 func TestAnApprovalInFlightAcrossAResetMintsNoLogin(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t, withPasskeys)
 	ctx := t.Context()
 	const subject = "aW4tZmxpZ2h0LXN1YmplY3Qh"
@@ -199,6 +202,7 @@ func TestAnApprovalInFlightAcrossAResetMintsNoLogin(t *testing.T) {
 // store.LockAddressTx), and each removal reads the other's row as still there, both skip the end,
 // and the row fails naming the passkey still stored.
 func TestTwoRemovalsFromTheLastTwoListsEndThePasskeySignIn(t *testing.T) {
+	t.Parallel()
 	served, database, s := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
 	ctx := t.Context()
 	if created := dispatchRequest(t, served, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTHER", "name": "Other project"}, "alice"); created.Code != http.StatusCreated {
@@ -296,6 +300,7 @@ func TestTwoRemovalsFromTheLastTwoListsEndThePasskeySignIn(t *testing.T) {
 // ending the sign-in alone with endPasskeySignInTx), and the removal finishes while the enrollment
 // holds the address, and the row fails.
 func TestARemovalTakesTheLinksThenTheAddressBeforeItEndsTheSignIn(t *testing.T) {
+	t.Parallel()
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
@@ -371,6 +376,7 @@ func TestARemovalTakesTheLinksThenTheAddressBeforeItEndsTheSignIn(t *testing.T) 
 // sessions' owner lock first (access.RemovePrincipal) and then waits for the address, a cycle
 // PostgreSQL breaks with 40P01, and the row fails.
 func TestARemovalWaitsForTheAddressBeforeItLocksThePersonsSessions(t *testing.T) {
+	t.Parallel()
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
@@ -431,6 +437,7 @@ func TestARemovalWaitsForTheAddressBeforeItLocksThePersonsSessions(t *testing.T)
 // (40P01), and the row fails. Before this row signed erin in as restricted it signed a restricted
 // row in as full, which takes no sessions lock, and the row passed under that control too.
 func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t *testing.T) {
+	t.Parallel()
 	served, database, _ := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
@@ -523,6 +530,7 @@ func TestARemovalWaitsForTheAddressBeforeAGoogleSignInLocksThePersonsSessions(t 
 // passing the pool rather than its read-only transaction), and the first answer holds neither and
 // the row fails.
 func TestTheOwnersAccessReadAnswersOneSnapshot(t *testing.T) {
+	t.Parallel()
 	served, database, s := newRegisteredAccessServer(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin, signInIssuer: "https://accounts.google.com"})
 	ctx := t.Context()
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {

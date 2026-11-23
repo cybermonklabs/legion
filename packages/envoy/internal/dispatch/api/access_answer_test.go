@@ -18,6 +18,7 @@ import (
 // names reads the membership answer; another verified account, a person and the shared token are
 // 403 ACCESS_ACCOUNT_REQUIRED on both routes, and a caller with no credential is 401 NO_IDENTITY.
 func TestTheAccessAnswerAdmitsOnlyItsAccounts(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	seedPeople(t, database, accessCarol)
@@ -52,6 +53,7 @@ func TestTheAccessAnswerAdmitsOnlyItsAccounts(t *testing.T) {
 // rule's answer for a viewer with no person, which the secrets broker reads it as
 // (projectaccess.Client.States).
 func TestTheAccessAnswerNamesTheProjectAndThePerson(t *testing.T) {
+	t.Parallel()
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
 	for _, key := range []string{"ACC", "HID"} {
@@ -108,6 +110,7 @@ func TestTheAccessAnswerNamesTheProjectAndThePerson(t *testing.T) {
 // read as describing a credential (describes forced true): the ?person= question answers holder
 // false and visible false once the address's account is recorded.
 func TestTheAccessAnswerSaysWhetherTheAskingCredentialsAccountHoldsTheAddress(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}, signInIssuer: google})
@@ -229,6 +232,7 @@ func TestTheAccessAnswerSaysWhetherTheAskingCredentialsAccountHoldsTheAddress(t 
 // Control: accountHolder reading an empty sub as no account (`case sub == ""`): the question
 // naming A answers holder true.
 func TestTheAccessAnswerReadsAnEmptyAccountAsTheAdmissionDoes(t *testing.T) {
+	t.Parallel()
 	const google = "https://accounts.google.com"
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}, signInIssuer: google})

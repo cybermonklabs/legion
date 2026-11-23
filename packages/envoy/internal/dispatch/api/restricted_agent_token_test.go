@@ -218,6 +218,7 @@ func (r restrictedTokenRig) presenting(t *testing.T, machine machineLogin, token
 // the scope; refuse a restricted member's browser decision as before, and erin's approve of her
 // own login fails naming RESTRICTED_MEMBER.
 func TestARestrictedMembersAgentTokenIsNamedAndNeitherMintsNorApproves(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t)
 
 	erins := r.startLogin(t, accessErin, "erin-laptop")
@@ -353,6 +354,7 @@ func (r restrictedTokenRig) sessionToken(t *testing.T, machine machineLogin, dev
 // the row fails naming the revocation not owed; at the head that revoked inline, a removal from a
 // list that never named erin ended her logins (TestARemovalFromAnotherProjectLeavesTheMembersLogins).
 func TestADelistedMembersTokenIsNotRenewed(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t)
 	ctx := t.Context()
 
@@ -419,6 +421,7 @@ func TestADelistedMembersTokenIsNotRenewed(t *testing.T) {
 // Control: record the revocation on every removal, as the head before this row did, and erin's ACC
 // token introspects not active and her refresh is refused, each named.
 func TestARemovalFromAnotherProjectLeavesTheMembersLogins(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t)
 	ctx := t.Context()
 	if created := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
@@ -454,6 +457,7 @@ func TestARemovalFromAnotherProjectLeavesTheMembersLogins(t *testing.T) {
 // before this row did, and nothing is owed, erin's ACC token stays active and her refresh is
 // answered, each named.
 func TestAnotherOwnersRemovalRevokesTheMembersLogins(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t)
 	ctx := t.Context()
 	if created := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Another project"}, accessCarol); created.Code != http.StatusCreated {
@@ -491,6 +495,7 @@ func TestAnotherOwnersRemovalRevokesTheMembersLogins(t *testing.T) {
 // Control: relay a restricted member's approval while a revocation is owed (the owed read dropped
 // from relayMachineLoginApproval), and her first approve answers 200, named.
 func TestAnApprovalWaitsForTheOwedRevocationAndItsLoginSurvives(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t)
 	ctx := t.Context()
 	before, beforeDevice, _ := r.approvedLogin(t, accessErin, "erin-laptop")
@@ -544,6 +549,7 @@ func TestAnApprovalWaitsForTheOwedRevocationAndItsLoginSurvives(t *testing.T) {
 // revoke of carol's login reaches the broker, which refuses it with its own answer, not 403
 // RESTRICTED_MEMBER, and the row fails naming it.
 func TestARestrictedMemberRevokesTheirOwnMachineLogin(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedTokenRig(t)
 	erins, erinsDevice, erinsCredential := r.approvedLogin(t, accessErin, "erin-laptop")
 	erinsToken := r.sessionToken(t, erins, erinsDevice, "erin-agent", "ACC")

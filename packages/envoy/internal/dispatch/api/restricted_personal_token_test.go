@@ -127,6 +127,7 @@ func writesInACC(t *testing.T, handler http.Handler, token, session string) *htt
 // callerScopes for them), and the first check fails naming [person approve]; and the full member's
 // row (TestAFullMembersMintStillHoldsPersonAndApprove) shows the rig mints both where it should.
 func TestARestrictedMembersMintHoldsNoScopeAndNamesTheirOneProject(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedMintRig(t)
 
 	token := minted(t, r.mintAt(t, accessErin, map[string]any{"name": "erin's agent"}), "erin's default mint")
@@ -207,6 +208,7 @@ func (r restrictedMintRig) everyRow(t *testing.T) map[string]string {
 // mint naming [person approve], while each write is still refused, the scopes dropped at the
 // token's use (personalTokenActor).
 func TestARestrictedMembersMintedTokenWritesNoAccessList(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedMintRigWith(t, testServerOptions{passkeyIssuer: passkeyOutsideOrigin})
 	if listed := dispatchRequest(t, r.handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessCarol, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names carol on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
@@ -289,6 +291,7 @@ func TestARestrictedMembersMintedTokenWritesNoAccessList(t *testing.T) {
 // restrictedKeptListRefusal answering no refusal at all, the row fails earlier, the edit keeping a
 // list of no project answering 200.
 func TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedMintRig(t)
 	before := r.tokensOf(t, accessErin)
 	for _, scopes := range [][]string{{model.ScopePerson}, {model.ScopePerson, model.ScopeApprove}} {
@@ -378,6 +381,7 @@ func TestARestrictedMemberIsRefusedAScopeOrAListOfOtherThanOneProject(t *testing
 // stops there; at 809a2c288d the grant and sign-in revokes reached their handler (404 FEATURE_OFF
 // here, where no broker is configured).
 func TestAStoredRestrictedTokenHoldingApproveActsWithNoScope(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedMintRig(t)
 	stored := personalTokenListing(t, r.database, accessErin, []string{"ACC"}, model.ScopePerson, model.ScopeApprove)
 	id := r.tokenIDOf(t, stored)
@@ -441,6 +445,7 @@ func TestAStoredRestrictedTokenHoldingApproveActsWithNoScope(t *testing.T) {
 // caller as restricted, the mint handing it true), and the first check fails, carol's default mint
 // holding [] where the row wants [person approve].
 func TestAFullMembersMintStillHoldsPersonAndApprove(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedMintRig(t)
 	token := minted(t, r.mintAt(t, accessCarol, map[string]any{"name": "carol's agent"}), "carol's default mint")
 	if !slices.Equal(token.Scopes, model.Scopes) || len(token.Projects) != 0 {
@@ -469,6 +474,7 @@ func TestAFullMembersMintStillHoldsPersonAndApprove(t *testing.T) {
 // row fails at its whoami check once she is restricted, whoami under her ACC token answering
 // person and approve where the row wants none, and stops there.
 func TestAMemberMadeRestrictedActsWithNoScopeThroughTheirTokens(t *testing.T) {
+	t.Parallel()
 	r := newRestrictedMintRig(t)
 	seedPeople(t, r.database, accessDana)
 	listing := minted(t, r.mintAt(t, accessDana, map[string]any{"name": "dana's ACC agent", "projects": []string{"ACC"}}), "dana's mint listing ACC, as a full member")
@@ -525,6 +531,7 @@ func TestAMemberMadeRestrictedActsWithNoScopeThroughTheirTokens(t *testing.T) {
 // Control: let any credential of a restricted member through (restrictedOwnLoginAtBrowser answering
 // allowed true), and each handler runs and the row fails naming its route.
 func TestTheOwnLoginRefusalHoldsARestrictedCredentialHoldingTheScopes(t *testing.T) {
+	t.Parallel()
 	handler, _, served := newRegisteredAccessServer(t, testServerOptions{admitsRestricted: true})
 	if listed := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
@@ -578,6 +585,7 @@ func TestTheOwnLoginRefusalHoldsARestrictedCredentialHoldingTheScopes(t *testing
 // Control: restrictedBrokerTokenList answering nil, and erin's token listing none answers 200 and
 // the row fails at its first check.
 func TestARestrictedMembersBrokerTokenListingOtherThanOneProjectActsForNobody(t *testing.T) {
+	t.Parallel()
 	stub := ciphertokentest.NewStubBroker(t)
 	handler, _, served := newRegisteredAccessServer(t, testServerOptions{admitsRestricted: true, brokerTokens: stubBrokerTokens(t, stub)})
 	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "OTH", "name": "Other project"}, "alice"); created.Code != http.StatusCreated {

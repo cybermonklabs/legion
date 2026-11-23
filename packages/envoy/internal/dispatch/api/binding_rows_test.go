@@ -30,6 +30,7 @@ import (
 // the scope's arm): the entry's token is refused BROKER_TOKEN_RECORDS_NO_ACCOUNT from the first
 // recording on, for as long as it lives.
 func TestAnEntryTokenActsWhateverItsPersonsAccount(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
 	deps.SignInIssuer = "https://accounts.google.com"
@@ -72,6 +73,7 @@ func TestAnEntryTokenActsWhateverItsPersonsAccount(t *testing.T) {
 // Control: the admission exempting every named token, as it did when only an entry's was one; the
 // token recording no account acts and the row fails naming it.
 func TestARestrictedMembersNamedTokenIsHeldToItsAccount(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
 	deps.SignInIssuer = "https://accounts.google.com"
@@ -116,6 +118,7 @@ func TestARestrictedMembersNamedTokenIsHeldToItsAccount(t *testing.T) {
 // token as one recording none: the token of another issuer made 10 minutes after the recording is
 // admitted.
 func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T) {
+	t.Parallel()
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
 	deps.SignInIssuer = "https://accounts.google.com"
@@ -169,6 +172,8 @@ func TestAnAccountOfAnotherIssuerIsRefusedOnceTheAddressRecordsOne(t *testing.T)
 // Control: createAgentToken and approverStanding without store.AddressLockSharedSQL: each
 // answers before the sign-in commits, the mint 201 with a token.
 func TestNoCredentialIsMintedForOrApprovedWhileASignInIsInFlight(t *testing.T) {
+	// Not parallel: it gives B's sign-in 10 s of wall clock to queue behind the trigger it holds, and
+	// in a run of the whole package among its parallel tests none had queued by then.
 	rig := newOutsideBrokerRig(t)
 	deps := rig.offDeps
 	deps.SignInIssuer = "https://accounts.google.com"

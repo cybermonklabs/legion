@@ -20,6 +20,7 @@ import (
 // Control: the refusal made whatever the deployment holds, as before, and the request with no
 // private project is answered 503.
 func TestABrokerTokensFailedTieRefusesOnlyWhileAProjectIsPrivate(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	ctx := context.Background()
 	if _, err := seed.database.Pool.Exec(ctx, `

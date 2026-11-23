@@ -41,6 +41,7 @@ const liveReadsQuiet = 300 * time.Millisecond
 // Control: today's views (no read rule on the live socket). bob's timeline is served where its
 // GET row refuses him, and alice's agent view relays PRIV's session, and the test fails naming each.
 func TestEveryLiveViewKeepsTheRuleOfItsHTTPRead(t *testing.T) {
+	t.Parallel()
 	roster := `[
 		{"session_id":"` + liveReadsPrivSession + `","title":"Private","capabilities":["btw"],"last_seen":200},
 		{"session_id":"` + liveReadsPubSession + `","title":"Public","capabilities":["btw"],"last_seen":100}

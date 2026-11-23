@@ -22,6 +22,7 @@ import (
 // default), and loadProject reading no visibility (PRIV's event then says nothing of it, which a
 // reader of the event takes for public). Each fails the row naming what it shows.
 func TestAProjectsDefaultRepositoryShowsOnlyToItsReaders(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	for project, repository := range map[string]string{seedPrivate: "acme/privdefault", seedPublic: "acme/pubdefault"} {
 		set := decodeBody[projectDefaultRepository](t, seed.mustRequest(t, callerCarol, http.MethodPut,

@@ -17,6 +17,7 @@ import (
 // Control, in the test: the batch before this change, 20, breaks the rule at production's
 // five-second client, which is what the starvation was.
 func TestAPassClaimsOnlyWhatItsWindowLetsItSend(t *testing.T) {
+	t.Parallel()
 	fits := func(batch int, timeout time.Duration) bool {
 		return time.Duration(batch-1)*timeout < brokerRevocationRetry-timeout
 	}

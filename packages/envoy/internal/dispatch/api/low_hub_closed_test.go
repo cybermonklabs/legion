@@ -23,6 +23,7 @@ import (
 // wait returned, and the test fails on both counts. With Subscribe's alone undone the subscribe
 // joins, goLocked still starts nothing, and the test fails on the first.
 func TestAClosedHubStartsNoGoroutine(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seedHubSettings(t, seed.database)
 	alice, err := seed.server.readerFor(t.Context(), model.BrowserActor(seedAlice))

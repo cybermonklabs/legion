@@ -94,6 +94,7 @@ var (
 // carol's s1 nor his own, since s1 is carol's and her credential reads PUB, which bob does not
 // see. A comment list kept for carol is never handed to alice, though the cache holds it.
 func TestThreadsOfAPrivateProjectAnswerAsMissing(t *testing.T) {
+	t.Parallel()
 	threads := seedThreads(t)
 	missing := uuid.NewString()
 	key := threads.issue[seedPrivate]
@@ -300,6 +301,7 @@ func requireLogHoldsNothingOf(t *testing.T, seed privateSeed, caller privateCall
 // does not see PRIV, finds none of the three in her event log or on her live socket, and carol
 // finds all three in both.
 func TestNoStateEventOfAHiddenProjectReachesAnOpenViewer(t *testing.T) {
+	t.Parallel()
 	threads := seedThreads(t)
 	key := threads.issue[seedPrivate]
 	url := liveURLOf(t, threads.handler)

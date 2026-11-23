@@ -15,6 +15,7 @@ import (
 //
 // Control: the person back in the error's text; the test fails naming them.
 func TestAFailedEventHeadReadNamesNoPerson(t *testing.T) {
+	t.Parallel()
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	if _, err := database.Pool.Exec(t.Context(), `alter table projects rename to projects_gone`); err != nil {
 		t.Fatalf("take the projects table away: %v", err)

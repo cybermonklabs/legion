@@ -18,6 +18,7 @@ import (
 // handler with the closed viewer, which is not open and sees no project; a read of the whole
 // deployment is refused 403 DEPLOYMENT_READ_REFUSED; and a caller who names nobody is still 401.
 func TestAServerWithNoDatabaseReadsAsTheClosedViewer(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), Deps{
 		Store:    &store.Store{},
@@ -76,6 +77,7 @@ func TestAServerWithNoDatabaseReadsAsTheClosedViewer(t *testing.T) {
 // tokens are refused every row); and GET /api/v1/credential-requests classed readclass.Caller (its
 // refusal to a restricted member dropped), and the walk fails naming the row.
 func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	var walked, ownLogin []string
 	for _, route := range seed.server.routes() {
@@ -125,6 +127,7 @@ func TestADeploymentReadIsRefusedToAViewerThatIsNotOpen(t *testing.T) {
 // a restricted member, except a row of the deployment, which refuses him (and is held to that) and
 // is read as alice, an open member who sees PUB.
 func TestTheReadScopePutsTheReaderInTheRequest(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	for _, test := range []struct {
 		classes []readclass.Class

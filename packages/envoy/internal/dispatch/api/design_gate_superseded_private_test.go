@@ -18,6 +18,7 @@ import (
 // Control: the gate read without the writer's viewer (the access.ProjectClause line taken out of
 // supersededApprovalGates) names PRIV's issue to alice.
 func TestASupersededApprovalNamesNoGateOfAProjectItsWriterDoesNotSee(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	created := func(project, title string) struct {
 		Key               string `json:"key"`

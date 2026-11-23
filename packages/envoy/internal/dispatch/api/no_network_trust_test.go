@@ -82,6 +82,7 @@ func walkRequest(t *testing.T, route string) *http.Request {
 // answered 404 or 405, and never served. The API names no route that needs none: sign-in, health
 // and the web app are the router's and the process's, and routes' test of this name holds them.
 func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
+	t.Parallel()
 	handler, routes := apiWalk(t)
 	for _, route := range routes {
 		response := httptest.NewRecorder()
@@ -115,6 +116,7 @@ func TestEveryRouteNeedsACredentialButTheNamedOnes(t *testing.T) {
 // API does not answer at too, so a route that takes the origin a request came to from that header
 // rather than from Host is caught.
 func TestNoRouteGrantsAccessByNetworkAddress(t *testing.T) {
+	t.Parallel()
 	handler, routes := apiWalk(t)
 	variants := forwardedtest.Variants()
 	for _, forwardedHost := range []string{apiHost, foreignHost} {

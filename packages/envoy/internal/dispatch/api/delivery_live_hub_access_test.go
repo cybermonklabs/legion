@@ -26,6 +26,7 @@ import (
 // acme/secret#7 with the next delta, read for the reader he had before, and the test fails naming
 // it.
 func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
+	t.Parallel()
 	const dave = "dave@example.com"
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, dave)
@@ -126,6 +127,7 @@ func framePullRequests(frame any) ([]string, []byte) {
 // Control: the hub does not resolve a sub's reader again when its subscribe raced a re-check; the
 // page holds the snapshot read for the reader that saw PRIV, and the test fails.
 func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seedHubSettings(t, seed.database)
 	clock := newNoonHubClock()
@@ -200,6 +202,7 @@ func TestASubscribeThatRacesAReaderRecheckIsReadAgain(t *testing.T) {
 // Control: the hub's intake takes project.created as it takes any other event; alice's view stays
 // read for the reader that saw no NEW, and no frame names acme/fresh#9.
 func TestADeliveryViewIsReadAgainForItsReaderAtANewProject(t *testing.T) {
+	t.Parallel()
 	seed := seedPrivateProject(t)
 	seedHubSettings(t, seed.database)
 	clock := newNoonHubClock()
