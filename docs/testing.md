@@ -169,6 +169,16 @@ itself, whose tests import its sources by relative path.
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
+- A test that requires a command to have left in place a signal it was started ignoring, as
+  `nohup` starts one ignoring SIGHUP and a shell's `&` job ignoring SIGINT, reads the command's
+  `SigIgn` mask with `ignoresSignal` (`@legion/test-fixtures/held-process`): a listener for the
+  signal clears the bit, so the read shows whether the command undid the ignore. gVisor's
+  `/proc/<pid>/status` has no `SigIgn` line, and macOS has no `/proc`, so such a file calls
+  `skipWithoutIgnoreMasks(file)` once, at module scope, as it would `skipWithout`, and hands the
+  answer to the `test.skipIf` of each row that reads the mask or rests on what is read from it. On
+  GitHub Actions on Linux it never skips: a runner there can read the mask, so one that cannot is
+  broken, and the rows run and fail rather than pass in silence.
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f

@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -46,6 +47,18 @@ import (
 // server's resident memory read from /proc, and requests over HTTP and the document websocket.
 // Both files build only under the `memory` tag, which the dispatch-memory CI job sets: their rows
 // run past go test's default deadline, so the unit run of every Go package leaves them out.
+//
+// The tests run at the same time (t.Parallel), each on a database of its own (newMemoryHarness).
+// What a test measures is one server process's own memory - its resident peak above its own idle
+// (peakAboveIdle) or the heap its own collector found live (liveHeapAboveIdle) - which other
+// processes do not move while the machine has memory to spare: the most any test reads is about
+// 400 MiB above a server's idle (TestColdReadCacheEvictionPlateaus), four servers at once on a
+// 16 GB runner. One after another, the suite kept 0.92 of 4 CPUs busy on average (2,461 CPU
+// seconds over 2,675 s, the whole suite pinned to 4 CPUs of a dev box). The two tests that
+// measure this test process's own allocations (TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound
+// and TestTableRowsOfSpannedTablesShareOneSpanBudget) do not call t.Parallel, so go test runs
+// them before any parallel test starts. At most testlimits.MaxProcessesAtOnce servers run at once
+// (serverSlots), the count the lane's Postgres is sized for.
 
 const memoryTestToken = "memory-test-token"
 
@@ -166,11 +179,34 @@ func collectOnSignal() {
 	}()
 }
 
+// serverSlots holds one token for each Dispatch server running in this test binary, at most
+// testlimits.MaxProcessesAtOnce: the most the lane's Postgres is sized to serve at once, which
+// requireConnectionCeiling refuses a start past. A start past it waits here for a server to exit
+// instead, so tests that run at the same time share the servers the lane can serve.
+var serverSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
+
+// takeServerSlot waits for a slot of serverSlots and answers the call that gives it back, which
+// the test's cleanup also runs, for a start that never ran a process; only the first call counts.
+// A test holds a slot for each of its servers that is running, so a test that waits for one while
+// it holds another (TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound's reader beside its
+// writer) waits for a server of another test, which never waits for a slot while it holds one:
+// every other test stops its server before it starts the next.
+func takeServerSlot(t *testing.T) (release func()) {
+	t.Helper()
+	serverSlots <- struct{}{}
+	var once sync.Once
+	release = func() { once.Do(func() { <-serverSlots }) }
+	t.Cleanup(release)
+	return release
+}
+
 // start starts a Dispatch server on a loopback port the kernel chose and the test holds from that
 // moment, which the server inherits as DISPATCH_LISTEN_FD and serves on, so no other program can
-// take the port before it serves.
+// take the port before it serves. It takes the server's slot before the drain, so what the drain
+// leaves owed is what the server meets.
 func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	t.Helper()
+	releaseSlot := takeServerSlot(t)
 	held := cmdtest.HoldPort(t)
 	port := strconv.Itoa(held.Port)
 	h.drainBeforeStart(t, port)
@@ -204,11 +240,14 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	held.Pass(command, "DISPATCH_LISTEN_FD")
 	// This server is a Dispatch process like any other a test starts, so the connection guard
 	// counts it, and releases it before exited closes, so a test that sees the exit sees the
-	// count fall (requireConnectionCeiling, cmdtest.StartThen). StartThen closes the test's copy
-	// of the held socket once the server has started, so the server releases the port when it
-	// exits.
+	// count fall (requireConnectionCeiling, cmdtest.StartThen); its slot goes back with it.
+	// StartThen closes the test's copy of the held socket once the server has started, so the
+	// server releases the port when it exits.
 	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
-	process := cmdtest.StartThen(t, "the Dispatch server", command, releaseConnections)
+	process := cmdtest.StartThen(t, "the Dispatch server", command, func() {
+		releaseConnections()
+		releaseSlot()
+	})
 	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: process.Output, exited: process.Exited, database: h.database}
 	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with
 	// SIGTERM as a deploy stops it, and StartThen's kill finds it gone.
