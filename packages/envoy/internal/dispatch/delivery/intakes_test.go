@@ -144,13 +144,15 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 // down with it, and the message stayed outstanding until the ack wait handed it to the next
 // process.
 func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
-	// The default logger, not the intake's: the row requires that no component logged a line about
-	// an acknowledgement, the bus client among them, and StartIntakes' intakes log to the default.
-	logs := captureLogs(t)
+	t.Parallel()
+	// The row requires that no component logged a line about an acknowledgement: both intakes and
+	// every NATS client take the test's logger, and nothing else on the path (duty, the store,
+	// GitHub's client) writes one.
+	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
-	publisher := intakeTestClient(t)
+	publisher := intakeTestClient(t, bus.WithLogger(logger))
 	fake := newFakeGitHub(t)
 	entered, held := make(chan struct{}), make(chan struct{})
 	var enter sync.Once
@@ -166,8 +168,10 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	t.Cleanup(release)
 
 	runCtx, cancel := context.WithCancel(ctx)
-	stop, err := StartIntakes(runCtx, func(string) (*bus.Client, error) {
-		return bus.Connect([]string{natsURL})
+	// startIntakes rather than StartIntakes, whose intakes log to the default: the test's tuning
+	// holds production's values and the test's logger.
+	stop, err := startIntakes(runCtx, tuningFor(t), func(string) (*bus.Client, error) {
+		return bus.Connect([]string{natsURL}, bus.WithLogger(logger))
 	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
 	if err != nil {
 		cancel()
