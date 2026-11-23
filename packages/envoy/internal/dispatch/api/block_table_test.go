@@ -30,6 +30,7 @@ const requestMemoryBound = 256 << 20
 // markdown writes it in. The table stays one entry: the list holds the paragraph and the two tables
 // alone, and the issue route lists the same rows.
 func TestBlocksListATablesRowsAndCellsWhereTheBlockRoutePlacesThem(t *testing.T) {
+	t.Parallel()
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Table rows",
 		"Intro.\n\n| # | Line | Due |\n| --- | --- | --- |\n| 1 | Backfill | Oct 1 |\n| 2 | Red-team loop | Today |\n")
@@ -159,6 +160,7 @@ func TestBlocksOfAHeldDocumentShareOneSpanBudget(t *testing.T) {
 // row, which the listing shows is soon. A column taken from the markdown (2, after Owner's two
 // columns) would remove Notes from the header instead.
 func TestDeleteColumnWithAListedColumnRemovesThatCell(t *testing.T) {
+	t.Parallel()
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Listed column", "Intro.\n")
 	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)

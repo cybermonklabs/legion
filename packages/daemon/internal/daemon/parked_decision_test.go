@@ -36,6 +36,7 @@ import (
 // publish refused for an architect nobody will hold (the second, a lingering tree; the third, a
 // failed claim on a running tree).
 func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
+	t.Parallel()
 	carried := "a human approved LEGION-9's spec document at version 3, which opens the gate LEGION-1 carried; any READY it refused is released and any child waiting on it starts"
 	for _, tc := range []struct {
 		name    string
@@ -91,6 +92,7 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 // here) stays dropped with its one line: no person decided anything, so the controller is told
 // nothing and nothing is kept for the root.
 func TestTheMachinerysNoticeToAStoppedTreeWritesNoParkedDecision(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -121,6 +123,7 @@ func TestTheMachinerysNoticeToAStoppedTreeWritesNoParkedDecision(t *testing.T) {
 // release before this one queued the notice, which then carries no ref either. The log line names
 // the notice's ref, empty for the old release's notice, which is how A5 tells the two apart.
 func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		notice record.Notice
@@ -168,6 +171,7 @@ func TestASpecDecisionThatNamesNoPersonIsNotRelayed(t *testing.T) {
 // than letting the second replace the first. The spec step's reference is the one every release
 // before the step list wrote, so a one-step deployment keeps exactly what it kept before.
 func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -203,6 +207,7 @@ func TestGatedStepsKeepADecisionForEachDocumentAPersonReviewed(t *testing.T) {
 // The parked-decision notice goes where every controller notice goes: the outbox's next run
 // publishes it on the project's controller topic, as "parked-decision on <issue>".
 func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -232,6 +237,7 @@ func TestAParkedDecisionIsPublishedOnTheControllerTopic(t *testing.T) {
 // left behind by the hold, which names the row the start read, not the reference. The hold is the
 // claim store's own write, so this runs through the daemon's own claim store.
 func TestOnlyADeliveredStartHoldsTheDecisionsItNamed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -307,6 +313,7 @@ func TestOnlyADeliveredStartHoldsTheDecisionsItNamed(t *testing.T) {
 // and the start's delivery then holds them, so each is told once, at that delivery's confirmation,
 // and no catch-up names them meanwhile.
 func TestACatchUpLeavesOutWhatAQueuedStartClaims(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -368,6 +375,7 @@ func TestACatchUpLeavesOutWhatAQueuedStartClaims(t *testing.T) {
 // the root names it. Otherwise it waits, kept and unclaimed, for the architect's next relaunch or
 // the tree's next re-admission, while the architect works the tree without the person's decision.
 func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -432,6 +440,7 @@ func TestADecisionAStaleStartReleasesReachesTheRunningArchitect(t *testing.T) {
 // the forget, or a finish that did not commit): the delivered mark its forget wrote stops it, so the
 // architect is told each decision once.
 func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -510,6 +519,7 @@ func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
 // (Before decisions were held by the delivery, the injected failure was the start's own forget;
 // a delivered start now forgets nothing, so the row's lost finish is the failure that remains.)
 func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -588,6 +598,7 @@ func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 // A catch-up forgets the decisions it named when it is published to its architect, and leaves them
 // when it finishes undelivered, so the next catch-up names them again.
 func TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed(t *testing.T) {
+	t.Parallel()
 	spec, at := "dispatch://LEGION-1/spec", time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name      string
@@ -637,6 +648,7 @@ func TestOnlyADeliveredCatchUpForgetsTheDecisionsItNamed(t *testing.T) {
 // rides beside already names, or the architect reads one person's decision as two and may act on
 // it twice.
 func TestAStartThatFindsTheRootArchitectRunningNamesEachKeptDecisionOnce(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
@@ -776,6 +788,7 @@ func keptDecisions(t *testing.T, pool *store.Pool, records record.Store, root st
 // goes. The lines are written once the close has committed, so the linger row run again — a lost
 // finish, a daemon that died before it — writes none of them twice.
 func TestAClosingTreeNamesEveryDecisionStillOwedToItsArchitect(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -860,6 +873,7 @@ func TestAClosingTreeNamesEveryDecisionStillOwedToItsArchitect(t *testing.T) {
 // each, and its Warn lines name only what really stands where it is — what was decided on the
 // root itself, and on a member the close hands to nobody, below a handed child or not.
 func TestAClosingTreeDoesNotWarnAboutTheDecisionsItHandsToAChild(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

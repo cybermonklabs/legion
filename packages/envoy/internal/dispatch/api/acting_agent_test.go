@@ -99,6 +99,7 @@ func requirePersonActor(t *testing.T, what string, actor model.Actor, login stri
 // held at the act. A caller that names no session leaves the act naming the token alone, and a
 // broker-issued token's act names the session the broker itself proved, which no caller chooses.
 func TestAnAgentsAnswerReviewAndSnoozeAreRecordedAsThePersonWithItsActBesideThem(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "ACT", "Recording who acted", "A spec")
 	token := mintPersonalToken(t, handler, "alice", actingTokenName, nil)
@@ -153,6 +154,7 @@ func TestAnAgentsAnswerReviewAndSnoozeAreRecordedAsThePersonWithItsActBesideThem
 // A broker-issued token proves its own session, so the act names that session and no token row;
 // a ?session= naming another session is the disagreement actingPerson refuses.
 func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-that-answers"
@@ -201,6 +203,7 @@ func TestABrokerTokensAnswerActsAsTheSessionTheBrokerProved(t *testing.T) {
 // is the person either way, and proven either way: every credential that holds the person scope
 // proves whom it acts for.
 func TestAnActsSessionIsProvenOnlyWhereTheCredentialProvedIt(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const brokerToken = "a-dev-box-token-whose-session-is-proven"
@@ -276,6 +279,7 @@ func TestAnActsSessionIsProvenOnlyWhereTheCredentialProvedIt(t *testing.T) {
 // credential that did prove a session decides it, and a body naming another is refused the way
 // every other disagreement about the writer is.
 func TestTheBodysActorNamesTheActingSessionWhereTheCredentialProvedNone(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "ACT", "The body names the acting session", "A spec")
 	token := mintPersonalToken(t, handler, "alice", actingTokenName, nil)
@@ -305,6 +309,7 @@ func TestTheBodysActorNamesTheActingSessionWhereTheCredentialProvedNone(t *testi
 // A broker-issued token proves the session it acts for, so a body naming another session is 403
 // ACTOR_SESSION_MISMATCH, and one naming that same session is taken.
 func TestABodyActorNamingAnotherSessionThanTheCredentialProvedIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-whose-body-lies"
@@ -352,6 +357,7 @@ func TestABodyActorNamingAnotherSessionThanTheCredentialProvedIsRefused(t *testi
 // list and the event the broker notifies on - read it exactly as they read an answer typed in a
 // browser, the act riding along on each.
 func TestThePersonChangesTheAnswerTheirAgentMadeAndEveryReaderStillSeesThem(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "ACT", "Changing an agent's answer", "A spec")
 	token := mintPersonalToken(t, handler, "alice", actingTokenName, nil)
@@ -427,6 +433,7 @@ func TestThePersonChangesTheAnswerTheirAgentMadeAndEveryReaderStillSeesThem(t *t
 // The list of what people wrote to a session carries the act of an answer an agent made for its
 // person, so a session reading its own answers sees which agent answered as well as who for.
 func TestTheSessionsAnswersListCarriesTheActOfAnAnswerMadeForThePerson(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	token := mintPersonalToken(t, f.handler, "alice", actingTokenName, nil)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
@@ -447,6 +454,7 @@ func TestTheSessionsAnswersListCarriesTheActOfAnAnswerMadeForThePerson(t *testin
 // it. The same message the person sends in a browser is accepted, so the act alone is what
 // refuses.
 func TestAMessageAnAgentSentForItsPersonIsRecordedWithItsActAndRefusedByTheAccept(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
@@ -491,6 +499,7 @@ func TestAMessageAnAgentSentForItsPersonIsRecordedWithItsActAndRefusedByTheAccep
 // an agent presenting its person's token writes as the session it names, with that person as the
 // owner behind it and no act at all.
 func TestACommentUnderAPersonalTokenIsStillTheSessionsOwnWrite(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "ACT", "Comments are unchanged", "A spec")
 	token := mintPersonalToken(t, handler, "alice", actingTokenName, nil)
@@ -580,6 +589,7 @@ func TestAMachineLoginDecisionNamesTheActingAgentOnItsAccessLogLine(t *testing.T
 // with the request left open. Each answers any other kind of ask, so it is the ask's kind alone
 // that refuses.
 func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
+	t.Parallel()
 	for _, credential := range []struct {
 		name string
 		// holding readies the credential on rig and answers what sending an ask's answer under it
@@ -674,6 +684,7 @@ func newestEventActor(t *testing.T, handler http.Handler, issueKey, eventType st
 // half - another session's ask, another session's following - which the test after this one
 // holds.
 func TestAnAgentsOwnRewordAndFollowAreStillTheSessionsOwnAct(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "OWN", "An agent's own acts", "A spec")
 	token := mintPersonalToken(t, handler, "alice", actingTokenName, nil)
@@ -707,6 +718,7 @@ func TestAnAgentsOwnRewordAndFollowAreStillTheSessionsOwnAct(t *testing.T) {
 // The other half: acting on another session's ask, or putting another session on one, is the
 // person's act, so it is recorded as the person with the agent named beside them.
 func TestAnAgentsActOnAnotherSessionIsRecordedAsThePerson(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "OTH", "An act for the person", "A spec")
 	token := mintPersonalToken(t, handler, "alice", actingTokenName, nil)

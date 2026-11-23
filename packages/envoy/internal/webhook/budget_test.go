@@ -22,14 +22,14 @@ import (
 // allocated only once the charge succeeds, so requests waiting for room add nothing to memory.
 func TestABodyReadWaitingForRoomAllocatesNothing(t *testing.T) {
 	const step = 16 << 10
-	bodies := newBodyBudget(step)
+	bodies := NewBodyBudget(step, nil)
 	// A read larger than the budget takes the one right to go past it, so the next read must wait.
-	over := bodies.begin()
+	over := bodies.begin(githubRoomWait)
 	defer over.release()
 	if _, err := over.grow(context.Background(), nil, 2*step); err != nil {
 		t.Fatalf("the first read's buffer: %v", err)
 	}
-	waiting := bodies.begin()
+	waiting := bodies.begin(githubRoomWait)
 	defer waiting.release()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -69,7 +69,7 @@ func TestGitHubHandlerReadsABodyUpToGitHubsPayloadCap(t *testing.T) {
 			body := bytes.Repeat([]byte("x"), tc.size)
 			pub := &mockPublisher{}
 			recorder := &mockRecorder{}
-			handler := GitHubHandler(secret, "@legion", "", pub, recorder)
+			handler := GitHubHandler(secret, "@legion", "", pub, recorder, NewBodyBudget(DefaultBodyBudget, nil))
 			req := httptest.NewRequest(http.MethodPost, "/webhook/github", iotest.DataErrReader(bytes.NewReader(body)))
 			req.ContentLength = int64(tc.size)
 			if tc.undeclared {
@@ -136,7 +136,7 @@ func TestGitHubHandlerRefusesADeclaredOversizeBodyUnread(t *testing.T) {
 	req.Header.Set("X-GitHub-Event", "push")
 	rr := httptest.NewRecorder()
 
-	GitHubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}).ServeHTTP(rr, req)
+	GitHubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil)).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413; body = %s", rr.Code, rr.Body.String())
@@ -147,16 +147,16 @@ func TestGitHubHandlerRefusesADeclaredOversizeBodyUnread(t *testing.T) {
 }
 
 // The handler buffers a body whole before it can check the signature, so anyone who can reach the
-// route can make it hold a body. The budget it reads bodies against holds at most githubBodyBudget
+// route can make it hold a body. The budget it reads bodies against holds at most DefaultBodyBudget
 // plus what the one request allowed past it charges beyond it, at most twice one cap-sized buffer
-// (bodyBudget); the rest wait for room and are then served. Here sixteen cap-sized
+// (BodyBudget); the rest wait for room and are then served. Here sixteen cap-sized
 // bodies with a wrong signature arrive together, sent as fast as they are read, and each is
 // answered 401.
 func TestGitHubHandlerBoundsTheBodyBytesItHoldsInABurst(t *testing.T) {
 	const requests = 16
-	bound := int64(githubBodyBudget + 2*githubMaxBody)
-	bodies := newBodyBudget(githubBodyBudget)
-	handler := githubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
+	bound := int64(DefaultBodyBudget + 2*githubMaxBody)
+	bodies := NewBodyBudget(DefaultBodyBudget, nil)
+	handler := GitHubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
 	start := make(chan struct{})
 	senders := make([]*testBody, requests)
 	for i := range senders {
@@ -173,7 +173,7 @@ func TestGitHubHandlerBoundsTheBodyBytesItHoldsInABurst(t *testing.T) {
 
 	most := bodies.mostHeld()
 	if most > bound {
-		t.Fatalf("the budget held %d MiB at once, want at most %d MiB (a %d MiB budget plus twice one cap-sized buffer)", most>>20, bound>>20, githubBodyBudget>>20)
+		t.Fatalf("the budget held %d MiB at once, want at most %d MiB (a %d MiB budget plus twice one cap-sized buffer)", most>>20, bound>>20, DefaultBodyBudget>>20)
 	}
 	t.Logf("the budget held at most %d MiB", most>>20)
 	for i, code := range codes {
@@ -190,7 +190,7 @@ func TestGitHubHandlerBoundsTheBodyBytesItHoldsInABurst(t *testing.T) {
 // signed 3.6 MB push arrives, and the push is served at once.
 func TestGitHubHandlerServesADeliveryBehindSlowSenders(t *testing.T) {
 	const secret = "s"
-	handler := GitHubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{})
+	handler := GitHubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	stall := make(chan struct{})
 	var senders []*testBody
 	for _, sent := range []int{4096, 4096, 4096, 0} {
@@ -216,7 +216,7 @@ func TestGitHubHandlerServesADeliveryBehindManyHeaderOnlySenders(t *testing.T) {
 		secret = "s"
 		budget = 8 << 20
 	)
-	handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, newBodyBudget(budget))
+	handler := GitHubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, NewBodyBudget(budget, nil))
 	stall := make(chan struct{})
 	senders := make([]*testBody, budget/(16<<10))
 	for i := range senders {
@@ -249,7 +249,7 @@ func TestGitHubHandlerServesPushesPastTheBudgetBehindAStalledConnection(t *testi
 		{"one byte", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, newBodyBudget(budget))
+			handler := GitHubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, NewBodyBudget(budget, nil))
 			stall := make(chan struct{})
 			_, done := serveUnsigned(t, handler, []*testBody{{remaining: githubMaxBody, stallAfter: tc.sent, stall: stall}}, 20*time.Millisecond)
 			defer func() {
@@ -277,8 +277,8 @@ func TestGitHubHandlerServesDeliveriesInProgressBehindASenderThatTookTheRightAnd
 		paused = 3 << 19 // each push pauses after 1.5 MiB, having charged a 2 MiB buffer
 		buffer = 2 << 20
 	)
-	bodies := newBodyBudget(budget)
-	handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
+	bodies := NewBodyBudget(budget, nil)
+	handler := GitHubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
 	push := largePushPayload(t, 1000)
 	resume := make(chan struct{})
 	resumePushes := sync.OnceFunc(func() { close(resume) })
@@ -327,9 +327,9 @@ func TestGitHubHandlerServesADeliveryBehindASenderThatTookTheRightAtABufferBound
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			bodies := newBodyBudget(budget)
-			handler := githubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
-			staying, finishing := bodies.begin(), bodies.begin()
+			bodies := NewBodyBudget(budget, nil)
+			handler := GitHubHandler(secret, "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
+			staying, finishing := bodies.begin(githubRoomWait), bodies.begin(githubRoomWait)
 			defer staying.release()
 			if err := staying.charge(ctx, budget/2); err != nil {
 				t.Fatalf("the read that stays: %v", err)
@@ -359,9 +359,9 @@ func TestAGitHubDeliveryWaitingForRoomEndsAtItsOwnDeadline(t *testing.T) {
 	githubBodyDeadline = 300 * time.Millisecond
 	t.Cleanup(func() { githubBodyDeadline = previous })
 	const budget = 64 << 10
-	bodies := newBodyBudget(budget)
-	handler := githubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
-	holder := bodies.begin()
+	bodies := NewBodyBudget(budget, nil)
+	handler := GitHubHandler("s", "@legion", "", &mockPublisher{}, &mockRecorder{}, bodies)
+	holder := bodies.begin(githubRoomWait)
 	defer holder.release()
 	if err := holder.charge(context.Background(), budget+1); err != nil {
 		t.Fatalf("the holder's charge: %v", err)
@@ -392,7 +392,7 @@ func TestAGitHubDeliveryWaitingForRoomEndsAtItsOwnDeadline(t *testing.T) {
 
 // awaitBudget waits until bodies holds held bytes with the right to go past its limit taken, or
 // free, as taken says, and fails the test if that takes longer than 5 s.
-func awaitBudget(t *testing.T, bodies *bodyBudget, held int64, taken bool) {
+func awaitBudget(t *testing.T, bodies *BodyBudget, held int64, taken bool) {
 	t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
 		bodies.mu.Lock()

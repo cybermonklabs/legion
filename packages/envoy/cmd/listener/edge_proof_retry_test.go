@@ -231,14 +231,14 @@ func TestEdgeAloneGivesAProofBackOnA503(t *testing.T) {
 // marker's revision, and of two presentations doing so at once the one that loses gets the
 // server's wrong-last-sequence error from that second write: 10071 on a bucket of one copy, 10164
 // on a replicated one. Either reads as a proof another presentation holds, a replay, and not as a
-// store that did not answer, whose 503 would be no refusal: wrongLastSequence reads both codes,
+// store that did not answer, whose 503 would be no refusal: bus.IsCASConflict reads both codes,
 // and the store answers a create refused with either as spent. The race itself is not driven
 // here: nothing orders the two writes of one create against another's, so the store's bucket
 // answers the second write's refusal itself. Control: the store reading only nats.ErrKeyExists as
 // spent; the lost create reads as a store that did not answer, and the row fails naming it.
 func TestEdgeSpentProofsReadALostCreateAfterAReleaseAsSpent(t *testing.T) {
 	for _, code := range []nats.ErrorCode{nats.JSErrCodeStreamWrongLastSequence, nats.JSErrCodeStreamWrongLastSequenceConstant} {
-		if err := fmt.Errorf("record the proof: %w", &nats.APIError{Code: http.StatusBadRequest, ErrorCode: code}); !wrongLastSequence(err) {
+		if err := fmt.Errorf("record the proof: %w", &nats.APIError{Code: http.StatusBadRequest, ErrorCode: code}); !bus.IsCASConflict(err) {
 			t.Errorf("a create refused with error code %d reads as no replay", code)
 		}
 		store := spentProofs{kv: bus.NewKeyValue(lostCreate{code: code}, nil, nil)}
@@ -247,7 +247,7 @@ func TestEdgeSpentProofsReadALostCreateAfterAReleaseAsSpent(t *testing.T) {
 		}
 	}
 	for _, err := range []error{errors.New("nats: timeout"), &nats.APIError{Code: http.StatusServiceUnavailable, ErrorCode: nats.JSErrCodeInsufficientResourcesErr}} {
-		if wrongLastSequence(err) {
+		if bus.IsCASConflict(err) {
 			t.Errorf("%v reads as a replay, want a store that did not answer", err)
 		}
 	}

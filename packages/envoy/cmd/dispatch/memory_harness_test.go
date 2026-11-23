@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -812,9 +814,11 @@ func requireAnswered(t *testing.T, upload uploadResult) {
 }
 
 // loadOverWebsocket opens the document's room as a browser does - it connects and asks for the
-// whole document - and closes once the room has sent it.
+// whole document - closes once the room has sent it, and returns once the server has ended the
+// socket, the settlement attempt its departure makes included.
 func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	t.Helper()
+	written := p.output.Len()
 	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
 	connection, answer, err := gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": {"alice"}})
 	if err != nil {
@@ -850,9 +854,42 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	if err := connection.Close(); err != nil {
 		t.Fatalf("close the connection: %v", err)
 	}
-	// The room's last peer leaving runs its settlement; give it the time a settlement of the
-	// heaviest admitted document takes here, so the peak counts it.
-	time.Sleep(3 * time.Second)
+	// The room's last peer leaving runs the settlement it owes on the socket's own handler: ygo's
+	// ServeHTTP runs the departure (handleDisconnect, which calls OnLastPeer, the service's
+	// settleLastPeer, and waits for it) before it returns, and the access log writes the request's
+	// line once the handler has returned (accesslog.Handler). So the socket's line is the moment
+	// the departure, and the settlement attempt it made, have ended, and the peak read after it
+	// counts them. A settlement whose timer fired before the departure, or one that attempt arms
+	// again, runs on its own and can end after the line; this load sends no update, and the
+	// server it meets started owing nothing (drainBeforeStart), so it leaves neither.
+	// A fixed 3 s stood here before, which counted no settlement that ran past it: across nine
+	// cold loads of heavy documents the server spent at most 40 ms of CPU in those 3 s.
+	p.waitForRequestLine(t, written, "route=/ws/doc/{room}", "path=/ws/doc/"+artifactID)
+}
+
+// waitForRequestLine waits until the server's output past offset holds the access log line of a
+// request whose line carries every one of fields, and fails the test if the server exits first or
+// a minute passes, a hang guard on a line a healthy server writes in milliseconds.
+func (p *memoryServer) waitForRequestLine(t *testing.T, offset int, fields ...string) {
+	t.Helper()
+	want := append([]string{`msg="` + accesslog.Message + `"`}, fields...)
+	deadline := time.Now().Add(time.Minute)
+	for {
+		for line := range strings.Lines(p.outputFrom(offset)) {
+			if !slices.ContainsFunc(want, func(field string) bool { return !strings.Contains(line, field) }) {
+				return
+			}
+		}
+		select {
+		case <-p.exited:
+			t.Fatalf("the server exited before it logged the request %q:\n%s", fields, p.outputTail())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server logged no request %q within a minute:\n%s", fields, p.outputTail())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // outputTail is the last 4,000 bytes the server has written, for a failure to show.

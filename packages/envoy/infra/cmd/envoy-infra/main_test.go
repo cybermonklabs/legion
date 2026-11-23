@@ -20,6 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
 // buildCLI builds this package's binary as name with the extra go build arguments args, and
 // returns its path.
 func buildCLI(t *testing.T, name string, args ...string) string {

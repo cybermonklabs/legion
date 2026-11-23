@@ -179,6 +179,7 @@ func (r *idleRig) startQueuedAt(t *testing.T, row int64, role claim.Role) {
 // that made it would report another release's bytes as its own. The last subtest, which drives
 // the idle rule instead, seeds no such bundle and says there why it cannot.
 func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("the record, the mark and the line of the release that took the pod", func(t *testing.T) {

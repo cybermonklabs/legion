@@ -140,6 +140,7 @@ func addItemTextVersion(t *testing.T, pool *store.Pool, artifactID string, numbe
 // the answer, and so is one whose text is only white space, which matches nothing by meaning
 // either.
 func TestGoingItemTextAnswersEachKindsOwnText(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
 	texts, err := goingItemText(context.Background(), database.Pool, seeded.hits, contracts.GoingHitRuneMax)
@@ -160,6 +161,7 @@ func TestGoingItemTextAnswersEachKindsOwnText(t *testing.T) {
 // The cut is by runes and not by bytes, so an answer shown a text of two-byte and four-byte
 // characters is shown the characters asked for.
 func TestGoingItemTextCutsToRunes(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
 	const runes = 7
@@ -183,6 +185,7 @@ func TestGoingItemTextCutsToRunes(t *testing.T) {
 // landed on: left counts characters in a UTF-8 database, so a budget falling between one-, two-,
 // three- and four-byte characters answers the bytes text.HeadRunes answered of the whole value.
 func TestGoingItemTextCutsWhereTheRuneHelperCut(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
 	// A text whose characters are of all four widths, so a cut inside it says which unit the
@@ -214,6 +217,7 @@ func TestGoingItemTextCutsWhereTheRuneHelperCut(t *testing.T) {
 // A page of hits costs one statement whatever kinds it names, and a page naming none makes no
 // statement at all.
 func TestGoingItemTextReadsOnePageInOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
 	recorder := &storetest.StatementRecorder{}
@@ -237,6 +241,7 @@ func TestGoingItemTextReadsOnePageInOneStatement(t *testing.T) {
 // lateral reads a hit's text with: the two must stay in sync, so that the text a model is given
 // for a hit is the text search ranked and showed the reader a snippet of.
 func TestGoingItemTextCoversSearchsOwnKinds(t *testing.T) {
+	t.Parallel()
 	page := searchPageAndTailSQL("legs", searchSeenParam)
 	for _, kind := range []string{"issue", "document", "comment", "ask", "message"} {
 		arm := "when '" + kind + "' then"

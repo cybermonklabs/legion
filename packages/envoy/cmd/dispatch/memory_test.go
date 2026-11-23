@@ -157,10 +157,7 @@ func appendColdReadMemoryUpdates(t *testing.T, memory *memoryHarness, artifactID
 
 func TestAColdReadOfAHeavyMultiUpdateHistoryStaysWithinTheMemoryBound(t *testing.T) {
 	memory := newMemoryHarness(t)
-	shape := admittedShape{
-		name:     `\)\_`,
-		markdown: heaviestAdmitted(t, func(units int) string { return strings.Repeat(`\)\_`, units) }),
-	}
+	shape := admittedShape{name: `\)\_`, markdown: heaviestAdmittedNamed(t, `\)\_`)}
 	writer := memory.start(t)
 	upload := writer.upload(t, "json", memory.issue, shape.markdown)
 	if upload.status != http.StatusCreated {
@@ -233,7 +230,7 @@ func cloneColdReadArtifact(t *testing.T, memory *memoryHarness, sourceID string,
 // half the budget this test held it to before (INFRA-3904).
 func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 	memory := newMemoryHarness(t)
-	markdown := heaviestAdmitted(t, func(units int) string { return strings.Repeat("# a\n", units) })
+	markdown := heaviestAdmittedNamed(t, "headings")
 	weight, err := docs.DocumentReadWeightForTest(markdown)
 	if err != nil {
 		t.Fatalf("weigh cache-fill document: %v", err)
@@ -327,7 +324,7 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 // element limit refuses, and two of the heaviest `)_` document it admits, which are stored.
 func TestTwoUploadsAtOnceStayWithinTheMemoryBound(t *testing.T) {
 	memory := newMemoryHarness(t)
-	heaviest := heaviestAdmitted(t, func(units int) string { return strings.Repeat(")_", units) })
+	heaviest := heaviestAdmittedNamed(t, ")_")
 	for _, pair := range []struct{ name, markdown string }{
 		{name: "cap-sized )_", markdown: fill(")_")},
 		{name: "heaviest admitted )_", markdown: heaviest},
@@ -964,12 +961,7 @@ func TestASpecOfFrontMatterAndTheMostHeadingsIsStored(t *testing.T) {
 // above out for every cell would cost the square of the width in strings, and its cube in grid
 // steps.
 func TestBlockPathsOfTheHeaviestTablesStayWithinTheMemoryBound(t *testing.T) {
-	shapes := []admittedShape{{
-		name: "the widest table",
-		markdown: heaviestAdmitted(t, func(cells int) string {
-			return strings.Repeat("| a ", cells) + "|\n" + strings.Repeat("| - ", cells) + "|\n" + strings.Repeat("| b ", cells) + "|\n"
-		}),
-	}}
+	shapes := []admittedShape{{name: widestTableBuild.name, markdown: heaviestAdmittedNamed(t, widestTableBuild.name)}}
 	for _, shape := range heaviestAdmittedShapes(t) {
 		if strings.HasSuffix(shape.name, "table") {
 			shapes = append(shapes, shape)
