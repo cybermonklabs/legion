@@ -6,7 +6,9 @@ import type { SessionAnswer } from "@legion/contracts";
 import { bearerCredential } from "@legion/envoy-client/bearer";
 import {
   readSessionAnswers,
+  renderSessionAnswers,
   SESSION_ANSWERS_MARKER,
+  SESSION_ANSWERS_WINDOW_MS,
   sessionAnswersFailureLine,
   sessionAnswersWords,
 } from "@legion/envoy-client/session-answers";
@@ -351,6 +353,85 @@ test("prefix case: after a restart the first request carries every answers messa
   const resumed = await withSessionAnswers([...followed], requestOf(readingEach(LATER), branch));
   expect(resumed).toEqual([...(changed ?? []), docsCall, docsResult]);
   keepsSent(changed, resumed);
+});
+
+// A person who deletes a comment a list sent showed leaves the next read that item with
+// `deleted_at`, `deleted_by` and no words (`sessionanswers.go`), and the renderer prints it with
+// the delete's mark and no words line (`renderSessionAnswerItem`). The list sent keeps its place
+// and its bytes, the person's words with them: an earlier request delivered it. What keeps the
+// model from reading those words as current is the list appended after the last message, which
+// shows the comment deleted and says in its second block that it replaces every earlier list
+// (`SESSION_ANSWERS_REPLACES`). An edit is the same change, with the edited mark and the new words.
+const COMMENT: SessionAnswer = {
+  ...ITEM,
+  kind: "comment",
+  relation: "commented_on_an_issue",
+  id: "c-1",
+  at: "2026-10-27T10:00:00.000Z",
+  author: { kind: "user", id: "alice" },
+  text: "Hold the release until the docs land.",
+  owner: { issue: { key: "CORE-7", title: "Release notes" } },
+  ref: "dispatch://CORE-7/comment/c-1",
+  href: "/issues/CORE-7#comment-c-1",
+};
+const COMMENTED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes\nHold the release until the docs land.`;
+/** `COMMENT` once alice deleted it, as Dispatch sends it. */
+const DELETED_COMMENT: SessionAnswer = {
+  ...COMMENT,
+  deleted_at: "2026-10-27T11:30:00.000Z",
+  deleted_by: { kind: "user", id: "alice" },
+  text: "",
+};
+const DELETED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue · Deleted by user alice at 2026-10-27T11:30:00.000Z\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes`;
+/** `COMMENT` once alice edited it, as Dispatch sends it. */
+const EDITED_COMMENT: SessionAnswer = {
+  ...COMMENT,
+  edited_at: "2026-10-27T11:00:00.000Z",
+  text: "Hold the release until the changelog lands too.",
+};
+const EDITED_COMMENTED = `${SESSION_ANSWERS_MARKER}\n\n2026-10-27T10:00:00.000Z · user alice · commented on an issue · edited 2026-10-27T11:00:00.000Z\ndispatch://CORE-7/comment/c-1 · CORE-7: Release notes\nHold the release until the changelog lands too.`;
+
+/** What `readSessionAnswers` gives for a read whose window, from `SINCE` on, holds `item` alone:
+ *  the list `renderSessionAnswers` renders at the window's end, the item's words and `SINCE`. */
+function readOf(item: SessionAnswer): CarriedAnswers {
+  const now = Date.parse(SINCE) + SESSION_ANSWERS_WINDOW_MS;
+  return {
+    text: renderSessionAnswers([item], { now }),
+    words: sessionAnswersWords([item]),
+    since: SINCE,
+  };
+}
+
+test("a comment deleted, or edited, appends a list showing it so with the sentence that it replaces every earlier list, and the list sent stays where it went", async () => {
+  for (const [changed, shown] of [
+    [DELETED_COMMENT, DELETED],
+    [EDITED_COMMENT, EDITED_COMMENTED],
+  ] as const) {
+    const session = {};
+    const [placed, next] = await deepRequests(session, readOf(COMMENT), readOf(changed));
+    // The list sent, alice's words in it, is re-sent with every byte where it went.
+    keepsSent(placed, next);
+    // After the last message: the list as the read renders it, with none of the words it
+    // replaced, then exactly the sentence saying it replaces every earlier list.
+    expect(next?.slice(placed?.length)).toEqual([
+      readCall,
+      readResult,
+      grepCall,
+      grepResult,
+      listOf(shown),
+    ]);
+    expect(JSON.stringify(next?.at(-1))).not.toContain(COMMENT.text);
+    expect(placed?.slice(opened.length)).toEqual([listOf(COMMENTED)]);
+    // The entry recorded for it holds the read's words, which the next read is compared with.
+    expect(recordedFor(session)).toStrictEqual([
+      { after: "user@1", blocks: [COMMENTED, REPLACES], words: sessionAnswersWords([COMMENT]) },
+      {
+        after: "toolResult@6#call-2",
+        blocks: [shown, REPLACES],
+        words: sessionAnswersWords([changed]),
+      },
+    ]);
+  }
 });
 
 test("a list with no new item stays where it first went: the request still ends with its own last message", async () => {

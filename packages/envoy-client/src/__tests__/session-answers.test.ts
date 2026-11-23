@@ -161,6 +161,54 @@ describe("renderSessionAnswers", () => {
     );
   });
 
+  // No read of a deleted post gives any part of its body: the server sends a deleted reply's text
+  // empty, with the delete's mark beside it (`sessionanswers.go`), so the head line ends with the
+  // deleted line and no words line follows it, for a comment's reply and a message's alike.
+  test("a deleted reply prints the deleted line and no words", () => {
+    const issue = { issue: { key: "CORE-7", title: "People's answers on every request" } };
+    const deletedComment: SessionAnswer = {
+      kind: "comment",
+      relation: "replied_on_your_ask",
+      id: "c-2",
+      at: "2026-10-27T10:30:00Z",
+      deleted_at: "2026-10-27T11:15:00Z",
+      deleted_by: { kind: "user", id: "ben@example.com" },
+      author: { kind: "user", id: "ben@example.com" },
+      text: "",
+      ask: { id: "ask-1", question: "Which format should the list use?" },
+      owner: issue,
+      ref: "dispatch://CORE-7/comment/c-2",
+      href: "/issues/CORE-7#comment-c-2",
+    };
+    const deletedMessage: SessionAnswer = {
+      kind: "message",
+      relation: "replied_to_your_message",
+      id: "m-2",
+      at: "2026-10-27T10:00:00Z",
+      deleted_at: "2026-10-27T10:20:00Z",
+      deleted_by: { kind: "user", id: "cy@example.com" },
+      author: { kind: "user", id: "cy@example.com" },
+      text: "",
+      owner: issue,
+      ref: "dispatch://CORE-7/message/m-2",
+      href: "/issues/CORE-7#message-m-2",
+    };
+
+    expect(renderSessionAnswerItem(deletedComment)).toBe(
+      [
+        "2026-10-27T10:30:00Z · user ben@example.com · replied on your ask · Deleted by user ben@example.com at 2026-10-27T11:15:00Z",
+        "dispatch://CORE-7/comment/c-2 · CORE-7: People's answers on every request",
+        "Question: Which format should the list use?",
+      ].join("\n")
+    );
+    expect(renderSessionAnswerItem(deletedMessage)).toBe(
+      [
+        "2026-10-27T10:00:00Z · user cy@example.com · replied to your message · Deleted by user cy@example.com at 2026-10-27T10:20:00Z",
+        "dispatch://CORE-7/message/m-2 · CORE-7: People's answers on every request",
+      ].join("\n")
+    );
+  });
+
   test("a list of 7,998 or 7,999 characters is whole; at 8,000 its one item is left out", () => {
     for (const target of [7_998, 7_999]) {
       const item = sizedItem("fits", target);

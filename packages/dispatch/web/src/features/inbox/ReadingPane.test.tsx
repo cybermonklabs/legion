@@ -7,8 +7,10 @@ import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
+import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { ApiError, api } from "../../api/client";
 import type {
   Agent,
@@ -1267,6 +1269,40 @@ test("a comment thread on an issue shows the issue and the thread, with no docum
   }
 });
 
+// The column's subject line prints the thread's root in one line: a root its author deleted has
+// no subject left and reads as the deleted line, an edited one carries ` · edited`, and one that
+// stands unedited carries neither.
+test("a thread's subject line reads as deleted for a deleted root and marks an edited one", async () => {
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const subject = async (overrides: Partial<MyReplyThreadRow>) => {
+    const { view } = renderThread(
+      threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, ...overrides })
+    );
+    try {
+      const body = await paneBody();
+      return body.querySelector("[data-inbox-thread-subject]")?.textContent;
+    } finally {
+      view.unmount();
+    }
+  };
+  try {
+    expect(await subject({ edited_at: "2026-10-12T00:20:00Z" })).toBe("The retry budget · edited");
+    expect(await subject({})).toBe("The retry budget");
+    // The deleted root was edited first, so ` · edited` can be drawn, and only the column's own
+    // reading of the delete keeps it off.
+    const deleted = await subject({
+      deleted_at: "2026-10-12T00:40:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      edited_at: "2026-10-12T00:20:00Z",
+      subject: "",
+    });
+    expect(deleted).toContain("Deleted by alice");
+    expect(deleted).not.toContain("edited");
+  } finally {
+    listComments.mockRestore();
+  }
+});
+
 test("an issue message conversation reads the issue's messages", async () => {
   const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
   const { view } = renderThread(
@@ -1448,19 +1484,15 @@ test("the next ask's card shows no answer refused on the ask before it, and its 
 /** A thread's root comment on `issueKey`, as the issue's comments read answers it. */
 function rootComment(id: string, issueKey: string): Comment {
   return {
+    ...commentDeliveryFields(),
     anchor: null,
-    answers: null,
-    artifact_id: null,
     ask_id: null,
     author: { id: "bob", kind: "user" },
     body: "The retry budget is too small.",
     created_at: "2026-10-12T00:00:00Z",
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: issueKey,
-    mentions: [],
-    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -1592,6 +1624,7 @@ function plannerExchange(id: string, reply: string): MessageRead {
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,

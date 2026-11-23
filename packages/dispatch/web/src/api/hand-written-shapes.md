@@ -115,7 +115,13 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   `Refusals`, and the emitter has no route to attach it to. The dashboard reads it from this
   hand-written type, and `scripts/gen-go.ts` renders the code into Go. Giving it a Go type and
   attaching it to the `Refusals` of every route that takes an id would generate it; that is a
-  change to which routes declare which refusals, which this issue does not make.
+  change to which routes declare which refusals, which this issue does not make. Since the
+  type is written by hand, a field the Go candidate (`refs.Candidate`, `refs/prefix.go`) gains
+  is added to it by hand too: `edited_at`, and `deleted_at` with `deleted_by`, are the marks of a
+  candidate comment or message its author edited or deleted, which the match list
+  (`ItemMatchList.tsx`) prints as every other surface prints them, the deleted line in place of
+  the `first_line` the delete cleared. Each is absent on a post that stands unedited, on every
+  other kind, and from a Dispatch older than the fields.
 
 ## What is not generated, and is not an exception either
 

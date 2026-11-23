@@ -36,6 +36,8 @@ import {
 } from "../../theme/classes";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import {
   buildIssuePath,
@@ -229,6 +231,11 @@ function ResultOption({
   // The route table carries the kind as a plain string; a kind this build has no icon or label
   // for keeps its own word and draws no icon, rather than borrowing another kind's.
   const kind = searchResultKind(result.kind);
+  // A delete takes the post's windows with its body, so a deleted post is no hit once the
+  // delete commits. The mark is the backstop for a hit of one all the same, whose snippet is
+  // empty: the deleted line stands where the snippet would, as it does in the referenced-by
+  // list.
+  const deleted = postDeletion(result);
 
   return (
     <PaletteOption
@@ -249,14 +256,20 @@ function ResultOption({
         {result.artifact === undefined ? null : (
           <span className="truncate">{result.artifact.name}</span>
         )}
+        {/* A comment or a message its author edited says so, as its byline does. */}
+        <EditedMark at={result.edited_at} className="shrink-0" deleted={deleted} />
       </div>
-      <MarkdownPreview
-        className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
-        highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
-        lines={2}
-        markdown={source}
-        tree={result.snippet_tree}
-      />
+      {deleted === null ? (
+        <MarkdownPreview
+          className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}
+          highlightClassName={`rounded px-0.5 ${searchHitBg} ${searchHitText}`}
+          lines={2}
+          markdown={source}
+          tree={result.snippet_tree}
+        />
+      ) : (
+        <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
+      )}
       {result.ask === undefined ? null : <AskHitStatus ask={result.ask} muted={muted} />}
     </PaletteOption>
   );

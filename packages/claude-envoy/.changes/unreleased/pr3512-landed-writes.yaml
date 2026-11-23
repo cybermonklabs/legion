@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A reply, a BTW answer, a rejected frame's report or a delivery accept that landed on Dispatch while
+  Dispatch kept no copy of its answer is taken as made: no error reply follows a BTW answer that
+  landed, and stderr says the write landed rather than that it did not reach Dispatch. A Codex
+  session does the same for its accepts, replies and BTW answers.
+time: 2026-11-18T19:21:21.000000000Z
+custom:
+    Issue: pr3512

@@ -215,6 +215,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"document_search",
 		"search_term_queue",
 		"handoffs",
+		"post_body_history",
 	}
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select tablename
@@ -265,12 +266,15 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 		"comments_replies_to_block",
 		"messages_replies_to_block",
 		"events_person_words_with_declines",
+		"events_post_text_changes",
 		"comment_deliveries_session",
 		"message_deliveries_session_taken",
 		"embeddings_window_owner",
 		"asks_issue_key",
 		"messages_issue_roots",
 		"document_search_vector",
+		"post_body_history_comment",
+		"post_body_history_message",
 	}
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select indexname

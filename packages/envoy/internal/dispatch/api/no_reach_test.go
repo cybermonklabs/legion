@@ -1245,6 +1245,11 @@ var readRelations = map[string][]string{
 // is, so a field the answer drops fails naming its path however deep it sits, where a check of
 // the top level alone, or of the fields the document requires, passes a nested field and one Go
 // leaves out where it is empty (`omitempty`).
+//
+// Four paths are not the fork point's, and each is named where it stands: deleted_at and
+// deleted_by of the comment and of its replies, which pull request #3512 (INFRA-1523) adds to
+// every comment by its R3 and not this child. Every other path is the fork point's, so a field
+// the store adds to either read still fails here as one the read did not answer.
 var readAnswerPaths = map[string][]string{
 	"GET /api/v1/comments/{id}": {
 		"comment",
@@ -1258,6 +1263,11 @@ var readAnswerPaths = map[string][]string{
 		"comment.answers", "comment.artifact_id", "comment.ask_id",
 		"comment.author", "comment.author.id", "comment.author.kind", "comment.author.proven",
 		"comment.body", "comment.created_at",
+		// INFRA-1523's R3, not #3178: the delete mark every read of a comment carries
+		// (model.Comment's DeletedAt and DeletedBy, no omitempty). A comment that stands, as this
+		// seed's does, answers each as null, and answerWalk.object counts a field it carries as
+		// null.
+		"comment.deleted_at", "comment.deleted_by",
 		"comment.deliveries", "comment.deliveries[].attempt", "comment.deliveries[].comment_id",
 		"comment.deliveries[].created_at", "comment.deliveries[].delivery", "comment.deliveries[].duplicate",
 		"comment.deliveries[].envelope_id", "comment.deliveries[].error", "comment.deliveries[].reply_id",
@@ -1273,6 +1283,9 @@ var readAnswerPaths = map[string][]string{
 		"replies[].anchor", "replies[].answers", "replies[].artifact_id", "replies[].ask_id",
 		"replies[].author", "replies[].author.id", "replies[].author.kind", "replies[].author.proven",
 		"replies[].body", "replies[].created_at", "replies[].deliveries", "replies[].edited_at", "replies[].id",
+		// INFRA-1523's R3, not #3178: the reply's delete mark, null on this seed's reply, as
+		// comment.deleted_at and comment.deleted_by above.
+		"replies[].deleted_at", "replies[].deleted_by",
 		"replies[].issue_key", "replies[].mentions", "replies[].reply_block", "replies[].reply_to",
 		"replies[].resolved", "replies[].resolved_at", "replies[].resolved_by", "replies[].suggestion",
 		"replies[].turn",

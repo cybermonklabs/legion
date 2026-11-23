@@ -7,7 +7,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link } from "react-router-dom";
 
 import type { Actor, CheckBlock } from "../../../api/types";
 import {
@@ -30,13 +29,15 @@ import {
   pageWordsText,
 } from "../../../theme/classes";
 import { useAgentText } from "../../refs/AgentName";
-import { buildReferencePath, parseNodeReference } from "../../refs/routes";
+import { EditedMark } from "../../refs/PostBody";
+import { postDeletion } from "../../refs/post-marks";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
 import { lineWords, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
+import { DeletedLine, NODE_EDITED_MARKS, ParentLink } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
 import { authorText, pageChrome } from "../page-structure";
@@ -1502,14 +1503,15 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
 }
 
 /** The one line a row draws for the node its words came from, where the filter draws that node
- *  as no row: its kind and its first line. The line is the link a reader follows to that node
- *  where the model gives it an address, as the outline's `ParentLink` draws it, and text where
- *  it gives none or the address does not parse. The link is a tab stop, as every control of the
- *  view is: the tree's keys move between rows and reach no link inside one. */
+ *  as no row: its kind and its first line, drawn by the outline's own `ParentLink`. The line is
+ *  the link a reader follows to that node where the model gives it an address, and text where
+ *  it gives none or the address does not parse. The link is a tab stop (`tabStops`), as every
+ *  control of the view is: the tree's keys move between rows and reach no link inside one. A
+ *  parent its author deleted is drawn as the deleted line, and one its author edited says
+ *  ` · edited` after its line, as the outline's parent line draws them (INFRA-1523, R2 and R3). */
 function ParentLine({ node }: { node: TreeNode }): ReactNode {
   const line = node.parentLine;
   if (line === undefined) return null;
-  const route = line.reference === undefined ? undefined : parseNodeReference(line.reference);
   return (
     <p
       className={`mt-0.5 flex min-w-0 items-baseline gap-1 text-xs leading-5 ${pageQuietText}`}
@@ -1520,19 +1522,7 @@ function ParentLine({ node }: { node: TreeNode }): ReactNode {
       <span className="shrink-0" {...pageChrome}>
         {NODE_TYPE_NAMES[line.type]}
       </span>
-      {route === undefined ? (
-        <span className="min-w-0 break-words" {...authorText}>
-          {line.line}
-        </span>
-      ) : (
-        <Link
-          className={`dispatch-inline-link min-w-0 break-words underline decoration-page-bullet underline-offset-[3px] ${pageQuietText}`}
-          to={buildReferencePath(route)}
-          {...authorText}
-        >
-          {line.line}
-        </Link>
-      )}
+      <ParentLink line={line} tabStops />
     </p>
   );
 }
@@ -1541,8 +1531,14 @@ function ParentLine({ node }: { node: TreeNode }): ReactNode {
  *  which outranks the filter. It is drawn by its kind and its words, so nothing the filter drew
  *  is lost. It is a row of the tree and of the table, as a check that serves no statement is.
  *  The links in its words are tab stops, as every control of the view is: the tree's keys move
- *  between rows and reach no link inside one. */
+ *  between rows and reach no link inside one. A comment or a message its author corrected
+ *  carries its mark as the outline's row does (INFRA-1523, R2 and R3): a deleted one draws the
+ *  deleted line in place of its words (`DeletedLine`), from the delete and never from its text,
+ *  which names the actor as no registry knows it and the time as stored; an edited one says
+ *  ` · edited` after its kind (`EditedMark`), outside its words, as the outline's row says it in
+ *  its margin. */
 function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): ReactNode {
+  const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
   return (
     <div
       aria-level={1}
@@ -1555,11 +1551,18 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
       role="treeitem"
       tabIndex={tabIndex}
     >
-      <p className={`text-xs leading-5 ${pageQuietText}`} {...pageChrome}>
-        {NODE_TYPE_NAMES[node.type]}
+      <p className={`text-xs leading-5 ${pageQuietText}`}>
+        <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+        <EditedMark at={node.editedAt} marks={NODE_EDITED_MARKS} />
       </p>
       <div className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`} data-node-words="">
-        <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+        {deleted === null ? (
+          <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+        ) : (
+          <p className="break-words" {...authorText}>
+            <DeletedLine deleted={deleted} />
+          </p>
+        )}
       </div>
       <ParentLine node={node} />
     </div>

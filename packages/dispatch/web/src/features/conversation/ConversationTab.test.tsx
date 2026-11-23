@@ -1,4 +1,5 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { DELETED_POST_DELIVERY_ERROR } from "@legion/contracts";
 import { type MutationKey, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -15,6 +16,8 @@ import {
   type Placement,
 } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
+import { ownReplies } from "../../__tests__/own-replies";
 import { answerIssueStates, answerThreadReads } from "../../__tests__/send-answers";
 import { heldDraftWords, stopReplySend } from "../../__tests__/stop-late-write";
 import { wholeText } from "../../__tests__/whole-text";
@@ -90,6 +93,7 @@ function message(id: string, overrides: Partial<Message> = {}): Message {
     body: `Body of ${id}`,
     created_at: "2026-09-09T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: "CORE-1",
@@ -662,6 +666,78 @@ test("a mention its session answered with an error is pointed at a new comment, 
         `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
       )
     );
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A delete ends each send of its post still pending, with its own words, and Dispatch refuses
+// every new delivery of a deleted post (409 POST_DELETED). So the attempt a comment's delete
+// ended reads the delete's words alone, never that it failed, with no Retry, while a standing
+// comment's failed mention still reads as failed and keeps its Retry; and a deleted targeted
+// message's card says the delete ended it and offers neither Retry nor a mode change.
+test("an attempt a post's delete ended offers no Retry or mode change, and a standing post's still does", async () => {
+  const deletion = { deleted_at: "2026-09-20T00:05:00Z", deleted_by: alice };
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", {
+        ...deletion,
+        body: "",
+        deliveries: [
+          mentionAttempt({
+            comment_id: "comment-1",
+            error: DELETED_POST_DELIVERY_ERROR,
+            session_id: "worker",
+            target: "session:worker",
+          }),
+        ],
+        mentions: [{ delivery: "btw", session_id: "worker", target: "session:worker" }],
+      }),
+      comment("comment-2", {
+        body: "@reviewer take a look",
+        deliveries: [
+          mentionAttempt({
+            comment_id: "comment-2",
+            error: "reviewer failed",
+            session_id: "reviewer",
+            target: "session:reviewer",
+          }),
+        ],
+        mentions: [{ delivery: "btw", session_id: "reviewer", target: "session:reviewer" }],
+      }),
+    ],
+    messages: [
+      thread(
+        message("message-1", {
+          ...deletion,
+          body: "",
+          deliveries: [attempt({ error: DELETED_POST_DELIVERY_ERROR, state: "failed" })],
+          target: "session:s1",
+        })
+      ),
+    ],
+  });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    await screen.findByText(wholeText("session:worker… · Ended by the post's delete"));
+    expect(
+      screen.queryByText(wholeText(`session:worker… · failed · ${DELETED_POST_DELIVERY_ERROR}`))
+    ).toBeNull();
+    screen.getByText(
+      wholeText(
+        `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
+      )
+    );
+    const card = (await screen.findByText("Ended by the post's delete")).closest(
+      "[data-turn]"
+    ) as HTMLElement;
+    expect(within(card).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(within(card).queryByRole("button", { name: /instead/ })).not.toBeInTheDocument();
+    // The one Retry on the page is the standing comment's.
     expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
   } finally {
     view.unmount();
@@ -2794,5 +2870,222 @@ test("a Conversation turn links the `#q2` the question map of its message names"
     stub.restore();
     getAsk.mockRestore();
     getReferenceQuestions.mockRestore();
+  }
+});
+
+test("the Conversation marks an edited message and reads a deleted one as deleted", async () => {
+  const root = message("message-1", { edited_at: "2026-09-09T01:00:00Z" });
+  // The deleted reply keeps its body, "Body of message-2", beside the marks, so only the
+  // Conversation's own reading of the marks keeps it off the page.
+  const deletedReply = message("message-2", {
+    created_at: "2026-09-09T02:00:00Z",
+    deleted_at: "2026-09-09T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+    in_reply_to: "message-1",
+  });
+  const stub = stubLists({ messages: [thread(root, [deletedReply])] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const turn = await screen.findByText("Body of message-1");
+    const card = turn.closest("[data-turn]") as HTMLElement;
+    expect(card.textContent).toContain("edited");
+    await waitFor(() => expect(card.textContent).toContain("Deleted by alice"));
+    expect(card.textContent).not.toContain("Body of message-2");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// An author who edits a reply and then deletes it leaves both marks on the record, and the
+// reader meets only the deleted line: ` · edited` points at a body no read of the reply gives any more.
+test("a deleted reply its author had edited reads as deleted, with no edited mark", async () => {
+  const root = message("message-1");
+  const deletedReply = message("message-2", {
+    body: "",
+    created_at: "2026-09-09T02:00:00Z",
+    deleted_at: "2026-09-09T04:00:00Z",
+    deleted_by: alice,
+    edited_at: "2026-09-09T03:00:00Z",
+    in_reply_to: "message-1",
+  });
+  const stub = stubLists({ messages: [thread(root, [deletedReply])] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+  try {
+    const deletedLine = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>("[data-post-deleted]");
+      if (found === null) throw new Error("the deleted reply is not on the page yet");
+      return found;
+    });
+    const reply = deletedLine.closest("[data-reply]") as HTMLElement;
+    expect(reply.textContent).toContain("Deleted by alice");
+    expect(reply.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// The quote under a reply prints its parent, so a parent its author edited carries ` · edited`
+// there too, as its own byline does; a parent nobody edited does not.
+test("a reply's quote of an edited parent marks the parent as edited, and of a standing one does not", async () => {
+  const reply = (id: string, parent: string) =>
+    message(id, { body: `Answer ${id}.`, created_at: "2026-09-09T02:00:00Z", in_reply_to: parent });
+  const stub = stubLists({
+    messages: [
+      thread(message("message-1", { body: "Alpha.", edited_at: "2026-09-09T01:00:00Z" }), [
+        reply("message-2", "message-1"),
+      ]),
+      thread(message("message-3", { body: "Gamma." }), [reply("message-4", "message-3")]),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const turn = (id: string) => view.container.querySelector(`[data-turn="message:${id}"]`);
+
+  try {
+    await waitFor(() =>
+      expect(turn("message-2")?.textContent).toContain("Replying to alice · edited — Alpha.")
+    );
+    await waitFor(() =>
+      expect(turn("message-4")?.textContent).toContain("Replying to alice — Gamma.")
+    );
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// Reply takes the message as it stands when it is pressed, and a draft can be open when its
+// author deletes it. The composer's quote reads the message from the Conversation's own read, so
+// once the delete lands it says the message is deleted and gives no part of the body the draft
+// took; until then it quotes the standing message as ever.
+test("the composer's quote of a message deleted while the draft is open reads as deleted, with no part of its body", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({ messages: [thread(message("message-1", { body: "Alpha." }))] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+
+  try {
+    const turn = (await screen.findByText("Alpha.")).closest("[data-turn]") as HTMLElement;
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(composer().textContent).toContain("Replying to alice — Alpha."));
+
+    stub.lists.messages = [
+      thread(
+        message("message-1", { body: "", deleted_at: "2026-09-09T03:00:00Z", deleted_by: alice })
+      ),
+    ];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+
+    await waitFor(() => expect(composer().textContent).toContain("Deleted by alice"));
+    expect(composer().textContent).toContain("Replying to alice");
+    expect(composer().textContent).not.toContain("Alpha.");
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A post its author deleted takes no reply (409 POST_DELETED), so the Conversation offers no
+// Reply on one - a message, a reply to one, a comment - as the margin's card draws no reply
+// composer under a deleted root; a standing post beside each keeps its Reply.
+test("the Conversation offers no Reply on a deleted message, reply or comment, and a standing one keeps it", async () => {
+  const deleted = { deleted_at: "2026-09-21T00:00:00Z", deleted_by: alice };
+  const stub = stubLists({
+    comments: [
+      comment("comment-1", deleted),
+      comment("comment-2", { created_at: "2026-09-20T01:00:00Z" }),
+    ],
+    messages: [
+      thread(message("message-1", deleted), [
+        message("message-2", { created_at: "2026-09-09T01:00:00Z", in_reply_to: "message-1" }),
+      ]),
+      thread(message("message-3", { created_at: "2026-09-09T02:00:00Z" }), [
+        message("message-4", {
+          ...deleted,
+          created_at: "2026-09-09T03:00:00Z",
+          in_reply_to: "message-3",
+        }),
+      ]),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const turn = (id: string) => view.container.querySelector(`[data-turn="${id}"]`);
+
+  try {
+    await screen.findByText("Body of message-2");
+    await screen.findByText("Body of comment-2");
+    expect({
+      deletedComment: ownReplies(turn("comment:comment-1")),
+      deletedMessage: ownReplies(turn("message:message-1")),
+      deletedReply: ownReplies(turn("message:message-4")),
+      standingComment: ownReplies(turn("comment:comment-2")),
+      standingMessage: ownReplies(turn("message:message-3")),
+      standingReply: ownReplies(turn("message:message-2")),
+    }).toEqual({
+      deletedComment: 0,
+      deletedMessage: 0,
+      deletedReply: 0,
+      standingComment: 1,
+      standingMessage: 1,
+      standingReply: 1,
+    });
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A reply open when its message is deleted can no longer go: the message takes no reply (409
+// POST_DELETED), so Send says so and sends nothing, and Cancel reply takes the words the reader
+// wrote to the issue's own address, where they go as a message that answers none.
+test("a reply open when its message is deleted sends nothing, and Cancel reply takes its words to the issue", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({ messages: [thread(message("message-1", { body: "Alpha." }))] });
+  const queryClient = newQueryClient();
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  const composer = () => screen.getByRole("form", { name: "Comment composer" });
+  const send = () => within(composer()).getByRole("button", { name: "Send" });
+  const field = () =>
+    within(composer()).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+
+  try {
+    const turn = (await screen.findByText("Alpha.")).closest("[data-turn]") as HTMLElement;
+    await user.click(within(turn).getByRole("button", { name: "Reply" }));
+    await user.click(field());
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Ship it.");
+    stub.lists.messages = [
+      thread(
+        message("message-1", { body: "", deleted_at: "2026-09-09T03:00:00Z", deleted_by: alice })
+      ),
+    ];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["issue-messages", "CORE-1"] }));
+    await waitFor(() => expect(composer().textContent).toContain("Deleted by alice"));
+    const deleted = { refusal: send().getAttribute("title"), text: field().value };
+    await user.click(within(composer()).getByRole("button", { name: "Cancel reply" }));
+    expect({
+      cancelled: {
+        quoted: composer().textContent?.includes("Replying to") ?? false,
+        refusal: send().getAttribute("title"),
+        text: field().value,
+      },
+      deleted,
+    }).toEqual({
+      cancelled: { quoted: false, refusal: null, text: "Ship it." },
+      deleted: {
+        refusal:
+          "The message this reply answers was deleted, so it takes no reply. Press Cancel reply to send it as a message that answers none.",
+        text: "Ship it.",
+      },
+    });
+  } finally {
+    view.unmount();
+    stub.restore();
   }
 });

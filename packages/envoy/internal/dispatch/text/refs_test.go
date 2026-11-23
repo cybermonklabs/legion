@@ -335,8 +335,8 @@ func TestExtractReadsADashboardPageBlockFragment(t *testing.T) {
 // A block of an ask, a comment or an issue message is addressed under its item, by a
 // `dispatch://` reference or the item's dashboard page, and its target id is `<item kind>/<item
 // id>#<block id>`. An ask's part can be pinned to a revision of the ask's parts and a comment's
-// block to a revision of its comment; a message never changes, so a pinned message block names
-// nothing, nor does a block of a project document's message, which no reference addresses. A
+// block to a revision of its comment; a message records no revisions, so a pinned message block
+// names nothing, nor does a block of a project document's message, which no reference addresses. A
 // page's raw `@` is no pin: the page names the item. A project document's page names its ask or
 // comment, never a block of it: the fragment beside a `?comment=` or an `?ask=` is the
 // document's.

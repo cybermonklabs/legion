@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
+import { actorLabelText } from "../refs/AgentName";
+import { deletedLineText } from "../refs/post-marks";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView } from "./presets";
@@ -268,6 +270,37 @@ test("a parent line carries the parent's own address", () => {
   ]);
 });
 
+// R2 and R3 of dispatch://INFRA-1523: a parent the filter draws as no row is a comment or a
+// message its author may have corrected, so its line carries the parent's marks - when and by
+// whom it was deleted, when it was edited - and its child's row draws them with the line. A
+// parent nobody corrected carries none.
+test("a parent line carries a deleted or an edited parent's marks", () => {
+  const by = { id: "alice", kind: "user" };
+  const root = node("CORE-1", "issue", [
+    node("comment-1", "comment", [node("plan#b-t1", "plan_task")], {
+      deletedAt: "2026-11-05T12:00:00Z",
+      deletedBy: by,
+      text: "Deleted by alice · 2026-11-05T12:00:00Z",
+    }),
+    node("message-1", "message", [node("plan#b-t2", "plan_task")], {
+      editedAt: "2026-11-05T13:00:00Z",
+    }),
+    node("comment-2", "comment", [node("plan#b-t3", "plan_task")]),
+  ]);
+  const lines = presetView(root, "plan", "").root.children.map((task) => task.parentLine);
+  expect(lines).toEqual([
+    {
+      deletedAt: "2026-11-05T12:00:00Z",
+      deletedBy: by,
+      id: "comment-1",
+      line: "Deleted by alice · 2026-11-05T12:00:00Z",
+      type: "comment",
+    },
+    { editedAt: "2026-11-05T13:00:00Z", id: "message-1", line: "message-1", type: "message" },
+    { id: "comment-2", line: "comment-2", type: "comment" },
+  ]);
+});
+
 // R1, R2: a parent's line is drawn as a row's first line is
 // (`drawnLine`), with an ellipsis where the cut ended inside a sentence and none where the line
 // is a whole sentence, whose own mark ends it.
@@ -372,4 +405,38 @@ test("the words filter matches the words a node draws, never its stored source",
   const markup = presetView(root, "conversation", "**");
   expect(markup.matches).toBe(0);
   expect(markup.root.children).toEqual([]);
+});
+
+// The architect's ruling of 2026-11-20 07:52Z on dispatch://INFRA-1523: a deleted post's node holds
+// its deleted line as its text, as the model writes it (`tree-drafts.ts`'s `deletedPostLine`): a
+// session named by its short id and the time as stored, which its row draws as neither, since the
+// row draws the page's own deleted line (`DeletedLine`). A deleted post has no words of its own
+// left, so the words filter matches it by none: not by the session's id, the raw time or the
+// line's words. A post nobody deleted still matches by its words.
+test("the words filter matches a deleted post by no words", () => {
+  const session = { id: "0f8e2c4a-1111-4222-8333-444455556666", kind: "session" } as const;
+  const deletion = { at: "2026-11-05T12:00:00Z", by: session };
+  const root = node("CORE-1", "issue", [
+    node("comment-1", "comment", [], {
+      deletedAt: deletion.at,
+      deletedBy: session,
+      text: `${deletedLineText(deletion, { label: actorLabelText })} · ${deletion.at}`,
+    }),
+    node("comment-2", "comment", [], { text: "Ship it on Friday." }),
+  ]);
+  const queries = [actorLabelText(session), "0f8e", "2026-11-05T12", "deleted by", "friday"];
+  expect(
+    Object.fromEntries(
+      queries.map((query) => [
+        query,
+        drawn(root, "conversation", query).filter((id) => id.startsWith("comment")),
+      ])
+    )
+  ).toEqual({
+    [actorLabelText(session)]: [],
+    "0f8e": [],
+    "2026-11-05T12": [],
+    "deleted by": [],
+    friday: ["comment-2"],
+  });
 });

@@ -157,6 +157,38 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
   expect(earlier.textContent).toBe(drawn);
 });
 
+// R2 of dispatch://INFRA-1523: a row names a post its author edited by its words then
+// ` · edited`, as a link to it reads (`useReferenceLabel`). The page publishes the words alone and
+// the edited references beside them, and a row cuts the words to its 60 characters before it
+// marks what the cut left: a mark written at the end of the name was cut off a name longer than
+// that, and a long edited post read as one nobody edited.
+const EDITED = "dispatch://CORE-1/comment/comment-9";
+const LONG_WORDS = "Hold the deploy until the plan lands and the reviewer has signed off on it";
+const LONG_HEAD = "Hold the deploy until the plan lands and the reviewer has";
+
+test("an edited post whose words are longer than the cut keeps ` · edited` after the cut", () => {
+  expect(LONG_WORDS.length).toBeGreaterThan(60);
+  const [link] = rowReferences(`see ${EDITED}`, []);
+  if (link === undefined) throw new Error("the text holds one reference");
+  const names = new Map([[EDITED, LONG_WORDS]]);
+  expect(rowReferenceWords(link, names, new Set([EDITED]))).toEqual({
+    key: undefined,
+    words: `${LONG_HEAD} · edited`,
+  });
+  // A post nobody edited is cut the same way and takes no mark.
+  expect(rowReferenceWords(link, names)).toEqual({ key: undefined, words: LONG_HEAD });
+  // A target the read has not named reads as its short form, unmarked.
+  expect(rowReferenceWords(link, new Map(), new Set([EDITED]))).toEqual({
+    key: undefined,
+    words: "CORE-1 comment",
+  });
+  // The pass draws the same words.
+  const root = document.createElement("div");
+  root.innerHTML = `<p>See ${EDITED} today</p>`;
+  linkRowReferences(root, names, new Set(), new Set([EDITED]));
+  expect(root.textContent).toBe(`See ${LONG_HEAD} · edited today`);
+});
+
 // Each row's words were read again on every draw. A text is read once for each list
 // of issue keys it is read against, however often a row draws it; another text, or another list
 // of keys, is read anew. A new set of ambiguous references is applied to the kept reading, so the

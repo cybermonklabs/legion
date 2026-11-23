@@ -97,12 +97,15 @@ export interface DispatchEvent {
   payload: Record<string, unknown>;
 }
 
-/** One reply to a Dispatch comment, with the fields `claimRunOf` (`reserve.ts`) reads. */
+/** One reply to a Dispatch comment, with the fields `claimRunOf` (`reserve.ts`) reads. A reply its
+ *  author deleted keeps its place and its `created_at`, carries `deleted_at`, and has an empty
+ *  body; a Dispatch older than the delete serves no `deleted_at` at all. */
 export interface CommentReply {
   id: string;
   body: string;
   created_at: string;
   edited_at: string | null;
+  deleted_at?: string | null;
 }
 
 /** The replies to one comment, as `GET /api/v1/comments/<id>` serves its thread. */

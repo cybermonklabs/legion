@@ -119,9 +119,16 @@ function kindOf(node: TreeNode): NodeType | undefined {
 
 /** Whether `node`'s words hold `wanted`, which is already lowercased; `""` holds everywhere.
  *  The words are the ones a reader reads (`nodeWords`, R1, R4's "the nodes whose words hold
- *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. */
+ *  them"), never the stored source: `**bold** text` is found by `bold text` and not by `**`. A
+ *  post its author deleted holds none: its text is the deleted line as the model writes it
+ *  (`tree-drafts.ts`'s `deletedPostLine`), naming the actor by a short id and the time as stored,
+ *  and its row draws the page's own deleted line in its place (`NodeRow.tsx`'s `DeletedLine`), so
+ *  no word typed finds it (INFRA-1523, R3). */
 function holds(node: TreeNode, wanted: string): boolean {
-  return wanted === "" || nodeWords(node).toLowerCase().includes(wanted);
+  return (
+    wanted === "" ||
+    (node.deletedAt === undefined && nodeWords(node).toLowerCase().includes(wanted))
+  );
 }
 
 /**
@@ -232,6 +239,11 @@ function filterView(
             // The parent's own address, which makes its line the link a reader follows to it
             // (R18, and R26: a step's row reaches the statement it serves).
             ...(node.reference === undefined ? {} : { reference: node.reference }),
+            // A comment's or a message's marks, which its child's row draws with the line
+            // (INFRA-1523, R2 and R3).
+            ...(node.deletedAt === undefined ? {} : { deletedAt: node.deletedAt }),
+            ...(node.deletedBy === undefined ? {} : { deletedBy: node.deletedBy }),
+            ...(node.editedAt === undefined ? {} : { editedAt: node.editedAt }),
             type: node.type,
           };
     const below = parts.flatMap((part) =>

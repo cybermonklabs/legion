@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The `DELETE /api/v1/comments/{id}` and `DELETE /api/v1/messages/{id}` contracts declare
+  `409 DELETE_CONTENDED`, the refusal of a delete a send of its post moved under while it was
+  being written: it carries `Retry-After: 1` and writes nothing, so the caller sends the same delete
+  again. Both name the words a delete settles a pending send with, `ended by the post's delete`,
+  which say the delete ended the attempt and nothing about a frame already sent, and
+  `DELETED_POST_DELIVERY_ERROR` exports them (generated into Go as
+  `contracts.DeletedPostDeliveryError`).
+time: 2026-11-19T06:03:49.147617612Z
+custom:
+    Issue: pr3512

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Prints what a searcher sees for each query in a file: Dispatch's own server, started against
 # DATABASE_URL (a corpus copy from corpus-copy.sh), answers GET /api/v1/search, and each answer
-# prints as one line of totals and its rows as `pos kind owner id snippet`. The output is plain
-# text, so two builds' runs diff; `took_ms` sits on its own line for that reason.
+# prints as one line of totals and its rows as `pos kind owner id snippet`, where a deleted
+# comment's or message's row says who deleted it and when in place of the snippet. The output is
+# plain text, so two builds' runs diff; `took_ms` sits on its own line for that reason.
 #
 # The server runs with a throwaway HOME, a made-up agent token and a trusted identity header, so it
 # reads no operator configuration and holds no credential; NATS is off. It migrates the database
@@ -101,11 +102,14 @@ while IFS= read -r query || [[ -n "$query" ]]; do
   [[ -z "$query" || "$query" == \#* ]] && continue
   answer="$(curl -fsS -G -H 'X-Dispatch-User: smoke@example.test' "${base}/api/v1/search" \
     --data-urlencode "q=${query}" --data-urlencode "limit=${limit}" --data-urlencode "offset=${offset}")"
-  # An answer from a server that predates totals prints "-" for them.
+  # An answer from a server that predates totals prints "-" for them. A deleted post is no hit
+  # once its delete commits, since the delete takes its windows with its body; a hit of one all
+  # the same, which the mark is the backstop for, carries an empty snippet and its delete mark,
+  # and prints the mark in the snippet's place.
   jq -r --arg query "$query" --argjson offset "$offset" '
     "== \($query)  total=\(.total // "-") reachable=\(.reachable // "-")",
     "   took_ms=\(.took_ms)",
     (.results | to_entries[] | .value as $hit |
-      "\(.key + 1 + $offset)\t\($hit.kind)\t\(if $hit.owner.kind == "issue" then $hit.owner.key else "\($hit.owner.project)/\($hit.owner.slug)" end)\t\($hit.id)\t\($hit.snippet | gsub("</?mark>"; "") | gsub("\\s+"; " ") | .[0:60])")
+      "\(.key + 1 + $offset)\t\($hit.kind)\t\(if $hit.owner.kind == "issue" then $hit.owner.key else "\($hit.owner.project)/\($hit.owner.slug)" end)\t\($hit.id)\t\(if $hit.deleted_at then "Deleted by \(if $hit.deleted_by then "\($hit.deleted_by.kind) \($hit.deleted_by.id)" else "its author" end) at \($hit.deleted_at)" else ($hit.snippet | gsub("</?mark>"; "") | gsub("\\s+"; " ") | .[0:60]) end)")
   ' <<<"$answer"
 done <"$queries"

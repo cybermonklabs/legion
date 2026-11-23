@@ -20,6 +20,7 @@ const REASONS = {
   8: "8. On a phone the comment's Expand thread opens the full-screen thread view in place of opening the card in the list (`toggleThread`'s `isPhone`), and its Reply answers in the view's own composer (`onReply`, and Reply's `!isPhone`), so the first row and the phone Reply row are the phone's forms of the Collapse thread and Reply rows. A comment link opens the view as Expand thread does (`ConversationTab`'s focus effect), and a decision landing on the comment closes it as Back does (`phone.hide`).",
   9: "9. The view's card is drawn only while a thread is open (`phoneThread`) and keyed by its thread (`key={phoneThread.id}`): another thread is opened after Back, and widening the page past the phone layout closes the view as Back does unless a send from it is out (`usePhoneThread`'s `outlived`), the first row's move either way.",
   10: "10. The read mark's ref on the newest card (`register`) moves to the view's copy of it while a thread is open; it marks the issue read and moves no reply. The margin's thread reply is the margin file's, and the app shell's forms are the sign-in file's.",
+  11: "11. A thread whose root its author deleted takes no reply: Dispatch refuses one (409 POST_DELETED), so the card draws its reply only while the root stands (`rootDeleted`). A delete that lands while the reply is open unmounts it as Collapse thread does, and what it held stays under the thread's reply send name, as the closed card says (`keptReply`). The delete is its author's, not a move of the host's or the reader's, and Dispatch takes no reply to a deleted root, so no row makes it.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -30,6 +31,11 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded) ? …",
     cells(`${HOST} · thread collapsed by the host, then opened`)
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | conditional | (expanded && rootDeleted === null) ? …",
+    cells(`${HOST} · thread collapsed by the host, then opened`),
+    { reason: REASONS[11] }
   ),
   ...answers(
     "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | mutationKey={replyMutationKey}",

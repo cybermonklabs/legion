@@ -833,6 +833,8 @@ test("models full orphaned anchor refresh events without a notification", () => 
     author: { id: "session-1", kind: "session" } as const,
     body: "This suggestion is now stale.",
     created_at: "2026-09-18T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "comment-1",
@@ -1046,6 +1048,8 @@ test("models comment thread lifecycle events and author edits", () => {
     author: actor,
     body: "Edited discussion",
     created_at: "2026-09-10T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     edited_at: "2026-09-10T00:02:00Z",
     id: "comment-1",
     issue_key: "DSP-1",
@@ -1148,6 +1152,8 @@ test("keeps the comment id, author, and message id when parsing event payloads",
     author: actor,
     body: "Please update this.",
     created_at: "2026-09-10T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     edited_at: null,
     id: "comment-1",
     issue_key: "DSP-1",
@@ -1241,8 +1247,10 @@ test("a reply names the block it answers, and an event recorded before reads no 
     replyInput.in_reply_to_block,
   ]).toEqual(["b2", "b2", "b2", "b2"]);
 
+  // A quote of a post its author edited carries the edit; a quote of an unedited one, none.
   const block: ReplyBlock = {
     block_id: "b2",
+    edited_at: "2026-09-10T00:00:00.5Z",
     node: "comment/comment-1#b2",
     ref: "dispatch://DSP-1/comment/comment-1#b-b2",
     removed: false,
@@ -1260,6 +1268,9 @@ test("a reply names the block it answers, and an event recorded before reads no 
     author: actor,
     body: "On two.",
     created_at: "2026-09-10T00:00:01Z",
+    deleted_at: null,
+    deleted_by: null,
+    edited_at: null,
     deliveries: [],
     id: "message-2",
     in_reply_to: "message-1",
@@ -1275,6 +1286,8 @@ test("a reply names the block it answers, and an event recorded before reads no 
     author: actor,
     body: "On the second paragraph.",
     created_at: "2026-09-10T00:00:01Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "comment-2",
@@ -1303,6 +1316,40 @@ test("a reply names the block it answers, and an event recorded before reads no 
     MessageEventPayloadSchema.parse({ id: "message-3", author: actor, in_reply_to: "message-1" })
       .reply_block
   ).toBeUndefined();
+});
+
+// A deleted post's events carry the mark in place of the body, and an edited message carries the
+// time of its edit. MessageEventPayloadSchema strips a field it does not declare, so the three
+// message marks are declared there; an event written before the corrections carries none of them.
+test("keeps the edited and deleted marks of a post through its event payload", () => {
+  const deletedBy = { id: "alice", kind: "user" };
+  const comment = CommentEventPayloadSchema.parse({
+    id: "comment-1",
+    author: deletedBy,
+    deleted_at: "2026-11-10T00:00:00Z",
+    deleted_by: deletedBy,
+  });
+  const message = MessageEventPayloadSchema.parse({
+    id: "message-1",
+    author: deletedBy,
+    edited_at: "2026-11-10T00:01:00Z",
+    deleted_at: "2026-11-10T00:02:00Z",
+    deleted_by: deletedBy,
+  });
+
+  expect([comment.deleted_at, comment.deleted_by]).toEqual(["2026-11-10T00:00:00Z", deletedBy]);
+  expect([message.edited_at, message.deleted_at, message.deleted_by]).toEqual([
+    "2026-11-10T00:01:00Z",
+    "2026-11-10T00:02:00Z",
+    deletedBy,
+  ]);
+
+  const live = MessageEventPayloadSchema.parse({ id: "message-2", author: deletedBy });
+  expect([live.edited_at, live.deleted_at, live.deleted_by]).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
 });
 
 test("accepts complete targeted-message payloads while ignoring future fields", () => {

@@ -105,7 +105,9 @@ export function approvalAsk(version: number, requestedVersion: number, summary =
   } satisfies Ask;
 }
 
-function recorded(seq: number, actor: ApprovalHistoryEvent["actor"]) {
+/** The fields of the event numbered `seq` beside its type and payload: written by `actor`, on the
+ * issue the request is on. */
+export function recorded(seq: number, actor: ApprovalHistoryEvent["actor"]) {
   return {
     id: seq,
     issue_key: ISSUE,

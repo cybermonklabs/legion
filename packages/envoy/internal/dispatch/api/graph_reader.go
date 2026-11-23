@@ -31,13 +31,15 @@ func (s *server) actingReader(w http.ResponseWriter, r *http.Request) (model.Act
 // request wrote it. Each path that reads as it does so on purpose, because no single acting
 // person is the reader there:
 //
-//   - an event's payload (commentEventPayload) is appended once and read by every subscriber of
-//     the event's topics and every reader of the issue's event log;
+//   - an event's payload (commentEventPayload, and messageCorrectionEvent for a message's edit
+//     and delete) is appended once and read by every subscriber of the event's topics and every
+//     reader of the issue's event log;
 //   - a delivery's frame (finishPendingMessageDelivery) is sent to the session it targets and
 //     read again by every reader of the conversation, not by the person who wrote the message;
-//   - the record of a comment thread a document projects (ProjectMark, from reopenComment,
-//     editComment, commentAction and createCommentFor) is written into the document every
-//     reader of that document reads;
+//   - the record of a comment thread a document projects (ProjectMark, through
+//     projectThreadMark from reopenComment, editComment and deleteComment, and from
+//     commentAction and createCommentFor) is written into the document every reader of that
+//     document reads;
 //   - a comment list (answerCommentList) is kept in listAnswers under its owner and its ETag
 //     and handed to the next reader whose request names the same pair, so an answer read for
 //     one person would be served to another.

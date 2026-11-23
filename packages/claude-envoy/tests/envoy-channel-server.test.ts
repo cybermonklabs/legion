@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
+import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
@@ -94,6 +95,77 @@ test("writes each Envoy envelope into the session as the rendered card that name
       eventId: "evt-42",
     },
   ])
+})
+
+/** A comment event on CORE-1's owner topic, as Dispatch's outbox publishes it: `payload` is the
+ *  event's own. */
+function commentEventRaw(type: string, eventId: string, payload: Record<string, unknown>): string {
+  return JSON.stringify({
+    event_id: eventId,
+    source: "dispatch",
+    source_event_id: "7",
+    topic: `notifications.dispatch.issue.CORE-1.${type}`,
+    dedupe_key: eventId,
+    issued_at: 1_760_000_000_000,
+    payload_summary: "CORE-1 comment",
+    payload: JSON.stringify({
+      id: 7,
+      seq: 7,
+      issue_key: "CORE-1",
+      type,
+      actor: { kind: "user", id: "alice" },
+      notify: true,
+      quiet: false,
+      created_at: "2026-11-02T00:00:00Z",
+      payload: {
+        id: "22222222-2222-4222-8222-222222222222",
+        issue_key: "CORE-1",
+        author: { kind: "user", id: "alice" },
+        created_at: "2026-11-02T00:00:00Z",
+        ...payload,
+      },
+    }),
+    trace_id: eventId,
+  })
+}
+
+// This server never reads a cut body whole: its card is the delivery Dispatch sent, which keeps
+// what its frame carried. A comment event that carried its body's first part alone keeps that
+// part and the note naming the route that answers it whole, and a delete's event is a card of its
+// own kind, which carries no body.
+test("a cut comment's card keeps the part its frame carried and the note, and a delete is a card of its own kind", async () => {
+  const notifier = new FakeNotifier()
+  const delivery = createChannelDelivery({
+    identity: new SessionIdentity("ses_claude", "/tmp"),
+    notifier,
+    configFile: sessionConfigFile("claude", process.env),
+  })
+  const subject = "notifications.dispatch.issue.CORE-1.comment"
+
+  await delivery.enqueue({
+    subject,
+    raw: commentEventRaw("comment.created", "dispatch-cut", {
+      body: "The first paragraph.",
+      body_truncated: true,
+    }),
+  })
+  await delivery.enqueue({
+    subject,
+    raw: commentEventRaw("comment.deleted", "dispatch-deleted", {
+      deleted_at: "2026-11-03T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+    }),
+  })
+
+  const [cut, deleted] = notifier.notifications.map((notification) => notification.content)
+  expect(cut).toContain("type: comment.created")
+  expect(cut).toContain("body: The first paragraph.")
+  expect(cut).toContain(
+    "the body is its first part only; read it whole with GET /api/v1/comments/22222222-2222-4222-8222-222222222222",
+  )
+  expect(deleted).toContain("type: comment.deleted")
+  expect(deleted).toContain('deleted_at: "2026-11-03T00:00:00Z"')
+  expect(deleted).not.toContain("body:")
 })
 
 test("delivers each dedupe key once and answers each relayed frame, never a receipt", async () => {
@@ -688,6 +760,49 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       },
     ])
   } finally {
+    server?.stop(true)
+  }
+})
+
+// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) answered the
+// attempt: its line says it landed, never that it could not be reported.
+test("a rejected frame's report that landed with no answer back is not said to be unreported", async () => {
+  let server: Server<undefined> | undefined
+  const written = spyOn(process.stderr, "write").mockImplementation(() => true)
+  try {
+    const replies: string[] = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        replies.push(new URL(request.url).pathname)
+        return Response.json(
+          { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
+          { status: 409 },
+        )
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    const delivery = createChannelDelivery({
+      identity: new SessionIdentity("ses_claude", process.cwd()),
+      notifier: new FakeNotifier(),
+      configFile: sessionConfigFile("claude", process.env),
+    })
+
+    expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+
+    const lines = written.mock.calls.map((call) => String(call[0]))
+    expect(replies).toEqual(["/api/v1/messages/44444444-4444-4444-8444-444444444444/reply"])
+    expect(lines.filter((line) => line.includes("could not report"))).toEqual([])
+    expect(
+      lines.filter((line) =>
+        line.startsWith(
+          "envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — POST ",
+        ),
+      ),
+    ).toHaveLength(1)
+  } finally {
+    written.mockRestore()
     server?.stop(true)
   }
 })

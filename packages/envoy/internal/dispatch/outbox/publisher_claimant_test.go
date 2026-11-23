@@ -135,6 +135,40 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 			want: []string{issueTopic + "comment.edited", claimantTopic},
 		},
 		{
+			name:  "a person's delete of a comment reaches the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return commentEvent("comment.deleted", alice, model.Comment{}), ""
+			},
+			want: []string{issueTopic + "comment.deleted", claimantTopic},
+		},
+		{
+			name:  "a person's edit of a message reaches the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.edited", alice, model.Message{Body: "Ship it Tuesday."}), ""
+			},
+			want: []string{issueTopic + "message.edited", claimantTopic},
+		},
+		{
+			name:  "a person's delete of a message reaches the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.deleted", alice, model.Message{}), ""
+			},
+			want: []string{issueTopic + "message.deleted", claimantTopic},
+		},
+		{
+			name:  "a person's delete of a message its own target already had reaches the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.deleted", alice, model.Message{Target: new("session:session-other")}), ""
+			},
+			// Only a new targeted message is quiet (events.Quiet): a session that was sent the
+			// text must learn that it is withdrawn.
+			want: []string{issueTopic + "message.deleted", claimantTopic},
+		},
+		{
 			name:  "a person's resolution of a thread reaches the claimant",
 			claim: &claimant,
 			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
@@ -201,6 +235,33 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 			},
 			forceNotify: true,
 			want:        []string{issueTopic + "comment.edited"},
+		},
+		{
+			name:  "an agent's delete of a comment that notifies still does not reach the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return commentEvent("comment.deleted", other, model.Comment{}), ""
+			},
+			forceNotify: true,
+			want:        []string{issueTopic + "comment.deleted"},
+		},
+		{
+			name:  "an agent's edit of a message that notifies still does not reach the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.edited", other, model.Message{Body: "Done, edited."}), ""
+			},
+			forceNotify: true,
+			want:        []string{issueTopic + "message.edited"},
+		},
+		{
+			name:  "an agent's delete of a message that notifies still does not reach the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.deleted", other, model.Message{}), ""
+			},
+			forceNotify: true,
+			want:        []string{issueTopic + "message.deleted"},
 		},
 		{
 			name:  "a person's targeted message does not reach the claimant",
@@ -394,6 +455,25 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 			},
 			deliveries: map[string]string{claimant.ID: "sent"},
 			want:       []string{issueTopic + "comment.edited", claimantTopic, askerTopic},
+		},
+		{
+			name:  "a person's delete of an ask reply reaches the claimant and the ask's followers",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				askID := seedAsk(t, database, "T-1", asker, "Ship it?")
+				seedFollower(t, database, askID, claimant.ID)
+				return commentEvent("comment.deleted", alice, model.Comment{AskID: &askID}), ""
+			},
+			want: []string{issueTopic + "comment.deleted", claimantTopic, askerTopic},
+		},
+		{
+			name:  "a person's delete of a reply to an agent's message reaches its author and the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				root := seedMessage(t, database, "T-1", messenger, "Status?", nil)
+				return messageEvent("message.deleted", alice, model.Message{InReplyTo: &root}), ""
+			},
+			want: []string{issueTopic + "message.deleted", claimantTopic, messengerTopic},
 		},
 		{
 			name:  "a person's issue update does not reach the claimant",

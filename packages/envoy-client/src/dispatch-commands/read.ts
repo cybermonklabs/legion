@@ -23,8 +23,9 @@ import {
   optionalString,
   stringArg,
 } from "./context";
-import { approvalLine, documentListLines } from "./document-targets";
-import { dispatchAnswered } from "./failures";
+import { resolveMessageArgument } from "./conversation";
+import { approvalLine, documentListLines, readRefOwner } from "./document-targets";
+import { dispatchAnswered, refuseMissingOfRef, throughPostCorrections } from "./failures";
 import { messageIdOf, refOwnerName, refTarget, refuseItemOffRef, resolveIdPrefix } from "./refs";
 import {
   askPartNoun,
@@ -45,7 +46,7 @@ import {
   olderServerWarnings,
   routeHeldBySession,
 } from "./render-issue";
-import { askSummary, commentSummary, messageSummary } from "./render-item";
+import { askSummary, commentSummary, messageSummary, postHistorySummary } from "./render-item";
 
 /**
  * `dispatch read`: whatever the call names — a message's conversation, an ask, a comment, a
@@ -64,8 +65,14 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     documentOwner,
     resolveDocument,
     issue,
+    configUrl,
+    hostSession,
   } = context;
   const message = optionalString(args, "message");
+  // --history reads one post's replaced bodies in place of the post. The contract holds it
+  // to a call that names a ref, and `argumentProblems` to a ref naming a comment or an
+  // issue message, so only those two branches below read it.
+  const history = optionalBoolean(args, "history") === true;
   // The pictures the shown texts embed, read beside the graph: a `Pictures:` section that
   // goes before `Referenced by:`, and the images it numbers.
   const picturesOf = (texts: readonly DatedText[]) =>
@@ -99,8 +106,9 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       ...showImages(pictures),
     };
   }
-  // A project document's id, read once for an ask or comment its ref names: the prefix match
-  // and the check that the item read is on that document share it.
+  // A project document's id, read once for an ask or comment its ref names: the prefix match,
+  // the check that the item read is on that document, and the owner read of a failing item read
+  // (refuseMissingOfRef) share it.
   let refDocumentId: Promise<string> | undefined;
   const documentIdOf = (ref: ParsedDispatchRef) => {
     refDocumentId ??= resolveDocument(ref.owner, ref.artifact).then(
@@ -108,13 +116,51 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     );
     return refDocumentId;
   };
+  /** The sentence a missing block's message ends with when the post that held the block is
+   *  deleted: a delete clears every block the post held, and every read of the post says that it
+   *  is deleted. The fact is the post's own `deleted_at`, read from the post
+   *  itself; the words of the server's refusal are never read, because a reader of prose breaks
+   *  on the day the prose changes (`skill://dispatch`: branch on an error's code, never on its
+   *  text). The message read is the issue's, as the message read below makes it, because
+   *  `GET /api/v1/messages/{id}` answers the root of that message's conversation rather than
+   *  the message named (`readableMessageThread`, `api/messages.go`): a deleted reply's block
+   *  would then say nothing, and a standing reply under a deleted root would say it falsely. A
+   *  message block's owner is always an issue. Nothing for a block of a document or of an ask,
+   *  neither of which a delete marks, for a post that stands, and where the post's own read
+   *  fails, which leaves the message as it is.
+   */
+  const deletedPostClause = async (ref: ParsedDispatchRef): Promise<string> => {
+    const item = ref.item;
+    if (item === undefined || (item.kind !== "comment" && item.kind !== "message")) {
+      return "";
+    }
+    const deleted = await (item.kind === "comment"
+      ? client.getComment(item.id).then((read) => read.comment.deleted_at)
+      : ref.owner.kind === "issue"
+        ? client.getMessage(ref.owner.issue, item.id).then((read) => read.message.deleted_at)
+        : Promise.resolve(undefined)
+    ).catch(() => undefined);
+    return deleted == null ? "" : ` This ${item.kind} is deleted.`;
+  };
   if (ownerArguments.ref?.kind === "ask") {
     const ref = ownerArguments.ref;
+    // The same undecidable `not found` the corrections and the two post reads met, one arm
+    // over: a reference whose issue Dispatch does not hold reads the same as one whose ask it
+    // does not. A reference naming a project document is read the same way, by the document.
     const askRead = await readAskRef(input.tool, ref.id, refOwnerName(ref), client, async () =>
       ref.owner.kind === "issue"
         ? client.listIssueAsks(ref.owner.issue)
         : client.getArtifactAsks(await documentIdOf(ref), "all")
-    );
+    ).catch(async (error: unknown) => {
+      throw await refuseMissingOfRef(
+        error,
+        "ask",
+        ref.id,
+        ref.owner,
+        refOwnerName(ref),
+        readRefOwner(client, ref.owner, () => documentIdOf(ref))
+      );
+    });
     await refuseItemOffRef(input.tool, "ask", ref, stringArg(args, "ref"), askRead.ask, () =>
       documentIdOf(ref)
     );
@@ -140,7 +186,18 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
         ? client.getComments(ref.owner.issue)
         : client.getArtifactComments(await documentIdOf(ref))
     );
-    const comment = await client.getComment(id);
+    // The same undecidable `not found` the corrections met: a reader of this read must be able
+    // to tell a post that is gone from an issue that was never there (dispatch://INFRA-1523).
+    const comment = await client.getComment(id).catch(async (error: unknown) => {
+      throw await refuseMissingOfRef(
+        error,
+        "comment",
+        id,
+        ref.owner,
+        refOwnerName(ref),
+        readRefOwner(client, ref.owner, () => documentIdOf(ref))
+      );
+    });
     await refuseItemOffRef(
       input.tool,
       "comment",
@@ -149,6 +206,20 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       comment.comment,
       () => documentIdOf(ref)
     );
+    if (history) {
+      return {
+        text: postHistorySummary(
+          "Comment",
+          refTarget(ref, "comment", id),
+          id,
+          await throughPostCorrections(input.tool, configUrl, client.commentHistory(id))
+        ),
+        details:
+          ref.owner.kind === "project"
+            ? { project: ref.owner.project, comment: id }
+            : { issue: comment.comment.issue_key, comment: id },
+      };
+    }
     const commentRef = refTarget(ref, "comment", id);
     const [pictures, graph] = await Promise.all([
       picturesOf(datedBodies([comment.comment, ...(comment.replies ?? [])])),
@@ -167,10 +238,45 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
     if (ownerArguments.ref.owner.kind !== "issue") {
       throw new Error("message references are issue-scoped");
     }
-    const messageRead = await client.getMessage(
-      ownerArguments.ref.owner.issue,
-      ownerArguments.ref.id
-    );
+    const messageIssue = ownerArguments.ref.owner.issue;
+    if (history) {
+      // The history is read of the message the reference names, resolved as the edit and
+      // the delete resolve their own `message` argument: a prefix resolves against the
+      // issue's messages, and a message on another issue is refused rather than read.
+      const id = await resolveMessageArgument(
+        input.tool,
+        "ref",
+        stringArg(args, "ref"),
+        client,
+        hostSession
+      );
+      return {
+        text: postHistorySummary(
+          "Message",
+          dispatchChildRef(dispatchIssueRef(messageIssue), "message", id),
+          id,
+          await throughPostCorrections(
+            input.tool,
+            configUrl,
+            client.messageHistory(id, hostSession === "" ? undefined : hostSession)
+          )
+        ),
+        details: { issue: messageIssue, message: id },
+      };
+    }
+    const named = ownerArguments.ref;
+    const messageRead = await client
+      .getMessage(messageIssue, named.id)
+      .catch(async (error: unknown) => {
+        throw await refuseMissingOfRef(
+          error,
+          "message",
+          named.id,
+          { kind: "issue", issue: messageIssue },
+          messageIssue,
+          () => client.getIssue(messageIssue)
+        );
+      });
     const messageRef = dispatchChildRef(
       dispatchIssueRef(ownerArguments.ref.owner.issue),
       "message",
@@ -199,11 +305,14 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       ref.item?.kind === "ask" ? client.getAsk(ref.item.id).catch(() => undefined) : undefined;
     // The read names the block's node, so a 404 is the block's own answer: an unpinned ref
     // names a block no current version holds, and a pinned one's answer says which of its
-    // version, that version's record or the block the server could not find.
+    // version, that version's record or the block the server could not find. The unpinned
+    // answer is rewritten in the reference's own words, and a delete, which clears every block
+    // the post held, is the one cause of it that a reader needs told, since every read of the
+    // post says that it is deleted. The post's own mark is what says so.
     const [incoming, outgoing, partOf, typed] = await Promise.all([
-      client.getReferences({ to: blockRef }).catch((error: unknown) => {
+      client.getReferences({ to: blockRef }).catch(async (error: unknown) => {
         if (ref.pin === undefined && dispatchAnswered(error, 404)) {
-          throw new Error(`No block ${ref.block} in ${holder}.`);
+          throw new Error(`No block ${ref.block} in ${holder}.${await deletedPostClause(ref)}`);
         }
         throw error;
       }),

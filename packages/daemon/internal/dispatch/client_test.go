@@ -855,6 +855,58 @@ func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
 	}
 }
 
+// R3 of dispatch://INFRA-1523: an issue message its author deleted keeps its message.created
+// event, and every read of that event gives no part of its body: the payload carries deleted_at
+// and deleted_by in place of body. A deleted message is no notice the outbox already posted, so
+// the read passes over it and goes on; it must not refuse the whole read, which would leave the
+// outbox row retrying for as long as the deleted message stands inside its window.
+func TestMessageBodiesSincePassesOverADeletedMessage(t *testing.T) {
+	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		if r.URL.Path != "/api/v1/issues/LEGION-5/events" {
+			t.Fatalf("request = %s %s, want the issue's events", r.Method, r.URL.Path)
+		}
+		writeJSON(t, w, []map[string]any{
+			{"seq": 9, "type": "message.deleted", "created_at": "2026-09-23T01:03:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001", "deleted_at": "2026-09-23T01:03:00Z", "deleted_by": map[string]string{"kind": "user", "id": "alice"}}},
+			{"seq": 8, "type": "message.created", "created_at": "2026-09-23T01:02:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001", "deleted_at": "2026-09-23T01:03:00Z", "deleted_by": map[string]string{"kind": "user", "id": "alice"}}},
+			{"seq": 7, "type": "message.created", "created_at": "2026-09-23T01:01:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000002", "body": "A short daemon notice."}},
+		})
+	}))
+	defer server.Close()
+
+	bodies, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	if err != nil {
+		t.Fatalf("list messages beside a deleted one: %v", err)
+	}
+	if len(bodies) != 1 || bodies[0] != "A short daemon notice." {
+		t.Fatalf("bodies = %#v, want the one message that still stands", bodies)
+	}
+}
+
+// The pass over a deleted message is for that message alone: a message.created event with no body
+// and no deleted_at is a payload the daemon cannot read, and the read still refuses it rather than
+// pass a notice the outbox may have posted.
+func TestMessageBodiesSinceStillRefusesAStandingMessageWithNoBody(t *testing.T) {
+	since := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertBearer(t, r)
+		writeJSON(t, w, []map[string]any{
+			{"seq": 8, "type": "message.created", "created_at": "2026-09-23T01:02:00Z",
+				"payload": map[string]any{"id": "f1c0ffee-0000-4000-8000-000000000001"}},
+		})
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, dispatchToken).MessageBodiesSince(context.Background(), "LEGION-5", since)
+	if err == nil || !strings.Contains(err.Error(), "payload body is required") {
+		t.Fatalf("err = %v, want the refusal of a message.created event with no body", err)
+	}
+}
+
 // Dispatch keeps a label's case as typed and treats labels differing only in case as one label, so
 // the label that hands an issue to Legion matches in any case, and nothing else stands in for it.
 func TestCarriesLegionLabelMatchesTheLabelInAnyCaseAndNothingElse(t *testing.T) {

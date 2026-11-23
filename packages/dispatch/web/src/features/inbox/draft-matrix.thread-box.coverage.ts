@@ -23,6 +23,7 @@ const REASONS = {
   11: "11. A box answers its thread's root; a read that no longer holds the root draws no box, since there is no message left to answer, and a read that holds it again draws the box at the same thread, as the move to another row and back does.",
   12: "12. The Inbox draws a thread's box in the reading column above the column's width and in the row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing the drawer, leaving the page, a column with no row selected or an empty list, and the Inbox's loading line or error unmount the box as the move to another row does, and the box drawn on return is the one that row draws, at the same thread's send name.",
   13: "13. Below the reading column's width, a phone's included, the Inbox draws no column: each thread row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed. What ends a card's box is (12)'s: leaving the page, closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox` and `usePaneSelection` pick, focus and scroll the column's row and draw the list beside the column, and move no box; the app shell's forms are the sign-in file's.",
+  14: "14. A root its author deleted takes no reply (`409 POST_DELETED`), so no box is drawn under it, as the margin's card draws no reply composer there, and the box leaves the page as a read without the root takes it (11): a reply the reader kept for the thread - typed in the box, or a send refused or stopped - is drawn itself in its place, saying the comment was deleted, with Discard my draft and no Send (`KeptReplyToDeleted`); `ThreadBody.test.tsx`'s \"a comment thread whose root is deleted draws no box, and keeps the reply typed there\" holds it.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -57,6 +58,10 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "CommentThreadBody | CommentThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | !(root === undefined) ? …",
     { reason: REASONS[11] }
+  ),
+  ...answers(
+    "CommentThreadBody | CommentThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | !(postDeletion(root) !== null) ? …",
+    { reason: REASONS[14] }
   ),
   ...answers(
     "ThreadTurns | CommentThreadBody <MentionComposer mutationKey={threadSendKey(thread.thread_id)}> | conditional | (composerFirst) ? …",
