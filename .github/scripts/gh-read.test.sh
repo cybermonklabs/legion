@@ -26,7 +26,9 @@ shopt -s inherit_errexit
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
 servers=()
-trap '[ ${#servers[@]} -eq 0 ] || kill "${servers[@]}" 2>/dev/null; rm -rf "$work"' EXIT
+# `|| true`: a stand-in already gone makes kill fail, and under set -e the trap would stop there,
+# leave $work behind and exit 1.
+trap '[ ${#servers[@]} -eq 0 ] || kill "${servers[@]}" 2>/dev/null || true; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -800,6 +802,52 @@ PY
 check "the stand-in answers nothing" "$(is "$answer" 'no answer')"
 check "and prints a traceback that names the fault" \
   "$(contains "$(<"$work/fault-err")" "^ValueError: invalid literal for int() with base 10: 'not a number'$")"
+
+echo "case: a socket closed under the stand-in's answer prints nothing"
+# gh drops the slower of two requests it raced, and the stand-in's write into that socket raises a
+# ConnectionError, which is no fault and prints nothing. A third stand-in, its stderr kept in a
+# file, holds a release's answer release-delay seconds. The client resets its connection once the
+# stand-in has logged the request, a second before the answer is due, so the answer is written
+# into a reset socket. The stand-in's thread count back at idle says the request has ended, and
+# with it any traceback the stand-in would print, before the file is read.
+mkdir -p "$work/drop-state"
+touch "$work/drop-state/release"
+echo 1 > "$work/drop-state/release-delay"
+: > "$work/drop-state/log"
+stand_in "$work/drop-state" "$work/drop-port" "$work/drop-err"
+threads() { awk '$1 == "Threads:" { print $2 }' "/proc/${servers[-1]}/status"; }
+idle=$(threads)
+closed=$(python3 - "$(<"$work/drop-port")" "$work/drop-state/log" <<'PY'
+import socket
+import struct
+import sys
+import time
+
+port, log = int(sys.argv[1]), sys.argv[2]
+try:
+    client = socket.create_connection(("127.0.0.1", port), timeout=30)
+    client.sendall(b"GET /repos/o/r/releases/tags/v1 HTTP/1.1\r\nHost: api.github.localhost\r\n\r\n")
+    for _ in range(600):
+        with open(log) as handle:
+            if any(line.split()[2:] == ["/repos/o/r/releases/tags/v1"] for line in handle):
+                break
+        time.sleep(0.05)
+    else:
+        sys.exit("the stand-in logged no request")
+    client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    client.close()
+    print("reset")
+except OSError as error:
+    print(f"error: {error}")
+PY
+) || true
+for _ in $(seq 600); do
+  [ "$(threads)" -le "$idle" ] && break
+  sleep 0.05
+done
+check "the client resets its request once the stand-in has read it" "$(is "$closed" reset)"
+check "the stand-in ends the request" "$(is "$(threads)" "$idle")"
+check "and prints nothing for the closed socket" "$(is "$(<"$work/drop-err")" '')"
 
 echo "case: on a GitHub runner, the job's start is read off the real Runner.Worker"
 if [ "${GITHUB_ACTIONS:-}" = true ]; then
