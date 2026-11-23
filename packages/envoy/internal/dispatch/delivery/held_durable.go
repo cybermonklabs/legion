@@ -281,6 +281,9 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	attempt := func() {
 		if d.subject == "" && ready() {
 			d.attempt(ctx)
+			if hook := d.tuning.attempted.Load(); hook != nil {
+				(*hook)()
+			}
 		}
 	}
 	// Taken before each attempt, which reads what the cache holds, so settings stored after that

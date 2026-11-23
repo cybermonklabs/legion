@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -605,9 +606,10 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 // process of the build before holds, which binds without one -- is therefore left exactly as it
 // is, filter set and all, however much this release would otherwise replace it.
 func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
+	t.Parallel()
 	// No component may log at ERROR: the intake, the duty lease and hold it takes, and both NATS
 	// clients write to the test's logger, and nothing else on the path (the store, GitHub's client)
-	// writes one. Serial: the two bind intervals after the standby line are a quiet window.
+	// writes one.
 	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
@@ -640,6 +642,9 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	// is the one a bound durable takes.
 	awaitPushBound(t, holder, "the durable is not bound to the other process")
 
+	var tries atomic.Int64
+	countTry := func() { tries.Add(1) }
+	tuningFor(t).attempted.Store(&countTry)
 	startIntakeProcess(t, pool, natsURL, nil, bus.WithLogger(logger))
 	standingBy := "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go"
 	waitFor(t, 20*time.Second, func() bool {
@@ -652,7 +657,14 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("the intake never said it was standing by for the bound durable: %v", logs())
 	})
-	time.Sleep(2 * durableBindInterval)
+	// Two more of the intake's tries after the one that stood by, each of which reads the bound
+	// durable and leaves it: waited for, not slept, so a slow machine reads the durable after
+	// those tries rather than before them. The try that wrote the line may not be counted yet,
+	// hence three.
+	stoodBy := tries.Load()
+	waitFor(t, 20*time.Second, func() bool { return tries.Load() >= stoodBy+3 }, func() string {
+		return fmt.Sprintf("the intake made %d tries after it stood by, want 3", tries.Load()-stoodBy)
+	})
 	after := awaitPushBound(t, holder, "the other process lost its binding to the durable")
 	if !slices.Equal(after.Config.FilterSubjects, legacy.FilterSubjects) || after.Config.FilterSubject != "" {
 		t.Fatalf("the durable's filter is %q / %v, want the set it carried: %v",
@@ -680,8 +692,9 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 // takes, bus.DispatchDeliveryDurable's: a test holding any other durable's lease would leave the
 // take-over free and prove nothing.
 func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
+	t.Parallel()
 	// The row waits for duty's skip line, which the intake's take-over writes to the intake's
-	// logger, the test's. Serial: the two bind intervals after that line are a quiet window.
+	// logger, the test's.
 	logs, logger := captureTestLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -719,18 +732,24 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	}
 
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
-	skipped := func() bool {
+	skips := func() int {
+		n := 0
 		for _, record := range logs() {
 			if record["msg"] == "dispatch duty: leased pass skipped" && record["lease"] == consumerLease(bus.DispatchDeliveryDurable) {
-				return true
+				n++
 			}
 		}
-		return false
+		return n
 	}
-	waitFor(t, 20*time.Second, skipped, func() string {
+	// Three of the take-over's tries, each skipped (duty writes the line as it skips, once a
+	// try): counted, not slept, so a slow machine reads the durable after those tries rather than
+	// before them.
+	waitFor(t, 20*time.Second, func() bool { return skips() >= 1 }, func() string {
 		return fmt.Sprintf("the intake never reported skipping the %s lease: %v", consumerLease(bus.DispatchDeliveryDurable), logs())
 	})
-	time.Sleep(2 * durableBindInterval)
+	waitFor(t, 20*time.Second, func() bool { return skips() >= 3 }, func() string {
+		return fmt.Sprintf("the intake skipped the %s lease %d times, want 3: %v", consumerLease(bus.DispatchDeliveryDurable), skips(), logs())
+	})
 	after, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 	if err != nil {
 		t.Fatalf("read the durable: %v", err)

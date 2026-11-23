@@ -98,6 +98,7 @@ func copyTuning(from *intakeTuning) *intakeTuning {
 	to.drainWait.Store(from.drainWait.Load())
 	to.stopArmed.Store(from.stopArmed.Load())
 	to.beforeRelease.Store(from.beforeRelease.Load())
+	to.attempted.Store(from.attempted.Load())
 	return to
 }
 
