@@ -1,0 +1,27 @@
+{
+  "envoy-nats-listener": {
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+      "name": "envoy-nats-listener",
+      "namespace": "envoy"
+    },
+    "spec": {
+      "replicas": 1,
+      "selector": {
+        "matchLabels": {
+          "app.kubernetes.io/component": "listener",
+          "app.kubernetes.io/instance": "envoy-nats",
+          "app.kubernetes.io/name": "nats-listener"
+        }
+      },
+      "strategy": {
+        "rollingUpdate": {
+          "maxSurge": 1,
+          "maxUnavailable": 0
+        },
+        "type": "RollingUpdate"
+      }
+    }
+  }
+}

@@ -39,7 +39,6 @@ import type {
   IssueDetails,
   Priorities,
   ReferenceTargets,
-  RepoProject,
   UserState,
 } from "../../api/types";
 import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
@@ -282,9 +281,6 @@ function stubIssueApi() {
     >),
     spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "listAgents").mockResolvedValue([]),
-    // The repository's control reads the project's repository mappings at once for an issue
-    // that resolves to none, as this one does; a project that maps none suggests no repository.
-    spyOn(api, "listRepoProjects").mockResolvedValue([]),
     spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
@@ -1519,8 +1515,8 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
 // leaves the read standing on that answer (`standsFailed`): the row keeps what the answer drew and
 // says no failure, since nothing it draws is missing. Each read of the panel whose failure Details
 // says in a line of its own (`DetailsErrorLine`) is refreshed here with a failure: the titles of
-// the issues this one waits on, what waits on it, the titles of those, and the repository
-// mappings. Referenced by's list, which draws its own line, has a case of its own.
+// the issues this one waits on, what waits on it, and the titles of those. Referenced by's list,
+// which draws its own line, has a case of its own.
 test("a refresh that fails over an answer a row of Details holds keeps that answer drawn and says no failure", async () => {
   const { getIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
@@ -1529,30 +1525,21 @@ test("a refresh that fails over an answer a row of Details holds keeps that answ
   const titles = spyOn(api, "getReferenceTargets").mockImplementation(async (refs) =>
     issueNames(refs, { "CORE-3": "Fix the build", "CORE-5": "Ship the release" })
   );
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
     await waitFor(() => {
       expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build");
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent("Ship the release");
-      expect(queryClient.getQueryState(["repo-projects"])?.status).toBe("success");
     });
 
     titles.mockRejectedValue(readFailure());
-    listRepoProjects.mockRejectedValueOnce(readFailure());
-    await act(() =>
-      Promise.all([
-        queryClient.refetchQueries({ queryKey: ["reference-targets"] }),
-        queryClient.refetchQueries({ queryKey: ["repo-projects"] }),
-      ])
-    );
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
     await readWhatWaits(queryClient, getReferences, readFailure());
     const refreshed = [
       referenceTargetsQuery([buildDispatchReference({ key: "CORE-3", kind: "issue" })]).queryKey,
       referenceTargetsQuery([buildDispatchReference({ key: "CORE-5", kind: "issue" })]).queryKey,
       ["references", "to", reference, "blocked_by"],
-      ["repo-projects"],
     ].map((queryKey) => queryClient.getQueryState(queryKey));
     expect(
       refreshed.map((state) => [state?.status, state?.data !== undefined]),
@@ -1561,14 +1548,9 @@ test("a refresh that fails over an answer a row of Details holds keeps that answ
       ["error", true],
       ["error", true],
       ["error", true],
-      ["error", true],
     ]);
 
-    for (const label of [
-      PROPERTY_LABELS.blocked_by,
-      PROPERTY_LABELS.blocks,
-      PROPERTY_LABELS.repository,
-    ]) {
+    for (const label of [PROPERTY_LABELS.blocked_by, PROPERTY_LABELS.blocks]) {
       const row = within(detailsRow(label));
       expect(
         row.queryByRole("alert"),
@@ -1589,7 +1571,6 @@ test("a refresh that fails over an answer a row of Details holds keeps that answ
     ).toHaveTextContent("Ship the release");
   } finally {
     unmount();
-    listRepoProjects.mockRestore();
     titles.mockRestore();
     getReferences.mockRestore();
     restore();
@@ -3314,12 +3295,12 @@ test("closing References or Details takes an open Referenced by list, and its re
 });
 
 // Details' reads of the titles of the issues this one waits on, of what waits on it and the
-// titles of those, of what references it, of the project's repository mappings and of the
-// projects, whose gated steps a top-level issue's approvals name, are each read again by the
-// events that change them (`api/event-refresh.ts`), so in Details a window focus past the app's
-// 30 s staleness reads none of them again. The reader's state keeps the app's defaults, so its
-// second read shows the focus was handled.
-test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blocks' titles, Referenced by, repository mapping or project again", async () => {
+// titles of those, of what references it and of the projects, whose gated steps a top-level
+// issue's approvals name and whose default repository the Repository row suggests, are each read
+// again by the events that change them (`api/event-refresh.ts`), so in Details a window focus
+// past the app's 30 s staleness reads none of them again. The reader's state keeps the app's
+// defaults, so its second read shows the focus was handled.
+test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blocks' titles, Referenced by or project again", async () => {
   const user = userEvent.setup();
   const { getIssue, getMyState, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"], referenced_by_count: 3 });
@@ -3347,7 +3328,6 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
       expect(blocksReads(getReferences, reference)).toBe(1);
       expect(titleReads(titles, waiter)).toBe(1);
       expect(listReads()).toBe(1);
-      expect(api.listRepoProjects).toHaveBeenCalledTimes(1);
       expect(api.listProjects).toHaveBeenCalledTimes(1);
       expect(client.isFetching()).toBe(0);
     });
@@ -3366,10 +3346,6 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
       "a window focus read the titles of the issues that wait on this one again"
     ).toBe(1);
     expect(listReads(), "a window focus read what references the issue again").toBe(1);
-    expect(
-      api.listRepoProjects,
-      "a window focus read the project's repository mappings again"
-    ).toHaveBeenCalledTimes(1);
     expect(api.listProjects, "a window focus read the projects again").toHaveBeenCalledTimes(1);
   } finally {
     unmount();
@@ -4898,14 +4874,14 @@ test("Add's Assignee closes an open Details, then puts the focus on the header's
   }
 });
 
-// With Details open, the repository's control drew its select only once its own read of the
-// project's mappings answered, in a commit of that control alone, and Add, read after its own
-// commits only, never saw it, so on an issue with a value for every other property Details drew
-// no Add beside the control it would press. The control is drawn at once, whatever that read
-// answers: on an issue that resolves to no repository the row reads "None", a button whose press
-// draws the box in its place. So nothing here waits on the read, which is held out throughout;
-// what the case still holds is that Add is drawn beside that one control, lists Repository, and
-// that choosing it reaches the box.
+// With Details open, the repository's control drew its select only once a read of its own
+// answered, in a commit of that control alone, and Add, read after its own commits only, never
+// saw it, so on an issue with a value for every other property Details drew no Add beside the
+// control it would press. The control is drawn at once, whatever its read of the project list,
+// which its suggestion comes from, answers: on an issue that resolves to no repository the row
+// reads "None", a button whose press draws the box in its place. So nothing here waits on that
+// read, which is held out throughout; what the case still holds is that Add is drawn beside that
+// one control, lists Repository, and that choosing it reaches the box.
 test("Add lists Repository on an empty repository row and presses None, which opens the box", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -4916,11 +4892,10 @@ test("Add lists Repository on an empty repository row and presses None, which op
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  // The issue resolves to no repository, so its control reads the mappings at once; the read
-  // never answers here, and the control is drawn without it.
-  const mappings = Promise.withResolvers<RepoProject[]>();
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(
-    () => mappings.promise
+  // The control reads the project list as it is drawn; the read never answers here, and the
+  // control is drawn without it.
+  const listProjects = spyOn(api, "listProjects").mockImplementation(
+    () => new Promise(() => undefined)
   );
   getIssue.mockResolvedValue({
     ...issue,
@@ -4946,7 +4921,7 @@ test("Add lists Repository on an empty repository row and presses None, which op
     await waitFor(() =>
       expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent(CONTROL_LABELS.none)
     );
-    expect(listRepoProjects).toHaveBeenCalled();
+    expect(listProjects).toHaveBeenCalled();
     const none = within(detailsRow(PROPERTY_LABELS.repository)).getByRole("button", {
       name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
     });
@@ -4977,7 +4952,7 @@ test("Add lists Repository on an empty repository row and presses None, which op
     expect(none, "the menu's Repository left None drawn beside the box").not.toBeInTheDocument();
   } finally {
     unmount();
-    listRepoProjects.mockRestore();
+    listProjects.mockRestore();
     getReferences.mockRestore();
     priorities.mockRestore();
     restore();
@@ -4998,11 +4973,6 @@ test("Add lists Repository on a row that inherits its repository and presses its
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  // The focus in the box reads the mappings; the read never answers here.
-  const mappings = Promise.withResolvers<RepoProject[]>();
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockImplementation(
-    () => mappings.promise
-  );
   // A value for every property Add lists but the repository, which the issue inherits: the API
   // answers no repository of its own and the one it resolves to.
   getIssue.mockResolvedValue({
@@ -5042,7 +5012,6 @@ test("Add lists Repository on a row that inherits its repository and presses its
     ).not.toBeInTheDocument();
   } finally {
     unmount();
-    listRepoProjects.mockRestore();
     getReferences.mockRestore();
     priorities.mockRestore();
     restore();
@@ -5067,40 +5036,8 @@ function expectPageFailure(row: HTMLElement, alert: HTMLElement): void {
   ).toHaveClass(pageHeaderControl);
 }
 
-// The repository's control reads the project's mappings at once on an issue that resolves to no
-// repository, as this one does. A read that fails is said in the Repository row as every other
-// row of Details says a failed read, and its Retry reads the mappings again.
-test("a failed read of the repository mappings is said in the page's colours, with Retry", async () => {
-  const user = userEvent.setup();
-  const { restore } = stubIssueApi();
-  const listRepoProjects = spyOn(api, "listRepoProjects")
-    .mockRejectedValueOnce(new Error("the network dropped the read"))
-    .mockResolvedValue([]);
-  const { unmount } = renderDetails();
-
-  try {
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
-    const alert = await within(row).findByRole("alert");
-    expectPageFailure(row, alert);
-    expect(alert.textContent).toBe("Could not load the repositories mapped to CORE.");
-    const reads = listRepoProjects.mock.calls.length;
-    await user.click(within(row).getByRole("button", { name: CONTROL_LABELS.retry }));
-    await waitFor(() => expect(listRepoProjects.mock.calls.length).toBeGreaterThan(reads));
-    await waitFor(() =>
-      expect(
-        within(row).queryByRole("alert"),
-        "the failure is still said after the mappings were read"
-      ).not.toBeInTheDocument()
-    );
-  } finally {
-    unmount();
-    listRepoProjects.mockRestore();
-    restore();
-  }
-});
-
-// A repository Dispatch refuses is said in the Repository row the same way, in Dispatch's words,
-// and its Retry makes the refused pick again.
+// A repository Dispatch refuses is said in the Repository row as Details says its own failures
+// (`expectPageFailure`), in Dispatch's words, and its Retry makes the refused pick again.
 test("a repository Dispatch refuses is said in the page's colours, with Retry", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -5144,122 +5081,12 @@ test("a repository Dispatch refuses is said in the page's colours, with Retry", 
   }
 });
 
-// A fetch of mappings that hold no answer clears their error, so a line drawn from the error
-// alone went at the press of its Retry, and the focus of a reader who pressed Retry by keyboard
-// went with it to the page's body. The line stays while the read is out, its Retry busy and
-// holding the focus, a second press joins the read that is out, and once the mappings answer and
-// the line goes, the focus goes to the row's control rather than to the page.
-test("the mappings' Retry keeps the focus while the read is out, and hands it to the row's control once it answers", async () => {
-  const user = userEvent.setup();
-  const { restore } = stubIssueApi();
-  const retried = Promise.withResolvers<RepoProject[]>();
-  const listRepoProjects = spyOn(api, "listRepoProjects")
-    .mockRejectedValueOnce(new Error("the network dropped the read"))
-    .mockImplementation(() => retried.promise);
-  const { unmount } = renderDetails();
-  const stopBlurring = emulateChromiumFocusFixup();
-  const retryOfMappings = () =>
-    within(detailsRow(PROPERTY_LABELS.repository)).queryByRole("button", {
-      name: CONTROL_LABELS.retry,
-    });
-
-  try {
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
-    await within(row).findByRole("alert");
-    const retry = retryOfMappings();
-    if (retry === null) throw new Error("the failed read of the mappings offers no Retry");
-
-    act(() => retry.focus());
-    await user.keyboard("{Enter}");
-    expect(listRepoProjects, "Retry did not read the mappings again").toHaveBeenCalledTimes(2);
-    await waitFor(() =>
-      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
-        "aria-busy",
-        "true"
-      )
-    );
-    expect(retryOfMappings(), "the line and its Retry went while the read is out").toBe(retry);
-    expect(
-      within(row).getByRole("alert").textContent,
-      "the line no longer says the read failed while it is read again"
-    ).toBe("Could not load the repositories mapped to CORE.");
-    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
-      retry
-    );
-    await user.keyboard("{Enter}");
-    expect(
-      listRepoProjects,
-      "a press of Retry while its read is out sent another"
-    ).toHaveBeenCalledTimes(2);
-
-    await act(async () => retried.resolve([]));
-    await waitFor(() =>
-      expect(retryOfMappings(), "the mappings answered, but the row still offers Retry").toBeNull()
-    );
-    expect(
-      document.activeElement,
-      "the mappings answered, and the focus fell to the page rather than to the row's control"
-    ).toBe(
-      within(row).getByRole("button", {
-        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
-      })
-    );
-  } finally {
-    stopBlurring();
-    unmount();
-    listRepoProjects.mockRestore();
-    restore();
-  }
-});
-
-// The mappings' line goes once they answer. Read again as the event of a mapping's write reads
-// them, rather than by the reader's press of the line's Retry, that answer is no press of the
-// reader's, so the focus Retry held stays on the page's body, as for every change the reader did
-// not make, rather than going to the row's control.
-test("the mappings read again on an event, not by their Retry, leave the focus their Retry held on the page's body", async () => {
-  const { restore } = stubIssueApi();
-  const listRepoProjects = spyOn(api, "listRepoProjects")
-    .mockRejectedValueOnce(new Error("the network dropped the read"))
-    .mockResolvedValue([]);
-  const { queryClient, unmount } = renderDetails();
-  const retryOfMappings = () =>
-    within(detailsRow(PROPERTY_LABELS.repository)).queryByRole("button", {
-      name: CONTROL_LABELS.retry,
-    });
-
-  try {
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
-    await within(row).findByRole("alert");
-    const retry = retryOfMappings();
-    if (retry === null) throw new Error("the failed read of the mappings offers no Retry");
-    act(() => retry.focus());
-    await act(() => queryClient.refetchQueries({ queryKey: ["repo-projects"] }));
-    await waitFor(() =>
-      expect(retryOfMappings(), "the mappings answered, but the row still offers Retry").toBeNull()
-    );
-    await settleFocus();
-    expect(
-      document.activeElement,
-      "the mappings answered on an event, and the focus left the page's body though the reader pressed nothing"
-    ).toBe(document.body);
-  } finally {
-    unmount();
-    listRepoProjects.mockRestore();
-    restore();
-  }
-});
-
-// The Repository row draws a failed read of the mappings and a refused write at once, each with
-// its own Retry. The reader presses the read's Retry by keyboard and, while that read is out, tabs
-// on to the write's Retry; a close made in another session then takes that Retry away, as a closed
-// issue's write line offers none. The reader pressed nothing on that line, so the focus stays on
-// the page's body.
-test("a close made elsewhere that takes the refused repository's Retry after a press of the mappings' Retry leaves its focus on the page's body", async () => {
+// A refused repository's line offers its Retry while the issue is open. With the reader's focus
+// on that Retry, a close made in another session takes it away, as a closed issue's line offers
+// none. The reader pressed nothing on that line, so the focus stays on the page's body.
+test("a close made elsewhere that takes the refused repository's Retry leaves its focus on the page's body", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
-  const listRepoProjects = spyOn(api, "listRepoProjects").mockRejectedValueOnce(
-    new Error("the network dropped the read")
-  );
   patchIssue.mockImplementationOnce(() =>
     Promise.reject(new ApiError(400, { code: "INVALID_ISSUE", error: "repository refused" }))
   );
@@ -5267,48 +5094,31 @@ test("a close made elsewhere that takes the refused repository's Retry after a p
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.repository));
-    await within(row).findByRole("alert");
     await user.click(
-      within(row).getByRole("button", {
+      await screen.findByRole("button", {
         name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
       })
     );
     await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
     await user.paste("acme/web");
     await user.keyboard("{Enter}");
-    await waitFor(() =>
-      expect(within(row).getAllByRole("button", { name: CONTROL_LABELS.retry })).toHaveLength(2)
-    );
-    const [readRetry, writeRetry] = within(row).getAllByRole("button", {
-      name: CONTROL_LABELS.retry,
-    });
-    if (readRetry === undefined || writeRetry === undefined) {
-      throw new Error("the Repository row draws no two Retries");
-    }
-
-    listRepoProjects.mockImplementationOnce(() => new Promise(() => undefined));
-    act(() => readRetry.focus());
-    await user.keyboard("{Enter}");
-    await waitFor(() => expect(readRetry).toHaveAttribute("aria-busy", "true"));
-    await user.tab();
-    expect(document.activeElement, "Tab from the mappings' Retry reached no other Retry").toBe(
-      writeRetry
-    );
+    const row = detailsRow(PROPERTY_LABELS.repository);
+    await within(row).findByRole("alert");
+    const retry = within(row).getByRole("button", { name: CONTROL_LABELS.retry });
+    act(() => retry.focus());
 
     drawIssue(getIssue, queryClient, closedIssue);
     await waitFor(() =>
-      expect(writeRetry, "the close left the refused write's Retry").not.toBeInTheDocument()
+      expect(retry, "the close left the refused write's Retry").not.toBeInTheDocument()
     );
     await settleFocus();
     expect(
       document.activeElement,
-      "a close elsewhere took the write's Retry, and the focus left the page's body though the reader pressed only the read's Retry"
+      "a close elsewhere took the refused write's Retry, and the focus left the page's body though the reader pressed nothing"
     ).toBe(document.body);
   } finally {
     stopBlurring();
     unmount();
-    listRepoProjects.mockRestore();
     restore();
   }
 });
@@ -7046,8 +6856,8 @@ test("with no pin, Pinned reads None and sends no request", async () => {
     const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
     expect(pins).toHaveTextContent(CONTROL_LABELS.none);
     expect(within(pins).queryAllByRole("link")).toHaveLength(0);
-    // Every other read of the panel has answered by the time the repository's has.
-    await waitFor(() => expect(api.listRepoProjects).toHaveBeenCalled());
+    // The panel's reads have gone out by the time the Repository row has read the project list.
+    await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
     expect(pinReads.asks, "Pinned read the issue's questions with no pin").not.toHaveBeenCalled();
     expect(
       pinReads.comments,

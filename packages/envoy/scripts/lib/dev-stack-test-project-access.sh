@@ -39,13 +39,13 @@ assert_project_access() {
       fail "$label: the broker was not pointed at its own Dispatch's access routes with its own token"
     grep -q "oidc-issuer=http://127\.0\.0\.1:${process_port[dev-oidc-issuer]} oidc-audience=dispatch oidc-accounts=${access_account} access-accounts=${access_account}\$" "$dispatch_log" ||
       fail "$label: Dispatch does not admit the broker's account to its access routes"
-    # The airlock: the rules file naming PRIV_KEY, the authority the stands wrote into this run's
-    # own directory, the proxy URL on the port the run picked, and the stands' own address in both
-    # of the settings that let the proxy dial it.
-    grep -q "airlock-rules=${work_dir}/airlock\.json airlock-ca=${work_dir}/stands/ca\.crt airlock-proxy=http://127\.0\.0\.1:[0-9][0-9]* airlock-resolve=priv\.airlock\.test=172\.20\.0\.9 airlock-dial=priv\.airlock\.test:443\$" "$broker_log" ||
-      fail "$label: the broker was not given the airlock's rules, authority, proxy URL and the stands' own address"
-    grep -q '"name": "PRIV_KEY", "hosts": \["priv.airlock.test"\]' "${work_dir}/airlock.json" ||
-      fail "$label: the rules file does not bind PRIV_KEY to the stand-in host"
+    # The airlock: the profiles file holding PRIV_KEY's proxy block, the authority the stands wrote
+    # into this run's own directory, the proxy URL on the port the run picked, and the stands' own
+    # address in both of the settings that let the proxy dial it.
+    grep -q "profiles=${work_dir}/profiles\.json airlock-ca=${work_dir}/stands/ca\.crt airlock-proxy=http://127\.0\.0\.1:[0-9][0-9]* airlock-resolve=priv\.airlock\.test=172\.20\.0\.9 airlock-dial=priv\.airlock\.test:443\$" "$broker_log" ||
+      fail "$label: the broker was not given the profiles file, the airlock's authority, proxy URL and the stands' own address"
+    jq -e '.profiles == [{"name": "PRIV_KEY", "proxy": {"hosts": ["priv.airlock.test"]}}]' "${work_dir}/profiles.json" >/dev/null 2>&1 ||
+      fail "$label: the profiles file is not one profile of PRIV_KEY whose proxy block binds it to the stand-in host"
     [[ "$(exported "$log_file" DEV_STACK_AIRLOCK_BOUND_URL)" == "https://priv.airlock.test" ]] ||
       fail "$label: the banner does not export the airlock's bound host"
   else
@@ -53,10 +53,10 @@ assert_project_access() {
       fail "$label: a run without --project-access gave the broker a project-access client"
     grep -q 'oidc-issuer= oidc-audience= oidc-accounts= access-accounts=$' "$dispatch_log" ||
       fail "$label: a run without --project-access changed Dispatch's service-account settings"
-    grep -q 'airlock-rules= airlock-ca= airlock-proxy= airlock-resolve= airlock-dial=$' "$broker_log" ||
+    grep -q 'profiles= airlock-ca= airlock-proxy= airlock-resolve= airlock-dial=$' "$broker_log" ||
       fail "$label: a run without --project-access started the airlock"
-    [[ ! -e "${work_dir}/airlock.json" ]] ||
-      fail "$label: a run without --project-access wrote an airlock rules file"
+    [[ ! -e "${work_dir}/profiles.json" ]] ||
+      fail "$label: a run without --project-access wrote a profiles file"
   fi
 }
 

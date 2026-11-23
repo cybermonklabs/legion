@@ -195,6 +195,12 @@ func (d *postingDispatch) Handoff(context.Context, string) (dispatch.Handoff, er
 func (d *postingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (d *postingDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *postingDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *postingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
@@ -270,7 +276,11 @@ func (d *laneBoard) Approval(context.Context, string) (dispatch.Approval, error)
 func (d *laneBoard) Handoff(context.Context, string) (dispatch.Handoff, error) {
 	return dispatch.Handoff{}, nil
 }
-func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error)         { return true, nil }
+func (d *laneBoard) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *laneBoard) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *laneBoard) ApprovedVersionBefore(context.Context, string, int) (int, error)   { return 0, nil }
 func (d *laneBoard) PutGatedSteps(context.Context, string, []string) error             { return nil }
 func (d *laneBoard) PutStep(context.Context, string, string, dispatch.StepWrite) error { return nil }
 func (d *laneBoard) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {

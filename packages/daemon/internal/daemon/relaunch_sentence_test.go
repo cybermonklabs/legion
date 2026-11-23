@@ -389,7 +389,8 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 		return c.State == string(supervise.StateIdle) && c.Pending == nil
 	})
 	// The record is told by the confirmation's own write, at the turn's start, before the end
-	// that leaves the claim idle (supervise's confirm), so it is read once the turn is over.
+	// that leaves the claim idle (supervise's confirmCarrying), so it is read once the turn is
+	// over.
 	if !storedClaim(t, cfg, token).EndedWork.Told {
 		t.Fatal("the start turn left the record untold, want it told by the turn that took the start message")
 	}

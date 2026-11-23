@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"path"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -307,10 +308,7 @@ func (c *processHeaderConn) Write(p []byte) (int, error) {
 		return c.Conn.Write(p)
 	}
 	status += len("\r\n")
-	answer := make([]byte, 0, len(p)+len(line))
-	answer = append(answer, p[:status]...)
-	answer = append(answer, line...)
-	answer = append(answer, p[status:]...)
+	answer := slices.Concat(p[:status], line, p[status:])
 	written, err := c.Conn.Write(answer)
 	// What was written, counted in p's bytes.
 	switch {

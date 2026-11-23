@@ -1236,7 +1236,12 @@ ENV_ALLOWED = frozenset({
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT", "DISPATCH_FIRST_ROLLOUT_BUILD",
-    "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
+    "DISPATCH_PREVIOUS_BUILD", "DISPATCH_TEST_DATABASE_URL",
+    # Read at run time by storetest's xid window rig (XidRequireGapsEnv): it turns a run that
+    # cannot judge gaps from shape alone into a failure, and go compiles the same files and runs
+    # the same tests with it set as without.
+    "DISPATCH_XID_REQUIRE_GAP_JUDGMENT",
+    "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE",
     "ENVOY_SMOKE_IMAGE", "FIRST_ROLLOUT_COMMIT",
     # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
     # around_job reads the env of every step of the job that runs go-release-notices.sh, so
@@ -2707,10 +2712,11 @@ def check_vet_tags(session: Session, data, problems: list) -> list:
     `./...` walks), never go list's own package list, which leaves out a package whose every file
     a missing tag excludes. go list then says, under each Run's platform and tags, which of them
     it compiles. For each file none compiles that names a tag (go_build_tags.is_tag: no platform
-    or architecture feature name, none the toolchain sets), every choice of its own tags is
-    tried, and go list says again whether the file is compiled under it: one that is, is a miss,
-    named with the tags that build it. go decides each answer; this rule's own reading of a
-    constraint only chooses which tags to try, and it reads a name in any script Go accepts."""
+    or architecture feature name, none of its NOT_TAGS, which the toolchain or only a patched
+    build sets), every choice of its own tags is tried, and go list says again whether the file
+    is compiled under it: one that is, is a miss, named with the tags that build it. go decides
+    each answer; this rule's own reading of a constraint only chooses which tags to try, and it
+    reads a name in any script Go accepts."""
     groups: dict = defaultdict(list)
     for g in data.GATES:
         for r, step in [(r, r.step) for r in g.runs] + [(r, e.step) for e in g.exact for r in e.runs]:

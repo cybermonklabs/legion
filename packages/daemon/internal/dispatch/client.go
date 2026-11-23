@@ -175,8 +175,15 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 // document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
 // nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
 // for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
-// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until the
-// server release that has it.
+// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until
+// the server release that has the route. A Dispatch that has the route but not an entry's `holds`
+// ignores that member, as it ignores every member a body carries that it does not declare (its
+// decodeJSON), and answers 200: the publish finishes, and that Dispatch keeps no `holds` for the
+// row. Its advice then reads the row by the project's gated steps, so a `criteria` row a root
+// registered beside a deployment whose list names `spec` and not `criteria` is left out of the
+// superseded-approval advice until the set is published again, which every daemon boot does
+// (queueRecordedGatesPublish). So deploy Dispatch first, or restart the daemon once Dispatch has
+// the column.
 func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
 	if gates == nil {
 		gates = []DesignGateDocument{}
@@ -481,6 +488,72 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
+// ArtifactChanges reads GET /api/v1/artifacts/{id}/changes?from=&to=: what changed in the document
+// between versions from and to, both positive and from below to, as Dispatch answers them (a pair
+// from 0 has no earlier version to compare, and Dispatch refuses it). A 404 ARTIFACT_NOT_FOUND is
+// ErrDocumentNotFound wrapped around Dispatch's own refusal (documentNotFound): Dispatch holds no
+// document of that id, a document deleted since its gate recorded it, and the caller records the
+// pair unreadable at once, since a deleted document does not come back. The router's `404
+// NOT_FOUND` `no route for <METHOD> <path>`, and a 405, are ErrNoChangesRoute wrapped the same
+// way: the build that answered has no such route. During a roll of Dispatch two builds answer,
+// and the next attempt can reach the one that has it, so the caller retries that answer as any
+// other failure within its bounded attempts. Dispatch also answers 404 NOT_FOUND for a version
+// the document does not have, which the daemon does not ask for, since the versions it reads are
+// the ones its gate recorded; that answer, and every other failure, is the request's own, which a
+// caller rides out.
+func (c *HTTPClient) ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error) {
+	query := url.Values{}
+	query.Set("from", fmt.Sprint(from))
+	query.Set("to", fmt.Sprint(to))
+	var changes ArtifactChanges
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/changes?"+query.Encode(), nil, &changes); err != nil {
+		var refusal *Error
+		switch {
+		case !errors.As(err, &refusal):
+		case artifactNotFound(refusal):
+			return ArtifactChanges{}, documentNotFound(err)
+		case NoRoute(err), refusal.Status == http.StatusMethodNotAllowed:
+			return ArtifactChanges{}, fmt.Errorf("%w: %w", ErrNoChangesRoute, err)
+		}
+		return ArtifactChanges{}, err
+	}
+	return changes, nil
+}
+
+// ApprovedVersionBefore reads GET /api/v1/artifacts/{id}/reviews, every review of the document,
+// newest first, and answers the highest version below version that one of them approved, 0 when
+// none did: the version a holder whose told version the record does not know is taken to have
+// worked from. It takes the highest such version wherever it stands in the list, so the answer
+// rests on no order of the list: a changes request names no approved version, and a review of a
+// version at or above the one asked about is not before it. A 404 ARTIFACT_NOT_FOUND is
+// ErrDocumentNotFound wrapped around Dispatch's own refusal, as ArtifactChanges answers it: a
+// document deleted since its gate recorded it, whose review history the caller records unread at
+// once rather than read again on its backoff.
+func (c *HTTPClient) ApprovedVersionBefore(ctx context.Context, artifactID string, version int) (int, error) {
+	var reviews []reviewResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/reviews", nil, &reviews); err != nil {
+		var refusal *Error
+		if errors.As(err, &refusal) && artifactNotFound(refusal) {
+			return 0, documentNotFound(err)
+		}
+		return 0, err
+	}
+	approved := 0
+	for _, review := range reviews {
+		if review.State == "approved" && review.Version < version && review.Version > approved {
+			approved = review.Version
+		}
+	}
+	return approved, nil
+}
+
+// documentNotFound is Dispatch's 404 ARTIFACT_NOT_FOUND, err, as the reads of one document answer
+// it: ErrDocumentNotFound wrapped around Dispatch's own refusal, so errors.Is finds it and the
+// message keeps what Dispatch said.
+func documentNotFound(err error) error {
+	return fmt.Errorf("%w: %w", ErrDocumentNotFound, err)
+}
+
 // Handoff reads GET /api/v1/handoffs/{id}: one handoff record with its issue, phase, version and
 // author. A record Dispatch does not have is its 404 HANDOFF_NOT_FOUND (Missing).
 func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
@@ -716,6 +789,13 @@ func (r handoffResponse) handoff() Handoff {
 		Version:  r.Version,
 		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
 	}
+}
+
+// reviewResponse is one review as GET /api/v1/artifacts/{id}/reviews serves it, read for the
+// version it was given on and its state (`approved` or `changes_requested`) alone.
+type reviewResponse struct {
+	Version int    `json:"version"`
+	State   string `json:"state"`
 }
 
 type actor struct {

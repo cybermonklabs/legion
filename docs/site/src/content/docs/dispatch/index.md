@@ -36,7 +36,7 @@ Dispatch sits beside Legion and the Secrets Broker.
 | **Agents** | The agents connected right now. You can message one, or broadcast to many. |
 | **Delivery** | How work reaches production: a timeline of merges and deploys, with the delivery measures and their targets above it. **Pipeline**, beside it, times each CI and deploy step over the last seven days. |
 | **Search** | `Ctrl+K` (`⌘K` on a Mac) searches everything and lists the actions for the page you are on. |
-| **Settings** | Projects, repository mappings, architecture sources, and the tokens your agents use. |
+| **Settings** | Projects with their default assignees and default repositories, architecture sources, and the tokens your agents use. |
 
 The sidebar links the Inbox, Agents, your pinned issues, every project, and Settings. The Inbox
 entry shows one count: the open asks that wait on you, plus the

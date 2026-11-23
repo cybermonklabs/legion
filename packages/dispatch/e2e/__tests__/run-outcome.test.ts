@@ -5,7 +5,7 @@
  *  to it (`e2e/run-outcome.ts` cites the line), so a leg that names any reporter of its own
  *  loads `e2e/failure-reporter.ts` only by naming it too: `--reporter=list,blob` records no row
  *  here, and the shard and alone legs of `.github/workflows/dispatch-browser.yaml` therefore
- *  run `--reporter=list,blob,./e2e/failure-reporter.ts`. A module that answered "did a row
+ *  name `./e2e/failure-reporter.ts` in their `--reporter` lists. A module that answered "did a row
  *  fail" off the reporter alone answers NO for a leg that loaded none, however red it was, and
  *  the teardown then deletes the logs its reader had come for. A `globalSetup` that threw
  *  before the first row is the same silence from the other end.

@@ -107,11 +107,12 @@ func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 	}
 }
 
-// TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject: such a secret with no
-// airlock entry is denied, project-channels-need-airlock, to a credential that names a private
-// project, because a release outside the airlock hands the session the real token and the session
-// could then post anywhere. The same secret behind the airlock, and the same secret asked for by a
-// credential that names only a public project, follow owner and tier as before.
+// TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject: such a secret that no
+// profile with a proxy block serves is denied, project-channels-need-airlock, to a credential that
+// names a private project, because a release outside the airlock hands the session the real token
+// and the session could then post anywhere. The same secret behind the airlock, served as a profile
+// of its own name with a proxy block, and the same secret asked for by a credential that names
+// only a public project, follow owner and tier as before.
 func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *testing.T) {
 	store := secrets.NewLocal(channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack))
 	loader := projectLoader(store)
@@ -119,11 +120,12 @@ func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *tes
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	loader.AirlockDigest = func(string) string { return "entry-one" }
-	behind, err := loader.Load(context.Background())
+	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(`{"name": "SLACK_TOKEN", "proxy": {"hosts": ["slack.com"]}}`), projectSvc)
+	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
-		t.Fatalf("Load with an airlock entry: %v", err)
+		t.Fatalf("policy.NewCurrent with a proxy block: %v", err)
 	}
+	behind := current.Get()
 	source := secrets.LocalARN(policytest.ID("SLACK_TOKEN"))
 	for _, c := range []struct {
 		name      string

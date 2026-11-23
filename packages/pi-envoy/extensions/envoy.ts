@@ -159,9 +159,14 @@ import { type AcceptedUserTurnDelivery, acceptUserTurn } from "@legion/pi-shared
 import {
   AgentStreamPublisher,
   type AgentStreamSettingsState,
+  type DispatchMessageCardDetails,
   modelReference,
 } from "@legion/pi-shared/agent-stream";
-import { transcriptPictures, withDeliveredPictures } from "@legion/pi-shared/delivery-pictures";
+import {
+  liveContext,
+  transcriptPictures,
+  withDeliveredPictures,
+} from "@legion/pi-shared/delivery-pictures";
 import { currentSessionID } from "@legion/pi-shared/dispatch-session-id";
 import {
   type AcceptedUserTurn,
@@ -1077,7 +1082,8 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   // Adds `addresses` to `shown`, a session's set of pictures it was shown (`shownPictures`),
   // which later reads and deliveries name instead of sending again: the pictures a delivery
-  // showed once the host took it, and those the transcript the session moved onto already shows.
+  // showed once the host took it, and those the live context of the transcript the session moved
+  // onto, or compacted, already shows.
   const markPicturesShown = (shown: Set<string>, addresses: readonly string[]): void => {
     for (const address of addresses) shown.add(address);
   };
@@ -1123,13 +1129,15 @@ export default function envoyExtension(hostApi: PiApi): void {
     // restart or a session change cut short, are held again for the first settled heartbeat.
     ledger?.restore(replaySnapshot(entries));
     unwritten.requeueNotices(heldReplayNotices(entries));
-    // The pictures the transcript the session is now on already shows (a fork's, a handoff's, a
-    // resume's, a restart's) are in the history every request sends, so they count as shown. The
-    // id the session left is no longer served: what it was shown is forgotten, and so are the
-    // turns this instance sent into it (every match asks under the live id; another instance in
-    // the process may still serve the id) and its typed turns already handed their pictures
-    // (`TypedPictures.dropOtherSessions` says which survive).
-    markPicturesShown(shownPictures(sessionID), transcriptPictures(branch));
+    // The pictures the live context of the transcript the session is now on already shows (a
+    // fork's, a handoff's, a resume's, a restart's) are in the history every request sends, so
+    // they count as shown; one a compaction or a `/clear` cut off is no longer sent, so it does
+    // not, and no entry before that cut is read (`liveContext`). The id the session left is no
+    // longer served: what it was shown is forgotten, and so are the turns this instance sent into
+    // it (every match asks under the live id; another instance in the process may still serve the
+    // id) and its typed turns already handed their pictures (`TypedPictures.dropOtherSessions`
+    // says which survive).
+    markPicturesShown(shownPictures(sessionID), transcriptPictures(liveContext(branch)));
     if (previousSessionID !== sessionID) {
       forgetShownPictures(previousSessionID);
       if (notedSessionIDs.delete(previousSessionID)) forgetInjectedUserTurns(previousSessionID);
@@ -1490,21 +1498,29 @@ export default function envoyExtension(hostApi: PiApi): void {
   });
 
   // A card's message: its `details` name the frame (`ledgerIdentity`), which the host keeps
-  // on the message it writes, beside the wake's card marker. An `inert` card is a steer that starts
-  // no turn on an idle host; a turn streaming when it is handed takes it and runs another model
-  // turn for it, so `UnwrittenFrames` hands an inert card only to a settled host (`hostSettled`).
-  // It carries `details` of its own all the same, the hand-over state `inert`, so a reading of the
-  // stored transcripts says which state held every waiting card; it carries no `envoyCard`, since
-  // the wake tracks no inert card and an id there would name nothing.
+  // on the message it writes, beside the wake's card marker, and the Dispatch message the card
+  // delivers to the session, if it delivers one: the live view draws that message from Dispatch's
+  // store, so the agent stream leaves its card out (`DispatchMessageCardDetails`). An `inert` card
+  // is a steer that starts no turn on an idle host; a turn streaming when it is handed takes it and
+  // runs another model turn for it, so `UnwrittenFrames` hands an inert card only to a settled host
+  // (`hostSettled`). It carries `details` of its own all the same, the hand-over state `inert`, so
+  // a reading of the stored transcripts says which state held every waiting card; it carries no
+  // `envoyCard`, since the wake tracks no inert card and an id there would name nothing.
   // Every other card goes as the wake says (`CardWake.deliveryFor`): an aside with `triggerTurn`,
   // never a steer, so no card waits in the steering queue a person's typed message uses; the wake
   // records a startup card, which goes as a follow-up, before the host has it.
   const handCard = (
     content: string | readonly ContentBlock[],
     deliverAs: CardDelivery,
-    identity: DedupeIdentity | undefined
+    identity: DedupeIdentity | undefined,
+    dispatchMessageId: string | undefined
   ): void => {
-    const known = identity === undefined ? {} : ledgerIdentity(identity);
+    const known = {
+      ...(identity === undefined ? {} : ledgerIdentity(identity)),
+      ...(dispatchMessageId === undefined
+        ? {}
+        : ({ dispatchMessageId } satisfies DispatchMessageCardDetails)),
+    };
     if (deliverAs === "inert") {
       pi.sendMessage(
         {
@@ -1793,12 +1809,19 @@ export default function envoyExtension(hostApi: PiApi): void {
             turn.messageId
           );
         }
+        // The agent's copy names the person's message it answers: a host busy with a turn writes
+        // it at its next prompt and fires `message_end` for it then, and the live view already
+        // holds the report above, keyed on that message, so the stream leaves the copy out
+        // (`DispatchMessageCardDetails`).
         if (handed) {
           pi.sendMessage(
             {
               content: shellCommandMessage(report),
               customType: "envoy-message",
-              details: LOCAL_ENVOY_NOTICE,
+              details: {
+                ...LOCAL_ENVOY_NOTICE,
+                ...({ dispatchMessageId: turn.messageId } satisfies DispatchMessageCardDetails),
+              },
               display: true,
             },
             { deliverAs: "nextTurn", triggerTurn: false }
@@ -2096,6 +2119,11 @@ export default function envoyExtension(hostApi: PiApi): void {
       if (body !== undefined) rendered = renderInbound(raw, session, subject, body);
     }
     const envelope = rendered.envelope;
+    // The Dispatch message a card of this frame delivers to the session, which its `details` name
+    // (`handCard`): a targeted message's delivery, which Dispatch stores for the session. A
+    // targeted comment is no message the session's message list holds.
+    const deliveredMessage =
+      rendered.delivery?.resource === "message" ? rendered.delivery.id : undefined;
     if (envelope !== undefined) noteInbox(envelope);
     // The host wrote the frame, or handled it without writing anything: the ledger records it,
     // so no redelivery shows it again, here or after a restart, and the claim is settled, so
@@ -2187,7 +2215,8 @@ export default function envoyExtension(hostApi: PiApi): void {
           `${storedText(rendered.content, relayed.storedAt)}\n${LATE_BTW_NOTE}`,
           "inert",
           identity,
-          claim
+          claim,
+          deliveredMessage
         );
       } else if (rendered.delivery?.mode === "btw") {
         // A BTW is answered on Dispatch or refused there, never shown as a card: a redelivery
@@ -2280,7 +2309,8 @@ export default function envoyExtension(hostApi: PiApi): void {
             card.content,
             rendered.delivery?.mode === "aside" ? "aside" : "card",
             identity,
-            claim
+            claim,
+            deliveredMessage
           );
           if (outcome !== "closed") markPicturesShown(shownPictures(sessionID), card.shown);
         } else {
@@ -3234,9 +3264,20 @@ export default function envoyExtension(hostApi: PiApi): void {
   // The host asks whether any extension handles `session_before_compact`, which turns its
   // background compaction off, but never these two: handling them changes nothing it does. A
   // compaction is the one moment the figures fall rather than climb, so both refresh the ring.
+  // The host fires `session_compact` once the compaction entry is on the branch, and the pictures
+  // the compaction cut off are no longer in any request: the session's shown set becomes what its
+  // new live context shows (`liveContext`), replaced rather than added to, so a later read or
+  // delivery sends such a picture again. It is the set of the session that compacted, the id its
+  // own tool calls carry, which a task subagent's instance knows too.
   pi.on("session_compact", async (_event, context) => {
     cardWake.noteIfIdle(context);
     refreshAgentStreamContext(eventSessionID(context));
+    const shown = shownPictures(context.sessionManager.getSessionId());
+    shown.clear();
+    markPicturesShown(
+      shown,
+      transcriptPictures(liveContext(context.sessionManager.getBranch?.() ?? []))
+    );
   });
   pi.on("auto_compaction_end", async (event, context) => {
     cardWake.autoCompactionEnd(event);

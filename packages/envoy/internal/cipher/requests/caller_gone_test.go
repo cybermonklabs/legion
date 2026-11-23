@@ -62,7 +62,7 @@ func TestAListWhoseCallerWentAwayLogsNothingOfTheRowsItLeftOff(t *testing.T) {
 			name: "the reader's own pending rows",
 			make: func(t *testing.T, m *Machine, i int) {
 				pod, key := everyonesPod(t, m, fmt.Sprintf("gone-own-%02d", i), "")
-				if req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
+				if req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), ""); err != nil || req.State != "pending" {
 					t.Fatalf("Create = %+v, %v; want it pending", req, err)
 				}
 			},
@@ -76,7 +76,7 @@ func TestAListWhoseCallerWentAwayLogsNothingOfTheRowsItLeftOff(t *testing.T) {
 			make: func(t *testing.T, m *Machine, i int) {
 				operator := fmt.Sprintf("gone%02d@example.com", i)
 				enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-gone-%02d", i), new(operator), nil)
-				if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
+				if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), ""); err != nil || req.State != "pending" {
 					t.Fatalf("Create = %+v, %v; want it pending", req, err)
 				}
 			},

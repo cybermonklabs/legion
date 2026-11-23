@@ -17,9 +17,12 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // trailerLegion is a `legion` for a test's commands: a two-line script that runs this test binary
@@ -72,13 +75,14 @@ func trailerRun(t *testing.T, dir string, env []string, stdin, name string, args
 
 // trailerRunInput runs name with args in dir, with env, and with stdin as its standard input: a
 // pipe for any reader but an *os.File, which the command gets as its descriptor 0. It answers the
-// exit status and what the command printed. A command that cannot start, or that runs for a
-// minute, fails the test. The command runs in a process group of its own, and the minute kills the
-// whole group, so a chain of gits that run one another without end stops there too and holds no
-// output pipe open.
+// exit status and what the command printed. A command that cannot start, or that still runs when
+// its limit (trailerRunLimit) passes, fails the test. The command runs in a process group of its
+// own, and the limit kills the whole group, so a chain of gits that run one another without end
+// stops there too and holds no output pipe open.
 func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, name string, args ...string) (code int, stdout, stderr string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), trailerRunLimit)
+	limit := trailerRunLimit(t)
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir, cmd.Env, cmd.Stdin = dir, env, stdin
@@ -89,7 +93,7 @@ func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, na
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("%s %q ran for %s: %s", name, args, trailerRunLimit, errb.String())
+		t.Fatalf("%s %q still ran when its limit of %s, %s before the test binary's deadline, passed: %s", name, args, limit.Round(time.Millisecond), testBoundMargin, errb.String())
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
@@ -101,15 +105,23 @@ func trailerRunInput(t *testing.T, dir string, env []string, stdin io.Reader, na
 	return 0, out.String(), errb.String()
 }
 
-// trailerRunLimit is how long trailerRunInput lets a command run before it kills its group.
-const trailerRunLimit = time.Minute
+// trailerRunLimit is how long trailerRunInput lets a command run before it kills its group: what
+// is left of the test binary's deadline less testBoundMargin, and no limit under -timeout 0. A git
+// that a loaded machine makes slow passes; one that never ends fails its row by name, and the
+// margin holds the kill, WaitDelay and the row's cleanups, before go test's alarm panics the
+// binary. A fixed minute failed a run that a loaded machine made slower than that.
+func trailerRunLimit(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 1<<60, testBoundMargin)
+}
 
 // fifoWriter is the shell that writes text into the FIFO at path, in the background: the writer
-// holds none of the command's output, and gives up after trailerRunLimit, so a run where nothing
-// opens the FIFO leaves no writer behind. A shorter limit fails a slow run that does open it: the
-// writer gives up first, and git then waits on the open until the run's own limit.
-func fifoWriter(path, text string) string {
-	return fmt.Sprintf(`(timeout %d sh -c 'printf "%s" > "%s"' >/dev/null 2>&1 &)`, int(trailerRunLimit.Seconds()), text, path)
+// holds none of the command's output, and gives up after trailerRunLimit as t has it now, so a
+// run where nothing opens the FIFO leaves no writer behind past the test binary's deadline. A
+// shorter limit fails a slow run that does open it: the writer gives up first, and git then waits
+// on the open until the run's own limit. A run's limit is reckoned when it starts, after this, so
+// the writer outlasts it.
+func fifoWriter(t *testing.T, path, text string) string {
+	return fmt.Sprintf(`(timeout %d sh -c 'printf "%s" > "%s"' >/dev/null 2>&1 &)`, int(trailerRunLimit(t).Seconds()), text, path)
 }
 
 // trailerRepo is a new repository under the test's temporary directory, made by git alone.
@@ -716,7 +728,7 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 	lines := "\nOmp-Session: closer-session\nLegion-Role: implementer\n"
 	// fifo is a command that makes the FIFO name in TMPDIR and writes text into it (fifoWriter).
 	fifo := func(name, text string) string {
-		return `mkfifo "$TMPDIR/` + name + `" && ` + fifoWriter(`$TMPDIR/`+name, text) + ` && `
+		return `mkfifo "$TMPDIR/` + name + `" && ` + fifoWriter(t, `$TMPDIR/`+name, text) + ` && `
 	}
 	type row struct {
 		name, host, command, stdin string
@@ -821,7 +833,7 @@ func TestGitWrapperAfterGivesAFifoMessageThroughAHostThatClosesDescriptors(t *te
 	}
 	copyExecutable(t, goGitProgram(t, strings.Replace(closingGitSource, "REAL_GIT", strconv.Quote(git), 1)), filepath.Join(compiledCloser, "git"))
 	// The FIFO's writer is fifoWriter's.
-	command := `mkfifo "$TMPDIR/message" && ` + fifoWriter(`$TMPDIR/message`, "msg") + ` && ` +
+	command := `mkfifo "$TMPDIR/message" && ` + fifoWriter(t, `$TMPDIR/message`, "msg") + ` && ` +
 		`git commit -q --allow-empty -F "$TMPDIR/message"`
 	for _, host := range []struct{ name, dir string }{{"a host's script", closer}, {"a compiled host's git", compiledCloser}} {
 		t.Run("-F <a FIFO> through "+host.name+" that closes descriptors", func(t *testing.T) {
@@ -893,7 +905,14 @@ func TestGitWrapperAfterRunsAHostScriptWithNoInterpreterLine(t *testing.T) {
 }
 
 // SIGTERM ends legion git while it reads a `-F -` message from a standard input that never ends,
-// as it ends git alone: the command dies of the signal within seconds, and no commit is made.
+// as it ends git alone: the command dies of the signal, and no commit is made. Standard input holds
+// the first bytes of the message, and the signal is sent once legion git has read them (pipeEmpty),
+// so it finds the read. A signal that came before the read would be answered before it, as runGit
+// answers a signal that came before it put back the signal's own action (endedBySignal), and the
+// row would pass without reading what the signal does to the read: a fixed second and a half
+// before the signal let a loaded machine send it there. A legion git that ends before it reads, or
+// that still runs after the signal, fails the row by name, with the test binary's deadline as the
+// only bound on either wait.
 func TestGitWrapperEndsOnSIGTERMWhileItReads(t *testing.T) {
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
@@ -902,7 +921,14 @@ func TestGitWrapperEndsOnSIGTERMWhileItReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer writer.Close()
+	// Closed after the kill below, so a legion git still reading never reads the message's end.
+	t.Cleanup(func() {
+		writer.Close()
+		reader.Close()
+	})
+	if _, err := writer.WriteString("the first line of a message whose end never comes\n"); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command(legion, "git", "--real", git, "--", "commit", "--allow-empty", "-F", "-")
 	cmd.Dir, cmd.Stdin = repo, reader
 	cmd.Env = trailerEnv(t, trailerPath(git), "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=signal-session", "LEGION_ROLE=implementer")
@@ -911,29 +937,74 @@ func TestGitWrapperEndsOnSIGTERMWhileItReads(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	reader.Close()
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	// The reads before standard input take well under a second; the signal finds the read.
-	time.Sleep(1500 * time.Millisecond)
+	exited := make(chan struct{})
+	var waited error
+	go func() {
+		waited = cmd.Wait()
+		close(exited)
+	}()
+	t.Cleanup(func() {
+		select {
+		case <-exited:
+		default:
+			_ = cmd.Process.Kill()
+			<-exited
+		}
+	})
+	ended := func() bool {
+		select {
+		case <-exited:
+			return true
+		default:
+			return false
+		}
+	}
+	testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "legion git to read the message's first bytes from its standard input", func() bool {
+		return ended() || pipeEmpty(t, reader)
+	})
+	if ended() {
+		t.Fatalf("legion git ended with %v before it read its standard input: %s", waited, errb.String())
+	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal legion git: %v", err)
 	}
-	select {
-	case err := <-done:
-		var exit *exec.ExitError
-		if !errors.As(err, &exit) {
-			t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", err, errb.String())
-		}
-		status, _ := exit.Sys().(syscall.WaitStatus)
-		if !(status.Signaled() && status.Signal() == syscall.SIGTERM) && exit.ExitCode() != 128+int(syscall.SIGTERM) {
-			t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", err, errb.String())
-		}
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("legion git still runs 10 s after SIGTERM")
+	testwait.Receive(t, "legion git to end after SIGTERM while it reads", exited)
+	var exit *exec.ExitError
+	if !errors.As(waited, &exit) {
+		t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", waited, errb.String())
+	}
+	status, _ := exit.Sys().(syscall.WaitStatus)
+	if !(status.Signaled() && status.Signal() == syscall.SIGTERM) && exit.ExitCode() != 128+int(syscall.SIGTERM) {
+		t.Fatalf("legion git ended with %v, want death by SIGTERM: %s", waited, errb.String())
 	}
 	if code, _, _ := trailerRun(t, repo, trailerEnv(t, trailerPath(git)), "", git, "rev-parse", "--verify", "-q", "HEAD"); code == 0 {
 		t.Fatal("a commit was made")
 	}
+}
+
+// pipeEmpty reports whether the pipe that reader is the read end of holds no byte that nobody has
+// read: poll(2) answers the end readable while the pipe holds one, or once no writer is left, and
+// the caller holds a writer open.
+func pipeEmpty(t *testing.T, reader *os.File) bool {
+	t.Helper()
+	conn, err := reader.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ready int
+	var pollErr error
+	if err := conn.Control(func(fd uintptr) {
+		for {
+			ready, pollErr = unix.Poll([]unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}, 0)
+			if !errors.Is(pollErr, unix.EINTR) {
+				return
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if pollErr != nil {
+		t.Fatalf("poll the pipe's read end: %v", pollErr)
+	}
+	return ready == 0
 }

@@ -37,6 +37,8 @@ transcript_to "$evidence/transcript.log"
 . "$root/scripts/e2e/lib/kind-sandbox.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/role-namespaces.sh
 . "$root/scripts/e2e/lib/role-namespaces.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
 
 # The NFS server: NFS-Ganesha as the Kubernetes SIG Storage's nfs-provisioner image ships it, run
 # with a configuration of the proof's own (two exports, NFSv4.0, no grace period).
@@ -76,17 +78,19 @@ release_shares() {
   fi
 }
 
+# cleanup tears the run down and prints its last line through lib/run-verdict.sh: PASS only for a
+# run that reached run_end, the script's last statement. A run a signal ended reads FAIL, and
+# release_shares and the teardown treat it as a failure, keeping the pods and the cluster's evidence.
 cleanup() {
-  local status=$?
+  local status=$? ended
+  ended=$(run_status "$status")
   docker rm -f "$cluster-driver" "$cluster-probe" >/dev/null 2>&1 || true
-  release_shares "$status"
-  kind_sandbox_teardown "$status" "$evidence"
+  release_shares "$ended"
+  kind_sandbox_teardown "$ended" "$evidence"
   rm -rf "$work"
-  if [ "$status" -eq 0 ]; then
-    echo "share volumes kind e2e: PASS in $((SECONDS - started))s (evidence: $evidence)"
-  else
-    echo "share volumes kind e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)" >&2
-  fi
+  run_verdict "$status" \
+    "share volumes kind e2e: PASS in $((SECONDS - started))s (evidence: $evidence)" \
+    "share volumes kind e2e: FAIL at $check after $((SECONDS - started))s (evidence: $evidence)"
 }
 trap cleanup EXIT
 
@@ -349,3 +353,4 @@ elapsed=$((SECONDS - check_started))
 [[ $probed != *"failed transiently"* ]] || fail "missing-image: probe-boot retried the pull before refusing: $(grep -m1 'failed transiently' <<<"$probed" | cut -c1-300)"
 note "missing-image: probe-boot exit 1 in ${elapsed}s: $(grep -m1 -o 'the registry does not have image [^ ]*' <<<"$probed")"
 pass
+run_end

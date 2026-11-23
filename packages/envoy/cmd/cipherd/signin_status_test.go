@@ -60,17 +60,16 @@ func fetchSignInStatus(t *testing.T, base string) (signInStatus, string) {
 }
 
 // awaitClientCheck waits for the boot pass of a broker's client check to reach the row, and
-// answers the status it then reads.
+// answers the status it then reads. Each read spends the bucket GET /signin/status shares with
+// the approval page's routes, so it is asked every tenth of a second.
 func awaitClientCheck(t *testing.T, base string) (signInStatus, string) {
 	t.Helper()
 	var status signInStatus
-	var body string
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		status, body = fetchSignInStatus(t, base)
-		return status.ClientCheck != nil
-	}) {
-		t.Fatalf("the broker took no client check within %s: %s", awaitTimeout, body)
-	}
+	body := testwait.UntilPolling(t, 100*time.Millisecond, "the broker's boot pass of its client check", func() (string, bool) {
+		var read string
+		status, read = fetchSignInStatus(t, base)
+		return read, status.ClientCheck != nil
+	})
 	return status, body
 }
 
@@ -286,7 +285,7 @@ func TestTheBinaryAnswersSignInStatusFromPostgres(t *testing.T) {
 	// And after a restart: both processes gone, a third started on the same database.
 	for _, process := range []*brokerProcess{first, second} {
 		process.Terminate(t)
-		if err := process.AwaitExit(t, stopTimeout); err != nil {
+		if err := process.AwaitExit(t); err != nil {
 			t.Fatalf("a broker exited with %v, want 0:\n%s", err, process.Log())
 		}
 	}

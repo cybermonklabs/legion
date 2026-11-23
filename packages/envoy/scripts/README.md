@@ -141,7 +141,9 @@ second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
 services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
 and the certificate authority they are signed by), which is a second such process:
 `dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
-at, and this script points nothing at that one. It then writes a rules file and a
+at, and this script points nothing at that one. It then writes a profiles file
+(`BROKER_PROFILES_FILE`, each secret a profile of its own name with a proxy block,
+and `AIRLOCK_PLAIN_GITHUB`, the `github-app` secret's profile with none) and a
 fake Secrets Manager naming each other, starts **two** broker processes on a
 database of their own with the whole `BROKER_AIRLOCK_*` block, puts one TCP front
 over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
@@ -250,7 +252,9 @@ broker reads its input's name by (lower-cased, each underscore a hyphen). These 
 identify the consumer's existing broker names and account; they do not rename the
 operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
 fixture and Google consumer boundary directly under fakes. It checks required inputs,
-fake broker rules, store names and consumer results without starting a stack.
+fake broker rules, store names and consumer results without starting a stack, k8a's
+broker start on its own, and k6's az wrapper with an az shim first on PATH (a shim that
+looks az up on PATH again must reach the real az, not the wrapper).
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
@@ -269,7 +273,7 @@ git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` pat
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
 fake Secrets Manager and makes every broker reread it. A control that needs other
-rules or another proxy setting — `k4`'s, which turns the refusal of a loopback address
+profiles or another proxy setting — `k4`'s, which turns the refusal of a loopback address
 off for one host — is a second broker process on the stack's own database, authority
 and stand-ins with that one setting changed, and the step's `HTTPS_PROXY` pointed at
 it. Every broker the run starts of its own — that control's, `k7`'s and the ones `k8a`
@@ -277,7 +281,7 @@ expects to refuse to start — takes its environment from the running stack brok
 (`/proc/<pid>/environ`) with the few variables it must change put in their place, so
 none of them can be missing a setting `dev-airlock.sh` gave the stack's. `k7` goes
 furthest with that device: its names are the consumers' own and its hosts are the real
-services, so its broker has the stack's whole environment with its rules file, its two
+services, so its broker has the stack's whole environment with its profiles file, its two
 ports and its public URL changed, and both `AGENT_SECRETS_URL` and the grant's proxy
 point at it. `k5`'s control is a second stack under `--keep-values`, `k6`'s a second
 stack under `--no-kind`, and `k9`'s a second stack under `--idle-seconds 60`.
@@ -302,62 +306,61 @@ and `k15` needs `lake` from the Lean toolchain the environment names. Each bound
 listens on one loopback address and port 443, so only one stack runs on a machine at a
 time.
 
-## github-narrowing-check.sh
+## github-profile-check.sh
 
-Runs the four checks of `agent-secrets`' GitHub App narrowing that need a broker, a
-GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
-document, and `k1` of dispatch://INFRA-3099's — end to end on a local stack of its
-own, and prints one `PASS` or `FAIL` line for each property they name, then `all <n>
-assertions passed` when every one passed, so a reader tells a complete run from a
-cut-off one.
+Runs the end-to-end checks of the broker's named GitHub profiles on a local stack of
+its own — `p1`, the profiles file served; `p2`, a GitHub profile's token asked for with
+its permissions cut to what the installation holds; `p3`, a proxied profile's token
+kept in the proxy and sent only where its block allows; and `p4`, a body carrying the
+removed `github_app` field refused `GITHUB_APP_FIELD_REMOVED` — and prints one `PASS`
+or `FAIL` line for each property they name, then `all <n> assertions passed` when every
+one passed, so a reader tells a complete run from a cut-off one.
 
 ```bash
-DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-narrowing-check.sh
+DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-profile-check.sh
 ```
 
-It starts `dev-broker.sh`, which holds the three `github-app` secrets and the
-stand-in GitHub they are minted against, and enrols one pod session of the service
-that owns two of them, as the Legion daemon enrols a worker pod, so each request for
-one of those is granted without asking. `k1` spends a narrowed token at the stand-in
-and reads back what the narrowed mint asked GitHub for; `k2` sets the stand-in to
-refuse the mint (HTTP 422) and then to answer wider than the narrowing asked, at the
-answer route the stack's banner names (`POST {"mode":
-"ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once",
-"repository": "<name>"}`), since one stack drives every answer this check needs;
-`k4` drives the secret whose
-release holds two installations, which no one token can be handed over for; and `k1`
-of INFRA-3099 drives the third secret, the one whose request reaches a person, with
-the stand-in refusing one repository, so that narrowing is refused before the
-approval request is opened: the command does not run, the refusal names the secret,
-that repository and the sentence it carries, its stderr names no page to approve
-anything on, the broker's own `credential_requests` gains no record, and the
-stand-in's records hold the search for the refused part and a revoke for every token
-it minted. Each check runs its own negative control — INFRA-3099's is the same
-request for a repository the stand-in reaches, approved on the broker's page as the
-person does, by `approve_record` and `approve_watch` copied from `airlock-check.sh`
-because each check script here stands alone — and every line names the exit status it
-read, because a property that failed and a command that never ran look alike in a
-transcript that holds neither.
+It starts `dev-broker.sh`, whose profiles file names its three `github-app` secrets and
+the two proxied profiles of `DEMO_GITHUB_APP` (`DEMO_GITHUB_READ` and
+`DEMO_GITHUB_ADMIN_READ`), with `DEV_BROKER_GITHUB_PERMISSIONS`, so the App's
+installations hold less than the profiles ask for, and `DEV_BROKER_PROXIED_GITHUB_IP`,
+so the stand-in GitHub is served over TLS on port 443 of a loopback address
+(`GITHUB_PROFILE_CHECK_GITHUB_IP`, 127.0.0.9 unless set), where the broker's proxy
+reaches it as `api.github.test`. It is the one driver that hands the stand-in an
+installation map (`dev-airlock-stands --installation-permissions`). It enrols one pod
+session of the service that owns the secrets, as the Legion daemon enrols a worker pod.
+`p1` reads the broker's `broker: profiles applied` line, runs `broker profiles check`
+on the stack's file, and adds a `github-app` secret no profile names to the store,
+which is refused `PROFILE_REFUSED` naming `github-app-no-profile`. `p2` reads the token
+request the stand-in recorded, the broker's left-out lines and the values answer's
+`github_left_out`, drives an empty cut (`PROFILE_MINT_REFUSED`, no token request) and a
+token wider than asked (`MINT_FAILED`, given back). `p3` runs a child under each proxied
+profile: its value, sent straight to the stand-in, is refused; its read through the
+proxy reaches the stand-in with a minted token; a `POST`, which the proxy blocks allow
+no profile, is refused by the proxy and reaches nothing; and the stand-in's deploy-key,
+organization-installations and commit-status routes answer by what the cut left in
+each token. `p4` posts a `github_app` body with `curl` to `POST /v1/requests` and
+`POST /v1/grants/{id}/values`.
 
-No line it prints is a credential: the child reads its token out of its own
-environment and prints the repository it asked for and the status it got, and a
-refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
-child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a type's value with
-an HTTP client that trusts the host's own roots and nothing else.
+No line it prints is a credential: a child prints the status of each call and no part
+of any answer, a token read back from the stand-in is printed by its length, and a
+refusal is printed as `agent-secrets` wrote it. Every line names the exit or HTTP status
+it read. When the stack does not start, or the session cannot be enrolled, it prints one
+`UNKNOWN` line saying which and exits 3, since no property was read. It exits 0 when
+every property passed, 1 when one did not, and 2 on a usage error; `--keep-stack`
+leaves the stack and the run's work directory up to look at a failure with, and
+`--help` prints the usage.
 
-`--keep-stack` leaves the stack and the run's work directory up to look at a failure
-with, `--help` prints the usage, and a usage error exits 2.
-`DEV_BROKER_POSTGRES_URL` is required: the stack is driven against the server it
-names, and the record property is read from the broker's own database there, whose
-name the script takes from `dev-broker.sh`'s own log and puts in place of that URL's
-path, so no password is ever parsed out of a banner. It needs bash, curl, jq, go,
-psql and setsid, and takes a few minutes once Go's build cache holds the stack's
-binaries. On a cold cache `dev-broker.sh`'s six builds take longer than all the rest,
-so the script waits for them under a bound of their own, up to 30 minutes, and then
-for the stack's start under a short one. The stack runs in a session of its own and
-is stopped as one process group, so a stop during the build — the script's exit, a
-wait that ran out, Ctrl-C — ends that build with the stack.
+Its negative control swaps the broker alone: `DEV_BROKER_BROKER_BIN`, which it passes
+to `dev-broker.sh`, names a broker binary that script starts in place of the one it
+builds, and a broker built before the profile mint and the proxy's profile token fails
+`p2` and `p3`. It needs bash, curl, jq, go and setsid, and a machine that lets this
+user bind port 443 of a loopback address, as a Legion pod does; elsewhere the stand-in
+cannot bind it and the run is `UNKNOWN`. It takes a few minutes once Go's build cache
+holds the stack's binaries; on a cold cache it waits for `dev-broker.sh`'s six builds
+under a bound of their own, up to 30 minutes. The stack runs in a session of its own and
+is stopped as one process group, so a stop during the build ends that build with the
+stack.
 
 ## project-secrets-check.sh
 
@@ -564,6 +567,63 @@ package spelled other than canonically is counted;
 `--timeout 1s` ends a package's binary; and a copy with
 one `EXPECTED_SKIPS` line deleted, in a temporary checkout, counts that test's skip. It needs
 a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_DATABASE_URL`.
+
+## forced-order.sh
+
+Runs the forced-order tests of each package named, every `TestForcedOrder…` test, on a
+nats-server whose own code carries hold points: places where a test parks the server's goroutine
+(`internal/testnats/hooks.go`, `testnats.Hook`) to force an order its scheduling would only
+sometimes produce — a consumer's state write held while a consumer of the same name is deleted
+and created again, a JetStream API request held while its server shuts down, released before
+`Stop` returns, a committed stream entry held before one server stores it.
+
+```bash
+packages/envoy/scripts/forced-order.sh ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
+packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hooktest/
+```
+
+It copies nats-server's module at the version it runs out of the module cache, applies
+`internal/testnats/testdata/hooked/v<version>/server.patch` to the copy, and adds the shared
+`testdata/hooked/zz_measure.go` (the event, the hook and the reporting helpers) and that version's
+`zz_measure_write.go` (its consumer state writer). It then runs
+`go test -tags odatrace -race -v -run '^TestForcedOrder'` with
+nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
+absolute `use` paths, so every other module version is the one CI's own build links; for a module
+with no workspace, on a copy of the module's `go.mod`. A workspace that does not use the module,
+or that holds a replace, is refused, and so is a module whose `go.mod` replaces nats-server, since
+the hooked copy would take the replacement's place. It reads go's JSON with `jq`. Nothing else of nats-server
+changes, the repository's own files are never written, and no other build sees a hook.
+The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
+place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`;
+`hooks.go` says where each one is. A server's shutdown, and its lame duck, report `server.shutdown`
+before they stop anything and `server.down` once the shutdown has waited for its goroutines: the
+hook releases every hold on that server at the first and parks none of its goroutines until the
+second, so a `Stop` or a `LameDuck` with an operation held returns, and the held operation lands
+or fails.
+
+`-C` names the module, relative to the caller's directory, as `go -C` does (`packages/envoy` by
+default), and the packages are relative to it; an empty `-C` is refused. `-server` is the
+nats-server version, by default the one the build links; 2.15.1 and 2.10.29 are hooked, and any
+other version is refused, so a module that moves to a new nats-server fails here until its hooks
+are ported; an empty value is refused too. `-drop <point>` removes the hook calls that pass that
+point, exactly, before the build, which is each test's control: a test holding at a dropped point
+fails waiting for its hold, and with `-drop server.shutdown` the test that stops a held server
+fails at its own deadline, since the stop then waits for the parked goroutine. A name no hook of
+that version reports is refused before anything is built, so a mistyped point cannot fail a test
+on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
+test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
+line).
+`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to five of
+those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
+an empty `-C`, a module that replaces nats-server), with the fixture package
+`internal/testnats/hooktest/skiponly`.
+`ci.yaml`'s `envoy-go-race` job runs that test, then the script on `./internal/testnats/hooktest/`
+twice: with no `-server`, so on the version the workspace links, and with `-server 2.10.29`. Its
+`daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
+nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
+the 10 minutes in its time budget.
 
 ## aws-moto-check.sh
 

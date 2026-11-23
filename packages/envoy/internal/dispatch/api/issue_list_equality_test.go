@@ -44,6 +44,10 @@ const mainIssueComponentsLateral = `
 		from owner o
 	) comp on true`
 
+// mainIssueRepoLateral is main's repository lateral but for the one read this change moved: the
+// project's default, which main read from the repo_projects row marked is_default, and which is
+// now the project's own default_repo column (migration 20261119000230 copied each such row
+// there).
 const mainIssueRepoLateral = `
 	left join lateral (
 		with recursive chain as (
@@ -56,7 +60,7 @@ const mainIssueRepoLateral = `
 		select
 			coalesce(
 				(select c.repo from chain c where c.repo is not null order by c.depth limit 1),
-				(select d.repo from repo_projects d where d.project = i.project_key and d.is_default)
+				(select d.default_repo from projects d where d.key = i.project_key)
 			) as resolved,
 			exists (
 				select 1 from chain c
@@ -568,14 +572,7 @@ func newIssueListFixture(t *testing.T) issueListFixture {
 			t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
 		}
 	}
-	for repo, body := range map[string]map[string]any{
-		"acme/widgets": {"project": "LIST", "default": true},
-		"acme/gadgets": {"project": "LIST"},
-	} {
-		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, body, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("map %s: status=%d body=%s", repo, response.Code, response.Body.String())
-		}
-	}
+	setDefaultRepository(t, handler, "LIST", "acme/widgets")
 	for _, statement := range []string{
 		`insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by)
 			values ('LIST', 1, 'acme/arch', 'main', 1, '{"kind":"system","id":"test"}')`,
