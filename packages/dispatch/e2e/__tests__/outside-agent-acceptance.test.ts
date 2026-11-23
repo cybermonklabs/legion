@@ -34,6 +34,7 @@ import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporar
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   acceptance,
+  codexRows,
   copyLeg,
   type LegRun,
   publicLeg,
@@ -1178,6 +1179,38 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       },
       // The four runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    test(
+      "the gate counts only PASS: a Codex row the public TSV holds as UNKNOWN holds it, and the gate names that row; C4's PASS is held as P6's is, without the session outside the project",
+      async () => {
+        const [control, unknown] = await runStandIns(passingControls, {
+          ...passingControls,
+          verdicts: { C2: "UNKNOWN" },
+        });
+        if (control === undefined || unknown === undefined) throw new Error("two runs, want two");
+        // The control: every C row PASS in the public TSV, so the gate names none of them but
+        // C4. No peer starts here, so no session outside the project stands behind C4's control
+        // send, and its PASS reads UNKNOWN, as P6's does.
+        expect({ verdicts: verdictsOf(control.stdout), stdout: control.stdout }).toMatchObject({
+          verdicts: Object.fromEntries(
+            codexRows.map((name) => [name, name === "C4" ? "UNKNOWN" : "PASS"])
+          ),
+        });
+        expect(rowsOf(control.stdout).get("C4")?.got).toContain(
+          "PASS as the public leg read it, unproven here: its control's session outside the project: "
+        );
+        expect(rowsOf(control.stdout).get("gate")?.got).not.toContain("C2");
+        // C2 UNKNOWN: copied as it is, counted, named by the gate, and the leg exits non-zero.
+        expect({ verdicts: verdictsOf(unknown.stdout), stdout: unknown.stdout }).toMatchObject({
+          verdicts: { C2: "UNKNOWN", gate: "UNKNOWN" },
+        });
+        expect(unknownsCounted(unknown.stdout)).toBe(unknownsCounted(control.stdout) + 1);
+        expect(rowsOf(unknown.stdout).get("gate")?.got).toContain("C2 UNKNOWN");
+        expect(unknown.code).not.toBe(0);
+      },
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
     );
 
     test(

@@ -5,8 +5,8 @@
 # five controls. Each control must fail as it states, or this test fails; each beside it a run
 # the counter must pass, so a counter that fails everything fails here too:
 #
-#   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/ and
-#      ./internal/dispatch/api/, one at a time, through a Go overlay (GOFLAGS=-overlay) that adds
+#   1. a skipped test planted in ./internal/cipher/api/, ./cmd/cipherd/, ./internal/holdrecord/
+#      and ./internal/dispatch/api/, one at a time, through a Go overlay (GOFLAGS=-overlay) that adds
 #      zz_planted_skip_test.go, is printed as `SKIP <package> TestPlantedSkip` and fails the
 #      counter; the same run without the overlay passes;
 #   2. with its variable unset or empty, the counter prints `database_skips=UNKNOWN` naming it,
@@ -137,11 +137,12 @@ WAIT_BODY='func TestPlantedWait(t *testing.T) { t.Parallel(); time.Sleep(3 * tim
 
 func TestPlantedQuick(t *testing.T) { t.Parallel(); time.Sleep(100 * time.Millisecond) }'
 
-echo "database-skips.test.sh: control 1, a planted skip in each of three packages" >&2
+echo "database-skips.test.sh: control 1, a planted skip in each of four packages" >&2
 # Each package's -run names the planted test and a test the package passes with the database set
 # (the API package's, the tests its table excuses), so the run without the overlay holds tests.
 for row in "internal/cipher/api ^(TestPlantedSkip|TestHealthzIsPublic)$" \
   "cmd/cipherd ^(TestPlantedSkip|TestBootBindsOnlyAfterTheCatchUp)$" \
+  "internal/holdrecord ^(TestPlantedSkip|TestNewRefusesAnIncompleteConfiguration)$" \
   "internal/dispatch/api ^(TestPlantedSkip|$API_ANCHOR|$api_expected)$"; do
   read -r dir run <<<"$row"
   name="planted-${dir//\//-}"
@@ -195,7 +196,7 @@ unknown_report() {
 { ev pass "$MODULE/internal/dispatch/store" TestElsewhere; ev skip "$MODULE/internal/dispatch/store" TestSkippedElsewhere
   ev pass "$MODULE/internal/dispatch/store"; } >"$WORK/elsewhere.json"
 count elsewhere bash "$COUNTER" --report "$WORK/elsewhere.json"
-unknown_report elsewhere 'holds no test of a package under ./internal/cipher/... ./cmd/cipherd/ that passed or failed' \
+unknown_report elsewhere 'holds no test of a package under ./internal/cipher/... ./cmd/cipherd/ ./internal/holdrecord/ that passed or failed' \
   "a report holding no test of a package the patterns name is UNKNOWN"
 : >"$WORK/empty.json"
 count empty-report bash "$COUNTER" --report "$WORK/empty.json"

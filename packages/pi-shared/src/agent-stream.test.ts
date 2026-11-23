@@ -7,8 +7,10 @@ import {
   type AgentStreamFrame,
   PICTURE_PLACEHOLDER,
 } from "@legion/contracts";
+import { renderInbound } from "@legion/envoy-client/delivery";
 
 import { AgentStreamPublisher, type AgentStreamSettingsState } from "./agent-stream";
+import { LOCAL_ENVOY_NOTICE } from "./envoy-notice";
 
 const SUBJECT = "agentstream.s1.frames";
 
@@ -1151,5 +1153,229 @@ describe("the model that produced an assistant turn", () => {
       `anthropic/${oversized}`.slice(0, AGENT_STREAM_LIMITS.modelChars) +
         AGENT_STREAM_TRUNCATION_SUFFIX
     );
+  });
+});
+
+/** The brief a session launcher has its claimer publish to the new agent's role. Its opening,
+ *  up to the `;`, is what the red check greps the live view's stream for. */
+const BRIEF = [
+  "alice started you with the session launcher; this is their request:",
+  "",
+  "Work on the Dispatch issue ACME-1: https://dispatch.example/issues/ACME-1.",
+].join("\n");
+
+/** The card pi-envoy shows an Envoy envelope in (`renderInbound`), read as session `s1`. */
+function rendered(fields: Record<string, unknown>): string {
+  return renderInbound(
+    JSON.stringify({
+      event_id: "event-1",
+      source: "agent",
+      source_event_id: "agent.event-1",
+      topic: "notifications.agent.s1",
+      dedupe_key: "agent.event-1",
+      issued_at: 1,
+      payload_summary: "message",
+      trace_id: "trace-1",
+      ...fields,
+    }),
+    "s1"
+  ).content;
+}
+
+/** An `envoy-message` card as Oh My Pi hands it to `message_start` and `message_end`. */
+function card(timestamp: number, content: unknown, details: object = {}, display = true) {
+  return { content, customType: "envoy-message", details, display, role: "custom", timestamp };
+}
+
+/** The text of a message frame's parts, joined. */
+function textOf(frame: AgentStreamFrame | undefined): string | undefined {
+  if (frame?.kind !== "message") return undefined;
+  return frame.message.parts.map((part) => (part.type === "text" ? part.text : "")).join("");
+}
+
+// pi-envoy shows every Envoy message the session receives as an `envoy-message` card, and the
+// terminal draws it; the live view drew none of them, so a session's first message, the brief a
+// session launcher sends, was in the terminal and not on the page (dispatch://INFRA-5271, R1).
+describe("an Envoy card the session displays", () => {
+  test("streams in its place as a user message saying who sent it and the whole of what they wrote", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const brief = rendered({
+      payload: BRIEF,
+      payload_summary: `${BRIEF.slice(0, 40)}…`,
+      source: "envoy",
+      topic: "notifications.role.alice-acme-1",
+    });
+    publisher.record(SUBJECT, card(20, brief, { envoyCard: "card-1", event_id: "event-1" }), true);
+    publisher.record(SUBJECT, card(20, brief, { envoyCard: "card-1", event_id: "event-1" }), false);
+    publisher.record(SUBJECT, assistant(30, [{ text: "ready", type: "text" }]), false);
+
+    const frame = published[1];
+    expect(frame?.kind === "message" && frame.message).toEqual({
+      at: 20,
+      id: "c20:card-1",
+      parts: [{ text: `Envoy message from envoy:\n\n${BRIEF}`, type: "text" }],
+      role: "user",
+      streaming: false,
+    });
+    // Both records of the card are one message, before the reply it started.
+    const replayed = publisher.replay("s1").frames;
+    expect(replayed.map((each) => (each.kind === "message" ? each.message.id : each.kind))).toEqual(
+      ["c20:card-1", "a30"]
+    );
+    // What the red check reads off the live view's stream: the brief's opening.
+    expect(JSON.stringify(replayed)).toContain(BRIEF.split(";")[0] ?? BRIEF);
+  });
+
+  test("names the agent that sent it, and a short message's words from its summary", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const peer = "01a0cccc-dddd-7eee-ffff-0123456789ab";
+    publisher.record(
+      SUBJECT,
+      card(10, rendered({ payload_summary: "The review is done.", source_session: peer })),
+      false
+    );
+
+    expect(textOf(published[0])).toBe(`Envoy message from ${peer}:\n\nThe review is done.`);
+  });
+
+  // The terminal's card shows the agent `renderInbound`'s warning that a body names a session
+  // other than its sender; the person reading the live view reads it under the words too.
+  test("writes the note a card adds under the words it brings", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const peer = "01a0cccc-dddd-7eee-ffff-0123456789ab";
+    const named = "01a0aaaa-bbbb-7ccc-dddd-eeeeeeeeeeee";
+    publisher.record(
+      SUBJECT,
+      card(10, rendered({ payload: `Ask ${named} about it.`, source_session: peer })),
+      false
+    );
+
+    expect(textOf(published[0])).toBe(
+      [
+        `Envoy message from ${peer}:`,
+        `Ask ${named} about it.`,
+        `note: body names session ${named}; the sender is ${peer}`,
+      ].join("\n\n")
+    );
+  });
+
+  // An empty `message` is no words: drawn as words, it would be a bubble with nothing under its
+  // header, so the card is shown whole as one with no words is.
+  test("shows a card whose message is empty whole and verbatim", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const empty = rendered({ payload: "", payload_summary: "Nothing here." });
+    expect(empty).toContain('  message: ""');
+    publisher.record(SUBJECT, card(10, empty), false);
+
+    expect(textOf(published[0])).toBe(`Envoy message from agent:\n\n\`\`\`\n${empty}\n\`\`\``);
+  });
+
+  // The live view renders a message as Markdown, which reads a card's indented TOON as code
+  // blocks and joins its lines, so a card that brings no words of a sender is fenced whole.
+  test("shows a Dispatch event's card, and any card with no words of a sender, whole and verbatim", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const event = rendered({
+      source: "dispatch",
+      payload: JSON.stringify({
+        id: 1,
+        issue_key: "ACME-1",
+        seq: 7,
+        type: "issue.updated",
+        actor: { kind: "user", id: "alice" },
+        notify: true,
+        created_at: "2026-11-22T00:00:00Z",
+        payload: { title: "Ship it", status: "in_progress" },
+      }),
+    });
+    const notice = "The session id changed.\n```\nkept\n```";
+    publisher.record(SUBJECT, card(10, event, { event_id: "dispatch-1" }), false);
+    publisher.record(SUBJECT, card(20, notice, LOCAL_ENVOY_NOTICE), false);
+
+    expect(textOf(published[0])).toBe(`Envoy message from dispatch:\n\n\`\`\`\n${event}\n\`\`\``);
+    // A fence longer than any run of backticks inside, so the card's own fence ends nothing.
+    expect(textOf(published[1])).toBe(`Envoy message:\n\n\`\`\`\`\n${notice}\n\`\`\`\``);
+  });
+
+  test("names a picture it carries, never its bytes", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    publisher.record(
+      SUBJECT,
+      card(10, [
+        { text: rendered({ payload_summary: "Look." }), type: "text" },
+        { data: "the picture's bytes", mimeType: "image/png", type: "image" },
+      ]),
+      false
+    );
+
+    const frame = published[0];
+    expect(frame?.kind === "message" && frame.message.parts).toEqual([
+      { text: "Envoy message from agent:\n\nLook.", type: "text" },
+      { text: PICTURE_PLACEHOLDER, type: "text" },
+    ]);
+  });
+
+  // A notice the plugin writes names neither a wake id nor an event, and two of them can be
+  // stamped in one millisecond: each keeps a slot of its own, and each record of one keeps its own.
+  test("keeps two cards that name no id, stamped in one millisecond, apart", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const first = card(10, "first notice", LOCAL_ENVOY_NOTICE);
+    const second = card(10, "second notice", LOCAL_ENVOY_NOTICE);
+    publisher.record(SUBJECT, first, true);
+    publisher.record(SUBJECT, second, true);
+    publisher.record(SUBJECT, first, false);
+
+    const ids = published.map((frame) => (frame.kind === "message" ? frame.message.id : ""));
+    expect(ids[0]).not.toBe(ids[1]);
+    expect(ids[2]).toBe(ids[0]);
+    // The replay orders cards of one millisecond by their newest record, which the second
+    // record of the first one moved, so the two are compared as a set.
+    expect(publisher.replay("s1").frames.map(textOf).sort()).toEqual([
+      "Envoy message:\n\n```\nfirst notice\n```",
+      "Envoy message:\n\n```\nsecond notice\n```",
+    ]);
+  });
+
+  // Dispatch stores every message it delivers to a session for that session, and the live view
+  // draws it from there: a card that delivers one, streamed too, would show the message twice.
+  test("is left out when it delivers a Dispatch message, which the live view draws from Dispatch's store", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    const delivered = card(10, rendered({ source: "dispatch" }), {
+      dispatchMessageId: "44444444-4444-4444-8444-444444444444",
+      event_id: "dispatch-1",
+    });
+
+    expect(publisher.record(SUBJECT, delivered, true)).toBe(false);
+    expect(publisher.record(SUBJECT, delivered, false)).toBe(false);
+    expect(published).toEqual([]);
+    expect(publisher.replay("s1").frames).toEqual([]);
+  });
+
+  test("is left out when the session does not display it, as is any other custom message", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+
+    expect(publisher.record(SUBJECT, card(10, "hidden", {}, false), false)).toBe(false);
+    expect(
+      publisher.record(
+        SUBJECT,
+        {
+          content: "a rule",
+          customType: "ttsr-injection",
+          display: true,
+          role: "custom",
+          timestamp: 20,
+        },
+        false
+      )
+    ).toBe(false);
+    expect(published).toEqual([]);
   });
 });

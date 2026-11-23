@@ -825,8 +825,9 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 // starts it (gateOpened) when the line reaches it. The gate and the blockers are therefore read
 // where the line is read, once for the whole project, rather than here once per child.
 //
-// A child entering beneath an ancestor the daemon has already accepted waits for that ancestor
-// to close before anything starts it (record.AcceptedAncestor, which the waiting line reads),
+// A child entering beneath an ancestor the daemon has already accepted waits while that ancestor
+// stands in retro or merging before anything starts it (record.AcceptedAncestor, which the
+// waiting line reads),
 // and the architect above the child is told so here. The two doors an agent uses refuse such a
 // child outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move
 // to todo, which the daemon records rather than undoes: the record is the honest one, and the
