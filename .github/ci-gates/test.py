@@ -1,16 +1,16 @@
 # What is left of the test job once the daemon's Go suite and the private-name port harness
-# have jobs of their own: the Claude Code plugin build, the changelog fold, the script
-# harnesses - each behind a gate of its own (the test.<filter>.py files beside this one),
-# whose reads this job's filter carries too, since the job must be selected for the step to run
-# in it (ci_filter_coverage.gate_read_sets adds them) - and the Bun suites of scripts/. Two go
-# commands are left, the builds Bun tests start: the listener's, and the natsfloor command the pin
-# scanner asks the NATS floor through.
+# have jobs of their own, and its builds, lints and typechecks are tooling-checks' (the
+# tooling-checks.py file beside this one): the script harnesses - each behind a gate of its own
+# (the test.<filter>.py files beside this one), whose reads this job's filter carries too, since
+# the job must be selected for the step to run in it (ci_filter_coverage.gate_read_sets adds
+# them) - and the Bun suites of scripts/. Two go commands are left, the builds Bun tests start:
+# the listener's, and the natsfloor command the pin scanner asks the NATS floor through.
 GATE = gate("test", "test", runs=[
     script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
                at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
     script_run("scripts/e2e/lib/nats-image.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {',
                at("test", "bun test scripts/e2e/lib"), ENVOY, ["./natsversion/cmd/natsfloor"], mode="build"),
-], reads=CLAUDE_ENVOY_BUILD + reads(
+], reads=reads(
     ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
     ("packages/dispatch/web/src/fonts/inter/**", "scripts/third-party-notices.test.ts:102-105 resolves the font "
                                                  "file's path, lists that directory and reads the package.json and "
@@ -22,20 +22,16 @@ GATE = gate("test", "test", runs=[
     ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
     ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                        f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
-    (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
-                    "scripts/priorities-seed.ts:29"),
+    (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9, "
+                    f"which {at('test', 'Test the Dispatch census script')} loads; scripts/priorities-seed.ts:29"),
     (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
     # The envoy-client sources, and cipher-client's with them, are the shared read below:
     # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11
-    # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
-    # scripts/dispatch typecheck holds seven cipher-client sources in its own program.
+    # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*.
     ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
-    ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
+    ("scripts/dispatch/**", f"{at('test', 'Test the Dispatch census script')}; "
                             "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
-    ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
-    ("scripts/sessions/**", f"{at('test', 'Lint the session message-wait script')} and typecheck; the suite "
-                            f"itself is {SESSIONS_JOB}'s, the one step of this job that needed a database"),
-    ("scripts/approval-eval/**", f"{at('test', 'Lint the approval-eval statistics')}, typecheck and test"),
+    ("scripts/approval-eval/**", at("test", "Test the approval-eval statistics")),
     ("scripts/search-measure/**", f"{at('test', 'Test the search-measure psql helper')}: pg_test.py imports pg.py"),
     (f"{ENVOY}/scripts/fixtures/pg-url.json", f"{at('test', 'Test the search-measure psql helper')}: scripts/search-measure/pg_test.py:86 reads it (CORPUS)"),
     ("skills/approval-review/references/never-decide.md",
@@ -49,17 +45,13 @@ GATE = gate("test", "test", runs=[
     (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", "scripts/e2e/lib/stage4b-capabilities.test.ts:13-22"),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "scripts/e2e/lib/stage4b-pods.test.ts:22-35"),
     (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "scripts/e2e/lib/stage4b-pods.test.ts:180-190"),
-    ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
-    (".github/actions/install-changie/**", at("test", "./.github/actions/install-changie")),
+    (".github/actions/install-changie/**", f"{at('test', './.github/actions/install-changie')}, which "
+                                           "release-push.test.sh's fold-notes cases render with"),
     (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:28-29 installs the tarball of the changie row, "
                               "or of changie-aarch64 on an arm64 runner"),
     (".github/scripts/ci-tools.sh", ".github/actions/install-changie/action.yml:18 sources it, and ci_tools_fetch "
                                     "reads that row's two sources"),
-    (".github/changelog-packages", f"{at('test', FOLD_CHECK_STEP)}: the step reads it as the package list"),
-    ("packages/*/.changie.yaml", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
-    ("packages/*/.changes/unreleased/**", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
 ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11; "
-                     "scripts/dispatch/ask-census.ts:10-18 (tsc -p scripts/dispatch); scripts/priorities-seed.ts:30-39 "
+                     "scripts/dispatch/ask-census.ts:10-18; scripts/priorities-seed.ts:30-39 "
                      "and priorities-seed.test.ts:2")
-  + setup_go("test", f"{DAEMON}/go.mod")
-  + biome(at("test", "Lint the Dispatch census script")) + bun_job("test"))
+  + setup_go("test", f"{DAEMON}/go.mod") + bun_job("test"))

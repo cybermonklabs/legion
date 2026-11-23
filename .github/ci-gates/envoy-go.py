@@ -17,19 +17,19 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     # The module but the race lane's packages, internal/integration, which the integration
     # step tests, the text checks, which the text-check job runs, the architecture-note and
     # spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which
-    # envoy-go-checks runs, and the broker's tree, which the database-skips step below runs.
+    # envoy-go-build runs, and the broker's tree, which the database-skips step below runs.
     # The Run names the packages the step's own `grep -Ev` keeps (packages_kept over
     # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
     # beside it. A Run saying more would credit this job with tests other jobs run: the race
     # lane's are envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the text checks
-    # are the text-check job's, those packages are envoy-go-checks', and the closure of ./...
+    # are the text-check job's, those packages are envoy-go-build's, and the closure of ./...
     # would put their test files and the files only those tests read on this job's filter, so a
     # change to one of them would start a job that does not run the test it touches.
     # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
     # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
     # so a second run here asks nothing and can only pass, and
     # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, a read this job
-    # need not carry; the fixture step of envoy-go-checks runs both, with the check that
+    # need not carry; the fixture step of envoy-go-build runs both, with the check that
     # makes the first a requirement. It also takes the backend count's tests of
     # cmd/cipher out (BACKEND_COUNT_TESTS), which the count step runs in this same job
     # and environment. The tests stay compiled into this step's binary, which is what a

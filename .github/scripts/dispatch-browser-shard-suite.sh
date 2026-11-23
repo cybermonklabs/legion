@@ -10,7 +10,7 @@
 # <shard> is this leg's number out of the job's four, the shard job's `${{ matrix.shard }}`: it
 # is the `--shard` numerator below, and it names the blob report this leg writes, the row count
 # file beside it and the title of the sampler's readings. <lane> is the run's lane, the
-# workflow's own `${{ inputs.lane }}`, `pull-request` or `full`: it decides which projects run
+# workflow's own `lane` input, `pull-request` or `full`: it decides which projects run
 # and whether the run is held to the `@pr` rows, and an unknown one ends this script below.
 # <connections> is the connection limit each stack's Postgres must allow, which the binaries job
 # reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container

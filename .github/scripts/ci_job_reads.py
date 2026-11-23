@@ -48,7 +48,8 @@ glob or the path instead, which a grep resolves. at()'s third argument, and a ga
 is the workflow file
 that holds the job's steps, and it is the job's own called file (job_file): ci.yaml's job of
 each gated id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, which holds the
-steps. The one gate whose steps are elsewhere names its file itself: ci.yaml's docs job calls
+steps, or, for the half of a split job SHARED_FILE names, the file of the other half. The one
+gate whose steps are elsewhere names its file itself: ci.yaml's docs job calls
 docs-site.yaml, whose job carries an id of its own, so that gate stays on ci.yaml, the file its
 own job id is in, and cites docs-site.yaml's build job (at_docs). The Read lists of the jobs
 without Go steps (the Bun packages) are as hand-kept as RULES: the check proves the filter
@@ -91,12 +92,25 @@ BROWSER_NIGHTLY = ".github/workflows/dispatch-browser-nightly.yaml"
 BUILD_TAGS = ".github/scripts/go_build_tags.py"
 
 
+# The halves of a job that was split so a pull request runs one and the merge queue the other,
+# each the job whose steps are in the other's called file, mapped to that other job. A split puts
+# both jobs in one file because ci.yaml already calls as many reusable workflows as
+# .github/scripts/check-workflow-files.sh allows it
+# (.github/ci-notes/ci.md#two-jobs-that-call-one-file), and each job
+# of the file runs under its own caller alone (ci_filter_coverage.check_called_jobs).
+SHARED_FILE = {
+    "tooling-checks": "test",
+    "pi-legion-build": "pi-legion",
+    "envoy-infra-build": "envoy-infra-go",
+}
+
+
 def job_file(job: str) -> str:
     """The workflow file that holds a job's steps. ci.yaml's job of that id keeps the gate - its
     `needs: changes` and its whole `if:` - and calls .github/workflows/ci-job-<id>.yaml, which
-    holds the steps, so that is where a gate's step, an Exact entry's, a TAG_RUNS row's and a
-    why's citation are looked for."""
-    return f".github/workflows/ci-job-{job}.yaml"
+    holds the steps, or the file of the job SHARED_FILE maps it to; so that is where a gate's
+    step, an Exact entry's, a TAG_RUNS row's and a why's citation are looked for."""
+    return f".github/workflows/ci-job-{SHARED_FILE.get(job, job)}.yaml"
 
 
 def at(job, step, workflow=""):
@@ -110,12 +124,13 @@ def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
     The job is ci.yaml's, which keeps the `if:` the filter gates whichever file holds the
     steps.
 
-    Every such gate reads three files: ci.yaml, where every job's `if:` is (CI_SELF), the job's own
-    ci-job-<id>.yaml, where the steps it runs are, and its own file of .github/ci-gates, which its
+    Every such gate reads three files: ci.yaml, where every job's `if:` is (CI_SELF), the file
+    job_file names, where the steps it runs are, and its own file of .github/ci-gates, which its
     filter is computed from (ci_filter_sources.load_gate_files adds that one). The first two are
     appended here rather than written out on each gate, so a gate's own `reads` say only what is
-    its own. The two gates that name a file - docs and dispatch_browser, whose called workflows
-    carry job ids of their own - declare what they read themselves, CI_SELF among it."""
+    its own. The gates that name a file - docs, dispatch_browser and dispatch_browser_pr, whose
+    called workflows carry job ids of their own - declare what they read themselves, CI_SELF among
+    it."""
     if not workflow:
         reads = list(reads) + CI_SELF + job_self(job)
     return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job))
@@ -341,9 +356,9 @@ def bun_job(job, workflow=""):
     install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
-        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
+        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-61)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
-        ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
+        ("patches/**", f"{install} applies package.json:52-61 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
@@ -394,10 +409,11 @@ CI_SELF = reads(
 
 
 def job_self(job):
-    """The file holding a job's steps, which ci.yaml's job of that id calls: the job reads the
-    definition of the steps it runs, as it reads ci.yaml for the `if:` that selects it, so each
-    moved job's gate declares this beside CI_SELF and its filter names the file. That is what
-    makes a change to one ci-job-<id>.yaml select that job and no other."""
+    """The file holding a job's steps (job_file), which ci.yaml's job of that id calls: the job
+    reads the definition of the steps it runs, as it reads ci.yaml for the `if:` that selects it,
+    so each moved job's gate declares this beside CI_SELF and its filter names the file. That is
+    what makes a change to one ci-job-<id>.yaml select the jobs whose steps it holds and no
+    other."""
     return reads((job_file(job), "the job reads the definition of the steps it runs"))
 
 
@@ -412,11 +428,12 @@ def at_docs(step):
     return at(DOCS_JOB, step, DOCS_SITE)
 
 
-# ci.yaml's dispatch-browser job and dispatch-browser-nightly.yaml's own job both call
-# dispatch-browser.yaml, which holds the steps. The gate stays on ci.yaml's dispatch-browser
-# job, whose if: the dispatch_browser filter gates, and every step citation names the job of
-# dispatch-browser.yaml that holds the step.
+# ci.yaml's dispatch-browser and dispatch-browser-pr jobs and dispatch-browser-nightly.yaml's own
+# job all call dispatch-browser.yaml, which holds the steps. Each of ci.yaml's two keeps a gate,
+# whose filter its if: tests, and every step citation names the job of dispatch-browser.yaml that
+# holds the step.
 BROWSER_JOB = "dispatch-browser"
+BROWSER_PR_JOB = "dispatch-browser-pr"
 BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
 BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "alone", "multiprocess", "merge"
 BROWSER_EMBEDDER = "embedder"
@@ -457,17 +474,19 @@ def envoy_client_dep(why):
 
 
 # What packages/claude-envoy/scripts/verify-build.sh and the scripts/build.ts it runs read, which
-# is every file the published plugin is built from: the claude-envoy gate, and the test gate, for
-# two of that job's steps - verify-build, which runs the same command release.yaml's
+# is every file the published plugin is built from: the claude-envoy gate, and the tooling-checks
+# gate, for two of that job's steps - verify-build, which runs the same command release.yaml's
 # claude_envoy_build does, and the build-input-list step
 # (packages/claude-envoy/tests/build-inputs.test.ts, which runs the build's two halves itself).
-# Those two steps are the whole of what the test job does in this package, so a file only the
-# claude-envoy job's lint, typecheck or other tests read is in CLAUDE_ENVOY_JOB below, not here.
+# Those two steps are the whole of what the tooling-checks job does in this package, so a file
+# only the claude-envoy job's lint, typecheck or other tests read is in CLAUDE_ENVOY_JOB below,
+# not here.
 VERIFY_BUILD_STEP = "Build, check and pack the Claude Code plugin as the release does"
 BUILD_INPUTS_STEP = "Check the Claude Code plugin's build input list covers what the build reads"
+TOOLING_JOB = "tooling-checks"
 CLAUDE_ENVOY_BUILD = reads(
         ("packages/claude-envoy/**", f"{at('claude-envoy', 'Lint Claude Envoy plugin')}, typecheck, verify-build, test and pack in "
-                                     f"packages/claude-envoy; {at('test', VERIFY_BUILD_STEP)} and {at('test', BUILD_INPUTS_STEP)} "
+                                     f"packages/claude-envoy; {at(TOOLING_JOB, VERIFY_BUILD_STEP)} and {at(TOOLING_JOB, BUILD_INPUTS_STEP)} "
                                      "run scripts/verify-build.sh and tests/build-inputs.test.ts of it"),
         (CONTRACTS_SRC, "packages/claude-envoy/tsconfig.json paths @legion/contracts; bundles import it"),
         ("packages/envoy-client/bin/dispatch.ts", "packages/claude-envoy/scripts/build.ts:310 bundles BUNDLE_ENTRYPOINTS' dispatch (:43), which verify-build runs and tests/dist-fresh.test.ts:304 holds to this path"),
@@ -577,7 +596,7 @@ def go_notices_runs():
     return out
 
 
-# The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks'
+# The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
@@ -916,7 +935,7 @@ def hold_infra_race_unit_script():
     found = re.findall(r"^EXCLUDE='(.*)'$", text, re.M)
     if found != [INFRA_PLAIN_PATTERN]:
         raise ValueError(f"{INFRA_RACE_UNIT_SCRIPT}'s EXCLUDE is {found}, and INFRA_PLAIN_PATTERN here is "
-                         f"'{INFRA_PLAIN_PATTERN}': make them one pattern, the packages envoy-infra-go's unit "
+                         f"'{INFRA_PLAIN_PATTERN}': make them one pattern, the packages envoy-infra-build's unit "
                          f"step leaves to the text-check job")
 
 
@@ -1221,7 +1240,7 @@ def race_step(job):
     return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
 
 
-# The architecture-note and spec-file rules and the commands that run them, which envoy-go-checks
+# The architecture-note and spec-file rules and the commands that run them, which envoy-go-build
 # tests in a step of their own: they need no database, so they run there on every push, and that
 # step is their one run. Both that step's package list and the unit step's exclusion of them are
 # built from this list, so go-test-step-expansion.py finds no pair the two steps both run and
@@ -1232,7 +1251,7 @@ NOTE_AND_SPEC_STEP = "Test the architecture-note and spec-file rules and their c
 NOTE_AND_SPEC_PKGS = [f"./{p}/" for p in NOTE_AND_SPEC_PACKAGES]
 NOTE_AND_SPEC_TEXT = "go test -count=1 " + " ".join(NOTE_AND_SPEC_PKGS)
 
-# listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-checks runs
+# listenerwire's tests and wirecheck's, the tool its clients test runs, which envoy-go-build runs
 # in a step of their own, their one run. clients_test.go type-checks the daemon's listener clients
 # (its //ci: lines), so run in envoy-go's unit step a change to one of those daemon packages would
 # start that whole job, its database and its 20-minute unit step, for one type check. They need no
@@ -1328,7 +1347,7 @@ hold_database_skips_packages()
 # The unit step runs the module less six things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
 # checks, which the text-check job runs, the architecture-note and spec-file packages and
-# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs, and the
+# LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-build runs, and the
 # broker's tree and command, which envoy-go's database-skips step runs. Its `grep -Ev` is
 # `/integration`, then the text checks, then those packages, each the package alone, then the
 # broker's tree and its command, then, in the lane's own order, each package in the form go
@@ -1376,7 +1395,7 @@ WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
 # The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
 # they move no closure: the whole pmdoc package compiles, whichever test the run selects.
 FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PACKAGE}/ -args --check"
-# pmdoc's readers on tables in a build made without inlining (-gcflags=all=-l), envoy-go-checks'
+# pmdoc's readers on tables in a build made without inlining (-gcflags=all=-l), envoy-go-build's
 # step of its own: goldmark builds pmdoc's readers through an interface, which Go's initialization
 # order does not look through, so a reader that copies a variable of pmdoc can be handed nil in
 # that build alone. The table tests read through the block reader, and the display fixture test
@@ -1426,7 +1445,7 @@ def hold_web_fixture_tests():
     gate whose reads are keyed on test names, the plugin-pack gate declaring the lockfile,
     skills/ and the prepack because those three tests read them, while this gate's reads are
     keyed on the package - the fixture step's Run is ./internal/dispatch/pmdoc/ and
-    envoy-go-checks' filter carries packages/envoy/** - so no read moves with a name here. Its
+    envoy-go-build's filter carries packages/envoy/** - so no read moves with a name here. Its
     own: what this list takes out of the unit step is one test's second run rather than a file's
     tests, and every other test of web_fixtures_test.go runs in the unit step, which is where
     every test of this module runs unless something takes it out, so demanding the whole file
@@ -1921,12 +1940,13 @@ PRIVATE_NAMES_PORT_BUILD = script_run(
     at(PRIVATE_NAMES_PORT_JOB, PRIVATE_NAMES_PORT_STEP), DAEMON, [LEGION_BUILD], mode="build")
 
 
-# The guide-layout step's own reads, declared once, for its gate (.github/ci-gates/test.guide_layout.py).
-# The test job's filter takes them too, as it takes every step gate's reads: a job's `if:` may
-# test one changes output only (ci_filter_coverage refuses a second), so the step's gate decides
-# nothing until the job's own filter selects the job for the same change.
+# The guide-layout step's own reads, declared once, for its gate
+# (.github/ci-gates/tooling-checks.guide_layout.py). The tooling-checks job's filter takes them
+# too, as it takes every step gate's reads: a job's `if:` may test one changes output only
+# (ci_filter_coverage refuses a second), so the step's gate decides nothing until the job's own
+# filter selects the job for the same change.
 GUIDE_LAYOUT_READS = reads(
-    ("scripts/semantic-line-breaks.guides.test.ts", at("test", GUIDES_STEP)),
+    ("scripts/semantic-line-breaks.guides.test.ts", at(TOOLING_JOB, GUIDES_STEP)),
     ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:10,17 spawns it"),
     ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
     ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
@@ -1940,15 +1960,180 @@ GUIDE_LAYOUT_READS = reads(
 PUSH_WORKFLOWS = {"docs": ".github/workflows/docs-pages.yaml"}
 
 
+def browser_gate(filter, job):
+    """The gate of one of ci.yaml's two callers of dispatch-browser.yaml. Both run the same
+    file, whose jobs carry ids of their own rather than one named for either caller, so each job
+    of it runs under both (ci_filter_coverage.called_job_owners) and each gate reads all of it,
+    the jobs the pull-request lane skips by its `lane` input among them: which jobs run is a
+    literal each caller passes, not a gate."""
+    # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
+    # projects, the two-process job, the visual job and the merge job, all in
+    # dispatch-browser.yaml, which ci.yaml's dispatch-browser and dispatch-browser-pr jobs and
+    # the nightly call (at_browser cites their steps).
+    #
+    # ci_filter_coverage.py's check_table reads a gate whose ci.yaml job calls a local workflow
+    # over the jobs of that workflow, so dispatch-browser.yaml's go commands, `env:` blocks and
+    # `shell:` keys are held here exactly as a job's own steps are: the binaries job's build
+    # step and the multiprocess job's are the exact entries below, and a name outside
+    # ENV_ALLOWED, or a `shell:`, in either job or in the file around it drops that step out of
+    # the check's reduction, which then counts it as reading every Go file of the repository.
+    # The gate keeps `workflow=CI`, as the docs gate does and for the same reason:
+    # dispatch-browser.yaml carries job ids of its own (binaries, shard, alone, multiprocess,
+    # merge) rather than one named for the caller, so ci.yaml is the file that holds a job named
+    # for the caller, and each citation names the browser job it is in.
+    #
+    # This gate lists no script Run, and cannot: a Run pinned to a script's text is reduced only
+    # where nothing around the ci.yaml job can move what the script compiles, and around_job
+    # reads that over every job of the called workflow. The shard and alone jobs run in a
+    # container (dispatch://INFRA-1443), which shell_reason counts as exactly such a thing, so a
+    # script Run here would fall to reading every Go file of the repository. It costs this
+    # filter nothing. Those two jobs run no go command at all - run-server.sh and run-broker.sh
+    # execute the binaries the first entry below builds - and the scripts the multiprocess job
+    # and the visual job still start compile closures this filter already carries:
+    # run-server.sh, which both of them start, builds ./cmd/dispatch, which the multiprocess
+    # job's own pinned build step below names, and run-signin-issuer.sh builds
+    # ./cmd/dev-oidc-issuer, which that first entry names. No job's e2e/harness-postgres.ts runs
+    # a go command in CI: each job that starts stacks there hands it the connection limit that
+    # a pinned step below reads.
+    return gate(filter, job, exact=[
+        # The four commands the shard and alone jobs' scripts built before those jobs moved
+        # into a container, built once in the binaries job and downloaded by both: this is the
+        # closure that build compiles and no other. The step names an output (-o) and pins
+        # CGO_ENABLED on the line, neither of which the simple form reduces, so the step is
+        # pinned whole; the Run carries that CGO_ENABLED, since the closure go lists without
+        # cgo is the one this build compiles.
+        pinned_step(BROWSER_BINARIES, BROWSER_BINARIES_STEP, ENVOY, BROWSER_BINARIES_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"] + BROKER_PKGS,
+             "CGO_ENABLED=0 go build of the Dispatch server, the real broker, its dev OIDC issuer and the seeding step",
+             {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
+        ], workflow=BROWSER_SITE),
+        # The stacks' connection limit, read on the host for the shard and alone jobs, whose
+        # containers have no Go, and in the visual, multiprocess and embedder jobs before their
+        # timed browser steps.
+        *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
+            (ENVOY, ["./internal/dispatch/store/cmd/connections"],
+             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             {"mode": "build"}),
+        ], workflow=BROWSER_SITE)
+          for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),
+                            (BROWSER_VISUAL, BROWSER_VISUAL_CONNECTIONS_STEP),
+                            (BROWSER_MP, BROWSER_MP_CONNECTIONS_STEP),
+                            (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP))],
+        # The multiprocess job builds the server once, so its two processes find it current and
+        # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
+        # The line has an `-o`, which is no form this check reduces, so the entry pins the whole
+        # script and names the one package it compiles - which is the closure run-server.sh
+        # compiles in that same job.
+        pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
+            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
+        # The embedder job builds it once for the same reason, and names its step for its own
+        # lane because this check looks a step up by name across the workflow.
+        pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
+            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
+    ], reads=reads(
+        ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "
+         f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
+         f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
+        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:124-150 (build:web)"),
+        # packages/contracts/src is no read of this table's either: the filter's listed block holds
+        # the modules dispatch_ui's tsc programs compile and the dispatch command's bundle loads,
+        # which check-ts-filters.sh writes, and ci_ts_programs.py's LISTED says why this suite
+        # loads those and no other; each job's `Build contracts for dispatch e2e` step runs
+        # `build:dispatch`, whose three entries compile nothing outside dispatch_ui's.
+        ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs it through e2e/dispatch-cli.ts:8"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
+        (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
+        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
+        (f"{ENVOY}/scripts/lib/pg-url.sh", "packages/dispatch/e2e/run-broker.sh:62 sources it, and packages/dispatch/e2e/harness-listeners.ts:188,197 "
+                                           f"start that script in a one-process run on the fake broker: {at_browser(BROWSER_SHARD_SPECS)} and "
+                                           f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}"),
+        (".github/scripts/dispatch-browser-samples.sh",
+         f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
+         "start it and read its two summaries"),
+        (".github/scripts/dispatch-browser-postgres.sh",
+         f"{at_browser(BROWSER_PG_STEP)} and {at_browser(BROWSER_PG_STEP, BROWSER_ALONE)} "
+         "run it for the reading of the image's PostgreSQL their stacks start"),
+        (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
+        (".github/scripts/dispatch-browser-run-reads.sh",
+         f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs its jobs mode over this run's "
+         f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
+         "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
+         "could not complete"),
+        (".github/scripts/dispatch-browser-wait-for-store.sh",
+         f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
+         "before it started, which it makes a bucket in and writes, reads back and deletes one "
+         "object in"),
+        (".github/scripts/dispatch-browser-shard-suite.sh",
+         f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's row time"),
+        (".github/scripts/dispatch-browser-shard-record.sh",
+         f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
+         "and the stacks' own logs"),
+        (".github/scripts/dispatch-browser-alone-suite.sh",
+         f"{at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} runs it for this leg's one "
+         "unsharded project"),
+        (".github/scripts/dispatch-browser-alone-record.sh",
+         f"{at_browser(BROWSER_RECORD_STEP, BROWSER_ALONE)} runs it to print and collect the "
+         "stack's own logs, there being no file store on that machine"),
+        (".github/scripts/dispatch-browser-visual-suite.sh",
+         f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} runs it for the stack and the "
+         "e2e/visual-run.sh the comparison against the baselines needs"),
+        (".github/scripts/dispatch-browser-merge-reports.sh",
+         f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} runs it to join the legs' blob "
+         "reports into the one HTML and JSON report of the run"),
+        (".github/scripts/dispatch-browser-reading-rows.sh",
+         f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs it for the rows each leg's "
+         "log printed against the rows the merged report holds, for the legs that owed a "
+         "blob report and uploaded none, and for the shard legs' row lists held against each other"),
+        (".github/scripts/dispatch-browser-reading-flake-rate.sh",
+         f"{at_browser(BROWSER_READ_TWO_STEP, BROWSER_MERGE)} runs it for the count and the "
+         "percentage of the rows that passed on a retry"),
+        (".github/scripts/dispatch-browser-reading-leg-exits.sh",
+         f"{at_browser(BROWSER_READ_THREE_STEP, BROWSER_MERGE)} runs it to name every leg that "
+         "concluded anything but success beside what its own blob report holds"),
+        (".github/scripts/dispatch-browser-reading-row-durations.sh",
+         f"{at_browser(BROWSER_READ_FOUR_STEP, BROWSER_MERGE)} runs it for the row count, the "
+         "median and the 95th percentile of each layer's passing rows"),
+        (".github/scripts/dispatch-browser-verdict.sh",
+         f"{at_browser(BROWSER_VERDICT_STEP, BROWSER_MERGE)} runs it to fail the job on an "
+         "upstream result that is neither success nor skipped and on a failed row in the "
+         "merged report"),
+        (".github/scripts/gh-read.sh",
+         "dispatch-browser-run-reads.sh:79 sources it, so the merge job's read of its own attempt's "
+         "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
+        # The container the shard and alone jobs run in, and what decides which bytes it is.
+        # No step reads these three: the `container:` key does, before the first step runs, so
+        # the citation is the two jobs that carry that key rather than a step of either.
+        (".github/ci-images.yaml",
+         "dispatch-browser.yaml's shard and alone jobs run in the image at the digest the "
+         "one `built:` row of this file carries, so a row that moves moves what those two jobs "
+         "run inside"),
+        (".github/docker/browser.Dockerfile",
+         "the Dockerfile that image is built from: its bytes are the browsers, their host "
+         "packages and the PostgreSQL the lanes of dispatch-browser.yaml's shard and alone jobs "
+         "start"),
+        (".github/workflows/browser-image.yaml",
+         "the build that publishes that image: its labels, platforms and action pins decide the "
+         "bytes of the image dispatch-browser.yaml's shard and alone jobs pin"),
+        ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
+    ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
+                         "packages/dispatch/e2e/inbox-cli.e2e.ts:328 runs")
+      + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)
+      + setup_go(BROWSER_MP, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
+      + CI_SELF + BROWSER_SITE_SELF, workflow=CI)
+
+
+
 # One entry per step of ci.yaml that runs a package under a build tag and passes -run: the job
 # whose untagged run of that package the -run leans on, which check-ci-filters.sh holds to running
 # in every run the tag step runs (check_tag_runs). The note says which step runs the untagged
-# tests, the judgement the check cannot derive. The last two entries pair a job with itself: the
+# tests, the judgement the check cannot derive. The envoy_go entry pairs a job with itself: the
 # untagged run is a step of the same job, so the filters are the same one and the subset holds
-# trivially; they are here all the same, so the rule covers every -run step and a later move of
+# trivially; it is here all the same, so the rule covers every -run step and a later move of
 # one to another job is caught. What the check holds an untagged job's filter to is what the tag
 # step's gate reads and the tag step filter's listed block, never what the tag filter selects, so
-# these two hold their filter to nothing its own gate does not read already, and rules 9 and 17
+# that entry holds its filter to nothing its own gate does not read already, and rules 9 and 17
 # judge it as they judge any other.
 TAG_RUNS = [
     TagRun("dispatch_memory", "dispatch-memory", MEMORY_STEP, "envoy_go", "envoy-go",
@@ -1976,8 +2161,10 @@ TAG_RUNS = [
     TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
            f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests",
            job_file("envoy-go")),
-    TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_go", "envoy-infra-go",
-           f"envoy-infra-go's own \"Unit test envoy-infra\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",
+    # The natslive step is the merge-queue half of envoy-infra's old job, and the unit step that
+    # runs the three packages' untagged tests went with the half a pull request runs.
+    TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_build", "envoy-infra-build",
+           f"envoy-infra-build's \"{INFRA_PLAIN_STEP}\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",
            job_file("envoy-infra-go")),
 ]
 

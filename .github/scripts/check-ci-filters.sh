@@ -56,8 +56,8 @@
 #      shape - an output inside a larger expression, a value built from one - is
 #      refused naming the input, the calling job and both files, since the resolution may never
 #      be guessed. A value naming the changes job nowhere carries no filter and is read as no
-#      gate: dispatch-browser.yaml's `lane`, which ci.yaml builds from the event and the pull
-#      request's labels, chooses which projects the browser suite runs, never whether it runs,
+#      gate: dispatch-browser.yaml's `lane`, which each of ci.yaml's two callers of it passes as
+#      a literal, chooses which projects the browser suite runs, never whether it runs,
 #      and where such a value stands in for a gate the table declares, this rule's own first
 #      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
@@ -258,7 +258,7 @@
 #      ci_job_reads.py's RACE_FILL_SCRIPTS names whose steps in the script's directory do not run
 #      that script's compile line once and exactly, or that run a `go test` with -race of their
 #      own: such a fill reaches its race step's packages and flags through the script that step
-#      runs (packages/envoy/infra/scripts/race-unit.sh for envoy-infra-go), and a fill that calls
+#      runs (packages/envoy/infra/scripts/race-unit.sh for envoy-infra-build), and a fill that calls
 #      it otherwise or copies its build compiles objects the step does not link, with nothing
 #      failing. It fails naming the job and the line.
 #  17. retired: the `!` patterns that keep a filter off the Go test files its job does not compile
