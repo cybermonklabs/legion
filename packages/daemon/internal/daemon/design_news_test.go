@@ -116,7 +116,7 @@ func newNewsReconcileRig(t *testing.T) *newsReconcileRig {
 
 func (r *newsReconcileRig) inTx(write func(pgx.Tx) error) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, write); err != nil {
+	if err := store.Transact(r.ctx, r.pool, func(_ context.Context, tx pgx.Tx) error { return write(tx) }); err != nil {
 		r.t.Fatalf("write the record: %v", err)
 	}
 }

@@ -55,7 +55,7 @@ func seedRenameRecords(t *testing.T, pool *store.Pool, project string, seeds ...
 	records := record.NewStore()
 	opened := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	closed := opened.Add(time.Hour)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		for _, seed := range seeds {
 			if err := records.PutIssue(ctx, tx, record.Issue{Key: seed.key, Project: project, Tree: seed.key, Title: seed.key,
 				Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", HandedOver: true, Rank: "A",
@@ -444,7 +444,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 	// The refresher's read of the live records, which that wake runs (refreshLive), over the
 	// workflow's own records.
 	rig.w.records = rig.issues
-	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error { return rig.w.refreshCacheRepositories(ctx, tx) }); err != nil {
+	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error { return rig.w.refreshCacheRepositories(ctx, tx) }); err != nil {
 		t.Fatalf("read the live records again: %v", err)
 	}
 	if cached := repositoryNames(rig.w.cacheRepositories()); !slices.Equal(cached, []string{renameTo}) {

@@ -1,0 +1,42 @@
+-- 20261116221539_document_block_versions_store.up.sql — what the node and tuple store holds of a
+-- document's blocks, in two columns only this release writes.
+--
+-- document_block_versions.version is the version a document's blocks are indexed at, and every
+-- release reads and writes it. The release before this one knows no store. When it indexes a
+-- version it deletes the document_blocks rows of the blocks the version drops and the block_refs
+-- rows of the links it drops, sets version, and states no node gone and retracts no tuple. And it
+-- reads a null version as a debt of its own, so a mark the backfill wrote there is drained by
+-- whichever release takes the block-index lease first, and that release writes the rows and no
+-- tuple. Neither leaves this release anything to read in version, so the store's standing is
+-- recorded beside it:
+--
+--   store_version   the version whose blocks this release's index pass last stated in the store
+--                   (refs.IndexBlocks, in the fence statement that sets version), and null where
+--                   no pass of this release has stated them. Where it is below the latest version
+--                   any release indexed, another release indexed the document after the store
+--                   last stated it, and the rows no longer name everything the store holds.
+--   store_owed_at   the backfill's mark: when it marked the document owed an index pass of this
+--                   release, which states every block's node, part_of tuple and parent_block_id
+--                   and clears the mark in the fence statement (graphcensus.Backfill,
+--                   refs.IndexBlocks). Null where nothing is owed.
+--
+-- The block-index reconciliation lists a document holding the mark as it lists a document whose
+-- version is null (docs' owedDocuments), through the partial index below, as
+-- document_block_versions_owed serves the null version. Both columns are null in every row this
+-- migration leaves, so the index is built empty and the reconciliation owes nothing new at the
+-- deploy.
+--
+-- Rolling deploy. The columns are additive and nullable with no default, so the ALTER is a
+-- catalog change that rewrites no row. The release before this one names neither: its upsert of
+-- the row and 0122's trigger (as 20261108070000 rewrote it) leave both as they stand, which is
+-- what keeps that release from draining the mark or moving the store's version. Rolling back past
+-- this migration is an image rollback alone; the columns and the index left behind are read by
+-- nothing that release runs.
+--
+-- The ALTER takes ACCESS EXCLUSIVE on document_block_versions and the CREATE INDEX SHARE, both
+-- held only for the catalog write and the empty build, over the table 20261108070000 altered the
+-- same way: 9,881 rows on the load-test deployment and fewer in production.
+alter table document_block_versions add column store_version integer, add column store_owed_at timestamptz;
+
+create index document_block_versions_store_owed
+  on document_block_versions (artifact_id) where store_owed_at is not null;

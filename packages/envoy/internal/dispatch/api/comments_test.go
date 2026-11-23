@@ -652,6 +652,31 @@ func TestEditCommentIsAuthorOnly(t *testing.T) {
 	}
 }
 
+// A comment an earlier build stored keeps its author's login in the case that build wrote it, and
+// no backfill rewrites it. The edit compares the stored author with the caller through
+// model.Actor.SameAs, which reads a person's id in its canonical form on both sides, so alice
+// edits the comment stored under "Alice" as her own. The comment is written by the route and its
+// author then restated under "Alice", in case only, as such a build stored it.
+func TestACommentStoredUnderAnotherCaseIsEditableByItsAuthor(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Edit a comment stored in another case", "before")
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "before edit"}, "alice")
+	if moved, err := database.Pool.Exec(context.Background(),
+		`update comments set author = jsonb_set(author, '{id}', '"Alice"') where id = $1`, comment.ID); err != nil {
+		t.Fatalf("store the comment under \"Alice\": %v", err)
+	} else if moved.RowsAffected() != 1 {
+		t.Fatalf("restated %d comment(s) with id %s, want the comment", moved.RowsAffected(), comment.ID)
+	}
+
+	edited := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/comments/"+comment.ID, map[string]string{"body": "after edit"}, "alice")
+	if edited.Code != http.StatusOK {
+		t.Fatalf("alice's edit of the comment stored under \"Alice\" answers %d, want 200: the author is compared in its canonical form", edited.Code)
+	}
+	if stored := readThreadComment(t, handler, comment.ID); stored.Body != "after edit" {
+		t.Fatalf("the comment stored under \"Alice\" reads %q after alice's edit, want %q", stored.Body, "after edit")
+	}
+}
+
 func TestResolveRecordsWhoAndWhen(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Resolution metadata", "before")

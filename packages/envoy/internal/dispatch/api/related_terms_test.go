@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -395,8 +397,11 @@ func TestRelatedTermsQueryCastsAndMatchesTheItemsHoldingTheChosenWords(t *testin
 	if term, _ := pickedTerm(picked, "walrus"); term.Surface != "Walruses" {
 		t.Fatalf("walrus's surface = %q, want the text's own 'Walruses'", term.Surface)
 	}
-	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, ""),
-		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK)
+	// The related q binds nothing of its own, so the body's own eight parameters are followed by
+	// the acting credential at $9.
+	rows, err := database.Pool.Query(context.Background(), relatedQOpener+searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "", 9),
+		picked.TSQuery, "CAST", searchMaxLimit, "", headlineOptions, 0, contracts.SearchKindDepth, searchFusionK,
+		refs.VisibilityArg(model.Actor{}))
 	if err != nil {
 		t.Fatalf("run the keyword body under the related q: %v", err)
 	}

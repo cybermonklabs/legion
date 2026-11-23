@@ -782,7 +782,11 @@ func refusedRoleForwardOutcome(verdict forwardVerdict, item contracts.Envelope, 
 // (bus.ErrForwardNotStored), or not known to have left this process -- the flush timed out or
 // failed, the publish failed -- is delivery_failed like a stale holder or an
 // unadvertised/unreadable delivery mode; no claim is no_holder. A failure clears the attempt, so
-// a re-send is forwarded again; a delivered forward records the dedupe entry.
+// a re-send is forwarded again; a delivered forward records the dedupe entry. A failure whose
+// window ended before the forward was published (bus.ErrWindowEndedBeforePublish) says so on its
+// line, "window_ended_before_publish":true: the window ran out before this process made the
+// publish, so nothing reached the holder's subject, where a flush or an acknowledgement that ran
+// out of it may follow a forward the holder receives.
 func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, err error, attrs ...slog.Attr) {
 	item, sessionID := forward.item, forward.sessionID
 	switch {
@@ -800,7 +804,11 @@ func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, e
 			sessionID:    sessionID,
 			metricStatus: "failed",
 			log: func(logger *logging.Logger) {
-				logger.DeliveryLog(slog.LevelError, "listener role forward failed", sessionID, item.Topic, item.EventID, "failed", append(attrs, slog.String("error", err.Error()))...)
+				failed := append(attrs, slog.String("error", err.Error()))
+				if errors.Is(err, bus.ErrWindowEndedBeforePublish) {
+					failed = append(failed, slog.Bool("window_ended_before_publish", true))
+				}
+				logger.DeliveryLog(slog.LevelError, "listener role forward failed", sessionID, item.Topic, item.EventID, "failed", failed...)
 			},
 			exceptionReason: "delivery_failed",
 			clearAttempt:    true,
