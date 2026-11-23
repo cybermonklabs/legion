@@ -97,7 +97,9 @@ var errNoIdentityReader = errors.New("the broker reads no Google identity token 
 const federationLifetimeMax = time.Hour
 
 // Mint returns the Anthropic token the federation rule of the secret req names grants, for the
-// identity of the account the deployment binds to it. A stored value ParseValue refuses, and a
+// identity of the account the deployment binds to the stored secret req's value was read from
+// (req.Source), so a profile of a bound secret mints under its source's binding whatever its own
+// name (boundAccount). A stored value ParseValue refuses, and a
 // secret whose binding is missing or names another account than the stored value, are refused
 // before any call is made. The exchange is sent once (Retry.startOnce): the identity token it
 // carries is read for this exchange alone, and a retry would present it again, so a failed
@@ -114,7 +116,7 @@ func (m *AnthropicFederation) Mint(ctx context.Context, req MintRequest) (Minted
 		return Minted{}, err
 	}
 	secret := parsed.AnthropicFederation
-	bound, err := boundAccount(m.Accounts, req.Name, secret.ServiceAccount)
+	bound, err := boundAccount(m.Accounts, req, secret.ServiceAccount)
 	if err != nil {
 		return Minted{}, err
 	}

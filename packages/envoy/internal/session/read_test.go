@@ -278,9 +278,10 @@ func TestASessionDeletedDuringTheReadStaysGone(t *testing.T) {
 	}
 }
 
-// delayingKV is a session bucket handle whose next Put or Get of a key a test delays goes to the
+// delayingKV is a session bucket handle whose next write or Get of a key a test delays goes to the
 // bucket at once and answers only once the test opens its gate, so the answer arrives after
-// whatever the test does in between.
+// whatever the test does in between. A write is any of the calls an entry write makes: Put, and
+// the Create and Update PutWithin sends conditionally.
 type delayingKV struct {
 	natsgo.KeyValue
 	mu         sync.Mutex
@@ -307,11 +308,25 @@ func (kv *delayingKV) take(calls map[string]*gate, key string) *gate {
 }
 
 func (kv *delayingKV) Put(key string, value []byte) (uint64, error) {
-	revision, err := kv.KeyValue.Put(key, value)
-	if g := kv.take(kv.puts, key); g != nil {
-		g.pass(func() {})
+	return kv.wrote(key)(kv.KeyValue.Put(key, value))
+}
+
+func (kv *delayingKV) Create(key string, value []byte) (uint64, error) {
+	return kv.wrote(key)(kv.KeyValue.Create(key, value))
+}
+
+func (kv *delayingKV) Update(key string, value []byte, last uint64) (uint64, error) {
+	return kv.wrote(key)(kv.KeyValue.Update(key, value, last))
+}
+
+// wrote answers a write of key once the test opens the gate it set for key's next write.
+func (kv *delayingKV) wrote(key string) func(uint64, error) (uint64, error) {
+	return func(revision uint64, err error) (uint64, error) {
+		if g := kv.take(kv.puts, key); g != nil {
+			g.pass(func() {})
+		}
+		return revision, err
 	}
-	return revision, err
 }
 
 func (kv *delayingKV) Get(key string) (natsgo.KeyValueEntry, error) {

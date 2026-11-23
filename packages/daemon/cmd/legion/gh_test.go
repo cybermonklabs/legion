@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testfifo"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -1278,13 +1279,14 @@ func ghWrapperDir(t *testing.T) string {
 // legionCommand is the one environment a `legion` command of these tests is given: this test
 // binary as `legion args…` in the working directory dir, with env and nothing of this process's
 // own but PATH, whose head is a pane's `gh` wrapper (ghWrapperDir) unless env names a PATH of its
-// own. A test that drives the run itself — one that signals it, or starts it under a shell of its
-// own — takes the command and runs it, so that base environment is built in one place.
+// own, and this binary's deadline (testDeadlineEnviron), which bounds what the run waits for. A test
+// that drives the run itself — one that signals it, or starts it under a shell of its own — takes
+// the command and runs it, so that base environment is built in one place.
 func legionCommand(t *testing.T, dir string, env map[string]string, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], args...)
 	cmd.Dir = dir
-	cmd.Env = []string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}
+	cmd.Env = append([]string{testMainEnv + "=1", "PATH=" + ghWrapperDir(t) + ":" + os.Getenv("PATH"), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=" + os.DevNull}, testDeadlineEnviron()...)
 	for name, value := range env {
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
@@ -1293,13 +1295,14 @@ func legionCommand(t *testing.T, dir string, env map[string]string, args ...stri
 
 // testGhChildEnviron is what this package's test binary, run as `legion`, hands gh beside the
 // allowlist (ghChildTestEnviron): testMainEnv, so the `gh` wrapper gh's git runs as its credential
-// helper runs this binary as `legion` again; every variable of environ the stand-in real gh of
-// these tests reads (GH_STANDIN_*); and the pairs testGhChildEnv names. None of these is one
-// ghChildEnviron keeps, which is the point of naming them here and nowhere in the binary. The
-// stand-ins tell the guard's visibility read by its argv, as the real gh would have to
-// (ghStandInPrefix), so no Legion variable naming that read is handed on.
+// helper runs this binary as `legion` again, with this binary's deadline (testDeadlineEnviron);
+// every variable of environ the stand-in real gh of these tests reads (GH_STANDIN_*); and the
+// pairs testGhChildEnv names. None of these is one ghChildEnviron keeps, which is the point of
+// naming them here and nowhere in the binary. The stand-ins tell the guard's visibility read by
+// its argv, as the real gh would have to (ghStandInPrefix), so no Legion variable naming that read
+// is handed on.
 func testGhChildEnviron(environ []string) []string {
-	out := []string{testMainEnv + "=1"}
+	out := append([]string{testMainEnv + "=1"}, testDeadlineEnviron()...)
 	for _, pair := range environ {
 		if name, _, _ := strings.Cut(pair, "="); strings.HasPrefix(name, "GH_STANDIN_") {
 			out = append(out, pair)
@@ -2322,6 +2325,9 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 	rest := func(visibility string) string {
 		return "printf '%s\\r\\n' 'HTTP/2.0 200 OK' 'X-Ratelimit-Remaining: 4999' ''\nprintf '%s\\n' " + visibility + "\nexit 0\n"
 	}
+	// A spent core limit whose reset is half an hour away, past the longest the guard waits for a
+	// reset (Guard.waitFits, rateLimitWaitBound), so the guard does not wait for it whatever bound
+	// the answer has.
 	restSpent := fmt.Sprintf("printf '%%s\\r\\n' 'HTTP/2.0 403 Forbidden' 'X-Ratelimit-Remaining: 0' 'X-Ratelimit-Reset: %d' ''\n", time.Now().Add(30*time.Minute).Unix()) +
 		`printf '%s\n' '{"message":"API rate limit exceeded for installation ID 1."}'` + "\n" +
 		"echo 'gh: API rate limit exceeded for installation ID 1. (HTTP 403)' >&2\nexit 1\n"
@@ -3206,11 +3212,36 @@ func TestGhConfigShapeRefusesADirectoryThatSendsElsewhere(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			// A check that opened a named pipe would wait on it, and fails the row by name before
-			// the test binary's deadline (testwait.Receive), the only bound on the wait.
+			// A check that opened a planted named pipe plainly would wait there for a writer. Its
+			// answer is waited for with testwait.Receive, as main waits for it, the only bound on the
+			// wait. Beside that wait, the fifo watch reads from the kernel whether the check opens a
+			// planted pipe plainly (testfifo.WatchBeside), and its own open for writing is the
+			// writer that open needed, so the check then answers and the case fails naming the pipe
+			// at once. The correct check opens each file with O_NONBLOCK and holds it for a moment,
+			// which is no such wait. Only a case that planted a pipe needs the kernel's record, and
+			// where the kernel keeps none, as gVisor keeps none, such a case fails under CI and skips
+			// elsewhere (testfifo.RequireWatch).
+			var pipes []string
+			for _, name := range []string{ghconfig.HostsFile, ghconfig.ConfigFile} {
+				path := filepath.Join(dir, name)
+				if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeNamedPipe != 0 {
+					pipes = append(pipes, path)
+				}
+			}
+			stopWatch := func() (string, error) { return "", nil }
+			if len(pipes) > 0 {
+				testfifo.RequireWatch(t)
+				stopWatch = testfifo.WatchBeside(nil, pipes...)
+			}
+			defer func() { _, _ = stopWatch() }()
 			done := make(chan error, 1)
 			go func() { done <- ghConfigShape(dir) }()
 			err := testwait.Receive(t, "ghConfigShape with "+tc.name, done)
+			if opened, watchErr := stopWatch(); watchErr != nil {
+				t.Fatalf("cannot tell whether ghConfigShape waits in a plain open of a planted pipe: %v", watchErr)
+			} else if opened != "" {
+				t.Fatalf("ghConfigShape opened the named pipe at %s plainly and waited there for a writer", filepath.Base(opened))
+			}
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("ghConfigShape = %v, want none", err)

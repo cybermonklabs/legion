@@ -447,12 +447,13 @@ func TestAGrantTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) {
 }
 
 // TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes: the person decided the request after a
-// hand-over, its hold ended, or its operator withheld the name, so the judge's own grant lands on
-// a request the decision transaction refuses. That is the ordinary end of a race the judge is
-// built to lose, and the deployment's alarms read the broker's ERROR lines, so it leaves none, and
-// the row it writes carries no error either — "error" is the model call's own failure, and
-// nothing failed here. A refusal of any other kind is a judge that reached a request it should not
-// have, and that does raise one, naming the record a person has to look at.
+// hand-over, its hold ended, its operator withheld the name, or a profiles roll took the request's
+// target out of its profile, so the judge's own grant lands on a request the decision transaction
+// refuses. That is the ordinary end of a race the judge is built to lose, and the deployment's
+// alarms read the broker's ERROR lines, so it leaves none and is logged at INFO, and the row it
+// writes carries no error either — "error" is the model call's own failure, and nothing failed
+// here. A refusal of any other kind is a judge that reached a request it should not have, and that
+// does raise one, naming the record a person has to look at.
 func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 	for _, c := range []struct {
 		refusal   error
@@ -464,6 +465,9 @@ func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 		// The withheld guard currentPolicyAdmits makes for the judge alone: the
 		// operator took the name back from the session while the model was answering.
 		{fmt.Errorf("%w: AIRLOCK_JUDGED_TOKEN is withheld from this session", record.ErrNotApprover), false},
+		// The target check an approval makes again (requests.checkTarget): the profiles file
+		// rolled while the model was answering, and the target is no longer in the profile.
+		{fmt.Errorf("%w: APP_KEY: the target ada/site is outside the profile, which names the account ada", requests.ErrTargetRefused), false},
 		{errors.New("the grant could not be written"), true},
 	} {
 		t.Run(c.refusal.Error(), func(t *testing.T) {
@@ -474,13 +478,20 @@ func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 			New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
 
 			var errorLines []string
+			lostRace := false
 			for _, r := range records.Records() {
 				if r.Level >= slog.LevelError {
 					errorLines = append(errorLines, r.Message)
 				}
+				if r.Level == slog.LevelInfo && strings.Contains(r.Message, "before the judge's grant landed") {
+					lostRace = true
+				}
 			}
 			if got := len(errorLines) > 0; got != c.wantError {
 				t.Errorf("the run wrote the ERROR lines %q; want any: %v", errorLines, c.wantError)
+			}
+			if !c.wantError && !lostRace {
+				t.Errorf("the run wrote no INFO line saying the judge's grant lost the race; want one")
 			}
 			_, logged := machine.rows()
 			if len(logged) != 1 {

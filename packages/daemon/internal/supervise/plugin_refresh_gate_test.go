@@ -40,16 +40,8 @@ type refreshAsks struct {
 	released int
 }
 
-// fakeAdmitter is the gate a test hands a machine: it answers admissions with what the test set
-// and counts every call. It is the surface Deps.RefreshGate names and nothing more
-// (RefreshAdmitter), which is why a fake can stand where the daemon's one real gate stands.
-//
-// Every method takes the lock, as the real gate's do: a machine's decisions run on a goroutine of
-// its own, and a test reads the counts from its own.
 type fakeAdmitter struct {
-	mu sync.Mutex
-	// refuse is what the gate answers from now on: false grants, true refuses, as a real gate
-	// does once K credits are out.
+	mu          sync.Mutex
 	refuse      bool
 	asks        refreshAsks
 	corrections []int
@@ -59,21 +51,21 @@ func newFakeAdmitter() *fakeAdmitter { return &fakeAdmitter{} }
 
 var _ RefreshAdmitter = (*fakeAdmitter)(nil)
 
-func (g *fakeAdmitter) Admit() bool {
+func (g *fakeAdmitter) Admit() *RefreshCredit {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.asks.asked++
 	if g.refuse {
-		return false
+		return nil
 	}
 	g.asks.granted++
-	return true
-}
-
-func (g *fakeAdmitter) Release() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.asks.released++
+	return &RefreshCredit{
+		doRelease: func() {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			g.asks.released++
+		},
+	}
 }
 
 func (g *fakeAdmitter) Correct(waiting int) {
@@ -124,7 +116,7 @@ func gatedHarness(t *testing.T, rate int) (*harness, *fakeAdmitter) {
 
 // refreshPass is the daemon's own stale-plugin pass over this one claim: a credit is asked of the
 // gate first, and the event is posted only where one was granted, carrying it (refreshStalePlugins
-// in internal/daemon, StalePlugin.Admitted). It answers whether the claim was posted at all, since
+// in internal/daemon, StalePlugin.Credit). It answers whether the claim was posted at all, since
 // a refused claim is left to the next sweep and nothing reaches the machine.
 //
 // It is the pass over a claim the snapshot shows idle, which is the only claim that pass takes
@@ -134,10 +126,11 @@ func gatedHarness(t *testing.T, rate int) (*harness, *fakeAdmitter) {
 // says so where it does it.
 func (h *harness) refreshPass(gate *fakeAdmitter, trigger string) bool {
 	h.t.Helper()
-	if !gate.Admit() {
+	credit := gate.Admit()
+	if credit == nil {
 		return false
 	}
-	h.must(StalePlugin{Claim: h.token, Trigger: trigger, Admitted: true})
+	h.must(StalePlugin{Claim: h.token, Trigger: trigger, Credit: credit})
 	return true
 }
 
@@ -291,7 +284,7 @@ func TestARefreshWhoseClaimRegisteredCurrentInsideTheWaitRelaunchesNothing(t *te
 // Every branch of refreshPlugin that raises no gated relaunch gives its credit straight back. The
 // lane gives up nothing by any of them — the next sweep decides the claim again as it stands then
 // — so a credit held through one would be a refresh the gate counts that nothing is waiting for,
-// and K of them would stop the lane for good until the sweep's own correction caught up.
+// and K of them would stop the lane until a sweep's correction took them back (reclaimCredit).
 //
 // A branch that leaves a wake of this claim's waiting is run on to that wake's turn (settle),
 // because the credit that wake holds is half of what such a row says: every row ends with the
@@ -328,15 +321,15 @@ func TestEveryRefreshThatRaisesNoRelaunchGivesItsCreditBack(t *testing.T) {
 			h.mustRefreshPass(gate, "boot")
 			h.wantWaitingWake(WakePluginRefresh)
 		}, func(h *harness) {
-			// One flag holds one credit, so the lagged post's own goes back to the gate where
+			// A machine holds one credit, so the lagged post's own goes back to the gate where
 			// it arrives and the one the waiting wake holds goes back at that wake's turn,
 			// which is run here: a row that stopped at the post would read the arrival release
 			// alone and say nothing of the credit the gate is bounded by.
 			//
 			// The negative control of this row is the arrival release reverted (the post's
-			// credit taken onto the flag the machine already holds): the two admissions are
-			// then held by one flag, the wake's turn gives back one of them, and the lane is a
-			// credit short for as long as it takes the sweep's own correction to find it.
+			// credit taken in place of the one the machine already holds): the first credit is
+			// then held by nothing, the wake's turn gives back the second, and the lane is a
+			// credit short until a sweep's correction takes the first back (reclaimCredit).
 			waiting := h.wantWaitingWake(WakePluginRefresh)
 			h.advance(waiting.At.Sub(h.clock.Now()))
 		}, refreshAsks{asked: 2, granted: 2, released: 2}},
@@ -405,8 +398,8 @@ func TestAnUncreditedRelaunchAsksTheGateAndRelaunchesNothingWhenItIsFull(t *test
 
 	// Every credit is out over other claims of the same wave by the time this post is decided.
 	gate.refusing(true)
-	// Admitted is omitted, as the daemon's pass omits it for a claim its snapshot read in a turn
-	// (refreshStalePlugins, StalePlugin.Admitted).
+	// Credit is omitted, as the daemon's pass omits it for a claim its snapshot read in a turn
+	// (refreshStalePlugins, StalePlugin.Credit).
 	h.must(StalePlugin{Claim: h.token, Trigger: "sweep"})
 
 	h.wantState(StateIdle)
@@ -439,10 +432,11 @@ func TestARefreshOverAClaimWithNoProcessToReplaceGivesItsCreditBack(t *testing.T
 	h.reach(StateSuspended)
 	h.m.deps.PluginContract = refreshContract
 
-	if !gate.Admit() {
+	credit := gate.Admit()
+	if credit == nil {
 		t.Fatal("the gate refused the first admission of a fresh gate")
 	}
-	err := h.insideDecision(h.m, func() error { return h.m.refreshPlugin(h.ctx, "sweep", true) })
+	err := h.insideDecision(h.m, func() error { return h.m.refreshPlugin(h.ctx, "sweep", credit) })
 	if err != nil {
 		t.Fatalf("the refresh of a suspended claim = %v, want nil", err)
 	}
@@ -658,13 +652,14 @@ func TestARefreshTheLaunchPathRefusesGivesItsCreditBack(t *testing.T) {
 	h.m.deps.Store = &cleanupReservedAfterFirstCheckStore{memStore: h.store}
 
 	// The pass's own admission, as refreshPass makes it: the event is posted carrying the credit
-	// the gate granted for it (refreshStalePlugins in internal/daemon, StalePlugin.Admitted).
+	// the gate granted for it (refreshStalePlugins in internal/daemon, StalePlugin.Credit).
 	// The post is handled here rather than through that helper because the refusal hands its
 	// error back to the caller.
-	if !gate.Admit() {
+	credit := gate.Admit()
+	if credit == nil {
 		t.Fatal("the sweep pass was refused its credit, want it granted")
 	}
-	err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true})
+	err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: credit})
 	if !errors.Is(err, treelifecycle.ErrCleanupReserved) {
 		t.Fatalf("the relaunch the launch path refused = %v, want the reservation's wait", err)
 	}
@@ -813,13 +808,14 @@ func TestATakeBackTheStoreRefusesAtTheRelaunchsOwnDecisionGivesTheCreditBack(t *
 	h.m.deps.PluginContract = refreshContract
 
 	// The pass's own admission, as refreshPass makes it (refreshStalePlugins in internal/daemon,
-	// StalePlugin.Admitted). The post is handled here rather than through that helper because the
+	// StalePlugin.Credit). The post is handled here rather than through that helper because the
 	// refused take-back hands its error back to the caller.
 	h.store.fail("PutDelivery", errBoom)
-	if !gate.Admit() {
+	credit2 := gate.Admit()
+	if credit2 == nil {
 		t.Fatal("the sweep pass was refused its credit, want it granted")
 	}
-	if err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Admitted: true}); !errors.Is(err, errBoom) {
+	if err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep", Credit: credit2}); !errors.Is(err, errBoom) {
 		t.Fatalf("the relaunch whose take-back the store refused = %v, want the store's refusal", err)
 	}
 

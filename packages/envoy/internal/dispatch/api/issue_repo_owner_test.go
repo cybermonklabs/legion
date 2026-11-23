@@ -23,7 +23,7 @@ func TestAnOwnerGitHubServesIsTakenThoughTheSignUpFormWouldRefuseIt(t *testing.T
 		strings.Repeat("a", 39) + "/x": strings.Repeat("a", 39) + "/x",
 	} {
 		raw, _ := json.Marshal(value)
-		repo, _, err := parseIssueRepo(raw)
+		repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE")
 		if err != nil || repo == nil || *repo != want {
 			t.Errorf("parseIssueRepo(%q) = %v, %v, want %q", value, repo, err, want)
 		}
@@ -35,7 +35,7 @@ func TestAnOwnerGitHubServesIsTakenThoughTheSignUpFormWouldRefuseIt(t *testing.T
 		strings.Repeat("a", 40) + "/x",
 	} {
 		raw, _ := json.Marshal(value)
-		if repo, _, err := parseIssueRepo(raw); err == nil {
+		if repo, _, err := parseIssueRepo(raw, "INVALID_ISSUE"); err == nil {
 			t.Errorf("parseIssueRepo(%q) = %q, want it refused: GitHub serves no login of that name", value, *repo)
 		}
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -204,6 +205,13 @@ func (f *fakeGitHubApp) handler(t *testing.T) http.Handler {
 
 func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handler, *store.Store) {
 	t.Helper()
+	return newRenamingArchitectureSourceServer(t, fake, refs.Renames{})
+}
+
+// newRenamingArchitectureSourceServer is newArchitectureSourceServer given the rename pairs
+// renames, as a boot gives the server the pairs it read.
+func newRenamingArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp, renames refs.Renames) (http.Handler, *store.Store) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -213,6 +221,7 @@ func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handle
 	handler, database, _ := newTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: github,
+		renames:       renames,
 	})
 	return handler, database
 }
@@ -279,12 +288,15 @@ func decodeStrict[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 	return value
 }
 
-func createTestProject(t *testing.T, handler http.Handler, key string) {
+// createTestProject creates each project a test writes, as a person.
+func createTestProject(t *testing.T, handler http.Handler, keys ...string) {
 	t.Helper()
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": key, "name": key,
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	for _, key := range keys {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+			"key": key, "name": key,
+		}, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -391,7 +403,7 @@ func TestArchitectureSourcesListAddAndChangeBranch(t *testing.T) {
 		t.Fatalf("list for a project that does not exist: status=%d body=%s", absent.Code, absent.Body.String())
 	}
 
-	// The repository in the path is stored as repository mappings are: lowercase, .git trimmed.
+	// The repository in the path is stored as an issue's own repository is: lowercase, .git trimmed.
 	saved := putSource(t, handler, "CORE", "Legion/Arch.git", "main")
 	if got, want := saved.String(), "CORE legion/arch@main enabled=true commit=- error=- components=0"; got != want {
 		t.Fatalf("saved source = %s, want %s", got, want)
@@ -456,6 +468,59 @@ func TestArchitectureSourcesListAddAndChangeBranch(t *testing.T) {
 		"CORE acme/infra@main deleted=false by alice",
 		"APP acme/infra@main deleted=false by alice",
 		"CORE legion/arch@release deleted=false by alice",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source events = %q, want %q", got, want)
+	}
+}
+
+// A source saved under the old name of a rename pair, in any case, is saved under its new name:
+// the access check reads the repository by the new name, and the row and its event carry it. A
+// repository that only begins like the old name is saved as given. A sync and a removal under the
+// old name reach the source under the new name.
+func TestAnArchitectureSourceUnderARenamedNameIsSavedUnderItsNewName(t *testing.T) {
+	fake := &fakeGitHubApp{
+		installations: map[string]string{"cybermonklabs/legion": "read", "sjawhar/legion-smoke": "read"},
+		repos: map[string]*fakeArchitectureRepo{
+			"cybermonklabs/legion": {commit: shaArch, files: archFiles()},
+			"sjawhar/legion-smoke": {commit: shaInfra, files: infraFiles()},
+		},
+	}
+	handler, database := newRenamingArchitectureSourceServer(t, fake,
+		refs.NewRenames([]store.RepoRename{{From: "sjawhar/legion", To: "cybermonklabs/legion"}}))
+	createTestProject(t, handler, "INFRA")
+
+	if got, want := putSource(t, handler, "INFRA", "SJawhar/Legion", "main").String(), "INFRA cybermonklabs/legion@main enabled=true commit=- error=- components=0"; got != want {
+		t.Fatalf("saved source = %s, want %s", got, want)
+	}
+	if got, want := putSource(t, handler, "INFRA", "sjawhar/legion-smoke", "main").String(), "INFRA sjawhar/legion-smoke@main enabled=true commit=- error=- components=0"; got != want {
+		t.Fatalf("saved source = %s, want %s", got, want)
+	}
+	if got, want := fake.headReads, []string{"cybermonklabs/legion@main", "sjawhar/legion-smoke@main"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the access checks read %q, want %q", got, want)
+	}
+	var stored string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select string_agg(repo, ' ' order by id) from architecture_sources where project_key = 'INFRA'`).Scan(&stored); err != nil {
+		t.Fatalf("read the stored sources: %v", err)
+	}
+	if stored != "cybermonklabs/legion sjawhar/legion-smoke" {
+		t.Fatalf("the stored sources = %s, want cybermonklabs/legion sjawhar/legion-smoke", stored)
+	}
+	if got, want := syncSource(t, handler, "INFRA", "sjawhar/legion").String(), "INFRA cybermonklabs/legion@main enabled=true commit="+shaArch+" error=- components=2"; got != want {
+		t.Fatalf("the source synced under the old name = %s, want %s", got, want)
+	}
+	if removed := dispatchRequest(t, handler, http.MethodDelete, sourcePath("INFRA", "SJawhar/Legion"), nil, "alice"); removed.Code != http.StatusNoContent {
+		t.Fatalf("remove the source under the old name: status=%d body=%s, want 204", removed.Code, removed.Body.String())
+	}
+	if got, want := sourceStrings(listSources(t, handler, "INFRA")), []string{
+		"INFRA sjawhar/legion-smoke@main enabled=true commit=- error=- components=0",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("INFRA sources after the removal = %q, want %q", got, want)
+	}
+	if got, want := sourceEvents(t, database), []string{
+		"INFRA cybermonklabs/legion@main deleted=false by alice",
+		"INFRA sjawhar/legion-smoke@main deleted=false by alice",
+		"INFRA cybermonklabs/legion@main deleted=true by alice",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("source events = %q, want %q", got, want)
 	}

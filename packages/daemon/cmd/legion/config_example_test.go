@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -255,7 +256,10 @@ func TestShippedLegionYAMLExampleRefusesAWorkerBackgroundAtTheSilenceBound(t *te
 }
 
 // memoryGuardExampleLines are the example's commented memory_guard block, line by line, as an
-// operator turning it on uncomments it.
+// operator turning it on uncomments it: `issue_pods` first and `controller_pod` after it, in the
+// file's order, since uncommentExample takes the first commented line that starts with each, and
+// the two blocks carry the same members at the same defaults but the wait after a kill, 5 seconds
+// for issue pods and 1 for the controller's pod.
 var memoryGuardExampleLines = []string{
 	"    # memory_guard:",
 	"    #   issue_pods:",
@@ -264,12 +268,18 @@ var memoryGuardExampleLines = []string{
 	"    #     floor_percent: 10",
 	"    #     wait_seconds: 5",
 	"    #     interval_milliseconds: 100",
+	"    #   controller_pod:",
+	"    #     enabled: true",
+	"    #     act_percent: 85",
+	"    #     floor_percent: 10",
+	"    #     wait_seconds: 1",
+	"    #     interval_milliseconds: 100",
 }
 
 // The example's commented memory_guard block, uncommented, passes the same check and settles on
-// the guard on at the defaults the block states, which are the wire's own
+// the guard on for both pod kinds at the defaults the block states, which are the wire's own
 // (config.DefaultMemoryGuard): a default changed in the wire and not in the example would have the
-// example teach a number no daemon runs.
+// example teach a number no daemon runs. The controller pod's wait_seconds is 1.
 func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	config := checkShippedExample(t, func(example string) string {
 		return uncommentExample(t, example, memoryGuardExampleLines...)
@@ -281,26 +291,42 @@ func TestMemoryGuardTheShippedExamplesBlockPassesCheckConfig(t *testing.T) {
 	if got, want := cfg.Runtime.Kubernetes.MemoryGuard, configpkg.DefaultMemoryGuard(); got != want {
 		t.Errorf("the example's memory_guard block uncommented settles on %+v, want the defaults %+v", got, want)
 	}
+	if got := cfg.Runtime.Kubernetes.MemoryGuard.ControllerPod.WaitSeconds; got != 1 {
+		t.Errorf("the example's controller_pod waits %d seconds after a kill, want 1", got)
+	}
 }
 
-// The example's memory_guard block, uncommented with act_percent at 96, one above the wire's range,
-// is refused by the same check: exit 1 and one line naming the whole key and both ends of the range,
-// which is what an operator who edits the shipped block past that range reads. It checks the
-// loader's refusal, not the range the block's own comment states. The block stays commented in the
-// file itself: its values are the defaults, which apply without it.
+// The example's memory_guard block, uncommented with either pod kind's act_percent at 91, one
+// above the 90 both kinds take (INFRA-3531 R4 of spec version 43), is refused by the same check:
+// exit 1 and one line naming that kind's whole key and both ends of its range, which is what an
+// operator who edits the shipped block past that range reads. It checks the loader's refusal, not
+// the range the block's own comment states. The block stays commented in the file itself: its
+// values are the defaults, which apply without it.
 func TestMemoryGuardTheShippedExampleRefusesAnActShareAboveItsRange(t *testing.T) {
-	config := stageShippedExample(t, func(example string) string {
-		example = uncommentExample(t, example, memoryGuardExampleLines...)
-		return strings.Replace(example, "act_percent: 85", "act_percent: 96", 1)
-	})
+	for _, kind := range []struct {
+		name string
+		max  int
+	}{{"issue_pods", 90}, {"controller_pod", 90}} {
+		t.Run(kind.name, func(t *testing.T) {
+			config := stageShippedExample(t, func(example string) string {
+				example = uncommentExample(t, example, memoryGuardExampleLines...)
+				// The kind's own act_percent: the first after its key, since both kinds carry 85.
+				at := strings.Index(example, "\n      "+kind.name+":")
+				if at < 0 {
+					t.Fatalf("the uncommented example has no %s block", kind.name)
+				}
+				return example[:at] + strings.Replace(example[at:], "act_percent: 85", fmt.Sprintf("act_percent: %d", kind.max+1), 1)
+			})
 
-	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
-	t.Logf("legion config check exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+			t.Logf("legion config check exited %d\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
 
-	want := "legion config check: runtime.kubernetes.memory_guard.issue_pods.act_percent must be between 50 and 95\n"
-	if code != 1 || out.Len() != 0 || errb.String() != want {
-		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+			want := fmt.Sprintf("legion config check: runtime.kubernetes.memory_guard.%s.act_percent must be between 50 and %d\n", kind.name, kind.max)
+			if code != 1 || out.Len() != 0 || errb.String() != want {
+				t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1, nothing, and %q", code, out.String(), errb.String(), want)
+			}
+		})
 	}
 }
 
