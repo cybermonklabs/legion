@@ -44,7 +44,9 @@
 # c), and an old-form message still on the stream (c); new pins with one older client still
 # connected keep the gate shut, and the purge driver refuses that reading and each reading whose
 # (a3) or (b) is unknown; and a required-mode listener's connection, its build before its trailing
-# privacy suffix, is judged by that build. Every case runs from the same clean
+# privacy suffix, is judged by that build. A list the gate makes with jq and then reads (the
+# listeners, their joined reads, the hub's ConfigMaps) that jq fails to make is UNKNOWN, naming the
+# failure: a jq that fails on one filter stands in for it. Every case runs from the same clean
 # fixture with one thing changed, so each fails for its own reason. The old-form rule itself is
 # held row by row. The summary counts cases.
 set -euo pipefail
@@ -204,6 +206,23 @@ else echo "curl: (7) Failed to connect to $host port 9020" >&2; exit 7
 fi
 EOF
 chmod +x "$root/bin/kubectl" "$root/bin/curl" "$root/bin/gh"
+# A jq that fails, as jq fails on input it cannot read (exit 5), when one of its arguments holds the
+# text in $FAKE/jq.fail, and is the jq it finds after its own directory otherwise. It is first on
+# the gate's PATH only in a case that sets jq_breaks, so the other cases start no extra process
+# per jq. It takes its own directory off PATH before it runs jq, so a jq on PATH that resolves
+# through PATH again (a shim) finds the real one.
+mkdir -p "$root/jqbreak"
+cat >"$root/jqbreak/jq" <<'EOF'
+#!/usr/bin/env bash
+want=$(<"$FAKE/jq.fail")
+for arg in "$@"; do
+  case "$arg" in
+    *"$want"*) echo "jq: error (at <stdin>:1): the case broke this jq on purpose" >&2; exit 5 ;;
+  esac
+done
+PATH=${PATH#"${BASH_SOURCE[0]%/*}":} exec jq "$@"
+EOF
+chmod +x "$root/jqbreak/jq"
 
 # --- the clean fixture ----------------------------------------------------------------------------
 readonly envoy_image="ghcr.io/cybermonklabs/legion/envoy@sha256:1111111111111111111111111111111111111111111111111111111111111111"
@@ -500,14 +519,21 @@ new_case() {
   cp -r "$base" "$FAKE"
   : >"$FAKE/calls"
   facts=("${facts_default[@]}")
+  jq_breaks=""
   export FAKE
 }
 
 # run_gate ARG... runs the gate on the case with the fakes first on PATH, keeping its output in
-# $output and its exit status in $status.
+# $output and its exit status in $status. With jq_breaks set, a jq that fails on an argument holding
+# that text comes first.
 run_gate() {
+  local path="$root/bin:$PATH"
+  if [ -n "${jq_breaks:-}" ]; then
+    printf '%s' "$jq_breaks" >"$FAKE/jq.fail"
+    path="$root/jqbreak:$path"
+  fi
   set +e
-  output=$(PATH="$root/bin:$PATH" bash "$gate" "$@" 2>&1)
+  output=$(PATH="$path" bash "$gate" "$@" 2>&1)
   status=$?
   set -e
 }
@@ -1898,6 +1924,17 @@ expect_status 3
 expect_line "UNKNOWN: (a3) the publishers: the hub's users could not be read: the ConfigMap envoy/envoy-nats-config the StatefulSet mounts could not be read: Error from server (Forbidden)"
 done_case
 
+# The ConfigMaps the hub's pods mount are listed by one jq: one that fails names its cause, where
+# a list read through a process substitution, whose exit status bash drops, read as no ConfigMap.
+new_case "(a3) ConfigMaps of the hub that cannot be listed are UNKNOWN, naming the failed list"
+first_reading_secs 200 reading
+jq_breaks='.projected.sources[]? | .configMap.name // empty'
+reading --since "$FAKE/earlier.json"
+expect_status 3
+expect_line "UNKNOWN: (a3) the publishers: the hub's users could not be read: the ConfigMaps the StatefulSet envoy/envoy-nats mounts could not be listed: jq: error (at <stdin>:1): the case broke this jq on purpose"
+expect_no_line "holds auth.conf"
+done_case
+
 # An auth.conf of another shape than the rendering this gate reads, here one with an accounts
 # block, is UNKNOWN: a user the reader passed over could be a publisher.
 new_case "(a3) an auth.conf of another shape, with an accounts block, is UNKNOWN"
@@ -2049,6 +2086,25 @@ touch "$FAKE/pods.fail"
 reading
 expect_status 3
 expect_line "UNKNOWN: the listeners in the cluster: the cluster's pods could not be listed: error: You must be logged in to the server (Unauthorized)"
+done_case
+
+# The listeners the pods list holds are listed by one jq, and their reads joined to them by another:
+# each that fails is UNKNOWN, naming the failure, where a list read through a process substitution
+# read as no listener at all and a failed join ended the gate with jq's own exit.
+new_case "listeners that cannot be listed are UNKNOWN, naming the failed list"
+jq_breaks='(.running | tostring)] | join("\u001f")'
+reading
+expect_status 3
+expect_line "UNKNOWN: the listeners in the cluster: the listeners found in the cluster could not be listed: jq: error (at <stdin>:1): the case broke this jq on purpose"
+expect_no_line "no listener container runs"
+done_case
+
+new_case "listener reads that cannot be joined to their listeners are UNKNOWN, naming the failed join"
+# shellcheck disable=SC2016 # the jq filter's text as the gate holds it, $reads unexpanded
+jq_breaks='to_entries[] | .value + {read: $reads[.key]}'
+reading
+expect_status 3
+expect_line "UNKNOWN: the listeners in the cluster: the reads of the listeners in the cluster could not be joined to them: jq: error (at <stdin>:1): the case broke this jq on purpose"
 done_case
 
 new_case "no Legion daemon consumer on the stream is UNKNOWN"

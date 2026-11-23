@@ -519,23 +519,36 @@ fi
 # Each running listener's newest "listener legacy subjects" log line: {ok, text, at}, the metrics
 # text and the second it was read at, or {ok: false, error}. One jq lists the listeners' fields and
 # one joins every read to its listener, so a reading starts one jq per running listener and not
-# eight: a cluster runs a listener per machine.
+# eight: a cluster runs a listener per machine. The list is written to a file and read from it,
+# never read through a process substitution, whose exit status bash drops: a list that could not
+# be made is the reading's pods_error, UNKNOWN by name, never a fleet of no listeners. So is a join
+# that fails.
 : >"$work/reads.jsonl"
-while IFS=$'\x1f' read -r ns pod container running; do
-  read_json='{"ok": false, "error": "not running"}'
-  if [ "$running" = true ]; then
-    if kc -n "$ns" logs "$pod" -c "$container" --since="$log_window" >"$work/log" 2>"$work/log.err" </dev/null; then
-      read_json=$(jq -R -n -c --arg window "$log_window" '[inputs | fromjson? | select(type == "object" and .msg == "listener legacy subjects")]
-        | if length == 0
-          then {ok: false, error: "its log holds no \"listener legacy subjects\" line from the last \($window): its build predates that line, or it is not logging it"}
-          else last | {ok: true, text: (.metrics | strings // ""), at: (.at | numbers // null)} end' "$work/log")
-    else
-      read_json=$(jq -cn --arg error "$(first_line "$work/log.err")" '{ok: false, error: "its log could not be read: \($error)"}')
+if jq -r '.[] | [.ns, .pod, .container, (.running | tostring)] | join("\u001f")' "$work/listeners.json" \
+  >"$work/listener-fields" 2>"$work/listener-fields.err"; then
+  while IFS=$'\x1f' read -r ns pod container running; do
+    read_json='{"ok": false, "error": "not running"}'
+    if [ "$running" = true ]; then
+      if kc -n "$ns" logs "$pod" -c "$container" --since="$log_window" >"$work/log" 2>"$work/log.err" </dev/null; then
+        read_json=$(jq -R -n -c --arg window "$log_window" '[inputs | fromjson? | select(type == "object" and .msg == "listener legacy subjects")]
+          | if length == 0
+            then {ok: false, error: "its log holds no \"listener legacy subjects\" line from the last \($window): its build predates that line, or it is not logging it"}
+            else last | {ok: true, text: (.metrics | strings // ""), at: (.at | numbers // null)} end' "$work/log")
+      else
+        read_json=$(jq -cn --arg error "$(first_line "$work/log.err")" '{ok: false, error: "its log could not be read: \($error)"}')
+      fi
     fi
+    printf '%s\n' "$read_json" >>"$work/reads.jsonl"
+  done <"$work/listener-fields"
+  if ! jq -c --slurpfile reads "$work/reads.jsonl" 'to_entries[] | .value + {read: $reads[.key]}' "$work/listeners.json" \
+    >"$work/pod-reads.jsonl" 2>"$work/pod-reads.err"; then
+    pods_error="${pods_error:-the reads of the listeners in the cluster could not be joined to them: $(first_line "$work/pod-reads.err")}"
+    : >"$work/pod-reads.jsonl"
   fi
-  printf '%s\n' "$read_json" >>"$work/reads.jsonl"
-done < <(jq -r '.[] | [.ns, .pod, .container, (.running | tostring)] | join("\u001f")' "$work/listeners.json")
-jq -c --slurpfile reads "$work/reads.jsonl" 'to_entries[] | .value + {read: $reads[.key]}' "$work/listeners.json" >"$work/pod-reads.jsonl"
+else
+  pods_error="${pods_error:-the listeners found in the cluster could not be listed: $(first_line "$work/listener-fields.err")}"
+  : >"$work/pod-reads.jsonl"
+fi
 
 # --- the listeners outside it ---------------------------------------------------------------------
 : >"$work/outside-reads.jsonl"
@@ -623,9 +636,16 @@ if [ -n "$since" ]; then
     if [ -n "$hub_error" ]; then
       auth_error=$hub_error
     else
+      # The ConfigMaps the pods mount, listed to a file first, as the listeners are above: a list
+      # that could not be made names its cause rather than reading as no ConfigMap.
       : >"$work/auth-holders"
+      if ! jq -r '[.spec.template.spec.volumes[]? | (.configMap.name // empty), (.projected.sources[]? | .configMap.name // empty)] | unique[]' \
+        "$work/hub.json" >"$work/configmaps" 2>"$work/configmaps.err"; then
+        auth_error="the ConfigMaps the StatefulSet $job_namespace/$hub_statefulset mounts could not be listed: $(first_line "$work/configmaps.err")"
+        : >"$work/configmaps"
+      fi
       while IFS= read -r configmap; do
-        if kc -n "$job_namespace" get configmap "$configmap" -o json >"$work/configmap.json" 2>"$work/configmap.err"; then
+        if kc -n "$job_namespace" get configmap "$configmap" -o json >"$work/configmap.json" 2>"$work/configmap.err" </dev/null; then
           if jq -e '.data | type == "object" and has("auth.conf")' "$work/configmap.json" >/dev/null 2>&1; then
             echo "$configmap" >>"$work/auth-holders"
             jq -j '.data["auth.conf"]' "$work/configmap.json" >"$work/auth.conf"
@@ -634,7 +654,7 @@ if [ -n "$since" ]; then
           auth_error="the ConfigMap $job_namespace/$configmap the StatefulSet mounts could not be read: $(first_line "$work/configmap.err")"
           break
         fi
-      done < <(jq -r '[.spec.template.spec.volumes[]? | (.configMap.name // empty), (.projected.sources[]? | .configMap.name // empty)] | unique[]' "$work/hub.json" 2>/dev/null)
+      done <"$work/configmaps"
       if [ -z "$auth_error" ]; then
         # BSD and macOS wc -l pad the count with spaces; $((holders)) reads it as the number alone.
         holders=$(wc -l <"$work/auth-holders")
