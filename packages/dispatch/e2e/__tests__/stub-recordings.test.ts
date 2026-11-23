@@ -16,6 +16,12 @@
  *  200 that answers a list of events is read a second way: every text an event's payload holds
  *  is demanded under the path that map keys it by.
  *
+ *  The GitHub proxy (`/api/github/rest/...`) is no route of that document: it forwards GitHub's
+ *  own answer. Its entries are held to the proxy's declaration instead, read out of
+ *  `packages/envoy/internal/dispatch/githubapi/proxy.go` itself - its prefix, the paths it
+ *  forwards and the query a workflow-runs read may carry - and to the shapes the dashboard reads
+ *  of each answer (`web/src/features/issue/GitHubLink.tsx`, `web/src/features/refs/Unfurl.tsx`).
+ *
  *  Those last ones are what keep the stubbed rows reading Go's tree. The dashboard asks for the
  *  trees on every request it makes, and draws one wherever it is given one; where it is given
  *  none it parses the markdown itself, which is the fallback a rolling deploy needs and which
@@ -32,7 +38,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Ajv2020 } from "ajv/dist/2020";
+import { Ajv2020, type ValidateFunction } from "ajv/dist/2020";
 
 import { recordedOrigin } from "../stub/origin";
 import type { Har } from "../stub/recording";
@@ -196,6 +202,184 @@ withTrees.addSchema({ $id: "trees", ...demandedDocument });
 const ajv = new Ajv2020({ allErrors: false, strict: false, validateFormats: false });
 ajv.addSchema({ $id: "dispatch", ...document });
 
+/** The GitHub proxy's declaration, read out of its Go source as the contract is read out of its
+ *  document: a copy here would go on passing a route the proxy stopped forwarding. */
+const proxySource = readFileSync(
+  fileURLToPath(new URL("../../../envoy/internal/dispatch/githubapi/proxy.go", import.meta.url)),
+  "utf8"
+);
+
+/** One declaration of proxy.go, by the line that declares it. A declaration that moved or was
+ *  renamed throws here rather than leaving every GitHub entry checked against nothing. */
+function proxyDeclares(name: string, line: RegExp): string {
+  const declared = line.exec(proxySource)?.[1];
+  if (declared === undefined)
+    throw new Error(`proxy.go declares no ${name} where this test reads it`);
+  return declared;
+}
+
+/** `Prefix`: the route the dashboard reads GitHub under. */
+const githubPrefix = proxyDeclares("Prefix", /^const Prefix = "([^"]+)"$/m);
+/** `readable`: the GitHub paths the proxy forwards; group 3 is a workflow-runs read. Go's
+ *  pattern is one JavaScript reads alike: anchors, classes, a bounded repeat and groups. */
+const githubReadable = new RegExp(
+  proxyDeclares("readable", /^var readable = regexp\.MustCompile\(`([^`]+)`\)$/m)
+);
+/** `workflowRunsQuery`: each parameter a workflow-runs read may carry. */
+const workflowRunsParameter = new RegExp(
+  proxyDeclares("workflowRunsQuery", /^var workflowRunsQuery = regexp\.MustCompile\(`([^`]+)`\)$/m)
+);
+
+/** Whether a workflow-runs read's query names one commit and its page, as proxy.go's
+ *  `workflowRunsOfOneCommit` holds it: every parameter one it takes, none twice, `head_sha`
+ *  among them. */
+function workflowRunsOfOneCommit(query: string): boolean {
+  const seen = new Set<string>();
+  for (const parameter of query.split("&")) {
+    const match = workflowRunsParameter.exec(parameter);
+    if (match === null) return false;
+    const name = `${match[1] ?? ""}${match[2] ?? ""}`;
+    if (seen.has(name)) return false;
+    seen.add(name);
+  }
+  return seen.has("head_sha");
+}
+
+/** What the dashboard reads of each answer the proxy forwards, as a schema of the members it
+ *  reads: GitHub's answer passes through whole, so a member the dashboard does not read may be
+ *  there or not. A workflow-runs answer is the one the proxy trims, to its `workflowRuns` struct,
+ *  so that one is held to exactly the members the struct keeps. */
+const githubShapes = {
+  // `GitHubReference` of GitHubLink.tsx and `GitHubIssue` of Unfurl.tsx: a pull request or an
+  // issue, its state and title, the head commit a pull request's checks are read for, its body.
+  reference: {
+    properties: {
+      body: { type: ["string", "null"] },
+      head: { properties: { sha: { type: "string" } }, type: "object" },
+      merged: { type: "boolean" },
+      state: { type: "string" },
+      title: { type: "string" },
+    },
+    required: ["state", "title"],
+    type: "object",
+  },
+  // `CheckRun` of GitHubLink.tsx, read a page at a time from `check_runs`.
+  checkRuns: {
+    properties: {
+      check_runs: {
+        items: {
+          properties: {
+            app: {
+              oneOf: [
+                { type: "null" },
+                { properties: { id: { type: "integer" } }, required: ["id"], type: "object" },
+              ],
+            },
+            check_suite: {
+              oneOf: [
+                { type: "null" },
+                { properties: { id: { type: "integer" } }, required: ["id"], type: "object" },
+              ],
+            },
+            conclusion: { type: ["string", "null"] },
+            id: { type: "integer" },
+            name: { type: "string" },
+            status: { type: "string" },
+          },
+          required: ["id", "name", "status", "conclusion"],
+          type: "object",
+        },
+        type: "array",
+      },
+    },
+    required: ["check_runs"],
+    type: "object",
+  },
+  // proxy.go's `workflowRuns`, which is all the proxy passes on, and `WorkflowRun` of
+  // GitHubLink.tsx.
+  workflowRuns: {
+    additionalProperties: false,
+    properties: {
+      total_count: { type: "integer" },
+      workflow_runs: {
+        items: {
+          additionalProperties: false,
+          properties: {
+            check_suite_id: { type: "integer" },
+            event: { type: "string" },
+            name: { type: "string" },
+          },
+          required: ["check_suite_id", "event", "name"],
+          type: "object",
+        },
+        type: "array",
+      },
+    },
+    required: ["total_count", "workflow_runs"],
+    type: "object",
+  },
+  // Any other status: the proxy's own refusal (`error` and one of the codes ProxyREST writes),
+  // or GitHub's error passed through as GitHub sent it (`message`).
+  error: {
+    oneOf: [
+      {
+        properties: {
+          code: {
+            enum: [
+              "GITHUB_PATH_REFUSED",
+              "GITHUB_RATE_LIMITED",
+              "GITHUB_TOKEN_UNAVAILABLE",
+              "GITHUB_UPSTREAM",
+              "METHOD_NOT_ALLOWED",
+            ],
+          },
+          error: { type: "string" },
+        },
+        required: ["error", "code"],
+        type: "object",
+      },
+      { properties: { message: { type: "string" } }, required: ["message"], type: "object" },
+    ],
+  },
+} as const;
+const githubValidators = Object.fromEntries(
+  Object.entries(githubShapes).map(([name, schema]) => [name, ajv.compile(schema)])
+) as Record<keyof typeof githubShapes, ValidateFunction>;
+
+/** Holds one recorded GitHub proxy entry to the proxy's declaration and the dashboard's shapes. */
+function checkGithubRead(entry: Har["log"]["entries"][number], url: URL, where: string): void {
+  expect(entry.request.method, `${where}: the GitHub proxy reads only`).toBe("GET");
+  const path = url.pathname.slice(githubPrefix.length);
+  const match = githubReadable.exec(path);
+  expect(match, `${where}: the GitHub proxy forwards no such path`).not.toBeNull();
+  if (match === null) return;
+  const workflowRuns = match[3] !== undefined;
+  if (workflowRuns) {
+    expect(
+      workflowRunsOfOneCommit(url.search.slice(1)),
+      `${where}: a workflow-runs read the proxy refuses - its query names no one commit`
+    ).toBe(true);
+  }
+  const status = entry.response.status;
+  const shape =
+    status === 200
+      ? workflowRuns
+        ? "workflowRuns"
+        : path.endsWith("/check-runs")
+          ? "checkRuns"
+          : "reference"
+      : "error";
+  expect(status === 200 || status >= 400, `${where}: the proxy answers 200 or an error`).toBe(true);
+  const body = entry.response.content.text;
+  expect(body, `${where}: a GitHub answer with no body`).toBeDefined();
+  if (body === undefined) return;
+  const validate = githubValidators[shape];
+  expect(
+    validate(JSON.parse(body)),
+    `${where}: the ${status} answer is not what the dashboard reads of it - ${ajv.errorsText(validate.errors)}`
+  ).toBe(true);
+}
+
 /** Every member of a payload that can hold a stored text: the field of every pair the document
  *  declares. An event's trees stand in a map of their own, so the demand above reaches none of
  *  them and the rule below reads an event's payload with these names instead.
@@ -213,8 +397,34 @@ ajv.addSchema({ $id: "dispatch", ...document });
  *  A member holding a list of texts - an answer's `selected` - is no string, and demands nothing
  *  here: an event carries the trees of the labels a replaced answer chose, which the Activity
  *  tab's `was:` line draws, and not those of the current answer, whose options the payload's
- *  own option trees draw; the Go rows hold which (`api/chosen_label_trees_test.go`). */
+ *  own option trees draw; the Go rows hold which (`api/chosen_label_trees_test.go`).
+ *
+ *  One field is read as a word and not a text: an issue claim event's `reason`, while it holds
+ *  one of the words `claimReasons` lists. */
 const storedTextFields = new Set(demandedPairs.map(({ field }) => field));
+
+/** The words an issue claim event's `reason` holds: why the holder changed (model.go's
+ *  `IssueClaimEventPayload`: "Reason is "claimed", "takeover", "forced", "released", or
+ *  "closed""), which the outbox reads as a word (`outbox/publisher.go`). It is no stored text, and
+ *  the server reads no tree for it, since `eventPayloadTexts` reads the comment, message,
+ *  suggestion and ask families alone. A reason outside these words is demanded a tree again, so a
+ *  claim event that gains a written reason still fails here. */
+const claimReasons: Record<string, true> = {
+  claimed: true,
+  closed: true,
+  forced: true,
+  released: true,
+  takeover: true,
+};
+
+/** Whether `at` is an issue claim event's reason word, which carries no tree. */
+function isClaimReason(event: RecordedEvent, at: string): boolean {
+  if (at !== "payload.reason") return false;
+  if (event.type !== "issue.claimed" && event.type !== "issue.released") return false;
+  const payload = event.payload;
+  if (payload === null || typeof payload !== "object" || !("reason" in payload)) return false;
+  return typeof payload.reason === "string" && Object.hasOwn(claimReasons, payload.reason);
+}
 
 /** Whether this schema is an event's: one that declares a `payload` beside the `trees` map
  *  holding the display tree of every text that payload carries (model.Event's `Trees`). */
@@ -319,6 +529,7 @@ function checkTrees(file: string): number {
     for (const event of answered as RecordedEvent[]) {
       events += 1;
       for (const at of eventTextPaths(event.payload, "payload", [])) {
+        if (isClaimReason(event, at)) continue;
         expect(
           holdsContent(event.trees?.[at]),
           `${where}: event ${event.id} (${event.type}) answers ${at} without a display tree ` +
@@ -337,6 +548,60 @@ describe("every committed recording answers what the generated contract declares
     expect(files.length).toBeGreaterThan(0);
   });
 
+  // The proxy's rule is read out of proxy.go, so it is shown here to refuse what the proxy
+  // refuses: a pattern read wrongly, or a shape that took anything, would pass every recording.
+  test("the GitHub proxy rule takes what the proxy forwards and refuses the rest", () => {
+    expect(githubPrefix).toBe("/api/github/rest/");
+    for (const forwarded of [
+      "repos/acme/web/pulls/7",
+      "repos/acme/web/issues/7",
+      "repos/acme/web/commits/0123abc/check-runs",
+      "repos/acme/web/actions/runs",
+    ]) {
+      expect(githubReadable.test(forwarded), forwarded).toBe(true);
+    }
+    for (const refused of [
+      "repos/acme/web/contents/README.md",
+      "user",
+      "repos/acme/web/pulls/7/files",
+    ]) {
+      expect(githubReadable.test(refused), refused).toBe(false);
+    }
+    const sha = "a".repeat(40);
+    expect(workflowRunsOfOneCommit(`head_sha=${sha}&per_page=100&page=1`)).toBe(true);
+    expect(workflowRunsOfOneCommit("per_page=100&page=1")).toBe(false);
+    expect(workflowRunsOfOneCommit(`head_sha=${sha}&head_sha=${sha}`)).toBe(false);
+    expect(workflowRunsOfOneCommit(`head_sha=${sha}&branch=main`)).toBe(false);
+    expect(githubValidators.reference({ state: "open", title: "Ship it" })).toBe(true);
+    expect(githubValidators.reference({ state: "open" })).toBe(false);
+    expect(
+      githubValidators.checkRuns({
+        check_runs: [{ conclusion: null, id: 1, name: "ci", status: "queued" }],
+      })
+    ).toBe(true);
+    expect(githubValidators.checkRuns({ check_runs: [{ id: 1, name: "ci" }] })).toBe(false);
+    const run = { check_suite_id: 6, event: "push", name: "CI" };
+    expect(githubValidators.workflowRuns({ total_count: 1, workflow_runs: [run] })).toBe(true);
+    // A field the proxy trims away is one it no longer trims.
+    expect(
+      githubValidators.workflowRuns({ total_count: 1, workflow_runs: [{ ...run, actor: {} }] })
+    ).toBe(false);
+    expect(githubValidators.error({ code: "GITHUB_PATH_REFUSED", error: "refused" })).toBe(true);
+    expect(githubValidators.error({ code: "SOMETHING_ELSE", error: "refused" })).toBe(false);
+  });
+
+  test("an issue claim event's reason word carries no tree, and a written reason still does", () => {
+    const claimed = { id: 1, payload: { reason: "takeover" }, type: "issue.claimed" };
+    expect(isClaimReason(claimed, "payload.reason")).toBe(true);
+    expect(
+      isClaimReason(
+        { ...claimed, payload: { reason: "the lane stalled overnight" } },
+        "payload.reason"
+      )
+    ).toBe(false);
+    expect(isClaimReason({ ...claimed, type: "comment.created" }, "payload.reason")).toBe(false);
+  });
+
   for (const file of files) {
     test(file, () => {
       const har = JSON.parse(readFileSync(join(recordings, file), "utf8")) as Har;
@@ -346,9 +611,14 @@ describe("every committed recording answers what the generated contract declares
         expect(url.origin, `${where}: a committed recording names the placeholder origin`).toBe(
           recordedOrigin
         );
-        // The generator covers the `/api/v1` route table and nothing else, so the sign-in
-        // route it leaves out is named here rather than passed over: a recording that reached
-        // some other unguarded route would otherwise be checked by nothing at all.
+        // The generator covers the `/api/v1` route table and nothing else, so the routes it
+        // leaves out are named here rather than passed over: the GitHub proxy, held to its own
+        // declaration, and the sign-in route. A recording that reached some other unguarded route
+        // would otherwise be checked by nothing at all.
+        if (url.pathname.startsWith(githubPrefix)) {
+          checkGithubRead(entry, url, where);
+          continue;
+        }
         if (!url.pathname.startsWith("/api/v1/")) {
           expect(url.pathname, `${where}: no contract covers this route`).toBe("/auth/whoami");
           continue;

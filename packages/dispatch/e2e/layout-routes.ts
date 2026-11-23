@@ -125,9 +125,9 @@ const allAgentsSelected: LayoutState = {
 };
 
 /** The lists of chips today's issue page draws from the stress issue's data: its 12 labels, its
- *  13 components and its 15 pull requests. Each is a list of R3, which `components/CappedGroup.tsx`
- *  marks with these names. */
-const ISSUE_GROUPS = ["labels", "components", "pull-requests"];
+ *  13 components, its 15 pull requests, and its links that are no pull request. Each is a list of
+ *  R3, which `components/CappedGroup.tsx` marks with these names. */
+const ISSUE_GROUPS = ["labels", "components", "pull-requests", "links"];
 
 /** A short page's floor: four fifths of what its own region drew at its narrowest width on the
  *  stress seed, so a page that drew a heading and nothing else still fails. */

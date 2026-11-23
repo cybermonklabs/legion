@@ -274,10 +274,18 @@ export async function seedLayoutStress({
   await patchIssue(issue, {
     advances: [review.priority, secondPriority.id],
     components: { ids: ISSUE_COMPONENTS, mode: "explicit" },
-    external_links: Array.from({ length: PULLS }, (_, index) => ({
-      kind: "github_pr",
-      url: pullUrl(index + 1),
-    })),
+    external_links: [
+      ...Array.from({ length: PULLS }, (_, index) => ({
+        kind: "github_pr",
+        url: pullUrl(index + 1),
+      })),
+      // A link that is no pull request, which today's header draws beside them and the
+      // redrawn Details lists apart (`links`).
+      {
+        kind: "url",
+        url: "https://docs.example.com/dispatch/the-layout-rule-and-its-browser-test",
+      },
+    ],
     labels: LABELS,
     parent: parent.key,
     repo: PULLS_REPO,
