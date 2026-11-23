@@ -151,6 +151,7 @@ func TestMemoryGuardAKillReportedTwiceIsOneNoteOnTheReportingRolesTopic(t *testi
 // which has no section for this notice
 // (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
 func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -203,6 +204,7 @@ func TestMemoryGuardAControllerKillReportedTwiceIsOneNoticeOnTheControllerTopic(
 // A holder the boot never bound refuses a kill of the controller's pod as it refuses an issue
 // pod's, so the launcher session logs the report it drops.
 func TestMemoryGuardAnUnboundHolderRefusesEveryControllerKill(t *testing.T) {
+	t.Parallel()
 	err := (&memoryGuardKills{}).controllerKilled(context.Background(), claim.ControllerToken("legion"), "pod-controller", memoryGuardKill())
 	if !errors.Is(err, errMemoryGuardKillsUnbound) {
 		t.Fatalf("controllerKilled = %v, want errMemoryGuardKillsUnbound", err)
