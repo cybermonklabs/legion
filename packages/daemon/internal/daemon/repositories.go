@@ -1159,15 +1159,18 @@ func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 
 // recoveryHoldLeft is the time left to recoveryHoldBound for a recovery whose listing is held with
 // release waits to tell, zero once the bound has passed, and whether a run is due at that time: one
-// is, until a run has checked the bound after it passed (recoveryBoundChecked). The waits are those
-// of the repositories to recover and of the repositories left unread alike: a pass that would let
-// one of the latter go puts it back while the listing is held (recoverRepositories), and its waits
-// are told at the bound as the former's are, so the refresher's wait is cut to the bound for both.
+// is, until a run of the recovery has begun with the bound passed (recoveryBoundChecked). The waits
+// are those of the repositories to recover and of the repositories left unread alike: a pass that
+// would let one of the latter go puts it back while the listing is held (recoverRepositories), and
+// its waits are told at the bound as the former's are, so the refresher's wait is cut to the bound
+// for both.
 //
 // A bound that passed while another job of the refresher ran (a read of the live records, say) is
 // still due: the refresher's wait was cut to it before that job began, and the loop that comes
 // back from the job finds no time left. Before, no time left meant no cut, and the run that tells
-// the waits came at the backoff, up to its cap past the bound.
+// the waits came at the backoff, up to its cap past the bound. Once a run has begun past the bound,
+// whatever it then meets (a listing that fails, a notice that fails, GitHub failing again), the
+// next run waits the backoff, so a fault past the bound never turns the refresher into a busy loop.
 func (w *workflowRuntime) recoveryHoldLeft() (time.Duration, bool) {
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
@@ -1256,6 +1259,11 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // fact.
 func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	w.recoveringMu.Lock()
+	// A run that begins with the hold's bound passed is the run the bound was due for: the next
+	// one waits the backoff, whatever this one meets (recoveryHoldLeft).
+	if !w.recoveryHeldSince.IsZero() && time.Since(w.recoveryHeldSince) >= recoveryHoldBound {
+		w.recoveryBoundChecked = true
+	}
 	repos := make(map[string]bool, len(w.recovering)+len(w.unread))
 	maps.Copy(repos, w.recovering)
 	for repo := range w.unread {
@@ -1410,18 +1418,14 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 // been held for recoveryHoldBound: the clock starts at the first pass that finds it so
 // (recoveryHeldSince) and runs on across holds released and made again, so a hold that flaps is
 // told at the bound all the same. The waits of the repositories to recover and of the repositories
-// a pass would let go run on this one clock (recoveryHoldLeft). A pass that finds the bound passed
-// marks it checked (recoveryBoundChecked), so the refresher does not run again at once if this pass
-// fails to tell the waits.
+// a pass would let go run on this one clock (recoveryHoldLeft).
 func (w *workflowRuntime) heldPastBound() bool {
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
 	if w.recoveryHeldSince.IsZero() {
 		w.recoveryHeldSince = time.Now()
 	}
-	past := time.Since(w.recoveryHeldSince) >= recoveryHoldBound
-	w.recoveryBoundChecked = w.recoveryBoundChecked || past
-	return past
+	return time.Since(w.recoveryHeldSince) >= recoveryHoldBound
 }
 
 // settleRecovery is, of names, the repositories a pass whose listing has applied recovered, with

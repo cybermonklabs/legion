@@ -193,8 +193,9 @@ type workflowRuntime struct {
 	// record (tellReleaseWaits), and which leave with the repository's own marker where a pass
 	// stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is when a
 	// recovery's listing was first found held with waits to tell (zero for none), so a hold past
-	// recoveryHoldBound tells them, and recoveryBoundChecked whether a run has found that bound
-	// passed since (heldPastBound), after which the refresher no longer cuts its wait to it.
+	// recoveryHoldBound tells them, and recoveryBoundChecked whether a run of the recovery has begun
+	// with that bound passed (recoverRepositories), after which the refresher no longer cuts its wait
+	// to it.
 	// recheckAfter is the refresher's wait before it runs a job of its own (refreshRepositories),
 	// time.After when nil; a test sees each wait through it.
 	repositories         *repositories
