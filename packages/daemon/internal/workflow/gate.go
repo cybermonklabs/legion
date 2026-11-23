@@ -132,7 +132,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		gate.ExemptVersion = stored.ExemptVersion
 	}
 	if sameDocument {
-		gate.VerificationVersion, gate.ChecksUnapproved = stored.VerificationVersion, stored.ChecksUnapproved
+		gate.VerificationVersion, gate.ApprovedSpecMark = stored.VerificationVersion, stored.ApprovedSpecMark
+		gate.ChecksUnapproved, gate.ProposesUnapproved = stored.ChecksUnapproved, stored.ProposesUnapproved
 	}
 	// Under the rule of a change request, the version the registration read as proposing nothing
 	// opens the gate with no person (R23), and one it reads as proposing something, its checks
@@ -186,6 +187,11 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
 		return intake.Result{}, err
+	}
+	if held, found := gates[step]; found && !ungated {
+		if err := e.readAgainIfOlder(ctx, tx, &held, gate); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	// The registration is the path that binds a step to a document, so it is the one that most
 	// often moves the issue's pairs; a re-registration of the document the step already names
@@ -575,7 +581,8 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	// The reset keeps the Verification version the gate was read at and the changed check that read
 	// found: a read older than that version changes neither (readChanges).
 	reset := record.DesignGate{Issue: issue.Key, Step: gate.Step, ArtifactID: gate.ArtifactID, LatestVersion: fact.Read.Version, Rule: gate.Rule,
-		VerificationVersion: gate.VerificationVersion, ChecksUnapproved: gate.ChecksUnapproved}
+		VerificationVersion: gate.VerificationVersion, ApprovedSpecMark: gate.ApprovedSpecMark, ChecksUnapproved: gate.ChecksUnapproved,
+		ProposesUnapproved: gate.ProposesUnapproved}
 	ungated := !e.gatesStep(gate.Step)
 	if ungated {
 		reset = classify.ApplyDesignGateEvent(reset, classify.DesignGateApproved, fact.Read.Version, record.EventMark{})
@@ -584,6 +591,11 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	}
 	if err := e.putGateTold(ctx, tx, reset, reset.LatestVersion); err != nil {
 		return intake.Result{}, err
+	}
+	if !ungated {
+		if err := e.readAgainIfOlder(ctx, tx, gate, reset); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	// The reset keeps the step on the document it named, so the pairs stand as they were and
 	// nothing is published; the question is asked of every gate write.
@@ -955,6 +967,9 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if err := e.putGateTold(ctx, tx, updated, fact.Version); err != nil {
 		return err
 	}
+	if err := e.readAgainIfOlder(ctx, tx, &gate, updated); err != nil {
+		return err
+	}
 	if err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
 		return err
 	}
@@ -1053,9 +1068,12 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // ending step too. Every other holder's copy is the person's opening as it was.
 //
 // A closing a read of the issue's Verification document made — a version of that document changes
-// a check of The Spec no person approved, while the spec stands at its version (checks, that
-// Verification version; 0 for every other move) — names the Verification document and not the
-// spec's version, which nobody changed (R25).
+// a check of The Spec no person approved, while the spec stands at its version (closing.checks,
+// that Verification version) — names the Verification document and not the spec's version, which
+// nobody changed (R25). A closing a read of a newer approved spec made (closing.approvedSpec) —
+// another issue's approval or an import changed a node the request reads, while neither of the
+// issue's documents moved — names the approved spec of the root's repository, and the root's
+// architect, the owner of the request, hears from it that the request no longer holds (R22).
 //
 // Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
 // suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
@@ -1066,7 +1084,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 // daemon could not spell - a tree whose root key is not an issue key is one such - which would
 // leave the gate closed under workers the message existed to warn.
 func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep,
-	document string, version int, open, exempt, specExempt bool, checks int) error {
+	document string, version int, open, exempt, specExempt bool, closing gateClosing) error {
 	root, err := e.store.Issue(ctx, tx, key)
 	if err != nil || root == nil {
 		return err
@@ -1108,9 +1126,14 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
 			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
 			"A merge the closed gate held is released.", root.Tree, version, step, document)
-	case checks > 0:
+	case closing.checks > 0:
 		body = fmt.Sprintf("The design gate of %s closed: version %d of its Verification document changes an approved check, "+
-			"and no person approved the change. Your phase goes on; the merge waits until every gated step stands open again.", root.Tree, checks)
+			"and no person approved the change. Your phase goes on; the merge waits until every gated step stands open again.", root.Tree, closing.checks)
+	case closing.approvedSpec:
+		body = fmt.Sprintf("The design gate of %s closed: the approved spec of %s changed under its change request, and version %d of "+
+			"the change request proposes a statement, component or interface, or changes a check, that the approved spec does not hold "+
+			"as written and no person approved. Your phase goes on; the merge waits until every gated step stands open again.",
+			root.Tree, root.Repo, version)
 	default:
 		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
@@ -1158,8 +1181,8 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // document that moved rather than to the spec. An opening this row makes with no person
 // (openedByExemption) is told as one, and a person's opening while the tree's spec gate stands
 // open by exemption gives the merger the ending step (record.SpecGateExempt). A closing this row
-// makes at the version the row held before, with a newer Verification version read, is the
-// Verification document's (gateMoveOfChecks).
+// makes at the version the row held before is named by the read that made it (gateClosingOf): a
+// newer Verification version's, or a newer approved spec's.
 func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
 	step := gate.Step.OrSpec()
 	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
@@ -1176,22 +1199,36 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	if stands == stood {
 		return nil
 	}
-	checks := 0
+	var closing gateClosing
 	if !stands && held {
-		checks = gateMoveOfChecks(before, gate)
+		closing = gateClosingOf(before, gate)
 	}
-	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, stands && openedByExemption(gate), record.SpecGateExempt(gates), checks)
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands, stands && openedByExemption(gate), record.SpecGateExempt(gates), closing)
 }
 
-// gateMoveOfChecks is the Verification version whose read moved the gate from before to after,
-// 0 where the move is not the Verification document's: the same document at the same version,
-// read at a newer Verification version. The spec did not move, so what closed the gate is that
-// version of the Verification document (R25).
-func gateMoveOfChecks(before, after record.DesignGate) int {
-	if before.ArtifactID != after.ArtifactID || before.LatestVersion != after.LatestVersion || after.VerificationVersion <= before.VerificationVersion {
-		return 0
+// gateClosing is what a closing names in place of the version of the gate's own document, where
+// that document did not move: the Verification version whose read closed it (checks), or that the
+// approved spec moved under the change request (approvedSpec).
+type gateClosing struct {
+	checks       int
+	approvedSpec bool
+}
+
+// gateClosingOf is what moved the gate from before to after, at the same document and version: a
+// read of a newer Verification version, which names that version of the Verification document
+// (R25), or else a read of a newer approved spec, which another issue's approval or an import
+// wrote while this issue's documents stood (R22). Any other move names the document's version.
+func gateClosingOf(before, after record.DesignGate) gateClosing {
+	if before.ArtifactID != after.ArtifactID || before.LatestVersion != after.LatestVersion {
+		return gateClosing{}
 	}
-	return after.VerificationVersion
+	switch {
+	case after.VerificationVersion > before.VerificationVersion:
+		return gateClosing{checks: after.VerificationVersion}
+	case after.ApprovedSpecMark > before.ApprovedSpecMark:
+		return gateClosing{approvedSpec: true}
+	}
+	return gateClosing{}
 }
 
 // mergerEndingAlsoHolds is what the merger's copy of a person's opening adds while the tree's

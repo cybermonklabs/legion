@@ -231,6 +231,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.specRequestStale(ctx, tx, fact)
 	case intake.SpecOutcomesRecorded:
 		return e.specOutcomesRecorded(ctx, tx, fact)
+	case intake.ApprovedSpecWritten:
+		return e.approvedSpecWritten(ctx, tx, fact)
+	case intake.SpecGateRead:
+		return e.specGateRead(ctx, tx, fact)
 	case intake.SpecEndingRead:
 		return e.specEndingRead(ctx, tx, fact)
 	case intake.CatchUpApplied:

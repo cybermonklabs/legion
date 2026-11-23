@@ -171,6 +171,55 @@ func (r *outbox) specEndingRead(ctx context.Context, row record.OutboxRow, paylo
 	return r.applyEnding(ctx, fmt.Sprintf("spec-ending-read:%d", row.ID), issue.Key, at, ending, payload.Cause, false)
 }
 
+// specGateRead runs one read of an issue's change request again after the approved spec it is read
+// against moved (record.SpecGateRead): it reads the issue's spec gate just before it acts, as every
+// fence of a row is, reads Dispatch once at that gate's current version, and applies the answer
+// (intake.SpecGateRead) under an event id that names the row, so a row run again after its finish
+// was lost applies nothing twice. A gate that stands under the rule of a change request no more,
+// or no gate, finishes the row with one line and no read. A Dispatch older than the route, and a
+// version Dispatch refuses for good, finish the row too, as changeRequestOfGate takes them: no
+// later read of that version answers otherwise, and the gate stands on the read it has. A read
+// Dispatch fails is retried on the row's backoff.
+func (r *outbox) specGateRead(ctx context.Context, row record.OutboxRow, payload record.SpecGateRead) error {
+	if r.dispatch == nil {
+		return fmt.Errorf("spec gate read executor has no Dispatch client")
+	}
+	var gate *record.DesignGate
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		gates, err := r.records.GatesOf(ctx, tx, row.Issue)
+		gate = record.SpecGate(gates)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the spec gate of %s: %w", row.Issue, err)
+	}
+	attributes := []any{"row", row.ID, "issue", row.Issue, "cause", payload.Cause}
+	if gate == nil || gate.Rule != record.GateRuleChangeRequest {
+		r.log.Info("outbox spec gate read finished without reading", append(attributes, "why", "the issue holds no spec gate under the rule of a change request")...)
+		return nil
+	}
+	attributes = append(attributes, "version", gate.LatestVersion, "approved_spec_mark", gate.ApprovedSpecMark)
+	read, err := r.dispatch.ChangeRequest(ctx, row.Issue, gate.LatestVersion)
+	if dispatch.NoRoute(err) {
+		r.log.Warn("outbox spec gate read finished without reading: Dispatch has no route for the change request", attributes...)
+		return nil
+	}
+	if refusal, permanent := dispatch.PermanentRefusal(err); permanent {
+		r.log.Warn("outbox spec gate read finished without reading: Dispatch refuses the change request of the version for good",
+			append(attributes, "status", refusal.Status, "code", refusal.Code, "error", err)...)
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the change request of %s at version %d from Dispatch: %w", row.Issue, gate.LatestVersion, err)
+	}
+	r.log.Info("outbox spec gate read", append(attributes, "read_mark", read.ApprovedSpecMark, "checks_unapproved", read.ChangesChecksUnapproved,
+		"proposes_unapproved", read.ProposesUnapproved, "proposes_nothing", read.ProposesNothing())...)
+	fact := intake.SpecGateRead{Issue: row.Issue, Read: intake.ChangeRequestReadOf(read)}
+	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("spec-gate-read:%d", row.ID), fact, r.handlers...); err != nil {
+		return fmt.Errorf("apply the change request of %s read again: %w", row.Issue, err)
+	}
+	return nil
+}
+
 // mergerWaitsForTheEnding is the merger's start fence of a tree whose spec gate stands open by
 // exemption (D10): it reads the ending condition of the tree root's change request at the merging
 // issue's pull request head, applies the answer, so the reading is recorded and the root's

@@ -551,6 +551,8 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		return decodeSpecRequestStale(event)
 	case "spec.outcomes_recorded":
 		return decodeSpecOutcomesRecorded(event)
+	case "spec.approved_written":
+		return decodeSpecApprovedWritten(event)
 	default:
 		return nil, nil
 	}
@@ -617,6 +619,29 @@ func decodeSpecOutcomesRecorded(event dispatchEvent) (Fact, error) {
 	}
 	return SpecOutcomesRecorded{Key: event.IssueKey, Seq: event.Seq, Record: recorded.Record, PullRequest: recorded.PullRequest,
 		Head: recorded.Head, List: recorded.List}, nil
+}
+
+// decodeSpecApprovedWritten decodes Dispatch's spec.approved_written: an act of the issue wrote
+// the approved spec of a repository, which every change request of that repository is read
+// against. The event's own issue must be the one its payload names, and it names the repository:
+// the daemon reads again the spec gates of that repository, so an event that names none says
+// nothing it can act on. The nodes the act wrote are Dispatch's to judge against each request.
+func decodeSpecApprovedWritten(event dispatchEvent) (Fact, error) {
+	var written struct {
+		Issue string `json:"issue"`
+		Repo  string `json:"repo"`
+		Act   string `json:"act"`
+	}
+	if err := json.Unmarshal(event.Payload, &written); err != nil {
+		return nil, fmt.Errorf("decode Dispatch spec.approved_written payload: %w", err)
+	}
+	if written.Issue != event.IssueKey {
+		return nil, fmt.Errorf("Dispatch spec.approved_written payload names issue %q, not its event's %s", written.Issue, event.IssueKey)
+	}
+	if written.Repo == "" {
+		return nil, fmt.Errorf("Dispatch spec.approved_written payload names no repository")
+	}
+	return ApprovedSpecWritten{Key: event.IssueKey, Seq: event.Seq, Repo: written.Repo, Act: written.Act}, nil
 }
 
 // issueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event

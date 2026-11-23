@@ -33,35 +33,48 @@ func registeredRule(gates map[record.DesignStep]record.DesignGate, step record.D
 
 // readChanges is gate as read, a read of its change request at the gate's current version
 // (LatestVersion), leaves it, under the rule of a change request (R23, R25); gate as it is under
-// any other rule, for a nil read and for a read of another version. The read holds the version of
-// the issue's Verification document it took its checks from, the second document of the request,
-// so a read older than the Verification version the gate holds changes nothing. Otherwise the gate
-// takes the read's Verification version, and:
+// any other rule, for a nil read and for a read of another version. A read is of three inputs: the
+// spec at its version, the issue's Verification document at the version it took its checks from,
+// and the approved spec of the repository it compared against (ApprovedSpecMark), which another
+// issue's approval moves while this issue's documents stand. The gate keeps the three of the read
+// it stands on, so an older read changes nothing: one of an older Verification version than the
+// gate's, and one of the same versions against an older approved spec, made before an approval
+// elsewhere the gate already applied. Otherwise the gate takes the read's Verification version and
+// approved-spec mark, and:
 //
-//   - whether a check of The Spec that the Verification document changes and no person approved
-//     holds the gate (ChecksUnapproved), as the read says it, where the read is of a Verification
-//     version newer than the gate's or the version is new to the gate (fresh: the version a
-//     registration, a reset or a version event moves it to); a read of the same Verification
-//     version and spec version only takes the hold away, when it finds the change approved: such a
-//     read may have been made before the person's approval the gate already applied, and the hold
-//     comes back only with a newer Verification version;
+//   - whether a check of The Spec that the Verification document changes, or a statement,
+//     component or interface the spec proposes, that no person approved holds the gate
+//     (ChecksUnapproved, ProposesUnapproved), as the read says it, where the read is newer in any
+//     of its inputs: a version new to the gate (fresh: the version a registration, a reset or a
+//     version event moves it to), a newer Verification version or a newer approved spec. A read of
+//     the same three inputs only takes a hold away, when it finds the change approved: it is the
+//     same read again, and the hold comes back only with a newer input;
 //   - its exemption: a read that does not exempt the version takes back an exemption of it, and a
 //     read that exempts it opens it with no person where opens says the fact may (a registration, a
-//     version event of the gate's own document, a reset). An approval and a version of another
-//     document never open a gate: a person's changes request takes an exemption back, and a read
-//     that changes nothing must not undo it. The exemption is never an approval in a person's name:
-//     ApprovedVersion is left as it stands.
+//     version event of the gate's own document, a reset). An approval, a version of another
+//     document and a read after the approved spec moved never open a gate: a person's changes
+//     request takes an exemption back, and a read that changes nothing must not undo it. The
+//     exemption is never an approval in a person's name: ApprovedVersion is left as it stands.
+//
+// A read newer in one input can be older in another: a version new to the gate, or a newer
+// Verification version, read against an older approved spec than the read the gate stood on. It is
+// the newest read of that version, so it is applied, and the gate's approved-spec mark moves back
+// with it; the caller reads the request again then (readAgainIfOlder).
 func readChanges(gate record.DesignGate, read *intake.ChangeRequestRead, fresh, opens bool) record.DesignGate {
 	if gate.Rule != record.GateRuleChangeRequest || read == nil || read.Version != gate.LatestVersion || read.VerificationVersion < gate.VerificationVersion {
 		return gate
 	}
-	switch {
-	case fresh || read.VerificationVersion > gate.VerificationVersion:
-		gate.ChecksUnapproved = read.ChecksUnapproved
-	case !read.ChecksUnapproved:
-		gate.ChecksUnapproved = false
+	newerChecks := read.VerificationVersion > gate.VerificationVersion
+	if !fresh && !newerChecks && read.ApprovedSpecMark < gate.ApprovedSpecMark {
+		return gate
 	}
-	gate.VerificationVersion = read.VerificationVersion
+	if fresh || newerChecks || read.ApprovedSpecMark > gate.ApprovedSpecMark {
+		gate.ChecksUnapproved, gate.ProposesUnapproved = read.ChecksUnapproved, read.ProposesUnapproved
+	} else {
+		gate.ChecksUnapproved = gate.ChecksUnapproved && read.ChecksUnapproved
+		gate.ProposesUnapproved = gate.ProposesUnapproved && read.ProposesUnapproved
+	}
+	gate.VerificationVersion, gate.ApprovedSpecMark = read.VerificationVersion, read.ApprovedSpecMark
 	switch exempt := gate.LatestVersion; {
 	case read.ExemptsVersion(exempt) && opens:
 		gate.ExemptVersion = &exempt
@@ -69,6 +82,21 @@ func readChanges(gate record.DesignGate, read *intake.ChangeRequestRead, fresh, 
 		gate.ExemptVersion = nil
 	}
 	return gate
+}
+
+// readAgainIfOlder queues a read of the change request of after's issue again
+// (record.SpecGateRead, cause older_read) where the read the gate now stands on compared against
+// an older approved spec than the read before stood on (readChanges applies such a read for a
+// version or a Verification version new to the gate): an approval elsewhere that the gate already
+// applied is then missing from what it stands on, and the read of the current approved spec
+// decides. before is the row of the step before the write, nil for none.
+func (e *Engine) readAgainIfOlder(ctx context.Context, tx pgx.Tx, before *record.DesignGate, after record.DesignGate) error {
+	if before == nil || after.Rule != record.GateRuleChangeRequest || after.ApprovedSpecMark >= before.ApprovedSpecMark {
+		return nil
+	}
+	e.logOnCommit(ctx, "workflow: the spec gate stands on a read of an older approved spec; its change request is read again", "issue", after.Issue,
+		"version", after.LatestVersion, "approved_spec_mark", after.ApprovedSpecMark, "before", before.ApprovedSpecMark)
+	return e.enqueue(ctx, tx, after.Issue, record.SpecGateRead{Cause: record.SpecGateCauseOlderRead})
 }
 
 // openedNotice is the design-approved notice of gate's opening at version, the one notice every
@@ -169,18 +197,9 @@ func (e *Engine) headMovedInMerging(ctx context.Context, tx pgx.Tx, issue record
 
 // verificationRead applies the change request read that an event of another document of an issue
 // carries — a version or an approval of its Verification document, the request's second document,
-// from which it reads its checks (R25) — to the issue's spec gate under the rule of a change
-// request, on a step the deployment gates (readChanges). The daemon's prepare stage reads it at the
-// gate's current version for any document of the issue the gate does not name, since an event
-// names no document's role. A read that moves nothing writes nothing.
-//
-// Such a read never opens the gate with no person: it can take an exemption back, when it finds a
-// check of The Spec changed, and it can hold a gate a person's approval opened while a changed
-// check no person approved stands, or take that hold away, when the approved spec holds the change
-// as written. The write goes through putGateTold, which tells the tree when it moves the standing
-// gate, naming the Verification document for a closing the read made (gateMoveOfChecks). A gate
-// that stays open by exemption reads the ending condition again for every member in merging, as a
-// version of the spec does (D10).
+// from which it reads its checks (R25) — to the issue's spec gate (applyGateRead). The daemon's
+// prepare stage reads it at the gate's current version for any document of the issue the gate
+// does not name, since an event names no document's role.
 func (e *Engine) verificationRead(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) error {
 	if fact.ChangeRequest == nil {
 		return nil
@@ -190,25 +209,103 @@ func (e *Engine) verificationRead(ctx context.Context, tx pgx.Tx, fact intake.Di
 		return err
 	}
 	gate := record.SpecGate(gates)
-	if gate == nil || gate.ArtifactID == fact.ArtifactID || gate.Rule != record.GateRuleChangeRequest || !e.gatesStep(gate.Step) {
+	if gate == nil || gate.ArtifactID == fact.ArtifactID {
 		return nil
 	}
-	updated := readChanges(*gate, fact.ChangeRequest, false, false)
-	if updated.VerificationVersion == gate.VerificationVersion && updated.ChecksUnapproved == gate.ChecksUnapproved &&
-		record.GateExempt(updated) == record.GateExempt(*gate) {
+	return e.applyGateRead(ctx, tx, gates, *gate, fact.ChangeRequest, "workflow: a change request read at another document's event moved the spec gate",
+		"artifact", fact.ArtifactID, "event", fact.Kind)
+}
+
+// approvedSpecWritten applies Dispatch's spec.approved_written: an act of some issue wrote the
+// approved spec of a repository, and every change request of that repository is read against it,
+// though no event of those issues says so (R22, R25). So each spec gate of an issue of that
+// repository under the rule of a change request (record.Store.SpecGatesOfRepository), on a step the
+// deployment gates, that stands open or that the request holds closed, is read again: one
+// record.SpecGateRead row on its issue. A gate closed for want of a person moves on no read of the
+// approved spec, since such a read opens nothing with no person, and is not read. The act's own
+// issue is read too where it holds such a gate: its own approval wrote what its request holds.
+func (e *Engine) approvedSpecWritten(ctx context.Context, tx pgx.Tx, fact intake.ApprovedSpecWritten) (intake.Result, error) {
+	project, _, _ := strings.Cut(fact.Key, "-")
+	gates, err := e.store.SpecGatesOfRepository(ctx, tx, project, fact.Repo)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	for _, gate := range gates {
+		if !e.gatesStep(gate.Step) || !(record.GateOpen(gate) || record.RequestHeld(gate)) {
+			continue
+		}
+		e.logOnCommit(ctx, "workflow: the approved spec of a repository moved; the change request of a spec gate it holds is read again", "issue", gate.Issue,
+			"by", fact.Key, "act", fact.Act, "repo", fact.Repo, "approved_spec_mark", gate.ApprovedSpecMark)
+		if err := e.enqueue(ctx, tx, gate.Issue, record.SpecGateRead{Cause: record.SpecGateCauseApprovedSpec}); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	return intake.Result{}, nil
+}
+
+// specGateRead applies the outbox's read of an issue's change request again
+// (record.SpecGateRead), after the approved spec it is read against moved, to the issue's spec gate
+// (applyGateRead). A Dispatch that answered no read leaves the gate as it stands.
+func (e *Engine) specGateRead(ctx context.Context, tx pgx.Tx, fact intake.SpecGateRead) (intake.Result, error) {
+	if fact.Read == nil {
+		return intake.Result{}, nil
+	}
+	gates, err := e.store.GatesOf(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	gate := record.SpecGate(gates)
+	if gate == nil {
+		return intake.Result{}, nil
+	}
+	return intake.Result{}, e.applyGateRead(ctx, tx, gates, *gate, fact.Read, "workflow: a read of the change request after the approved spec moved moved the spec gate")
+}
+
+// applyGateRead applies read, a read of the change request of gate's issue that no version of the
+// gate's own document carries, to gate, the issue's spec gate, under the rule of a change request,
+// on a step the deployment gates (readChanges); gates are the issue's rows as they stood. A read
+// that moves nothing writes nothing.
+//
+// Such a read never opens the gate with no person: it can take an exemption back, when it finds
+// a check of The Spec changed or a node the request proposes not held as written, and it can hold
+// a gate a person's approval opened while such a change no person approved stands, or take that
+// hold away, when the approved spec holds the change as written. The write goes through
+// putGateTold, which tells the tree when it moves the standing gate, naming the Verification
+// document or the approved spec for a closing the read made (gateClosingOf). A gate that stays
+// open by exemption reads the ending condition again for every member in merging, as a version of
+// the spec does (D10): the conclusion is judged against the approved spec too. A read that moved
+// the gate's approved-spec mark back is read again (readAgainIfOlder).
+func (e *Engine) applyGateRead(ctx context.Context, tx pgx.Tx, gates map[record.DesignStep]record.DesignGate, gate record.DesignGate,
+	read *intake.ChangeRequestRead, why string, attrs ...any) error {
+	if gate.Rule != record.GateRuleChangeRequest || !e.gatesStep(gate.Step) {
 		return nil
 	}
-	e.logOnCommit(ctx, "workflow: a change request read at another document's event moved the spec gate", "issue", fact.Key,
-		"artifact", fact.ArtifactID, "event", fact.Kind, "verification_version", updated.VerificationVersion, "checks_unapproved", updated.ChecksUnapproved,
-		"exempt", record.GateExempt(updated), "open", record.GateOpen(updated))
+	updated := readChanges(gate, read, false, false)
+	if updated.VerificationVersion == gate.VerificationVersion && updated.ApprovedSpecMark == gate.ApprovedSpecMark &&
+		updated.ChecksUnapproved == gate.ChecksUnapproved && updated.ProposesUnapproved == gate.ProposesUnapproved &&
+		record.GateExempt(updated) == record.GateExempt(gate) {
+		return nil
+	}
+	e.logOnCommit(ctx, why, append([]any{"issue", gate.Issue, "verification_version", updated.VerificationVersion,
+		"approved_spec_mark", updated.ApprovedSpecMark, "checks_unapproved", updated.ChecksUnapproved, "proposes_unapproved", updated.ProposesUnapproved,
+		"exempt", record.GateExempt(updated), "open", record.GateOpen(updated)}, attrs...)...)
 	if err := e.putGateTold(ctx, tx, updated, updated.LatestVersion); err != nil {
 		return err
 	}
-	if err := record.PublishChangedGates(ctx, e.store, tx, fact.Key, gates, e.now()); err != nil {
+	if err := record.PublishChangedGates(ctx, e.store, tx, gate.Issue, gates, e.now()); err != nil {
 		return err
 	}
-	if record.GateExempt(updated) && updated.VerificationVersion > gate.VerificationVersion {
-		return e.queueEndingReads(ctx, tx, fact.Key, record.SpecEndingCauseVersion)
+	if err := e.readAgainIfOlder(ctx, tx, &gate, updated); err != nil {
+		return err
+	}
+	if !record.GateExempt(updated) {
+		return nil
+	}
+	switch {
+	case updated.VerificationVersion > gate.VerificationVersion:
+		return e.queueEndingReads(ctx, tx, gate.Issue, record.SpecEndingCauseVersion)
+	case updated.ApprovedSpecMark > gate.ApprovedSpecMark:
+		return e.queueEndingReads(ctx, tx, gate.Issue, record.SpecEndingCauseApprovedSpec)
 	}
 	return nil
 }

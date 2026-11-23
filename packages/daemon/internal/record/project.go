@@ -727,29 +727,34 @@ func GateOpen(gate DesignGate) bool {
 }
 
 // GateApproved is whether a person's approval stands on the gate's current document version.
-// Under the rule of a change request it stands on the checks the issue's Verification document
-// held when the person approved too: a later version of that document that changes a check of The
-// Spec no person approved (ChecksHeld) leaves the approval recorded and standing on nothing, until
-// a read finds the change approved (R25).
+// Under the rule of a change request it stands on the request as the person approved it: a later
+// read that finds a check of The Spec the Verification document changes, or a statement,
+// component or interface the spec proposes, that the approved spec does not hold as written
+// (RequestHeld) leaves the approval recorded and standing on nothing, until a read finds the
+// change approved (R25) — a later version of that document, or another issue's approval that
+// changed a node the request reads.
 func GateApproved(gate DesignGate) bool {
-	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion && !ChecksHeld(gate)
+	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == gate.LatestVersion && !RequestHeld(gate)
 }
 
 // GateExempt is whether the gate stands open by exemption: it is under the rule of a change
 // request, and its current version is the version Dispatch read as proposing nothing (R23), with
-// no changed check holding it (ChecksHeld; a read that finds one also takes the exemption back). A
-// person's approval of that version beside it changes nothing: the exemption that let the issue
-// start still asks for the ending condition before anything of its tree lands (D10).
+// nothing of the request holding it (RequestHeld; a read that finds something also takes the
+// exemption back). A person's approval of that version beside it changes nothing: the exemption
+// that let the issue start still asks for the ending condition before anything of its tree lands
+// (D10).
 func GateExempt(gate DesignGate) bool {
-	return gate.Rule == GateRuleChangeRequest && gate.ExemptVersion != nil && *gate.ExemptVersion == gate.LatestVersion && !ChecksHeld(gate)
+	return gate.Rule == GateRuleChangeRequest && gate.ExemptVersion != nil && *gate.ExemptVersion == gate.LatestVersion && !RequestHeld(gate)
 }
 
-// ChecksHeld is whether a check of The Spec that the issue's Verification document changes, and no
-// person approved, holds the gate closed: under the rule of a change request, the read at the
-// gate's Verification version found one (DesignGate.ChecksUnapproved, R25). A gate under the rule
-// of a person's approval reads no Verification document, so nothing holds it this way (R24).
-func ChecksHeld(gate DesignGate) bool {
-	return gate.Rule == GateRuleChangeRequest && gate.ChecksUnapproved
+// RequestHeld is whether the change request holds the gate closed: under the rule of a change
+// request, the read the gate stands on found a check of The Spec that the issue's Verification
+// document changes, or a statement, component or interface its spec proposes, that the approved
+// spec does not hold as written, so no person approved it (DesignGate.ChecksUnapproved,
+// DesignGate.ProposesUnapproved, R25). A gate under the rule of a person's approval reads no
+// change request, so nothing holds it this way (R24).
+func RequestHeld(gate DesignGate) bool {
+	return gate.Rule == GateRuleChangeRequest && (gate.ChecksUnapproved || gate.ProposesUnapproved)
 }
 
 // SpecGateExempt is whether gates, the rows a tree's root holds by step, hold a spec gate
