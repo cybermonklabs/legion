@@ -35,6 +35,7 @@ var (
 // TestNewLocalClockIsUTC: AWS SDK date fields are UTC, so the fake's deletion clock must not take
 // the developer machine's local daylight-saving rules into a recovery deadline.
 func TestNewLocalClockIsUTC(t *testing.T) {
+	t.Parallel()
 	if got := NewLocal().now().Location(); got != time.UTC {
 		t.Fatalf("Local.now location = %s, want UTC", got)
 	}
@@ -48,6 +49,7 @@ func TestNewLocalClockIsUTC(t *testing.T) {
 // restore are refused, as Secrets Manager refuses a secret marked for deletion. A restore serves it
 // again.
 func TestLocalWriteLifecycle(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	at := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 	l := NewLocal()
@@ -157,6 +159,7 @@ func TestLocalWriteLifecycle(t *testing.T) {
 // naming secrets.Local rather than answered or stored as something else. A secret created with no
 // value is held with no version, as Secrets Manager holds one.
 func TestLocalWritesRefuseWhatSecretsManagerRefuses(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	held := aws.String("example/agent-secrets/held")
 	l := NewLocal(LocalSecret{Name: *held, Value: "v1"})
@@ -214,6 +217,7 @@ func TestLocalWritesRefuseWhatSecretsManagerRefuses(t *testing.T) {
 // stands, as a read does, so an edit made before the write is kept with it, and that a write to a
 // Local whose file no longer parses fails naming the path.
 func TestLocalWritesFollowTheFile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "secrets.json")
 	write := func(content string) {
@@ -247,6 +251,7 @@ func TestLocalWritesFollowTheFile(t *testing.T) {
 // names it. A tag write, a delete and its restore, and a write of the bytes it already holds keep
 // the id. Each id is a count, never derived from the value.
 func TestLocalNumbersAValueAnewWhenItsBytesChange(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const name = "dev/agent-secrets/key"
 	l := NewLocal()
@@ -324,6 +329,7 @@ func TestLocalNumbersAValueAnewWhenItsBytesChange(t *testing.T) {
 // PutSecretValue is: the secret whose value it changes gets a new version id, and one whose value
 // it leaves alone, its tags edited or not, keeps its id.
 func TestLocalFromFileNumbersAnEditedValueAnew(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "secrets.json")
 	write := func(edited, kept string) {

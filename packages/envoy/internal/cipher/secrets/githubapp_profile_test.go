@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/githubtest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // tokenRequest is one POST .../access_tokens the stub GitHub received: the installation it named,
@@ -215,6 +214,7 @@ func readScope(accounts ...string) *secrets.GitHubScope {
 // Every token request names its permissions, so GitHub never grants one the request did not
 // name, and it names the scope's repositories, which reach the token request as they are given.
 func TestAProfileMintAsksForItsPermissionsCutToTheInstallation(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -284,6 +284,7 @@ func TestAProfileMintAsksForItsPermissionsCutToTheInstallation(t *testing.T) {
 // and one of them leaves an empty cut, no token is asked for either, so nothing is minted that the
 // release would then hand to nobody.
 func TestAnEmptyCutRefusesWithNoRequestToGitHub(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -322,6 +323,7 @@ func TestAnEmptyCutRefusesWithNoRequestToGitHub(t *testing.T) {
 // asks for nothing the installation lacks, so its token is asked for, naming metadata, and
 // released, with nothing left out.
 func TestAProfileOfMetadataAloneMintsOnAnInstallationOfMetadataAlone(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -357,6 +359,7 @@ func TestAProfileOfMetadataAloneMintsOnAnInstallationOfMetadataAlone(t *testing.
 // token rather than holding a permission the profiles file does not state. A repository GitHub
 // names in another case than asked is the same repository.
 func TestATokenPastTheRequestIsRefusedAndRevokedForEveryProfile(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -481,6 +484,7 @@ func TestATokenPastTheRequestIsRefusedAndRevokedForEveryProfile(t *testing.T) {
 // TestAValueTokenProfileReleasesTheBareToken: a profile whose value is githubname.ValueToken releases
 // the one account's token itself, not today's JSON of installations, with that token's expiry.
 func TestAValueTokenProfileReleasesTheBareToken(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -505,6 +509,7 @@ func TestAValueTokenProfileReleasesTheBareToken(t *testing.T) {
 // a bare token is, so it is refused from the installations listing (ErrMintSeveralInstallations,
 // inside ErrMintNarrowingRefused), naming both, and GitHub is asked for no token.
 func TestAValueTokenScopeOfTwoInstalledAccountsGetsNoToken(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -531,6 +536,7 @@ func TestAValueTokenScopeOfTwoInstalledAccountsGetsNoToken(t *testing.T) {
 // token, by a release or a check, so none is left live that nobody holds. The installations form
 // of the same scope is the control: it releases a token of each installation.
 func TestAValueTokenProfileOfAnAccountWithTwoInstallationsIsRefusedBeforeAnyToken(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -577,6 +583,7 @@ func TestAValueTokenProfileOfAnAccountWithTwoInstallationsIsRefusedBeforeAnyToke
 // in the broker, refused (class refused) before GitHub is asked anything, for a release and a
 // check alike.
 func TestAMintWithNoProfileScopeIsRefused(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -602,6 +609,7 @@ func TestAMintWithNoProfileScopeIsRefused(t *testing.T) {
 // the account, before GitHub is asked anything: its token would otherwise be asked for with no
 // repositories, which is every repository its installation reaches.
 func TestAProfileOfRepositoriesOfTwoAccountsMintsEachAccountWithItsOwn(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -647,6 +655,7 @@ func TestAProfileOfRepositoriesOfTwoAccountsMintsEachAccountWithItsOwn(t *testin
 // not installed on gets no token request, and a scope none of whose accounts has an installation
 // is refused as the App with no installation there (ErrMintNoInstallation, class refused).
 func TestAProfileAccountWithNoInstallationMintsNothing(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -676,6 +685,7 @@ func TestAProfileAccountWithNoInstallationMintsNothing(t *testing.T) {
 // request is the caller's scope (class narrowing), and the error names what it likely got wrong:
 // the repositories it names, or the permissions it asks for. No error quotes GitHub's own text.
 func TestGitHubsRefusalOfAProfilesTokenNamesTheLikelyCause(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -722,6 +732,7 @@ func TestGitHubsRefusalOfAProfilesTokenNamesTheLikelyCause(t *testing.T) {
 // error names neither the repositories as a likely cause nor GitHub's own text. Neither names a
 // wait, which counts as a minute, so the Retry ends the mint at its one token request.
 func TestGitHubAppMintKeepsARateLimited422Upstream(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -764,8 +775,8 @@ func TestGitHubAppMintKeepsARateLimited422Upstream(t *testing.T) {
 // 500, which the Retry asks three times, all of them the token itself) is logged at WARN, never
 // naming the token, and the wider token is still refused.
 func TestGitHubAppMintStillRefusesWhenGitHubDoesNotRevoke(t *testing.T) {
+	t.Parallel()
 	var logged bytes.Buffer
-	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -778,7 +789,7 @@ func TestGitHubAppMintStillRefusesWhenGitHubDoesNotRevoke(t *testing.T) {
 		return status, answer
 	})
 	retry, _, _ := testRetry(atTheTop)
-	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client(), Retry: retry}
+	app := secrets.GitHubApp{Base: github.server.URL, HTTP: github.server.Client(), Retry: retry, Log: slog.New(slog.NewTextHandler(&logged, nil))}
 
 	release, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: readScope("ada")})
 	if release.Value != "" || secrets.MintErrorClass(err) != "upstream" {
@@ -799,6 +810,7 @@ func TestGitHubAppMintStillRefusesWhenGitHubDoesNotRevoke(t *testing.T) {
 // and Mint logs no line saying GitHub did not revoke it. A 401 or a 404 to the first DELETE keeps
 // its meaning, a revoke GitHub did not confirm, and is logged as one.
 func TestGitHubAppMintReadsARetriedRevokesRefusalAsRevoked(t *testing.T) {
+	t.Parallel()
 	wider := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"write","metadata":"read"}}`}
 	revokedAndLost := reply{lost: true}
 	badCredentials := reply{status: http.StatusUnauthorized, body: `{"message":"Bad credentials"}`}
@@ -815,10 +827,9 @@ func TestGitHubAppMintReadsARetriedRevokesRefusalAsRevoked(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer
-			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 			retry, _, _ := testRetry(atTheBottom)
 			up := newScripted(t, append([]reply{installed, wider}, tc.revokes...)...)
-			release, err := mintGitHub(t.Context(), t, up, retry, nil)
+			release, err := mintGitHub(t.Context(), t, up, retry, nil, slog.New(slog.NewTextHandler(&logged, nil)))
 			if release.Value != "" || secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), "a level past the request") {
 				t.Fatalf("Mint = %q, %v (class %s); want nothing released and class upstream naming the level", release.Value, err, secrets.MintErrorClass(err))
 			}
@@ -845,6 +856,7 @@ func TestGitHubAppMintReadsARetriedRevokesRefusalAsRevoked(t *testing.T) {
 // times GitHub's size (an answer over 4 MiB, past the 1 MiB other calls read to), Mint reads it,
 // checks it and releases the token.
 func TestGitHubAppMintReadsTheAnswerToAScopeAtTheMaximum(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)

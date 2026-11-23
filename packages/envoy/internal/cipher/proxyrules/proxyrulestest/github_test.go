@@ -27,6 +27,7 @@ import (
 // released against this stand-in holds a token for each account the profile's scope names that
 // it was given an installation on, and for no other.
 func TestTheGitHubStandAnswersTheInstallationsItWasGiven(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7, "zed-org": 9}}).Answer)
 
@@ -106,6 +107,7 @@ func mintedGitHubToken(t *testing.T, value, owner string) string {
 // answered the token alone, the minter would refuse every profile's token, since it refuses a
 // token that names no permissions.
 func TestTheGitHubStandAnswersWhatATokenRequestAsked(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
 	client := clientOf(service)
@@ -177,6 +179,7 @@ func TestTheGitHubStandAnswersWhatATokenRequestAsked(t *testing.T) {
 // metadata out releases nothing, and the same scope naming it is released. It is the local driver
 // of the rule the profiles file holds every GitHub profile to (policy.ParseProfiles).
 func TestTheGitHubStandHasTheMinterRefuseAScopeThatLeavesMetadataOut(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
 	app := secrets.GitHubApp{Base: service.URL()}
@@ -201,6 +204,7 @@ func TestTheGitHubStandHasTheMinterRefuseAScopeThatLeavesMetadataOut(t *testing.
 // owner's own map decides that owner's requests. Driven through the broker's own minter, a profile
 // asking past the map is cut to it, and the release names what the cut left out.
 func TestTheGitHubStandHoldsThePermissionsItWasGiven(t *testing.T) {
+	t.Parallel()
 	acme := map[string]string{"contents": "read", "metadata": "read", "workflows": "write"}
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{
@@ -282,6 +286,7 @@ func TestTheGitHubStandHoldsThePermissionsItWasGiven(t *testing.T) {
 // nothing released, which is the path a check cannot otherwise drive, since GitHub itself never
 // widens.
 func TestTheGitHubStandReleasesAProfilesTokenAndRefusesAWiderOne(t *testing.T) {
+	t.Parallel()
 	value := gitHubAppValue(t)
 	for _, tc := range []struct {
 		name   string
@@ -323,6 +328,7 @@ func TestTheGitHubStandReleasesAProfilesTokenAndRefusesAWiderOne(t *testing.T) {
 // The refusal names what the scope likely got wrong: its repositories where it names some, and
 // else the permissions it asked for.
 func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
+	t.Parallel()
 	value := gitHubAppValue(t)
 	for _, tc := range []struct {
 		name  string
@@ -359,6 +365,7 @@ func TestTheGitHubStandRefusesEveryTokenWhenItIsAskedTo(t *testing.T) {
 // refuses every scope the minter mints, of named repositories or of every one; and it mints a
 // request naming none, which only a caller other than the minter sends.
 func TestTheGitHubStandRefusesOnePartOfATokenRequest(t *testing.T) {
+	t.Parallel()
 	value := gitHubAppValue(t)
 	refusedRepository := GitHubAnswer{Mode: GitHubTokensRefusedRepository, Repository: "proofs"}
 	refusedPermissions := GitHubAnswer{Mode: GitHubTokensRefusedPermissions}
@@ -420,6 +427,7 @@ func TestTheGitHubStandRefusesOnePartOfATokenRequest(t *testing.T) {
 // its second attempt, after which the stand answers as ordinary again with no call to Answers.
 // A stand built with no option starts on the ordinary answer.
 func TestTheGitHubStandsAnswerIsSetWhileItRuns(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	stand := NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}})
 	service.AnswerWith(stand.Answer)
@@ -496,6 +504,7 @@ func tokenRequests(seen []Request) int {
 // repository reaches every repository of its own account and none of anyone else's, which is
 // the other scope it mints.
 func TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7, "zed-org": 9}}).Answer)
 	app := secrets.GitHubApp{Base: service.URL()}
@@ -554,6 +563,7 @@ func TestTheGitHubStandAnswersARepositoryOnlyToATokenThatReachesIt(t *testing.T)
 // nothing afterwards, and 401 for a credential it never minted, as its repository route answers
 // one.
 func TestTheGitHubStandRevokesATokenItMinted(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
 	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
@@ -596,14 +606,14 @@ func TestTheGitHubStandRevokesATokenItMinted(t *testing.T) {
 // saw, and the run logs no revoke failure, which a route the stand-in did not serve would leave
 // behind.
 func TestTheGitHubStandAnswersTheMintersOwnRevoke(t *testing.T) {
+	t.Parallel()
 	var logged logtest.Buffer
-	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{
 		Installations: map[string]int64{"acme-org": 7}, Answer: GitHubAnswer{Mode: GitHubTokensWider},
 	}).Answer)
 
-	minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{
+	minted, err := secrets.GitHubApp{Base: service.URL(), Log: slog.New(slog.NewTextHandler(&logged, nil))}.Mint(t.Context(), secrets.MintRequest{
 		Name: "legion-github-app", Value: gitHubAppValue(t), GitHub: acmeScope("proofs"),
 	})
 	if minted.Value != "" || secrets.MintErrorClass(err) != "upstream" {
@@ -627,6 +637,7 @@ func TestTheGitHubStandAnswersTheMintersOwnRevoke(t *testing.T) {
 // there; a credential the stand never minted, and one the minter gave back, are refused as GitHub
 // refuses bad credentials. What a token holds is what the token route answered it holds.
 func TestTheGitHubStandsRoutesAnswerByWhatATokenHolds(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{
 		Installations: map[string]int64{"acme-org": 7, "ada": 8},

@@ -37,6 +37,7 @@ func loadOnly(t *testing.T, store *secrets.Local, services ...string) *policy.Se
 // TestTheOwnerTagTakesAGroup: an owner tag group:<address> loads, the secret is served with that
 // owner, and the set answers it as group-owned; a person's secret is not.
 func TestTheOwnerTagTakesAGroup(t *testing.T) {
+	t.Parallel()
 	set := loadOnly(t, secrets.NewLocal(
 		policytest.Secret("TEAM_KEY", approversOwner, policy.TierHuman, "v"),
 		policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierHuman, "v"),
@@ -58,6 +59,7 @@ func TestTheOwnerTagTakesAGroup(t *testing.T) {
 // @ is refused as a malformed owner and as a malformed requester, never read as a person or a
 // service.
 func TestMalformedGroupEntriesAreRefused(t *testing.T) {
+	t.Parallel()
 	for _, entry := range []string{"group:", "group:Upper@example.com", "group:nobody"} {
 		owned := policytest.Secret("TEAM_KEY", entry, policy.TierHuman, "v")
 		listed := policytest.ListedSecret("LISTED_KEY", policy.OwnerShared, policy.TierHuman, entry, "v")
@@ -80,6 +82,7 @@ func TestMalformedGroupEntriesAreRefused(t *testing.T) {
 // TestSplitRequestersNeverAnswersAGroupAsAPerson: a group entry holds an @, and SplitRequesters
 // answers it as a group, never as a person.
 func TestSplitRequestersNeverAnswersAGroupAsAPerson(t *testing.T) {
+	t.Parallel()
 	people, services, groups := policy.SplitRequesters("ada@example.com " + approversOwner + " legion-daemon " + reviewersOwner)
 	if !slices.Equal(people, []string{"ada@example.com"}) || !slices.Equal(services, []string{"legion-daemon"}) || !slices.Equal(groups, []string{approversOwner, reviewersOwner}) {
 		t.Fatalf("SplitRequesters = people %v, services %v, groups %v; want [ada@example.com], [legion-daemon], [%s %s]", people, services, groups, approversOwner, reviewersOwner)
@@ -94,6 +97,7 @@ func TestSplitRequestersNeverAnswersAGroupAsAPerson(t *testing.T) {
 // human tier; another group, a person, a second group or a service at agent tier is refused, and a
 // person owner's list names no group.
 func TestRequesterRuleHoldsAGroupOwnedServiceAccountSecretToItsGroup(t *testing.T) {
+	t.Parallel()
 	owned := func(tier, requesters string) policy.TagSet {
 		return policy.TagSet{Type: policy.TypeGoogleServiceAccount, Owner: approversOwner, Tier: tier, Requesters: requesters, MaxGrant: time.Hour}
 	}
@@ -131,6 +135,7 @@ func TestRequesterRuleHoldsAGroupOwnedServiceAccountSecretToItsGroup(t *testing.
 // included, and for anyone once the group is stale; a human-tier one is an approval request to the
 // group; a requesters entry naming a group admits a member and refuses a non-member.
 func TestEvaluateAdmitsAGroupMember(t *testing.T) {
+	t.Parallel()
 	loaded := loadOnly(t, secrets.NewLocal(
 		policytest.Secret("TEAM_KEY", approversOwner, policy.TierAgent, "v"),
 		policytest.Secret("TEAM_ADMIN_KEY", approversOwner, policy.TierHuman, "v"),
@@ -209,6 +214,7 @@ func (d *turningDirectory) Want([]string)                 {}
 // member as not on the list, which ends a grant for good: the one look finds the group stale, and
 // the member is denied as the group unread, which pauses a grant.
 func TestARequestersGroupIsReadInOneLook(t *testing.T) {
+	t.Parallel()
 	loaded := loadOnly(t, secrets.NewLocal(
 		policytest.ListedSecret("LISTED_KEY", policy.OwnerShared, policy.TierAgent, approversOwner, "v"),
 	))
@@ -229,6 +235,7 @@ func TestARequestersGroupIsReadInOneLook(t *testing.T) {
 // and while the group is stale every member is denied as the group unread, before the project
 // rule is read.
 func TestEvaluateReadsTheRequestersGroupBeforeTheProject(t *testing.T) {
+	t.Parallel()
 	tagged := policytest.ListedSecret("PRIV_LISTED", policy.OwnerShared, policy.TierAgent, approversOwner, "v")
 	tagged.Tags[policy.TagProject] = "PRIV"
 	loader := policytest.Loader(secrets.NewLocal(tagged))
@@ -267,6 +274,7 @@ func TestEvaluateReadsTheRequestersGroupBeforeTheProject(t *testing.T) {
 // names nothing, so the reader, never told of the new group, admits nobody to it; and the next
 // load names it.
 func TestALoadNamesItsGroupsAndARereadDoesNot(t *testing.T) {
+	t.Parallel()
 	const a, b = "a@example.com", "b@example.com"
 	store := secrets.NewLocal(policytest.Secret("A_KEY", record.GroupPrefix+a, policy.TierHuman, "v"))
 	fake := groupstest.New()
@@ -299,6 +307,7 @@ func TestALoadNamesItsGroupsAndARereadDoesNot(t *testing.T) {
 // of the served secrets, each once, sorted, as bare addresses; a refused secret's group is not
 // named.
 func TestGroupNamesIsEveryGroupAServedSecretNames(t *testing.T) {
+	t.Parallel()
 	refused := policytest.Secret("REFUSED_KEY", record.GroupPrefix+"refused@example.com", policy.TierHuman, "v")
 	delete(refused.Tags, policy.TagTier)
 	set := loadOnly(t, secrets.NewLocal(
@@ -328,6 +337,7 @@ func groupCurrent(t *testing.T, store *secrets.Local, fake *groupstest.Directory
 // a reread that changes a secret makes live, each carry the loader's group directory, so every
 // decision on a set Get answers asks the same reader; a set no Current published carries none.
 func TestEachPublishedSetCarriesTheLoadersDirectory(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(policytest.Secret("DEEL_API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	fake := groupstest.New()
 	cur := groupCurrent(t, store, fake)

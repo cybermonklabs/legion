@@ -73,6 +73,7 @@ func credential(operator, service string, projects ...string) policy.Requester {
 // person is decides nothing here: naming the project is what the rule reads. A pod of the
 // project's service whose credential names it gets the secret too.
 func TestAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt(t *testing.T) {
+	t.Parallel()
 	set := loadProjects(t, secrets.NewLocal(projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject)))
 	source := secrets.LocalARN(policytest.ID("PRIV_KEY"))
 	released := policy.Decision{Outcome: policy.Automatic, Source: source}
@@ -112,6 +113,7 @@ func TestAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt(t *testing.T) {
 // person's human-tier secret of PRIV still asks its owner, and its agent-tier one goes at once to
 // its owner's sessions alone.
 func TestAPrivateProjectSecretOwnedByAPersonStillAsksItsOwner(t *testing.T) {
+	t.Parallel()
 	listed := projectSecret("PRIV_LISTED", carol, policy.TierHuman, privProject)
 	listed.Tags[policy.TagRequesters] = carol
 	set := loadProjects(t, secrets.NewLocal(
@@ -148,6 +150,7 @@ func TestAPrivateProjectSecretOwnedByAPersonStillAsksItsOwner(t *testing.T) {
 // secret whose project is public answers every credential, whatever projects it names or does
 // not, exactly as owner and tier answer an untagged one.
 func TestAPrivateProjectSecretOfAPublicProjectFollowsOwnerAndTier(t *testing.T) {
+	t.Parallel()
 	set := loadProjects(t, secrets.NewLocal(
 		projectSecret("PUB_SHARED", policy.OwnerShared, policy.TierAgent, pubProject),
 		projectSecret("PUB_PERSON", carol, policy.TierAgent, pubProject),
@@ -183,6 +186,7 @@ func TestAPrivateProjectSecretOfAPublicProjectFollowsOwnerAndTier(t *testing.T) 
 // an unnamed private project, so a refusal never says whether a project exists; the broker's own
 // log keeps project-missing apart.
 func TestAPrivateProjectSecretTaggedWithAMissingProjectGoesToNobody(t *testing.T) {
+	t.Parallel()
 	set := loadProjects(t, secrets.NewLocal(projectSecret("GONE_KEY", policy.OwnerShared, policy.TierAgent, goneProject)))
 	want := policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonProjectMissing, Source: secrets.LocalARN(policytest.ID("GONE_KEY"))}
 	for who, r := range map[string]policy.Requester{
@@ -213,6 +217,7 @@ func TestAPrivateProjectSecretTaggedWithAMissingProjectGoesToNobody(t *testing.T
 // so a caller that evaluates a tagged secret without having resolved its project's state gets
 // ErrNoProjectState rather than a guess — neither a release nor a denial it did not decide.
 func TestAPrivateProjectSecretWithNoStateIsAnError(t *testing.T) {
+	t.Parallel()
 	set := loadProjects(t, secrets.NewLocal(
 		projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject),
 		policytest.Secret("PLAIN_KEY", policy.OwnerShared, policy.TierAgent, "v"),
@@ -238,6 +243,7 @@ func TestAPrivateProjectSecretWithNoStateIsAnError(t *testing.T) {
 // "\tproject=<KEY>" after the admin field, and so moves the version, which ends the grants the
 // policy decided before the tag.
 func TestAPrivateProjectSecretTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
+	t.Parallel()
 	const arn = "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/"
 	digest := func(lines string) string {
 		sum := sha256.Sum256([]byte(lines))
@@ -309,6 +315,7 @@ func TestAPrivateProjectSecretTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 // client (project-unchecked), which could not tell whether the project is private and would
 // otherwise release it to every session.
 func TestAPrivateProjectSecretTagIsLoaded(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(
 		projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject),
 		projectSecret("LOWER_KEY", policy.OwnerShared, policy.TierAgent, "priv"),
@@ -364,6 +371,7 @@ func TestAPrivateProjectSecretTagIsLoaded(t *testing.T) {
 // wrote it meant to stop. A key that is another word, the cost-allocation tag "project" among
 // them, is not read at all, as before.
 func TestAMisspelledProjectTagKeyRefusesTheSecret(t *testing.T) {
+	t.Parallel()
 	misspelled := map[string]string{
 		"CAPS_KEY":        "Dispatch-Project",
 		"UNDERSCORE_KEY":  "dispatch_project",
@@ -415,6 +423,7 @@ func TestAMisspelledProjectTagKeyRefusesTheSecret(t *testing.T) {
 // project the caller resolved no state for. Evaluate's answer for the same secret is a Deny with
 // that reason, or the error, in every row, so the two readers cannot drift.
 func TestTheProjectRuleIsOneFunction(t *testing.T) {
+	t.Parallel()
 	const unresolved = "NEW"
 	store := secrets.NewLocal(
 		policytest.Secret("PLAIN_KEY", policy.OwnerShared, policy.TierAgent, "v"),

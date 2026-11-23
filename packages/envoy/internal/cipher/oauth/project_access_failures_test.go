@@ -27,6 +27,7 @@ import (
 // naming no project mints through the same failure, and logs that it did. Each way Dispatch can
 // fail to answer is a row, run against the real Dispatch client.
 func TestANamedTradeMintsUncheckedOnlyForAnEmptyList(t *testing.T) {
+	t.Parallel()
 	answering := func(status int, body string) func(*testing.T) projectaccess.Access {
 		return func(t *testing.T) projectaccess.Access {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -60,8 +61,11 @@ func TestANamedTradeMintsUncheckedOnlyForAnEmptyList(t *testing.T) {
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			logs := capturedLog(t)
-			named := newExchangeFixture(t, func(cfg *oauth.Config) { cfg.Exchange.Projects = c.dispatch(t) })
+			logger, logs := capturedLog()
+			named := newExchangeFixture(t, func(cfg *oauth.Config) {
+				cfg.Exchange.Projects = c.dispatch(t)
+				cfg.Log = logger
+			})
 			named.registers(t, account, "pod-uid-1", "implementer-g1")
 			status, body := named.exchange(t, exchangeForm(named.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), newKey(t))
 			refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
@@ -69,6 +73,7 @@ func TestANamedTradeMintsUncheckedOnlyForAnEmptyList(t *testing.T) {
 			public := newExchangeFixture(t, func(cfg *oauth.Config) {
 				cfg.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: account, Person: person}}, nil)
 				cfg.Exchange.Projects = c.dispatch(t)
+				cfg.Log = logger
 			})
 			public.registers(t, account, "pod-uid-1", "public-session-1")
 			public.introspectsProjects(t, public.exchanged(t, exchangeForm(public.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), newKey(t)),
@@ -86,6 +91,7 @@ func TestANamedTradeMintsUncheckedOnlyForAnEmptyList(t *testing.T) {
 // ask, an entry's naming a project or none and a person's naming none, is refused server_error,
 // never minted unchecked.
 func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		path func(*testing.T) string
@@ -141,6 +147,7 @@ func TestAnUnreadableAccessTokenFileRefusesTheTrade(t *testing.T) {
 // person's trade naming none are refused server_error. The rule holds whichever Access answered
 // the kind, the real client's or another's.
 func TestAnUnknownMemberKindRefusesTheTrade(t *testing.T) {
+	t.Parallel()
 	refused := func(t *testing.T, access projectaccess.Access) {
 		t.Helper()
 		const says = "a member kind this broker does not know"

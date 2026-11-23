@@ -55,6 +55,7 @@ func evaluated(t *testing.T, set *policy.Set, name, what string, r policy.Reques
 // groups would leave the reader never told of the group, which then admits nobody, and the profile
 // would serve none of its members.
 func TestAGroupOnlyAProfileNamesIsNamedToTheReaderAtTheLoad(t *testing.T) {
+	t.Parallel()
 	fake := groupstest.New()
 	cur := profiledWithGroups(t, []secrets.LocalSecret{appSource()}, fake, readProfile,
 		`{"name": "TEAM_READ", "source": "LEGION_IMPLEMENT_APP", "requesters": ["`+approversOwner+`"], `+acmeRead+`}`)
@@ -75,6 +76,7 @@ func TestAGroupOnlyAProfileNamesIsNamedToTheReaderAtTheLoad(t *testing.T) {
 // since the group's members change and the person's entry would not; and so is a profile naming a
 // group of a source whose list names only people and services, or another group.
 func TestAProfileNarrowsAGroupRequesterOnlyToThatGroup(t *testing.T) {
+	t.Parallel()
 	stored := append(everySource(), groupListedApp())
 	for _, row := range []struct {
 		name, profile string
@@ -111,6 +113,7 @@ func TestAProfileNarrowsAGroupRequesterOnlyToThatGroup(t *testing.T) {
 // tier while the group is read; an outsider, and a member while the group is not read, are put to
 // the group.
 func TestAProfileOfAGroupOwnedSourceIsTheGroups(t *testing.T) {
+	t.Parallel()
 	fake := groupstest.New()
 	fake.Set(approversGroup, groupMember)
 	team := policytest.Secret("TEAM_KEY", approversOwner, policy.TierAgent, "team-v1")

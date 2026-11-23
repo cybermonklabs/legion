@@ -13,6 +13,7 @@ import (
 // trims, nor the word none. An underscore after the first character is a login's, since a managed
 // user's login ends in `_<shortcode>` (`mona-cat_octo`); what GitHub allows in no login is refused.
 func TestParseGitHubLoginReadsOneLogin(t *testing.T) {
+	t.Parallel()
 	for raw, want := range map[string]string{
 		"Ada": "ada", "x-": "x-", "A-b-C9": "a-b-c9", strings.Repeat("a", 39): strings.Repeat("a", 39),
 		// a_b was refused here while the broker held a login to letters, digits and hyphens, which

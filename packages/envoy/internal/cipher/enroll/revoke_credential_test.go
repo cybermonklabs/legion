@@ -57,6 +57,7 @@ func mintDecidedCredential(t *testing.T, svc *Service, operator, service *string
 // and refuses ErrNotApprover otherwise, so who may revoke a machine login never drifts from who may
 // approve it.
 func TestRevokeAndDecideAdmitTheSameLogins(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	for _, approver := range []string{"ada@example.com", "Ada@Example.com", record.AnyoneApprover} {
@@ -117,6 +118,7 @@ func liveCredentialIDs(t *testing.T, svc *Service, operator string) []uuid.UUID 
 // pending request cancelled in their name — while their other machine's session goes on; the
 // credential leaves their list and enrolls nothing more, and revoking it again changes nothing.
 func TestRevokingAMachineLoginEndsEverySessionItEnrolled(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	devbox := mintApprovedCredential(t, svc, "ada@example.com", nil, "devbox")
@@ -187,6 +189,7 @@ func TestRevokingAMachineLoginEndsEverySessionItEnrolled(t *testing.T) {
 // login ends that session and takes it off the list. A service's login whose record an older broker
 // opened naming a person is listed for every person too.
 func TestOnlyTheApproverRevokesAMachineLogin(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	ada := mintApprovedCredential(t, svc, "ada@example.com", nil, "devbox")
@@ -279,6 +282,7 @@ func TestOnlyTheApproverRevokesAMachineLogin(t *testing.T) {
 // RevokeCredential's rule for a person's machine: another person is ErrNotApprover, and the
 // person who approved it ends it.
 func TestAPersonsOwnMachineLoginsLeaveOutEveryServicesLogin(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	devbox := mintApprovedCredential(t, svc, "ada@example.com", nil, "devbox")
@@ -341,6 +345,7 @@ func TestAPersonsOwnMachineLoginsLeaveOutEveryServicesLogin(t *testing.T) {
 // session its launcher ended before the login expired is not listed, and one whose session's lease
 // has lapsed is not listed either, before the sweep ends that session: it renews no more.
 func TestAnExpiredLoginLeavesTheListOnceItsLastSessionEnds(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	devbox := mintApprovedCredential(t, svc, "ada@example.com", nil, "devbox")
@@ -382,6 +387,7 @@ func TestAnExpiredLoginLeavesTheListOnceItsLastSessionEnds(t *testing.T) {
 // lease no longer renewable — while a pod another service login enrolled goes on. The audit row
 // names the revoker, the service and both pods.
 func TestAnyoneRevokesAServiceLoginAndEveryPodItEnrolled(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -482,6 +488,7 @@ func TestAnyoneRevokesAServiceLoginAndEveryPodItEnrolled(t *testing.T) {
 // bob's, and the other two, minted from no launcher_credential record, are no machine login anyone
 // may revoke (ErrNoCredential).
 func TestOnlyALaunchersOwnRecordNamesWhoMayListAndRevokeIt(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	bobs := mintDecidedCredential(t, svc, str("ada@example.com"), nil, "bobs-record", "bob@example.com", "bob@example.com")
@@ -521,6 +528,7 @@ func TestOnlyALaunchersOwnRecordNamesWhoMayListAndRevokeIt(t *testing.T) {
 // credential's row as RevokeCredential does, with revoked_at set) leaves Create refused
 // ErrUnauthenticated and no enrollment written, never a session the revoke did not end.
 func TestAnEnrollmentRacingARevokeCannotLand(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -558,6 +566,7 @@ func TestAnEnrollmentRacingARevokeCannotLand(t *testing.T) {
 // under it (here a transaction holding the row for share, as Create does, with its enrollment
 // written) commits first and is ended by the revoke.
 func TestARevokeEndsAnEnrollmentCreatedWhileItWaited(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintApprovedCredential(t, svc, "ada@example.com", nil, "devbox")
@@ -595,6 +604,7 @@ func TestARevokeEndsAnEnrollmentCreatedWhileItWaited(t *testing.T) {
 // queue on it, so the second reads the credential the first revoked and changes nothing — one
 // launcher_credential.revoked row and one enrollment.revoked row, never two.
 func TestTwoRevokesOfOneLoginEndItOnce(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintApprovedCredential(t, svc, "ada@example.com", nil, "devbox")
@@ -640,6 +650,7 @@ func TestTwoRevokesOfOneLoginEndItOnce(t *testing.T) {
 // login's revoke waiting on that row; it then finds the enrollment ended and leaves it out, so the
 // session has one enrollment.revoked row, never two, and the login's audit row names no session.
 func TestARevokeRacingTheLaunchersOwnRevokeEndsTheSessionOnce(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintApprovedCredential(t, svc, "ada@example.com", nil, "devbox")

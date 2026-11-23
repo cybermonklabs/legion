@@ -81,6 +81,7 @@ func (f *failingAliases) ListAliases(context.Context, *kms.ListAliasesInput, ...
 // by itself without a kms:ListAliases call, so a KMS that refuses the lookup fails no load. A
 // well-tagged secret on an alias still asks, and that failure fails the load.
 func TestARefusalForANameOrTagCostsNoAliasLookup(t *testing.T) {
+	t.Parallel()
 	onAlias := func(name string, edit func(*secrets.LocalSecret)) secrets.LocalSecret {
 		s := policytest.Secret(name, owner, policy.TierAgent, "v")
 		s.KmsKeyID = "alias/agent-secrets"
@@ -267,6 +268,7 @@ func listEntry(name, arn string, versionsToStages map[string][]string) smtypes.S
 // is not in the namespace, so no line and no broker_unservable_secrets series is its), and never
 // resolves aliases nobody used.
 func TestLoadReadsEveryPageOfThePrefixOnly(t *testing.T) {
+	t.Parallel()
 	entry := func(name string) smtypes.SecretListEntry { return listEntry(name, "arn:"+name, onlyCurrent) }
 	loader, sm := pagedLoader(t,
 		entry(policytest.Prefix+"first"), entry(policytest.Prefix+"second"),
@@ -297,6 +299,7 @@ func TestLoadReadsEveryPageOfThePrefixOnly(t *testing.T) {
 // label GetSecretValue reads, mid-rotation included, and refused with no-current-value when none
 // does: created without a value, or holding only a pending or a previous version.
 func TestLoadServesASecretOnlyWhileAVersionIsCurrent(t *testing.T) {
+	t.Parallel()
 	entry := func(name string, versionsToStages map[string][]string) smtypes.SecretListEntry {
 		return listEntry(policytest.ID(name), "arn:"+name, versionsToStages)
 	}
@@ -428,6 +431,7 @@ func await(t *testing.T, done func() bool) {
 // policy alone: the same secrets listed in another order give the same version, and any owner,
 // tier, name or ARN change gives another.
 func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
+	t.Parallel()
 	// Secrets Manager promises no listing order, so these listings come back in the order given.
 	listed := func(entries ...smtypes.SecretListEntry) string {
 		t.Helper()
@@ -480,6 +484,7 @@ func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
 // of one secret's own name, with its proxy block, moves it, as an edit of that entry moves it
 // again, which is what ends the grants that entry affects.
 func TestTheProfileDigestIsInTheVersion(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(
 		policytest.Secret("A_KEY", owner, policy.TierAgent, "v"),
 		policytest.Secret("B_KEY", policy.OwnerShared, policy.TierHuman, "v"),
@@ -524,6 +529,7 @@ func goldenFixture() *secrets.Local {
 }
 
 func TestGoldenDigest(t *testing.T) {
+	t.Parallel()
 	const want = "252a3be479774f1163b99a7fbeeec17d523eb5e7048d54f90b8cb5e702fc16ca"
 	set, err := policytest.Loader(goldenFixture()).Load(context.Background())
 	if err != nil {
@@ -544,6 +550,7 @@ func TestGoldenDigest(t *testing.T) {
 // GOLDEN_TYPE\tada@example.com\tagent\tmint:google-login:<arn>/golden-type\t1h0m0s\t\n' | sha256sum,
 // with <arn> arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets.
 func TestGoldenDigestWithTypeAndMaxGrant(t *testing.T) {
+	t.Parallel()
 	store := goldenFixture()
 	secretType := policytest.TypeSecret("GOLDEN_TYPE", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "v1")
 	secretType.Tags[policy.TagMaxGrant] = "1h"
@@ -574,6 +581,7 @@ func TestGoldenDigestWithTypeAndMaxGrant(t *testing.T) {
 // arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets and <tail> empty,
 // "\tscopes=admin.directory.group apps.groups.settings" or "\tadmin=true".
 func TestGoldenDigestWithScopesAndAdmin(t *testing.T) {
+	t.Parallel()
 	version := func(edit func(*secrets.LocalSecret)) string {
 		t.Helper()
 		store := goldenFixture()
@@ -612,6 +620,7 @@ func TestGoldenDigestWithScopesAndAdmin(t *testing.T) {
 // took and a word it never did alike — and the namespace's version is the version of the same
 // namespace with the tags removed, so no leftover tag moves a deployment's policy version.
 func TestALeftoverShapeTagIsIgnored(t *testing.T) {
+	t.Parallel()
 	load := func(leftover map[string]string) *policy.Set {
 		t.Helper()
 		store := goldenFixture()
@@ -643,6 +652,7 @@ func TestALeftoverShapeTagIsIgnored(t *testing.T) {
 // full Load and by single-name merges gives byte-equal Versions — including names whose slug order
 // differs from their Name order ("A_B" vs "A0": '-' < '0' but '_' > '0').
 func TestMergedSetVersionEqualsAFullLoads(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(policytest.Secret("A0", "ada@example.com", policy.TierAgent, "v1"))
 	cur := policytest.Current(t, store)
 	store.Put(policytest.Secret("A_B", "ada@example.com", policy.TierAgent, "v1"))
@@ -716,6 +726,7 @@ func TestLoadOneAnswersOneNameByLoadsRules(t *testing.T) {
 // other, and one a character longer is ErrNameInvalid with no DescribeSecret made, since Secrets
 // Manager refuses a longer SecretId as invalid input rather than answering it not found.
 func TestLoadOneMakesNoCallForAnIDPastSecretsManagersNameLimit(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal()
 	count := &policytest.CountingDescriber{SecretsManagerAPI: store}
 	loader := policytest.Loader(store)
@@ -752,6 +763,7 @@ func samplesOf(t *testing.T, registry *metrics.Registry, metric string) string {
 // fails is counted all the same, since it was asked of the store, and a name no secret can carry
 // makes no call and counts nothing.
 func TestLoadCountsEachStoreReadByWhatItRead(t *testing.T) {
+	t.Parallel()
 	store := &failingSecrets{Local: secrets.NewLocal(policytest.Secret("SERVED", owner, policy.TierAgent, "v"))}
 	registry := metrics.New()
 	loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
@@ -803,6 +815,7 @@ func TestLoadCountsEachStoreReadByWhatItRead(t *testing.T) {
 // requesters is held to no cap of its own: SERVED_KEY carries one, but dropping it would leave
 // the secret served.
 func TestRequestersLoad(t *testing.T) {
+	t.Parallel()
 	const (
 		person = "person@example.com"
 		other  = "other@example.com"
@@ -900,6 +913,7 @@ func TestRequestersLoad(t *testing.T) {
 // services beside that owner only at human tier and only where the deployment binds it to an
 // account that is not one person's own dev-<name> one. The scopes tag is read on that type alone.
 func TestAdminCap(t *testing.T) {
+	t.Parallel()
 	const (
 		person       = "person@example.com"
 		other        = "other@example.com"
@@ -1028,6 +1042,7 @@ func TestAdminCap(t *testing.T) {
 // PLAIN_KEY\tada@example.com\tagent\t<arn>/plain-key\n' | sha256sum, with <arn>
 // arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets.
 func TestNewSetDigest(t *testing.T) {
+	t.Parallel()
 	const (
 		person = "person@example.com"
 		daemon = "legion-daemon"

@@ -179,6 +179,7 @@ func textOf(p *string) string {
 // session. It records the person as its owner (ownerKey), as a box of the person does, so the
 // pod's requests are the person's to read and cancel.
 func TestAPersonPodLoginEnrolsItsOwnPodAsItsPerson(t *testing.T) {
+	t.Parallel()
 	for _, schema := range personPodSchemas() {
 		t.Run(schema.name, func(t *testing.T) {
 			r := newPersonPodRig(t, schema)
@@ -219,6 +220,7 @@ func TestAPersonPodLoginEnrolsItsOwnPodAsItsPerson(t *testing.T) {
 // an enrollment would adopt. No refusal writes an enrollment, and the box keeps its grant. The
 // same login then enrols its own pod, so each refusal is the rule's and not the login's.
 func TestAPersonPodLoginIsRefusedEveryEnrollmentButItsOwnPod(t *testing.T) {
+	t.Parallel()
 	const adaWorkerAccount = "system:serviceaccount:people:ada-worker"
 	for _, schema := range personPodSchemas() {
 		t.Run(schema.name, func(t *testing.T) {
@@ -285,6 +287,7 @@ func TestAPersonPodLoginIsRefusedEveryEnrollmentButItsOwnPod(t *testing.T) {
 // ErrPodSelfEnrollOnly. A pod of another account under a session name is the account's
 // ErrPodSelfEnrollOnly.
 func TestAPersonPodLoginReadsTheAccountThenThePodThenTheSessionName(t *testing.T) {
+	t.Parallel()
 	for _, schema := range personPodSchemas() {
 		t.Run(schema.name, func(t *testing.T) {
 			r := newPersonPodRig(t, schema)
@@ -313,6 +316,7 @@ func TestAPersonPodLoginReadsTheAccountThenThePodThenTheSessionName(t *testing.T
 // pod login, and each is refused ada's pod, though the setting maps the pod's account to ada.
 // Ada's pod login of that account then enrols the same pod.
 func TestAPersonPodRuleLeavesAMachineLoginAndASignInRefusedAPod(t *testing.T) {
+	t.Parallel()
 	for _, schema := range personPodSchemas() {
 		t.Run(schema.name, func(t *testing.T) {
 			r := newPersonPodRig(t, schema)
@@ -356,6 +360,7 @@ func TestAPersonPodRuleLeavesAMachineLoginAndASignInRefusedAPod(t *testing.T) {
 // credential id, and only the pod UID refuses the sibling's enrollment. On the per-pod schema,
 // each pod holds a credential of its own, and the enrolling credential refuses it as well.
 func TestAPersonPodLoginEndsItsOwnPodAlone(t *testing.T) {
+	t.Parallel()
 	for _, schema := range personPodSchemas() {
 		t.Run(schema.name, func(t *testing.T) {
 			r := newPersonPodRig(t, schema)
@@ -432,6 +437,7 @@ func TestAPersonPodLoginEndsItsOwnPodAlone(t *testing.T) {
 // reads it as ada's machine login, which would admit the session enrollment and the grant with
 // it.
 func TestAStalePersonPodLoginActsOnNothing(t *testing.T) {
+	t.Parallel()
 	for _, change := range []struct {
 		name  string
 		apply func(r podRig)
@@ -497,6 +503,7 @@ func TestAStalePersonPodLoginActsOnNothing(t *testing.T) {
 // ErrNotApprover and ends nothing. The person's RevokeCredential ends the pod's enrollment, and the
 // person's RevokeOwnCredential of the pod's next login ends the next enrollment.
 func TestAPersonPodLoginIsListedAndRevokedAsItsPersonsOwn(t *testing.T) {
+	t.Parallel()
 	for _, schema := range personPodSchemas() {
 		t.Run(schema.name, func(t *testing.T) {
 			r := newPersonPodRig(t, schema)
@@ -614,6 +621,7 @@ func (r podRig) enrollNaming(t *testing.T, cred Credential, account, podUID stri
 // session gets the same refusals. (A restricted member's pod enrolls nothing at all:
 // TestARestrictedMembersLauncherEnrollsNothing.)
 func TestAPersonsPodNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
+	t.Parallel()
 	r, _ := newPersonPodProjectsRig(t)
 	cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
 	for _, c := range []struct {
@@ -637,6 +645,7 @@ func TestAPersonsPodNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
 // with no project, as before. Her next pod names PUB and PRIV, which she sees, and it is enrolled
 // with both, as her session naming them would be.
 func TestAFullMembersPodEnrollsAsBefore(t *testing.T) {
+	t.Parallel()
 	r, _ := newPersonPodProjectsRig(t)
 	first := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
 	enr, err := r.enrollNaming(t, first, adaPodAccount, "pod-uid-ada")
@@ -657,6 +666,7 @@ func TestAFullMembersPodEnrollsAsBefore(t *testing.T) {
 // a broker with no client of Dispatch's project access, her pod naming PRIV is refused
 // ErrProjectsUnchecked.
 func TestAPersonsPodNamingProjectsIsRefusedWhileDispatchCannotCheckThem(t *testing.T) {
+	t.Parallel()
 	r, dispatch := newPersonPodProjectsRig(t)
 	dispatch.SetDown(true)
 	cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)

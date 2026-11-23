@@ -16,6 +16,7 @@ import (
 // is never asked and Dispatch is never read. A project whose state could not be read hands the
 // request over too: the judge fails closed.
 func TestTheJudgeLeavesAPrivateProjectsSecretToItsPerson(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name, wantDetail string
 		machine          func(*fakeRequests)
@@ -59,6 +60,7 @@ func TestTheJudgeLeavesAPrivateProjectsSecretToItsPerson(t *testing.T) {
 // in their order, the issue and spec reads it always made and no other Dispatch route, and the
 // model's grant applied.
 func TestTheJudgeOfAnUntaggedRequestAsksDispatchNothingNew(t *testing.T) {
+	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
 

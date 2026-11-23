@@ -119,6 +119,7 @@ func wantCarried(t *testing.T, what string, got []CarriedEnrollment, want ...Car
 // enrollment comes; a dormant one is answered while it holds a live grant or a pending request.
 // A row an older broker replica wrote under the account alone is the daemon's own all the same.
 func TestCarriedAnswersADaemonsOwnPodEnrollments(t *testing.T) {
+	t.Parallel()
 	const session = "ses_acme"
 	t.Run("a live row holding a grant is answered live with its lease end", func(t *testing.T) {
 		svc, enrol, acme, _ := carriedDaemons(t)
@@ -172,6 +173,7 @@ func TestCarriedAnswersADaemonsOwnPodEnrollments(t *testing.T) {
 // not answered, since adopt takes nothing from it: a row ended for good, a dormant row whose
 // grant has been revoked since it went dormant, and a dormant row the carry sweep ended.
 func TestCarriedLeavesOutARowThatCanHandNothingOn(t *testing.T) {
+	t.Parallel()
 	const session = "ses_acme"
 	t.Run("a row ended for good", func(t *testing.T) {
 		svc, enrol, acme, _ := carriedDaemons(t)
@@ -221,6 +223,7 @@ func TestCarriedLeavesOutARowThatCanHandNothingOn(t *testing.T) {
 // matched on its pod account alone, the legacy row on its credential having any subject); ACME
 // is answered GLOBEX's row, and the test fails naming it (the pull request records the run).
 func TestCarriedAnswersNoOtherDaemonsEnrollment(t *testing.T) {
+	t.Parallel()
 	for _, spelling := range []struct {
 		name   string
 		legacy bool
@@ -254,6 +257,7 @@ func TestCarriedAnswersNoOtherDaemonsEnrollment(t *testing.T) {
 // daemon asks about, live and holding a grant, is another principal's (carryPrincipal), which no
 // pod adopts from, so it is not answered.
 func TestCarriedAnswersNoPersonsSessionOfTheSameID(t *testing.T) {
+	t.Parallel()
 	svc, _, acme, _ := carriedDaemons(t)
 	const session = "ses_person"
 	person := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -269,6 +273,7 @@ func TestCarriedAnswersNoPersonsSessionOfTheSameID(t *testing.T) {
 // byte, then by enrollment id, and an id named twice is answered once; an id nothing names is
 // simply absent.
 func TestCarriedSortsItsAnswerAndAnswersAnIDOnce(t *testing.T) {
+	t.Parallel()
 	svc, enrol, acme, _ := carriedDaemons(t)
 	// "Z" sorts before "a" byte for byte, and after it in most collations, so a sort by the
 	// database's collation answers them the other way round.
@@ -288,6 +293,7 @@ func TestCarriedSortsItsAnswerAndAnswersAnIDOnce(t *testing.T) {
 // a credential of its own (the per-pod schema, IssueTokenLoginTx) and enrols under the same pair
 // its predecessor did, so the rows its predecessor launched are its own to be answered.
 func TestCarriedAnswersAReplacedDaemonPodItsPredecessorsRows(t *testing.T) {
+	t.Parallel()
 	svc, enrol, _, _ := carriedDaemons(t)
 	storetest.PerPodLoginSchema(t, svc.Store)
 	rig := podRig{svc: svc}
@@ -307,6 +313,7 @@ func TestCarriedAnswersAReplacedDaemonPodItsPredecessorsRows(t *testing.T) {
 // subject, launched nothing Carried could answer for, and is refused ErrServiceLoginRequired
 // before anything is read.
 func TestCarriedRefusesALoginThatProvedNoAccount(t *testing.T) {
+	t.Parallel()
 	svc, _, _, _ := carriedDaemons(t)
 	for _, cred := range []Credential{
 		mintCredential(t, svc, str("ada@example.com"), nil, "devbox"),
@@ -322,6 +329,7 @@ func TestCarriedRefusesALoginThatProvedNoAccount(t *testing.T) {
 // bytes, and one that no session_id column can hold are each ErrInvalidSessionIDs; 4096 ids of
 // 255 bytes are answered.
 func TestCarriedRefusesSessionIDsOutsideItsBounds(t *testing.T) {
+	t.Parallel()
 	svc, _, acme, _ := carriedDaemons(t)
 	many := func(n, size int) []string {
 		ids := make([]string, n)
@@ -358,6 +366,7 @@ func TestCarriedRefusesSessionIDsOutsideItsBounds(t *testing.T) {
 //
 // The control (the pull request records the run): MaxCarriedSessionIDs set to 2048 fails the row.
 func TestTheInvalidSessionIDsTextNamesItsBounds(t *testing.T) {
+	t.Parallel()
 	want := fmt.Sprintf("session_ids must name 1 to %d session ids, each 1 to %d bytes of text", MaxCarriedSessionIDs, MaxCarriedSessionIDBytes)
 	if got := ErrInvalidSessionIDs.Error(); got != want {
 		t.Fatalf("ErrInvalidSessionIDs says %q, want %q", got, want)
@@ -392,6 +401,7 @@ func TestTheInvalidSessionIDsTextNamesItsBounds(t *testing.T) {
 // each of GLOBEX's legacy rows, its row of carryPodAccount and its row of the paired account, to
 // ACME's enrolment, which Carried did not answer, and the test fails naming each.
 func TestAnEmptyCarriedAnswerHandsTheNextEnrolmentNothing(t *testing.T) {
+	t.Parallel()
 	const session = "ses_next"
 	type rig struct {
 		svc          *Service
@@ -520,6 +530,7 @@ func TestAnEmptyCarriedAnswerHandsTheNextEnrolmentNothing(t *testing.T) {
 // naming it; TestAnEmptyCarriedAnswerHandsTheNextEnrolmentNothing passes under that control, which
 // is the gap this row closes.
 func TestAReplacedDaemonPodsNextEnrolmentTakesOnlyWhatCarriedAnswered(t *testing.T) {
+	t.Parallel()
 	const session = "ses_next"
 	svc, enrol, _, _ := carriedDaemons(t)
 	storetest.PerPodLoginSchema(t, svc.Store)

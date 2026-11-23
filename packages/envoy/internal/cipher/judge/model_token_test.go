@@ -43,6 +43,7 @@ func tokenData() Data {
 // unset the judge presents the metadata server's identity token, as it always has, and asks IAM
 // Service Account Credentials nothing, though one is named for it to reach.
 func TestTheJudgePresentsTheMetadataIdentityTokenWithNoAccount(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (ciphertokentest.NewMetadataStand, t.Setenv).
 	ciphertokentest.NewMetadataStand(t)
 	iam := ciphertokentest.NewIAMStand(t)
 	model := newModel(t, verdictReply(Grant, "The reason names the issue."))
@@ -65,6 +66,7 @@ func TestTheJudgePresentsTheMetadataIdentityTokenWithNoAccount(t *testing.T) {
 // token generateIdToken mints for it, from one call of the shape Google's reference gives,
 // carrying the pod's own access token, and never asks the metadata server's identity path.
 func TestTheJudgePresentsTheMintedTokenWithAnAccount(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (ciphertokentest.NewMetadataStand, t.Setenv).
 	metadata := ciphertokentest.NewMetadataStand(t)
 	iam := ciphertokentest.NewIAMStand(t)
 	model := newModel(t, verdictReply(Grant, "The reason names the issue."))
@@ -104,6 +106,7 @@ func TestTheJudgePresentsTheMintedTokenWithAnAccount(t *testing.T) {
 // never calls the model, with the pod's own identity token or with none. The metadata server here
 // would still hand out an identity token, so a judge that fell back would have reached the model.
 func TestTheJudgeHandsTheRequestOverWhenTheMintIsRefused(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (ciphertokentest.NewMetadataStand, t.Setenv).
 	metadata := ciphertokentest.NewMetadataStand(t)
 	iam := ciphertokentest.NewIAMStand(t)
 	iam.AnswersStatus(http.StatusForbidden, `{"error":{"code":403,"message":"Permission 'iam.serviceAccounts.getOpenIdToken' denied on resource (or it may not exist).","status":"PERMISSION_DENIED"}}`)

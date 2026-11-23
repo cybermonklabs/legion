@@ -58,6 +58,7 @@ func iamServer(t *testing.T, handle http.HandlerFunc) (*httptest.Server, *atomic
 // its stored value names too, as the broker's own credential, for one hour at the cloud-platform
 // scope, and the bare access token back.
 func TestGoogleServiceAccountMintImpersonatesTheStoredAccount(t *testing.T) {
+	t.Parallel()
 	var gotPath, gotMethod, gotAuthorization, gotContentType, gotBody string
 	server, calls := iamServer(t, func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -110,6 +111,7 @@ func TestGoogleServiceAccountMintImpersonatesTheStoredAccount(t *testing.T) {
 // times the request out, is the upstream's, asked three times under the Retry, so an operator
 // reads the class and knows whether to fix an IAM binding or wait.
 func TestGoogleServiceAccountMintNamesGooglesVerdict(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		code     int
@@ -152,6 +154,7 @@ func TestGoogleServiceAccountMintNamesGooglesVerdict(t *testing.T) {
 // Google minted nor the stored value reaches an error the broker logs and answers a session with,
 // however the answer fails.
 func TestGoogleServiceAccountMintErrorsQuoteNoToken(t *testing.T) {
+	t.Parallel()
 	const minted = "impersonated-access-token-7ab2"
 	for _, tc := range []struct {
 		name   string
@@ -193,6 +196,7 @@ func TestGoogleServiceAccountMintErrorsQuoteNoToken(t *testing.T) {
 // and the shape is checked before any credential is resolved or any call made, so a mistyped value
 // never asks Google to impersonate anything.
 func TestGoogleServiceAccountMintRefusesAValueThatIsNoServiceAccount(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		value string
@@ -231,6 +235,7 @@ func TestGoogleServiceAccountMintRefusesAValueThatIsNoServiceAccount(t *testing.
 // of its own, so one call there is one resolution. The credentials are gcloud's authorized_user
 // shape, whose token_uri the file names, as the broker's own end-to-end fixture writes them.
 func TestGoogleServiceAccountResolvesItsOwnCredentialsOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	var resolutions atomic.Int64
 	own := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/token" {
@@ -295,6 +300,7 @@ func TestGoogleServiceAccountResolvesItsOwnCredentialsOnce(t *testing.T) {
 // the tag existed. The list is built the way a release builds it, from a policy.Secret's
 // ScopeURLs, so what is pinned is the path a release takes and not a hand-written list.
 func TestGoogleServiceAccountScopes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		tag  string
@@ -352,6 +358,7 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 // deployment binds the stored secret, GCP_FLEET, as BROKER_SERVICE_ACCOUNT_SECRETS names it, and
 // the profile mints under that binding by its source's name (MintRequest.Source), never its own.
 func TestAGoogleProfileAsksForItsOwnScopes(t *testing.T) {
+	t.Parallel()
 	source := policytest.TypeSecret("GCP_FLEET", "ada@example.com", policy.TierHuman, policy.TypeGoogleServiceAccount, serviceAccountValue)
 	source.Tags[policy.TagScopes] = "bigquery cloud-platform"
 	current := policytest.ProfiledCurrent(t, secrets.NewLocal(source),
@@ -395,6 +402,7 @@ func TestAGoogleProfileAsksForItsOwnScopes(t *testing.T) {
 // under it whatever the profile is called, and a profile of an unbound one is refused even where
 // its own name is one the deployment binds, naming the profile and the source it is of.
 func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv).
 	const otherAccount = "dev-sami@example-identities.iam.gserviceaccount.com"
 	const otherValue = `{"service_account":"` + otherAccount + `"}`
 	server, calls := iamServer(t, func(w http.ResponseWriter, _ *http.Request) {

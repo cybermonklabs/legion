@@ -179,6 +179,7 @@ func signInForm(personToken, machineToken, session string) url.Values {
 // machine and the session asked for, held to no one project; and the sign-in the exchange
 // recorded names that person, that box key and that machine.
 func TestAPersonSignedInOnAMachineExchangesForATokenNamingBoth(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	key := newKey(t)
 	token := f.exchanged(t, signInForm(
@@ -219,6 +220,7 @@ func TestAPersonSignedInOnAMachineExchangesForATokenNamingBoth(t *testing.T) {
 // the same sign-in used again, and the person signing in on a second box records a second one,
 // so revoking either leaves the other to be decided on its own row.
 func TestEachTradeOfOneSignInRecordsTheSameKeyAndASecondBoxIsItsOwn(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	first, second := newKey(t), newKey(t)
 	for _, c := range []struct {
@@ -250,6 +252,7 @@ func TestEachTradeOfOneSignInRecordsTheSameKeyAndASecondBoxIsItsOwn(t *testing.T
 // the very next trade of it is invalid_grant and the refusal says what to run, while the
 // person's other box keeps trading.
 func TestARevokedSignInIsRefusedAndNamesTheSignInCommand(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	revoked, kept := newKey(t), newKey(t)
 	trade := func(key *ecdsa.PrivateKey, session string) (int, map[string]any) {
@@ -285,6 +288,7 @@ func TestARevokedSignInIsRefusedAndNamesTheSignInCommand(t *testing.T) {
 // invalid_grant naming the command that makes a key of its own — not a 500, and not a quiet
 // move that would collide on every trade after it.
 func TestASignInsKeyPresentedFromAnotherMachineIsRefusedAndNamesTheSignInCommand(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	key := newKey(t)
 	f.exchanged(t, signInForm(
@@ -313,6 +317,7 @@ func TestASignInsKeyPresentedFromAnotherMachineIsRefusedAndNamesTheSignInCommand
 // the other's audience, a machine no entry lists, and no actor token at all. Each gives its own
 // message, so the person reading it knows which of the five to fix.
 func TestASignInTradeIsRefusedWhatItCannotDecide(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	key := newKey(t)
 	said := map[string]string{}
@@ -395,6 +400,7 @@ func TestASignInTradeIsRefusedWhatItCannotDecide(t *testing.T) {
 // type is registered, so the library refuses both by name before any handler of the broker's
 // runs and nothing of the sign-in path is reachable.
 func TestABrokerWithNoDeviceAudienceRegistersNeitherSignInType(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	plain := newExchangeFixtureWithoutPerson(t, f)
 	key := newKey(t)
@@ -454,6 +460,7 @@ func recordCredential(ctx context.Context, cred oauth.MachineCredential) (string
 // nowhere to record the sign-in is refused at build, as one that takes a machine's and cannot
 // mint its credential is, since a sign-in nothing records could never be revoked.
 func TestAProviderNeedsItsSignInRecorder(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		adjust func(*oauth.ExchangeConfig)

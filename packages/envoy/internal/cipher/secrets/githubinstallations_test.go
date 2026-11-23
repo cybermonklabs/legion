@@ -66,6 +66,7 @@ func storedValue(t *testing.T, entries map[string]storedEntry) string {
 // The named revert: read the value without its version, and the version 2 and missing rows are
 // served.
 func TestAStoredValueOfAShapeVersionOtherThanOneIsRefusedNamingIt(t *testing.T) {
+	t.Parallel()
 	profile := map[string]string{"contents": "read", "metadata": "read"}
 	entries, err := json.Marshal(map[string]storedEntry{"ada": stored(42, "ghs_stored_ada", fresh, profile)})
 	if err != nil {
@@ -130,6 +131,7 @@ const fresh = 50 * time.Minute
 // The named reverts: drop the wider check, and the two wider rows are served; drop LeftOut, and
 // the two cut rows name nothing; drop the empty-cut check, and the metadata row is served.
 func TestAStoredTokenWiderThanItsProfileIsRefusedACutOneIsServedNamingTheCutAndAMetadataOnlyOneIsRefused(t *testing.T) {
+	t.Parallel()
 	profile := map[string]string{"contents": "write", "issues": "read", "metadata": "read"}
 	const token = "ghs_stored_ada"
 	for _, row := range []struct {
@@ -187,6 +189,7 @@ func TestAStoredTokenWiderThanItsProfileIsRefusedACutOneIsServedNamingTheCutAndA
 // The named revert: drop the expiry check, and the two short rows are served; set the margin to
 // another number, and either the 19m59s row is served or the 20m01s row is refused.
 func TestAStoredTokenIsHandedOverOnlyWithMoreThanTheMarginOfItsLifeLeft(t *testing.T) {
+	t.Parallel()
 	profile := map[string]string{"contents": "read", "metadata": "read"}
 	for _, row := range []struct {
 		name   string
@@ -245,6 +248,7 @@ func TestAStoredTokenIsHandedOverOnlyWithMoreThanTheMarginOfItsLifeLeft(t *testi
 // clients of today's release do not read. An account the profile does not name is left out of the
 // release, whatever the stored value holds for it.
 func TestAnInstallationsProfileIsServedItsAccountsStoredTokensInTheGitHubAppReleaseForm(t *testing.T) {
+	t.Parallel()
 	profile := map[string]string{"contents": "read", "metadata": "read"}
 	value := storedValue(t, map[string]storedEntry{
 		"Acme-Org": stored(41, "ghs_stored_acme", fresh, profile),
@@ -275,6 +279,7 @@ func TestAnInstallationsProfileIsServedItsAccountsStoredTokensInTheGitHubAppRele
 // releases its one account's stored token, bare, as the github-app mint releases its one
 // installation's.
 func TestAValueTokenProfileOfOneAccountIsServedThatAccountsStoredToken(t *testing.T) {
+	t.Parallel()
 	profile := map[string]string{"contents": "read", "metadata": "read"}
 	value := storedValue(t, map[string]storedEntry{
 		"acme": stored(41, "ghs_stored_acme", fresh, profile),
@@ -291,6 +296,7 @@ func TestAValueTokenProfileOfOneAccountIsServedThatAccountsStoredToken(t *testin
 // out an account the App is not installed on, and a release that leaves every account out is
 // refused ErrMintNoInstallation in the words a released client matches ("has no installation on").
 func TestAnAccountTheStoredValueHoldsNoTokenForIsLeftOutAndNoneIsRefused(t *testing.T) {
+	t.Parallel()
 	profile := map[string]string{"contents": "read", "metadata": "read"}
 	value := storedValue(t, map[string]storedEntry{"ada": stored(42, "ghs_stored_ada", fresh, profile)})
 	minted, err := mintStored(value, scopeOf(githubname.ValueInstallations, profile, "ada", "example-org"))
@@ -338,6 +344,7 @@ func selectedBy(entry storedEntry, tokenList, installationList []string) storedE
 // two; read a profile with no repositories as matching any token, and the cut token and the token
 // whose lists differ are served as the whole installation's.
 func TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches(t *testing.T) {
+	t.Parallel()
 	profile := map[string]string{"contents": "read", "metadata": "read"}
 	selected := narrowed(stored(42, "ghs_stored_ada", fresh, profile), "ada/lean", "Ada/Proofs")
 	own := selectedBy(stored(42, "ghs_stored_ada", fresh, profile), []string{"ada/lean", "ada/proofs"}, []string{"ada/proofs", "Ada/Lean"})
@@ -395,6 +402,7 @@ func TestAProfilesRepositoriesMustEqualThoseItsStoredTokenReaches(t *testing.T) 
 // The named reverts: drop the marker's arm, and the marked token is refused; read any value of
 // repository_scope as the marker, and the unknown value is served.
 func TestAnAllExceptProtectedTokenServesAProfileOfNoRepositoriesAndNoOtherScopeIsRead(t *testing.T) {
+	t.Parallel()
 	profile := map[string]string{"administration": "read", "metadata": "read"}
 	selectedNoList := stored(42, "ghs_stored_ada", fresh, profile)
 	selectedNoList.RepositorySelection = "selected"
@@ -438,6 +446,7 @@ func TestAnAllExceptProtectedTokenServesAProfileOfNoRepositoriesAndNoOtherScopeI
 // malformed value is refused ErrMintStoredValue, by ParseValue and by the minter alike, and no
 // refusal holds the token it carries.
 func TestAMalformedStoredValueIsRefusedNamingNoPartOfIt(t *testing.T) {
+	t.Parallel()
 	const canary = "ghs_canary_never_quoted"
 	// entries is the value holding one well-formed entry under each of keys, each as edit leaves
 	// it.
@@ -623,6 +632,7 @@ func oneEntry(t *testing.T, value string) fixtureEntry {
 // exactly the files this test names, so a shape added to it fails here until the test says how it
 // is served. Each profile asks for the entry's own permissions, so permissions decide nothing here.
 func TestTheFixturesOfTheMintersShapesAreReadAndServedAsEachShapeSays(t *testing.T) {
+	t.Parallel()
 	files, err := os.ReadDir(filepath.Join("testdata", "minted-shapes"))
 	if err != nil {
 		t.Fatal(err)
@@ -666,6 +676,7 @@ func TestTheFixturesOfTheMintersShapesAreReadAndServedAsEachShapeSays(t *testing
 //
 // The named revert: drop the comparison of the two lists, and the second row is served.
 func TestTheInstallationListFixtureIsServedToAProfileOfNoRepositoriesOnlyWhileItsTwoListsAreEqual(t *testing.T) {
+	t.Parallel()
 	value := readMintedShape(t, "installation-list.json")
 	entry := oneEntry(t, value)
 	if minted, err := mintFixture(value, entry.account, entry.Permissions, nil); err != nil || minted.Value != entry.Token {
@@ -694,6 +705,7 @@ func TestTheInstallationListFixtureIsServedToAProfileOfNoRepositoriesOnlyWhileIt
 //
 // The named revert: read the value without its version, and each is served.
 func TestAFixtureOfAnUnknownShapeVersionIsRefusedNamingTheSecretTheVersionAndTheOnesKnown(t *testing.T) {
+	t.Parallel()
 	for _, name := range slices.Sorted(maps.Keys(mintedShapes)) {
 		t.Run(name, func(t *testing.T) {
 			value := readMintedShape(t, name)

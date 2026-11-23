@@ -32,6 +32,7 @@ func refusedAs(t *testing.T, set *policy.Set, name, reason string) {
 }
 
 func TestTypeSecretsAreServed(t *testing.T) {
+	t.Parallel()
 	githubApp := typeSecret("GITHUB_APP_KEY", policy.TypeGitHubApp, "github-app-value")
 	googleLogin := typeSecret("GOOGLE_LOGIN_KEY", policy.TypeGoogleLogin, "google-login-value")
 	googleLogin.Tags[policy.TagMaxGrant] = "1h"
@@ -70,6 +71,7 @@ func TestTypeSecretsAreServed(t *testing.T) {
 }
 
 func TestParseTypeSourceRefusesAMalformedMintedSource(t *testing.T) {
+	t.Parallel()
 	for _, source := range []string{"mint:", "mint:github-app", "mint:github-app:", "mint::arn:aws:x"} {
 		if _, _, minted, err := policy.ParseTypeSource(source); !minted || !errors.Is(err, policy.ErrTypeSourceMalformed) {
 			t.Errorf("ParseTypeSource(%q) = minted %t, %v; want minted and ErrTypeSourceMalformed", source, minted, err)
@@ -81,6 +83,7 @@ func TestParseTypeSourceRefusesAMalformedMintedSource(t *testing.T) {
 }
 
 func TestParseMaxGrant(t *testing.T) {
+	t.Parallel()
 	for raw, want := range map[string]time.Duration{"1h": time.Hour, "1s": time.Second, "90m": 90 * time.Minute} {
 		if got, err := policy.ParseMaxGrant(raw); err != nil || got != want {
 			t.Errorf("ParseMaxGrant(%q) = %v, %v; want %v", raw, got, err, want)
@@ -102,6 +105,7 @@ func TestParseMaxGrant(t *testing.T) {
 // A whole https://www.googleapis.com/auth/ URL and an upper-case name are the two mistakes a
 // reader makes here, and both land on ErrScopesEntry rather than being trimmed or lowercased.
 func TestParseScopes(t *testing.T) {
+	t.Parallel()
 	for raw, want := range map[string]string{
 		"admin.directory.group apps.groups.settings":        "admin.directory.group apps.groups.settings",
 		" apps.groups.settings\tcloud-platform \n bigquery": "apps.groups.settings bigquery cloud-platform",
@@ -126,6 +130,7 @@ func TestParseScopes(t *testing.T) {
 }
 
 func TestUnknownTypeIsRefused(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(typeSecret("UNKNOWN_TYPE_KEY", "other", "value"))
 
 	set, err := policytest.Loader(store).Load(context.Background())
@@ -145,6 +150,7 @@ func TestUnknownTypeIsRefused(t *testing.T) {
 // values are policytest.TypeValue's, which panics for a type it holds no value of: add one there,
 // and its decoder to secrets.ParseValue.
 func TestEveryTypeDecodesAValueThroughParseValue(t *testing.T) {
+	t.Parallel()
 	for _, secretType := range policy.Types {
 		if _, err := secrets.ParseValue(secretType, policytest.TypeValue(secretType)); err != nil {
 			t.Errorf("secrets.ParseValue(%s) of a value its minter mints from = %v; want it decoded", secretType, err)
@@ -163,6 +169,7 @@ func TestEveryTypeDecodesAValueThroughParseValue(t *testing.T) {
 }
 
 func TestTypeSecretWithoutValueIsRefused(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(typeSecret("EMPTY_TYPE_KEY", policy.TypeGitHubApp, ""))
 
 	set, err := policytest.Loader(store).Load(context.Background())
@@ -176,6 +183,7 @@ func TestTypeSecretWithoutValueIsRefused(t *testing.T) {
 }
 
 func TestMalformedMaxGrantIsRefused(t *testing.T) {
+	t.Parallel()
 	secret := typeSecret("BAD_MAX_GRANT", policy.TypeGoogleLogin, "value")
 	secret.Tags[policy.TagMaxGrant] = "soon"
 	store := secrets.NewLocal(secret)
@@ -191,6 +199,7 @@ func TestMalformedMaxGrantIsRefused(t *testing.T) {
 }
 
 func TestTypeRetagChangesVersionAndSource(t *testing.T) {
+	t.Parallel()
 	first := typeSecret("MUTABLE_TYPE_KEY", policy.TypeGitHubApp, "value")
 	store := secrets.NewLocal(first)
 	loader := policytest.Loader(store)
@@ -220,6 +229,7 @@ func TestTypeRetagChangesVersionAndSource(t *testing.T) {
 }
 
 func TestPlainSecretDigestIsUnchanged(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(policytest.Secret("PLAIN_KEY", typeOwner, policy.TierAgent, "value"))
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
@@ -232,6 +242,7 @@ func TestPlainSecretDigestIsUnchanged(t *testing.T) {
 }
 
 func TestLegacyMintTagIsIgnoredAndEmptySecretIsRefused(t *testing.T) {
+	t.Parallel()
 	secret := policytest.Secret("LEGACY_MINT_KEY", typeOwner, policy.TierAgent, "")
 	secret.Tags["mint-service-account"] = "ignored"
 	store := secrets.NewLocal(secret)
@@ -247,6 +258,7 @@ func TestLegacyMintTagIsIgnoredAndEmptySecretIsRefused(t *testing.T) {
 }
 
 func TestEmptyTypeIsAPlainSecret(t *testing.T) {
+	t.Parallel()
 	secret := typeSecret("EMPTY_TYPE", "", "value")
 	set, err := policytest.Loader(secrets.NewLocal(secret)).Load(context.Background())
 	if err != nil {
@@ -261,6 +273,7 @@ func TestEmptyTypeIsAPlainSecret(t *testing.T) {
 // github-app secret names the accounts the broker mints for, and one that names none, by a missing
 // tag or a tag of only white space, is refused github-owners-missing rather than served.
 func TestAGitHubAppSecretWithoutOwnersIsRefused(t *testing.T) {
+	t.Parallel()
 	for name, owners := range map[string]*string{"missing": nil, "empty": new("  \t ")} {
 		t.Run(name, func(t *testing.T) {
 			secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
@@ -283,6 +296,7 @@ func TestAGitHubAppSecretWithoutOwnersIsRefused(t *testing.T) {
 // TestGitHubOwnersAreReadWithoutRegardToCase: one list in two spellings is one policy, and a
 // google-login secret carries no owners whatever its tags say.
 func TestGitHubOwnersAreReadWithoutRegardToCase(t *testing.T) {
+	t.Parallel()
 	load := func(owners string) *policy.Set {
 		t.Helper()
 		secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
@@ -317,6 +331,7 @@ func TestGitHubOwnersAreReadWithoutRegardToCase(t *testing.T) {
 // stores hold, and a comma anywhere in it is refused github-owners-malformed rather than read as
 // a separator or as part of a login.
 func TestAGitHubOwnersCommaIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, owners := range []string{"acme-org,ada", "acme-org, ada", "ada,"} {
 		t.Run(owners, func(t *testing.T) {
 			secret := typeSecret("APP_KEY", policy.TypeGitHubApp, "value")
@@ -346,6 +361,7 @@ func TestAGitHubOwnersCommaIsRefused(t *testing.T) {
 // which ends in `_<shortcode>` (`mona-cat_octo`), and the longest login are read; a tag that names
 // no entry at all is github-owners-missing.
 func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
+	t.Parallel()
 	longest := strings.Repeat("a", 39)
 	for _, owners := range []string{
 		"-ada", "-x", "-", // a login starts with a letter or digit, never a hyphen
@@ -417,6 +433,7 @@ var legacyMintTargetPattern = regexp.MustCompile(`^[a-z0-9-]{6,30}@[a-z0-9-]+\.i
 // secret as a stored one (policy.TagRollbackGuard), so the first release that reads type is the
 // rollback floor.
 func TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere(t *testing.T) {
+	t.Parallel()
 	if legacyMintTargetPattern.MatchString(policy.RollbackGuardValue) {
 		t.Fatalf("RollbackGuardValue %q matches the earlier brokers' mint-service-account rule, so they would mint for it", policy.RollbackGuardValue)
 	}
@@ -441,6 +458,7 @@ func TestTheRollbackGuardIsRefusedByEarlierBrokersAndIgnoredHere(t *testing.T) {
 // TestDefaultGrantTag: default-grant=session is served as SessionDefault; any other value is
 // refused default-grant-malformed.
 func TestDefaultGrantTag(t *testing.T) {
+	t.Parallel()
 	good := typeSecret("GOOD_KEY", policy.TypeGoogleLogin, "v")
 	good.Tags[policy.TagDefaultGrant] = policy.DefaultGrantSession
 	bad := typeSecret("BAD_KEY", policy.TypeGoogleLogin, "v")

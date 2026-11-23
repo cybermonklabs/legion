@@ -75,6 +75,7 @@ func (r podRenewalRig) lease(t *testing.T) time.Time {
 // The control (the pull request records the run): Renew answering its lease end to the
 // nanosecond again fails the comparison with the row's own.
 func TestARenewalCarryingThePodsCurrentTokenExtendsTheLease(t *testing.T) {
+	t.Parallel()
 	r := newPodRenewalRig(t)
 	renewal, err := r.svc.Renew(context.Background(), r.id, mintPodToken(t, r.issuer, r.key, renewAccount, renewPodUID))
 	if err != nil {
@@ -99,6 +100,7 @@ func TestARenewalCarryingThePodsCurrentTokenExtendsTheLease(t *testing.T) {
 // left where it was: a renewal carrying a token never renews an enrollment the token does not name,
 // and a token from another pod never renews this one.
 func TestARenewalCarryingAnotherPodsOrAccountsTokenIsRefused(t *testing.T) {
+	t.Parallel()
 	r := newPodRenewalRig(t)
 	expiry := time.Now().Add(-time.Hour).Truncate(time.Second)
 	expired := r.issuer.Claims(renewAccount, testAudience)
@@ -139,6 +141,7 @@ func TestARenewalCarryingAnotherPodsOrAccountsTokenIsRefused(t *testing.T) {
 // Its first renewal carrying the pod's token sets the column, and from then on a renewal without
 // one is ErrPodTokenRequired and leaves the lease where it was.
 func TestAPodEnrollmentRenewsWithoutItsTokenUntilItFirstRenewsWithIt(t *testing.T) {
+	t.Parallel()
 	r := newPodRenewalRig(t)
 	ctx := context.Background()
 	if at := r.tokenRenewedAt(t); at != nil {
@@ -178,6 +181,7 @@ func TestAPodEnrollmentRenewsWithoutItsTokenUntilItFirstRenewsWithIt(t *testing.
 // pod_token_renewed_at null, so only a token the broker accepted moves an enrollment onto the
 // token-required path.
 func TestARefusedTokenNeverSetsTheRatchet(t *testing.T) {
+	t.Parallel()
 	r := newPodRenewalRig(t)
 	if _, err := r.svc.Renew(context.Background(), r.id, mintPodToken(t, r.issuer, r.key, renewAccount, "pod-uid-other")); !errors.Is(err, ErrPodIdentity) {
 		t.Fatalf("Renew(another pod's token) = %v, want ErrPodIdentity", err)
@@ -195,6 +199,7 @@ func TestARefusedTokenNeverSetsTheRatchet(t *testing.T) {
 // accepted: an invalid token, a token on a broker without a pod verifier, and a valid token for
 // the wrong enrollment all have one refusal.
 func TestAMachineSessionRenewsWithoutAPodTokenAndRefusesOne(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	ctx := context.Background()
@@ -257,6 +262,7 @@ func (r podUIDRig) token(t *testing.T, podUID string) string {
 // marked, and every role, each renewing with the same pod's token as a new-image renewer does,
 // keeps renewing, while a token-less renewal of any of them is now refused.
 func TestEveryRoleOfANewImagePodKeepsRenewingOnceOneRoleMarksItsUID(t *testing.T) {
+	t.Parallel()
 	r := newPodUIDRig(t)
 	ctx := context.Background()
 	daemon := r.login(t, "cluster")
@@ -288,6 +294,7 @@ func TestEveryRoleOfANewImagePodKeepsRenewingOnceOneRoleMarksItsUID(t *testing.T
 // enrolled after that renewal or before it; before it, the copy renews token-less, the window that
 // stays open.
 func TestACopiedTokensRowIsRefusedTokenlessOnceTheRealPodRenewsWithItsToken(t *testing.T) {
+	t.Parallel()
 	t.Run("the pod renews with its token, then the copy enrolls", func(t *testing.T) {
 		r := newPodUIDRig(t)
 		ctx := context.Background()
@@ -322,6 +329,7 @@ func TestACopiedTokensRowIsRefusedTokenlessOnceTheRealPodRenewsWithItsToken(t *t
 // TestAnOldImagePodKeepsRenewingTokenless: a pod whose renewer never sends a token marks nothing,
 // so its roles keep renewing token-less, each renewal reported so the API logs it.
 func TestAnOldImagePodKeepsRenewingTokenless(t *testing.T) {
+	t.Parallel()
 	r := newPodUIDRig(t)
 	ctx := context.Background()
 	daemon := r.login(t, "cluster")
@@ -346,6 +354,7 @@ func TestAnOldImagePodKeepsRenewingTokenless(t *testing.T) {
 // would let that copy renew token-less in every such gap. A new generation of the same pod renews
 // with its token, as a current-image renewer does, and is never refused.
 func TestAMarkedUIDOutlivesItsRowsButTouchesNoOtherPod(t *testing.T) {
+	t.Parallel()
 	for _, ends := range []string{"revoked", "lapsed"} {
 		t.Run(ends, func(t *testing.T) {
 			r := newPodUIDRig(t)

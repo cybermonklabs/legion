@@ -103,6 +103,7 @@ func writeJSON(w http.ResponseWriter, status int, body string) {
 // An answer that is no refusal carries its own id in its header, its body as the handler wrote
 // it, and is counted served under HTTP_<status>; it writes no line.
 func TestEveryAnswerCarriesAnIDOfItsOwn(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, `{"served":true}`)
 	}))
@@ -138,6 +139,7 @@ func TestEveryAnswerCarriesAnIDOfItsOwn(t *testing.T) {
 // carries, and a JSON object body gains answer_id, its length dropped since the body grew. The
 // line holds no word of the refusal's message.
 func TestARefusalWritesOneLineNamingItsCode(t *testing.T) {
+	t.Parallel()
 	const message = "the words the caller reads"
 	driven := 0
 	for _, row := range []struct {
@@ -237,6 +239,7 @@ func mustJSON(t *testing.T, value any) string {
 // A 429, the OAuth device grant's slow_down and authorization_pending, a 500 and a 503 each write
 // no line and are counted under their own outcome; each still carries its id.
 func TestTheAnswersThatWriteNoLineAreCounted(t *testing.T) {
+	t.Parallel()
 	driven := 0
 	for _, row := range []struct {
 		name, body, labels string
@@ -274,6 +277,7 @@ func TestTheAnswersThatWriteNoLineAreCounted(t *testing.T) {
 // that notes one and then answers 500 instead, as the approval page does when its template
 // fails, is counted failed under HTTP_500, and writes no line.
 func TestACodeNotedForARefusalNamesNoOtherAnswer(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		answer.FromWriter(w).NoteCode("RECORD_ID_INPUT")
 		http.Error(w, "the approval page failed to render", http.StatusInternalServerError)
@@ -296,6 +300,7 @@ func TestACodeNotedForARefusalNamesNoOtherAnswer(t *testing.T) {
 // status gives, and writes no line: a 503 is not counted failed, nor a refusal refused, since
 // nobody reads the answer.
 func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, body, code, otherwise string
 		status                      int
@@ -327,6 +332,7 @@ func TestAnAnswerWhoseCallerEndedIsCountedCancelled(t *testing.T) {
 // Arrived is when Middleware first saw the request, before the handler ran, and, on a request no
 // Recorder records, the moment it is asked.
 func TestArrivedIsWhenTheRequestReachedTheRecorder(t *testing.T) {
+	t.Parallel()
 	var arrived, handled time.Time
 	before := time.Now()
 	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -350,6 +356,7 @@ func TestArrivedIsWhenTheRequestReachedTheRecorder(t *testing.T) {
 // route for the mux's own 404 and 405. A caller's X-Correlation-Id is kept as its printable ASCII,
 // at most 256 bytes.
 func TestTheLineNamesTheRouteAndTheCallersCorrelationID(t *testing.T) {
+	t.Parallel()
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/things/{name}", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusBadRequest, `{"code":"THING_INVALID","error":"no"}`)
@@ -401,6 +408,7 @@ func TestTheLineNamesTheRouteAndTheCallersCorrelationID(t *testing.T) {
 // and 400 write lines; drop unrouted's check, and the edge's 404, 405 and 400 write lines; drop its
 // request-for-* clause, and the edge's 400 writes a line.
 func TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine(t *testing.T) {
+	t.Parallel()
 	mux := func() *http.ServeMux {
 		m := http.NewServeMux()
 		m.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
@@ -474,6 +482,7 @@ func TestTheEdgesAnswersNameTheirPortAndItsUnroutedOnesWriteNoLine(t *testing.T)
 // The named revert: list every name the request noted, with no bound and no counts (fbaa5626);
 // the row of 4,000 names then writes a line of about a MiB, and this test fails.
 func TestARefusalsLineBoundsTheNamesItLists(t *testing.T) {
+	t.Parallel()
 	const (
 		nameBytes  = 256
 		listBudget = 32 << 10
@@ -564,6 +573,7 @@ func TestARefusalsLineBoundsTheNamesItLists(t *testing.T) {
 // names (requests/machine_read.go). Each other row notes its names in two notes, which the line
 // reads as one.
 func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
+	t.Parallel()
 	named := make([]string, 129)
 	for i := range named {
 		prefix := fmt.Sprintf("NAME_%03d_", i)
@@ -630,6 +640,7 @@ func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
 // the names' own bytes, the list would take 32,768 of them, and the line would be about 288 KiB,
 // which GKE drops.
 func TestARefusalsLineCountsTheNamesAsItWritesThem(t *testing.T) {
+	t.Parallel()
 	const (
 		listBudget = 32 << 10
 		entryLimit = 256 << 10
@@ -702,17 +713,19 @@ func TestARefusalsLineCountsTheNamesAsItWritesThem(t *testing.T) {
 // at most 256 bytes of that header before the line is built (answer.CorrelationID): reverting
 // both that and the clip is what fails it.
 func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
+	t.Parallel()
 	const entryLimit = 256 << 10
 	// The caller's text: not one byte repeated, so its first 256 bytes are no other 256 of it.
 	sent := strings.Repeat("abcdefghij", 30000)
 	want := sent[:256]
-	// refused is one request to the API port, changed by edit, that its route refuses.
-	refused := func(edit func(*http.Request)) {
+	// refused is one request to the API port, changed by edit, that its route refuses, its line
+	// written to log.
+	refused := func(log *slog.Logger, edit func(*http.Request)) {
 		req := httptest.NewRequest(http.MethodPost, "/v1/requests", nil)
 		edit(req)
 		answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
-		}), nil, nil).ServeHTTP(httptest.NewRecorder(), req)
+		}), nil, log).ServeHTTP(httptest.NewRecorder(), req)
 	}
 	// airlockLine is a refusal's line as the airlock's proxy port fills it (refusalFields).
 	airlockLine := answer.RefusalLine{ID: answer.NewID(), Status: http.StatusForbidden, Code: "NOT_ALLOWED",
@@ -720,49 +733,48 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 	driven := 0
 	for _, row := range []struct {
 		name, field string
-		// write writes the row's one line.
-		write func()
+		// write writes the row's one line to log.
+		write func(log *slog.Logger)
 	}{
-		{"the API port's method", "method", func() {
-			refused(func(req *http.Request) { req.Method = sent })
+		{"the API port's method", "method", func(log *slog.Logger) {
+			refused(log, func(req *http.Request) { req.Method = sent })
 		}},
 		// The recorder's own clip, not ClipFields: CorrelationID keeps at most 256 bytes of the
 		// header, so this row pins that cut and the line's clip never sees a longer one.
-		{"the API port's X-Correlation-Id", "correlation_id", func() {
-			refused(func(req *http.Request) { req.Header.Set("X-Correlation-Id", sent) })
+		{"the API port's X-Correlation-Id", "correlation_id", func(log *slog.Logger) {
+			refused(log, func(req *http.Request) { req.Header.Set("X-Correlation-Id", sent) })
 		}},
-		{"a correlation id handed to the line whole", "correlation_id", func() {
+		{"a correlation id handed to the line whole", "correlation_id", func(log *slog.Logger) {
 			line := airlockLine
 			line.Correlation = sent
-			slog.Warn(answer.RefusalMessage, line.Fields(nil)...)
+			log.Warn(answer.RefusalMessage, line.Fields(nil)...)
 		}},
-		{"a port's own field before correlation_id", "host", func() {
-			slog.Warn(answer.RefusalMessage, airlockLine.Fields([]any{"host", sent, "reason", "not allowed by rule", "path", "/v1/"})...)
+		{"a port's own field before correlation_id", "host", func(log *slog.Logger) {
+			log.Warn(answer.RefusalMessage, airlockLine.Fields([]any{"host", sent, "reason", "not allowed by rule", "path", "/v1/"})...)
 		}},
-		{"a port's own field after correlation_id", "slot", func() {
-			slog.Warn(answer.RefusalMessage, airlockLine.Fields(nil, "issue", "INFRA-1352", "slot", sent)...)
+		{"a port's own field after correlation_id", "slot", func(log *slog.Logger) {
+			log.Warn(answer.RefusalMessage, airlockLine.Fields(nil, "issue", "INFRA-1352", "slot", sent)...)
 		}},
-		{"a field of a line built by answer.ClipFields", "path", func() {
-			slog.Info("a call line", answer.ClipFields([]any{"answer_id", answer.NewID(), "method", http.MethodGet, "path", sent, "status", http.StatusOK})...)
+		{"a field of a line built by answer.ClipFields", "path", func(log *slog.Logger) {
+			log.Info("a call line", answer.ClipFields([]any{"answer_id", answer.NewID(), "method", http.MethodGet, "path", sent, "status", http.StatusOK})...)
 		}},
-		{"an error of a line built by answer.ClipFields", "error", func() {
-			slog.Warn("an upstream line", answer.ClipFields([]any{"host", "example.com", "path", "/v1/", "error", errors.New(sent)})...)
+		{"an error of a line built by answer.ClipFields", "error", func(log *slog.Logger) {
+			log.Warn("an upstream line", answer.ClipFields([]any{"host", "example.com", "path", "/v1/", "error", errors.New(sent)})...)
 		}},
-		{"a slog.Attr's string value", "path", func() {
-			slog.Info("a call line", answer.ClipFields([]any{"method", http.MethodGet, slog.String("path", sent)})...)
+		{"a slog.Attr's string value", "path", func(log *slog.Logger) {
+			log.Info("a call line", answer.ClipFields([]any{"method", http.MethodGet, slog.String("path", sent)})...)
 		}},
-		{"a slog.Attr's error", "error", func() {
-			slog.Warn("an upstream line", answer.ClipFields([]any{"host", "example.com", slog.Any("error", errors.New(sent))})...)
+		{"a slog.Attr's error", "error", func(log *slog.Logger) {
+			log.Warn("an upstream line", answer.ClipFields([]any{"host", "example.com", slog.Any("error", errors.New(sent))})...)
 		}},
-		{"a key with no value after it, which slog writes under !BADKEY", "!BADKEY", func() {
-			slog.Info("a call line", answer.ClipFields([]any{"method", http.MethodGet, sent})...)
+		{"a key with no value after it, which slog writes under !BADKEY", "!BADKEY", func(log *slog.Logger) {
+			log.Info("a call line", answer.ClipFields([]any{"method", http.MethodGet, sent})...)
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			driven++
 			out := &logtest.Buffer{}
-			logtest.SetDefault(t, logging.NewCloudHandler(out))
-			row.write()
+			row.write(slog.New(logging.NewCloudHandler(out)))
 			lines := slices.Collect(strings.Lines(out.String()))
 			if len(lines) != 1 {
 				t.Fatalf("the row wrote %d lines, want 1", len(lines))
@@ -794,6 +806,7 @@ func TestEveryFieldTheCallerWroteIsCutToItsFirst256Bytes(t *testing.T) {
 // The named reverts: drop the extras or the trailing fields, put correlation_id after the
 // trailing fields, or skip ClipFields, and this fails.
 func TestARefusalsLineKeepsEveryFieldAPortAddsInOrder(t *testing.T) {
+	t.Parallel()
 	const pairs = 5000
 	long := strings.Repeat("abcdefghij", 100)
 	var extras, trailing, wantExtras, wantTrailing []any
@@ -833,6 +846,7 @@ func TestARefusalsLineKeepsEveryFieldAPortAddsInOrder(t *testing.T) {
 // escape and those without, U+2028 and U+2029, bytes that are not UTF-8, and the bytes it writes
 // as they are, the HTML characters among them. The count allocates nothing.
 func TestTheBoundCountsANameAsTheLineWritesIt(t *testing.T) {
+	// Not parallel: testing.AllocsPerRun reads the whole process's malloc count (runtime.MemStats), which every other running test's allocations move.
 	const opening = `"secrets":[`
 	for _, name := range []string{
 		"", "PLAIN_NAME", `"`, `\`, "\b", "\f", "\n", "\r", "\t", "\x00", "\x01", "\x1f", "\x7f",
@@ -864,6 +878,7 @@ func (u unwrapping) Unwrap() http.ResponseWriter { return u.ResponseWriter }
 // A handler reaches the recorder through its request's context and through a writer that wraps
 // it, and one that runs behind none notes nothing and does not fail.
 func TestAHandlerReachesTheRecorderItRunsBehind(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		wrapped := unwrapping{w}
 		if answer.FromWriter(wrapped) != answer.FromContext(req.Context()) || answer.FromWriter(wrapped) == nil {
@@ -895,6 +910,7 @@ func TestAHandlerReachesTheRecorderItRunsBehind(t *testing.T) {
 // written. A connection a handler takes is the handler's, the answer counted, once the handler
 // has returned, as the 101 an upgrade is.
 func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
+	t.Parallel()
 	copied := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusGone)
@@ -962,6 +978,7 @@ func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 
 // A handler that panics is counted failed, and its panic goes on to the server.
 func TestAPanickingHandlerIsCountedFailed(t *testing.T) {
+	t.Parallel()
 	r := newRig(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic(http.ErrAbortHandler)
 	}))

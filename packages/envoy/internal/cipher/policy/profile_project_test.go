@@ -47,6 +47,7 @@ func loadProfiled(t *testing.T, stored ...secrets.LocalSecret) *policy.Set {
 // hold. Served without its source's project, the profile would go by owner and tier to every
 // session, which is what the tag exists to stop.
 func TestAProfileOfAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt(t *testing.T) {
+	t.Parallel()
 	set := loadProfiled(t,
 		projectSecret("PRIV_KEY", policy.OwnerShared, policy.TierAgent, privProject),
 		projectSecret("GONE_KEY", policy.OwnerShared, policy.TierAgent, goneProject),
@@ -83,6 +84,7 @@ func TestAProfileOfAPrivateProjectSecretGoesOnlyToACredentialThatNamesIt(t *test
 // limit off the served profile's ProjectChannels (requests' AirlockValues), so the profile carries
 // it.
 func TestAProfileOfAProjectChannelsSecretIsLimitedAsItsSource(t *testing.T) {
+	t.Parallel()
 	app := policytest.TypeSecret("APP_KEY", policy.OwnerShared, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	app.Tags[policy.TagProjectChannels] = policy.ProjectChannelsSlack
 	set := loadProfiled(t, app)
@@ -114,6 +116,7 @@ func TestAProfileOfAProjectChannelsSecretIsLimitedAsItsSource(t *testing.T) {
 // version as tagging a secret served by its own name does, so the airlock proxy reads again the
 // values it holds (proxy's bound.go) and each live grant is evaluated again.
 func TestTaggingAProfilesSourceMovesTheVersion(t *testing.T) {
+	t.Parallel()
 	app := func(channels bool) secrets.LocalSecret {
 		s := policytest.TypeSecret("APP_KEY", policy.OwnerShared, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 		if channels {

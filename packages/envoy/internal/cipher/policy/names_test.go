@@ -8,6 +8,7 @@ import (
 )
 
 func TestNameSlugRoundTrip(t *testing.T) {
+	t.Parallel()
 	for name, slug := range map[string]string{"DEEL_API" + "_KEY": "deel-api-key", "A0": "a0", "A_B": "a-b"} {
 		got, err := policy.NameToSlug(name)
 		if err != nil || got != slug {

@@ -48,6 +48,7 @@ func (b *boundTransport) calls() []bool {
 // the run's arithmetic gives its Dispatch phase. A run that made none of them, or no GET, is a
 // failure too: a list without them cannot say whether they are bounded.
 func TestEveryDispatchReadOfARunIsUnderTheOneBound(t *testing.T) {
+	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	opts := testOptions(t, dispatch, model, machine)
 	transport := &boundTransport{inner: opts.Dispatch.HTTP.Transport}
@@ -116,6 +117,7 @@ func TestTheJudgedRowIsWrittenOnAContextOfItsOwn(t *testing.T) {
 // (context.Canceled) says nothing of Dispatch: it is logged at INFO, on notApplied's line for the
 // broker stopping under the approval. The request waits for its person in each case.
 func TestADispatchFailureAtTheApprovalIsNoRefusal(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		failure error
@@ -127,10 +129,11 @@ func TestADispatchFailureAtTheApprovalIsNoRefusal(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var records logtest.Recorder
-			logtest.SetDefault(t, &records)
 			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 			machine.applyErr = c.failure
-			New(t.Context(), testOptions(t, dispatch, model, machine)).write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
+			opts := testOptions(t, dispatch, model, machine)
+			opts.Log = slog.New(&records)
+			New(t.Context(), opts).write(t.Context(), pending(), verdictRow{asked: true, verdict: Verdict{Word: Grant, Reason: "yes"}})
 			if _, logged := machine.rows(); len(logged) != 1 {
 				t.Fatalf("the run logged %d rows; want the failed approval's row", len(logged))
 			}

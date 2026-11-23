@@ -24,6 +24,7 @@ import (
 // broker with no client of Dispatch asks nothing and enrolls as before, which is why the check
 // needs BROKER_PROJECT_ACCESS_URL.
 func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
+	t.Parallel()
 	const (
 		outsider = "outsider@outside.example"
 		full     = "ines@example.com"

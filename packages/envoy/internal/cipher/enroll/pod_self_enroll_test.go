@@ -163,6 +163,7 @@ func (r podRig) enrollSession(t *testing.T, cred Credential, account, podUID, se
 // whose token it can read. A request carrying both faults, another pod UID and a session name,
 // is answered the pod UID's refusal: podUnderTokenLogin reads the pod UID first.
 func TestAPodsOwnLoginEnrolsItsOwnPodAlone(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	cred := r.login(t, selfAccount, "pod-uid-self")
 	if cred.Subject == nil || *cred.Subject != selfAccount || cred.PodUID != "pod-uid-self" {
@@ -195,6 +196,7 @@ func TestAPodsOwnLoginEnrolsItsOwnPodAlone(t *testing.T) {
 // pod asking for another pod UID of the account is ErrPodSelfEnrollOnly and never allowed as a
 // pod its service launches.
 func TestAnAccountInBothListsEnrolsItsOwnPodAlone(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	r.svc.ServicesByAccount[selfAccount] = podLoginService
 	cred := r.login(t, selfAccount, "pod-uid-self")
@@ -229,6 +231,7 @@ func TestAnAccountInBothListsEnrolsItsOwnPodAlone(t *testing.T) {
 // credential rows the pods of one account hold (newPerPodRig), which is what a pod logging
 // itself in meets.
 func TestAPodEnrollingItselfStatesNoSessionNameAndTakesNoSiblingsGrant(t *testing.T) {
+	t.Parallel()
 	for _, schema := range []struct {
 		name string
 		rig  func(t *testing.T) podRig
@@ -282,6 +285,7 @@ func TestAPodEnrollingItselfStatesNoSessionNameAndTakesNoSiblingsGrant(t *testin
 // On the schema of the release after this one, which is where the per-pod login starts
 // (newPerPodRig).
 func TestEveryPodOfAnAccountHoldsItsOwnLoginAtOnce(t *testing.T) {
+	t.Parallel()
 	r := newPerPodRig(t)
 	firstKey := newLoginKey(t)
 	first := r.loginWithKey(t, selfAccount, "pod-uid-one", firstKey)
@@ -315,6 +319,7 @@ func TestEveryPodOfAnAccountHoldsItsOwnLoginAtOnce(t *testing.T) {
 // every such login of an account is the same credential, as a launcher's is, and it belongs to no
 // pod, so it enrols none of its own account's pods.
 func TestALoginBoundToNoPodIsItsAccountsOne(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	first := r.login(t, selfAccount, "")
 	second := r.login(t, selfAccount, "")
@@ -333,6 +338,7 @@ func TestALoginBoundToNoPodIsItsAccountsOne(t *testing.T) {
 // pod, proving the key it already holds, keeps its credential id, so every pod it enrolled stays
 // under it. The same holds when it mints a new key, as a restarted process does.
 func TestALoginRelogsInFromItsOwnPodUnderTheSameCredential(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	key := newLoginKey(t)
 	first := r.loginWithKey(t, launcherAccount, "pod-uid-daemon", key)
@@ -351,6 +357,7 @@ func TestALoginRelogsInFromItsOwnPodUnderTheSameCredential(t *testing.T) {
 // from its own pod and enrols pods running as the account BROKER_SERVICES binds to its service,
 // several of them, none of them its own pod.
 func TestALaunchersLoginEnrolsThePodsItsServiceLaunches(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	cred := r.login(t, launcherAccount, "pod-uid-daemon")
 	for _, podUID := range []string{"pod-uid-worker-1", "pod-uid-worker-2"} {
@@ -367,6 +374,7 @@ func TestALaunchersLoginEnrolsThePodsItsServiceLaunches(t *testing.T) {
 // another service than the login's, is ErrPodNotLaunched — including under a pod's own login,
 // which would otherwise reach every account but its own.
 func TestATokenLoginEnrolsNoPodOfAnAccountItsServiceDoesNotLaunch(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	r.svc.ServicesByAccount["system:serviceaccount:other:another-service-pod"] = "another-service"
 	for who, cred := range map[string]Credential{
@@ -387,6 +395,7 @@ func TestATokenLoginEnrolsNoPodOfAnAccountItsServiceDoesNotLaunch(t *testing.T) 
 // deployment's settings, so neither rule reaches it and it enrols the pods it launches, whatever
 // account they run as.
 func TestAServiceLoginAPersonApprovedEnrolsPodsAsBefore(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	cred := mintCredential(t, r.svc, nil, str(podLoginService), "legion/legion-daemon")
 	for i, account := range []string{workerPodAccount, selfAccount, strangerPodAccount} {
@@ -437,6 +446,7 @@ func (r podRig) revoked(t *testing.T, enrollmentID string) bool {
 // Each launcher pod holds a login of its own only on the schema of the release after this one
 // (newPerPodRig); until then the replacement takes the account's row over and needs no rule.
 func TestAReplacedLauncherPodEndsItsPredecessorsEnrollments(t *testing.T) {
+	t.Parallel()
 	r := newPerPodRig(t)
 	ctx := context.Background()
 	first := r.login(t, launcherAccount, "pod-uid-daemon-one")
@@ -460,6 +470,7 @@ func TestAReplacedLauncherPodEndsItsPredecessorsEnrollments(t *testing.T) {
 // TestALauncherStillEndsItsOwnEnrollments: the rule above adds to the enrolling credential's own
 // revoke and replaces nothing — a launcher ends the pods it enrolled itself, as before.
 func TestALauncherStillEndsItsOwnEnrollments(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	ctx := context.Background()
 	cred := r.login(t, launcherAccount, "pod-uid-daemon")
@@ -480,6 +491,7 @@ func TestALauncherStillEndsItsOwnEnrollments(t *testing.T) {
 // end another's enrollment, whichever of them logged in last. This is what keeps the
 // replaced-launcher rule to launchers; the account BROKER_SERVICES does bind is the test below.
 func TestASelfEnrolledPodEndsNoOtherPodsEnrollment(t *testing.T) {
+	t.Parallel()
 	// Two session pods hold two logins at once only on the schema of the release after this
 	// one (newPerPodRig).
 	r := newPerPodRig(t)
@@ -507,6 +519,7 @@ func TestASelfEnrolledPodEndsNoOtherPodsEnrollment(t *testing.T) {
 // second pod is refused the first's enrollment. The half that keeps working: the credential
 // that made the enrollment, which is the first pod's own, still ends it.
 func TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment(t *testing.T) {
+	t.Parallel()
 	// Two session pods hold two logins at once only on the schema of the release after this
 	// one (newPerPodRig).
 	r := newPerPodRig(t)
@@ -554,6 +567,7 @@ func TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment(t *testing.T) {
 // Its own enrollment each pod still ends: the second under the credential the takeover handed
 // it, the first after logging in again.
 func TestOnTheShippedSchemaAPodEndsNoOtherPodsEnrollmentOfItsAccount(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	r.svc.ServicesByAccount[selfAccount] = podLoginService
 	ctx := context.Background()
@@ -603,6 +617,7 @@ func TestOnTheShippedSchemaAPodEndsNoOtherPodsEnrollmentOfItsAccount(t *testing.
 // its own — the pod's account must be one BROKER_SERVICES binds to the login's own service, so a
 // login of one service ends nothing of another's pods.
 func TestATokenLoginEndsNoEnrollmentOfAnotherServicesPods(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	ctx := context.Background()
 	const otherService, otherPodAccount = "other-service", "system:serviceaccount:other:other-worker"
@@ -638,6 +653,7 @@ func TestATokenLoginEndsNoEnrollmentOfAnotherServicesPods(t *testing.T) {
 // index the statement here stops resolving, which is exactly why the drop waits for the release
 // whose pods no longer run it.
 func TestThePreviousBrokersTokenLoginStillRunsOnTheMigratedSchema(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	key := newLoginKey(t)
 	var id string
@@ -685,6 +701,7 @@ func (r podRig) tokenLoginOf(account, podUID string, key loginKey) TokenLogin {
 // the login's own insert then runs with whatever schema the drop left. With the lock the drop
 // waits and the login succeeds; without it the drop finishes first and the login is refused.
 func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	ctx := context.Background()
 	pool := r.svc.Store.Pool
@@ -749,6 +766,7 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 // nothing. Two logins of two subjects, each in a transaction of its own and neither committed,
 // both finish; a lock that serialized them would leave the second waiting for the first.
 func TestTwoLoginsInFlightDoNotWaitForEachOther(t *testing.T) {
+	t.Parallel()
 	r := newPodRig(t)
 	ctx := context.Background()
 	first, err := r.svc.Store.Pool.Begin(ctx)

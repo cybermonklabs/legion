@@ -164,6 +164,7 @@ func compareWithMergeBase(t *testing.T, answers map[string]gridAnswer) {
 // secret as it does today (R9). With -write-golden it writes the golden instead, which the head
 // comment allows at the merge base alone.
 func TestAPrivateProjectSecretBaseGridIsRecorded(t *testing.T) {
+	t.Parallel()
 	store, names := gridSecrets(nil)
 	set, err := policytest.Loader(store, gridService).Load(context.Background())
 	if err != nil {

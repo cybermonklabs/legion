@@ -14,6 +14,7 @@ import (
 )
 
 func TestGoogleLoginMintExchangesRefreshToken(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
@@ -40,6 +41,7 @@ func TestGoogleLoginMintExchangesRefreshToken(t *testing.T) {
 // the moment it asked. An answer that carries none says nothing about when the token ends, and
 // the minted expiry is zero: no clock ends such a value.
 func TestGoogleLoginMintReportsTheExpiryGoogleGave(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
 	for name, row := range map[string]struct {
 		answer string
@@ -80,6 +82,7 @@ func TestGoogleLoginMintReportsTheExpiryGoogleGave(t *testing.T) {
 }
 
 func TestGoogleLoginMintNamesInvalidRaptWithoutLeakingCredentials(t *testing.T) {
+	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant", "error_subtype": "invalid_rapt"})
@@ -102,6 +105,7 @@ func TestGoogleLoginMintNamesInvalidRaptWithoutLeakingCredentials(t *testing.T) 
 // not a login that needs a new sign-in, so the broker's log points its operator at Google, after
 // the Retry has asked three times.
 func TestGoogleLoginMintNamesAGoogleOutageAsUpstream(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -125,6 +129,7 @@ func TestGoogleLoginMintNamesAGoogleOutageAsUpstream(t *testing.T) {
 // the status and the body are what tell it. A 4xx that is no rate limit stays refused. None of the
 // three is asked twice: a rate limit that names no wait counts as a minute, which ends the mint.
 func TestGoogleLoginMintNamesARateLimitAsUpstream(t *testing.T) {
+	t.Parallel()
 	value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
 	for _, tc := range []struct {
 		name   string
@@ -162,6 +167,7 @@ func TestGoogleLoginMintNamesARateLimitAsUpstream(t *testing.T) {
 // timing the request out: both are upstream, which points the broker's operator at Google rather
 // than at the login.
 func TestGoogleLoginMintReadsInvalidGrantOnlyFromARefusal(t *testing.T) {
+	t.Parallel()
 	value := `{"type":"authorized_user","client_id":"client-id","cli` + `ent_secret":"client-secret","ref` + `resh_token":"refresh-token"}`
 	for _, tc := range []struct {
 		status int

@@ -85,6 +85,7 @@ func approveOnTheDormantRow(t *testing.T, svc *Service, enrollmentID uuid.UUID, 
 // its own pod's, and each slot of it its own slot's; and a machine's own session is that
 // machine's, by the subject its credential proved.
 func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newPodRig(t)
 	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
@@ -170,6 +171,7 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 // same claim, and another role of the same service, which enrols first, takes nothing. The value
 // reaching that next pod over HTTP is api's TestTheNextPodOfAClaimReceivesTheValueAPersonApprovedForTheLastOne.
 func TestTheNextPodOfAClaimTakesWhatTheLastOneLeft(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newPodRig(t)
 	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
@@ -215,6 +217,7 @@ func TestTheNextPodOfAClaimTakesWhatTheLastOneLeft(t *testing.T) {
 // the same person enrolling on another box first takes nothing, and the first session, resumed on
 // a third box, gets its grant back by the session carry.
 func TestAResumedSessionGetsItsOwnGrantBackAfterAnotherSessionOfThePersonEnrolled(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
@@ -244,6 +247,7 @@ func TestAResumedSessionGetsItsOwnGrantBackAfterAnotherSessionOfThePersonEnrolle
 // that owner comes up: a person signing in on a second box, and a second pod of one claim beside a
 // first that is still running.
 func TestALiveEnrollmentOfTheSameOwnerKeepsItsGrants(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("a person's sign-in on another box", func(t *testing.T) {
 		svc := newService(t)
@@ -282,6 +286,7 @@ func TestALiveEnrollmentOfTheSameOwnerKeepsItsGrants(t *testing.T) {
 // whose row records none is taken by no later pod of the claim: its grant waits for its own
 // session's next enrollment, or for the carry sweep, as before.
 func TestAnEnrollmentWithNoOwnerKeepsTodaysRule(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newPodRig(t)
 	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
@@ -312,6 +317,7 @@ func TestAnEnrollmentWithNoOwnerKeepsTodaysRule(t *testing.T) {
 // than it names a session), and in any shape a claim token cannot take. Each refusal writes no
 // row; a claim of the longest shape is accepted.
 func TestAClaimIsRefusedOffAPodAndWhenMalformed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newPodRig(t)
 	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
@@ -408,6 +414,7 @@ func adoptedFrom(t *testing.T, svc *Service, to uuid.UUID) (from uuid.UUID, rule
 // it, not the session of the pod whose box ended. A request that named no session still names
 // none, and its wake falls back to the session of the enrollment it hangs off, the next pod's.
 func TestTheNextPodOfAClaimIsWokenForTheRequestItTook(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newPodRig(t)
 	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
@@ -441,6 +448,7 @@ func TestTheNextPodOfAClaimIsWokenForTheRequestItTook(t *testing.T) {
 // lands on the old row and moves with it. A live pod of another claim takes nothing, and with no
 // live pod of the claim the end leaves the row dormant, as before.
 func TestAPodOfTheClaimUpBeforeTheLastOneEndedTakesWhatItLeft(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("the daemon's revoke lands after the next pod enrolled", func(t *testing.T) {
 		r := newPodRig(t)
@@ -522,6 +530,7 @@ func TestAPodOfTheClaimUpBeforeTheLastOneEndedTakesWhatItLeft(t *testing.T) {
 // under the same claim token is another owner: it takes nothing a dormant pod of the first
 // service's claim left, at its enrolment or at that pod's end.
 func TestTheSameClaimUnderAnotherServiceTakesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const otherService, otherPodAccount = "other-service", "system:serviceaccount:other:other-worker"
 	r := newPodRig(t)
@@ -568,6 +577,7 @@ func TestTheSameClaimUnderAnotherServiceTakesNothing(t *testing.T) {
 // a live pod of the claim to hand its grant to (handOver) nor when they enrol after it (adopt).
 // The first daemon's own next pod of the claim still takes it.
 func TestAnotherDaemonOfTheServiceStatingTheClaimTakesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const otherDaemonAccount = "system:serviceaccount:legion-other:legion-daemon"
 	rig := func(t *testing.T) (podRig, Credential, Credential) {
@@ -637,6 +647,7 @@ func TestAnotherDaemonOfTheServiceStatingTheClaimTakesNothing(t *testing.T) {
 // same machine, live when the first one's box ends, is handed nothing, a third enrolling after
 // takes nothing, and the first session, resumed, gets its grant back by the session carry.
 func TestAMachinesGrantStaysWithItsSession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newPodRig(t)
 	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-machine")
@@ -707,6 +718,7 @@ func holdEnrollment(t *testing.T, svc *Service, id uuid.UUID) (release func()) {
 // rule, which leaves a withheld name where it is because a withhold binds a session name; and
 // nothing from the live third.
 func TestAPairedTakeGoesThroughTheSessionRuleAndTheClaimRuleIsUnchanged(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	r := newPodRig(t)
 	r.svc.ServicesByAccount[pairedWorkerPodAccount] = podLoginService

@@ -86,6 +86,7 @@ func answerOf(t *testing.T, client *http.Client, request *http.Request) (int, st
 // request back from, whole - the method, the path, the query, the Host, the headers and the
 // body - since a check that cannot see one of those cannot assert about it.
 func TestAServiceAnswersItsBodyAndRecordsWhatItGot(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Body: "S answered"})
 	request, err := http.NewRequest(http.MethodPost, service.URL()+"/v1/things?page=2", strings.NewReader("the body the command sent"))
 	if err != nil {
@@ -120,6 +121,7 @@ func TestAServiceAnswersItsBodyAndRecordsWhatItGot(t *testing.T) {
 // proxy trusts them all; and the files the authority writes are the pair a broker mounts as its
 // own certificate authority.
 func TestAServiceTakesACertificateFromTheAuthorityItWasGiven(t *testing.T) {
+	t.Parallel()
 	authority, err := NewAuthority("the run's authority")
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +160,7 @@ func TestAServiceTakesACertificateFromTheAuthorityItWasGiven(t *testing.T) {
 // a call reached it signed with the real key, so it has to accept a call the AWS signer made
 // with that key and refuse one made with anything else, naming why.
 func TestTheAWSStandVerifiesTheRealKeysSignatureAndRefusesAnother(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{})
 	service.AnswerWith(NewAWSStand(AWSOptions{KeyID: testAWSKeyID, SecretKey: testAWSSecretKey, Body: "the signature verified"}).Answer)
 	client := clientOf(service)
@@ -202,6 +205,7 @@ func hashOfBody(body string) string {
 // what lets a check drive a minted token to within the proxy's five-minute margin by asking for
 // a short one.
 func TestTheGoogleStandsLifetimeReachesTheMinter(t *testing.T) {
+	t.Parallel()
 	const lifetime = 7 * time.Minute
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGoogleStand(GoogleOptions{AccessToken: "th" + "e-stand-in-token", Lifetime: lifetime}).Answer)
@@ -233,6 +237,7 @@ func TestTheGoogleStandsLifetimeReachesTheMinter(t *testing.T) {
 // access token for the right one - and leave every other request to the service behind it,
 // since one host plays the endpoint and the API both.
 func TestTheMicrosoftStandRecordsTheAssertionItWasGiven(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Body: "the API answered"})
 	stand := NewMicrosoftStand(MicrosoftOptions{
 		Tokens: []string{"the-real-access-token"}, Assertion: "the.real.federated-token", Lifetime: 3599 * time.Second,
@@ -307,6 +312,7 @@ const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string"
 // object, and an answer held back past the caller's own bound - each read back as what that
 // reader makes of it.
 func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	stand := NewModelStand(ModelOptions{Answer: ModelAnswer{Text: `{"verdict":"grant","reason":"the reason names the issue"}`}})
 	service.AnswerWith(stand.Answer)
@@ -362,6 +368,7 @@ func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
 // issue it holds without one, a key it holds no issue for, the ask a person answered, an id it
 // holds no ask for, and a read presenting no token at all.
 func TestTheDispatchStandAnswersTheReadsItsReaderMakes(t *testing.T) {
+	t.Parallel()
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewDispatchStand(DispatchOptions{
 		Issues: []DispatchIssue{
@@ -434,6 +441,7 @@ func TestTheDispatchStandAnswersTheReadsItsReaderMakes(t *testing.T) {
 // comes back for the audience asked, and a reader that presented no Metadata-Flavor header - as
 // nothing in the broker does, and as a stray client would - is refused.
 func TestTheMetadataStandAnswersTheIdentityTokenItsReaderAsksFor(t *testing.T) {
+	// Not parallel: it sets googleidentity.MetadataHostVar, an environment variable of the whole process (t.Setenv).
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewMetadataStand(MetadataOptions{Token: "the-identity-token"}).Answer)
 	t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(service.URL(), "http://"))

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -173,8 +174,9 @@ func answered(status int, header http.Header) reply {
 }
 
 // mintGitHub mints acme's token from up under retry, as a release of a github-app profile does,
-// for scope, or for a profile of contents at read on acme (readScope) where scope is nil.
-func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.Retry, scope *secrets.GitHubScope) (secrets.Minted, error) {
+// for scope, or for a profile of contents at read on acme (readScope) where scope is nil, logging
+// to log (slog.Default() where nil).
+func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.Retry, scope *secrets.GitHubScope, log *slog.Logger) (secrets.Minted, error) {
 	t.Helper()
 	key, err := testAppKey()
 	if err != nil {
@@ -183,7 +185,7 @@ func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.
 	if scope == nil {
 		scope = readScope("acme")
 	}
-	return secrets.GitHubApp{Base: up.server.URL, HTTP: up.server.Client(), Retry: retry}.Mint(ctx, secrets.MintRequest{
+	return secrets.GitHubApp{Base: up.server.URL, HTTP: up.server.Client(), Retry: retry, Log: log}.Mint(ctx, secrets.MintRequest{
 		Type: "github-app", Value: githubAppValue(t, "1", key), GitHub: scope,
 	})
 }
@@ -194,6 +196,7 @@ func mintGitHub(ctx context.Context, t *testing.T, up *scripted, retry *secrets.
 // wait's ceiling is the 1 s left of the mint's 10 s. With the real draw each wait falls under its
 // ceiling, and two runs wait differently. Each attempt is counted by type, outcome and number.
 func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		first reply
@@ -210,7 +213,7 @@ func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
 				return ceiling
 			})
 			up := newScripted(t, installed, tc.first, answered(http.StatusServiceUnavailable, nil), tokenMinted)
-			minted, err := mintGitHub(t.Context(), t, up, retry, nil)
+			minted, err := mintGitHub(t.Context(), t, up, retry, nil, nil)
 			if err != nil || !strings.Contains(minted.Value, "token-7") {
 				t.Fatalf("Mint after 503, 503, 201 = %q, %v; want acme's token", minted.Value, err)
 			}
@@ -238,7 +241,7 @@ func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
 	for run := range runs {
 		retry, clock, _ := testRetry(nil)
 		up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil), answered(http.StatusServiceUnavailable, nil), tokenMinted)
-		if _, err := mintGitHub(t.Context(), t, up, retry, nil); err != nil {
+		if _, err := mintGitHub(t.Context(), t, up, retry, nil, nil); err != nil {
 			t.Fatalf("run %d: Mint after 503, 503, 201: %v", run, err)
 		}
 		waits := clock.slept()
@@ -258,6 +261,7 @@ func TestMintCallRetriesA503TwiceAndMintsAtTheThird(t *testing.T) {
 // an outage, as a 5xx is. The failure of a call is its last attempt's, naming how many attempts it
 // made; a mint that fails before it calls anything made none.
 func TestMintCallRetriesWhatItsClassifierRetries(t *testing.T) {
+	t.Parallel()
 	past := reply{status: http.StatusOK, body: "[" + strings.Repeat(" ", 1<<20) + "]"}
 	for _, tc := range []struct {
 		name    string
@@ -278,7 +282,7 @@ func TestMintCallRetriesWhatItsClassifierRetries(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			retry, _, registry := testRetry(atTheTop)
 			up := newScripted(t, tc.replies...)
-			minted, err := mintGitHub(t.Context(), t, up, retry, nil)
+			minted, err := mintGitHub(t.Context(), t, up, retry, nil, nil)
 			if len(up.requests()) != len(tc.replies) {
 				t.Fatalf("the mint made %d requests; want the %d its script answers", len(up.requests()), len(tc.replies))
 			}
@@ -303,7 +307,7 @@ func TestMintCallRetriesWhatItsClassifierRetries(t *testing.T) {
 	t.Run("an answer past its cap", func(t *testing.T) {
 		retry, _, _ := testRetry(atTheTop)
 		up := newScripted(t, past)
-		_, err := mintGitHub(t.Context(), t, up, retry, nil)
+		_, err := mintGitHub(t.Context(), t, up, retry, nil, nil)
 		if len(up.requests()) != 1 || secrets.MintErrorClass(err) != "upstream" || secrets.MintAttempts(err) != 1 || !strings.Contains(err.Error(), "more than 1048576 bytes") {
 			t.Fatalf("Mint against an answer past its cap = %v after %d requests (%d attempts); want one upstream attempt naming the cap", err, len(up.requests()), secrets.MintAttempts(err))
 		}
@@ -320,8 +324,9 @@ func TestMintCallRetriesWhatItsClassifierRetries(t *testing.T) {
 // TestANilRetryMakesOneAttempt: a minter built with no Retry, as agent-secrets' own code and a
 // row about something else build one, makes one attempt of each call.
 func TestANilRetryMakesOneAttempt(t *testing.T) {
+	t.Parallel()
 	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil))
-	_, err := mintGitHub(t.Context(), t, up, nil, nil)
+	_, err := mintGitHub(t.Context(), t, up, nil, nil, nil)
 	if len(up.tokenRequests()) != 1 || secrets.MintErrorClass(err) != "upstream" || secrets.MintAttempts(err) != 1 {
 		t.Fatalf("Mint with no Retry = %v after %d token requests (%d attempts); want one upstream attempt", err, len(up.tokenRequests()), secrets.MintAttempts(err))
 	}
@@ -343,6 +348,7 @@ func (f *failingFirst) RoundTrip(request *http.Request) (*http.Response, error) 
 // TestMintCallRetriesATransportFailure: a call that got no answer at all, while its context
 // lives, is made again.
 func TestMintCallRetriesATransportFailure(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -365,6 +371,7 @@ func TestMintCallRetriesATransportFailure(t *testing.T) {
 // TestMintCallTriesACancelledContextOnce: a call whose caller's context ends while it waits for
 // the answer is not made again, and is counted as cancelled.
 func TestMintCallTriesACancelledContextOnce(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var tokenCalls atomic.Int64
@@ -407,6 +414,7 @@ func TestMintCallTriesACancelledContextOnce(t *testing.T) {
 // clock the test sets, never the jitter's: Retry-After in seconds, Retry-After as an HTTP date,
 // and X-RateLimit-Reset when X-RateLimit-Remaining is 0.
 func TestMintCallWaitsTheWaitTheServerNamesInFull(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		answer func(now time.Time) reply
@@ -425,7 +433,7 @@ func TestMintCallWaitsTheWaitTheServerNamesInFull(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			retry, clock, _ := testRetry(atTheBottom)
 			up := newScripted(t, installed, tc.answer(clock.Now()), tokenMinted)
-			if _, err := mintGitHub(t.Context(), t, up, retry, nil); err != nil {
+			if _, err := mintGitHub(t.Context(), t, up, retry, nil, nil); err != nil {
 				t.Fatalf("Mint after the named wait: %v", err)
 			}
 			if waits := clock.slept(); !slices.Equal(waits, []time.Duration{tc.want}) {
@@ -442,6 +450,7 @@ func TestMintCallWaitsTheWaitTheServerNamesInFull(t *testing.T) {
 // no wait), a rate limit that names no wait (a minute), and a wait that fits the budget but not
 // what an earlier wait of the same mint left of it.
 func TestMintCallEndsAtANamedWaitPastWhatIsLeft(t *testing.T) {
+	t.Parallel()
 	maxInt64 := strconv.FormatInt(math.MaxInt64, 10)
 	for _, tc := range []struct {
 		name     string
@@ -464,7 +473,7 @@ func TestMintCallEndsAtANamedWaitPastWhatIsLeft(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			retry, clock, _ := testRetry(atTheTop)
 			up := newScripted(t, tc.replies...)
-			_, err := mintGitHub(t.Context(), t, up, retry, nil)
+			_, err := mintGitHub(t.Context(), t, up, retry, nil, nil)
 			if len(up.requests()) != len(tc.replies) || secrets.MintErrorClass(err) != "upstream" || secrets.MintAttempts(err) != tc.attempts {
 				t.Fatalf("Mint = %v after %d requests (%d attempts); want class upstream after %d attempts and no further request",
 					err, len(up.requests()), secrets.MintAttempts(err), tc.attempts)
@@ -479,11 +488,12 @@ func TestMintCallEndsAtANamedWaitPastWhatIsLeft(t *testing.T) {
 // TestMintCallEndsWhenTheDeadlineIsShorterThanTheWait: a caller's deadline that falls before the
 // next wait ends ends the mint at once, with no further attempt and no wait.
 func TestMintCallEndsWhenTheDeadlineIsShorterThanTheWait(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	retry, clock, _ := testRetry(atTheTop)
 	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil))
-	_, err := mintGitHub(ctx, t, up, retry, nil)
+	_, err := mintGitHub(ctx, t, up, retry, nil, nil)
 	if len(up.tokenRequests()) != 1 || secrets.MintErrorClass(err) != "upstream" || secrets.MintAttempts(err) != 1 {
 		t.Fatalf("Mint under a 1 s deadline before a 2 s wait = %v after %d token requests (%d attempts); want one attempt", err, len(up.tokenRequests()), secrets.MintAttempts(err))
 	}
@@ -495,12 +505,13 @@ func TestMintCallEndsWhenTheDeadlineIsShorterThanTheWait(t *testing.T) {
 // TestMintCallSendsItsBodyAgain: a retried call sends the body it sent first, whole: a profile's
 // token request's access_tokens body, naming its repositories and its permissions.
 func TestMintCallSendsItsBodyAgain(t *testing.T) {
+	t.Parallel()
 	retry, _, _ := testRetry(atTheTop)
 	scoped := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"read","metadata":"read"},"repository_selection":"selected","repositories":[{"name":"proofs"}]}`}
 	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil), scoped)
 	scope := readScope("acme")
 	scope.Repositories = []string{"acme/proofs"}
-	if _, err := mintGitHub(t.Context(), t, up, retry, scope); err != nil {
+	if _, err := mintGitHub(t.Context(), t, up, retry, scope, nil); err != nil {
 		t.Fatalf("Mint of a token naming a repository after a 503: %v", err)
 	}
 	tokens := up.tokenRequests()
@@ -513,6 +524,7 @@ func TestMintCallSendsItsBodyAgain(t *testing.T) {
 // each mints through a 503, sending its body again, and a refusal - a login's invalid_grant, a
 // service account's permission denied - is answered at its first attempt.
 func TestGoogleMintersRetryA503AndAnswerInvalidGrantAtOnce(t *testing.T) {
+	t.Parallel()
 	unavailable := reply{status: http.StatusServiceUnavailable, body: `{"error":{"code":503,"status":"UNAVAILABLE"}}`}
 	login := func(retry *secrets.Retry, up *scripted) (secrets.Minted, error) {
 		return secrets.GoogleLogin{TokenURL: up.server.URL, HTTP: up.server.Client(), Retry: retry}.
@@ -570,6 +582,7 @@ func TestGoogleMintersRetryA503AndAnswerInvalidGrantAtOnce(t *testing.T) {
 // first failure. The budget refills one a second: two seconds on, one mint retries twice and the
 // next not at all.
 func TestRetryBudgetStopsManyMintsFailingAtOnce(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)

@@ -19,6 +19,7 @@ import (
 // maxGrant over an hour (max-grant-required) and requesters that leave out its owner
 // (requesters-not-owner); and so are a github and a google block, neither of which fits the type.
 func TestAProfileOfAnAnthropicFederationSourceIsHeldToItsTypesRules(t *testing.T) {
+	t.Parallel()
 	source := policytest.TypeSecret("FED_ADMIN", appOwner, policy.TierHuman, policy.TypeAnthropicFederation, policytest.TypeValue(policy.TypeAnthropicFederation))
 	stored := []secrets.LocalSecret{appSource(), source}
 

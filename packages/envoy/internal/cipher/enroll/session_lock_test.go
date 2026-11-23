@@ -24,6 +24,7 @@ import (
 // createAttempt names READ COMMITTED, and without the name the second case's enrolment waits but
 // reads its predecessors in a snapshot taken before the wait.
 func TestAnAdoptionReadsItsPredecessorsUnderTheSessionsLock(t *testing.T) {
+	t.Parallel()
 	for _, repeatableRead := range []bool{false, true} {
 		name := "the server's default level"
 		if repeatableRead {

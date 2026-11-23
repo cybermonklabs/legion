@@ -23,6 +23,7 @@ func channelsSecret(name, owner, tier, value string) secrets.LocalSecret {
 // any other value, the empty tag and the word none included, refuses the secret
 // project-channels-malformed, since a value the broker cannot read names no limit it could apply.
 func TestProjectChannelsTagIsLoaded(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(
 		channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack),
 		channelsSecret("UPPER_TOKEN", policy.OwnerShared, policy.TierAgent, "SLACK"),
@@ -53,6 +54,7 @@ func TestProjectChannelsTagIsLoaded(t *testing.T) {
 // bound.go). A secret without it writes the line it wrote before the tag existed, so no deployed
 // version moves.
 func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
+	t.Parallel()
 	const arn = "arn:aws:secretsmanager:local:000000000000:secret:example/agent-secrets/"
 	digest := func(lines string) string {
 		sum := sha256.Sum256([]byte(lines))
@@ -114,6 +116,7 @@ func TestProjectChannelsTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 // of its own name with a proxy block, and the same secret asked for by a credential that names
 // only a public project, follow owner and tier as before.
 func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(channelsSecret("SLACK_TOKEN", policy.OwnerShared, policy.TierAgent, policy.ProjectChannelsSlack))
 	loader := projectLoader(store)
 	bare, err := loader.Load(context.Background())
@@ -155,6 +158,7 @@ func TestAProjectChannelsSecretOutsideTheAirlockIsDeniedToAPrivateProject(t *tes
 // dispatch-project tag at all, and stays limited once its person can no longer see that project,
 // which is exactly when the limit must not fall away.
 func TestListsPrivateReadsTheCredentialsOwnProjects(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name      string
 		requester policy.Requester

@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -54,6 +53,7 @@ func (h capturingHandler) WithGroup(string) slog.Handler { return h }
 // Notify presents the broker's own account token, read afresh for each notice, as its bearer:
 // the listener admits the account it names, so the broker shares no bearer with anyone.
 func TestNotifyPresentsTheAccountToken(t *testing.T) {
+	t.Parallel()
 	var gotMethod, gotPath, gotAuth string
 	// The body is read as the listener's send route reads it.
 	var gotBody listenerwire.SendRequest
@@ -114,15 +114,15 @@ func TestNotifyPresentsTheAccountToken(t *testing.T) {
 }
 
 func TestNotifySwallowsServerErrorAndLogsIt(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
 	var records []slog.Record
-	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
+	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client(), Log: slog.New(capturingHandler{records: &records})}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -134,15 +134,15 @@ func TestNotifySwallowsServerErrorAndLogsIt(t *testing.T) {
 }
 
 func TestNotifySwallowsNotFoundAndLogsIt(t *testing.T) {
+	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
 	var records []slog.Record
-	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
+	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client(), Log: slog.New(capturingHandler{records: &records})}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -151,11 +151,11 @@ func TestNotifySwallowsNotFoundAndLogsIt(t *testing.T) {
 }
 
 func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
+	t.Parallel()
 	var records []slog.Record
-	logtest.SetDefault(t, capturingHandler{records: &records})
 
 	// A port the test holds and nothing listens on: the connection fails.
-	e := Envoy{URL: "http://" + testport.Refused(t), Account: staticAccount("tok"), HTTP: &http.Client{}}
+	e := Envoy{URL: "http://" + testport.Refused(t), Account: staticAccount("tok"), HTTP: &http.Client{}, Log: slog.New(capturingHandler{records: &records})}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -166,6 +166,7 @@ func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
 // An account token the broker cannot read sends nothing, since a call with no bearer would only
 // be refused, and logs why without a token.
 func TestNotifySendsNothingWithoutTheAccountToken(t *testing.T) {
+	t.Parallel()
 	sent := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sent = true
@@ -173,9 +174,8 @@ func TestNotifySendsNothingWithoutTheAccountToken(t *testing.T) {
 	}))
 	defer srv.Close()
 	var records []slog.Record
-	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: &accountTokens{err: errors.New("the token file is missing")}, HTTP: srv.Client()}
+	e := Envoy{URL: srv.URL, Account: &accountTokens{err: errors.New("the token file is missing")}, HTTP: srv.Client(), Log: slog.New(capturingHandler{records: &records})}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 	if sent {
 		t.Fatal("a notice went out with no account token")

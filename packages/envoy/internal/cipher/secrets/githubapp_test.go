@@ -114,6 +114,7 @@ func verifyAppJWT(t *testing.T, authorization string, public *rsa.PublicKey, app
 }
 
 func TestGitHubAppMintSignsJWTAndFollowsPagination(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +171,7 @@ func TestGitHubAppMintSignsJWTAndFollowsPagination(t *testing.T) {
 }
 
 func TestGitHubAppMintRefusesAppWithoutInstallations(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -192,6 +194,7 @@ func TestGitHubAppMintRefusesAppWithoutInstallations(t *testing.T) {
 // App is suspended on, so Mint leaves that owner out rather than failing every other owner, and
 // an App suspended everywhere has no installation to mint for.
 func TestGitHubAppMintSkipsSuspendedInstallations(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -255,6 +258,7 @@ func TestGitHubAppMintSkipsSuspendedInstallations(t *testing.T) {
 }
 
 func TestGitHubAppMintNeverLeaksKeyOnFailure(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -275,6 +279,7 @@ func TestGitHubAppMintNeverLeaksKeyOnFailure(t *testing.T) {
 }
 
 func TestGitHubAppMintRejectsCorruptKeyWithoutLeakingIt(t *testing.T) {
+	t.Parallel()
 	value := `{"app_id":"123456","private_key":"---` + `--BEGIN RSA PRIVATE KEY-----\nprivate-material\n-----END RSA PRIVATE KEY-----"}`
 	_, err := (secrets.GitHubApp{}).Mint(t.Context(), mintFor(value, "acme"))
 	if err == nil || strings.Contains(err.Error(), "private-material") || strings.Contains(err.Error(), "PRIVATE KEY") {
@@ -283,6 +288,7 @@ func TestGitHubAppMintRejectsCorruptKeyWithoutLeakingIt(t *testing.T) {
 }
 
 func TestGitHubAppMintAcceptsPKCS8Key(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -322,6 +328,7 @@ func TestGitHubAppMintAcceptsPKCS8Key(t *testing.T) {
 // once; and each rate limit here names no wait, which counts as a minute and so ends the mint at
 // its first attempt. A stored value the minter refuses makes no attempt at all.
 func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -387,6 +394,7 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 // TestGitHubAppMintRefusesAnAnswerPastItsCap: an upstream answer is read to 1 MiB and no further,
 // so a GitHub that streams without end costs the broker a bounded read.
 func TestGitHubAppMintRefusesAnAnswerPastItsCap(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -408,6 +416,7 @@ func TestGitHubAppMintRefusesAnAnswerPastItsCap(t *testing.T) {
 // request for it. An App installed only on accounts the scope does not name mints nothing, and is
 // refused as the App with no installation there.
 func TestGitHubAppMintLeavesOutAnAccountItsScopeDoesNotName(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -465,6 +474,7 @@ func TestGitHubAppMintLeavesOutAnAccountItsScopeDoesNotName(t *testing.T) {
 // installation on an account the scope does not name, and the scope's accounts still mint: one
 // outsider's malformed installation never fails the whole release.
 func TestGitHubAppMintSkipsAnInstallationThatNamesNoAccount(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -507,6 +517,7 @@ func TestGitHubAppMintSkipsAnInstallationThatNamesNoAccount(t *testing.T) {
 // zero or negative names no installation a token can be asked for, so it is left out, and the
 // scope's account's valid installation still mints: no token request is sent for installation 0.
 func TestGitHubAppMintSkipsAnInstallationWithNoID(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -547,6 +558,7 @@ func TestGitHubAppMintSkipsAnInstallationWithNoID(t *testing.T) {
 // The airlock's proxy mints again five minutes before it, which is what keeps the token of the
 // installation that ends first from being handed to a call about to use it.
 func TestGitHubAppMintReportsTheEarliestInstallationExpiry(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)

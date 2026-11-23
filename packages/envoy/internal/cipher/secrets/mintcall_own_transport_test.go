@@ -12,6 +12,7 @@ import (
 // not reach the transport whose trace mintAttempt reads. The default is configured with both for
 // the call alone and put back after.
 func TestTheMintersOwnTransportInheritsNothingFromTheDefault(t *testing.T) {
+	// Not parallel: it replaces net/http's package-level http.DefaultTransport for a call and puts it back.
 	configured := &http.Transport{
 		TLSClientConfig: &tls.Config{NextProtos: []string{"another-protocol"}},
 		TLSNextProto: map[string]func(string, *tls.Conn) http.RoundTripper{

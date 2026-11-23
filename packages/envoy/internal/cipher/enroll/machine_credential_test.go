@@ -65,6 +65,7 @@ func machineCredentialFor(t *testing.T, svc *Service, subject, thumbprint string
 // the credential existed. Dropping the account from BROKER_VM_SERVICES, and listing it for
 // another service, each end the credential at its next call.
 func TestAMachinesCredentialAuthenticatesWhileItsAccountIsListed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
@@ -97,6 +98,7 @@ func TestAMachinesCredentialAuthenticatesWhileItsAccountIsListed(t *testing.T) {
 // a second row. A machine of the same account with a key of its own holds a credential of its
 // own.
 func TestAMachinesSecondExchangeMovesItsOneCredential(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
@@ -124,6 +126,7 @@ func TestAMachinesSecondExchangeMovesItsOneCredential(t *testing.T) {
 // and the handler's read of the identity it acts under — are two queries with no lock between
 // them, while one row is shared by every login of a subject.
 func TestACredentialReadByItsKeyIsGoneOnceThatKeyMoves(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
@@ -153,6 +156,7 @@ func TestACredentialReadByItsKeyIsGoneOnceThatKeyMoves(t *testing.T) {
 // refused for want of a person: secret authority follows the access token, and a person reaches
 // their own secrets on that machine only through their own sign-in.
 func TestAMachineEnrolsASessionThatActsForItsFleetAndNoPerson(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
@@ -178,6 +182,7 @@ func TestAMachineEnrolsASessionThatActsForItsFleetAndNoPerson(t *testing.T) {
 // pods its tokens prove and no session, and one machine's credential never ends another
 // machine's session.
 func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
@@ -234,6 +239,7 @@ func TestOnlyAMachinesOwnCredentialEnrolsItsSession(t *testing.T) {
 // each refuse the next renewal. Listing the account again lets it renew, so this is the
 // configuration as it is now and not a mark on the row.
 func TestAMachineSessionRenewsOnlyWhileItsMachineLoginIsLive(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
@@ -275,6 +281,7 @@ func TestAMachineSessionRenewsOnlyWhileItsMachineLoginIsLive(t *testing.T) {
 // (RevokePersonSignIn). Only a machine's own session, which no person ever enrolled, is held to
 // its credential.
 func TestAPersonsSessionOnAMachineRenewsPastItsCredentialsExpiry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const person = "ada@example.com"
 	svc := newService(t)

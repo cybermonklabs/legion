@@ -252,6 +252,7 @@ func accessTokenOf(t *testing.T, status int, body map[string]any) string {
 // token and is answered an access token bound to the key its proof named, which introspects as
 // the session it asked for, the person and project its account is listed with, and that key.
 func TestAPodExchangesItsTokenForOneThatIntrospects(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -305,6 +306,7 @@ func (f *exchangeFixture) readPodForm(t *testing.T) url.Values {
 // literal below is the answer every resource server reads a read-only token by, and a test of a
 // build that predates the read entry copies it with its words spelled out.
 func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	answer := f.introspected(t, f.exchanged(t, f.readPodForm(t), key))
@@ -326,6 +328,7 @@ func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
 // under a named entry the same request is granted no scope at all, as it was before read entries
 // existed. The scope is the entry's to decide, never the request's.
 func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	read := f.readPodForm(t)
@@ -347,6 +350,7 @@ func TestTheEntryDecidesTheScopeAndARequestNamingMachineWidensNothing(t *testing
 // exchange decides anything, under a named entry and under the read entry alike, and stores no
 // token. The same request naming no scope is then answered, so what refused it was the scope.
 func TestARequestNamingTheReadScopeIsRefusedUnderEveryEntry(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -379,6 +383,7 @@ func TestARequestNamingTheReadScopeIsRefusedUnderEveryEntry(t *testing.T) {
 // names, so a pod of it that asks for any other is refused, and the refusal names the session the
 // entry fixes; no token is stored.
 func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	before := f.count(t, "oauth_access_tokens")
@@ -401,6 +406,7 @@ func TestAReadEntrysPodNamingAnotherSessionIsRefused(t *testing.T) {
 // nothing is minted from it: the token the exchange client was issued is not one it may trade
 // again, and a read token names no machine credential either.
 func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	read := f.exchanged(t, f.readPodForm(t), key)
@@ -420,6 +426,7 @@ func TestAReadTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
 // entries existed, holding no OAuth scope. TestAPodExchangesItsTokenForOneThatIntrospects holds
 // the named pod's answer the same way.
 func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	deploy := func(claims map[string]any) {
@@ -455,6 +462,7 @@ func TestEveryOtherEntryMintsTheTokenItDidAndNoScope(t *testing.T) {
 // kubelet refreshes, so a role that renews exchanges the same one again. Neither the replay store
 // nor the session name's claim may refuse the second exchange.
 func TestAPodExchangesTheSameTokenTwice(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -475,6 +483,7 @@ func TestAPodExchangesTheSameTokenTwice(t *testing.T) {
 // TestAWorkflowTokenIsRefusedTheSecondTime: a workflow run mints a fresh token per request, so
 // one presentation is all a token needs and the second is a replay.
 func TestAWorkflowTokenIsRefusedTheSecondTime(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	subject := f.workflowToken(t, "4242", nil)
@@ -493,6 +502,7 @@ func TestAWorkflowTokenIsRefusedTheSecondTime(t *testing.T) {
 // and its expiry and never its audience, so this is the broker's own check and a token a pod was
 // given for another service is not spendable here.
 func TestASubjectTokenMintedForAnotherAudienceIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	subject := f.podToken(t, "pod-uid-1", func(claims map[string]any) {
@@ -510,6 +520,7 @@ func TestASubjectTokenMintedForAnotherAudienceIsRefused(t *testing.T) {
 // TestAnUnlistedAccountIsRefused: the pod's token verifies and the cluster is the configured one;
 // what refuses it is that no entry lists the service account it was minted for.
 func TestAnUnlistedAccountIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	subject := f.podToken(t, "pod-uid-1", func(claims map[string]any) {
@@ -524,6 +535,7 @@ func TestAnUnlistedAccountIsRefused(t *testing.T) {
 // TestAPodTokenBoundToNoPodIsRefused: a token carrying no pod uid proves only that the account
 // exists, not that Kubernetes minted it for a pod of this cluster.
 func TestAPodTokenBoundToNoPodIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	subject := f.podToken(t, "pod-uid-1", func(claims map[string]any) {
@@ -539,6 +551,7 @@ func TestAPodTokenBoundToNoPodIsRefused(t *testing.T) {
 // principal, so it may not mint a token naming the session a pod of the first is writing under,
 // and the refusal names it; under a name of its own it is answered.
 func TestASessionNameAnotherPrincipalHoldsIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	// Both pods are registered for what they ask: the refusal below is the claim on the name, not
@@ -570,6 +583,7 @@ func refusedTheName(t *testing.T, status int, body map[string]any, session strin
 // TestAnExchangeAskingForAJSONWebTokenIsRefused: this provider signs no claim set of its own, so
 // it registers no JSON Web Token type and the library refuses a caller asking for one.
 func TestAnExchangeAskingForAJSONWebTokenIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	form := exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1")
@@ -585,6 +599,7 @@ func TestAnExchangeAskingForAJSONWebTokenIsRefused(t *testing.T) {
 // issuer publishes public keys, so a token signed with a secret is refused before any key is
 // resolved.
 func TestASubjectTokenSignedWithASharedSecretIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	claims := f.cluster.Claims(account, podAudience)
@@ -636,6 +651,7 @@ func (f *exchangeFixture) devBoxTokenOf(t *testing.T, key *ecdsa.PrivateKey, per
 // session, so the exchange's own step runs after the request validates. The person is the
 // approver the login recorded and the token names no project.
 func TestADevBoxSessionExchangesItsMachineToken(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	machineToken := f.devBoxToken(t, key, person)
@@ -660,6 +676,7 @@ func TestADevBoxSessionExchangesItsMachineToken(t *testing.T) {
 // token is minted: a token of such a session would make a relay socket subscribe a wildcard over
 // every session's relay subject. Control: the same login's trade naming ada-devbox is minted.
 func TestADevBoxTradeNamingAWildcardSessionIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	machineToken := f.devBoxToken(t, key, person)
@@ -754,6 +771,7 @@ func waitForWaiting(t *testing.T, pool *pgxpool.Pool, pid uint32, like string, r
 // revoke is enroll.RevokeReusedCredential, the revoke that runs in a caller's transaction: it
 // takes the credential's row first and ends its tokens as enroll.Service.RevokeCredential does.
 func TestAMachineExchangeHoldsItsCredentialAgainstARevoke(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	key := newKey(t)
@@ -824,6 +842,7 @@ func TestAMachineExchangeHoldsItsCredentialAgainstARevoke(t *testing.T) {
 // active, but whose launcher credential has lapsed, is refused invalid_grant by the exchange's
 // credential check, and no token is stored for it.
 func TestAMachineExchangeOfAnEndedCredentialIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	credential := f.newCredential(t)
@@ -863,6 +882,7 @@ func (f *exchangeFixture) introspectsAs(t *testing.T, token, session, person, pr
 // the pod it replaces still holds a live token, and the old pod's renewals go on being answered
 // beside it, neither of them registered for anything.
 func TestEveryPodOfAFixedSessionAccountWritesUnderItsName(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	for _, uid := range []string{"pod-uid-old", "pod-uid-new", "pod-uid-old", "pod-uid-new"} {
@@ -875,6 +895,7 @@ func TestEveryPodOfAFixedSessionAccountWritesUnderItsName(t *testing.T) {
 // to the workflow, not to a run of it, so runs that start within one access lifetime of each
 // other, as two merges in a row do, are each answered under it.
 func TestEveryRunOfAFixedSessionWorkflowWritesUnderItsName(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	deploy := func(claims map[string]any) {
@@ -893,6 +914,7 @@ func TestEveryRunOfAFixedSessionWorkflowWritesUnderItsName(t *testing.T) {
 // workflow are each answered with the registration table empty, which is also what a deployment
 // whose daemon registers nothing for them looks like.
 func TestAFixedSessionEntryNeedsNoRegistration(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	for _, uid := range []string{"pod-uid-old", "pod-uid-replacement"} {
@@ -920,6 +942,7 @@ func TestAFixedSessionEntryNeedsNoRegistration(t *testing.T) {
 // for nothing else, is refused the first name — invalid_grant, since the subject token is sound
 // and it is broker state that refuses — with a refusal that names the session.
 func TestAnUnregisteredPodOfTheSameAccountIsRefusedTheName(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	const role = "implementer-g1"
@@ -946,6 +969,7 @@ func TestAnUnregisteredPodOfTheSameAccountIsRefusedTheName(t *testing.T) {
 // for good. It names the session, and the same pod's next trade under that name, once its
 // deployment has registered it, is answered.
 func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	const role, uid = "implementer-g1", "pod-uid-early"
@@ -967,6 +991,7 @@ func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
 // same session and is refused, because the lapse of a token hands no name over. The first pod's
 // next renewal is answered under its own person and project.
 func TestAnotherPrincipalIsRefusedANameAfterItsHoldersTokenLapses(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Second })
 	key := newKey(t)
 	const role = "019a-role-session"
@@ -988,6 +1013,7 @@ func TestAnotherPrincipalIsRefusedANameAfterItsHoldersTokenLapses(t *testing.T) 
 // daemon acts for — and a pod of another account are refused them before the entry's own caller
 // has ever exchanged, and still once it has.
 func TestANameAnEntryFixesIsRefusedToEveryOtherCaller(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	machine := f.devBoxToken(t, key, person)
@@ -1016,6 +1042,7 @@ func TestANameAnEntryFixesIsRefusedToEveryOtherCaller(t *testing.T) {
 // claims as well: the daemon's account asking it is given the name, and the new entry's next
 // exchange on the new replica takes it back.
 func TestARePointedNameIsItsNewEntrysWhicheverReplicaReservesLast(t *testing.T) {
+	t.Parallel()
 	old := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	daemonForm := func(f *exchangeFixture, session string) url.Values {
@@ -1068,6 +1095,7 @@ func TestARePointedNameIsItsNewEntrysWhicheverReplicaReservesLast(t *testing.T) 
 // person's two machines; each claim runs SessionRetention past the expiry of the token it was
 // made for, which is the issued token's own expiry rather than a moment computed before it.
 func TestAPrincipalReclaimsItsOwnNameAsOftenAsItLikes(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	const role = "019a-role-session"
@@ -1104,6 +1132,7 @@ func TestAPrincipalReclaimsItsOwnNameAsOftenAsItLikes(t *testing.T) {
 // and one whose life has passed are each answered as simply not live, with no error and nothing
 // else disclosed. The expired case is why the access lifetime is a setting: a second proves it.
 func TestIntrospectingATokenTheBrokerCannotStandBehind(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Second })
 	ctx := context.Background()
 	key := newKey(t)
@@ -1145,6 +1174,7 @@ func TestIntrospectingATokenTheBrokerCannotStandBehind(t *testing.T) {
 // hands the broker everything after the first space of `Authorization: DPoP  <token>`, tells the
 // caller of such a header that the broker cannot be reached and to try again.
 func TestIntrospectingALiveTokenWithACharacterAddedIsNotLive(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -1177,6 +1207,7 @@ func TestIntrospectingALiveTokenWithACharacterAddedIsNotLive(t *testing.T) {
 // that access token has expired. It is answered as simply not live — both while the access token
 // issued beside it is live and once that access token has expired.
 func TestIntrospectionAnswersOnlyAnAccessToken(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Second })
 	ctx := context.Background()
 	key := newKey(t)
@@ -1213,6 +1244,7 @@ func TestIntrospectionAnswersOnlyAnAccessToken(t *testing.T) {
 // and a row the broker cannot decode both reach the log as an authorization failure naming
 // neither: the cause is kept beneath it and never printed.
 func TestAnIntrospectionFailureNamesItsCause(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	key := newKey(t)
@@ -1262,6 +1294,7 @@ func TestAnIntrospectionFailureNamesItsCause(t *testing.T) {
 // row the broker cannot read would be answered as a token nobody issued, denying a sound token
 // and hiding the fault.
 func TestIntrospectingATokenWhoseRowDoesNotDecodeIsABrokerFailure(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -1288,6 +1321,7 @@ func TestIntrospectingATokenWhoseRowDoesNotDecodeIsABrokerFailure(t *testing.T) 
 // subject token is the credential and shipping a secret to every pod is what this removes. Every
 // neighbouring case stays the library's own refusal.
 func TestTheExchangeClientAuthenticatesWithNoCredentialAndOnlyThere(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -1363,6 +1397,7 @@ func TestTheExchangeClientAuthenticatesWithNoCredentialAndOnlyThere(t *testing.T
 // not registered at all, so a caller presenting it is refused by the library before any handler
 // of the broker's runs.
 func TestAnIssuerTheBrokerWasNotToldAboutRegistersNoType(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.GitHub = oauth.IssuerConfig{} })
 	key := newKey(t)
 	status, body := f.exchange(t, exchangeForm(f.workflowToken(t, "4242", nil), oauthwire.SubjectTokenTypeGitHub, "ci-release"), key)
@@ -1376,6 +1411,7 @@ func TestAnIssuerTheBrokerWasNotToldAboutRegistersNoType(t *testing.T) {
 // client's only one, and refuses every caller by name rather than faulting on a policy nobody
 // built.
 func TestAnExchangeWithNoListedIdentityIsRefusedByName(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Policy = nil })
 	key := newKey(t)
 	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
@@ -1494,6 +1530,7 @@ func (f *exchangeFixture) introspectsProjects(t *testing.T, token string, scope 
 // does not see is refused naming it, and one Dispatch does not hold is refused in the very same
 // words; a list that is no list is refused before Dispatch is asked anything.
 func TestAPersonTradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
@@ -1525,6 +1562,7 @@ func TestAPersonTradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 // TestARestrictedMembersEmptyListIsRefused: a restricted member sees only the projects that name
 // them, so their trade names which; one naming none is refused, saying how to name them.
 func TestARestrictedMembersEmptyListIsRefused(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	access.kinds[person] = projectaccess.MemberRestricted
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
@@ -1537,6 +1575,7 @@ func TestARestrictedMembersEmptyListIsRefused(t *testing.T) {
 // TestAFullMembersEmptyListIsTaken: a full member's trade that names no project is answered as it
 // is today, a token acting as its person that names none.
 func TestAFullMembersEmptyListIsTaken(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	access.kinds[person] = projectaccess.MemberFull
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
@@ -1549,6 +1588,7 @@ func TestAFullMembersEmptyListIsTaken(t *testing.T) {
 // signed in to Dispatch — is no restricted member, so their trade naming no project is answered as
 // it is today.
 func TestAPersonWithNoDispatchRowIsTaken(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
@@ -1563,6 +1603,7 @@ func TestAPersonWithNoDispatchRowIsTaken(t *testing.T) {
 // project is answered as it is today, and one naming a project is refused as a broker that cannot
 // check it — never minted unchecked — with a status a client asks again on.
 func TestAK3OutageMintsAnEmptyListAsToday(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	access.down = true
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
@@ -1579,6 +1620,7 @@ func TestAK3OutageMintsAnEmptyListAsToday(t *testing.T) {
 // Workspace domain, so it is a full member's and asks Dispatch no member kind; a list it names is
 // still held to what that person sees.
 func TestASignInTradeAsksNoMemberKind(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	access.kinds[person] = projectaccess.MemberRestricted
 	f := newSignInFixtureWith(t, func(c *oauth.Config) { c.Exchange.Projects = access })
@@ -1604,6 +1646,7 @@ func TestASignInTradeAsksNoMemberKind(t *testing.T) {
 // to one project and one person, and the exchange holds that pairing to Dispatch at every trade,
 // for each of the three settings that write such an entry.
 func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	access.sees[person] = []string{"PRIV"}
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
@@ -1635,6 +1678,7 @@ func TestANamedTradeIsRefusedWhenItsEntryPersonCannotSeeTheProject(t *testing.T)
 // row with `projects` restored, and a machine login's own token, which no exchange decided and so
 // carries neither claim, are unchanged.
 func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	key := newKey(t)
@@ -1680,6 +1724,7 @@ func TestATokenStoredBeforeTheListIsNotLive(t *testing.T) {
 // Dispatch cannot be asked, mint it as they would any list naming no project. A workflow entry
 // may not leave its project empty.
 func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) {
+	t.Parallel()
 	trade := func(t *testing.T, access projectaccess.Access) (*exchangeFixture, int, map[string]any) {
 		t.Helper()
 		f := newExchangeFixture(t, func(c *oauth.Config) {
@@ -1730,6 +1775,7 @@ func TestAnAccountEntryWithNoProjectMintsANamedTokenWithNoProject(t *testing.T) 
 // entry's token as it always has: the operator's own setting is what chose its project. A broker
 // whose Dispatch cannot be asked is TestANamedTradeMintsUncheckedOnlyForAnEmptyList's.
 func TestANamedTradeMintsAsTodayWithNoProjectAccess(t *testing.T) {
+	t.Parallel()
 	unchecked := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	unchecked.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -1746,6 +1792,7 @@ func TestANamedTradeMintsAsTodayWithNoProjectAccess(t *testing.T) {
 // renewal is a fresh trade, and a person who lost a project since the last one is refused it at the
 // next.
 func TestEveryTradeChecksAgainBecauseThereIsNoRefreshToken(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
@@ -1763,15 +1810,12 @@ func TestEveryTradeChecksAgainBecauseThereIsNoRefreshToken(t *testing.T) {
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "The token names a project its person cannot see: PRIV.")
 }
 
-// capturedLog swaps the default logger for one that writes JSON lines into a buffer until the
-// test ends, for the tests that read what the exchange logs.
-func capturedLog(t *testing.T) *lockedBuffer {
-	t.Helper()
+// capturedLog is a logger that writes JSON lines into a buffer of the test's own, and that
+// buffer, for the tests that read what the exchange logs: a test hands the logger to each
+// provider whose lines it reads (oauth.Config.Log), and never swaps the process's default.
+func capturedLog() (*slog.Logger, *lockedBuffer) {
 	buffer := &lockedBuffer{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(buffer, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	return buffer
+	return slog.New(slog.NewJSONHandler(buffer, nil)), buffer
 }
 
 type lockedBuffer struct {
@@ -1809,6 +1853,7 @@ func (b *lockedBuffer) lines(fragments ...string) []string {
 // rather than a named token naming none, which they would read as the public-session shape and
 // hold to no project. A named token naming none, and a person token, store no such claim.
 func TestANamedTokenStoresItsProjectUnderTheOlderClaimToo(t *testing.T) {
+	t.Parallel()
 	olderClaim := func(t *testing.T, f *exchangeFixture, session string) any {
 		t.Helper()
 		var claim any
@@ -1846,6 +1891,7 @@ func TestANamedTokenStoresItsProjectUnderTheOlderClaimToo(t *testing.T) {
 // that holds the token, never minted unchecked: an operator entry's token, a person's trade naming
 // a project, and a person's trade naming none alike.
 func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
+	t.Parallel()
 	access := newFakeAccess()
 	access.refused = true
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
@@ -1866,10 +1912,14 @@ func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
 // mint logs one line naming what was minted unchecked: the entry's principal, or the person. An
 // entry's token naming a project is refused temporarily_unavailable instead, and logs no such line.
 func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
-	logs := capturedLog(t)
+	t.Parallel()
+	logger, logs := capturedLog()
 	access := newFakeAccess()
 	access.down = true
-	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
+	f := newExchangeFixture(t, func(c *oauth.Config) {
+		c.Exchange.Projects = access
+		c.Log = logger
+	})
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
 	status, body := f.exchange(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, "implementer-g1"), key)
@@ -1881,6 +1931,7 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 	public := newExchangeFixture(t, func(c *oauth.Config) {
 		c.Exchange.Policy = newPolicy(t, []exchange.AccountEntry{{Account: otherAccount, Person: person}}, nil)
 		c.Exchange.Projects = access
+		c.Log = logger
 	})
 	public.registers(t, otherAccount, "pod-uid-2", "public-session-1")
 	public.exchanged(t, exchangeForm(public.podTokenOf(t, otherAccount, "pod-uid-2"), oauthwire.SubjectTokenTypeKubernetes, "public-session-1"), key)

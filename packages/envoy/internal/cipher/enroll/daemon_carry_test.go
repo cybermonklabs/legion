@@ -87,6 +87,7 @@ func spellAccountAlone(t *testing.T, svc *Service, id uuid.UUID) {
 // answering exchange.AccountPrincipal(*in.Subject)); GLOBEX's enrolment adopts the grant, and the test
 // fails naming it (the pull request records the run).
 func TestAPodOfAnotherDaemonCannotAdoptASessionsGrants(t *testing.T) {
+	t.Parallel()
 	for _, spelling := range []struct {
 		name   string
 		legacy bool
@@ -132,6 +133,7 @@ func TestAPodOfAnotherDaemonCannotAdoptASessionsGrants(t *testing.T) {
 // pair alone, as main's text did (`e.carry_principal=$1 and e.session_id=$2`); the row is then read
 // as the claim rule's, which moves no withheld name, and the test fails naming it.
 func TestALegacyRowsWithheldNamesMoveByTheSessionRule(t *testing.T) {
+	t.Parallel()
 	svc, issuer, key, acme, _ := twoDaemons(t)
 	const session = "ses_withheld"
 	first := enrolPod(t, svc, issuer, key, acme, session, "acme-pod-1")
@@ -163,6 +165,7 @@ func TestALegacyRowsWithheldNamesMoveByTheSessionRule(t *testing.T) {
 // account, so the test fails at the name's holder, naming S, before it reaches the trade (the pull
 // request records the run).
 func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
@@ -221,6 +224,7 @@ func TestAPodAndItsTradeStillShareOneSessionName(t *testing.T) {
 // test fails naming them and the count of them the older replica's match finds, while the
 // adoption half still passes (the pull request records the run).
 func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
@@ -281,6 +285,7 @@ func TestARunningSessionKeepsItsGrantsAcrossTheCarryMigration(t *testing.T) {
 // lower, the adoption waits on the higher, Postgres ends one of the two as a deadlock, and the
 // test fails naming it (the pull request records the run).
 func TestTheCarryMigrationTakesItsRowsInAdoptsOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)

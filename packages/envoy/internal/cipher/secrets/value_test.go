@@ -85,6 +85,7 @@ func minterOf(t *testing.T, secretType string) (mint, secrets.MintRequest) {
 // value; the minter, driven with the same value, answers the same words, because the decoder is
 // the only reader of a stored value.
 func TestParseValueRefusesWhatEachMinterRefusesInItsWords(t *testing.T) {
+	t.Parallel()
 	for _, row := range refusedValues(t) {
 		t.Run(row.secretType+"/"+row.name, func(t *testing.T) {
 			_, err := secrets.ParseValue(row.secretType, row.value)
@@ -110,6 +111,7 @@ func TestParseValueRefusesWhatEachMinterRefusesInItsWords(t *testing.T) {
 // TestParseValueDecodesEachTypesFields: a value each type's minter mints from decodes into that
 // type's fields, and only them.
 func TestParseValueDecodesEachTypesFields(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -141,6 +143,7 @@ func TestParseValueDecodesEachTypesFields(t *testing.T) {
 // TestParseValueRefusesATypeNoMinterReads: the decoder knows the four types and no other, so a
 // type tag naming any other, or none, is refused as a value no minter mints from.
 func TestParseValueRefusesATypeNoMinterReads(t *testing.T) {
+	t.Parallel()
 	for _, secretType := range []string{"", "other", "GitHub-App"} {
 		if _, err := secrets.ParseValue(secretType, azureLoginValue); !errors.Is(err, secrets.ErrMintStoredValue) || !strings.Contains(err.Error(), "is no type a minter reads") {
 			t.Fatalf("ParseValue(%q) = %v; want a refusal naming no type a minter reads", secretType, err)
@@ -154,6 +157,7 @@ func TestParseValueRefusesATypeNoMinterReads(t *testing.T) {
 // of the profile's scope comes after it, so a bad value under a scope it refuses is the stored
 // value's.
 func TestParseValueLeavesTheOtherChecksInTheirPlace(t *testing.T) {
+	t.Parallel()
 	_, err := (secrets.AzureLogin{SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{Name: "OTHER", Source: "OTHER", HumanTier: true, Value: leak})
 	if got := secrets.MintErrorClass(err); got != "refused" {
 		t.Fatalf("Azure mint of another secret with a bad value = %v (class %s); want refused", err, got)

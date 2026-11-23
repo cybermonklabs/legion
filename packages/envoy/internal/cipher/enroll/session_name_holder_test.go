@@ -164,7 +164,7 @@ func replacedPod(t *testing.T) pairedMove {
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	capture := &logtest.Recorder{}
-	logtest.SetDefault(t, capture)
+	svc.Log = slog.New(capture)
 	cluster := daemonLogin(t, svc)
 	svc.ServicesByAccount[workerPodAccount] = "legion-daemon"
 	svc.ServicesByAccount[pairedWorkerPodAccount] = "legion-daemon"
@@ -291,6 +291,7 @@ func (m pairedMove) tookNoneOfIt(t *testing.T, moved Enrollment) {
 // Google account, whose machine enrols a session of its own, and another person, signed in on a
 // box of their own.
 func TestASessionNameAnotherPrincipalHoldsIsRefusedAndTakesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, c := range []struct {
 		name  string
@@ -375,6 +376,7 @@ func TestASessionNameAnotherPrincipalHoldsIsRefusedAndTakesNothing(t *testing.T)
 // enrolling the same name is refused nothing and adopts what the box it replaced held. That is
 // the carry itself, and binding the name must not stand in its way.
 func TestTheSamePrincipalsSecondBoxTakesTheNameAndWhatItHeld(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
@@ -398,6 +400,7 @@ func TestTheSamePrincipalsSecondBoxTakesTheNameAndWhatItHeld(t *testing.T) {
 // principal, so an enrolment that states no name has no name to bind. Nothing is written to the
 // table of holders and nothing is refused, however many such enrolments one credential makes.
 func TestAnEnrollmentNamingNoSessionBindsNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -431,6 +434,7 @@ func TestAnEnrollmentNamingNoSessionBindsNothing(t *testing.T) {
 // by letting each of the two claim a name the other has already claimed, which the table itself
 // would refuse if they disagreed.
 func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
@@ -498,6 +502,7 @@ func TestAPodsEnrollmentAndTheExchangeHoldItsNameUnderTheSameAccount(t *testing.
 // already minted, so the credential it still holds authenticates nothing either
 // (ErrUnauthenticated). Nothing about a session name is involved in either.
 func TestARevokedSignInTradesNothingSoItsBoxReachesNoEnrollment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "signin-box")
@@ -536,6 +541,7 @@ func TestARevokedSignInTradesNothingSoItsBoxReachesNoEnrollment(t *testing.T) {
 // the session rule's trail, and the broker logs the take once it has committed, naming the name,
 // the account it took the name from and the account that took it.
 func TestAPairedAccountsPodTakesTheNameAndWhatItCarries(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := replacedPod(t)
 
@@ -587,6 +593,7 @@ func TestAPairedAccountsPodTakesTheNameAndWhatItCarries(t *testing.T) {
 // enrollment holds: they stay on it, dormant, for the next pod its own daemon enrols
 // (tookNoneOfIt).
 func TestAPairedAccountsPodAnotherDaemonLaunchedTakesTheNameAndNothingItCarries(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := replacedPod(t)
 	pairAccounts(t, m.svc, workerPodAccount, pairedWorkerPodAccount)
@@ -607,6 +614,7 @@ func TestAPairedAccountsPodAnotherDaemonLaunchedTakesTheNameAndNothingItCarries(
 // of the rest, whichever spelling the row carries, held to every check a row of the pair is held
 // to (tookNoneOfIt).
 func TestAPairedAccountsPodTakesWhatItsPairsLegacyRowHolds(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	t.Run("the same daemon's login takes all of it", func(t *testing.T) {
 		m := replacedPod(t)
@@ -639,6 +647,7 @@ func TestAPairedAccountsPodTakesWhatItsPairsLegacyRowHolds(t *testing.T) {
 // account's enrollment of the name holds, because adopt's session rule matches the paired account
 // at every enrolment and not only at the one whose bind took the name.
 func TestAPairedAccountsEnrollmentAfterItsExchangeTookTheNameTakesWhatItCarries(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := replacedPod(t)
 	pairAccounts(t, m.svc, workerPodAccount, pairedWorkerPodAccount)

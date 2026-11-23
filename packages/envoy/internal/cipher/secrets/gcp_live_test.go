@@ -26,6 +26,7 @@ import (
 //	BROKER_GCP_LIVE_PROJECT=<project number> BROKER_GCP_LIVE_KMS_KEY=<key name> \
 //	  go test -tags gcplive ./internal/cipher/secrets/ -run Live -count=1 -v
 func TestGCPLive(t *testing.T) {
+	// Not parallel: it reads the process's GCP environment (BROKER_GCP_LIVE_* through os.Getenv) and its application default credentials (GOOGLE_APPLICATION_CREDENTIALS, the metadata server).
 	project, key := envOrSkip(t, "BROKER_GCP_LIVE_PROJECT"), envOrSkip(t, "BROKER_GCP_LIVE_KMS_KEY")
 	if err := ValidGCPKeyName(key); err != nil {
 		t.Fatal(err)

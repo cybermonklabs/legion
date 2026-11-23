@@ -27,6 +27,7 @@ import (
 // stops it from falling back to the person scope as the switch did before the none scope
 // existed.
 func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T) {
+	t.Parallel()
 	const project, stale = "ACME", "STALE"
 	for _, c := range []struct {
 		name    string

@@ -15,6 +15,7 @@ import (
 // cell must answer exactly as the merge base answered the untagged grid
 // (testdata/evaluate-merge-base.json): a public project's tag changes no answer.
 func TestAPrivateProjectSecretTagOfAPublicProjectAnswersAsTheMergeBase(t *testing.T) {
+	t.Parallel()
 	store, names := gridSecrets(func(s *secrets.LocalSecret) { s.Tags[policy.TagProject] = pubProject })
 	loader := policytest.Loader(store, gridService)
 	loader.ProjectChecks = true

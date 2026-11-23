@@ -139,6 +139,7 @@ func withheldNames(t *testing.T, svc *Service, id uuid.UUID) []string {
 // launcher enrolled it, and so does an enrollment that states no session, because a principal
 // with no name beside it is no pair.
 func TestAnEnrollmentRecordsThePrincipalItsCallerProved(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
@@ -204,6 +205,7 @@ func TestAnEnrollmentRecordsThePrincipalItsCallerProved(t *testing.T) {
 // the role's enrollment before the replacement pod enrols, or the lease lapses one lease after
 // the pod stopped renewing.
 func TestTheNextEnrollmentOfASessionHoldsTheGrantTheEndedBoxHeld(t *testing.T) {
+	t.Parallel()
 	for _, kind := range carryKinds {
 		for _, end := range endsOfTheBox() {
 			t.Run(kind+", "+end.name, func(t *testing.T) {
@@ -241,6 +243,7 @@ func TestTheNextEnrollmentOfASessionHoldsTheGrantTheEndedBoxHeld(t *testing.T) {
 // session proves, so the answer lands on the session as it stands when it comes rather than on
 // the box that asked, and no approver's pending list lost it.
 func TestAPendingRequestFiledBeforeTheMoveIsStillPendingUnderTheNewEnrollment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
@@ -271,6 +274,7 @@ func TestAPendingRequestFiledBeforeTheMoveIsStillPendingUnderTheNewEnrollment(t 
 // boxes of one session name can each hold one, and the successor keeps each name once, which is
 // all its primary key (enrollment_id, name) can hold.
 func TestTheWithheldNamesMoveAndANameBothRowsHoldIsKeptOnce(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	session := "withholds-move"
@@ -304,6 +308,7 @@ func TestTheWithheldNamesMoveAndANameBothRowsHoldIsKeptOnce(t *testing.T) {
 // name holds the name back as the operator said, rather than handing it over automatically
 // again.
 func TestAWithholdMadeBeforeTheMoveSurvivesABoxThatEndedHoldingNothingElse(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	for _, kind := range carryKinds {
@@ -338,6 +343,7 @@ func TestAWithholdMadeBeforeTheMoveSurvivesABoxThatEndedHoldingNothingElse(t *te
 // successor names the predecessor it took from, and one grant.moved row per grant names that
 // grant, the enrollment it hangs off now and the one it came from.
 func TestTheAdoptionTrailNamesBothEnrollments(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
@@ -381,6 +387,7 @@ func TestTheAdoptionTrailNamesBothEnrollments(t *testing.T) {
 // states no name has nothing for a later enrollment to follow, however much its enrollment holds
 // and whatever its credential proved.
 func TestNothingIsAdoptedForAnEmptySessionID(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -421,6 +428,7 @@ func TestNothingIsAdoptedForAnEmptySessionID(t *testing.T) {
 // sweep that revokes what a dormant enrollment held finds nothing of it, even with the carry
 // window turned off, which is the setting that ends every dormant enrollment at once.
 func TestAnAdoptedPredecessorIsNoLongerDormantSoTheCarrySweepTakesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)

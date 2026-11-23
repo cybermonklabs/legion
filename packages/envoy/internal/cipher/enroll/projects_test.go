@@ -48,6 +48,7 @@ func enrolSession(t *testing.T, svc *Service, person, runtimeID string, projects
 // own read answers it. A restricted member's session enrolls nothing, whatever it names
 // (TestARestrictedMembersSessionEnrollsNothingNamingProjectsOrNot).
 func TestASessionEnrollsWithProjectsItsPersonSees(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	withProjects(t, svc)
 	for _, c := range []struct {
@@ -76,6 +77,7 @@ func TestASessionEnrollsWithProjectsItsPersonSees(t *testing.T) {
 // project Dispatch does not hold, each refuse the whole enrollment with the same refusal, naming
 // the project the session asked for and saying nothing of whether it exists; nothing is enrolled.
 func TestASessionNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	withProjects(t, svc)
 	unseen, err := enrolSession(t, svc, aliceLogin, "box-alice", "PRIV", "PUB")
@@ -101,6 +103,7 @@ func TestASessionNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
 // member's session naming none enrolls as before. (A restricted member's machine login and pod
 // login enroll nothing at all: TestARestrictedMembersLauncherEnrollsNothing.)
 func TestARestrictedMembersSignInSessionMustNameItsProjects(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	enrolUnder := func(t *testing.T, svc *Service, cred Credential, runtimeID string, projects ...string) (Enrollment, error) {
 		t.Helper()
@@ -155,6 +158,7 @@ func TestARestrictedMembersSignInSessionMustNameItsProjects(t *testing.T) {
 // hold, enrolls a session naming no project while Dispatch is down, unchecked, and is refused one
 // naming a project (ErrProjectsUnchecked).
 func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
+	t.Parallel()
 	uncheckable := func(t *testing.T, err error, cause error, what string) {
 		t.Helper()
 		var refused *projectaccess.MemberKindUncheckable
@@ -221,6 +225,7 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 // sixteen). A person's pod names its projects as its person's session does
 // (person_pod_test.go).
 func TestAPodNamesNoProjectOfItsOwn(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	dispatch := withProjects(t, svc)
 	issuer, key := withPodVerifier(t, svc)

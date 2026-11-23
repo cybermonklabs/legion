@@ -103,6 +103,7 @@ func TestASecretWithoutAValueIsPendingForItsFirstTenMinutes(t *testing.T) {
 // value: past the window the broker refuses it no-current-value and the store still holds it with
 // no version, for its owner to find (`agent-secrets secret show NAME`, `versions: none`) and clear.
 func TestAStrandedSecretIsRefusedButNeverDeleted(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		ctx := context.Background()
 		store := secrets.NewLocal(createdWithoutValue("STRANDED_KEY", time.Now()))
@@ -167,6 +168,7 @@ func TestAPendingSecretThatGetsItsValueIsServedWithNoMoreLines(t *testing.T) {
 // listing that left it out - gives the policy no way to tell a create in flight from an abandoned
 // one, so it refuses the secret no-current-value at once, as it always did.
 func TestASecretWithoutAValueOrACreationTimeIsRefusedAtOnce(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(policytest.Secret("UNDATED_KEY", owner, policy.TierAgent, ""))
 	set, err := policytest.Loader(store).Load(context.Background())
 	if err != nil {
@@ -181,6 +183,7 @@ func TestASecretWithoutAValueOrACreationTimeIsRefusedAtOnce(t *testing.T) {
 // store created moments ago, but that carries no create label, is no create waiting for its value
 // (no `agent-secrets secret create` made it), so the policy refuses it no-current-value at once.
 func TestAYoungSecretWithoutAValueOrTheCreateLabelIsRefusedAtOnce(t *testing.T) {
+	t.Parallel()
 	unlabelled := policytest.Secret("UNLABELLED_KEY", owner, policy.TierAgent, "")
 	now := time.Now()
 	unlabelled.CreatedAt = &now
@@ -198,6 +201,7 @@ func TestAYoungSecretWithoutAValueOrTheCreateLabelIsRefusedAtOnce(t *testing.T) 
 // pending (one refused by the miss-path limit, or one that failed): one second before ten minutes
 // it is pending, at ten minutes it is not, with the same set.
 func TestAPendingAnswerEndsAtTenMinutesWithoutAReload(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
 		store := secrets.NewLocal(createdWithoutValue("WAITING_KEY", time.Now()))
 		cur := policytest.Current(t, store)
@@ -219,6 +223,7 @@ func TestAPendingAnswerEndsAtTenMinutesWithoutAReload(t *testing.T) {
 // refuse the secret no-current-value and the answer say it is no longer pending, though the wall
 // clock has not moved.
 func TestTheLoadAndThePendingAnswerReadOneClock(t *testing.T) {
+	t.Parallel()
 	created := time.Now()
 	store := secrets.NewLocal(createdWithoutValue("WAITING_KEY", created))
 	cur := policytest.Current(t, store)

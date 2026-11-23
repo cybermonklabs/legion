@@ -17,6 +17,7 @@ import (
 // who gets each name's own answer, and a name nothing in the store or the file holds is
 // ErrUnknownSecret to both, as a stored name the set does not serve is.
 func TestARestrictedMemberIsDeniedEveryProfileNameBeforeAnyProfileAnswer(t *testing.T) {
+	t.Parallel()
 	const outsider = "outsider@outside.example"
 	cur, _ := profiled(t, everySource(), readProfile,
 		`{"name": "GHOST_READ", "source": "NO_SUCH_APP", `+acmeRead+`, `+apiProxy+`}`)

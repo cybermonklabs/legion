@@ -125,6 +125,7 @@ func servedProfile(t *testing.T, set *policy.Set, name string) policy.Secret {
 // profile's own scope (its accounts, as GitHubOwners), its entry's digest, the profile itself, and
 // its source's value version, by which a mint the decoder refuses refuses that source.
 func TestAPassingProfileIsServedByItsName(t *testing.T) {
+	t.Parallel()
 	cur, store := profiled(t, []secrets.LocalSecret{appSource()}, readProfile)
 	base, err := policytest.Loader(store, daemonService).Load(t.Context())
 	if err != nil {
@@ -162,6 +163,7 @@ func TestAPassingProfileIsServedByItsName(t *testing.T) {
 // against its source (R2): the profile is not served, the policy's refusals name it with the row's
 // reason, and GITHUB_READ, the passing profile in the same file, is still served.
 func TestAFailedProfileIsRefusedAloneAndTheOthersServe(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, profile, reason string
 	}{
@@ -197,6 +199,7 @@ func TestAFailedProfileIsRefusedAloneAndTheOthersServe(t *testing.T) {
 // and pod, so any list narrows it; a listed source takes a subset of its list; and a profile with
 // no list takes the source's.
 func TestAProfileLooserThanItsSourceIsRefused(t *testing.T) {
+	t.Parallel()
 	// outcome is how a file holding readProfile and profile answers profile's name.
 	outcome := func(t *testing.T, profile string) *policy.Set {
 		t.Helper()
@@ -245,6 +248,7 @@ func TestAProfileLooserThanItsSourceIsRefused(t *testing.T) {
 // fails leaves that name released by nobody, rather than as the stored value: a request for it is
 // refused, with the profile's reason.
 func TestAFailedProfilesNameReleasesNoStoredValue(t *testing.T) {
+	t.Parallel()
 	cur, _ := profiled(t, everySource(), readProfile, `{"name": "PLAIN_KEY"}`)
 	set := cur.Get()
 	refusedProfile(t, set, "PLAIN_KEY", policy.ReasonProfileNeedsProxy)
@@ -257,6 +261,7 @@ func TestAFailedProfilesNameReleasesNoStoredValue(t *testing.T) {
 // TestAProfileNamedForAnotherStoredSecretRefusesBoth: a profile whose name a stored secret other
 // than its source holds is refused, and so is that stored secret, until one of the two goes.
 func TestAProfileNamedForAnotherStoredSecretRefusesBoth(t *testing.T) {
+	t.Parallel()
 	cur, store := profiled(t, everySource(), readProfile, `{"name": "TAKEN_KEY", "source": "LEGION_IMPLEMENT_APP", `+acmeRead+`}`)
 	set := cur.Get()
 	refusedProfile(t, set, "TAKEN_KEY", policy.ReasonProfileNameTaken)
@@ -285,6 +290,7 @@ func TestAProfileNamedForAnotherStoredSecretRefusesBoth(t *testing.T) {
 // tag's rules on its own tags: one that keeps the source's human tier is served as admin, and an
 // agent-tier one is refused admin-tier.
 func TestAProfileOfAnAdminSourceIsAdmin(t *testing.T) {
+	t.Parallel()
 	admin := policytest.ListedSecret("ADMIN_PAT", appOwner, policy.TierHuman, appOwner, "pat-v1")
 	admin.Tags[policy.TagAdmin] = policy.AdminTrue
 	cur, _ := profiled(t, []secrets.LocalSecret{appSource(), admin}, readProfile,
@@ -300,6 +306,7 @@ func TestAProfileOfAnAdminSourceIsAdmin(t *testing.T) {
 // TestWithholdingASourceWithholdsItsProfiles: a session whose operator withheld a source asks for
 // each profile of it as for a human-tier secret, and a withhold of another name changes nothing.
 func TestWithholdingASourceWithholdsItsProfiles(t *testing.T) {
+	t.Parallel()
 	cur, _ := profiled(t, everySource(), readProfile)
 	set := cur.Get()
 	for _, row := range []struct {
@@ -325,6 +332,7 @@ func TestWithholdingASourceWithholdsItsProfiles(t *testing.T) {
 // its write sibling and the profile that holds its source's name, a refused profile withholds and
 // is withheld as its file names it, and a stored secret no profile uses withholds itself alone.
 func TestAWithholdDecidesBySource(t *testing.T) {
+	t.Parallel()
 	cur, _ := profiled(t, everySource(), readProfile,
 		`{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["acme"], "permissions": {"contents": "write", "metadata": "read"}}}`,
 		`{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["acme"], "permissions": {"contents": "write", "metadata": "read"}}}`,
@@ -371,6 +379,7 @@ func TestAWithholdDecidesBySource(t *testing.T) {
 // policy version and the profile's digest, which a release compares its grant against; an edit of
 // its guidance alone, which tells the judge how to decide requests to come, moves neither.
 func TestAnEditedProfileEndsItsGrants(t *testing.T) {
+	t.Parallel()
 	stored := everySource()
 	served := func(profile string) (version, digest string) {
 		t.Helper()
@@ -396,6 +405,7 @@ func TestAnEditedProfileEndsItsGrants(t *testing.T) {
 // a source the set serves none of the profiles of is refused saying that each is refused, and
 // naming them.
 func TestASourceIsServedOnlyThroughItsProfiles(t *testing.T) {
+	t.Parallel()
 	cur, _ := profiled(t, everySource(), readProfile,
 		`{"name": "GITHUB_WIDE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["other-org"], "permissions": {"metadata": "read"}}}`,
 		`{"name": "LISTED_LONG", "source": "LISTED_APP", "maxGrant": "2h", `+acmeRead+`}`,
@@ -447,6 +457,7 @@ func TestASourceIsServedOnlyThroughItsProfiles(t *testing.T) {
 // that name as the profile, with the profile's scope and digest, beside any profile of another
 // name of the same source.
 func TestAProfileOfTheSourcesOwnNameServesThatName(t *testing.T) {
+	t.Parallel()
 	own := `{"name": "LEGION_IMPLEMENT_APP", ` + acmeRead + `}`
 	cur, _ := profiled(t, everySource(), readProfile, own)
 	profiles := policytest.Profiles(t, policytest.ProfilesFile(readProfile, own), daemonService)
@@ -465,6 +476,7 @@ func TestAProfileOfTheSourcesOwnNameServesThatName(t *testing.T) {
 // its name, with a refusal that says it has no profile, in a deployment with a profiles file and
 // in one with none; a stored value no profile names is served as always.
 func TestAGitHubAppWithNoProfileIsRefusedByName(t *testing.T) {
+	t.Parallel()
 	app := policytest.TypeSecret("APP_KEY", appOwner, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	plain := policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1")
 	for name, cur := range map[string]*policy.Current{
@@ -495,6 +507,7 @@ func TestAGitHubAppWithNoProfileIsRefusedByName(t *testing.T) {
 // is refused value-malformed, as a source is today, and each profile of it is refused with a
 // detail that names that reason.
 func TestAProfileOfAValueRefusedSourceNamesTheSourcesReason(t *testing.T) {
+	t.Parallel()
 	broken := appSource()
 	broken.Value = "not an App's value"
 	cur, _ := profiled(t, []secrets.LocalSecret{broken}, readProfile)
@@ -536,6 +549,7 @@ func (d *describedIDs) take() []string {
 // TestRereadingAProfileNameRereadsItsSource: a reread of a profile's name reads its source, which
 // is the only secret a store holds for it, and answers for the profile as the policy then serves it.
 func TestRereadingAProfileNameRereadsItsSource(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(appSource())
 	described := &describedIDs{SecretsManagerAPI: store}
 	loader := policytest.Loader(store, daemonService)
@@ -604,6 +618,7 @@ func TestTheFirstPublishWritesTheProfilesLine(t *testing.T) {
 // reread, a value read that readValues records and a mint's RefuseValue - and after each the live
 // set serves GITHUB_READ, or refuses it with its source's reason.
 func TestEveryPublishedSetHoldsTheProfiles(t *testing.T) {
+	t.Parallel()
 	cur, store := profiled(t, everySource(), readProfile)
 	// holds checks the live set after step: GITHUB_READ served when reason is "", else refused with
 	// a detail naming reason, its source's.
@@ -667,6 +682,7 @@ func TestEveryPublishedSetHoldsTheProfiles(t *testing.T) {
 // profile's reread names its source and its siblings, a source's names its profiles, and a name
 // no profile is of names itself alone, as does a name the policy has never heard of.
 func TestARereadNamesEveryNameServedFromTheValueItReads(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(appSource(),
 		policytest.Secret("STORED_TOKEN", appOwner, policy.TierAgent, "stored-v1"),
 		policytest.Secret("PLAIN_KEY", appOwner, policy.TierAgent, "plain-v1"))
@@ -704,6 +720,7 @@ func TestARereadNamesEveryNameServedFromTheValueItReads(t *testing.T) {
 // each profile of it. A stored value has no version the policy lists, so its reread is the only
 // signal of a new value, and every reread of it moves every name served from it.
 func TestARereadMovesTheNamesOfAMintedSourceOnlyWhenItMovesItsValueVersion(t *testing.T) {
+	t.Parallel()
 	app := []string{"GITHUB_READ", appSourceName}
 	stored := []string{"STORED_TOKEN", "STORED_TOKEN_READ", "STORED_TOKEN_SECOND"}
 	for _, row := range []struct {

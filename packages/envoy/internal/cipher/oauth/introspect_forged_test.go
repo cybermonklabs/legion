@@ -19,6 +19,7 @@ import (
 // The control is the check removed from Introspect: the wrong-MAC token then reaches the closed
 // store and answers its error, and this test fails (run by hand for the record of this change).
 func TestAnUnsignedTokenIsAnsweredWithNoStoreRead(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	key := newKey(t)

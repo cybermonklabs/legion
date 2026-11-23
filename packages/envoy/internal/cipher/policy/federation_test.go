@@ -14,6 +14,7 @@ import (
 // owner once, or its group owner once, beside services at human tier), may be an admin secret, and
 // carries no scopes; a valid one loads and is served.
 func TestTheFederationTypeTakesTheServiceAccountTypesPolicyFields(t *testing.T) {
+	t.Parallel()
 	federation := func(change func(*policy.TagSet)) policy.TagSet {
 		set := policy.TagSet{Type: policy.TypeAnthropicFederation, Owner: "ada@example.com", Tier: policy.TierHuman, Requesters: "ada@example.com", MaxGrant: time.Hour}
 		if change != nil {
@@ -59,6 +60,7 @@ func TestTheFederationTypeTakesTheServiceAccountTypesPolicyFields(t *testing.T) 
 // a person approves every release of, as an admin secret is, since its token can be an
 // organization administrator's; a google-service-account secret with no admin tag is not.
 func TestAPersonApprovesEveryReleaseOfAFederationSecret(t *testing.T) {
+	t.Parallel()
 	admin := policytest.Secret("ADMIN_KEY", "ada@example.com", policy.TierHuman, "v")
 	admin.Tags[policy.TagAdmin] = policy.AdminTrue
 	admin.Tags[policy.TagRequesters] = "ada@example.com"

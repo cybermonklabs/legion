@@ -95,6 +95,7 @@ const (
 // sides are read: the extract's names, and the keys decide writes for the three project scopes a
 // token can be issued under, with the scope it grants.
 func TestTheDocumentedClaimsAreTheClaimsAnExchangedTokenCarries(t *testing.T) {
+	t.Parallel()
 	documented := extractedClaims(t)
 	issued := issuedClaims(t)
 	slices.Sort(documented)

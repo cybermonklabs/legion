@@ -151,6 +151,7 @@ func (r *federationRig) mint(t *testing.T, value string) (secrets.Minted, error)
 // bound account alone, for the audience https://api.anthropic.com with includeEmail, as the pod's
 // own credential, and hands that identity token to the exchange as its assertion.
 func TestTheFederationGrantMintsTheBoundAccountsIdentityToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newFederationRig, ciphertokentest.NewMetadataStand, t.Setenv).
 	r := newFederationRig(t)
 	if _, err := r.mint(t, federationValue(federationAccount, "")); err != nil {
 		t.Fatalf("Mint: %v", err)
@@ -177,6 +178,7 @@ func TestTheFederationGrantMintsTheBoundAccountsIdentityToken(t *testing.T) {
 // the value's rule, organization and target service account, and its workspace only when the
 // value names one.
 func TestTheFederationExchangeSendsTheRequiredFields(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newFederationRig, ciphertokentest.NewMetadataStand, t.Setenv).
 	r := newFederationRig(t)
 	for _, workspace := range []string{"", federationSpace} {
 		if _, err := r.mint(t, federationValue(federationAccount, workspace)); err != nil {
@@ -216,6 +218,7 @@ func TestTheFederationExchangeSendsTheRequiredFields(t *testing.T) {
 // TestTheFederationGrantRefusesAnotherTokenShape: an answer whose access_token is no
 // sk-ant-oat01- token, or that holds none, releases nothing, and the error quotes no token.
 func TestTheFederationGrantRefusesAnotherTokenShape(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newFederationRig, ciphertokentest.NewMetadataStand, t.Setenv).
 	// An Anthropic API key's shape, which the exchange never answers: no federated token.
 	const apiKeyShape = "sk-ant-api03-" + "a-key-not-a-federated-token"
 	r := newFederationRig(t)
@@ -244,6 +247,7 @@ func TestTheFederationGrantRefusesAnotherTokenShape(t *testing.T) {
 // the grant, so it is refused as the rule's fault, naming the setting; a short one is taken; an
 // answer with no lifetime is refused, since nothing would tell the proxy when to mint again.
 func TestTheFederationGrantExpiresAtTheTokensEnd(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newFederationRig, ciphertokentest.NewMetadataStand, t.Setenv).
 	r := newFederationRig(t)
 	asked := r.clock()
 	r.anthropic.set(func(s *anthropicStand) {
@@ -287,6 +291,7 @@ func TestTheFederationGrantExpiresAtTheTokensEnd(t *testing.T) {
 // type; and each mint presents an identity token it read for that mint, never one an earlier mint
 // presented, so IAM is asked once per mint.
 func TestTheFederationExchangeIsSentOnce(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newFederationRig, ciphertokentest.NewMetadataStand, t.Setenv).
 	r := newFederationRig(t)
 	r.anthropic.set(func(s *anthropicStand) {
 		s.status = http.StatusServiceUnavailable
@@ -317,6 +322,7 @@ func TestTheFederationExchangeIsSentOnce(t *testing.T) {
 // TestTheFederationExchangeFollowsNoRedirect: an exchange answered with a 307 or a 308 releases
 // nothing, and the body carrying the identity token never reaches the address the redirect names.
 func TestTheFederationExchangeFollowsNoRedirect(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newFederationRig, ciphertokentest.NewMetadataStand, t.Setenv).
 	var elsewhere atomic.Int64
 	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		elsewhere.Add(1)
@@ -345,6 +351,7 @@ func TestTheFederationExchangeFollowsNoRedirect(t *testing.T) {
 // while IAM holds the first, and present different ones, so no two exchanges carry one token. A
 // reader that joined concurrent reads into one mint would hand both exchanges one token.
 func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (ciphertokentest.NewMetadataStand, t.Setenv).
 	ciphertokentest.NewMetadataStand(t)
 	var minted atomic.Int64
 	gate := make(chan struct{})
@@ -386,6 +393,7 @@ func TestTwoConcurrentFederationMintsPresentTwoIdentityTokens(t *testing.T) {
 // ErrMintNotBound before any call is made; so is a value the decoder refuses, ErrMintStoredValue;
 // and a minter given no identity-token reader refuses ErrMintUpstream and exchanges nothing.
 func TestAFederationSecretBoundToNoAccountReleasesNothing(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newFederationRig, ciphertokentest.NewMetadataStand, t.Setenv).
 	r := newFederationRig(t)
 	if _, err := r.minter.Mint(t.Context(), secrets.MintRequest{Name: "UNBOUND", Source: "UNBOUND", Value: federationValue(federationAccount, "")}); !errors.Is(err, secrets.ErrMintNotBound) {
 		t.Fatalf("Mint of an unbound secret = %v, want ErrMintNotBound", err)
@@ -425,6 +433,7 @@ func TestAFederationSecretBoundToNoAccountReleasesNothing(t *testing.T) {
 // secret is refused ErrMintNotBound even where its own name is one the deployment binds, naming
 // the profile and the source it is of, before IAM or Anthropic is asked.
 func TestAnAnthropicFederationProfileMintsUnderItsSourcesBinding(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newFederationRig, ciphertokentest.NewMetadataStand, t.Setenv).
 	r := newFederationRig(t)
 	for _, req := range []secrets.MintRequest{
 		{Name: "FED_ADMIN", Source: "FED_ADMIN"},

@@ -266,6 +266,7 @@ func servedSecret(value string) *fakeSecret {
 var noVersionCreated = time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 
 func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
+	t.Parallel()
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
 		fakePrefix + "served":      servedSecret("v1"),
 		fakePrefix + "default-key": {annotations: map[string]string{"owner": "shared", "tier": "agent"}, state: secretmanagerpb.SecretVersion_ENABLED, value: []byte("v")},
@@ -331,6 +332,7 @@ func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 // a random value of that create's) reaches neither List's nor Describe's tags: the secret lists
 // and describes with exactly its annotations as tags, and is served as the same secret without it.
 func TestGCPListAndDescribeReadNoLabel(t *testing.T) {
+	t.Parallel()
 	labelled := servedSecret("v1")
 	labelled.labels = map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
@@ -364,6 +366,7 @@ func TestGCPListAndDescribeReadNoLabel(t *testing.T) {
 // the create label and holds no version at all: one without the label, or with a version (a
 // disabled one included), is not, however young.
 func TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion(t *testing.T) {
+	t.Parallel()
 	label := map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}
 	tags := map[string]string{"owner": "shared", "tier": "agent"}
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
@@ -387,6 +390,7 @@ func TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion(t *testing.T) {
 }
 
 func TestGCPDescribeAndRead(t *testing.T) {
+	t.Parallel()
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
 		fakePrefix + "served":   servedSecret("hello"),
 		fakePrefix + "disabled": {annotations: map[string]string{}, replicationKey: fakeKey, versionKey: fakeKey, state: secretmanagerpb.SecretVersion_DISABLED, value: []byte("v")},
@@ -436,6 +440,7 @@ func TestGCPDescribeAndRead(t *testing.T) {
 // each already makes, so the policy learns of a new value with no call of its own; a secret whose
 // latest version holds no value (disabled) or that has no version answers "".
 func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
+	t.Parallel()
 	seventh := servedSecret("v7")
 	seventh.number = "7"
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
@@ -468,6 +473,7 @@ func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
 }
 
 func TestGCPListFailureNamesTheCodeNotTheMessage(t *testing.T) {
+	t.Parallel()
 	f := &fakeSecretManager{failList: status.Errorf(codes.PermissionDenied, "Permission denied on resource project 000000000000 (secret value: hunter2)")}
 	store := NewGCP(startFake(t, f), fakeKey)
 	_, err := store.List(context.Background(), fakePrefix)
@@ -477,6 +483,7 @@ func TestGCPListFailureNamesTheCodeNotTheMessage(t *testing.T) {
 }
 
 func TestGCPValidNameAndPrefix(t *testing.T) {
+	t.Parallel()
 	store := GCP{KeyName: fakeKey}
 	if err := store.ValidName(fakePrefix + "deel-api-key"); err != nil {
 		t.Fatal(err)
@@ -511,6 +518,7 @@ func TestGCPValidNameAndPrefix(t *testing.T) {
 // List of N secrets under the prefix is one ListSecrets and N GetSecretVersion, a Describe is one
 // GetSecret and one GetSecretVersion, and a Read is one GetSecret and one AccessSecretVersion.
 func TestGCPReadQuotaCost(t *testing.T) {
+	t.Parallel()
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{
 		fakePrefix + "a": servedSecret("v"),
 		fakePrefix + "b": servedSecret("v"),
@@ -540,6 +548,7 @@ func TestGCPReadQuotaCost(t *testing.T) {
 // TestGCPRetriesAnUnavailableMetadataCall pins NewGCPClient's retry: a transient UNAVAILABLE on
 // ListSecrets, GetSecret or GetSecretVersion is retried, so it fails neither a reload nor a reread.
 func TestGCPRetriesAnUnavailableMetadataCall(t *testing.T) {
+	t.Parallel()
 	f := &fakeSecretManager{
 		secrets:     map[string]*fakeSecret{fakePrefix + "a": servedSecret("v")},
 		unavailable: map[string]int{"ListSecrets": 1, "GetSecret": 1, "GetSecretVersion": 2},
@@ -561,6 +570,7 @@ func TestGCPRetriesAnUnavailableMetadataCall(t *testing.T) {
 // gcpHeldFor costs no metadata read, the first release after it reads again, and a secret
 // scheduled for deletion since is refused from that read on.
 func TestGCPReadChecksDeletionOncePerWindow(t *testing.T) {
+	t.Parallel()
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{fakePrefix + "a": servedSecret("v")}}
 	store := NewGCP(startFake(t, f), fakeKey)
 	now := time.Date(2026, 10, 17, 0, 0, 0, 0, time.UTC)
@@ -595,6 +605,7 @@ func TestGCPReadChecksDeletionOncePerWindow(t *testing.T) {
 // releases of a secret scheduled for deletion cost one metadata read per window, as readable ones
 // do, and concurrent releases of a cold secret wait for one check.
 func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
+	t.Parallel()
 	gone := servedSecret("v")
 	gone.expires = time.Now().Add(30 * 24 * time.Hour)
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{fakePrefix + "gone": gone, fakePrefix + "cold": servedSecret("v")}}
@@ -629,6 +640,7 @@ func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
 // under a request's deadline, within seconds. A FAILED_PRECONDITION on an enabled version (an
 // unusable key, say) is an error the broker logs, not a secret with no value.
 func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
+	t.Parallel()
 	broken := servedSecret("v")
 	broken.keyUnusable = true
 	f := &fakeSecretManager{
@@ -659,6 +671,7 @@ func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
 // not-found (a denied call, an outage past its retries) is not remembered: the next release
 // checks again, so one caller's failure never refuses every release of the secret for 30 s.
 func TestGCPReadDoesNotCacheAFailedCheck(t *testing.T) {
+	t.Parallel()
 	f := &fakeSecretManager{
 		secrets:     map[string]*fakeSecret{fakePrefix + "a": servedSecret("v")},
 		unavailable: map[string]int{"GetSecret": gcpMetadataAttempts},
@@ -676,6 +689,7 @@ func TestGCPReadDoesNotCacheAFailedCheck(t *testing.T) {
 // TestGCPReadCachesADisabledVersionsVerdict pins that a secret whose latest version is disabled
 // costs one GetSecretVersion per window however often it is released, as Read's other check does.
 func TestGCPReadCachesADisabledVersionsVerdict(t *testing.T) {
+	t.Parallel()
 	off := servedSecret("v")
 	off.state = secretmanagerpb.SecretVersion_DISABLED
 	f := &fakeSecretManager{secrets: map[string]*fakeSecret{fakePrefix + "off": off}}

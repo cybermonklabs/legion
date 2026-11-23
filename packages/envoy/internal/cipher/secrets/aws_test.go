@@ -31,6 +31,7 @@ func (s stubSMAPI) GetSecretValue(_ context.Context, _ *secretsmanager.GetSecret
 // HasCurrentValue and the agent-secrets CLI's VALUE column read: a secret has a value while one of
 // its versions carries AWSCURRENT, and not otherwise.
 func TestHasCurrentVersionIsTheRuleListServesBy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		stages map[string][]string
 		want   bool
@@ -68,6 +69,7 @@ func (s stagedSecrets) DescribeSecret(context.Context, *secretsmanager.DescribeS
 // (ListSecrets' SecretVersionsToStages, DescribeSecret's VersionIdsToStages), and "" for a secret
 // no version of which carries it.
 func TestAWSListingNamesTheVersionGetSecretValueReads(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, tc := range []struct {
 		stages map[string][]string
@@ -93,6 +95,7 @@ func TestAWSListingNamesTheVersionGetSecretValueReads(t *testing.T) {
 // never writes on AWS, whose create takes the value with the tags) and holds no version at all:
 // one without the tag, or with any version, is not.
 func TestAWSListingIsUnfilledOnlyForATaggedSecretWithNoVersion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	tagged := LocalSecret{Name: "dev/tagged-empty", Tags: map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}}
 	untagged := LocalSecret{Name: "dev/untagged-empty", Tags: map[string]string{}}
@@ -115,6 +118,7 @@ func TestAWSListingIsUnfilledOnlyForATaggedSecretWithNoVersion(t *testing.T) {
 }
 
 func TestAWSReadReturnsErrNotFoundOnResourceNotFoundException(t *testing.T) {
+	t.Parallel()
 	r := AWS{Client: stubSMAPI{err: &types.ResourceNotFoundException{}}}
 	_, err := r.Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:missing")
 	if !errors.Is(err, ErrNotFound) {
@@ -127,6 +131,7 @@ func TestAWSReadReturnsErrNotFoundOnResourceNotFoundException(t *testing.T) {
 // ResourceNotFoundException, reads as not in the store, both from Secrets Manager's own answer
 // and from a Local holding such a secret.
 func TestAWSReadReturnsErrNotFoundForASecretScheduledForDeletion(t *testing.T) {
+	t.Parallel()
 	scheduled := &types.InvalidRequestException{Message: aws.String("You can't perform this operation on the secret because it was marked for deletion.")}
 	if _, err := (AWS{Client: stubSMAPI{err: scheduled}}).Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:deleting"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Read(InvalidRequestException) = %v, want ErrNotFound", err)
@@ -138,6 +143,7 @@ func TestAWSReadReturnsErrNotFoundForASecretScheduledForDeletion(t *testing.T) {
 }
 
 func TestAWSReadReturnsSecretStringOnSuccess(t *testing.T) {
+	t.Parallel()
 	r := AWS{Client: stubSMAPI{out: &secretsmanager.GetSecretValueOutput{SecretString: aws.String("shh")}}}
 	v, err := r.Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:present")
 	if err != nil {
@@ -152,6 +158,7 @@ func TestAWSReadReturnsSecretStringOnSuccess(t *testing.T) {
 // alone, or an empty SecretString, holds nothing the broker can hand a command, and Read answers
 // it as ErrValueNotText, never as a secret the store does not hold.
 func TestAWSReadOfAValueThatIsNotTextIsErrValueNotText(t *testing.T) {
+	t.Parallel()
 	for name, out := range map[string]*secretsmanager.GetSecretValueOutput{
 		"binary": {SecretBinary: []byte{0xff, 0x00}},
 		"empty":  {SecretString: aws.String("")},
@@ -164,6 +171,7 @@ func TestAWSReadOfAValueThatIsNotTextIsErrValueNotText(t *testing.T) {
 }
 
 func TestAWSReadWrapsGenericErrorInsteadOfMappingToErrNotFound(t *testing.T) {
+	t.Parallel()
 	boom := errors.New("boom")
 	r := AWS{Client: stubSMAPI{err: boom}}
 	source := "arn:aws:secretsmanager:us-east-1:1:secret:present"
@@ -188,6 +196,7 @@ func TestAWSReadWrapsGenericErrorInsteadOfMappingToErrNotFound(t *testing.T) {
 // secret the file gives no value is one created without a value: listed with no version, its read
 // is ErrNotFound, until a value is put, which gives it an AWSCURRENT version.
 func TestLocalFromFileServesTheFileAsSecretsManagerWould(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "secrets.json")
 	content := `{"secrets": [
 		{"name": "dev/agent-secrets/demo-key", "kms_key_id": "alias/dev", "tags": {"owner": "shared", "tier": "agent"}, "value": "demo-v1"},
@@ -260,6 +269,7 @@ func TestLocalFromFileServesTheFileAsSecretsManagerWould(t *testing.T) {
 // file an edit leaves unparseable fails each call, naming the path and never quoting the file, and
 // a value put directly stands until the file next changes.
 func TestLocalFromFileFollowsTheFile(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "secrets.json")
 	write := func(content string) {
 		t.Helper()
@@ -327,6 +337,7 @@ func currentStages(entry types.SecretListEntry) int {
 }
 
 func TestLocalFromFileRejectsMissingFile(t *testing.T) {
+	t.Parallel()
 	_, err := LocalFromFile(filepath.Join(t.TempDir(), "missing.json"))
 	if err == nil {
 		t.Fatal("expected an error for a missing file")
@@ -336,6 +347,7 @@ func TestLocalFromFileRejectsMissingFile(t *testing.T) {
 // TestLocalFromFileNeverQuotesTheFile pins that a file that does not parse is refused naming the
 // path and where it failed, never its content, which could itself be or contain a secret value.
 func TestLocalFromFileNeverQuotesTheFile(t *testing.T) {
+	t.Parallel()
 	const sensitive = "sk-should-never-appear-in-any-error-message"
 	for name, content := range map[string]string{
 		"not JSON":                  sensitive + "\n",

@@ -10,7 +10,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestGiveBackRevokesEveryTokenOfAReleasedValue: GiveBack is what the broker calls for a github-app
@@ -21,6 +20,7 @@ import (
 // never again after a failure: a retry would draw on the budget the live mints retry from. A value
 // handed as the installations form that is no such object holds nothing it can name.
 func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -28,10 +28,9 @@ func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
 	for _, refused := range []bool{false, true} {
 		t.Run(fmt.Sprintf("GitHub refusing the revokes: %t", refused), func(t *testing.T) {
 			var logged bytes.Buffer
-			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 			github := newBreakingGitHub(t, false)
 			retry, _, _ := testRetry(atTheBottom)
-			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: github.client, Retry: retry}
+			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: github.client, Retry: retry, Log: slog.New(slog.NewTextHandler(&logged, nil))}
 			minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: githubAppValue(t, "123456", key), GitHub: readScope("acme-org", "ada")})
 			if err != nil {
 				t.Fatalf("the release: %v", err)
@@ -78,6 +77,7 @@ func TestGiveBackRevokesEveryTokenOfAReleasedValue(t *testing.T) {
 // the value's text looks: the same bare token handed as the installations form names no
 // installation, so nothing is revoked, and handed as the token form it is revoked.
 func TestGiveBackRevokesTheBareTokenOfAValueTokenProfile(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)

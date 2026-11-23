@@ -28,6 +28,7 @@ func newDispatchClient(t *testing.T, d *dispatchStandIn, token string) Dispatch 
 // it stands in the file, and nothing else. A read that writes would be a read the broker's
 // Dispatch credential is not there for.
 func TestIssueReadsTheIssueAndItsSpecWithTheProjectedToken(t *testing.T) {
+	t.Parallel()
 	stand := newDispatch(t, "doing", testSpec)
 	issue, err := newDispatchClient(t, stand, "projected-token").Issue(t.Context(), testIssue)
 	if err != nil {
@@ -60,6 +61,7 @@ func TestIssueReadsTheIssueAndItsSpecWithTheProjectedToken(t *testing.T) {
 // broker's reader holds what it read for ciphertoken.AccountTokenCacheTTL and the rotation this
 // proves is one a run meets 30 seconds later.
 func TestIssueReadsTheTokenAgainForEveryCall(t *testing.T) {
+	t.Parallel()
 	stand := newDispatch(t, "doing", testSpec)
 	path := filepath.Join(t.TempDir(), "dispatch-token")
 	if err := os.WriteFile(path, []byte("first-token\n"), 0o600); err != nil {
@@ -89,6 +91,7 @@ func TestIssueReadsTheTokenAgainForEveryCall(t *testing.T) {
 // shows the model as an issue that is not found, and every other refusal is a failure of the
 // read, which hands the request to its person.
 func TestIssueTellsAMissingIssueFromAFailedRead(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		status int
 		want   error
@@ -118,6 +121,7 @@ func TestIssueTellsAMissingIssueFromAFailedRead(t *testing.T) {
 // TestAnIssueWithNoSpecDocumentIsNoFailure: the spec read answering 404, or saying what it holds
 // is no document, leaves HasSpec false and the issue itself intact.
 func TestAnIssueWithNoSpecDocumentIsNoFailure(t *testing.T) {
+	t.Parallel()
 	for _, status := range []int{http.StatusNotFound, http.StatusBadRequest} {
 		stand := newDispatch(t, "doing", testSpec)
 		stand.specStatus = status
@@ -141,6 +145,7 @@ func TestAnIssueWithNoSpecDocumentIsNoFailure(t *testing.T) {
 // TestIssueRefusesAnUnreadableToken: a token file the broker cannot read, or one that is empty,
 // is this deployment's own misconfiguration, and no call is made at all.
 func TestIssueRefusesAnUnreadableToken(t *testing.T) {
+	t.Parallel()
 	stand := newDispatch(t, "doing", testSpec)
 	for _, c := range []struct{ name, token string }{
 		{"an empty file", ""},
@@ -170,6 +175,7 @@ func TestIssueRefusesAnUnreadableToken(t *testing.T) {
 // issue's assignee, and an issue nobody is assigned to answers "". A 404 is ErrNoIssue and any
 // other refusal a failure of the read, as for Issue.
 func TestAssigneeReadsTheIssueAlone(t *testing.T) {
+	t.Parallel()
 	stand := newDispatch(t, "doing", testSpec)
 	stand.issue["assignee"] = "ada@example.com"
 	dispatch := newDispatchClient(t, stand, "projected-token")
@@ -198,6 +204,7 @@ func TestAssigneeReadsTheIssueAlone(t *testing.T) {
 // and status and nothing else, so an assignee Dispatch answers in another shape than a string
 // leaves the judge's read as it is, and fails the assignee read alone.
 func TestTheJudgesIssueReadDoesNotReadTheAssignee(t *testing.T) {
+	t.Parallel()
 	stand := newDispatch(t, "doing", testSpec)
 	stand.issue["assignee"] = map[string]any{"login": "ada@example.com"}
 	dispatch := newDispatchClient(t, stand, "projected-token")
@@ -214,6 +221,7 @@ func TestTheJudgesIssueReadDoesNotReadTheAssignee(t *testing.T) {
 // out of the body the route answers with, tells an ask Dispatch does not hold (404, ErrNoAsk)
 // from a read that failed, and refuses an answer that is no JSON object.
 func TestDispatchReadsAnAsk(t *testing.T) {
+	t.Parallel()
 	t.Run("the route, the token and the fields", func(t *testing.T) {
 		stand := newDispatch(t, "doing", testSpec)
 		ask, err := newDispatchClient(t, stand, "projected-token").Ask(t.Context(), testAsk)

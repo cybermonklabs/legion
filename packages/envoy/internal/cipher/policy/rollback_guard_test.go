@@ -17,6 +17,7 @@ import (
 // guard reaches no Secret field, so a requesters tag holding it alone is no list and a real list
 // beside it keeps its meaning.
 func TestTheProjectRollbackGuardIsRefusedByTheMergeBaseAndIgnoredHere(t *testing.T) {
+	// Not parallel: it loads the rollback cases, whose legacy kind tag writes the package-level legacyTypesLogged map (listingType), which TestTypeTagWinsAndOldTagLogsOnce clears and counts.
 	for base, head := range map[string]string{
 		baseRollbackGuard:      policy.RequestersRollbackGuard,
 		baseTagProject:         policy.TagProject,
@@ -93,6 +94,7 @@ func TestTheProjectRollbackGuardIsRefusedByTheMergeBaseAndIgnoredHere(t *testing
 // the rest answered single-spaced; a tag without it is answered unchanged, so a requesters tag no
 // guard was written into reaches ParseRequesters exactly as the store holds it.
 func TestSplitRequestersGuard(t *testing.T) {
+	t.Parallel()
 	guard := policy.RequestersRollbackGuard
 	for _, c := range []struct {
 		raw, rest string

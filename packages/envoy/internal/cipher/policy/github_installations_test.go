@@ -29,6 +29,7 @@ func tokensSource() secrets.LocalSecret {
 // The named revert: leave the type out of the GitHub token types (policy.ServesGitHubTokens),
 // and the github block rows are refused as a github block on a source of another type.
 func TestAGitHubInstallationsSourceIsServedOnlyThroughProfilesOfItsAccounts(t *testing.T) {
+	t.Parallel()
 	const tokensRead = `{"name": "TOKENS_READ", "source": "APP_TOKENS", "github": {"accounts": ["acme", "ada"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`
 	cur, _ := profiled(t, []secrets.LocalSecret{tokensSource()},
 		tokensRead,
@@ -64,6 +65,7 @@ func TestAGitHubInstallationsSourceIsServedOnlyThroughProfilesOfItsAccounts(t *t
 // profile's; one with no github-owners tag is refused github-owners-missing; and one whose value is
 // no installation tokens the decoder reads is refused value-malformed, so no profile of it serves.
 func TestAGitHubInstallationsSecretIsRefusedWithNoProfileNoOwnersOrAValueTheDecoderRefuses(t *testing.T) {
+	t.Parallel()
 	id := policytest.ID(tokensSourceName)
 	t.Run("no profile", func(t *testing.T) {
 		cur, _ := profiled(t, []secrets.LocalSecret{tokensSource(), appSource()}, readProfile)
@@ -99,6 +101,7 @@ func TestAGitHubInstallationsSecretIsRefusedWithNoProfileNoOwnersOrAValueTheDeco
 // The named revert: drop the decoder's words from the value refusal (withhold), and neither detail
 // names the version.
 func TestALoadOfAValueOfAnotherShapeVersionNamesTheVersionItReadAndTheOnesItKnows(t *testing.T) {
+	t.Parallel()
 	value := strings.Replace(policytest.GitHubInstallationsValue(), `"shapeVersion":1`, `"shapeVersion":2`, 1)
 	if !strings.Contains(value, `"shapeVersion":2`) {
 		t.Fatalf("the fixture value names no shapeVersion 1 to replace: %d bytes", len(value))
@@ -127,6 +130,7 @@ func TestALoadOfAValueOfAnotherShapeVersionNamesTheVersionItReadAndTheOnesItKnow
 // The named reverts: drop the superseded-by arm, and the exact value is refused profile-name-taken;
 // read the tag of a served key alone, and the two retired keys' rows are refused.
 func TestAProfileTakesAStoredSecretsNameOnlyWhereThatSecretIsSupersededByItsSource(t *testing.T) {
+	t.Parallel()
 	const takeover = `{"name": "LEGION_IMPLEMENT_APP", "source": "APP_TOKENS", "github": {"accounts": ["acme"], "permissions": {"contents": "read", "metadata": "read"}}}`
 	for _, row := range []struct {
 		name       string

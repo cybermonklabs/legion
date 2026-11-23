@@ -114,6 +114,7 @@ func mintCredentialFrom(t *testing.T, svc *Service, operator, service *string, h
 // person. A stated operator must name the same person, in any casing; one that names anyone else is
 // refused; an enrollment that states none is that person's all the same.
 func TestAnOperatorCredentialEnrollsItsOwnOperator(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -152,6 +153,7 @@ func TestAnOperatorCredentialEnrollsItsOwnOperator(t *testing.T) {
 // credential enrols boxes and machine sessions only, per Create's doc comment. Matching operator and
 // an otherwise-valid pod token must still be refused for kind: pod.
 func TestOperatorCredentialRefusesPodEnrollment(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -167,6 +169,7 @@ func TestOperatorCredentialRefusesPodEnrollment(t *testing.T) {
 }
 
 func TestServiceCredentialEnrolsPodOnlyWithNoOperator(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -204,6 +207,7 @@ func TestServiceCredentialEnrolsPodOnlyWithNoOperator(t *testing.T) {
 }
 
 func TestCreateIsIdempotentAndRefusesConflictingThumbprint(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -232,6 +236,7 @@ func TestCreateIsIdempotentAndRefusesConflictingThumbprint(t *testing.T) {
 // enrollment must come back as Existing; holding the aborted insert's connection while the
 // recovery lookup waits for another deadlocks, and enough concurrent retries deadlock any pool.
 func TestIdempotentRetryNeedsOnlyOneConnection(t *testing.T) {
+	t.Parallel()
 	svc := newService(t, "pool_max_conns=1")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -253,6 +258,7 @@ func TestIdempotentRetryNeedsOnlyOneConnection(t *testing.T) {
 }
 
 func TestRevokeThenLookupReportsNotLive(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -277,6 +283,7 @@ func TestRevokeThenLookupReportsNotLive(t *testing.T) {
 // TestRevokeNonexistentEnrollmentReturnsErrNotLive is the regression for review finding 1a:
 // revoking an id with no enrollment row must not proceed to write an audit row.
 func TestRevokeNonexistentEnrollmentReturnsErrNotLive(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	id := uuid.New().String()
@@ -297,6 +304,7 @@ func TestRevokeNonexistentEnrollmentReturnsErrNotLive(t *testing.T) {
 // TestRevokeTwiceReturnsErrNotLive is the regression for review finding 1b: revoking an
 // already-revoked enrollment a second time must not write a second audit row.
 func TestRevokeTwiceReturnsErrNotLive(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -326,6 +334,7 @@ func TestRevokeTwiceReturnsErrNotLive(t *testing.T) {
 // grant directly (grant issuance belongs to a later task's service, not this package) and checks
 // Revoke sets revoked_at/revoked_by on the grant in the same call.
 func TestRevokeRevokesLiveGrantsUnderEnrollment(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -355,6 +364,7 @@ func TestRevokeRevokesLiveGrantsUnderEnrollment(t *testing.T) {
 // or knowing its id. An operator A credential must not be able to revoke operator B's enrollment,
 // and the enrollment must remain untouched (still live) afterward.
 func TestRevokeRefusesWrongOperator(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 
@@ -381,6 +391,7 @@ func TestRevokeRefusesWrongOperator(t *testing.T) {
 // service (a restarted Legion daemon, which logs in again with a fresh key), are refused and end
 // nothing; the enrolling credential ends it.
 func TestOnlyTheCredentialThatEnrolledAPodEndsItsEnrollment(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -417,6 +428,7 @@ func TestOnlyTheCredentialThatEnrolledAPodEndsItsEnrollment(t *testing.T) {
 // (TestOperatorCredentialRefusesPodEnrollment): an operator credential may not revoke a pod
 // enrollment, symmetrically with being unable to create one.
 func TestRevokeRefusesOperatorCredentialForPodEnrollment(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -440,6 +452,7 @@ func TestRevokeRefusesOperatorCredentialForPodEnrollment(t *testing.T) {
 }
 
 func TestReplayReportsFreshOnceThenSeen(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	expires := time.Now().Add(time.Hour)
@@ -461,6 +474,7 @@ func TestReplayReportsFreshOnceThenSeen(t *testing.T) {
 // transaction holds, it answers without a second connection, a repeat in the same transaction is
 // seen, and a rollback forgets the jti.
 func TestReplayRecordsInTheTransactionItIsHanded(t *testing.T) {
+	t.Parallel()
 	svc := newService(t, "pool_max_conns=1")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -489,6 +503,7 @@ func TestReplayRecordsInTheTransactionItIsHanded(t *testing.T) {
 }
 
 func TestPodEnrollmentRejectsBadOrMismatchedToken(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -512,6 +527,7 @@ func TestPodEnrollmentRejectsBadOrMismatchedToken(t *testing.T) {
 // it expired, not as a token for another pod: the launcher can present the pod's current token
 // with the same key, where a mismatch is a different pod altogether.
 func TestPodEnrollmentWithAnExpiredTokenNamesItsExpiry(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -543,6 +559,7 @@ func TestPodEnrollmentWithAnExpiredTokenNamesItsExpiry(t *testing.T) {
 // on the struct) that runs synchronously right where that race would land, so this test revokes
 // the conflicting enrollment from inside the hook and gets the same code path deterministically.
 func TestCreateRetriesWhenConflictingRowIsRevokedBeforeRecovery(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -587,6 +604,7 @@ func TestCreateRetriesWhenConflictingRowIsRevokedBeforeRecovery(t *testing.T) {
 // raw Postgres type-mismatch error (SQLSTATE 22P02 from the enrollments.id uuid column), which
 // proof.Verifier.Verify would otherwise surface as a 500.
 func TestLookupRejectsNonUUIDWithoutError(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 
@@ -606,6 +624,7 @@ func TestLookupRejectsNonUUIDWithoutError(t *testing.T) {
 // session_id, a live enrollment with none (null), and an id with no live row at all (revoked or
 // never existed) — every case answers ("", nil) except the first.
 func TestSessionID(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -681,6 +700,7 @@ func requestState(t *testing.T, svc *Service, id string) (state, decidedBy strin
 // event on its record (so the approver's pending list stops offering it), in the same transaction
 // as the revoke.
 func TestRevokeCancelsPendingRequests(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -703,6 +723,7 @@ func TestRevokeCancelsPendingRequests(t *testing.T) {
 // enrollment is ended — revoked with an enrollment.expired audit row and its pending requests
 // cancelled, each with a cancelled event on its record.
 func TestLapsedLeaseReleasesTheRuntimeID(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -758,6 +779,7 @@ func TestLapsedLeaseReleasesTheRuntimeID(t *testing.T) {
 // lapsed enrollment however many there are (more than one batch's worth here), leaves a live one
 // alone, and that a second call finds nothing left to end.
 func TestEndLapsedEndsEveryLapsedEnrollmentAcrossBatches(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -800,6 +822,7 @@ func TestEndLapsedEndsEveryLapsedEnrollmentAcrossBatches(t *testing.T) {
 // TestPodEnrollmentRecordsTheVerifiedSubject pins that a pod enrollment stores the service-account
 // subject its projected token proved, and a box enrollment stores none.
 func TestPodEnrollmentRecordsTheVerifiedSubject(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	ctx := context.Background()
@@ -827,6 +850,7 @@ func TestPodEnrollmentRecordsTheVerifiedSubject(t *testing.T) {
 // live slot is refused, the slotless enrollment of the same pod is a third identity, and revoking
 // one slot leaves the others live.
 func TestEachSlotOfAPodIsAnEnrollmentOfItsOwn(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	ctx := context.Background()
@@ -888,6 +912,7 @@ func TestEachSlotOfAPodIsAnEnrollmentOfItsOwn(t *testing.T) {
 // enrollment, or one that does not match record.ValidSlot, is ErrInvalidSlot and writes no row;
 // and a pod's runtime id stays the pod UID its token proves, never a UID composed with a role.
 func TestASlotIsRefusedOffAPodAndWhenMalformed(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	ctx := context.Background()

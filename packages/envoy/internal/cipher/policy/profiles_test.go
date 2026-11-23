@@ -50,6 +50,7 @@ func repositories(n int) string {
 // it refuses, so the author of the pull request can find it. The control is the rows' own first
 // profile, with a profile of each other kind beside it: a file the broker serves.
 func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		profile string
@@ -140,6 +141,7 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 // is refused naming what it is, never read as a file of no profiles: a file of no profiles says
 // so, {"profiles": []}.
 func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		file string
 		want []string
@@ -196,6 +198,7 @@ func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 // requesters and scopes are sorted, as the tags they stand beside are. Lookup answers the one
 // profile the file holds by that name, the same each time, and nil for a name it does not hold.
 func TestParseProfilesReadsEachFieldAsTheBrokerServesIt(t *testing.T) {
+	t.Parallel()
 	profiles, err := policy.ParseProfiles([]byte(profilesFile(
 		`{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "tier": "agent", "requesters": ["legion-daemon", "ada@example.com"], "maxGrant": "1h30m",
 		  "github": {"accounts": ["Example-Org", "ada"], "repositories": ["example-org/widgets", "Example-Org/legion", "ada/proofs", "example-org/widgets"], "permissions": {"contents": "write", "metadata": "read", "workflows": "write"}}}`,
@@ -248,6 +251,7 @@ func TestParseProfilesReadsEachFieldAsTheBrokerServesIt(t *testing.T) {
 // name, SourceOf answers the first, as Lookup and Digest do. The zero Profiles, a deployment with
 // no profiles file, holds no profile and is no profile's source.
 func TestProfilesIndexEachProfilesSource(t *testing.T) {
+	t.Parallel()
 	profiles, err := policy.ParseProfiles([]byte(profilesFile(
 		githubRead,
 		githubWrite(`{"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}}`),
@@ -307,6 +311,7 @@ func TestProfilesIndexEachProfilesSource(t *testing.T) {
 // service entry against the deployment's registered services, as the loader reads a requesters
 // tag; a person is no service and needs no registration.
 func TestCheckRequestersRefusesAServiceTheDeploymentDoesNotRegister(t *testing.T) {
+	t.Parallel()
 	profiles, err := policy.ParseProfiles([]byte(profilesFile(githubRead,
 		`{"name": "GITHUB_ADMIN_PAT", "requesters": ["ada@example.com", "legion-daemon"], "proxy": {"hosts": ["api.github.com"]}}`)))
 	if err != nil {
@@ -338,6 +343,7 @@ func TestCheckRequestersRefusesAServiceTheDeploymentDoesNotRegister(t *testing.T
 // how to decide requests to come: writing guidance ends no grant. A name the file does not hold
 // has no digest, as a deployment with no profiles file gives every name none.
 func TestProfilesDigestLeavesGuidanceOut(t *testing.T) {
+	t.Parallel()
 	digest := func(t *testing.T, name, profile string) string {
 		t.Helper()
 		profiles, err := policy.ParseProfiles([]byte(profilesFile(githubRead, profile)))
@@ -401,6 +407,7 @@ func TestProfilesDigestLeavesGuidanceOut(t *testing.T) {
 // from the empty ones. A profile with no proxy block has no entry, so its credential is released
 // as it is today for a name the rules do not hold.
 func TestProxyRulesHoldOneEntryPerProxyBlock(t *testing.T) {
+	t.Parallel()
 	profiles, err := policy.ParseProfiles([]byte(profilesFile(
 		githubRead,
 		`{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}}}`,
@@ -434,6 +441,7 @@ func TestProxyRulesHoldOneEntryPerProxyBlock(t *testing.T) {
 // object {"profiles": [...]} has no profiles to compare, and is refused: a null file read as no
 // profiles would report every profile of the change as added.
 func TestDecodeProfilesReadsAFileTheRulesRefuse(t *testing.T) {
+	t.Parallel()
 	refused := profilesFile(adminPAT(`{"hosts": ["api.github.com"], "judge": 1800}`),
 		githubWrite(`{"accounts": ["Example-Org"], "permissions": {"workflows": "read"}}`))
 	if _, err := policy.ParseProfiles([]byte(refused)); err == nil {

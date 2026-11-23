@@ -67,6 +67,7 @@ func refreshToken(r *http.Request) string {
 // the session with. Each answer still names its class. Every row mints under a Retry on a clock
 // the test sets, so a failure it retries is asked again and the error is its last attempt's.
 func TestAMintErrorNeverQuotesWhatTheUpstreamEchoes(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +163,7 @@ func TestAMintErrorNeverQuotesWhatTheUpstreamEchoes(t *testing.T) {
 // subtypes of a login that must sign in again, are named as Google answers them; any other value is
 // named "unknown".
 func TestAGoogleRefusalNamesOnlyTheSubtypesGoogleDocuments(t *testing.T) {
+	t.Parallel()
 	for subtype, want := range map[string]string{"invalid_rapt": "(invalid_rapt)", "rapt_required": "(rapt_required)", "something_new": "(unknown)"} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusBadRequest)

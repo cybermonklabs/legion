@@ -13,6 +13,7 @@ import (
 // having answered, since Go's TLS client returns the alert as a *net.OpError a dial's failure is
 // also one of. Control: a refused dial is still an upstream that could not be reached.
 func TestATLSAlertReadsAsTheUpstreamAnswering(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct{ name, addr, want string }{
 		{"the upstream's TLS alert", tlsalerttest.Remote(t), "answered, but the TLS exchange failed"},
 		{"this side's TLS alert on a record it could not take", tlsalerttest.Local(t), "answered, but the TLS exchange failed"},

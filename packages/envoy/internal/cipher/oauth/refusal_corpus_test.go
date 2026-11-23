@@ -141,6 +141,7 @@ var corpusCodes = map[string]*oauth2.RFC6749Error{
 }
 
 func TestTheCodeCorpusIsWhatTheLibraryWrites(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join("testdata", "refusal-codes.json")
 	var want []string
 	for _, value := range corpusCodes {
@@ -170,6 +171,7 @@ func TestTheCodeCorpusIsWhatTheLibraryWrites(t *testing.T) {
 }
 
 func TestEveryLibraryErrorTheTokenEndpointReturnsIsInTheCodeCorpus(t *testing.T) {
+	t.Parallel()
 	used := regexp.MustCompile(`oauth2\.(Err[A-Z][A-Za-z]*)`)
 	found := 0
 	for _, source := range []string{"exchange.go", "provider.go", "clientauth.go"} {
@@ -229,6 +231,7 @@ func corpusDescriptions(t *testing.T) []string {
 }
 
 func TestTheRefusalCorpusIsWhatTheBrokerWrites(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join("testdata", "refusal-descriptions.json")
 	want := corpusDescriptions(t)
 	if os.Getenv("UPDATE_REFUSAL_CORPUS") == "1" {
@@ -254,6 +257,7 @@ func TestTheRefusalCorpusIsWhatTheBrokerWrites(t *testing.T) {
 }
 
 func TestEachCorpusHintStandsInTheBrokersSource(t *testing.T) {
+	t.Parallel()
 	sources := map[string]string{}
 	read := func(path string) string {
 		text, ok := sources[path]

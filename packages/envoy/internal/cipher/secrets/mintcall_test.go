@@ -21,6 +21,7 @@ import (
 // rateLimitedWait. The test counts the rows it drove and fails under the number the table must
 // hold.
 func TestServerWaitBoundsTheWaitAnAnswerNames(t *testing.T) {
+	t.Parallel()
 	const rowsToDrive = 8
 	now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
 	exhausted := func(reset string) http.Header {

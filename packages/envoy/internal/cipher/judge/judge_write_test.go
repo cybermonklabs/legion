@@ -48,6 +48,7 @@ func lineWith(lines []string, words ...string) string {
 // machine refusing the judge. It is logged as that, at INFO, and never as the ERROR "refused"; the
 // verdict's row is still written, on its own context, saying the approval was not applied.
 func TestAShutdownDuringTheApprovalIsNoRefusal(t *testing.T) {
+	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.commitTakes = 3 * time.Second
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
@@ -77,6 +78,7 @@ func TestAShutdownDuringTheApprovalIsNoRefusal(t *testing.T) {
 // (requests.JudgedAppliedUnknown), the run says so at WARN and its verdict line reads applied
 // unknown, never false.
 func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		wrote       requests.JudgedWrite
 		level, says string
@@ -115,6 +117,7 @@ func TestAnApprovalWhoseAnswerWasLostWritesNoSecondRow(t *testing.T) {
 // mid-commit — is no refusal, and the row LogJudged then wrote says whether it applied. One that
 // did not apply is logged at WARN as that, and never as the ERROR "refused".
 func TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal(t *testing.T) {
+	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.applyErr = fmt.Errorf("%w: conn closed", requests.ErrCommitUncertain)
 	runner := New(t.Context(), testOptions(t, dispatch, model, machine))
@@ -137,6 +140,7 @@ func TestAnApprovalWhoseCommitGotNoAnswerIsNoRefusal(t *testing.T) {
 // approval runs. Only the approval's own answer says whether the stop cut it (context.Canceled in
 // that error); the run's context being cancelled says nothing of why this approval failed.
 func TestAnUnexpectedRefusalDuringAStopIsStillAnError(t *testing.T) {
+	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -158,6 +162,7 @@ func TestAnUnexpectedRefusalDuringAStopIsStillAnError(t *testing.T) {
 // approval's not-applied line describes the row LogJudged wrote, so a row that could not be written
 // gets the one ERROR saying so, with the approval's error beside it, and no line that claims a row.
 func TestTheVerdictLineWaitsForTheRowItNames(t *testing.T) {
+	t.Parallel()
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Grant, "yes")), newRequests()
 	machine.applyErr = fmt.Errorf("%w: unexpected EOF", requests.ErrCommitUncertain)
 	machine.logErr = errors.New("the database refused the row")

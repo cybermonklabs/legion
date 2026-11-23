@@ -25,6 +25,7 @@ import (
 // is one it made itself and registers no protocol on, so it counts as owned. Each run mints
 // exactly one token, at the second tunnel.
 func TestATokenRequestWhoseProxyRefusedItsTunnelIsSentAgain(t *testing.T) {
+	// Not parallel: it stores its transport in the package-level tracedTransports sync.Map (secrets.TraceTransportForTest), which every mint reads.
 	key, err := testAppKey()
 	if own, callers := secrets.OwnClientTracesConnectionsForTest(); !own || callers {
 		t.Fatalf("the minters' own client is traced: %t, a caller's own *http.Transport is traced: %t; want true and false", own, callers)

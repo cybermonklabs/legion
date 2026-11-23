@@ -193,20 +193,10 @@ func within(t *testing.T, what string, got, low, high time.Time) {
 	}
 }
 
-// logBuffer is a log destination safe to write from several goroutines and read from the test.
-type logBuffer = logtest.Buffer
-
-// captureSlog sends slog's default logger to a buffer until t ends, and answers the buffer.
-func captureSlog(t *testing.T) *logBuffer {
-	t.Helper()
-	logged := &logBuffer{}
-	logtest.SetDefault(t, slog.NewTextHandler(logged, nil))
-	return logged
-}
-
 // Until a broker has beaten, broker_serving is empty, so a lease is live exactly while it has not
 // run out: a lapsed lease is refused and swept.
 func TestBeforeAnyBeatALapsedLeaseIsLapsed(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	id := r.enroll(t, "box-unbeaten")
 	if processes := r.processes(t); len(processes) != 0 {
@@ -225,6 +215,7 @@ func TestBeforeAnyBeatALapsedLeaseIsLapsed(t *testing.T) {
 // A gap after the latest beat no longer than the threshold is a broker still serving: a lease that
 // ran out inside it is lapsed, and the next beat moves only the clock.
 func TestABeatAfterAGapWithinTheThresholdMovesNoLease(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	r.beat(t)
 	id := r.enroll(t, "box-short-gap")
@@ -256,6 +247,7 @@ func TestABeatAfterAGapWithinTheThresholdMovesNoLease(t *testing.T) {
 // by the gap, no further than one Lease past the beat, leaves the others, and turns the guard off:
 // the restored lease is live on its own value.
 func TestTheTimeNoBrokerServedIsGivenBackToTheLeasesItRanOut(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	ctx := context.Background()
 	r.beat(t)
@@ -327,6 +319,7 @@ func TestTheTimeNoBrokerServedIsGivenBackToTheLeasesItRanOut(t *testing.T) {
 // and finds no gap. The test holds servingLock until both beats wait on it, so it runs on a
 // database of its own (newServingRigOnItsOwnDatabase).
 func TestTwoBeatsAtOnceGiveTheTimeBackOnce(t *testing.T) {
+	t.Parallel()
 	r := newServingRigOnItsOwnDatabase(t)
 	ctx := context.Background()
 	other := &ServingClock{Enrollments: r.svc, Interval: servingInterval, NotServingAfter: notServingAfter}
@@ -374,6 +367,7 @@ func TestTwoBeatsAtOnceGiveTheTimeBackOnce(t *testing.T) {
 // The clock never moves backward: a beat that finds its row's last_serving_at ahead of its own
 // time leaves it there, and records its own threshold.
 func TestABeatNeverMovesTheClockBackward(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	r.exec(t, `insert into broker_serving (process, last_serving_at, not_serving_after) values ($1, now() + interval '1 hour', interval '1 second')`, r.clock.processID())
 	ahead, _ := r.serving(t)
@@ -386,6 +380,7 @@ func TestABeatNeverMovesTheClockBackward(t *testing.T) {
 // With every row gone a lease is live exactly while it has not run out, and the next beat writes
 // its process's row as of its own time.
 func TestABeatRecreatesADeletedRow(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	r.beat(t)
 	id := r.enroll(t, "box-no-row")
@@ -405,6 +400,7 @@ func TestABeatRecreatesADeletedRow(t *testing.T) {
 // A beat deletes the rows of processes more than an hour behind the latest row and keeps the rest;
 // the latest row is never deleted, even when it is not the beating process's.
 func TestABeatPrunesRowsAnHourBehindTheLatest(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	r.exec(t, `insert into broker_serving (process, last_serving_at, not_serving_after) values
 		('gone', now() - interval '2 hours', interval '15 seconds'),
@@ -435,6 +431,7 @@ func sortedCopy(s []string) []string {
 // fleet that loses a pod stops counting it a threshold later rather than at the next prune, an
 // hour on.
 func TestABeatCountsTheBrokersStillBeating(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	var counted []int
 	r.clock.OnReplicas = func(replicas int) { counted = append(counted, replicas) }
@@ -458,6 +455,7 @@ func TestABeatCountsTheBrokersStillBeating(t *testing.T) {
 // pods get is api.MinReplicas's work and not the count's, so the count a process hands over is
 // the fleet it really sees.
 func TestALoneBrokersBeatCountsItself(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	var counted []int
 	r.clock.OnReplicas = func(replicas int) { counted = append(counted, replicas) }
@@ -473,6 +471,7 @@ func TestALoneBrokersBeatCountsItself(t *testing.T) {
 // current across more than the threshold, so the guard stays off and a lease that runs out in the
 // meantime is lapsed, not held live as if no broker were serving.
 func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	ctx := context.Background()
 	// Every bound here is the clock's own, and a loaded machine must still meet them: Beat bounds
@@ -483,15 +482,17 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	// and four of threshold keep every relation this row reads and give that machine room
 	// (INFRA-985).
 	const interval, threshold = time.Second, 4 * time.Second
-	stuck := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold}
-	serving := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold}
+	// Both clocks log to logged from their first line on, so the Run warnings read below are theirs.
+	logged := &logtest.Buffer{}
+	log := slog.New(slog.NewTextHandler(logged, nil))
+	stuck := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold, Log: log}
+	serving := &ServingClock{Enrollments: r.svc, Interval: interval, NotServingAfter: threshold, Log: log}
 	for _, clock := range []*ServingClock{stuck, serving} {
 		if err := clock.Beat(ctx); err != nil {
 			t.Fatalf("Beat: %v", err)
 		}
 	}
 	id := r.enroll(t, "box-held")
-	logged := captureSlog(t)
 
 	holder, err := r.svc.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -581,6 +582,7 @@ func (r servingRig) beatsPast(t *testing.T, clock *ServingClock, want time.Time)
 
 // Run beats as soon as it starts and returns once its context ends.
 func TestRunBeatsAtOnceAndReturnsWhenItsContextEnds(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -650,6 +652,7 @@ type outageRow struct {
 //  3. it is the target of this change's named revert: >= in place of > inside
 //     broker_outage_since, which turns the row whose gap lies exactly on the threshold red.
 func TestTheOutageRuleAgreesWithTheBeatsOldCondition(t *testing.T) {
+	t.Parallel()
 	r := newServingRig(t)
 	for _, c := range []struct {
 		name       string

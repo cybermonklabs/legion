@@ -230,6 +230,7 @@ func readRollbackGolden(t *testing.T) map[string]rollbackAnswer {
 // check. It never skips: the broker packages' run counts every skip as a database suite that did
 // not run (database-skips.sh).
 func TestTheRollbackGuardBaseAnswersAreRecorded(t *testing.T) {
+	// Not parallel: with -write-rollback-golden it loads the rollback cases, whose legacy kind tag writes the package-level legacyTypesLogged map (listingType), which TestTypeTagWinsAndOldTagLogsOnce clears and counts.
 	if !*writeRollbackGolden {
 		readRollbackGolden(t)
 		return

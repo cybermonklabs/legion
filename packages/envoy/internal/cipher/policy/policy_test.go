@@ -25,6 +25,7 @@ const (
 // anyone for a shared one; a shared agent-tier secret goes to everyone; a service's secret goes
 // to that service alone.
 func TestEvaluateFollowsOwnerAndTierAlone(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(
 		policytest.Secret("PERSON_AGENT", owner, policy.TierAgent, "v"),
 		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
@@ -95,6 +96,7 @@ func TestEvaluateFollowsOwnerAndTierAlone(t *testing.T) {
 // to that session, so it asks the owner, or anyone for a shared secret, and a service's own secret,
 // which no person approves, is denied. Withholding one name changes no other name's answer.
 func TestEvaluateTreatsAWithheldNameAsHumanTier(t *testing.T) {
+	t.Parallel()
 	store := secrets.NewLocal(
 		policytest.Secret("PERSON_AGENT", owner, policy.TierAgent, "v"),
 		policytest.Secret("PERSON_HUMAN", owner, policy.TierHuman, "v"),
@@ -153,6 +155,7 @@ func TestEvaluateTreatsAWithheldNameAsHumanTier(t *testing.T) {
 // a pod whose service is equal to a person's entry, cannot happen: every person entry holds an
 // @ and no service name may.)
 func TestRequesters(t *testing.T) {
+	t.Parallel()
 	const (
 		sami   = "sami@example.com"
 		jason  = "jason@example.com"
@@ -233,6 +236,7 @@ func TestRequesters(t *testing.T) {
 // the same way. The control is the same requester unmarked, who is answered exactly as before,
 // the group's secrets included. A name the set does not serve is still ErrUnknownSecret.
 func TestARestrictedMemberIsDeniedEverySecret(t *testing.T) {
+	t.Parallel()
 	const outsider = "outsider@outside.example"
 	store := secrets.NewLocal(
 		policytest.Secret("OWN_AGENT", outsider, policy.TierAgent, "v"),
@@ -289,6 +293,7 @@ func TestARestrictedMemberIsDeniedEverySecret(t *testing.T) {
 // that is nothing but line endings keeps them, since the empty string reads to a caller as a
 // credential that is not set. (The values below are fixtures, not credentials.)
 func TestTrimLineEnding(t *testing.T) {
+	t.Parallel()
 	const (
 		token = "tok-abc"
 		pem   = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"

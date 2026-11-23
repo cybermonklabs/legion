@@ -271,6 +271,7 @@ func newKey(t *testing.T) *ecdsa.PrivateKey {
 }
 
 func TestDeviceAuthorizationOmitsTheCompleteURI(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	status, header, body := f.post(t, "/device_authorization", url.Values{
 		"client_id": {oauthwire.ClientID}, "scope": {"machine"}, "dpop_jkt": {thumbprint(t, newKey(t))},
@@ -304,6 +305,7 @@ func TestDeviceAuthorizationOmitsTheCompleteURI(t *testing.T) {
 
 // A request onRequest refuses is answered with its broker code and stores no device code.
 func TestARefusedDeviceRequestStoresNothing(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.refuse = &oauth.Refusal{Status: http.StatusBadRequest, Code: "REQUEST_INVALID", Message: "the request object does not verify"}
 	status, _, body := f.post(t, "/device_authorization", url.Values{"client_id": {oauthwire.ClientID}, "scope": {"machine"}}, nil)
@@ -322,6 +324,7 @@ func TestARefusedDeviceRequestStoresNothing(t *testing.T) {
 }
 
 func TestARateLimitRefusalNamesItsRetryAfter(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.refuse = &oauth.Refusal{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "too many", RetryAfter: 30}
 	status, header, body := f.post(t, "/device_authorization", url.Values{"client_id": {oauthwire.ClientID}}, nil)
@@ -335,6 +338,7 @@ func TestARateLimitRefusalNamesItsRetryAfter(t *testing.T) {
 // that code again as the member code every other refusal of the broker has, which is where the
 // answer's record reads it; it carries nothing else.
 func TestWriteRefusalNamesItsCodeBesideItsOAuthMembers(t *testing.T) {
+	t.Parallel()
 	w := httptest.NewRecorder()
 	oauth.WriteRefusal(w, &oauth.Refusal{Status: http.StatusBadRequest, Code: "REQUEST_INVALID", Message: "the request object does not verify"})
 	var body map[string]any
@@ -351,6 +355,7 @@ func TestWriteRefusalNamesItsCodeBesideItsOAuthMembers(t *testing.T) {
 }
 
 func TestTheTokenEndpointWaitsUntilTheCodeIsApproved(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	deviceCode, userCode := f.authorize(t, key)
@@ -385,6 +390,7 @@ func TestTheTokenEndpointWaitsUntilTheCodeIsApproved(t *testing.T) {
 // poll's time by writing back the device code it read. That write landing after an approval
 // committed leaves the approval in place, so the next poll is issued its tokens.
 func TestAPollThatReadThePendingCodeBeforeTheApprovalKeepsTheApproval(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	deviceCode, userCode := f.authorize(t, key)
@@ -414,6 +420,7 @@ func TestAPollThatReadThePendingCodeBeforeTheApprovalKeepsTheApproval(t *testing
 // clock as far off as BROKER_PROOF_SKEW_SECONDS allows every other broker proof, not the library's
 // ten seconds, and refuses one past it.
 func TestATokenRequestsDPoPSkewIsTheBrokersProofSkew(t *testing.T) {
+	t.Parallel()
 	f := newFixtureWith(t, func(c *oauth.Config) { c.ProofSkew = time.Minute })
 	key := newKey(t)
 	first := f.login(t, key)
@@ -445,6 +452,7 @@ func TestATokenRequestsDPoPSkewIsTheBrokersProofSkew(t *testing.T) {
 }
 
 func TestADeniedCodeAnswersAccessDenied(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	deviceCode, userCode := f.authorize(t, key)
@@ -457,6 +465,7 @@ func TestADeniedCodeAnswersAccessDenied(t *testing.T) {
 }
 
 func TestApprovingAnUnknownCodeIsNotFound(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	if err := f.provider.ApproveDevice(context.Background(), "ABCD-EFGH", true, nil); !errors.Is(err, oauth2.ErrNotFound) {
 		t.Fatalf("ApproveDevice(unknown) = %v, want oauth2.ErrNotFound", err)
@@ -464,6 +473,7 @@ func TestApprovingAnUnknownCodeIsNotFound(t *testing.T) {
 }
 
 func TestTheTokenEndpointRefusesAProofFromAnotherKey(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	keyA, keyB := newKey(t), newKey(t)
 	deviceCode, userCode := f.authorize(t, keyA)
@@ -482,6 +492,7 @@ func TestTheTokenEndpointRefusesAProofFromAnotherKey(t *testing.T) {
 }
 
 func TestARefreshRotatesAndTheOldTokenIsRefusedAfterItsGrace(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	first := f.login(t, key)
@@ -523,6 +534,7 @@ func (f *fixture) shiftGrace(t *testing.T, elapsed time.Duration) {
 // five minutes, so a helper whose answer was lost and whose retries back off past a minute still
 // keeps its login, and the token it is answered refreshes on.
 func TestALostRefreshAnswerRetriedTwoMinutesLaterKeepsTheLogin(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	first := f.login(t, key)
@@ -548,6 +560,7 @@ func TestALostRefreshAnswerRetriedTwoMinutesLaterKeepsTheLogin(t *testing.T) {
 // grace ends the tokens its earlier redemption issued, so the family never forks into two live
 // branches; the earlier branch's token, presented afterwards, is a reuse.
 func TestTwoRedemptionsWithinTheGraceLeaveOneBranch(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	first := f.login(t, key)
@@ -573,6 +586,7 @@ func TestTwoRedemptionsWithinTheGraceLeaveOneBranch(t *testing.T) {
 }
 
 func TestReusingARotatedTokenEndsTheLogin(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	first := f.login(t, key)
@@ -595,6 +609,7 @@ func TestReusingARotatedTokenEndsTheLogin(t *testing.T) {
 // TestReusingARotatedTokenEndsTheLoginAfterASweep: a family whose newest token is live keeps its
 // rotated rows through a sweep, so a replay is still found and still revokes the family.
 func TestReusingARotatedTokenEndsTheLoginAfterASweep(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	first := f.login(t, key)
@@ -618,6 +633,7 @@ func TestReusingARotatedTokenEndsTheLoginAfterASweep(t *testing.T) {
 }
 
 func TestBeforeCanRefuse(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	refreshToken := f.login(t, key)
@@ -638,6 +654,7 @@ func TestBeforeCanRefuse(t *testing.T) {
 // takes as the login's end; any other Before error (a lost database connection) is a 500
 // server_error the client retries, and the refresh token stays redeemable.
 func TestABeforeFailureIsAServerError(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	key := newKey(t)
 	refreshToken := f.login(t, key)
@@ -657,6 +674,7 @@ func TestABeforeFailureIsAServerError(t *testing.T) {
 // TestNewRefusesAConfigurationItCouldNotServe: every lifetime and the proof skew must be
 // positive, the secret long enough, and an issuer named must be named whole.
 func TestNewRefusesAConfigurationItCouldNotServe(t *testing.T) {
+	t.Parallel()
 	secret := make([]byte, 32)
 	sound := oauth.Config{
 		Secret: secret, DeviceLifetime: time.Minute, AccessLifetime: time.Minute, RefreshLifetime: time.Hour,
@@ -685,6 +703,7 @@ func TestNewRefusesAConfigurationItCouldNotServe(t *testing.T) {
 }
 
 func TestNormalizeUserCode(t *testing.T) {
+	t.Parallel()
 	for typed, want := range map[string]string{
 		"ABCD-EFGH":   "ABCD-EFGH",
 		"abcd-efgh":   "ABCD-EFGH",
@@ -700,6 +719,7 @@ func TestNormalizeUserCode(t *testing.T) {
 }
 
 func TestNewUserCodeIsTheBrokersFormat(t *testing.T) {
+	t.Parallel()
 	for range 50 {
 		code, err := oauth.NewUserCode()
 		if err != nil {

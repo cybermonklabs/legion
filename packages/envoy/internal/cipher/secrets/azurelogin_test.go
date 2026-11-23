@@ -19,6 +19,7 @@ func azureProjectedToken(payload string) string {
 }
 
 func TestAzureLoginMintReleasesTheCurrentProjectedToken(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "token")
 	minter := secrets.AzureLogin{
 		TokenFile:  file,
@@ -53,6 +54,7 @@ func TestAzureLoginMintReleasesTheCurrentProjectedToken(t *testing.T) {
 }
 
 func TestAzureLoginMintRefusesMalformedStoredIdentities(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"stored-credential-must-not-leak", "null", "[]", `{`, `{}`, `{"tenant_id":"tenant-id"}`,
 		`{"client_id":"client-id"}`, `{"tenant_id":" ","client_id":"client-id"}`,
@@ -69,6 +71,7 @@ func TestAzureLoginMintRefusesMalformedStoredIdentities(t *testing.T) {
 }
 
 func TestAzureLoginMintRefusesUnreadableProjectedTokens(t *testing.T) {
+	t.Parallel()
 	for _, file := range []string{filepath.Join(t.TempDir(), "do-not-print-this-token"), t.TempDir()} {
 		got, err := (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", Source: "AZURE_LOGIN", HumanTier: true, Value: azureLoginValue})
 		if got.Value != "" || secrets.MintErrorClass(err) != "upstream" {
@@ -81,6 +84,7 @@ func TestAzureLoginMintRefusesUnreadableProjectedTokens(t *testing.T) {
 }
 
 func TestAzureLoginMintRefusesInvalidOrExpiredProjectedTokensWithoutDisclosingThem(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)
 	for name, token := range map[string]string{
 		"empty":             "",
@@ -121,6 +125,7 @@ func TestAzureLoginMintRefusesInvalidOrExpiredProjectedTokensWithoutDisclosingTh
 // configured secret under a name of its own releases it, and a profile of another secret does not,
 // whatever it is called.
 func TestAzureLoginMintRequiresTheConfiguredHumanTierSecret(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "token")
 	token := azureProjectedToken(`{"exp":4102444800}`)
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {

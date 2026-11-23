@@ -17,6 +17,7 @@ import (
 // the refusal, never a failure to ask that an operator entry's token or a person's trade naming no
 // project would mint through unchecked. It runs the real Dispatch client, not a stand-in for it.
 func TestARefusalWithABodyItCannotReadStillRefusesTheTrade(t *testing.T) {
+	t.Parallel()
 	const says = "Dispatch refused the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		for _, body := range projectaccesstest.RefusalBodies {

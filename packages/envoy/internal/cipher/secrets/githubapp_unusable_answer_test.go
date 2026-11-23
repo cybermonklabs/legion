@@ -23,7 +23,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // tokenAnswerFault is how the answer to a token request breaks on its way back from GitHub. Each
@@ -496,6 +495,7 @@ func warned(log, says string) (lines, warnings int) {
 // through to its approver, and no error or log line holds a token. An answer whose part the
 // minter holds does not name its token is logged as a token nothing can revoke.
 func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
@@ -605,7 +605,6 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer
-			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 			github := newBreakingGitHub(t, tc.refuseRevokes, tc.faults...)
 			retry, _, _ := testRetry(atTheBottom)
 			client := github.client
@@ -618,7 +617,7 @@ func TestATokenWhoseAnswerTheMinterCannotUseIsGivenBack(t *testing.T) {
 			if tc.registered {
 				client = github.registeredClient
 			}
-			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: client, Retry: retry}
+			app := secrets.GitHubApp{Base: github.service.URL(), HTTP: client, Retry: retry, Log: slog.New(slog.NewTextHandler(&logged, nil))}
 
 			ctx := t.Context()
 			if tc.deadline > 0 {

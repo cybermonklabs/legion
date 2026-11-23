@@ -27,6 +27,7 @@ func machineForm(t *testing.T, f *signInFixture, session string) url.Values {
 // `dispatch` call, every hook run and every session of a long-lived process, and nothing removes
 // those rows.
 func TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	key := newKey(t)
 	before := f.count(t, "launcher_credentials")
@@ -62,6 +63,7 @@ func TestATradeThatDeclinesItsLauncherCredentialLeavesNoRow(t *testing.T) {
 // sessions enrol under. A second trade of the same key moves that one credential rather than
 // minting another, as it always has.
 func TestTheHelpersTradeStillGetsItsLauncherCredential(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	key := newKey(t)
 	before := f.count(t, "launcher_credentials")
@@ -101,6 +103,7 @@ func TestTheHelpersTradeStillGetsItsLauncherCredential(t *testing.T) {
 // recorded for the refused trade, so the box signs in again rather than keeping a half-made
 // sign-in.
 func TestASignInThatDeclinesItsCredentialIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	key := newKey(t)
 	before := f.count(t, "launcher_credentials")
@@ -135,6 +138,7 @@ func TestASignInThatDeclinesItsCredentialIsRefused(t *testing.T) {
 // second half is what ends a token from a trade that commits while the revoke's statement waits,
 // which the first half's statement does not see; it reaches only a token that names a credential.
 func TestRevokingASignInEndsTheTokenItsTradeMinted(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	key := newKey(t)
 	ctx := context.Background()
@@ -203,6 +207,7 @@ func recordSignIn(t *testing.T, f *signInFixture, person, thumbprint, machine st
 // on filling an operator's machine-logins list, and one misspelled the other way would lose the
 // credential its secrets depend on with nothing naming the cause, so neither is guessed.
 func TestALauncherCredentialValueTheBrokerCannotReadIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newSignInFixture(t)
 	key := newKey(t)
 	before := f.count(t, "launcher_credentials")

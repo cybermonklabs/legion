@@ -153,6 +153,7 @@ func insertSignIn(t *testing.T, svc *Service, cred Credential, person string) st
 // session that named itself and still holds something. The row is marked ended and dormant, its
 // grant stays live, its pending request stays pending, and no approver's list loses it.
 func TestAnEndOfTheBoxLeavesANamedSessionsGrantAndPendingRequestStanding(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -212,6 +213,7 @@ func TestAnEndOfTheBoxLeavesANamedSessionsGrantAndPendingRequestStanding(t *test
 // the end it already had is the one it keeps, since the box ended then and not now. A second
 // sweep finds it no longer dormant and changes nothing.
 func TestTheCarrySweepRevokesWhatADormantEnrollmentHeldOnceItsWindowPasses(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	svc.Carry = time.Hour
 	ctx := context.Background()
@@ -275,6 +277,7 @@ func TestTheCarrySweepRevokesWhatADormantEnrollmentHeldOnceItsWindowPasses(t *te
 // BROKER_SESSION_CARRY_SECONDS: 0 is no carry at all, so the next sweep ends every dormant
 // enrollment it finds and the broker behaves as it did before the carry.
 func TestTheCarrySweepTurnedOffEndsADormantEnrollmentAtOnce(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred, enr := carryEnrollment(t, svc, nil, nil, "session", "carry-off")
@@ -297,6 +300,7 @@ func TestTheCarrySweepTurnedOffEndsADormantEnrollmentAtOnce(t *testing.T) {
 // the grant is revoked and the pending request cancelled in the same transaction, with no
 // dormancy and nothing left for another box to adopt.
 func TestAPersonsRevokeTakesTheSessionsGrantAtOnce(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	issuer, key := withPodVerifier(t, svc)
@@ -373,6 +377,7 @@ func TestAPersonsRevokeTakesTheSessionsGrantAtOnce(t *testing.T) {
 // enrollments alone would pass over it and leave its grant for the next enrollment of that session
 // name to adopt — on a box the person has not revoked. The revoke takes the dormant rows too.
 func TestRevokingAMachineLoginTakesBackWhatItsDormantEnrollmentHeld(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintApprovedCredential(t, svc, "ada@example.com", nil, "devbox")
@@ -408,6 +413,7 @@ func TestRevokingAMachineLoginTakesBackWhatItsDormantEnrollmentHeld(t *testing.T
 // outright, grants revoked and requests cancelled, with no dormant_since for the carry sweep to
 // find.
 func TestAnEndThatCarriesNothingEndsTheEnrollmentAsItAlwaysDid(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	ctx := context.Background()
 	cred := mintCredential(t, svc, str("ada@example.com"), nil, "devbox")
@@ -455,6 +461,7 @@ func TestAnEndThatCarriesNothingEndsTheEnrollmentAsItAlwaysDid(t *testing.T) {
 // applies is such a row, so the probe reads the principal as well as the name. A named
 // enrollment that does record one goes dormant on either end of its box, as it always did.
 func TestAnEnrollmentWithNoPrincipalEndsAsItAlwaysDidAndOneWithAPrincipalGoesDormant(t *testing.T) {
+	t.Parallel()
 	svc := newService(t)
 	issuer, key := withPodVerifier(t, svc)
 	for _, tc := range []struct {

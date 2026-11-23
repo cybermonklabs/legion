@@ -78,6 +78,7 @@ func errorText(err error) string {
 // (secrets.ErrMintNoInstallation and secrets.ErrMintEmptyCut). A check that carries no scope is
 // a programming error, refused before GitHub is asked anything.
 func TestAGitHubAppCheckOfAProfileBeforeApprovalReleasesNoToken(t *testing.T) {
+	t.Parallel()
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)

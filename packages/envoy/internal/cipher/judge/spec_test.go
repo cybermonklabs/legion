@@ -9,6 +9,7 @@ import (
 )
 
 func TestSpecExtractTakesTheSummaryAndTheRequirements(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name     string
 		markdown string
@@ -77,6 +78,7 @@ func TestSpecExtractTakesTheSummaryAndTheRequirements(t *testing.T) {
 // TestSpecExtractIsCutToItsBound: a spec larger than the bound is cut to it, whichever path it
 // came down, so what reaches the model is bounded whatever an agent wrote into the document.
 func TestSpecExtractIsCutToItsBound(t *testing.T) {
+	t.Parallel()
 	long := strings.Repeat("é ", specRunes)
 	for _, c := range []struct{ name, markdown string }{
 		{"the sections", "## Summary\n\n" + long + "\n\n## Requirements\n\n" + long + "\n"},
