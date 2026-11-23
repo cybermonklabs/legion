@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
@@ -68,17 +69,13 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 42, envelopeFields)
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 42, envelopeFields)
 
-	var count int
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	count := testwait.UntilPolling(t, 50*time.Millisecond, "a delivery_pull_requests row of acme/widgets#42", func() (int, bool) {
+		var count int
 		if err := pool.QueryRow(ctx, "select count(*) from delivery_pull_requests where repo = $1 and number = $2", "acme/widgets", 42).Scan(&count); err != nil {
 			t.Fatalf("count rows: %v", err)
 		}
-		if count > 0 || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return count, count > 0
+	})
 	if count != 1 {
 		t.Fatalf("delivery_pull_requests row count for acme/widgets#42 = %d, want exactly 1 (two envelopes for the same merge must dedupe through the shared upsert)", count)
 	}
@@ -98,16 +95,18 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	}
 
 	// deliver records the event's time only once the handler that stored the row has returned
-	// (intake.go deliver), so the row can be read before the freshness is: wait for it on a
-	// deadline of its own rather than reading it once.
-	got, err := GetSettings(ctx, pool)
-	freshnessDeadline := time.Now().Add(10 * time.Second)
-	for err == nil && got.LastEventAt == nil && time.Now().Before(freshnessDeadline) {
-		time.Sleep(50 * time.Millisecond)
-		got, err = GetSettings(ctx, pool)
+	// (intake.go deliver), so the row can be read before the freshness is: wait for it rather
+	// than reading it once.
+	type freshness struct {
+		settings DeliverySettings
+		err      error
 	}
-	if err != nil || got.LastEventAt == nil {
-		t.Errorf("settings.LastEventAt not recorded after intake processed an event: %+v, %v", got, err)
+	got := testwait.UntilPolling(t, 50*time.Millisecond, "settings.LastEventAt to be recorded after the intake processed an event", func() (freshness, bool) {
+		stamped, err := GetSettings(ctx, pool)
+		return freshness{settings: stamped, err: err}, err != nil || stamped.LastEventAt != nil
+	})
+	if got.err != nil || got.settings.LastEventAt == nil {
+		t.Errorf("settings.LastEventAt not recorded after intake processed an event: %+v, %v", got.settings, got.err)
 	}
 	_ = settings
 }
@@ -372,7 +371,7 @@ func TestIntakeDiscardsAnEnvelopeItDoesNotWantWithoutCallingGitHub(t *testing.T)
 	// Every one acknowledged: the ack floor reaches the last message the stream holds.
 	var info *natsgo.ConsumerInfo
 	var lastSeq uint64
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		stream, err := natsClient.JS().StreamInfo(bus.Stream)
 		if err != nil {
 			t.Fatalf("read stream info: %v", err)
@@ -435,20 +434,24 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	if _, err := PutSettings(ctx, pool, settings, model.Actor{Kind: "system", ID: "delivery-test"}); err != nil {
 		t.Fatalf("change the deploy workflow path: %v", err)
 	}
-	waitFor(t, 2*time.Second, func() bool {
+	// The bound is the row's subject, so it stays a span: the cache reads the row again on the
+	// write's notification (SettingsCache.Run's wake), and 2 s is far inside the 30 s the intake
+	// polled the row at before the cache (settingsRetryInterval), so a cache that waited for a
+	// poll fails here, where a wait to the test binary's deadline would pass it.
+	if !testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
 		held := settingsCache.Load()
 		return held != nil && held.DeployWorkflowPath == newPath
-	}, func() string {
-		return fmt.Sprintf("the running intake's settings = %+v two seconds after the write, want deploy workflow path %s", settingsCache.Load(), newPath)
-	})
+	}) {
+		t.Fatalf("the running intake's settings = %+v two seconds after the write, want deploy workflow path %s", settingsCache.Load(), newPath)
+	}
 
 	const onNewPath, onOldPath = int64(8001), int64(8002)
 	publishWorkflowEnvelope(t, natsClient, "acme", "widgets", newPath, onNewPath)
-	awaitRuns(t, ctx, pool, natsClient, 1, 30*time.Second)
+	awaitRuns(t, ctx, pool, natsClient, 1)
 	publishWorkflowEnvelope(t, natsClient, "acme", "widgets", oldPath, onOldPath)
 
 	// The old-path envelope is acknowledged without being fetched.
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.NumPending == 0 && info.NumAckPending == 0
 	}, func() string {

@@ -184,7 +184,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	first := write("first")
 	stop := runOutbox(t, database, client, broker)
 	defer stop()
-	waitFor(t, 10*time.Second, "the first event backed off for S's subject", func() bool {
+	waitFor(t, "the first event backed off for S's subject", func() bool {
 		_, attempts := publishedDestinations(t, database, first.ID)
 		return attempts > 0
 	})
@@ -193,7 +193,7 @@ func holdsBackASessionRouteTheStreamRefuses(t *testing.T) {
 	}
 	second, third := write("second"), write("third")
 
-	waitFor(t, 30*time.Second, "all three events published", func() bool {
+	waitFor(t, "all three events published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil &&
 			publishedAt(t, database, third.ID) != nil
 	})
@@ -279,14 +279,14 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 	stop := runOutbox(t, rig.database, rig.client, rig.broker)
 	defer stop()
-	waitFor(t, 15*time.Second, "the first event backed off for S", func() bool {
+	waitFor(t, "the first event backed off for S", func() bool {
 		_, attempts := publishedDestinations(t, rig.database, first.ID)
 		return attempts > 0
 	})
 	second, third := write("second"), write("third")
 
 	topic := "notifications.dispatch.issue.T-1.message.created"
-	waitFor(t, 10*time.Second, "the later events on the topic family", func() bool {
+	waitFor(t, "the later events on the topic family", func() bool {
 		bySubject, _ := streamOrder(t, rig.conn)
 		return slices.Contains(bySubject[topic], second.ID) && slices.Contains(bySubject[topic], third.ID)
 	})
@@ -302,7 +302,7 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 
 	capturing()
-	waitFor(t, 45*time.Second, "all three events published", func() bool {
+	waitFor(t, "all three events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil &&
 			publishedAt(t, rig.database, third.ID) != nil
 	})
@@ -467,7 +467,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 	stop := runOutbox(t, rig.database, rig.client, rig.broker)
 	defer func() { stop() }()
 	if !oneBatch {
-		waitFor(t, 60*time.Second, "the first event backed off for the topic family", func() bool {
+		waitFor(t, "the first event backed off for the topic family", func() bool {
 			_, attempts := publishedDestinations(t, rig.database, first.ID)
 			return attempts > 0
 		})
@@ -479,7 +479,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 		second = rig.write(t, person, "second, by a person")
 		stop = runOutbox(t, rig.database, rig.client, rig.broker)
 	}
-	waitFor(t, 60*time.Second, "a batch settled the second event while the topic family was refused", func() bool {
+	waitFor(t, "a batch settled the second event while the topic family was refused", func() bool {
 		return rig.settled(t, second.ID)
 	})
 	stop()
@@ -489,7 +489,7 @@ func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool
 	}
 	rig.captureAgain(t)
 	stop = runOutbox(t, rig.database, rig.client, rig.broker)
-	waitFor(t, 120*time.Second, "both events published", func() bool {
+	waitFor(t, "both events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
 
@@ -527,13 +527,13 @@ func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
 	first := rig.write(t, person, "first, by a person")
 	stop := runOutbox(t, rig.database, rig.client, rig.broker)
 	defer stop()
-	waitFor(t, 60*time.Second, "the first event backed off for S's subject", func() bool {
+	waitFor(t, "the first event backed off for S's subject", func() bool {
 		_, attempts := publishedDestinations(t, rig.database, first.ID)
 		return attempts > 0
 	})
 	rig.captureAgain(t)
 	second := rig.write(t, person, "second, by a person")
-	waitFor(t, 120*time.Second, "both events published", func() bool {
+	waitFor(t, "both events published", func() bool {
 		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
 	})
 
@@ -687,18 +687,18 @@ func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testi
 
 	topic := "notifications.dispatch.issue.T-1.message.created"
 	session := contracts.LegacyAgentSubject("S")
-	waitFor(t, 5*time.Second, "the first event's topic sent", func() bool { return len(publisher.sent()) > 0 })
+	waitFor(t, "the first event's topic sent", func() bool { return len(publisher.sent()) > 0 })
 	time.Sleep(200 * time.Millisecond)
 	if got := publisher.sent(); !slices.Equal(got, []string{topic}) {
 		t.Fatalf("sent %v before any answer, want only the first event's topic send: the second event's copy for S went while that send had no answer", got)
 	}
 	publisher.accept(0, 1)
-	waitFor(t, 5*time.Second, "the second event's sends, once the first's topic send was answered", func() bool { return len(publisher.sent()) == 3 })
+	waitFor(t, "the second event's sends, once the first's topic send was answered", func() bool { return len(publisher.sent()) == 3 })
 	if got := publisher.sent()[1:]; !slices.Contains(got, topic) || !slices.Contains(got, session) {
 		t.Fatalf("sent %v once the first event's topic send was answered, want the second event's to the topic family and to %s", got, session)
 	}
 	publisher.accept(1, 3)
-	waitFor(t, 5*time.Second, "both events marked published", func() bool {
+	waitFor(t, "both events marked published", func() bool {
 		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil
 	})
 }
@@ -821,7 +821,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 		database := storetest.Open(t)
 		event := seed(t, database)
 		proxy.Cut()
-		waitFor(t, 5*time.Second, "the client noticing the cut", func() bool { return !client.Connected() })
+		waitFor(t, "the client noticing the cut", func() bool { return !client.Connected() })
 		outbox := holding(t, Deps{Store: database, Publisher: client})
 		outbox.scan(context.Background(), unfenced{})
 		var attempts int
@@ -836,7 +836,7 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 				attempts, nextAttempt, failure)
 		}
 		proxy.Restore()
-		waitFor(t, 10*time.Second, "the client reconnecting", client.Connected)
+		waitFor(t, "the client reconnecting", client.Connected)
 		outbox.scan(context.Background(), unfenced{})
 		if publishedAt(t, database, event.ID) == nil {
 			t.Fatal("the released event was not published once NATS was back")
@@ -1173,7 +1173,7 @@ func TestAPublishedEventIsWrittenOnce(t *testing.T) {
 					t.Fatalf("event %d reached %v, want %d destinations", event.ID, destinations, tc.destinations)
 				}
 			}
-			waitFor(t, 15*time.Second, "the scan's updates reported", func() bool { return updates()-before >= published })
+			waitFor(t, "the scan's updates reported", func() bool { return updates()-before >= published })
 			if written := settled() - before; written != published {
 				t.Fatalf("publishing %d events of %d destinations each updated events %d times, want %d: one write per event",
 					published, tc.destinations, written, published)

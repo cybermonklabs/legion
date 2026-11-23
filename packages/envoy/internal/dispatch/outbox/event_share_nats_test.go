@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf16"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -16,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // What one event carries of an item is bounded in UTF-16 units and sent in bytes, so every
@@ -44,26 +44,22 @@ func capBody(t *testing.T) string {
 }
 
 // eventPayload is the payload of the one event that arrived on topic, decoded out of its
-// envelope. It fails the test when nothing arrives within ten seconds.
+// envelope. It waits for that event until testwait's margin before the test binary's deadline and
+// fails the test by name when nothing has arrived by then (testwait.Receive).
 func eventPayload(t *testing.T, received <-chan *natsgo.Msg, topic string) (contracts.Envelope, map[string]any) {
 	t.Helper()
-	select {
-	case message := <-received:
-		var envelope contracts.Envelope
-		if err := json.Unmarshal(message.Data, &envelope); err != nil {
-			t.Fatalf("decode the envelope on %s: %v", topic, err)
-		}
-		var delivered struct {
-			Payload map[string]any `json:"payload"`
-		}
-		if err := json.Unmarshal([]byte(envelope.Payload), &delivered); err != nil {
-			t.Fatalf("decode the event the envelope on %s carries: %v", topic, err)
-		}
-		return envelope, delivered.Payload
-	case <-time.After(10 * time.Second):
-		t.Fatalf("nothing arrived on %s", topic)
-		return contracts.Envelope{}, nil
+	message := testwait.Receive(t, "an event to arrive on "+topic, received)
+	var envelope contracts.Envelope
+	if err := json.Unmarshal(message.Data, &envelope); err != nil {
+		t.Fatalf("decode the envelope on %s: %v", topic, err)
 	}
+	var delivered struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(envelope.Payload), &delivered); err != nil {
+		t.Fatalf("decode the event the envelope on %s carries: %v", topic, err)
+	}
+	return envelope, delivered.Payload
 }
 
 // A comment body of exactly the share an event carries reaches a subscriber through a real NATS
@@ -89,7 +85,7 @@ func TestRunDeliversACommentBodyAtTheEventShareThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, issueTopic)
@@ -131,7 +127,7 @@ func TestRunDeliversTheWidestAnsweredAskThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, issueTopic)
@@ -178,7 +174,7 @@ func TestRunPublishesAStandInForAnEventNATSRefuses(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	envelope, payload := eventPayload(t, received, issueTopic)
@@ -247,7 +243,7 @@ func TestRunStandInKeepsAnAsksSessionsWholeThroughNATS(t *testing.T) {
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, issueTopic)
@@ -312,7 +308,7 @@ func TestRunStandInKeepsTheDocumentOfADocumentAsksReplyWholeThroughNATS(t *testi
 	stop := run(t, database, client, broker)
 	defer stop()
 
-	waitFor(t, 10*time.Second, "the event marked published", func() bool {
+	waitFor(t, "the event marked published", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	_, payload := eventPayload(t, received, documentTopic)

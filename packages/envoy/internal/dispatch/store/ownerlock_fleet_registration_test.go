@@ -1,13 +1,14 @@
 package store
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the bound on an earlier
@@ -29,7 +30,7 @@ const registrationGateBound = 5 * time.Second
 // long as the publish does, and the heartbeat with it.
 func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
 	s, owners := openFleetStore(t)
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	mine := registerFleetProcess(t, s, OwnerLockProtocol, 0)
 	holder, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -70,13 +71,8 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 		<-beat
 		t.FailNow()
 	}
-	select {
-	case err := <-beat:
-		if err != nil {
-			t.Fatalf("this build's heartbeat after %s was refused: %v", registration.name, err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatalf("this build's heartbeat did not go through within 5s of %s's refusal", registration.name)
+	if err := testwait.Receive(t, "this build's heartbeat to go through after "+registration.name+"'s refusal", beat); err != nil {
+		t.Fatalf("this build's heartbeat after %s was refused: %v", registration.name, err)
 	}
 	if hasLegacyMark(t, s) {
 		t.Errorf("%s was refused and the earlier build's mark is stamped, want none", registration.name)
@@ -90,6 +86,9 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	published := make(chan error, 1)
 	go func() { published <- arriveOn(ctx, publishConn, publish, uuid.NewString()) }()
 	awaitGateWait(t, s, publishConn.Conn().PgConn().PID(), published, publish.name)
+	// A correct publish goes on only once the holder commits below, so a slow machine only makes
+	// this window quieter. The window outlasts registrationGateBound, so a publish bounded as the
+	// registration is would end inside it.
 	select {
 	case err := <-published:
 		t.Fatalf("%s ended (%v) within %s while the transaction it waits for was still under way; want it to wait as long as the earlier build's publish lets it",
@@ -99,13 +98,8 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-published:
-		if err != nil {
-			t.Fatalf("%s after the transaction it waited for committed: %v", publish.name, err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s did not end within 10s of the commit of the transaction it waited for", publish.name)
+	if err := testwait.Receive(t, publish.name+" to end after the commit of the transaction it waited for", published); err != nil {
+		t.Fatalf("%s after the transaction it waited for committed: %v", publish.name, err)
 	}
 	if !hasLegacyMark(t, s) {
 		t.Errorf("%s went through and the earlier build's mark is not stamped", publish.name)

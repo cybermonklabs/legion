@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeJobClock is a jobClock the test moves: Advance fires, in due order and on the caller's
@@ -182,13 +183,13 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); jobs.Run(runCtx) }()
 	t.Cleanup(func() { cancel(); <-done })
-	waitFor(t, 20*time.Second, func() bool {
+	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchJobDurable)
 		return err == nil && info.PushBound
 	}, func() string { return "the job intake never bound its durable" })
 
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
-	waitFor(t, 20*time.Second, func() bool { return clock.armed() == 1 }, func() string { return "the job event scheduled no read" })
+	waitFor(t, func() bool { return clock.armed() == 1 }, func() string { return "the job event scheduled no read" })
 	if calls := fake.calls.Load(); calls != 0 {
 		t.Fatalf("read the jobs %d times before the burst went quiet", calls)
 	}
@@ -571,10 +572,12 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 		releaseOnce()
 		fired.Wait()
 	})
-	waitFor(t, 20*time.Second, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
+	waitFor(t, func() bool { return inFlight.Load() >= reconcilePartialConcurrency }, func() string {
 		return fmt.Sprintf("%d jobs reads in flight, want %d", inFlight.Load(), reconcilePartialConcurrency)
 	})
-	// Every run's burst has ended; give the rest a moment to start reads they should not.
+	// Every run's burst has ended; give the rest a moment to start reads they should not. A
+	// correct intake starts none past reconcilePartialConcurrency at all, so a loaded machine only
+	// makes this moment quieter and cannot fail a correct run.
 	time.Sleep(500 * time.Millisecond)
 	if got := most.Load(); got != reconcilePartialConcurrency {
 		t.Fatalf("%d of %d runs' jobs read at once, want at most %d", got, runs, reconcilePartialConcurrency)
@@ -766,16 +769,12 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	// The event in hand when the context ends: a tracked run's, which reaches the read it
 	// schedules, where the clock holds it.
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
-	select {
-	case <-clock.armedFirst:
-	case <-time.After(20 * time.Second):
-		t.Fatalf("the first job event never reached the read it schedules: %+v", consumer())
-	}
+	testwait.Receive(t, "the first job event to reach the read it schedules", clock.armedFirst)
 
 	// The event under test, waiting behind it on the one key.
 	event := jobPayload("acme/widgets", 501)
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.501.completed", event)
-	waitFor(t, 20*time.Second, func() bool { return consumer().Delivered.Consumer >= 2 }, func() string {
+	waitFor(t, func() bool { return consumer().Delivered.Consumer >= 2 }, func() string {
 		return fmt.Sprintf("the job event under test was never delivered to the intake: %+v", consumer())
 	})
 
@@ -803,15 +802,15 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 		t.Fatal("the delivery was already stopping, so the row would measure the stop's own guard rather than the moment before it")
 	}
 	close(clock.release)
-	waitFor(t, 20*time.Second, runnerIdle, func() string {
+	waitFor(t, runnerIdle, func() string {
 		return fmt.Sprintf("the job event under test was never handled: %+v", consumer())
 	})
 
-	// The stop, which hands back what the delivery held rather than what it acknowledged.
-	stopping, endStop := context.WithTimeout(context.Background(), 20*time.Second)
-	defer endStop()
+	// The stop, which hands back what the delivery held rather than what it acknowledged. Its
+	// context is the test's own until testwait's margin before the binary's deadline
+	// (testwait.Context): no handler is left running for it to give up.
 	handedAt := time.Now()
-	jobs.StopDelivering(stopping)
+	jobs.StopDelivering(testwait.Context(t))
 
 	const handOver = 5 * time.Second
 	select {

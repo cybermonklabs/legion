@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // takeOverAttempt is one intake's own process: its client, its lease pool and the intake itself,
@@ -153,20 +154,23 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	holder.stop()
 	stopped := time.Now()
 	var taken *natsgo.ConsumerInfo
-	waitFor(t, standbyTakeOverBound, func() bool {
+	// standbyTakeOverBound is the row's subject, so it stays a span: a wait to the test binary's
+	// deadline would pass a hand-over that waited for the hold's lapse (intakeHoldTTL) rather than
+	// the one durableBindInterval poll a released hold costs.
+	if !testwait.Holds(standbyTakeOverBound, 50*time.Millisecond, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil || !info.PushBound || info.Config.DeliverSubject == held.Config.DeliverSubject {
 			return false
 		}
 		taken = info
 		return true
-	}, func() string {
-		return "the standby did not take the durable the holder released over within the bound: " + consumerState(publisher)
-	})
+	}) {
+		t.Fatal("the standby did not take the durable the holder released over within the bound: " + consumerState(publisher))
+	}
 	t.Logf("the standby took the durable over %s after the holder stopped", time.Since(stopped))
 
 	publishMergedPullRequest(t, publisher, 11)
-	waitFor(t, 20*time.Second, func() bool { return standby.fetches(11) == 1 }, func() string {
+	waitFor(t, func() bool { return standby.fetches(11) == 1 }, func() string {
 		return "the standby that took the durable over did not handle a message: " + consumerState(publisher)
 	})
 	if taken.Config.DeliverSubject == held.Config.DeliverSubject {
@@ -200,7 +204,7 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	// up whole: its keyed runner is stopped (heldDurable.stopDeliveringWithin), which no later
 	// attempt undoes, since each one subscribes afresh.
 	var subscribed *intakeDelivery
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		process.intake.mu.Lock()
 		subscribed = process.intake.delivering
 		process.intake.mu.Unlock()
@@ -208,7 +212,7 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("the take-over never subscribed before its create: creates=%d; %s", attempts.Load(), consumerState(publisher))
 	})
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		subscribed.keys.mu.Lock()
 		defer subscribed.keys.mu.Unlock()
 		return subscribed.keys.stopped
@@ -233,7 +237,7 @@ func TestATakeOverWhoseCreateNeverLandsGivesItsSubscriptionUp(t *testing.T) {
 	// The create lands on a later attempt, and the intake binds the durable afresh and delivers.
 	failing.Store(false)
 	publishMergedPullRequest(t, publisher, 12)
-	waitFor(t, 30*time.Second, func() bool { return process.fetches(12) == 1 }, func() string {
+	waitFor(t, func() bool { return process.fetches(12) == 1 }, func() string {
 		return "the intake never bound the durable afresh after the take-over it gave up: " + consumerState(publisher)
 	})
 }

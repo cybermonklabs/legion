@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every reconcile pass searches and lists GitHub against one installation's rate limit, so one
@@ -33,11 +34,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 			<-release
 		})
 	}()
-	select {
-	case <-taken:
-	case <-time.After(20 * time.Second):
-		t.Fatal("the other caller never took the delivery-reconcile lease")
-	}
+	testwait.Receive(t, "the other caller to take the delivery-reconcile lease", taken)
 
 	reconcile.leasedPass(ctx, leases, time.Now())
 	if mints := fake.tokenMints.Load(); mints != 0 {

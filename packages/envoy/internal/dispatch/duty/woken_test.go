@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Most rows below run inside a synctest bubble, so the loop's timers run on a fake clock: an hour
@@ -379,6 +380,8 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 		<-done
 	}()
 
+	// A correct loop never runs the pass while the other session holds the lease, so a loaded
+	// machine cannot fail this window; it only shortens what a wrong loop has to show.
 	select {
 	case <-ran:
 		t.Fatal("the pass ran while another session held its lease")
@@ -388,9 +391,5 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 	if err := holder.QueryRow(ctx, duty.FreeLease, duty.LeaseNamespace, name).Scan(&freed); err != nil || !freed {
 		t.Fatalf("let the lease go: %v (%t)", err, freed)
 	}
-	select {
-	case <-ran:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the pass did not run within 5s of the lease being let go")
-	}
+	testwait.Receive(t, "the pass to run once the lease was let go", ran)
 }

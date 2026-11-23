@@ -5,11 +5,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // repoProjectsDefaultVersion is the migration that adds a project's default repository and an
@@ -182,14 +182,10 @@ func TestMigrationCountsAnOverDeepIssueCommittedWhileItWaits(t *testing.T) {
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the writer: %v", err)
 	}
-	select {
-	case err := <-applied:
-		var pgErr *pgconn.PgError
-		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || !strings.Contains(err.Error(), "EDGE-34") {
-			t.Fatalf("migrate after a writer committed EDGE-34 33 links down: %v, want 0113 refusing it (23514)", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the migration never finished after the writer committed")
+	err = testwait.Receive(t, "the migration to finish after the writer committed", applied)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" || !strings.Contains(err.Error(), "EDGE-34") {
+		t.Fatalf("migrate after a writer committed EDGE-34 33 links down: %v, want 0113 refusing it (23514)", err)
 	}
 	if got := schemaVersion(t, store); got != repoProjectsDefaultVersion-1 {
 		t.Fatalf("schema version = %d, want %d", got, repoProjectsDefaultVersion-1)

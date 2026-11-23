@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build, raced (ownerlock_fleet_test.go): the writers of either
@@ -30,7 +32,7 @@ type raceTally struct {
 // transactions that failed any other way, and the increments lost (lostIncrements).
 func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, rounds int) raceTally {
 	t.Helper()
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	all := owners.all()
 	start := ownerSeqs(t, s, all)
 	committed := map[Owner]int{}
@@ -128,7 +130,7 @@ const (
 // writers, and updates are lost.
 func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing.T) {
 	s, owners := openFleetStore(t)
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	mine := registerFleetProcess(t, s, OwnerLockProtocol, 0)
 	all := owners.all()
 	start := ownerSeqs(t, s, all)
@@ -181,7 +183,9 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 			timedArrival(earlierBuildArrivals[1], instance)
 		}
 		earlier.Wait()
-		if _, err := s.Pool.Exec(ctx, `delete from server_processes where instance = $1::uuid`, instance); err != nil {
+		// The earlier build's leaving is no wait, and runs on a context of its own: once ctx has
+		// ended, a failure here would end the test with this build's writers still running.
+		if _, err := s.Pool.Exec(context.Background(), `delete from server_processes where instance = $1::uuid`, instance); err != nil {
 			t.Fatal(err)
 		}
 		ageLegacyMark(t, s, OwnerLockMarkWindow+time.Minute)

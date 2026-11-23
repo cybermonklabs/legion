@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -215,13 +216,10 @@ func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 	registration := mustRegister(t, database, "c1", "K0")
 	ageHeartbeat(t, database, registration.ID, time.Hour)
 
-	deadline := time.Now().Add(10 * time.Second)
-	for !slices.Contains(liveIDs(t, database), registration.ID) {
-		if time.Now().After(deadline) {
-			t.Fatal("a registered process aged past the live window was not live again within 10 s of heartbeats")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 50*time.Millisecond, "a registered process aged past the live window to be live again on its heartbeat (the live processes last read)", func() ([]string, bool) {
+		live := liveIDs(t, database)
+		return live, slices.Contains(live, registration.ID)
+	})
 }
 
 // Deregister deletes the row and stops the heartbeat, so the process is neither live nor written
@@ -233,6 +231,9 @@ func TestDeregisterDeletesTheRow(t *testing.T) {
 	if err := registration.Deregister(context.Background()); err != nil {
 		t.Fatalf("deregister: %v", err)
 	}
+	// A window in which a heartbeat that outlived Deregister would write the row again: four
+	// heartbeats. A correct Deregister has stopped the heartbeat before it returns, so nothing
+	// writes the row in it, and a loaded machine only lets a faulty heartbeat fire fewer times.
 	time.Sleep(200 * time.Millisecond)
 	if rowExists(t, database, registration.ID) {
 		t.Error("the deregistered process's row is still in the registry")
@@ -265,13 +266,10 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 		cancel()
 		<-done
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for rowExists(t, database, old.ID) {
-		if time.Now().After(deadline) {
-			t.Fatal("the prune loop did not delete a row whose heartbeat is ten minutes and a second old within 10 s")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 50*time.Millisecond, "the prune loop to delete a row whose heartbeat is ten minutes and a second old (whether the row still stood, last read)", func() (bool, bool) {
+		exists := rowExists(t, database, old.ID)
+		return exists, !exists
+	})
 	if !rowExists(t, database, recent.ID) {
 		t.Error("the prune loop deleted a row whose heartbeat is nine minutes old")
 	}
@@ -520,16 +518,15 @@ func livePeer(t *testing.T, tx pgx.Tx, setting string) string {
 	return id
 }
 
-// waitForLive waits up to 10 s of heartbeats for id to be live again.
+// waitForLive waits for id to be live again, which the process's heartbeat makes it. Its one bound
+// is the test binary's deadline less testwait's margin, where it fails naming what and the live
+// processes it read last.
 func waitForLive(t *testing.T, database *store.Store, id, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for !slices.Contains(liveIDs(t, database), id) {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s was not live again within 10 s of heartbeats", what)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.UntilPolling(t, 20*time.Millisecond, what+" to be live again (the live processes last read)", func() ([]string, bool) {
+		live := liveIDs(t, database)
+		return live, slices.Contains(live, id)
+	})
 }
 
 // requireNotLost fails when the registration's heartbeat has reported a refusal.
@@ -542,17 +539,15 @@ func requireNotLost(t *testing.T, registration *Registration, what string) {
 	}
 }
 
-// requireRefusal waits up to 10 s for the registration's heartbeat to report a refusal naming the
-// peer and the rotation advice, then requires that, a few heartbeats later, nothing made the
-// process live again.
+// requireRefusal waits for the registration's heartbeat to report a refusal naming the peer and the
+// rotation advice, then requires that, a few heartbeats later, nothing made the process live again.
+// The wait's one bound is the test binary's deadline less testwait's margin. The few heartbeats are
+// a window in which nothing must happen: the heartbeat that refused has stopped, so a correct run
+// never makes the process live in it, and a loaded machine only lets fewer heartbeats of a faulty
+// run fire before the check.
 func requireRefusal(t *testing.T, database *store.Store, registration *Registration, peer, what string) {
 	t.Helper()
-	var refusal error
-	select {
-	case refusal = <-registration.Lost():
-	case <-time.After(10 * time.Second):
-		t.Fatalf("%s reported no refusal within 10 s of heartbeats; live = %v", what, liveIDs(t, database))
-	}
+	refusal := testwait.Receive(t, what+" to report its heartbeat's refusal on Lost", registration.Lost())
 	if !errors.Is(refusal, ErrKeySetMismatch) {
 		t.Fatalf("%s reported %v, want ErrKeySetMismatch", what, refusal)
 	}
@@ -670,17 +665,14 @@ func TestALiveRowsHeartbeatChecksNoPeer(t *testing.T) {
 	}
 	// Three heartbeats stamped after the peer was written.
 	last := heartbeat()
-	deadline := time.Now().Add(10 * time.Second)
-	for stamped := 0; stamped < 3; {
-		if time.Now().After(deadline) {
-			t.Fatalf("the live process's heartbeat stamped its row %d times in 10 s, want 3", stamped)
-		}
+	stamped := 0
+	testwait.Until(t, "the live process's heartbeat to stamp its row 3 times (the stamps counted)", func() (int, bool) {
 		if at := heartbeat(); at.After(last) {
 			last = at
 			stamped++
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return stamped, stamped >= 3
+	})
 	requireNotLost(t, registration, "a live process beside a disagreeing peer")
 }
 

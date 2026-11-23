@@ -1,10 +1,11 @@
 package store
 
 import (
-	"context"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's mark, as
@@ -41,7 +42,7 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ctx := context.Background()
+			ctx := testwait.Context(t)
 			s := openEmptyTestStore(t)
 			if err := s.migrate(ctx, migrationsThrough(t, ownerLockLegacyGateVersion-1)); err != nil {
 				t.Fatalf("migrate through %d: %v", ownerLockLegacyGateVersion-1, err)
@@ -122,13 +123,8 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !ended {
-				select {
-				case err := <-wrote:
-					if err != nil {
-						t.Fatalf("the earlier build's write after this build's committed: %v", err)
-					}
-				case <-time.After(10 * time.Second):
-					t.Fatal("the earlier build's write did not end within 10s of this build's commit")
+				if err := testwait.Receive(t, "the earlier build's write to end after this build's commit", wrote); err != nil {
+					t.Fatalf("the earlier build's write after this build's committed: %v", err)
 				}
 			}
 			if got := ownerSeqs(t, s, []Owner{issue})[issue]; got != seq+2 {
@@ -156,7 +152,7 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	window := OwnerLockMarkWindow
 	OwnerLockMarkWindow = markExpiryWindow
 	t.Cleanup(func() { OwnerLockMarkWindow = window })
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	all := owners.all()
 	start := ownerSeqs(t, s, all)
 	ledger := newRaceLedger()

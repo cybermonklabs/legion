@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keyedItem is one item a keyedRunner test hands its runner: the key and a number naming it.
@@ -52,15 +54,12 @@ func (r *keyedRecorder) recorded(key string) []string {
 	return events
 }
 
+// awaitStart is the next item the recorder's handler starts, waited for until testwait's margin
+// before the test binary's deadline (testwait.Receive), so a start that is merely slow on a loaded
+// machine still passes, and one that never comes fails the test by name.
 func awaitStart(t *testing.T, starts <-chan keyedItem) keyedItem {
 	t.Helper()
-	select {
-	case item := <-starts:
-		return item
-	case <-time.After(5 * time.Second):
-		t.Fatal("no item started within 5s")
-		return keyedItem{}
-	}
+	return testwait.Receive(t, "an item to start", starts)
 }
 
 // Items of one key run in the order they were given, each once the one before it has ended, while
@@ -79,6 +78,8 @@ func TestAKeyedRunnerRunsOneKeyInOrderAndKeysAtOnce(t *testing.T) {
 	if item := awaitStart(t, recorder.start); item.n != 3 {
 		t.Fatalf("start while a1 is held = %+v, want b3 (a2 waits behind a1)", item)
 	}
+	// a2 waits behind a1, which its gate holds, so a correct runner starts nothing in this window:
+	// a loaded machine only makes it quieter, and cannot fail a correct run.
 	select {
 	case item := <-recorder.start:
 		t.Fatalf("%+v started while a1 was still in its handler", item)

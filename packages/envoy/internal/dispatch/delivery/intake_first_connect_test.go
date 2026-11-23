@@ -17,10 +17,6 @@ import (
 // has landed. The number is this file's own, so the row's fetch count is its own message's.
 const firstConnectNumber = 7
 
-// firstConnectWithin bounds the row's waits: the take-over's bind, and the first-connect callback
-// running once the gate is open.
-const firstConnectWithin = 20 * time.Second
-
 // givingUpLines are the lines heldDurable writes when it stops delivering from a durable it
 // bound: a lost hold (run) and a durable that no longer delivers to it (check).
 var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
@@ -72,28 +68,35 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	type firstBind struct {
 		subject string
 		landed  bool
+		// spent is why the hook did not wait for the callback at all: the test binary's deadline
+		// had rowDeadlineMargin or less left when the gate opened (testwait.Left).
+		spent error
 	}
 	bound := make(chan firstBind, 1)
 	intake.boundHook = func() {
 		openGate()
-		landed := testwait.Holds(firstConnectWithin, time.Millisecond, func() bool { return !client.AwaitingConnectionForTest() })
+		// The hook runs on the run loop, where the test must not be failed, so it waits for the
+		// callback under what testwait.Left leaves of the test binary's deadline, as
+		// untilTheBinaryDeadline does on the test's own goroutine, and hands a deadline already
+		// spent to the row rather than failing.
+		left, spent := testwait.Left(t, rowDeadlineMargin)
+		landed := spent == nil && testwait.Holds(left, time.Millisecond, func() bool { return !client.AwaitingConnectionForTest() })
 		// boundHook runs on the run loop after the take-over set the subject, so it reads it
 		// there. Only the first bind is the row's.
 		select {
-		case bound <- firstBind{subject: intake.subject, landed: landed}:
+		case bound <- firstBind{subject: intake.subject, landed: landed, spent: spent}:
 		default:
 		}
 	}
 	runIntake(t, intake)
 
-	var first firstBind
-	select {
-	case first = <-bound:
-	case <-time.After(firstConnectWithin):
-		t.Fatalf("the intake never bound its durable within %s; the messages logged were %q", firstConnectWithin, loggedMessages(logs()))
+	first := testwait.Receive(t, "the intake to bind its durable", bound)
+	if first.spent != nil {
+		t.Fatal(first.spent.Error())
 	}
 	if !first.landed {
-		t.Fatalf("the first-connect callback did not run within %s of the gate opening inside the bind", firstConnectWithin)
+		t.Fatalf("the first-connect callback did not run once the gate opened inside the bind, before the test binary's deadline less %s; the messages logged were %q",
+			rowDeadlineMargin, loggedMessages(logs()))
 	}
 	boundAt, boundLogged := loggedAt(logs(), "dispatch delivery: NATS consumer bound")
 	connectedAt, connectedLogged := loggedAt(logs(), "envoy nats connected")
@@ -139,7 +142,7 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	}
 
 	publishPullRequestEnvelope(t, observer, "acme", "widgets", firstConnectNumber, mergedPullRequest(firstConnectNumber))
-	waitFor(t, firstConnectWithin, func() bool { return fetches.Load() >= 1 }, func() string {
+	waitFor(t, func() bool { return fetches.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the intake never handled pull request %d published after the callback; the messages logged were %q", firstConnectNumber, loggedMessages(logs()))
 	})
 	if !intakeHoldsSubscription(intake) {

@@ -3,6 +3,7 @@ package duty_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldSessionLock takes a connection of leases and the session-level advisory lock key on it.
@@ -29,7 +31,8 @@ func heldSessionLock(t *testing.T, leases *pgxpool.Pool, key int64) *pgxpool.Con
 }
 
 // requireLockFree waits until a session of the shared pool can take key, which it can once the
-// session that held it unlocked it or ended, and gives it back.
+// session that held it unlocked it or ended, and gives it back. Its one bound is the test binary's
+// deadline less testwait's margin.
 func requireLockFree(t *testing.T, pool *store.Pool, key int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -38,41 +41,27 @@ func requireLockFree(t *testing.T, pool *store.Pool, key int64) {
 		t.Fatalf("acquire a connection of the shared pool: %v", err)
 	}
 	defer other.Release()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("lock %d to be free for another session after FreeSessionLock returned", key), func() (struct{}, bool) {
 		var taken bool
 		if err := other.QueryRow(ctx, `select pg_try_advisory_lock($1)`, key).Scan(&taken); err != nil {
 			t.Fatalf("try lock %d from another session: %v", key, err)
 		}
-		if taken {
-			if _, err := other.Exec(ctx, `select pg_advisory_unlock($1)`, key); err != nil {
-				t.Fatalf("give back lock %d: %v", key, err)
-			}
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("lock %d is still held by another session 5s after FreeSessionLock returned", key)
-		}
-		time.Sleep(10 * time.Millisecond)
+		return struct{}{}, taken
+	})
+	if _, err := other.Exec(ctx, `select pg_advisory_unlock($1)`, key); err != nil {
+		t.Fatalf("give back lock %d: %v", key, err)
 	}
 }
 
-// requireConnections waits up to 5s for the pool to hold total connections, idle of them idle: a
-// connection released closed is destroyed by the pool on a goroutine of its own.
+// requireConnections waits for the pool to hold total connections, idle of them idle: a
+// connection released closed is destroyed by the pool on a goroutine of its own. Its one bound is
+// the test binary's deadline less testwait's margin, where it fails with the counts last read.
 func requireConnections(t *testing.T, leases *pgxpool.Pool, total, idle int32, why string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.Until(t, fmt.Sprintf("the pool after FreeSessionLock to hold %d connections, %d idle: %s", total, idle, why), func() (string, bool) {
 		stat := leases.Stat()
-		if stat.TotalConns() == total && stat.IdleConns() == idle {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("pool after FreeSessionLock: total %d, idle %d; want total %d, idle %d: %s",
-				stat.TotalConns(), stat.IdleConns(), total, idle, why)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return fmt.Sprintf("total %d, idle %d", stat.TotalConns(), stat.IdleConns()), stat.TotalConns() == total && stat.IdleConns() == idle
+	})
 }
 
 // An unlock Postgres confirms gives the lock back and the connection back to its pool.

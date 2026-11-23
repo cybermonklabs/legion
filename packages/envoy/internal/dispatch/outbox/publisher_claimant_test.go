@@ -490,7 +490,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the first attempt backed off after reaching the claimant", func() bool {
+	waitFor(t, "the first attempt backed off after reaching the claimant", func() bool {
 		destinations, attempts := publishedDestinations(t, database, event.ID)
 		return attempts > 0 && slices.Contains(destinations, claimantTopic)
 	})
@@ -498,7 +498,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 		t.Fatalf("published_destinations after the first attempt = %#v, want the issue topic and the claimant", destinations)
 	}
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "the retry published the event", func() bool {
+	waitFor(t, "the retry published the event", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	if got, want := topicsOf(publisher.all()), []string{issueTopic, claimantTopic, askerTopic}; !reflect.DeepEqual(got, want) {

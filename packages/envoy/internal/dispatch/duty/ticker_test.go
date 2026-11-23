@@ -2,6 +2,7 @@ package duty_test
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fixJitter makes every jittered wait draw what draw answers for its bound, until the test ends.
@@ -106,10 +108,6 @@ func TestRunJitteredDoesNotStartWhenIdle(t *testing.T) {
 	})
 }
 
-// runLeasedDeadline bounds each wait for a pass below: far longer than any tick here takes, so
-// reaching it is a pass that never came, not a slow one.
-const runLeasedDeadline = 30 * time.Second
-
 // A loop that speeds up while work remains - the block-index reconciliation asks for a two-second
 // step after a full batch and the full interval otherwise - must make its first pass at start and
 // then every pass at the step it asked for, with the step as each tick's period. A loop that held
@@ -143,15 +141,12 @@ func TestRunLeasedAfterEachPassTicksAtStartAndThenAtTheWaitEachPassAsksFor(t *te
 	}()
 	defer func() { stop(); <-done }()
 
+	// Each pass is waited for until the test binary's deadline less testwait's margin: a loop that
+	// held its ticks to the hour-long interval never makes the second pass, and fails there by name.
 	var got []passTimes
 	for len(got) < passes {
-		select {
-		case p := <-ran:
-			got = append(got, p)
-		case <-time.After(runLeasedDeadline):
-			t.Fatalf("the loop made %d passes in %v, the step %v and the interval %v; want %d: a tick was held to the interval or refused by its own previous pass",
-				len(got), runLeasedDeadline, step, interval, passes)
-		}
+		got = append(got, testwait.Receive(t, fmt.Sprintf("pass %d of %d at the %v step (an interval of %v); a pass that never comes is a tick held to the interval or refused by its own previous pass",
+			len(got)+1, passes, step, interval), ran))
 	}
 	if first := got[0].began.Sub(started); first >= interval {
 		t.Errorf("the first pass came %v after start; want it at start", first)
@@ -185,12 +180,8 @@ func TestRunLeasedWaitsAnIntervalBeforeTheFirstTickWhenAsked(t *testing.T) {
 	}()
 	defer func() { stop(); <-done }()
 
-	select {
-	case began := <-ran:
-		if first := began.Sub(started); first < interval {
-			t.Errorf("the first pass came %v after start; want one interval, %v, in", first, interval)
-		}
-	case <-time.After(runLeasedDeadline):
-		t.Fatalf("no pass in %v with an interval of %v", runLeasedDeadline, interval)
+	began := testwait.Receive(t, fmt.Sprintf("the first pass, one interval (%v) in", interval), ran)
+	if first := began.Sub(started); first < interval {
+		t.Errorf("the first pass came %v after start; want one interval, %v, in", first, interval)
 	}
 }

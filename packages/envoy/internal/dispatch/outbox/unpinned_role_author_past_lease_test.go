@@ -117,7 +117,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, 10*time.Second, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
 	want := []string{eventKey}
 	if got := keysOf(wrote.received()); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once the resend had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",
