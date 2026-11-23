@@ -105,11 +105,11 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 - **A launch on an issue that names no repository.** `<KEY> names no repository: set the
   repository of <KEY>, or the default repository of project <PROJECT>, in Dispatch`. A claim an
   operator starts on an issue the workflow does not record works the repository Dispatch resolves
-  for that issue (its own, else its nearest ancestor's, else the project's default), and this issue
-  resolves to none. Set the issue's repository, or the project's default repository, in Dispatch,
-  and start the claim again. The daemon refuses that launch alone and stays up. The same launch is
-  refused, naming the cause, when Dispatch does not answer, when a role App is not installed on the
-  repository, or when GitHub does not answer its read.
+  for that issue (its own, else its nearest ancestor's in its own project, else the project's
+  default), and this issue resolves to none. Set the issue's repository, or the project's default
+  repository, in Dispatch, and start the claim again. The daemon refuses that launch alone and
+  stays up. The same launch is refused, naming the cause, when Dispatch does not answer, when a
+  role App is not installed on the repository, or when GitHub does not answer its read.
 - **A stamped repository.** The daemon compares `projects.<KEY>.commit_issue_trailer_repos` with
   nothing at boot: the loader checks each name's shape and two names of one repository (the table
   above), and a pane stamps a commit when the repository it works is on the list. A misspelled name
@@ -124,9 +124,9 @@ Apps' installations on it, its name and default branch, and Dispatch's webhook A
 - **A record whose work is elsewhere.** The same log line with the cause `Dispatch resolves it to
   <owner/name>, but its pull request #<n> is on <owner/name>` (or `its workspace <dir> is in
   <owner/name>`) `: set the issue's repository in Dispatch to …`: the issue worked in that
-  repository, but its own repository or an ancestor's, set in Dispatch since, resolves it
-  elsewhere. Set the issue's repository in Dispatch to the one the cause names, with the command it
-  names; the daemon fills the record at its next try.
+  repository, but its own repository or an ancestor's in its own project, set in Dispatch since,
+  resolves it elsewhere. Set the issue's repository in Dispatch to the one the cause names, with
+  the command it names; the daemon fills the record at its next try.
 - **Agent Sandbox is missing.** The refusal names `the Sandbox CRD sandboxes.agents.x-k8s.io` or
   `the Agent Sandbox controller Deployment agent-sandbox-system/agent-sandbox-controller`, and
   whether the API answered 404 or 403. A 403 means the daemon's identity lacks the get the
@@ -1642,9 +1642,9 @@ GitHub for it.
 The issue says `Legion keeps <owner/name> as this issue's repository; the change to <other> in
 Dispatch is not applied`. An issue's repository is fixed when Legion first records it: its branch,
 workspace and pull request live there, so a later change of the issue's own repository, or its
-parent's or the project's default it inherited, does not move it. Create a new issue on the other
-repository for the work that belongs there. The daemon says it once for each repository the issue
-is changed to.
+parent's in its own project or the project's default it inherited, does not move it. Create a new
+issue on the other repository for the work that belongs there. The daemon says it once for each
+repository the issue is changed to.
 
 ## A status change did not stick
 
