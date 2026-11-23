@@ -48,6 +48,7 @@ import (
 // reads 13,110 times its length - the same work either way, since the branch is the only thing
 // between them.
 func TestOperatorRunLexingIsLinear(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		piece    string
 		multiple int
@@ -74,12 +75,12 @@ func TestOperatorRunLexingIsLinear(t *testing.T) {
 // reuse branch read 858,901,710 bytes of a 64 KiB text while the count built on measureOpRun's
 // own report came to 262,140 - its extent loop and the searches together, the extent loop's own
 // share of that being 131,070 - and the test passed on it. What that moves is where the claim
-// sits, not whether one is made. Both hooks are set for this one reading and put back after it,
-// so no other test of this package counts anything.
+// sits, not whether one is made. Both hooks belong to this one reading (lexHooks), so no other
+// reading counts anything, nor does this count hold another test's reading beside it.
 func lexingWork(text string) int {
 	scanned := 0
-	opCharRead = func() { scanned++ }
-	opRunScanned = func(run opRun, slash, dash int) {
+	hooks := &lexHooks{opCharRead: func() { scanned++ }}
+	hooks.opRunScanned = func(run opRun, slash, dash int) {
 		at := run.from
 		if slash >= 0 {
 			scanned += slash + 2
@@ -103,10 +104,6 @@ func lexingWork(text string) int {
 			scanned += run.stop - 1 - at
 		}
 	}
-	defer func() {
-		opCharRead = nil
-		opRunScanned = nil
-	}()
-	redactedQuery(text)
+	redactedQueryWith(text, hooks)
 	return scanned
 }

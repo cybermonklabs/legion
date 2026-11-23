@@ -14,6 +14,8 @@ import (
 // empty one, for instance) or an irregular file, so those are named for what they are rather than
 // sent back to all:. Each row is the entry that tells one branch of the advice from its absence.
 func TestCheckEmbedsEveryFileNamesWhyAnEntryIsMissing(t *testing.T) {
+	// Not parallel: each subtest changes the process's working directory (t.Chdir), the directory
+	// CheckEmbedsEveryFile reads the migrations directory from.
 	for _, tc := range []struct {
 		name  string
 		place func(t *testing.T, dir string)
@@ -117,6 +119,7 @@ func TestCheckEmbedsEveryFileNamesWhyAnEntryIsMissing(t *testing.T) {
 }
 
 func TestCheckNumberedOneToNRefusesAGap(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0001_a.up.sql": {Data: []byte("select 1")},
 		"migrations/0002_b.up.sql": {Data: []byte("select 2")},
@@ -129,6 +132,7 @@ func TestCheckNumberedOneToNRefusesAGap(t *testing.T) {
 }
 
 func TestCheckNumberedOneToNRefusesASetNotStartingAtOne(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{"migrations/0002_b.up.sql": {Data: []byte("select 2")}}
 	err := CheckNumberedOneToN(set, "migrations")
 	if err == nil || !strings.Contains(err.Error(), "numbered 2 where 1 comes next") {
@@ -137,6 +141,7 @@ func TestCheckNumberedOneToNRefusesASetNotStartingAtOne(t *testing.T) {
 }
 
 func TestCheckNumberedOneToNAcceptsOneToN(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0001_a.up.sql":   {Data: []byte("select 1")},
 		"migrations/0001_a.down.sql": {Data: []byte("select -1")},
@@ -150,6 +155,7 @@ func TestCheckNumberedOneToNAcceptsOneToN(t *testing.T) {
 // The rule starts at its number: a migration below it needs no census, and the first one at it
 // without one is named with the file to add.
 func TestCheckCensusDeclaredFromNamesTheFirstMigrationFromItsNumberWithoutOne(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0001_a.up.sql": {Data: []byte("create table a (id integer)")},
 		"migrations/0002_b.up.sql": {Data: []byte("alter table a add column b integer")},
@@ -171,6 +177,7 @@ func TestCheckCensusDeclaredFromNamesTheFirstMigrationFromItsNumberWithoutOne(t 
 // migration names a table that does not exist or the extractor misread a statement. A rename
 // makes the new name known.
 func TestCheckTouchedTablesAreKnownNamesATableNoMigrationCreates(t *testing.T) {
+	t.Parallel()
 	set := fstest.MapFS{
 		"migrations/0001_a.up.sql": {Data: []byte("create table if not exists public.a (id integer)")},
 		"migrations/0002_b.up.sql": {Data: []byte("alter table a rename to b")},
