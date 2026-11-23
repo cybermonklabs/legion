@@ -145,7 +145,7 @@ const commandLimitMs = 35 * 60 * 1000;
  * APP_LOGINS_DRAIN_MS, a whole number of milliseconds from 1 to MAX_DRAIN_LIMIT_MS, sets another
  * bound for one run: app-logins.test.ts's drain rows run at two seconds, so each waits out two
  * rather than five. */
-export const DEFAULT_DRAIN_LIMIT_MS = 15000; // CONTROL: a default of 15 s
+export const DEFAULT_DRAIN_LIMIT_MS = 1500; // CONTROL: a default of 1.5 s
 /** The longest bound APP_LOGINS_DRAIN_MS may set: the longest delay a timer takes, 2^31 - 1 ms. A
  * longer one fires at once (Bun 1.4.4: a 2^31 ms setTimeout fired after 10 ms), so a longer
  * bound would end every drain at the exit. */
