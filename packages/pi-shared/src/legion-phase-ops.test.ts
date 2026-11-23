@@ -255,20 +255,14 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", plan_reason: "The plan fit the work." },
       "handoff_complete names plan_reason without plan_rating",
     ],
-    // A failed step names the step its task returns to by its place, 1 for its first, and only a
-    // completion with the verdict fail names one (INVALID_RETURN_TO, RETURN_TO_NEEDS_FAIL).
+    // A tester's completion names the step its task returns to by its place, 1 for its first,
+    // and only a tester's completion names one (INVALID_RETURN_TO, RETURN_TO_NEEDS_FAIL): this
+    // session is the implementer's.
     ...[0, -1, 1.5, "2"].map(
       (returnTo) =>
         [
-          { op: "handoff_complete", summary: "x", verdict: "fail", return_to: returnTo },
+          { op: "handoff_complete", summary: "x", return_to: returnTo },
           "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first",
-        ] as const
-    ),
-    ...[{ verdict: "pass" }, {}].map(
-      (verdict) =>
-        [
-          { op: "handoff_complete", summary: "x", ...verdict, return_to: 1 },
-          "handoff_complete names return_to without the verdict fail: only the completion of a step that failed, with the verdict fail, names the step its task returns to; send it again without return_to",
         ] as const
     ),
     // The pair is the schema's own rule, so it is named with the call's other problems at once.
@@ -314,6 +308,13 @@ test("each op refuses its arguments whole before any daemon request, naming ever
   ] as const;
   for (const [input, message] of refusals) {
     await expect(executePhaseOp(ops, input)).rejects.toThrow(message);
+  }
+  // Only a tester's completion names the step its task returns to (RETURN_TO_NEEDS_FAIL), and this
+  // session is the implementer's: return_to is refused beside a verdict and beside none.
+  for (const verdict of [{ verdict: "pass" }, {}]) {
+    await expect(
+      executePhaseOp(ops, { op: "handoff_complete", summary: "x", ...verdict, return_to: 1 })
+    ).rejects.toThrow();
   }
   expect(routes).toEqual([]);
 });
@@ -520,16 +521,17 @@ test("the description names the retro's rating fields, its scale, its skill and 
   }
 });
 
-// Contract 219: a tester's fail names the step its task returns to, `return_to`, which goes on the
-// wire as the daemon's `returnTo`; a completion that names none sends none.
-test("a tester's fail sends return_to as returnTo", async () => {
+// Contract 219: a tester's completion names the step its task returns to, `return_to`, which goes
+// on the wire as the daemon's `returnTo`. It carries no verdict, since the check states decide
+// whether the testing step failed, and one naming a verdict beside it is refused before it is
+// sent; a completion that names none sends none.
+test("a tester's completion sends return_to as returnTo, with no verdict", async () => {
   const tester = { ...implementer, role: "tester" as const };
   const { ops, routes, posted, lookups } = runtime(tester, stateAtPhase("testing"));
   await expect(
     executePhaseOp(ops, {
       op: "handoff_complete",
       summary: "The proof is thin.",
-      verdict: "fail",
       return_to: 1,
     })
   ).resolves.toEqual(daemonFixture("handoff-complete.json"));
@@ -542,25 +544,17 @@ test("a tester's fail sends return_to as returnTo", async () => {
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     summary: "The proof is thin.",
-    verdict: "fail",
+    verdict: "",
     ...REPORT,
     returnTo: 1,
   });
-  await executePhaseOp(ops, { op: "handoff_complete", summary: "Red.", verdict: "fail" });
+  const sent = posted.length;
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Red.", verdict: "fail", return_to: 1 })
+  ).rejects.toThrow();
+  expect(posted).toHaveLength(sent);
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "Red." });
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
-});
-
-// The description is where the tester reads what its fail may carry and what the daemon refuses.
-test("the description tells the tester its fail may name the step its task returns to", () => {
-  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  for (const words of [
-    "`return_to`, the place of a step of the task its issue runs, 1 for its first",
-    "RETURN_TO_NEEDS_FAIL",
-    "INVALID_RETURN_TO",
-    "RETURN_REFUSED",
-  ]) {
-    expect(description).toContain(words);
-  }
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
@@ -902,6 +896,10 @@ test("a report by a role the check does not record is refused before any call, n
 test("each wrong shape of a check report is refused before any call, nothing minted or posted", async () => {
   const check = closedRuntime(implementer, checkRecord());
   const lastLook = closedRuntime(implementer, checkRecord({ last: true }));
+  const testersCheck = closedRuntime(
+    { ...implementer, role: "tester" },
+    checkRecord({ role: "tester" })
+  );
   for (const [ops, input, message] of [
     [
       check.ops,
@@ -930,10 +928,10 @@ test("each wrong shape of a check report is refused before any call, nothing min
       { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: "tomorrow" },
       "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
     ],
-    // A report on a production check names no step to return to, whatever its verdict, as the
-    // daemon refuses it (RETURN_TO_NEEDS_FAIL).
+    // A report on a production check names no step to return to, whatever its verdict, even the
+    // tester's, as the daemon refuses it (RETURN_TO_NEEDS_FAIL).
     [
-      check.ops,
+      testersCheck.ops,
       { op: "handoff_complete", summary: "Looked.", verdict: "fail", return_to: 1 },
       "handoff_complete's return_to names the step a failed step's task returns to, and a report on a production check names none; send it again without return_to",
     ],
@@ -942,6 +940,7 @@ test("each wrong shape of a check report is refused before any call, nothing min
   }
   expect(check.posted).toEqual([]);
   expect(lastLook.posted).toEqual([]);
+  expect(testersCheck.posted).toEqual([]);
 });
 
 test("the check's last look asks for no wake: a pending there is posted without one", async () => {

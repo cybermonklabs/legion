@@ -219,20 +219,25 @@ func taskCounts(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, ge
 	return counts
 }
 
-// testerMovesBack is the tester's own move of key out of testing back to the phase named
-// (request_backward_move).
-func testerMovesBack(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, to phase.Phase) {
+// testerReturnsTo is the tester's return of key's task to its step at place: the one check of
+// the head it tested, headOne, fails (testedAs), and its completion of testing names place
+// (returnTo), with a test record of its own, as each completion of a testing step names a new one.
+// A testing step ends by its checks' states alone, so this is the tester's one way back to an
+// earlier step: its own move out of testing is refused (BACKWARD_REFUSED).
+func testerReturnsTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, place int) {
 	t.Helper()
-	applyRefusingNothing(t, pool, engine, intake.BackwardMove{Issue: key, Requester: claim.RoleTester, To: to, Reason: "the review missed a case"})
+	testedAs(t, pool, engine, key, headOne, false)
+	applyRefusingNothing(t, pool, engine, failedTest(key, place, "test-"+randomSuffix(t)))
 }
 
 // A move back is counted by the task's own order, not by phase.Order: with the steps
 // `implementer reviewer tester`, the reviewer's approval moves the task on from reviewing to
 // testing and counts nothing, though testing comes before reviewing in phase.Order, and the
-// tester's move back to reviewing is a move back of the task and counts its pair, testing-reviewing,
-// and a pass. The tester's fail after it adds its own pair. The twin: an issue with no plan rows
-// walks today's line, where the tester's pass into reviewing counts nothing and the reviewer's
-// move back to testing counts reviewing-testing.
+// tester's return to the review's step (its completion's returnTo 2, on a failing check) is a move
+// back of the task and counts its pair, testing-reviewing, and a pass. The tester's fail after it
+// adds its own pair. The twin: an issue with no plan rows walks today's line, where the tester's
+// pass into reviewing counts nothing and the reviewer's move back to testing counts
+// reviewing-testing.
 func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)
@@ -244,9 +249,9 @@ func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 	if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 0 || len(counts.BackwardMoves) != 0 {
 		t.Fatalf("after the approval of reviewing into testing the task counts %+v, want nothing: the approval moves it on", counts)
 	}
-	testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
+	testerReturnsTo(t, pool, engine, root.Key, 2)
 	if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Pass != 1 || !maps.Equal(counts.BackwardMoves, map[string]int{"testing-reviewing": 1}) {
-		t.Fatalf("after the tester's move back to reviewing the task counts %+v, want pass 1 and testing-reviewing 1", counts)
+		t.Fatalf("after the tester's return to reviewing the task counts %+v, want pass 1 and testing-reviewing 1", counts)
 	}
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerTesterFailed, "", record.PhaseRow{})
@@ -272,7 +277,7 @@ func TestAReturnInAnyOrderCountsItsPair(t *testing.T) {
 // The hook a deployment that writes no `hooks:` key runs fires at the fifth move back of a task in
 // another order, and its message lists each count under its own pair, the move back that is a
 // forward pair of phase.Order among them: `testing-reviewing=4`. The fifth move is the tester's
-// move back to reviewing, which the prompt names.
+// return to reviewing (its completion's returnTo 2, on a failing check), which the prompt names.
 func TestAHookNamesAMoveOfAnyOrderAtItsFifthReturn(t *testing.T) {
 	pool := migratedPool(t)
 	engine := returnEngine()
@@ -281,7 +286,7 @@ func TestAHookNamesAMoveOfAnyOrderAtItsFifthReturn(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
-	testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
+	testerReturnsTo(t, pool, engine, root.Key, 2)
 	move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerTesterFailed, "", record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
@@ -290,7 +295,7 @@ func TestAHookNamesAMoveOfAnyOrderAtItsFifthReturn(t *testing.T) {
 		if prompts := hookPrompts(t, pool); len(prompts) != 0 {
 			t.Fatalf("the hook fired %+v before the fifth move back", prompts)
 		}
-		testerMovesBack(t, pool, engine, root.Key, phase.Reviewing)
+		testerReturnsTo(t, pool, engine, root.Key, 2)
 	}
 	prompts := hookPrompts(t, pool)
 	if want := []string{"implementer", "tester", "reviewer"}; !sameStrings(promptRoles(prompts), want) {

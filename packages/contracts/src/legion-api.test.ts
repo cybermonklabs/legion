@@ -1363,20 +1363,21 @@ test("the request schema takes exactly the ratings the daemon takes", () => {
   expect(parted).toEqual([]);
 });
 
-// Contract 219: a step that failed names the step its task returns to, `returnTo`, by its place in
-// the task, 1 for its first. Only a completion with the verdict fail names one
-// (RETURN_TO_NEEDS_FAIL), and a place below 1 is none (INVALID_RETURN_TO). A completion that
-// names none stays what it was.
-test("a failed step's completion names the step its task returns to", () => {
-  const failed = { grantId: "g", summary: "s", verdict: "fail", returnTo: 2 };
-  expect(LegionHandoffCompleteRequest.parse(failed)).toEqual(failed);
-  expect(LegionHandoffCompleteRequest.safeParse({ ...failed, returnTo: 1 }).success).toBeTrue();
+// Contract 219: a tester's completion names the step its task returns to, `returnTo`, by its place
+// in the task, 1 for its first, and carries no verdict (contract 221), since the check states
+// decide whether the testing step failed. A completion naming a verdict names no returnTo
+// (RETURN_TO_NEEDS_FAIL, VERDICT_NOT_TAKEN), and a place below 1 is none (INVALID_RETURN_TO). A
+// completion that names none stays what it was.
+test("a tester's completion names the step its task returns to, with no verdict", () => {
+  const tested = { grantId: "g", summary: "s", verdict: "", returnTo: 2 };
+  expect(LegionHandoffCompleteRequest.parse(tested)).toEqual(tested);
+  expect(LegionHandoffCompleteRequest.safeParse({ ...tested, returnTo: 1 }).success).toBeTrue();
   for (const returnTo of [0, -1, 1.5]) {
-    expect(LegionHandoffCompleteRequest.safeParse({ ...failed, returnTo }).success).toBeFalse();
+    expect(LegionHandoffCompleteRequest.safeParse({ ...tested, returnTo }).success).toBeFalse();
   }
-  for (const verdict of ["pass", "pending", ""]) {
-    expect(LegionHandoffCompleteRequest.safeParse({ ...failed, verdict }).success).toBeFalse();
-    const { returnTo: _, ...without } = { ...failed, verdict };
+  for (const verdict of ["pass", "pending", "fail"]) {
+    expect(LegionHandoffCompleteRequest.safeParse({ ...tested, verdict }).success).toBeFalse();
+    const { returnTo: _, ...without } = { ...tested, verdict };
     expect(LegionHandoffCompleteRequest.safeParse(without).success).toBeTrue();
   }
 });

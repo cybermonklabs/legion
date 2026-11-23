@@ -408,14 +408,15 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       },
       "handoff-complete.json",
     ],
-    // A tester's fail names the step its task returns to (contract 219).
+    // A tester's completion names the step its task returns to (contract 219), with no verdict,
+    // since the check states decide whether its testing step failed.
     [
       "handoffComplete",
       "/legion/v1/handoff/complete",
       {
         grantId: "grant-209",
         summary: "the proof is thin",
-        verdict: "fail",
+        verdict: "",
         commit: "abc123",
         handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
         handoffVersion: 3,
@@ -600,15 +601,16 @@ test("a refused plan surfaces its code and every reason in its sentence", async 
   expect(requests).toHaveLength(1);
 });
 
-// The daemon refuses a returnTo on a completion that fails no step (RETURN_TO_NEEDS_FAIL); the
-// request's schema refuses it the same, so it never leaves the pane.
-test("a completion naming returnTo without the verdict fail is refused before it goes", async () => {
+// The daemon takes a returnTo on a tester's completion alone, which carries no verdict
+// (RETURN_TO_NEEDS_FAIL, VERDICT_NOT_TAKEN); the request's schema refuses one beside a verdict the
+// same, so it never leaves the pane, and sends one beside none.
+test("a completion naming returnTo beside a verdict is refused before it goes, and one beside none goes", async () => {
   const { fetch, requests } = daemon(() => Response.json({}));
   const client = createLegionDaemonClient("http://daemon.test", {
     pluginContract: CONTRACT,
     fetch,
   });
-  for (const verdict of ["pass", ""]) {
+  for (const verdict of ["pass", "pending", "fail"]) {
     const refused = await (async () =>
       client.handoffComplete({ grantId: "grant-209", summary: "done", verdict, returnTo: 1 }))()
       .then(() => undefined)
@@ -616,6 +618,8 @@ test("a completion naming returnTo without the verdict fail is refused before it
     expect(refused, `verdict ${JSON.stringify(verdict)} with returnTo`).toBeInstanceOf(Error);
   }
   expect(requests).toHaveLength(0);
+  await client.handoffComplete({ grantId: "grant-209", summary: "done", verdict: "", returnTo: 1 });
+  expect(requests).toHaveLength(1);
 });
 // A refused pause or resume carries more than a code and a sentence: the pause that stands, or
 // the last pause (`LegionPauseFailureResponse`). The client reads the refusal through the plain
