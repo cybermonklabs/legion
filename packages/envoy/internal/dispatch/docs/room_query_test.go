@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Room queries (room_query.go) are how one process asks every other one about a document room: a
@@ -92,8 +93,16 @@ func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
 		t.Fatalf("the store holds bob's edit %q while its append is held, so nothing here is tested", stored)
 	}
 
+	// The timer opens task B's gate after held, and closes opened before it opens the gate, so a
+	// flush that returned before the gate opened finds opened still open. A span measured from the
+	// flush's start would not tell the two apart: a loaded machine can start the flush well after
+	// the timer.
 	const held = 200 * time.Millisecond
-	released := time.AfterFunc(held, pair.gateB.release)
+	opened := make(chan struct{})
+	released := time.AfterFunc(held, func() {
+		close(opened)
+		pair.gateB.release()
+	})
 	defer released.Stop()
 	started := time.Now()
 	answers, asked, err := pair.taskA.roomQueries.ask(context.Background(), pair.database.Pool, pair.artifactID, roomQueryFlush)
@@ -101,8 +110,10 @@ func TestAFlushWaitsForTheOtherProcessesHeldAppend(t *testing.T) {
 	if err != nil || !asked {
 		t.Fatalf("task A's flush = asked %t, %v; want task B asked", asked, err)
 	}
-	if waited < held-20*time.Millisecond {
-		t.Fatalf("task A's flush returned after %v, before task B's held append was let go at %v: it did not wait for the append", waited, held)
+	select {
+	case <-opened:
+	default:
+		t.Fatalf("task A's flush returned after %v, before task B's held append was let go: it did not wait for the append", waited)
 	}
 	if len(answers) != 1 || answers[0].process != pair.taskB.ProcessID() || !answers[0].holds {
 		t.Fatalf("task A's flush answers = %+v after %v, want task B's one, holding the room", answers, waited)
@@ -186,11 +197,7 @@ func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
 
 	deliverRoomQuery(t, pair.taskB, pair.taskA.ProcessID(), pair.artifactID, roomQueryFlush)
 
-	select {
-	case <-lingering:
-	case <-time.After(roomWait(t)):
-		t.Fatal("the query woke none of task B's lingering appends: a batch of its keystrokes holds the answer up for a linger")
-	}
+	testwait.Receive(t, "the query to wake task B's lingering appends: a batch of its keystrokes holds the answer up for a linger", lingering)
 	state = pair.taskB.lockExistingState(pair.artifactID)
 	flushed, waiters := state.appendsFlushed, state.appendWaiters
 	pair.taskB.unlockState(pair.artifactID, state)
@@ -503,7 +510,7 @@ func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
 		t.Fatalf("the cold write's version reads %q; want the agent's edit alone, bob's append being queued behind its lock", markdown)
 	}
 	waitForLandedAppends(t, taskB, artifactID)
-	waitFor(t, roomWait(t), "bob's edit to be stored once the write let go of the lock", func() bool {
+	waitUntil(t, "bob's edit to be stored once the write let go of the lock", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "by bob")
 	})
 	if stored := storedMarkdown(t, database, artifactID); !strings.Contains(stored, "by the agent") {

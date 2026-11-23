@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -105,16 +106,22 @@ func editAsBrowserPeer(t *testing.T, service *Service, artifactID string, connec
 
 // resendUntilStored is what a browser's provider does after its room is closed under it: while the
 // store does not hold what peer, that browser's own document, has written, it waits for the room's
-// recovery and sends peer's state to the room that replaced it, as actor on connection.
+// recovery and sends peer's state to the room that replaced it, as actor on connection. Each wait
+// for the room's appends ends on the room's idle signal, which a landed or a refused append
+// raises, bounded only as appendsContext bounds it.
 func resendUntilStored(t *testing.T, service *Service, artifactID string, connection uint64, actor model.Actor, peer *crdt.Doc) {
 	t.Helper()
 	ctx := context.Background()
+	appends, cancel := appendsContext(t)
+	defer cancel()
 	state := crdt.EncodeStateAsUpdateV1(peer, nil)
 	for range 5 {
-		quiet, cancel := context.WithTimeout(ctx, roomWait(t))
-		_ = service.waitForPendingUpdates(quiet, artifactID)
-		_ = service.waitForDurableAppends(quiet, artifactID)
-		cancel()
+		if err := service.waitForPendingUpdates(appends, artifactID); err != nil {
+			t.Fatalf("wait for the room's updates to reach persistence before checking %s's edit is stored: %v", actor.ID, err)
+		}
+		if err := service.waitForDurableAppends(appends, artifactID); err != nil {
+			t.Fatalf("wait for the room's appends to land before checking %s's edit is stored: %v", actor.ID, err)
+		}
 		if storedHoldsPeerEdit(t, service.store, artifactID, peer) {
 			return
 		}
@@ -162,10 +169,26 @@ func storedHoldsPeerEdit(t *testing.T, database *store.Store, artifactID string,
 	return true
 }
 
-// waitForLandedAppends waits until every update the room has recorded is durable.
+// appendsContext is the context of a wait for a room's appends (waitForPendingUpdates,
+// waitForDurableAppends): its one bound is the test binary's deadline less testwait's margin
+// (testwait.Remaining), so the wait ends on the room's idle signal however long a loaded machine
+// takes to raise it, and a room whose appends never land is cut off before go test's alarm. It is
+// neither testwait.Context, which ends with t.Context before the test's cleanups run, so a cleanup
+// that waits for a room's appends would find it already ended, nor awaitRoomAppends, which also
+// fails a room whose appends land nothing for appendStall, a span a wait this helper replaced did
+// not have.
+func appendsContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	return context.WithTimeout(context.Background(), testwait.Remaining(t, roomWaitMargin))
+}
+
+// waitForLandedAppends waits until every update the room has recorded is durable. Each wait ends on
+// the room's idle signal (waitForRoomIdle), bounded only as appendsContext bounds it, so a room
+// whose appends queue long on a loaded machine still passes, and one whose appends never land fails
+// naming the step that did not finish.
 func waitForLandedAppends(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), roomWait(t))
+	ctx, cancel := appendsContext(t)
 	defer cancel()
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the room's updates to reach persistence: %v", err)
@@ -423,7 +446,7 @@ func arrangeNoVersionSettlement(t *testing.T, service *Service, artifactID strin
 	waitForLandedAppends(t, service, artifactID)
 	service.settle = 20 * time.Millisecond
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 30*time.Second, "the no-version settlement to commit", func() bool {
+	waitUntil(t, "the no-version settlement to commit", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -454,10 +477,10 @@ func TestARoomWhoseSettlementWroteNoVersionIsReleasedWhenIdle(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	arrangeNoVersionSettlement(t, service, artifactID, model.Actor{Kind: "user", ID: "alice"})
 
-	waitFor(t, 30*time.Second, "the idle room to be evicted", func() bool {
+	waitUntil(t, "the idle room to be evicted", func() bool {
 		return service.srv.GetDoc(artifactID) == nil && !slices.Contains(service.srv.Rooms(), artifactID)
 	})
-	waitFor(t, 10*time.Second, "the evicted room's state to be released", func() bool {
+	waitUntil(t, "the evicted room's state to be released", func() bool {
 		_, held := service.rooms.Load(artifactID)
 		return !held
 	})
@@ -517,13 +540,15 @@ func TestALoadNeverWaitsForTheDocumentLock(t *testing.T) {
 	if err := browser.AskForDocument(); err != nil {
 		t.Fatalf("ask the room for its document: %v", err)
 	}
-	const limit = 10 * time.Second
+	// A load that waited for the lock would never send the document: the holder keeps the lock
+	// until the test ends. So the wait ends on the document or on the socket's end, and its one
+	// bound is the test binary's deadline less testwait's margin (testwait.Context).
 	select {
 	case <-browser.Answers:
 	case <-browser.Ended:
 		t.Fatal("the socket closed before the room sent its document")
-	case <-time.After(limit):
-		t.Fatalf("the cold room did not load within %s while another transaction held the document lock", limit)
+	case <-testwait.Context(t).Done():
+		t.Fatal("the cold room did not load before the test binary's deadline while another transaction held the document lock")
 	}
 }
 
@@ -1114,20 +1139,28 @@ func TestAnEvictionDuringAVersionsCommitListsItsAuthorOnce(t *testing.T) {
 		t.Fatalf("the version lists %+v, want alice", named.Version.Authors)
 	}
 	evicted := make(chan error, 1)
+	// The commit comes once the eviction has reached the room's close: the room server runs
+	// beforeClose for the room there, ahead of ygo's close, which flushes the room's appends.
+	closing := make(chan struct{})
+	reached := sync.OnceFunc(func() { close(closing) })
+	beforeClose := service.srv.beforeClose
+	service.srv.beforeClose = func(room string) {
+		if beforeClose != nil {
+			beforeClose(room)
+		}
+		if room == artifactID {
+			reached()
+		}
+	}
 	go func() { evicted <- service.Evict(context.Background(), artifactID) }()
-	time.Sleep(50 * time.Millisecond) // let the eviction reach the room's close before the commit
+	testwait.Receive(t, "the eviction to reach the room's close", closing)
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the version: %v", err)
 	}
-	select {
-	case err := <-evicted:
-		if err != nil {
-			t.Fatalf("evict the room: %v", err)
-		}
-	case <-time.After(roomWait(t)):
-		t.Fatal("the eviction did not finish")
+	if err := testwait.Receive(t, "the eviction to finish once the version committed", evicted); err != nil {
+		t.Fatalf("evict the room: %v", err)
 	}
-	waitFor(t, 30*time.Second, "alice's append to land", func() bool {
+	waitUntil(t, "alice's append to land", func() bool {
 		return !service.hasDurableAppend(artifactID) && !service.hasPendingUpdates(artifactID)
 	})
 	if owed := pendingAuthorRows(t, service.store, artifactID); len(owed) != 0 {
@@ -1172,11 +1205,7 @@ func TestTwoVersionsBeforeAnAppendAsksForTheLockListItsAuthorOnce(t *testing.T) 
 	second := model.Actor{Kind: "session", ID: "second-versioner"}
 
 	editAsConnectedPeer(t, service, artifactID, 1, bob, appendBlocks(t, "Bob's paragraph.\n"))
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("bob's append never reached the store")
-	}
+	testwait.Receive(t, "bob's append to reach the store", entered)
 	v1 := commitNamedVersion(t, service, artifactID, first)
 	v2 := commitNamedVersion(t, service, artifactID, second)
 	if persistence.released.CompareAndSwap(false, true) {

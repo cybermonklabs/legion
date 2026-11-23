@@ -7,14 +7,18 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // excerptVersionOf is the excerpt_version of the mention document writes, or nil while it is owed.
@@ -64,7 +68,7 @@ func TestTheExcerptLeaseHolderPassesOverDocumentsHoldingNewerContent(t *testing.
 		service.runReferenceExcerptReconciliation(ctx, leases, nil, excerptSchedule{minGap: 100 * time.Millisecond, retryBase: time.Hour})
 	})
 
-	waitFor(t, 20*time.Second, fmt.Sprintf("the document after %d documents holding newer content to be reconciled", newer),
+	waitUntil(t, fmt.Sprintf("the document after %d documents holding newer content to be reconciled", newer),
 		func() bool { return !isOwed(t, database, readable) })
 	for _, document := range documents[:newer] {
 		if version := excerptVersionOf(t, database, document); version != nil {
@@ -94,7 +98,7 @@ func TestAStaleExcerptLeftByABuildThatStoresNoneIsMarkedAndCutAgain(t *testing.T
 	leases := excerptLeases(t, database)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
-	waitFor(t, 20*time.Second, "the excerpt version 1 left behind to be marked owed and cut again at version 2", func() bool {
+	waitUntil(t, "the excerpt version 1 left behind to be marked owed and cut again at version 2", func() bool {
 		version := excerptVersionOf(t, database, document)
 		return version != nil && *version == 2
 	})
@@ -234,7 +238,8 @@ func newExcerptService(t *testing.T, database *store.Store, persistence Versione
 }
 
 // runExcerpts runs the reconciliation loop run until the test ends, and fails the test if it does
-// not return promptly once its context ends.
+// not return once its context ends. That wait's one bound is the test binary's deadline less
+// testwait's margin (testwait.Receive).
 func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -245,11 +250,42 @@ func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Error("the reconciliation did not return within 10s of its context ending")
-		}
+		testwait.Receive(t, "the reconciliation to return once its context ended", done)
+	})
+}
+
+// leasedPassStatements counts every statement a leased loop's pools start, as
+// storetest.StatementCounter does, and the leases those statements free. duty frees a leased pass's
+// lease with the pass's last statement (freeLeaseOn, deferred until the pass has returned), and the
+// loop starts no statement after it until its next pass, so a pass has ended once its free is
+// counted: a fact, where a span with no statement in it is a guess that a stall inside a pass on a
+// loaded machine makes wrong.
+type leasedPassStatements struct {
+	storetest.StatementCounter
+	freed atomic.Int64
+}
+
+// freeLeaseStatement is the statement duty gives a lease back with (duty's freeLease): the unlock
+// of two keys, duty's lease namespace and the lease name's hashtext. A document room's lock is
+// given back with an unlock of one key, which this does not count.
+const freeLeaseStatement = `select pg_advisory_unlock($1, hashtext($2))`
+
+// TraceQueryStart counts the statement before it counts a free, so a reader that sees a free
+// counted also sees its statement counted.
+func (s *leasedPassStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	ctx = s.StatementCounter.TraceQueryStart(ctx, conn, data)
+	if data.SQL == freeLeaseStatement {
+		s.freed.Add(1)
+	}
+	return ctx
+}
+
+// awaitPasses waits until passes of the loop's passes have ended and freed their lease. It sets no
+// span of its own (waitUntil).
+func (s *leasedPassStatements) awaitPasses(t *testing.T, passes int64) {
+	t.Helper()
+	waitUntil(t, fmt.Sprintf("%d of the loop's passes to end and free their lease", passes), func() bool {
+		return s.freed.Load() >= passes
 	})
 }
 
@@ -347,7 +383,7 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 		service.runReferenceExcerptReconciliation(ctx, leases, nil, excerptSchedule{minGap: 50 * time.Millisecond, retryBase: base})
 	})
 
-	waitFor(t, 15*time.Second, "the failing document's first attempt and three retries", func() bool {
+	waitUntil(t, "the failing document's first attempt and three retries", func() bool {
 		return len(persistence.reads.attempts(failing)) >= 4
 	})
 	attempts := persistence.reads.attempts(failing)
@@ -376,7 +412,9 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 		service.runReferenceExcerptReconciliation(ctx, leases, nil, excerptSchedule{minGap: 100 * time.Millisecond, retryBase: time.Hour})
 	})
 
-	waitFor(t, 10*time.Second, "the twenty-first document's excerpt", func() bool { return !isOwed(t, database, last) })
+	waitUntil(t, "the twenty-first document's excerpt", func() bool { return !isOwed(t, database, last) })
+	// A window in which a correct run reads none of the twenty again: a slow machine only shortens
+	// what the window observes, so it cannot fail a correct run.
 	time.Sleep(500 * time.Millisecond)
 	for _, document := range failing {
 		if attempts := persistence.reads.attempts(document); len(attempts) != 1 {
@@ -390,19 +428,22 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 
 // Once the reconciliation has stored every owed excerpt, it makes no statement at all - no batch
 // on a timer, no lease attempt - over a window longer than the two-second step the timer it
-// replaced took, and its last pass asked for no timer.
+// replaced took, and its last pass asked for no timer. The window opens once the boot pass, which
+// stored them all and is the loop's one pass (three documents fill no batch, and none is
+// deferred), has freed its lease; a correct run makes no statement in it, so a slow machine only
+// shortens what the window observes.
 func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	database := storetest.Open(t)
 	documents := owedDocuments(t, database, 3)
-	counter := &storetest.StatementCounter{}
-	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	statements := &leasedPassStatements{}
+	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
 	service := newExcerptService(t, counted, nil)
 	leases := excerptLeases(t, counted)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
-	waitFor(t, 15*time.Second, "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
-	storetest.AwaitQuiet(t, counter, time.Second)
-	storetest.RequireNoStatements(t, counter, 3*time.Second, "the reconciliation with nothing owed")
+	waitUntil(t, "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
+	statements.awaitPasses(t, 1)
+	storetest.RequireNoStatements(t, &statements.StatementCounter, 3*time.Second, "the reconciliation with nothing owed")
 	if next := service.reconcileExcerptPass(context.Background(), referenceExcerptSchedule); !next.IsZero() {
 		t.Fatalf("a pass with nothing owed asked to run again at %v; want no timer", next)
 	}
@@ -414,9 +455,9 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 }
 
 // A mention left owed while the reconciliation is idle wakes it through its notification on a
-// real pglisten.Hub, and its excerpt is stored within 3 seconds: one ClearExcerpts leaves, and
-// one an old-style direct update leaves, as the previous release's code and rebuild-refs write
-// them, with no call in Go to announce them.
+// real pglisten.Hub, and its excerpt is stored: one ClearExcerpts leaves, and one an old-style
+// direct update leaves, as the previous release's code and rebuild-refs write them, with no call in
+// Go to announce them.
 func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	database := storetest.Open(t)
 	document := owedDocuments(t, database, 1)[0]
@@ -434,22 +475,20 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		stopHub()
 		<-hubDone
 	})
-	counter := &storetest.StatementCounter{}
-	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	// The hub signals every wake once its LISTEN stands (pglisten.Hub). A signal already there
+	// when the loop starts is taken by the loop's first select or after its boot pass, whichever
+	// the select picks, so the loop would run one pass or two. The test takes that signal before
+	// the loop starts, so the boot pass is the loop's one pass until a mention is left owed.
+	testwait.Receive(t, "the hub to connect", connected)
+	testwait.Receive(t, "the hub's signal after its LISTEN", wake)
+	statements := &leasedPassStatements{}
+	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
 	service := newExcerptService(t, counted, nil)
 	leases := excerptLeases(t, counted)
-	started := time.Now()
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, wake) })
-	select {
-	case <-connected:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the hub did not connect within 10s")
-	}
-	waitFor(t, 10*time.Second, "the boot pass to store the excerpt", func() bool { return !isOwed(t, database, document) })
-	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the
-	// boot pass began; after it the loop is idle.
-	time.Sleep(time.Until(started.Add(referenceExcerptSchedule.minGap + time.Second)))
-	storetest.AwaitQuiet(t, counter, 500*time.Millisecond)
+	waitUntil(t, "the boot pass to store the excerpt", func() bool { return !isOwed(t, database, document) })
+	// Once the boot pass has freed its lease the loop is idle: nothing is owed and no wake waits.
+	statements.awaitPasses(t, 1)
 
 	ctx := context.Background()
 	for name, leaveOwed := range map[string]func() error{
@@ -478,6 +517,6 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		if !isOwed(t, database, document) {
 			t.Fatalf("%s left nothing owed", name)
 		}
-		waitFor(t, 3*time.Second, "the excerpt "+name+" left owed to be stored", func() bool { return !isOwed(t, database, document) })
+		waitUntil(t, "the excerpt "+name+" left owed to be stored", func() bool { return !isOwed(t, database, document) })
 	}
 }

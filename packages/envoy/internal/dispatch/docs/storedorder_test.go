@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // storedOrderRounds is how many rounds TestStoredOrderSoak runs. The default fits the package in
@@ -432,14 +433,11 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 	return service, artifactID, enteredCh, release
 }
 
-// awaitHeldAppend returns once the held append has reached the store.
+// awaitHeldAppend returns once the held append has reached the store. Its one bound is the test
+// binary's deadline less testwait's margin (testwait.Receive).
 func awaitHeldAppend(t *testing.T, entered <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-entered:
-	case <-time.After(roomWait(t)):
-		t.Fatal("bob's append never reached the store")
-	}
+	testwait.Receive(t, "bob's append to reach the store", entered)
 }
 
 // onFirst returns a hook for room that runs do the first time it is called for it.
@@ -626,7 +624,7 @@ func TestStoredOrderTwoBrowsersOutOfOrder(t *testing.T) {
 	before := head()
 	releaseFirst := holdPeerEdit(t, service, artifactID, &service.beforeObserveUpdate, replaceRun("Second.", "Second, bob."))
 	editAsPeer(t, service, artifactID, replaceRun("bob", "bob and carol"))
-	waitFor(t, roomWait(t), "the second peer's update to be stored", func() bool { return head() > before })
+	waitUntil(t, "the second peer's update to be stored", func() bool { return head() > before })
 	releaseFirst()
 	assertStoredOrder(t, service, artifactID)
 }
@@ -741,12 +739,14 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 	})
 	// As typeIntoDocument's: the writing ends, the room applies the peer's last update, and the
 	// last peer of the room waits for every update to be stored, before the connection closes.
+	// Each wait ends on its fact; its one bound is the test binary's deadline less testwait's
+	// margin (waitUntil, appendsContext).
 	t.Cleanup(func() {
 		close(stopped)
 		done.Wait()
 		client := peer.Doc.ClientID()
 		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
+		waitUntil(t, "the room to apply the peer's last update", func() bool {
 			room := service.srv.GetDoc(artifactID)
 			return room == nil || room.StateVector().Clock(client) >= sent
 		})
@@ -754,7 +754,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 			return
 		}
 		typists.Delete(artifactID)
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := appendsContext(t)
 		defer cancel()
 		if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 			t.Errorf("wait for the peer's updates to reach persistence: %v", err)
