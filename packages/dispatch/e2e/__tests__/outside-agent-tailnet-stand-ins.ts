@@ -213,6 +213,9 @@ export interface BrowserStandIns {
   /** The full member's list of credential grants the stand-in Dispatch answers (default
    *  `default`). */
   readonly fullGrants?: FullGrants;
+  /** What the stand-in Dispatch answers the full member's token on GET /api/v1/whoami in place of
+   *  Dispatch's own agent shape (state/token-whoami.json): a planted answer. */
+  readonly tokenWhoami?: Readonly<Record<string, unknown>>;
   /** The verdicts of the driver's rows grants-list and grants-revoke (default both PASS); `none`
    *  writes no outside-edge-grants.tsv. */
   readonly grantRows?: readonly [string, string] | "none";
@@ -577,6 +580,9 @@ function browserStandIn(
 ): { readonly run: string; readonly env: Record<string, string> } {
   writeFileSync(join(state, "browser"), "");
   writeFileSync(join(state, "full-grants.json"), fullGrantsList(browser.fullGrants ?? "default"));
+  if (browser.tokenWhoami !== undefined) {
+    writeFileSync(join(state, "token-whoami.json"), JSON.stringify(browser.tokenWhoami));
+  }
   if (browser.noWindow === true) writeFileSync(join(state, "no-window"), "");
   writeFileSync(
     join(state, "listed"),

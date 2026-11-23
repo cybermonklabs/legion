@@ -12,15 +12,17 @@
  *  say. It answers the full member's browser session (cookie `session=full`) on the routes the
  *  leg's controls read, and refuses that cookie's write whose Origin is not its own origin, 403
  *  `invalid request origin`, as Dispatch's router does; it answers the full member's personal
- *  token (`Authorization: Bearer <fullToken>`) on whoami, the credential-grants list
- *  (`<state>/full-grants.json`) and the GitHub proxy's read, which `<state>/proxy-refuses-token`
- *  makes 403 OAUTH_SCOPE_REQUIRED; and 401 to anything else. Its access list names the test person
- *  until `POST /_remove`, the owner's removal; in a browser gate's run (`<state>/browser`) the list
- *  is `<state>/listed`, which the owner's routes by cookie change: PUT and DELETE
- *  `/api/v1/projects/EXAMPLE/access/people/<address>` (DELETE leaves `<state>/removed`) and POST
- *  `.../invitations`, which makes a link (kept in `<state>/links`) for an address the list names
- *  and answers 409 PERSON_NOT_LISTED for any other. It appends each request it answers,
- *  `METHOD path`, to `<state>/dispatch-seen`. */
+ *  token (`Authorization: Bearer <fullToken>`) on whoami, as Dispatch answers every credential but
+ *  a browser session (`{kind: "agent", owner, project, scopes, service, session}`, owner the full
+ *  member's login; `<state>/token-whoami.json`, where a test plants it, is answered instead), the
+ *  credential-grants list (`<state>/full-grants.json`) and the GitHub proxy's read, which
+ *  `<state>/proxy-refuses-token` makes 403 OAUTH_SCOPE_REQUIRED; and 401 to anything else. Its
+ *  access list names the test person until `POST /_remove`, the owner's removal; in a browser
+ *  gate's run (`<state>/browser`) the list is `<state>/listed`, which the owner's routes by cookie
+ *  change: PUT and DELETE `/api/v1/projects/EXAMPLE/access/people/<address>` (DELETE leaves
+ *  `<state>/removed`) and POST `.../invitations`, which makes a link (kept in `<state>/links`)
+ *  for an address the list names and answers 409 PERSON_NOT_LISTED for any other. It appends each
+ *  request it answers, `METHOD path`, to `<state>/dispatch-seen`. */
 
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -75,7 +77,23 @@ const server = Bun.serve({
     if (request.headers.get("authorization") === `Bearer ${settings.fullToken}`) {
       const route = `${request.method} ${path}`;
       if (route === "GET /api/v1/whoami") {
-        return Response.json({ kind: "user", login: settings.fullLogin, scopes: ["person"] });
+        const planted = join(settings.state, "token-whoami.json");
+        if (existsSync(planted)) {
+          return new Response(readFileSync(planted), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        // Dispatch's whoamiAgent (issue_assignee.go) for a personal token of the person scope
+        // that lists no project: no member_kind, projects or private_projects, which it leaves out
+        // for a full member's token with no list.
+        return Response.json({
+          kind: "agent",
+          owner: settings.fullLogin,
+          project: null,
+          scopes: ["person"],
+          service: null,
+          session: null,
+        });
       }
       if (route === "GET /api/v1/credential-grants" && url.searchParams.get("approver") === "me") {
         return new Response(readFileSync(join(settings.state, "full-grants.json")), {

@@ -1754,6 +1754,70 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
+      "outside-agent-grants.sh reads the full member from whoami as Dispatch answers it: the owner of a token's agent shape, the login of a browser session's user shape, and UNKNOWN naming any other kind, no person, or a login that is no folded address",
+      async () => {
+        // The stand-in answers the token Dispatch's own agent shape, which the first row of the
+        // test above reads; here each run plants another answer.
+        const planted = {
+          user: { kind: "user", login: fullLogin, scopes: ["person"] },
+          service: { kind: "service", owner: fullLogin, scopes: ["person"] },
+          nobody: { kind: "agent", owner: null, project: null, scopes: [], service: null },
+          unfolded: { kind: "agent", owner: fullLogin.toUpperCase(), project: null, scopes: [] },
+          noAddress: { kind: "agent", owner: "full", project: null, scopes: [] },
+        } as const;
+        const names = Object.keys(planted) as (keyof typeof planted)[];
+        const prepared = await Promise.all(
+          names.map((name) => prepareStandIn(scratch, browserRun({ tokenWhoami: planted[name] })))
+        );
+        try {
+          const runs = await Promise.all(
+            prepared.map((each) =>
+              runLeg(join(each.leg, "..", "outside-agent-grants.sh"), [], {
+                PATH: each.env.PATH ?? "",
+                HOME: each.env.HOME ?? "",
+                OUTSIDE_ALLOW_HTTP: "1",
+                OUTSIDE_TAILNET_DISPATCH_URL: each.dispatch.origin,
+                OUTSIDE_SWEEP_FULL_TOKEN_FILE: each.env.OUTSIDE_SWEEP_FULL_TOKEN_FILE ?? "",
+                OUTSIDE_PERSON: "outside-e2e@example.com",
+              })
+            )
+          );
+          const read = Object.fromEntries(
+            names.map((name, at) => [name, { code: runs[at]?.code, stdout: runs[at]?.stdout }])
+          );
+          expect(read).toEqual({
+            user: { code: 0, stdout: `grant ${serviceGrant}\n` },
+            service: {
+              code: 2,
+              stdout: expect.stringMatching(
+                /^UNKNOWN: whoami with the full member's token: whoami answered kind service, neither agent \(a token\) nor user \(a browser session\): \{"kind":"service",/
+              ),
+            },
+            nobody: {
+              code: 2,
+              stdout: expect.stringMatching(
+                /^UNKNOWN: whoami with the full member's token: whoami answered kind agent with no owner, so the credential acts for no person: \{"kind":"agent","owner":null,/
+              ),
+            },
+            unfolded: {
+              code: 2,
+              stdout: `UNKNOWN: whoami with the full member's token: whoami answered kind agent with owner ${fullLogin.toUpperCase()}, which is no folded address, the form a grant names a person in\n`,
+            },
+            noAddress: {
+              code: 2,
+              stdout:
+                "UNKNOWN: whoami with the full member's token: whoami answered kind agent with owner full, which is no folded address, the form a grant names a person in\n",
+            },
+          });
+        } finally {
+          for (const each of prepared) each.dispatch.stop();
+        }
+      },
+      // Five preparations, then the five runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+    );
+
+    test(
       "the workflow rows: a skipped window step, a late cookie, a check's FAIL, a check's missing exit and the driver's limits each hold their own row",
       async () => {
         const [skipped, late, failed, uncoded, overLimit, noLimit] = await runStandIns(

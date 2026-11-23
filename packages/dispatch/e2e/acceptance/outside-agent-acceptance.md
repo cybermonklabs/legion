@@ -446,8 +446,12 @@ secret, and asks no terminal. In this gate it does these steps:
 5. Seconds before it starts the workflow, it reads the full member's list of credential grants
    (`GET /api/v1/credential-grants?approver=me`, with `OUTSIDE_SWEEP_FULL_TOKEN_FILE`) and picks the
    probe grant: the first grant with no approver and no operator, whose approver and operator name
-   neither the full member (their token's whoami) nor the test person. No person may end such a
-   grant at the broker, whatever Dispatch relays, so the probe ends nothing.
+   neither the full member nor the test person. The full member is the `owner` their token's
+   `GET /api/v1/whoami` answers: Dispatch answers every credential but a browser session
+   `{"kind":"agent","owner":...}`, and a browser session `{"kind":"user","login":...}`; any other
+   kind, an owner of null, or a person that is no lowercase address reads UNKNOWN. Each of the four
+   is compared as Dispatch and the broker store a person: blanks cut and A-Z lowered. No person may
+   end such a grant at the broker, whatever Dispatch relays, so the probe ends nothing.
    `outside-agent-grants.sh`, run alone (`bash outside-agent-grants.sh`, with
    `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_TAILNET_DISPATCH_URL` and `OUTSIDE_PERSON`), is the
    same read as a preflight before a live gate is asked for: it prints `grant <id>` (exit 0), `no
@@ -557,8 +561,12 @@ command every owner act is made with the owner's browser session and every row p
 same acts sent another `Origin` are refused `403 invalid request origin`, which rows unlisted and
 public name, and with neither a command nor the session the owner rows read UNKNOWN naming both. Run
 alone, `outside-agent-grants.sh` prints the probe grant, `no grant with no approver and no operator`
-(exit 1), or UNKNOWN without the token (exit 2). With no input the browser gate reads each of its
-rows UNKNOWN, and `OUTSIDE_GATE` of another word every row.
+(exit 1), or UNKNOWN without the token (exit 2). The stand-in Dispatch answers the full member's
+token on whoami as Dispatch does, `{"kind":"agent","owner":...}`, so a read of `login` there reads
+UNKNOWN; planted in its place, a user shape's `login` still names the full member, and a kind of
+another word, an owner of null, an owner in capitals and an owner with no `@` each read UNKNOWN,
+naming it. With no input the browser gate reads each of its rows UNKNOWN, and `OUTSIDE_GATE` of
+another word every row.
 
 ## What the two legs do not prove
 

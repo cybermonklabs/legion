@@ -4,7 +4,8 @@
 # list of credential grants, GET /api/v1/credential-grants?approver=me, read with the full member's
 # personal token (OUTSIDE_SWEEP_FULL_TOKEN_FILE, the person scope). outside-agent-tailnet.sh sources
 # this file from beside it, after outside-agent-lib.sh, and the functions read its `work`, `tab`,
-# `person` and `token_header` and set `grants_before`, `grants_probe` and `grants_problem`.
+# `person` and `token_header` and set `grants_before`, `grants_probe` and `grants_problem` (and
+# `whoami_named` and `whoami_problem`, whoami_person's own).
 #
 # A grant every signed-in person is listed (one the model judge approved, whose approver is
 # `anyone`, or one a pod that acts for no person got without asking, with no approver and no
@@ -89,27 +90,80 @@ grants_read() {
   grant_rows "$work/grants-$1.json" >"$work/grants-$1.rows"
 }
 
+# fold_login LOGIN: LOGIN as Dispatch and the broker fold a person's login before they store or
+# compare it (fold.Login: the blanks around it cut, the letters A-Z lowered and no other byte
+# changed): Dispatch's whoami answers its login so folded (model.CanonicalLogin), and the broker
+# so folds a grant's approver and its enrollment's operator (record.CanonicalLogin). So the full
+# member, the test person and a grant's two fields are held to each other in that one namespace.
+fold_login() {
+  local login=$1
+  login=${login#"${login%%[![:space:]]*}"}
+  login=${login%"${login##*[![:space:]]}"}
+  # shellcheck disable=SC2018,SC2019 # A-Z alone, as fold.ASCII lowers: no other letter changes
+  printf '%s' "$login" | LC_ALL=C tr 'A-Z' 'a-z'
+}
+
+# whoami_person FILE: the person the GET /api/v1/whoami answer in FILE names, into whoami_named,
+# or why it names none, into whoami_problem (returning 1). Dispatch answers a person's browser
+# session `{"kind":"user","login":...}` and every other credential, a personal token that holds the
+# person scope among them, `{"kind":"agent","owner":...}`, whose owner is null where the credential
+# acts for no person (issue_assignee.go, whoami). Each names the person by their address, folded
+# (fold_login). Any other kind, no person, or a person written otherwise is a problem that names
+# what was answered: a grant's approver and operator could not be held against it.
+whoami_person() {
+  local answer kind field named
+  whoami_named=''
+  whoami_problem=''
+  answer=$(tr -d ' \n' <"$1" 2>/dev/null)
+  kind=$(json_field kind "$answer")
+  case $kind in
+    agent) field=owner ;;
+    user) field=login ;;
+    *)
+      whoami_problem="whoami answered kind ${kind:-none}, neither agent (a token) nor user (a browser session): ${answer:0:200}"
+      return 1
+      ;;
+  esac
+  named=$(json_field "$field" "$answer")
+  case $named in
+    '' | null)
+      whoami_problem="whoami answered kind $kind with no $field, so the credential acts for no person: ${answer:0:200}"
+      return 1
+      ;;
+  esac
+  if [ "$(fold_login "$named")" != "$named" ] || [ "${named#*@}" = "$named" ]; then
+    whoami_problem="whoami answered kind $kind with $field $named, which is no folded address, the form a grant names a person in"
+    return 1
+  fi
+  whoami_named=$named
+}
+
 # grants_read_before: the full member's login and list, and the probe grant: sets grants_before
 # (the ids every signed-in person is listed, one a line), grants_probe and grants_problem. The
-# probe is the first grant with no approver and no operator, each field read and compared with
-# the full member's login and the test person's address, case ignored.
+# probe is the first grant with no approver and no operator, each field folded and compared with
+# the full member's login (whoami_person, with the full member's token) and the test person's
+# address, folded too (fold_login).
 grants_read_before() {
   local status self who id granted approver operator
   [ -z "$grants_problem" ] || return 0
   status=$(full_token_get /api/v1/whoami "$work/token-whoami.json")
-  self=$(json_field login "$(tr -d ' \n' <"$work/token-whoami.json" 2>/dev/null)" | tr '[:upper:]' '[:lower:]')
-  if [ "$status" != 200 ] || [ -z "$self" ]; then
+  if [ "$status" != 200 ]; then
     grants_problem="whoami with the full member's token answered $status: $(text_of "$work/token-whoami.json")"
     return 0
   fi
+  if ! whoami_person "$work/token-whoami.json"; then
+    grants_problem="whoami with the full member's token: $whoami_problem"
+    return 0
+  fi
+  self=$whoami_named
   grants_problem=$(grants_read before)
   [ -z "$grants_problem" ] || return 0
   grants_before=$(everyone_grants "$work/grants-before.rows")
-  who=$(printf '%s' "$person" | tr '[:upper:]' '[:lower:]')
+  who=$(fold_login "$person")
   while IFS="$tab" read -r id granted approver operator || [ -n "$id" ]; do
     [ "$granted:$approver:$operator" = automatic:null: ] || continue
-    approver=$(printf '%s' "$approver" | tr '[:upper:]' '[:lower:]')
-    operator=$(printf '%s' "$operator" | tr '[:upper:]' '[:lower:]')
+    approver=$(fold_login "$approver")
+    operator=$(fold_login "$operator")
     [ "$approver" != "$self" ] && [ "$operator" != "$self" ] || continue
     [ -z "$who" ] || { [ "$approver" != "$who" ] && [ "$operator" != "$who" ]; } || continue
     grants_probe=$id
