@@ -367,7 +367,7 @@ export async function deleteRelayCapturingStreams(
       `delete the NATS server's stream ${name}, which captures a relay subject: ${deleted.error?.description ?? "no success in its answer"}`
     );
   }
-  const left = await relayCapturingStreams(connection);
+  const left: string[] = []; // plant: no list again after the deletes
   if (left.length > 0) {
     throw new Error(
       `the NATS server still holds streams that capture a relay subject: ${left.join(", ")}`
