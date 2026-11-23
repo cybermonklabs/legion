@@ -1692,21 +1692,22 @@ func scannedMark(seq *int64, at *time.Time) EventMark {
 	return mark
 }
 
-const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened, rule, exempt_version`
+const gateColumns = `issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at, told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened, rule, exempt_version, verification_version`
 
 // scanGate reads a gate row in the shape PutGate writes: an approval's mark only with the approval,
 // a told changes request's reason and mark only with its version. An older daemon, which knows none
 // of these columns, may clear a version and leave the rest, so the shape is the reader's and the
 // writer's to keep rather than a constraint that would refuse that daemon's write. The rule's word
 // is read back as its rule (GateRule.Word), and a row the release before wrote, which names
-// neither the rule nor the exemption, reads as the rule of a person's approval with no exemption.
+// neither the rule, the exemption nor the Verification version, reads as the rule of a person's
+// approval with no exemption, read at no Verification version.
 func scanGate(row scanner) (DesignGate, error) {
 	var gate DesignGate
 	var approvedSeq, toldSeq *int64
 	var approvedAt, toldAt *time.Time
 	var step, rule string
 	if err := row.Scan(&gate.Issue, &step, &gate.ArtifactID, &gate.LatestVersion, &gate.ApprovedVersion, &approvedSeq, &approvedAt,
-		&gate.ToldChangesVersion, &gate.ToldChangesReason, &toldSeq, &toldAt, &gate.EverOpened, &rule, &gate.ExemptVersion); err != nil {
+		&gate.ToldChangesVersion, &gate.ToldChangesReason, &toldSeq, &toldAt, &gate.EverOpened, &rule, &gate.ExemptVersion, &gate.VerificationVersion); err != nil {
 		return DesignGate{}, err
 	}
 	gate.Rule = gateRuleOfWord(rule)
@@ -1857,18 +1858,18 @@ func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) erro
 	// otherwise put out a mark a past approval lit. What counts as opened is the one statement of
 	// it (GateOpen), which classify.DesignGateOpen calls too.
 	_, err := tx.Exec(ctx, `insert into design_gates (issue, step, artifact_id, latest_version, approved_version, approved_seq, approved_at,
-		told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened, rule, exempt_version)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		told_changes_version, told_changes_reason, told_changes_seq, told_changes_at, ever_opened, rule, exempt_version, verification_version)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		on conflict (issue, step) do update set artifact_id = excluded.artifact_id,
 		latest_version = excluded.latest_version, approved_version = excluded.approved_version,
 		approved_seq = excluded.approved_seq, approved_at = excluded.approved_at,
 		told_changes_version = excluded.told_changes_version, told_changes_reason = excluded.told_changes_reason,
 		told_changes_seq = excluded.told_changes_seq, told_changes_at = excluded.told_changes_at,
 		ever_opened = design_gates.ever_opened or excluded.ever_opened,
-		rule = excluded.rule, exempt_version = excluded.exempt_version`,
+		rule = excluded.rule, exempt_version = excluded.exempt_version, verification_version = excluded.verification_version`,
 		gate.Issue, string(step), gate.ArtifactID, gate.LatestVersion, gate.ApprovedVersion, approvedSeq, approvedAt,
 		gate.ToldChangesVersion, toldReason, toldSeq, toldAt,
-		gate.EverOpened || GateOpen(gate), gate.Rule.Word(), gate.ExemptVersion)
+		gate.EverOpened || GateOpen(gate), gate.Rule.Word(), gate.ExemptVersion, gate.VerificationVersion)
 	if err != nil {
 		return fmt.Errorf("put design gate for %s: %w", gate.Issue, err)
 	}

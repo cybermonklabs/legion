@@ -20,12 +20,14 @@ const beforeSpecGateExemption = specGateExemptionVersion - 1
 // failure to read that block names it.
 const specGateExemptionRelease = "the release that opens the design gate of a change request that proposes nothing"
 
-// 20261122104755 gives each design gate the rule it started under (design_gates.rule) and the
-// version that opened it with no person (design_gates.exempt_version), keeps the daemon's last
-// reading of each issue's ending condition (spec_endings), lets the outbox queue the re-read of
-// that condition (spec_ending_read), and is read by the two notice kinds of this release. A gate
-// the release before wrote reads back under the rule of a person's approval with no exemption, and
-// the release before's own gate write, which names neither column, still lands.
+// 20261122104755 gives each design gate the rule it started under (design_gates.rule), the
+// version that opened it with no person (design_gates.exempt_version) and the version of the
+// Verification document its change request was read at (design_gates.verification_version), keeps
+// the daemon's last reading of each issue's ending condition (spec_endings), lets the outbox queue
+// the re-read of that condition (spec_ending_read), and is read by the two notice kinds of this
+// release. A gate the release before wrote reads back under the rule of a person's approval with
+// no exemption, read at no Verification version, and the release before's own gate write, which
+// names none of the columns, still lands.
 //
 // The way back, the last paragraph of the migration's header (migrations.WayBack), deletes the
 // rows the release before cannot decode — the queued re-reads and the queued notices of the two
@@ -59,18 +61,19 @@ func TestTheGateRuleAndTheEndingComeFromTheMigrationAndGoWithTheWayBack(t *testi
 		t.Fatalf("migrate through the spec gate exemption: %v", err)
 	}
 
-	const gates = `select row(step, rule, exempt_version)::text from design_gates order by step`
-	if got, want := rowsAsText(t, store, gates), []string{"(spec,approval,)"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the gate the release before wrote = %v, want %v: the rule of a person's approval, no exemption", got, want)
+	const gates = `select row(step, rule, exempt_version, verification_version)::text from design_gates order by step`
+	if got, want := rowsAsText(t, store, gates), []string{"(spec,approval,,0)"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the gate the release before wrote = %v, want %v: the rule of a person's approval, no exemption, no Verification version", got, want)
 	}
 	exec(releaseBeforesGate, root, "criteria", "the-criteria", 1)
-	exec(`update design_gates set rule = 'change_request', exempt_version = 3 where step = 'spec'`)
-	if got, want := rowsAsText(t, store, gates), []string{"(criteria,approval,)", "(spec,change_request,3)"}; !reflect.DeepEqual(got, want) {
+	exec(`update design_gates set rule = 'change_request', exempt_version = 3, verification_version = 2 where step = 'spec'`)
+	if got, want := rowsAsText(t, store, gates), []string{"(criteria,approval,,0)", "(spec,change_request,3,2)"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the gates after this release's write = %v, want %v", got, want)
 	}
 	for _, refused := range []struct{ why, statement string }{
 		{"a rule that is none", `update design_gates set rule = 'person' where step = 'spec'`},
 		{"an exemption of version 0", `update design_gates set exempt_version = 0 where step = 'spec'`},
+		{"a Verification version below 0", `update design_gates set verification_version = -1 where step = 'spec'`},
 		{"an ending of a state Dispatch never answers", `insert into spec_endings (issue, head, state) values ('` + root + `', 'h1', 'maybe')`},
 		{"an ending at no head", `insert into spec_endings (issue, head, state) values ('` + root + `', '', 'ready')`},
 	} {
@@ -98,7 +101,7 @@ func TestTheGateRuleAndTheEndingComeFromTheMigrationAndGoWithTheWayBack(t *testi
 	if got, want := rowsAsText(t, store, left), []string{"(notice,design-approved)", "(role_message,)"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the outbox after the way back = %v, want %v: the re-read and the two new notice kinds gone, every other row kept", got, want)
 	}
-	if got := rowsAsText(t, store, `select column_name::text from information_schema.columns where table_name = 'design_gates' and column_name in ('rule', 'exempt_version')`); len(got) != 0 {
+	if got := rowsAsText(t, store, `select column_name::text from information_schema.columns where table_name = 'design_gates' and column_name in ('rule', 'exempt_version', 'verification_version')`); len(got) != 0 {
 		t.Fatalf("the gate columns the way back leaves = %v, want none", got)
 	}
 	if got := rowsAsText(t, store, `select coalesce(to_regclass('public.spec_endings')::text, '')`); !reflect.DeepEqual(got, []string{""}) {
@@ -123,7 +126,7 @@ func TestTheGateRuleAndTheEndingComeFromTheMigrationAndGoWithTheWayBack(t *testi
 	if applied != 1 {
 		t.Fatalf("the roll forward applied %d migrations, want this one again", applied)
 	}
-	if got, want := rowsAsText(t, store, gates), []string{"(criteria,approval,)", "(spec,approval,)", "(spec,approval,)"}; !reflect.DeepEqual(got, want) {
+	if got, want := rowsAsText(t, store, gates), []string{"(criteria,approval,,0)", "(spec,approval,,0)", "(spec,approval,,0)"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the gates after the roll forward = %v, want %v: every gate under the rule of a person's approval", got, want)
 	}
 }

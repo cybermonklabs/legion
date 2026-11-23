@@ -1519,6 +1519,14 @@ type DesignGate struct {
 	// and nil while no version has opened the gate that way. The gate is open by exemption while it
 	// equals LatestVersion (GateExempt).
 	ExemptVersion *int
+	// VerificationVersion is the newest version of the issue's Verification document a read of its
+	// change request saw (0 while no read saw one): under the rule of a change request the request
+	// reads its checks from that document, so it is the other half of what the gate stands open on
+	// beside LatestVersion. Every write that moves it decides ExemptVersion again from the same
+	// read, so an exemption that stands at LatestVersion was read at VerificationVersion, and a
+	// read made before a later version of that document the gate already applied exempts nothing
+	// (the workflow's exemptAt).
+	VerificationVersion int
 }
 
 // GateRule is the rule a design gate opens under: GateRuleApproval, a person approves the current
