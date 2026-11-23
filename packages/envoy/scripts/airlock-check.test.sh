@@ -256,6 +256,66 @@ want_environ="$(printf '%s\n' BROKER_AIRLOCK_LISTEN_ADDR BROKER_DATABASE_URL BRO
 label="k8a's broker start gives the broker exactly the stack broker's environment and its overrides"
 check test "$output" = "$want_environ"
 
+# --- k6's az wrapper, read out of airlock-check.sh and run on its own, on a box whose az on PATH
+# is a version manager's shim: a script that takes its own directory out of PATH and execs the az
+# it then finds there, as mise's does when it falls through. k6_azure_wrapper records the az on
+# PATH, the shim, and writes the wrapper; the wrapper then runs first on PATH, as k6_azure puts it,
+# with a config directory that holds no cloud yet, as az-broker's does. It registers the stand-in
+# cloud, selects it and runs the command, each through the shim, and the verdict is the calls the
+# az behind the shim recorded: those three, in that order. A wrapper that ran the shim on its own
+# PATH handed the shim back to the wrapper, and the two called each other, a new pair at each
+# cloud register. So the shim refuses a fourth call in one chain of calls and says so: the row
+# ends there rather than filling the machine. The controls show the setup could fail: the az the
+# wrapper records is the shim, and the shim runs the az put where k6_azure puts the wrapper.
+az_dir="$work/az-wrapper"
+mkdir -p "$az_dir/shim" "$az_dir/real" "$az_dir/probe" "$az_dir/config"
+cat >"$az_dir/real/az" <<EOF
+#!/usr/bin/env bash
+printf 'az %s\n' "\$*" >>"$az_dir/calls"
+EOF
+{
+  printf '#!/usr/bin/env bash\nshim_dir=%q\n' "$az_dir/shim"
+  cat <<'EOF'
+calls=$((${AIRLOCK_TEST_AZ_SHIM_CALLS:-0} + 1))
+if ((calls > 3)); then
+  echo "az shim: call $calls in one chain of calls, each through the one before: a loop" >&2
+  exit 97
+fi
+export AIRLOCK_TEST_AZ_SHIM_CALLS="$calls"
+handed_path=""
+IFS=: read -r -a path_dirs <<<"$PATH"
+for dir in "${path_dirs[@]}"; do
+  [[ "$dir" == "$shim_dir" ]] || handed_path="${handed_path:+${handed_path}:}${dir}"
+done
+export PATH="$handed_path"
+exec az "$@"
+EOF
+} >"$az_dir/shim/az"
+printf '#!/usr/bin/env bash\necho probe\n' >"$az_dir/probe/az"
+chmod +x "$az_dir/real/az" "$az_dir/shim/az" "$az_dir/probe/az"
+definition="$(sed -n '/^k6_azure_wrapper() {/,/^}/p' "$script_dir/airlock-check.sh")"
+[[ -n "$definition" ]] || { printf 'FAIL: airlock-check.sh defines no k6_azure_wrapper()\n'; exit 1; }
+eval "$definition"
+# shellcheck disable=SC2034 # the two URLs are read by k6_azure_wrapper, eval'd above
+WORK_DIR="$az_dir/work" AIRLOCK_MICROSOFT_URL=https://login.microsoft.test AIRLOCK_AZURE_RESOURCE_URL=https://management.azure.test
+box_path="$az_dir/shim:$az_dir/real:$PATH"
+PATH="$box_path" k6_azure_wrapper
+status=0
+output="${REAL_AZ-}"
+label="the az k6_azure_wrapper records on a box whose az is a shim is that shim"
+check test "${REAL_AZ-}" = "$az_dir/shim/az"
+output="$(PATH="$az_dir/probe:$box_path" "$az_dir/shim/az" version 2>&1)" || status=$?
+label="the shim runs the az put first on PATH, where k6_azure puts the wrapper"
+check test "$output" = probe
+status=0
+# The wrapper's directory before the PATH the wrapper recorded, as k6_azure runs it.
+output="$(PATH="$WORK_DIR/k6/bin:${K6_AZ_PATH-}" AZURE_CONFIG_DIR="$az_dir/config" timeout 60 az group list -o json 2>&1)" || status=$?
+output="${output:+$output; }the az behind the shim recorded: $(tr '\n' ';' 2>/dev/null <"$az_dir/calls" || echo nothing)"
+label="k6's az wrapper, on a box whose az is a shim, registers the cloud, selects it and runs the command, each through the shim to the az behind it"
+passed=false
+[[ "$status" -eq 0 && "$(awk '{print $2, $3}' "$az_dir/calls" 2>/dev/null)" == $'cloud register\ncloud set\ngroup list' ]] && passed=true
+check "$passed"
+
 if [[ "$failed" -ne 0 ]]; then
   printf 'airlock-check inputs: failed (%s checks)\n' "$failed"
   exit 1

@@ -174,6 +174,53 @@ check "and prints the memory reading" \
 check "and the CPU reading, with its groups" \
   "$(contains "$out" '^::notice title=shard 1 CPU::the browser step used [0-9][0-9]* CPU-seconds over [0-9][0-9]* samples: browser .*everything else .*$')"
 
+echo "case: the Dispatch server is counted under dispatch, by the program it runs"
+# Stand-ins named as run-server.sh execs the server: the path the browser jobs'
+# DISPATCH_E2E_SERVER_BIN names, which the pattern before this case fell through to `everything
+# else`, and the `./dispatch-e2e` a local run builds. The first is a copy of bash spinning, so the
+# reading has CPU to give it; the broker's `cipherd` beside it in the same directory is not the
+# server and must stay out. The case waits until both servers are in two ticks, the second five
+# seconds after the first, so the spinner's second reading is a difference over a whole tick. It
+# waits on the file rather than a clock, since awk writes a tick's lines when it exits and a fixed
+# sleep could read a tick half written; the 30 s bound only ends a wait for lines that never come,
+# which the checks then report.
+dir=$(fixture dispatch-server)
+mkdir -p "$dir/out/dispatch-e2e-broker"
+cp "$(command -v bash)" "$dir/out/dispatch-e2e-broker/dispatch"
+cp "$(command -v sleep)" "$dir/out/dispatch-e2e-broker/cipherd"
+cp "$(command -v sleep)" "$dir/dispatch-e2e"
+"$dir/out/dispatch-e2e-broker/dispatch" -c 'while :; do :; done' &
+server=$!
+"$dir/out/dispatch-e2e-broker/cipherd" 60 &
+broker=$!
+(cd "$dir" && exec ./dispatch-e2e 60) &
+local_server=$!
+"$samples_script" sample "$dir" &
+sampler=$!
+# lines_of <pid>: how many dispatch lines the samples hold for that process so far.
+lines_of() { grep -c "^$1 [0-9][0-9]* dispatch$" "$dir/cpu-samples.txt" 2>/dev/null || true; }
+for _ in $(seq 150); do
+  [ "$(lines_of "$server")" -ge 2 ] && [ "$(lines_of "$local_server")" -ge 2 ] && break
+  sleep 0.2
+done
+kill "$sampler" "$server" "$broker" "$local_server" 2>/dev/null || true
+wait "$sampler" "$server" "$broker" "$local_server" 2>/dev/null || true
+check "the server at the browser jobs' path is a dispatch line of two ticks" \
+  "$(is "$([ "$(lines_of "$server")" -ge 2 ] && echo yes)" yes)"
+check "and so is the server a local run builds" \
+  "$(is "$([ "$(lines_of "$local_server")" -ge 2 ] && echo yes)" yes)"
+check "and the broker's command beside it is no line at all" \
+  "$(is "$(grep -c "^$broker " "$dir/cpu-samples.txt" || true)" 0)"
+# The reading over the machine's lines and the spinning server's alone: on a machine that runs
+# other Dispatch servers, as a workstation does, the whole reading's `dispatch` would be theirs
+# too, so only this narrowed one says the stand-in's CPU reached the group.
+mkdir -p "$dir/server-only"
+: > "$dir/server-only/memory-samples.txt"
+grep -E "^(machine |$server )" "$dir/cpu-samples.txt" > "$dir/server-only/cpu-samples.txt" || true
+run_report "$dir/server-only" "shard 1"
+check "the reading gives dispatch the CPU the server spent" \
+  "$(contains "$out" 'samples: browser 0 (0%), runner 0 (0%), dispatch [1-9][0-9]* ([0-9]*%), postgres 0 ')"
+
 echo "case: a call the script cannot read"
 set +e
 out=$("$samples_script" 2>&1); status=$?
