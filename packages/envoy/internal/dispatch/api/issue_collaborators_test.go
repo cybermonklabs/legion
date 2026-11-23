@@ -197,6 +197,7 @@ func wantStatus(t *testing.T, what string, response *httptest.ResponseRecorder, 
 // the registry; a session the registry records and that also posted is one agent carrying both;
 // the daemon's lifecycle writer is nobody.
 func TestIssueCollaboratorsListsEverySourceOncePerPersonAndSession(t *testing.T) {
+	t.Parallel()
 	listener := &legionRegistryListener{}
 	handler, database, _ := newTestServer(t, testServerOptions{envoyURL: listener.serve(t).URL})
 	seedPeople(t, database, "carol")
@@ -305,6 +306,7 @@ func TestIssueCollaboratorsListsEverySourceOncePerPersonAndSession(t *testing.T)
 // Each event type that makes its actor a collaborator gives the reason it means, a person's and a
 // session's alike; an event of any other type makes nobody one.
 func TestIssueCollaboratorsTakesEachEventTypesReason(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	key := createInteractionIssue(t, handler, "TEST", "Event types", "spec").Key
 	wantStatus(t, "unassign", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"assignee": nil}, "alice"), http.StatusOK)
@@ -351,6 +353,7 @@ func TestIssueCollaboratorsTakesEachEventTypesReason(t *testing.T) {
 // newest time gathered from all of them; a session acting for a person's token is an agent, not
 // that person; the daemon's lifecycle writer is left out under any project.
 func TestIssueCollaboratorsFoldsLoginsAndSortsSessions(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	key := createInteractionIssue(t, handler, "TEST", "Login case", "spec").Key
 	wantStatus(t, "assign bob", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"assignee": "bob"}, "alice"), http.StatusOK)
@@ -385,6 +388,7 @@ func TestIssueCollaboratorsFoldsLoginsAndSortsSessions(t *testing.T) {
 // A listener that errors or does not answer in the client's window fails nothing: people and the
 // sessions the events name still answer, without the registry's entries, as unavailable.
 func TestIssueCollaboratorsAnswersWithoutTheRegistry(t *testing.T) {
+	t.Parallel()
 	for name, setup := range map[string]func(t *testing.T) testServerOptions{
 		"listener errors": func(t *testing.T) testServerOptions {
 			listener := &legionRegistryListener{status: http.StatusServiceUnavailable}
@@ -433,6 +437,7 @@ func TestIssueCollaboratorsAnswersWithoutTheRegistry(t *testing.T) {
 
 // An issue that does not exist is the ordinary 404, before the listener is asked.
 func TestIssueCollaboratorsOfAnUnknownIssueIs404(t *testing.T) {
+	t.Parallel()
 	listener := &legionRegistryListener{}
 	handler, _, _ := newTestServer(t, testServerOptions{envoyURL: listener.serve(t).URL})
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/TEST-404/collaborators", nil, "alice")

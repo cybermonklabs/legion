@@ -36,6 +36,7 @@ import (
 // alone, on its own schedule, releases and admits it within a bound — never waiting for a message
 // that will never come.
 func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
@@ -90,6 +91,7 @@ func TestPollHoldReleaseClosesAHeldRootOnAQuietStreamWithinABound(t *testing.T) 
 // the poll neither gives up nor drops the hold on an error, and that it actually calls the reader
 // more times than the injected failure count once it does release.
 func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -135,6 +137,7 @@ func TestPollHoldReleaseRetriesAFailedPositionRead(t *testing.T) {
 // the same consumer position that released the first: the poll's fact names the hold it releases,
 // so it is applied again rather than taken for the first release's duplicate, and the hold ends.
 func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -182,6 +185,7 @@ func TestPollHoldReleaseReleasesASecondHoldTheSamePositionReaches(t *testing.T) 
 // reading rather than adopting it as last before the transaction that carries it has actually
 // committed.
 func TestPollHoldReleaseRetriesAFailedApplyOfAnUnchangedPosition(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -385,6 +389,7 @@ func (d *filteringDispatch) PutDesignGates(context.Context, string, []dispatch.D
 // Dispatch shows out of the workflow's own window is held on its own listing summary exactly like
 // one still inside it.
 func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
@@ -443,6 +448,7 @@ func TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow(t *te
 // backlog. Exactly the labeled todo root is admitted, and quickly — this regression row is one
 // worth keeping.
 func TestReconcileOnThePilotsShapeAdmitsOnlyTheLabeledTodoRootQuickly(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	url := workflowNATS(t)
 	conn := testnats.Connect(t, url)
@@ -524,6 +530,7 @@ func (f *failingPositionReader) DispatchPosition(context.Context) (intake.Dispat
 // releasing on the strength of the timer, only naming what it is still waiting for: the target,
 // the current ack floor, and the stream sequence stuck behind it.
 func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	var logBuf syncBuffer
 	log := slog.New(slog.NewTextHandler(&logBuf, nil))
@@ -581,6 +588,7 @@ func TestPollHoldReleaseWarnsWhenAHoldPersistsPastItsBound(t *testing.T) {
 // pollHoldReleaseWith's one more pass, once Held() turns false, closes that gap — no database
 // table of held keys, no later event of any kind needed.
 func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRecordedThenPromoted(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -669,6 +677,7 @@ func TestANewerLabeledEventInTheWindowBetweenReleasesCommitAndItsCommitHookIsRec
 // and wasHeld only clears once the closing pass actually succeeds, so the poll retries it on its
 // own schedule exactly as a failed position apply already does.
 func TestPollHoldReleaseRetriesAFailedClosingPass(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, log)
@@ -771,6 +780,7 @@ const (
 // release that follows the quiet consumer's catch-up admits it, with the lower-ranked LEGION-NEXT
 // still waiting behind it.
 func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	js := workflowJetStream(t, workflowNATS(t))
 	logged := &syncBuffer{}

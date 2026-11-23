@@ -328,9 +328,9 @@ def bun_job(job, workflow=""):
     install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
-        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
+        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-61)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
-        ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
+        ("patches/**", f"{install} applies package.json:52-61 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
@@ -604,6 +604,7 @@ RULES = {
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
+    f"{DAEMON}/internal/podsafety/podsafety_test.go": reads((f"{DAEMON}/docker/worker.Dockerfile", "internal/podsafety/podsafety_test.go:543")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
@@ -701,6 +702,12 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.. "
                                "for plan_ratings_way_back_doc_test.go:35 (assertIsTheGuidesBlock, way_back_doc_test.go:165, "
                                "through wayBackBlockOfTheGuide, :181) and :49 (entryLinkIn of shippedText)")),
+    # This test reads the plan rows' migration through migrations.All, as the one above does, and
+    # internal/store's owner_steps_way_back_test.go, which runs that migration's way back, reads no
+    # text outside its package, so the guide is this one's one row.
+    f"{DAEMON}/internal/textcheck/owner_steps_way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for owner_steps_way_back_doc_test.go:28 (wayBackBlockOfTheGuide, way_back_doc_test.go:146)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
@@ -2263,8 +2270,8 @@ BROKER_PKGS = ["./cmd/cipherd", "./cmd/dev-oidc-issuer", "./internal/cipher/ciph
 BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
-CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
+CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+CGO_ENABLED=0 go build -ldflags='-s -w' -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
 # shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
@@ -2490,12 +2497,12 @@ SCRIPT_TEST_GATES = [
     # for this repository's addresses, so that script is a second subject of this step.
     harness("check_ci_tools_test", "Test the tool manifest check", f"{SCRIPTS}/check-ci-tools.test.sh", [
         (f"{SCRIPTS}/check-ci-tools.sh", "the script under test"),
-        (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:885-887 runs it in bash for plugin_download_url, and "
+        (f"{SCRIPTS}/repo-paths.sh", "check-ci-tools.sh:981-982 runs it in bash for plugin_download_url, and "
                                      "check-ci-tools.test.sh:103 links it into every fixture"),
     ]),
     harness("ci_tools_proof_test", "Test the tool fallback rig", f"{SCRIPTS}/ci-tools-proof.test.sh", [
         (f"{SCRIPTS}/ci-tools-proof.sh", "the script under test"),
-        (f"{SCRIPTS}/ci-tools.sh", "ci-tools-proof.sh:379 sources the fetch helper, so every case of the harness reads it"),
+        (f"{SCRIPTS}/ci-tools.sh", "ci-tools-proof.sh:389 sources the fetch helper, so every case of the harness reads it"),
     ]),
     harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
         (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
@@ -2510,22 +2517,22 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names.test.sh:23 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it too: the pull request's text is the guard's other surface"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:417 runs it too: the pull request's text is the guard's other surface"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:72 sources it for every gh read"),
     ], lib=False),
     harness("check_private_names_terms_test", "Test the private-name check's term list", f"{SCRIPTS}/check-private-names-terms.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-terms.test.sh:24 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it, over a pull request's text naming a term"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:417 runs it, over a pull request's text naming a term"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:72 sources it for every gh read"),
     ], lib=False),
     harness("check_private_names_keys_test", "Test the private-name check's issue-key rule", f"{SCRIPTS}/check-private-names-keys.test.sh", [
         (f"{SCRIPTS}/check-private-names-test-lib.sh", "check-private-names-keys.test.sh:26 sources it for its fixtures"),
         (TEST_LIB, "check-private-names-test-lib.sh:37 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
-        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:261 runs it, over a pull request's new text"),
-        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:73 sources it for every gh read"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names-test-lib.sh:417 runs it, over a pull request's new text"),
+        (f"{SCRIPTS}/gh-read.sh", "check-pr-text.sh:72 sources it for every gh read"),
     ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
@@ -2575,12 +2582,13 @@ SCRIPT_TEST_GATES = [
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:287 posts with it, and ci-ok-report.test.sh:437,453 runs it on its own"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:116 sources it for its bounded gh reads"),
+        (f"{SCRIPTS}/ci-ok-hold.sh", "the ci-ok job's hold step, the other script under test"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:292 posts with it, and ci-ok-report.test.sh:459,475 runs it on its own"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:121 and ci-ok-hold.sh:94 source it for their bounded reads"),
         (f"{SCRIPTS}/runner-shutdown.sh",
-         "ci-ok-report.sh:118 sources it, and no early ci-ok is posted for a failure it reads as "
+         "ci-ok-report.sh:123 sources it, and no early ci-ok is posted for a failure it reads as "
          "a runner shutdown"),
-        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:263 reaches its verdict with it, and ci-ok-report.test.sh's "
+        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:268 reaches its verdict with it, and ci-ok-report.test.sh's "
                                 "verdict helper runs it for the group behind the front of the queue"),
         (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh's program includes it"),
     ]),
@@ -2592,7 +2600,7 @@ SCRIPT_TEST_GATES = [
     harness("find_pr_payload_test", "Test the pull request payload both pr-title checks read (a stand-in gh)",
             f"{SCRIPTS}/find-pr-payload.test.sh", [
         (f"{SCRIPTS}/find-pr-payload.sh", "the script under test"),
-        (f"{SCRIPTS}/gh-read.sh", "find-pr-payload.sh:34 sources it for its gh read"),
+        (f"{SCRIPTS}/gh-read.sh", "find-pr-payload.sh:38 sources it for its gh read"),
     ]),
     harness("merge_group_cancels_test", "Test the merge-group cancel decision", f"{SCRIPTS}/merge-group-cancels.test.sh", [
         (f"{SCRIPTS}/merge-group-cancels.sh", "the script under test"),
@@ -2610,6 +2618,13 @@ SCRIPT_TEST_GATES = [
     harness("dispatch_browser_latest_blobs_test", "Test the browser lane's blob attempt selection",
             f"{SCRIPTS}/dispatch-browser-latest-blobs.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-latest-blobs.sh", "the script under test"),
+    ]),
+    harness("dispatch_browser_reading_rows_test", "Test the browser lane's reading of its rows",
+            f"{SCRIPTS}/dispatch-browser-reading-rows.test.sh", [
+        (f"{SCRIPTS}/dispatch-browser-reading-rows.sh", "the script under test"),
+        (".github/workflows/dispatch-browser.yaml",
+         "the harness runs the script through the merge job's own call, the run: line of the step "
+         "\"Reading one, the rows\", and reads that the selection step carries the id it passes"),
     ]),
     harness("dispatch_browser_run_reads_test", "Test the browser lane's run reads",
             f"{SCRIPTS}/dispatch-browser-run-reads.test.sh", [
@@ -2637,6 +2652,10 @@ SCRIPT_TEST_GATES = [
             "scripts/priorities-seed-check.test.sh", [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
+    harness("architecture_check_test", "Test the architecture-check action's go-path mode",
+            ".github/actions/architecture-check/check.test.sh", [
+        (".github/actions/architecture-check/check.sh", "the script under test"),
+    ]),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
@@ -2832,7 +2851,7 @@ GATES = [
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness
-    # have jobs of their own: the Claude Code plugin build, the changelog fold, about thirty
+    # have jobs of their own: the Claude Code plugin build, the changelog fold, the
     # script harnesses - each behind a gate of its own below (SCRIPT_TEST_GATES), whose reads
     # this gate carries too, since the job must be selected for the step to run in it - and the
     # Bun suites of scripts/. Two go commands are left, the builds Bun tests start: the listener's,
@@ -2900,7 +2919,7 @@ GATES = [
     # job that needs a database (scripts/sessions/__tests__/message-wait.test.ts:20-28 refuses
     # without LEGION_TEST_PG_DSN, since a store it cannot measure is a measurement of nothing),
     # and a Postgres service on the test job would start one for every change that selects any
-    # of its thirty-two harness steps. The test reads the script it spawns and nothing else: both
+    # of its harness steps. The test reads the script it spawns and nothing else: both
     # are under scripts/sessions, and both import node: builtins and bun alone, so the job
     # installs no dependencies and this filter names no lockfile.
     gate("sessions_script", SESSIONS_JOB, reads=reads(
@@ -3494,6 +3513,11 @@ GATES = [
         (f"{ENVOY}/loadtest/cluster/nats-*.tgz",
          f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh runs render-nats.sh, which checks "
          "the vendored archive's sha256 and renders it"),
+        # The helm the cluster suite's render runs, installed by its own step from the helm row.
+        (".github/actions/install-helm/**", at("envoy-go-checks", "./.github/actions/install-helm")),
+        (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
+                                        "reads that row's two sources"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
         # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
@@ -3504,11 +3528,11 @@ GATES = [
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
         (".github/actions/architecture-check/check.sh",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
-         ".github/actions/architecture-check/action.yml:95 and :121 run it"),
+         ".github/actions/architecture-check/action.yml:68, :133 and :159 run it"),
         (".dispatch/architecture/**",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-         "(.github/actions/architecture-check/action.yml:16), which check.sh:68 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:78 reads"),
+         "(.github/actions/architecture-check/action.yml:23), which check.sh:73 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:85 reads"),
         (".github/actions/spec-check/action.yml",
          f"{at('envoy-go-checks', './.github/actions/spec-check')} runs the action it defines"),
         (".github/actions/spec-check/check.sh",
@@ -3517,7 +3541,7 @@ GATES = [
         (".github/scripts/build-envoy-command.sh",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} and "
          f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
-         ".github/actions/architecture-check/check.sh:60 and .github/actions/spec-check/check.sh:62 run it"),
+         ".github/actions/architecture-check/check.sh:67 and .github/actions/spec-check/check.sh:62 run it"),
         (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-checks', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
         # The step judges the action's default path, .dispatch/spec, which holds no file on main;
         # the read names .dispatch whole because a read that matches no file is refused, and the
@@ -3965,7 +3989,7 @@ GATES = [
     # The tool-fallback job: the live proof that every tool install reads the second source
     # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
     # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
-    # the gate beside it, the rig and the fault proxy it drives, the eight actions it installs
+    # the gate beside it, the rig and the fault proxy it drives, the nine actions it installs
     # through, and the two files a row's version is pinned in that a step of it reads.
     gate("tool_fallback", "tool-fallback", reads=reads(
         (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
@@ -3997,7 +4021,7 @@ GATES = [
          "faulted installs left to the version its row pins"),
         (".github/scripts/tool-fallback-final-state.sh",
          f"{at('tool-fallback', TOOL_FINAL_STEP)} is that script, which reads what this runner "
-         "holds after the sixteen refusals"),
+         "holds after the eighteen refusals"),
         (".github/actions/install-crane/**", at("tool-fallback", "./.github/actions/install-crane")),
         (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
         (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),
@@ -4007,6 +4031,7 @@ GATES = [
         (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",
          at("tool-fallback", "./.github/actions/install-docker-plugin")),
+        (".github/actions/install-helm/**", at("tool-fallback", "./.github/actions/install-helm")),
         (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                                "to name mise's own install directory for that tool, and "
                                                ".github/actions/install-jj reads that same ARG, while the mise row "

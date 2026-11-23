@@ -26,6 +26,7 @@ import (
 // second build is the merger's phase start once Dispatch answers again, after the reconcile of the
 // tree's news has run once more.
 func TestAnUnreadableReviewHistoryIsReadAgainOnceDispatchAnswers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// before is the version Dispatch's review history shows approved before version 5, once it

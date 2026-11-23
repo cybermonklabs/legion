@@ -3,7 +3,6 @@ package webhook
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"time"
 
@@ -28,8 +27,22 @@ func stringValue(value any) string {
 // rather than at the bus's own 5 s bound.
 const slackAnswerBudget = 2500 * time.Millisecond
 
-// SlackHandler returns the HTTP handler for Slack webhook events.
-func SlackHandler(secret string, publisher Publisher) http.HandlerFunc {
+// slackMaxBody is the largest Slack event body the handler reads.
+const slackMaxBody = 1 << 20
+
+// slackRoomWait is the most a Slack event waits, in all, for room in the listener's body budget
+// (BodyBudget) before it is answered 503, which Slack retries: inside slackAnswerBudget, with
+// 1.5 s of it left for the publish. It is a variable so a test can shorten it.
+var slackRoomWait = time.Second
+
+// SlackHandler returns the HTTP handler for Slack webhook events, which reads its bodies against
+// bodies, the listener's one body budget. It checks every event's signature with secret before it
+// parses a byte of the body, the url_verification handshake included: Slack signs that request as
+// it signs every other, and its documentation says to verify it before answering the challenge
+// (https://docs.slack.dev/reference/events/url_verification). So an event that does not check is
+// a 401, whatever its body holds, and a handler built with an empty secret refuses every event
+// (verify.Slack).
+func SlackHandler(secret string, publisher Publisher, bodies *BodyBudget) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusOK)
@@ -37,9 +50,13 @@ func SlackHandler(secret string, publisher Publisher) http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), slackAnswerBudget)
 		defer cancel()
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+		body, release, err := bodies.readBody(ctx, w, r, r.Body, slackMaxBody, slackRoomWait)
+		defer release()
 		if err != nil {
-			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if !verify.Slack(secret, body, r.Header.Get("X-Slack-Request-Timestamp"), r.Header.Get("X-Slack-Signature")) {
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}
 		var payload map[string]any
@@ -47,14 +64,9 @@ func SlackHandler(secret string, publisher Publisher) http.HandlerFunc {
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		// URL verification must happen BEFORE signature check.
 		if typeName(payload["type"]) == "url_verification" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"challenge": payload["challenge"]})
-			return
-		}
-		if !verify.Slack(secret, body, r.Header.Get("X-Slack-Request-Timestamp"), r.Header.Get("X-Slack-Signature")) {
-			http.Error(w, "invalid signature", http.StatusUnauthorized)
 			return
 		}
 		if typeName(payload["type"]) == "event_callback" && stringValue(payload["event_id"]) != "" {

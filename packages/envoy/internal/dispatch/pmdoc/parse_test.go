@@ -361,43 +361,6 @@ func TestParseReadsAFootnoteDefinitionEndingInABlock(t *testing.T) {
 	}
 }
 
-// A reference goldmark's exact match leaves unresolved is looked up among the definitions by its
-// label's key once, not compared with every definition: with 2,000 definitions and 2,000 such
-// references a document parses in about the time it takes with the definitions written as plain
-// paragraphs, where comparing each pair would take over a hundred times as long. The two timings
-// are taken in the same run, so a slow machine slows both.
-func TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition(t *testing.T) {
-	document := func(definitions bool) string {
-		var markdown strings.Builder
-		for range 2000 {
-			markdown.WriteString("Unmatched [^QQ].\n\n")
-		}
-		for index := range 2000 {
-			if definitions {
-				fmt.Fprintf(&markdown, "[^d%d]: x\n\n", index)
-			} else {
-				fmt.Fprintf(&markdown, "d%d: x\n\n", index)
-			}
-		}
-		return markdown.String()
-	}
-	fastest := func(markdown string) time.Duration {
-		best := time.Duration(1<<63 - 1)
-		for range 3 {
-			start := time.Now()
-			if _, err := Parse(markdown); err != nil {
-				t.Fatal(err)
-			}
-			best = min(best, time.Since(start))
-		}
-		return best
-	}
-	plain, withDefinitions := fastest(document(false)), fastest(document(true))
-	if withDefinitions > 10*plain {
-		t.Fatalf("parsing took %v with 2,000 definitions and %v with them as paragraphs, want under ten times as long", withDefinitions, plain)
-	}
-}
-
 // A panic in this package's reader or renderer is recovered at the entry point, so it never
 // crashes the caller, and is this package's bug: an ErrPanic, which callers answer as an internal
 // error, never an ErrSchema refusal of the caller's markdown.

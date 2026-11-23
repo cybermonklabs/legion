@@ -60,6 +60,99 @@ trap 'rm -rf "$work"' EXIT
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
 
+# Importing ci_job_reads.py walks the repository and runs go list. The cases at the end of this
+# file that read its race walk and its files_but_tests ask it fourteen questions, and as fourteen
+# fresh python3 processes, each importing it, they took 66 s of this harness's 115 s in CI's job
+# 137302423430: 28.8 s for the first import and about 2.8 s for each later one. So one python3,
+# started here, imports it once, from the repository's root as the check runs, while the cases
+# before those run, and answers each question in a child it forks: the child starts from the
+# module as the import left it, as a fresh python3 started from there would, and whatever the
+# question changes (the race lane, the working directory, REPO, a cache) ends with the child.
+coproc READS {
+  cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
+import os
+import sys
+import traceback
+from pathlib import Path
+
+import ci_filter_coverage
+import ci_job_reads as reads
+
+
+def derived(root, lane):
+    reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
+        reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane.split())),)
+    try:
+        return reads.race_impossible_script(reads.race_impossible_tests(root))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+
+
+def from_root(root):
+    os.chdir(root)
+    ci_filter_coverage.REPO = Path.cwd()
+    reads.repository_files.cache_clear()
+
+
+def listed(root, suffix, shape):
+    from_root(root)
+    return " ".join(reads.files_but_tests("pkg", suffix=suffix, tree=shape == "tree", skip=("testdata",)))
+
+
+def refused(root, spelling):
+    from_root(root)
+    try:
+        reads.files_but_tests(spelling)
+    except ValueError as exc:
+        return str(exc)
+    return ""
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused}
+
+
+def field():
+    """One NUL-ended field of the question; None at the end of the input."""
+    data = bytearray()
+    while (byte := sys.stdin.buffer.read(1)) != b"\0":
+        if not byte:
+            return None
+        data += byte
+    return data.decode()
+
+
+while (count := field()) is not None:
+    question, *args = [field() for _ in range(int(count))]
+    child = os.fork()
+    if child == 0:
+        try:
+            answer = questions[question](*args)
+        except BaseException:
+            traceback.print_exc()
+            os._exit(1)
+        sys.stdout.write(f"{answer}\0")
+        sys.stdout.flush()
+        os._exit(0)
+    # A question that raised, or a child that died before it answered, ends this python3 too: its
+    # stdout closes, and ask fails rather than read an empty answer.
+    if os.waitpid(child, 0)[1] != 0:
+        sys.exit(1)
+'
+}
+
+# ask <question> <arg>...: the answer of that python3 to one question, as a fresh python3 would
+# print it. A question that raises ends that python3, its traceback on stderr, and ask then fails
+# with no answer, as a fresh python3 that raised failed.
+ask() {
+  local answer
+  printf '%s\0' "$#" "$@" >&"${READS[1]}"
+  if ! IFS= read -r -d '' answer <&"${READS[0]}"; then
+    echo "the python3 that answers for ci_job_reads.py ended without answering '$1'" >&2
+    return 1
+  fi
+  printf '%s\n' "$answer"
+}
+
 # fixture <name>: a tree that passes. The app job runs `go test ./cmd/app ./lib`, whose closure is
 # cmd/app and lib (cmd/app imports lib); lib's test reads fixtures/data.json through `..`, which
 # RULES records; mod/other is a package nothing imports. The image job runs only on a pull
@@ -207,7 +300,7 @@ jobs:
       - name: Judge every job of this run
         run: echo verdict
       - name: Set every other ci-ok on this head to this job's conclusion
-        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}
+        if: ${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}
         run: echo reconcile
 YAML
   cat > "$root/.github/ci-filters.yaml" <<'YAML'
@@ -1066,7 +1159,7 @@ check "names the job and the check" \
 # check_ci_ok holds them and prints them.
 ciok_name="\${{ github.event_name == 'workflow_dispatch' && needs.changes.outputs.ref_is_main != 'true' && 'ci-ok (dispatch)' || 'ci-ok' }}"
 prtitle_name="\${{ github.event_name == 'workflow_dispatch' && 'pr-title (dispatch)' || 'pr-title' }}"
-reconcile_if="\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}"
+reconcile_if="\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') && !(steps.verdict.outcome == 'failure' && github.event_name == 'merge_group' && github.run_attempt == '1') }}"
 ref_run='if [ "$GITHUB_REF" = refs/heads/main ]; then echo is_main=true; else echo is_main=false; fi >> "$GITHUB_OUTPUT"'
 # has <text> <string>: true/false for check, a fixed-string match: these strings hold [ and $,
 # which contains would read as a regex.
@@ -1139,12 +1232,15 @@ replace "$root/.github/workflows/ci.yaml" $'\n  image:\n' \
 run_check "$root"
 check "a name expression that names no required check passes" "$(is "$status" 0)"
 
-echo "case: the verdict job's reconcile step runs on a dispatch of another ref"
-# On such a run every other ci-ok of the head is a pull request's or the queue's, and the step
-# would set each posted one to that run's verdict; `if: always()` alone was the shape before, and
-# the expression's comparison of github.ref read refs/heads/Main as main.
+echo "case: the verdict job's reconcile step runs on a dispatch of another ref, or after the hold"
+# On a dispatch of another ref every other ci-ok of the head is a pull request's or the queue's,
+# and the step would set each posted one to that run's verdict; `if: always()` alone was the shape
+# before, and the expression's comparison of github.ref read refs/heads/Main as main. The third
+# shape runs the step on a merge group's first attempt whose verdict failed too, after the hold
+# step, which must end the job so its check run concludes the moment the group is the front.
 n=0
-for given in "always()" "\${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}"; do
+for given in "always()" "\${{ always() && !(github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') }}" \
+  "\${{ always() && (github.event_name != 'workflow_dispatch' || needs.changes.outputs.ref_is_main == 'true') }}"; do
   n=$((n + 1))
   root=$(fixture "ci-ok-reconcile-if-$n")
   replace "$root/.github/workflows/ci.yaml" "        if: $reconcile_if" "        if: $given"
@@ -1268,7 +1364,7 @@ echo "case: the file has no ci-ok job"
 # The job is the last of the fixture, and `replace` reads the file without its trailing newline,
 # so the block to cut starts at the newline before it and ends at its last line.
 root=$(fixture ci-ok-absent)
-replace "$root/.github/workflows/ci.yaml" $'\n  ci-ok:\n    name: ${{ github.event_name == \'workflow_dispatch\' && needs.changes.outputs.ref_is_main != \'true\' && \'ci-ok (dispatch)\' || \'ci-ok\' }}\n    needs: [changes, app, image, lint]\n    if: ${{ always() }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Judge every job of this run\n        run: echo verdict\n      - name: Set every other ci-ok on this head to this job\'s conclusion\n        if: ${{ always() && (github.event_name != \'workflow_dispatch\' || needs.changes.outputs.ref_is_main == \'true\') }}\n        run: echo reconcile' ""
+replace "$root/.github/workflows/ci.yaml" $'\n  ci-ok:\n    name: ${{ github.event_name == \'workflow_dispatch\' && needs.changes.outputs.ref_is_main != \'true\' && \'ci-ok (dispatch)\' || \'ci-ok\' }}\n    needs: [changes, app, image, lint]\n    if: ${{ always() }}\n    runs-on: ubuntu-24.04\n    steps:\n      - name: Judge every job of this run\n        run: echo verdict\n      - name: Set every other ci-ok on this head to this job\'s conclusion\n        if: ${{ always() && (github.event_name != \'workflow_dispatch\' || needs.changes.outputs.ref_is_main == \'true\') && !(steps.verdict.outcome == \'failure\' && github.event_name == \'merge_group\' && github.run_attempt == \'1\') }}\n        run: echo reconcile' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the check nothing would carry" \
@@ -1873,6 +1969,18 @@ replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: G
 run_check "$root"
 check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
 check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+
+# GOCACHE names where go keeps what it compiled, keyed on the inputs, so a step that sets it in
+# its env - as envoy-go-checks' darwin vet does, for a build cache of its own - still compiles
+# what the bare command compiles.
+echo "case: a GOCACHE in a claimed simple go command's step env"
+root=$(fixture gocache-env)
+replace "$root/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
+  $'        env:\n          GOCACHE: ${{ runner.temp }}/go-build-app\n        run: go test ./cmd/app ./lib'
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+check "and the step does carry the env" "$(contains "$(<"$root/.github/workflows/ci.yaml")" 'GOCACHE: \${{ runner.temp }}/go-build-app')"
 
 echo "case: an assignment outside ENV_ALLOWED in front of a claimed simple go command"
 root=$(fixture goos-assignment)
@@ -2595,7 +2703,7 @@ check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
 # refill_workflow <root>: cache_workflow's shape with the fill made again on every push, as
-# ci-caches.yaml's go-daemon, go-notices, go-envoy and go-envoy-test fills are: the fill's restore
+# ci-caches.yaml's Go families but go-envoy-infra are filled: the fill's restore
 # downloads the family's newest entry (no lookup-only, and its key and a `-` as restore-keys), its
 # builds and its save run on every push, and its save names the commit after the key ci.yaml
 # restores.
@@ -3314,21 +3422,7 @@ check "and reads the .yml spelling GitHub reads too" \
 # lane replaced by <lane>, a space-separated list of package paths under <root> ("pkg" for the
 # package alone, "pkg/..." for the tree). Echoes "RAISED: <what it refused>" when the walk
 # refuses what it reads.
-derived() {
-  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import sys
-
-import ci_job_reads as reads
-
-root, lane = sys.argv[1], sys.argv[2].split()
-reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
-    reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane)),)
-try:
-    print(reads.race_impossible_script(reads.race_impossible_tests(root)))
-except ValueError as refusal:
-    print("RAISED:", refusal)
-' "$1" "$2")
-}
+derived() { ask derived "$1" "$2"; }
 
 # race_tree: a lane of two packages, one of them a tree, holding every form the walk reads. Echoes
 # its root.
@@ -3771,21 +3865,7 @@ git -C "$root" add .gitignore pkg/a.go pkg/a_test.go pkg/z.go pkg/notes.txt pkg/
 rm "$root/pkg/gone.go"
 # listed_files <root> <suffix> <tree|flat>: files_but_tests("pkg") run from <root>, as the check
 # runs from the repository's, skipping testdata.
-listed_files() {
-  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import os
-import sys
-from pathlib import Path
-
-import ci_filter_coverage
-import ci_job_reads as reads
-
-os.chdir(sys.argv[1])
-ci_filter_coverage.REPO = Path.cwd()
-reads.repository_files.cache_clear()
-print(" ".join(reads.files_but_tests("pkg", suffix=sys.argv[2], tree=sys.argv[3] == "tree", skip=("testdata",))))
-' "$@")
-}
+listed_files() { ask listed "$@"; }
 check "lists the tracked and the new files, a directory's own before its subdirectory's" \
   "$(is "$(listed_files "$root" .go tree)" "pkg/a.go pkg/new.go pkg/z.go pkg/sub/b.go")"
 check "and no ignored build output, test file, deleted file or skipped directory for any suffix" \
@@ -3795,22 +3875,7 @@ check "and without the tree, the directory's own files" \
 # ./pkg, pkg/ or an absolute path would match no path of repo_files(), which spells each relative
 # and in normal form, so the reads would go missing with nothing failing: each is refused.
 for spelling in ./pkg pkg/ "$root/pkg"; do
-  refusal=$( (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import os
-import sys
-from pathlib import Path
-
-import ci_filter_coverage
-import ci_job_reads as reads
-
-os.chdir(sys.argv[1])
-ci_filter_coverage.REPO = Path.cwd()
-reads.repository_files.cache_clear()
-try:
-    reads.files_but_tests(sys.argv[2])
-except ValueError as exc:
-    print(exc)
-' "$root" "$spelling") )
+  refusal=$(ask refused "$root" "$spelling")
   check "refuses the directory spelled $spelling, naming the spelling" \
     "$(contains "$refusal" "files_but_tests is given '$spelling', which is not a path relative to the repository root in normal form")"
 done

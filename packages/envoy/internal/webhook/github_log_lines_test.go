@@ -57,7 +57,7 @@ func TestAResendWhoseFirstTryWasStoredLogsStored(t *testing.T) {
 		return info.State.Subjects[topic]
 	}
 
-	handler := GitHubHandler("s", "@legion", "", "", reconnecting, &mockRecorder{})
+	handler := GitHubHandler("s", "@legion", "", "", reconnecting, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	body := withInstallation(t, githubFixture(t, "push"), 1001)
 	before := reconnecting.Connection().Stats().OutMsgs
 	proxy.FreezeServerReplies()
@@ -112,7 +112,7 @@ func TestGitHubPublishedLineNamesEachTopicTheRenamePublisherPublishes(t *testing
 		former  = "notifications.github.example-org.former-repo.push.branch.main"
 	)
 
-	plain := GitHubHandler("s", "@legion", "", "", ghrename.Publishing(client, ghrename.Renames{}, logging.New("test")), &mockRecorder{})
+	plain := GitHubHandler("s", "@legion", "", "", ghrename.Publishing(client, ghrename.Renames{}, logging.New("test")), &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	postDelivery(t, plain, "push", sharedDelivery, body, appDelivery("5341240"))
 	if got, want := linesStarting(logged.String(), "github published "), []string{publishedLine(current, "5341240", "stored")}; !slices.Equal(got, want) {
 		t.Fatalf("the delivery before the rename logged\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -122,7 +122,7 @@ func TestGitHubPublishedLineNamesEachTopicTheRenamePublisherPublishes(t *testing
 	if err != nil {
 		t.Fatalf("parse the rename: %v", err)
 	}
-	renamed := GitHubHandler("s", "@legion", "", "", ghrename.Publishing(client, renames, logging.New("test")), &mockRecorder{})
+	renamed := GitHubHandler("s", "@legion", "", "", ghrename.Publishing(client, renames, logging.New("test")), &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	logged.Reset()
 	postDelivery(t, renamed, "push", sharedDelivery, body, appDelivery("5341240"))
 	want := []string{publishedLine(current, "5341240", "duplicate"), publishedLine(former, "5341240", "stored")}
@@ -140,7 +140,7 @@ func TestGitHubPublishedLineNamesEachTopicTheRenamePublisherPublishes(t *testing
 func TestAGitHubDeliveryWithNoHookTargetIsPublishedWithAnEmptyTarget(t *testing.T) {
 	logged := captureLog(t)
 	client := githubStream(t)
-	handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{})
+	handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	postDelivery(t, handler, "push", sharedDelivery, withInstallation(t, githubFixture(t, "push"), 1001), nil)
 	const topic = "notifications.github.example-org.example-repo.push.branch.main"
 	if got, want := linesStarting(logged.String(), "github published "), []string{publishedLine(topic, "", "stored")}; !slices.Equal(got, want) {
@@ -217,7 +217,7 @@ func fieldCount(fields []string, key string) int {
 // published line alone. The github mention detected line quotes the delivery as well.
 func TestAForgedHookTargetHeaderAddsNoFieldToTheGitHubLines(t *testing.T) {
 	logged := captureLog(t)
-	handler := GitHubHandler("s", "@legion", "", "", githubStream(t), &mockRecorder{})
+	handler := GitHubHandler("s", "@legion", "", "", githubStream(t), &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 	const (
 		forgedDelivery = "d-1 result=stored target_id=5341305"
 		forgedType     = "integration result=stored"
@@ -274,7 +274,7 @@ func TestGitHubSenderLineNamesTheWebhookApp(t *testing.T) {
 	post := func(event, delivery string, body []byte, headers map[string]string) []string {
 		t.Helper()
 		logged.Reset()
-		handler := GitHubHandler("s", "@legion", "", "", &mockPublisher{}, &mockRecorder{})
+		handler := GitHubHandler("s", "@legion", "", "", &mockPublisher{}, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 		req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(body))
 		req.Header.Set("X-GitHub-Delivery", delivery)
 		req.Header.Set("X-GitHub-Event", event)
@@ -335,7 +335,7 @@ func TestGitHubPublishedLineNamesKeyTargetAndResult(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			logged := captureLog(t)
-			handler := GitHubHandler("s", "@legion", "", "", githubStream(t), &mockRecorder{})
+			handler := GitHubHandler("s", "@legion", "", "", githubStream(t), &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 			first := withInstallation(t, row.body, 1001)
 			topics := githubTopics(t, row.event, first)
 			if len(topics) == 0 {

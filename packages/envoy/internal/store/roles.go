@@ -437,7 +437,7 @@ const (
 	// gone when it arrived.
 	roleClaimWriteMissing
 	// roleClaimWriteRaced is every attempt lost to a write that landed since the read it was
-	// conditional on (nats.ErrKeyExists), the last of them at the attempt bound.
+	// conditional on (bus.IsCASConflict), the last of them at the attempt bound.
 	roleClaimWriteRaced
 )
 
@@ -468,7 +468,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 			return roleClaimWriteLanded, at, nil
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleClaimWriteMissing, claim, nil
-		case !errors.Is(err, nats.ErrKeyExists):
+		case !bus.IsCASConflict(err):
 			return roleClaimWriteFailed, claim, err
 		case attempt == w.attempts:
 			return roleClaimWriteRaced, claim, nil

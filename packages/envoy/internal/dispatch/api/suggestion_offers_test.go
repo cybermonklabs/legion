@@ -184,6 +184,7 @@ func askTheQuestion(t *testing.T, fixture offerFixture, path string) (*model.Sug
 // row of the role other_project per item, ranked in the order the items stand, each naming the
 // ask it offers and the issue that holds it, beside the related rows of the same check.
 func TestSuggestionOffersOfAnAskCreateAreRankedRowsOfTheirOwnRole(t *testing.T) {
+	t.Parallel()
 	fixture := seedCrossProjectOffers(t, "XREC", "XRECO", 2)
 
 	offered, askID := askTheQuestion(t, fixture, "/api/v1/issues/"+fixture.host+"/asks")
@@ -219,6 +220,7 @@ func TestSuggestionOffersOfAnAskCreateAreRankedRowsOfTheirOwnRole(t *testing.T) 
 // An ask create on a project document records its offers too: the row carries the document in
 // place of an issue, which is the owner such an ask has.
 func TestSuggestionOffersOfAnAskOnAProjectDocumentAreRecorded(t *testing.T) {
+	t.Parallel()
 	fixture := seedCrossProjectOffers(t, "XDOC", "XDOCO", 1)
 	document := uploadProjectDocument(t, fixture.handler, "XDOC", "backlog-notes.md",
 		"# Backlog notes\n\nWhat the weekly planning meeting decided.\n")
@@ -243,6 +245,7 @@ func TestSuggestionOffersOfAnAskOnAProjectDocumentAreRecorded(t *testing.T) {
 // it: the table keys a row of the role by the ask it was offered on, and such a check holds the
 // document block's own id and no ask id (persistSuggestions).
 func TestSuggestionOffersOfANewDecisionBlockReachNoRow(t *testing.T) {
+	t.Parallel()
 	fixture := seedCrossProjectOffers(t, "XBLOCK", "XBLOCKO", 1)
 	before := readOfferRows(t, fixture.database, "role = 'other_project'")
 
@@ -271,6 +274,7 @@ func TestSuggestionOffersOfANewDecisionBlockReachNoRow(t *testing.T) {
 // The check writes no row of the role decision any more: the roles an ask create records are
 // related and other_project alone, though the table still admits the rows earlier checks wrote.
 func TestSuggestionRolesOfAnAskCreateLeaveNoDecisionRow(t *testing.T) {
+	t.Parallel()
 	fixture := seedCrossProjectOffers(t, "XROLE", "XROLEO", 1)
 
 	askTheQuestion(t, fixture, "/api/v1/issues/"+fixture.host+"/asks")
@@ -292,6 +296,7 @@ func TestSuggestionRolesOfAnAskCreateLeaveNoDecisionRow(t *testing.T) {
 // which is also the column's default, so the swept mark is what says the sweep reached it. The
 // records route then counts the write that offered it.
 func TestSuggestionOfferIsSweptAndStaysIgnoredWithoutLaterActivity(t *testing.T) {
+	t.Parallel()
 	fixture := seedCrossProjectOffers(t, "XSWEEP", "XSWEEPO", 1)
 	srv := directServer(fixture.deps)
 	from := time.Now().Add(-time.Minute)
@@ -325,6 +330,7 @@ func TestSuggestionOfferIsSweptAndStaysIgnoredWithoutLaterActivity(t *testing.T)
 // A later write of the same actor that cites the offered ask from the source issue marks the row
 // acted_on, the rule every other role is judged by (suggestionActedOnByCitation).
 func TestSuggestionOfferBecomesActedOnWhenTheSourceCitesTheOfferedAsk(t *testing.T) {
+	t.Parallel()
 	fixture := seedCrossProjectOffers(t, "XCITE", "XCITEO", 1)
 	srv := directServer(fixture.deps)
 
@@ -439,6 +445,7 @@ func reportStamp(at time.Time) string { return at.Format(time.RFC3339) }
 // the questions they offered, over the window its other counts read: from inclusive, to
 // exclusive.
 func TestRelatedChecksReportCountsTheOffersInsideItsWindow(t *testing.T) {
+	t.Parallel()
 	fixture := seedOfferReportSources(t, "ROFF", "ROFFB")
 	start, hour := reportHours()
 	seedWriteSuggestionOffers(t, fixture.database, reportOffers(fixture, hour))
@@ -469,6 +476,7 @@ func TestRelatedChecksReportCountsTheOffersInsideItsWindow(t *testing.T) {
 // The project filter reads the project of the row's own source: the issue for a row that names
 // one, the project document for a row that names one instead.
 func TestRelatedChecksReportCountsTheOffersOfOneProject(t *testing.T) {
+	t.Parallel()
 	fixture := seedOfferReportSources(t, "RPROJ", "RPROJB")
 	_, hour := reportHours()
 	seedWriteSuggestionOffers(t, fixture.database, reportOffers(fixture, hour))
@@ -491,6 +499,7 @@ func TestRelatedChecksReportCountsTheOffersOfOneProject(t *testing.T) {
 // Only an ask create records a row of the role, so the count is zero under every other source
 // kind, though the same window holds three such writes under the kind ask.
 func TestRelatedChecksReportCountsNoOfferUnderASourceKindThatHoldsNone(t *testing.T) {
+	t.Parallel()
 	fixture := seedOfferReportSources(t, "RKIND", "RKINDB")
 	_, hour := reportHours()
 	seedWriteSuggestionOffers(t, fixture.database, reportOffers(fixture, hour))

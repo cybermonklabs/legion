@@ -49,6 +49,7 @@ func hearsNothing(context.Context, []ghrepo.Repository) error { return nil }
 // Control: with the call moved into the records' read-only transaction, the first check finds that
 // transaction idle in it.
 func TestPublishingTheHeardSetAgainHoldsNoTransactionAcrossItsStreamCall(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	held := &eachHeldSubscription{calls: make(chan chan struct{})}
 	w, _, _, _ := repositoryRigWith(t, &installations{}, held.install)

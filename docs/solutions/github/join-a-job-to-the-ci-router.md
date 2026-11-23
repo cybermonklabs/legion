@@ -139,9 +139,12 @@ cancellation, or a `changes` that failed or was cancelled — the moment that jo
 group that can no longer merge should leave the queue at the first failure. It posts only for the
 queue's front group, whose base is the tip of main: the queue takes a group behind the front out
 only once the groups in front of it end, and an early failing `ci-ok` there makes the queue build
-another group on it, so that group's verdict waits for the `ci-ok` job. Every check run it
-posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the `ci-ok` job's
-last step (`.github/scripts/ci-ok-reconcile.sh`) sets to what the job concluded each `ci-ok`
+another group on it, so that group's verdict waits for the `ci-ok` job, which holds a failing
+verdict until the group is the front (`.github/scripts/ci-ok-hold.sh`) for the same reason.
+Every check run it posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the
+`ci-ok` job's reconcile step (`.github/scripts/ci-ok-reconcile.sh`), its last on every run but a
+merge group's first attempt whose verdict failed, where the hold ends the job, sets to what the
+job concluded each `ci-ok`
 check run on the head that is a post: one carrying that marker, or one with an empty
 `external_id`, which the release before the marker posted. A posted check run is updated by no
 re-run and can sit in another workflow's suite, so a run that was posted a failing `ci-ok` and
@@ -377,8 +380,9 @@ the fills live in workflows that run there.
   (`key: <family>-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}`),
   with the family's prefix as `restore-keys`
   (`restore-keys: ${{ format('<family>-{0}-{1}-', runner.os, runner.arch) }}`; the families are
-  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test` and `go-envoy-infra`, and `go-notices` in
-  the order the item below gives). In
+  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-darwin-vet` and `go-envoy-infra`,
+  and `go-notices` in the order the item below gives; `go-envoy-darwin-vet` restores into the
+  build cache directory its step's `GOCACHE` names, not into `~/.cache/go-build`). In
   `ci.yaml` that fallback applies on every run, a dispatched one on main included, because no job
   there saves. A job that does save keeps the prefix off main alone
   (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-{1}-', runner.os, runner.arch) || '' }}`),

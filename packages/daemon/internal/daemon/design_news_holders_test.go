@@ -22,6 +22,7 @@ import (
 // which the owning architect holds, is named through newsClaims.holderOf and not here; a phase no
 // role works names none. A member in reviewing names its reviewer's claim.
 func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		phase phase.Phase
 		role  claim.Role
@@ -51,6 +52,7 @@ func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
 // issue, in no phase, which names no holder and reads as told at its next start. A key the record
 // holds no issue of in the tree is an error, never a member told at its next start.
 func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	root := r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Testing)
@@ -89,6 +91,7 @@ func TestAMemberIsNamedByItsRealPhaseWhenItsCallerHandedNoIssueOver(t *testing.T
 // by the root's, whether the walk reads the tree itself, asked first with nothing handed over, or
 // reads the facts its caller handed over.
 func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOver(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	root := r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Implementing)
@@ -123,6 +126,7 @@ func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOve
 // answers its news itself: the root architect's summary says so (workflow.NewsYouAnswer), and never
 // that a task tells it or that its next start carries it.
 func TestTheRootArchitectsSummarySaysItAnswersAMemberInAcceptingItOwns(t *testing.T) {
+	t.Parallel()
 	r := newNewsReconcileRig(t)
 	r.member(reconcileRoot, "", phase.Implementing)
 	r.member(reconcileChild, reconcileRoot, phase.Accepting)

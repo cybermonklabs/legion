@@ -205,7 +205,7 @@
 #      family saved under the commit is filled again on every push, each entry under a key of its
 #      own; no entry carries the restores' key itself, so GitHub gives each restore the newest
 #      entry whose key starts with it. The fill builds on that newest entry, so its own restore
-#      must download it, and only by the prefix that holds its Go version. Every other restore of
+#      must download it, and its restore-keys must hold its Go version. Every other restore of
 #      ci-caches.yaml is a lookup, which must download nothing: the workflow asks only whether
 #      that exact key is already there, no step of it reads a restored entry, and a prefix hit
 #      would answer for an older key and skip the build that fills this one, leaving it empty.
@@ -368,7 +368,8 @@
 # script (split at \n alone, stripped of spaces and tabs, comments and blank lines aside; a
 # script holding any character outside printable ASCII, tab and \n is not simple), with no shell:
 # on the step and no defaults.run.shell on the job or the workflow, no container: on the job, no
-# name outside ENV_ALLOWED (test configuration go never reads; GO*, CGO_*, BASH_ENV, ENV, HOME,
+# name outside ENV_ALLOWED (test configuration go never reads, and GOPROXY and GOCACHE; any other
+# GO* name, CGO_*, BASH_ENV, ENV, HOME,
 # XDG_CONFIG_HOME and PATH are outside it) in the workflow's, job's or step's env or in front of
 # the command itself, no step of the job up to and including its own writing $GITHUB_ENV or
 # $GITHUB_PATH or running `go env -w` on a line of its script that is not a comment (each reaches

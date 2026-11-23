@@ -176,6 +176,7 @@ func heldAdmission(t *testing.T, w *workflowRuntime, repo string) {
 // nothing, and the first read after the reset, the refresher's fifth job's, is the read the refused
 // one owed: here GitHub has renamed the default branch since, and that read serves the new name.
 func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterTheReset(t *testing.T) {
+	t.Parallel()
 	var reset atomic.Int64
 	github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", 6*time.Second, &reset))
 	logs := &syncBuffer{}
@@ -228,6 +229,7 @@ func TestABootServesARecordedDefaultBranchThroughARateLimitAndReadsItAgainAfterT
 // limit, rather than holding a branch nothing recorded (holdLimited answering none held). Nothing
 // is held, so the next launch reads GitHub once more and works the repository on its answer.
 func TestALaunchWithNoDefaultBranchHeldKeepsARateLimitAsItsReadErrorAndReadsOnceMore(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var reset atomic.Int64
 	github := newLimitedGitHub(t, limitedBoth, spendsOnce("zeta/tools", 2*time.Second, &reset))
@@ -263,6 +265,7 @@ func TestALaunchWithNoDefaultBranchHeldKeepsARateLimitAsItsReadErrorAndReadsOnce
 // the Retry-After and the secondary budget. The other repository is served throughout, and once
 // GitHub answers, the read takes GitHub's branch, with no restart.
 func TestARepositoryGitHubStillRateLimitsIsServedOnItsHeldBranchUntilGitHubAnswers(t *testing.T) {
+	t.Parallel()
 	var limiting atomic.Bool
 	limiting.Store(true)
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, _ int) bool {
@@ -303,6 +306,7 @@ func TestARepositoryGitHubStillRateLimitsIsServedOnItsHeldBranchUntilGitHubAnswe
 // failure is logged naming it, and the next read asks GitHub again. GitHub said nothing about the
 // repository.
 func TestAReadAfterARateLimitThatGetsNoAnswerLeavesTheRepositoryServed(t *testing.T) {
+	t.Parallel()
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, read int) bool {
 		switch {
 		case repo != "zeta/tools":
@@ -336,6 +340,7 @@ func TestAReadAfterARateLimitThatGetsNoAnswerLeavesTheRepositoryServed(t *testin
 // GitHub's documentation waits such a limit ask GitHub nothing, and the line names the headers as
 // GitHub sent them. Read as a refusal of the repository, the answer left it unrecorded on.
 func TestABootReadsARateLimitNamedOnlyByItsMessageAsARateLimit(t *testing.T) {
+	t.Parallel()
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, read int) bool {
 		if repo != "zeta/tools" || read > 1 {
 			return false
@@ -372,6 +377,7 @@ func TestABootReadsARateLimitNamedOnlyByItsMessageAsARateLimit(t *testing.T) {
 // refresher's second job reads again; it holds no branch for it, says no hold, and refuses no boot:
 // the other repository is recorded on.
 func TestADefaultBranchRead404Or500IsKeptAsTheRepositorysReadError(t *testing.T) {
+	t.Parallel()
 	for _, status := range []int{http.StatusNotFound, http.StatusInternalServerError} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {
 			github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, _ int) bool {
@@ -407,6 +413,7 @@ func TestADefaultBranchRead404Or500IsKeptAsTheRepositorysReadError(t *testing.T)
 // spelling as configured, holds GitHub's spelling of it, and intake's subjects are case-sensitive.
 // It is kept as a read that did not answer, as any repository with nothing held is.
 func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
@@ -462,6 +469,7 @@ func TestARecordedDefaultBranchIsHeldOnlyForTheRepositoryTheRecordNames(t *testi
 // set pending, as before INFRA-4401's review, the heard set does not name zeta/tools and is left
 // pending.
 func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		refuse func(w http.ResponseWriter)
@@ -550,6 +558,7 @@ func TestABootsBackfillLeavesARecordGitHubDoesNotAnswerForAndTheRefresherFillsIt
 // a default branch a moment, never has more than repositoryReads in flight, and every repository is
 // recorded on.
 func TestTheFirstJobReadsTheRecordsRepositoriesRepositoryReadsAtATime(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	var inFlight, most atomic.Int64
 	named := map[string]string{}
@@ -648,6 +657,7 @@ func recordBeforeBoot(t *testing.T, cfg config.Config, issues ...record.Issue) {
 // naming no call left until a reset half a minute away, and the daemon answers /healthz long
 // before it, serving the repository on the recorded branch once its first job has run.
 func TestABootWithARecordedDefaultBranchComesUpAtOnceThroughARateLimit(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	recorded := cfg.Project + "-1"
 	cfg.DispatchURL = liveBootDispatch(t, cfg.Project, []map[string]any{listedAs(recorded, "done", "acme/widgets")})
@@ -678,6 +688,7 @@ func TestABootWithARecordedDefaultBranchComesUpAtOnceThroughARateLimit(t *testin
 // branch that GitHub's limit refuses again — an admission's, or the refresher's own — is answered
 // from the branch held, saying so again, where a refusal would leave the read with nothing.
 func TestAHeldDefaultBranchAnswersAReadAfterTheHoldsReset(t *testing.T) {
+	t.Parallel()
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, repo string, _ int) bool {
 		if repo != "acme/widgets" {
 			return false
@@ -715,6 +726,7 @@ func TestAHeldDefaultBranchAnswersAReadAfterTheHoldsReset(t *testing.T) {
 // the repository once more soon after the reset, where before it exited after its appauth stage
 // with GitHub's refusal.
 func TestABootThroughASpentRateLimitComesUp(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	recorded := cfg.Project + "-1"
 	cfg.DispatchURL = liveBootDispatch(t, cfg.Project, []map[string]any{listedAs(recorded, "done", "acme/widgets")})
@@ -743,6 +755,7 @@ func TestABootThroughASpentRateLimitComesUp(t *testing.T) {
 // as the refresher's and a launch's are, so the entry names it as its read error until a read
 // answers; Dispatch is asked nothing of its webhook App, since GitHub named no repository.
 func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		refuse func(w http.ResponseWriter)
@@ -785,6 +798,7 @@ func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *t
 // maximum (c-boot-mint-rate-limit case 10, the maximum shortened to 5 s): an event's preparation
 // whose read a 429 refuses, asking for 17 s, is delivered again after 17 s, not 5 s.
 func TestAnEventsDefaultBranchReadAfterTheStartStillWaitsTheRetryAfterGitHubNames(t *testing.T) {
+	// Not parallel: it writes the package variable startRateLimits (withStartRateLimits).
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 5 * time.Second })
 	github := newLimitedGitHub(t, limitedBoth, func(w http.ResponseWriter, _ string, _ int) bool {
 		w.Header().Set("Retry-After", "17")

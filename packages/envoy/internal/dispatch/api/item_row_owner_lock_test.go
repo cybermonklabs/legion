@@ -230,6 +230,7 @@ var itemRowLockTable = []itemRowLockCase{
 // The census is the other half of this: it names every writer, this proves the lock of the
 // writers it lists, and TestTheLockTablePlacesEveryWriterTheCensusNames keeps the two lists one.
 func TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites(t *testing.T) {
+	t.Parallel()
 	for _, writer := range itemRowLockTable {
 		t.Run(writer.name, func(t *testing.T) { holdWriterBehindOwnerLock(t, writer.writer(), writer.ready(t)) })
 	}

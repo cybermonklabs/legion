@@ -73,7 +73,7 @@ func TestOneGUIDWithTwoInstallationsIsOneStreamMessage(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			client := githubStream(t)
-			handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{})
+			handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 			first := withInstallation(t, row.body, 1001)
 			second := withInstallation(t, row.body, 2002)
 			if bytes.Equal(first, second) {
@@ -103,7 +103,7 @@ func TestOneGUIDWithTwoInstallationsIsOneStreamMessage(t *testing.T) {
 
 	t.Run("one body under two GUIDs", func(t *testing.T) {
 		client := githubStream(t)
-		handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{})
+		handler := GitHubHandler("s", "@legion", "", "", client, &mockRecorder{}, NewBodyBudget(DefaultBodyBudget, nil))
 		body := withInstallation(t, githubFixture(t, "push"), 1001)
 		postDelivery(t, handler, "push", sharedDelivery, body, appDelivery("5341240"))
 		postDelivery(t, handler, "push", "9a0c5d8e-cc78-11e3-8c2f-1c5a2b7d3e41", body, appDelivery("5341240"))

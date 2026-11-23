@@ -36,6 +36,7 @@ func twoExperiments(alpha, beta string) []config.Experiment {
 // the refusal names the arm's own key. An arm that names no overlay adds no value, since its
 // panes start on the role's own files.
 func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
 	// The stub refuses two shapes: any value naming both arms' overlays, which no pane is ever
@@ -83,6 +84,7 @@ func TestTheTmuxBootGateReadsOneValuePerRolePerDeclaredArm(t *testing.T) {
 // The boot read of a declared arm's overlays refuses a file no pane could read, naming the arm's
 // own key under the `experiments` key and the file, as it does for the `memory` block's own.
 func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
+	t.Parallel()
 	cfg := config.Config{
 		Project: "test",
 		Runtime: config.Runtime{Name: "tmux"},
@@ -109,6 +111,7 @@ func TestDeclaredArmOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
 // recovers the panic that read makes — without it the first half would pass over a reader that
 // never queries at all.
 func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
+	t.Parallel()
 	const tree, issue = "LEGION-1", "LEGION-2"
 	declared := config.Project{}.ExperimentsDeclared("projects.test")
 	if len(declared) != 1 || declared[0].Name != config.MemoryExperimentName {
@@ -138,6 +141,7 @@ func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 // arm throughout: the same record answers every role. An experiment that names no roles reaches
 // every role, as it did before the key existed.
 func TestAnExperimentReachesOnlyTheRolesItNames(t *testing.T) {
+	t.Parallel()
 	const tree, issue = "LEGION-1", "LEGION-2"
 	recorded := map[string][]record.Assignment{tree: {{Experiment: "cheaper-model", Variant: "open"}}}
 	declare := func(roles []claim.Role) []config.Experiment {

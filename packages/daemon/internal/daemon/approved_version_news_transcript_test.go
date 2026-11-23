@@ -27,10 +27,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
-	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The three variables that narrow a run of part two to one step, one arm or another count of
@@ -151,6 +148,7 @@ func pickSessions(step, arm, runs string) (sessionsPick, error) {
 // be repeated, and an arm the pick names is every step's one arm. Each pick is read as the runs it
 // makes, `<word> <arm>` in order, with the count of runs of each.
 func TestApprovedVersionNewsAFullRunMakesTheRetiredStepsInTheHeadArmAloneAndAPickStillMakesTheirBase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, step, arm, runs string
 		want                  []string
@@ -187,6 +185,7 @@ func TestApprovedVersionNewsAFullRunMakesTheRetiredStepsInTheHeadArmAloneAndAPic
 // in, and then the count of runs, in the lines the script reads: a full run's plan, and the plan of
 // the measurement of a4's base arm.
 func TestApprovedVersionNewsThePlanNamesEachStepItsArmsAndTheCountOfRuns(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, step, arm, runs, want string }{
 		{"a full run", "", "", "", "plan step a4 " + sessionsA4 + " head\n" +
 			"plan step off " + sessionsOff + " head base\n" +
@@ -225,7 +224,10 @@ func sessionsNoteBeforeRound(task, note string) (string, bool) {
 // a task that does not end with them, would leave a task marked as ending with them that does not,
 // and the reviewer would read no entry for its round, or one the daemon did not give.
 func TestApprovedVersionNewsAReviewersNoteGoesBeforeItsRoundsSentences(t *testing.T) {
-	resume := workflow.ResumePhaseTask(record.Issue{Key: "AS0001-1", Title: "The reader", Phase: phase.Reviewing})
+	t.Parallel()
+	// The reviewer's resume task as the engine composes it for an issue with no plan rows and no
+	// working copy (workflow.Engine.ResumeTask).
+	const resume = "Continue The reader. Issue: AS0001-1. Phase: reviewing. Resume the existing phase work."
 	const note = "The pull request makes the reader fetch one page on each call."
 	noted, ok := sessionsNoteBeforeRound(resume+reviewround.Sentences("", 1), note)
 	if want := resume + " " + note + reviewround.Sentences("", 1); !ok || noted != want {
@@ -599,6 +601,7 @@ func sessionsFixtureResult(tool, text string, isError bool) map[string]any {
 // and a publish to another topic, another way of sending, or a message missing the version or the
 // change does not.
 func TestApprovedVersionNewsCountsOnlyTheArchitectsPublishToTheHoldersRoleTopic(t *testing.T) {
+	t.Parallel()
 	topic := notify.RoleTopicPrefix + "as0001-as0001-2-reviewer"
 	other := notify.RoleTopicPrefix + "as0001-as0001-1-architect"
 	told := "Version 2 of the Verification document of AS0001-2 changes " + sessionsCheckID + ": the read now answers 200 with the page it read."
@@ -637,6 +640,7 @@ func TestApprovedVersionNewsCountsOnlyTheArchitectsPublishToTheHoldersRoleTopic(
 // changed section's heading as the news names it or as the spec writes it. The word "design"
 // alone names nothing, since the news itself is about the approved design.
 func TestApprovedVersionNewsCardNamesTheChangedSectionNotTheWordDesign(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		card string
 		want bool
@@ -664,6 +668,7 @@ func TestApprovedVersionNewsCardNamesTheChangedSectionNotTheWordDesign(t *testin
 // back as one, a review the child's architect rightly took for no approval would make a run whose
 // architect rightly waited read as a FAIL of its prompt.
 func TestApprovedVersionNewsCountsOnlyTheParentsApprovalOfVersion2(t *testing.T) {
+	t.Parallel()
 	const child, parent = "AS0001-2", "AS0001-1"
 	const reasons = "\n\nRead against the root spec at its approved version, with a fresh reviewer.\n"
 	for _, tc := range []struct {
@@ -690,6 +695,7 @@ func TestApprovedVersionNewsCountsOnlyTheParentsApprovalOfVersion2(t *testing.T)
 // result: the tool's own, or the result of eval code that called it. The clause a prompt quotes,
 // read back, a model's own text that quotes a refusal, and a result the tool answered are none.
 func TestApprovedVersionNewsReadsThePluginsRefusalOfADaemonAnswer(t *testing.T) {
+	t.Parallel()
 	const refusal = "GET /legion/v1/state answered 200 with a body the daemon API contract does not describe: " +
 		"settings.review_round_cap: Too small: expected number to be >0"
 	quoted := map[string]any{"type": "message", "message": map[string]any{"role": "assistant", "content": []any{
@@ -722,6 +728,7 @@ func TestApprovedVersionNewsReadsThePluginsRefusalOfADaemonAnswer(t *testing.T) 
 // never counts for the base arm. Only a run whose version holds the words is judged on its
 // assertion.
 func TestApprovedVersionNewsAVersionTheArchitectDidNotWriteStopsTheRunBeforeItsAssertion(t *testing.T) {
+	t.Parallel()
 	// The check's words before and after the edit, as the a4 step writes them.
 	const document, before, after = "AS0001-2's Verification document", "The read answers 200.", "The read answers 200 with the page it read."
 	written := `{"number": 2, "content": "- c-reader-pages: ` + after + `"}`
@@ -756,6 +763,7 @@ func TestApprovedVersionNewsAVersionTheArchitectDidNotWriteStopsTheRunBeforeItsA
 // daemon, makes the run HARNESS, named so: the script counts it for neither arm, and the proof ends
 // at it. A harness that stopped the step first keeps its own reason.
 func TestApprovedVersionNewsARunLinePrintsHarnessForAFaultAfterItsStep(t *testing.T) {
+	t.Parallel()
 	const stopped = "the harness failed; its log is above"
 	refused := []string{`legion-as0001-as0001-2-reviewer: "GET /legion/v1/state answered 200 with a body the daemon API contract does not describe: …"`}
 	for _, tc := range []struct {
@@ -801,6 +809,7 @@ const sessionsCleanupChildRun = "a4-the-architect-tells-the-child-reviewer base 
 // ends FAIL at its assertion, and whose later cleanup, which stands for the daemon's stop, then
 // fails the test as daemon.stop does. It runs only when the parent re-executes this binary.
 func TestApprovedVersionNewsRunWhoseCleanupFails(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(sessionsCleanupChildEnv) != "1" {
 		t.Skip(sessionsCleanupChildEnv + " is not set: this test is the child of TestApprovedVersionNewsARunLinePrintsHarnessForAFaultInItsCleanup")
 	}
@@ -817,6 +826,7 @@ func TestApprovedVersionNewsRunWhoseCleanupFails(t *testing.T) {
 // control biting. The line says the test log above names the failure, so the fault prints above
 // it. The child runs with no database, since it reads none.
 func TestApprovedVersionNewsARunLinePrintsHarnessForAFaultInItsCleanup(t *testing.T) {
+	t.Parallel()
 	child := exec.Command(os.Args[0], "-test.run", "^TestApprovedVersionNewsRunWhoseCleanupFails$", "-test.v")
 	child.Env = append(os.Environ(), sessionsCleanupChildEnv+"=1", "LEGION_TEST_PG_DSN=")
 	out, err := child.CombinedOutput()

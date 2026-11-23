@@ -36,6 +36,7 @@ import (
 // the turn ends, or that expiry ends a turn that never does, the new tree's architect launches and
 // the role resumes its session in the new tree.
 func TestACarriedChildsRoleStillInATurnStopsBeforeItsNewTreeLaunches(t *testing.T) {
+	t.Parallel()
 	const rootKey, childKey = "LEGION-207", "LEGION-208"
 	carries := []struct {
 		name string
@@ -275,7 +276,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 				and coalesce(payload->>'task', '') <> ''`, childKey).Scan(&task); err != nil {
 		t.Fatalf("read the implementer's start at generation 2: %v", err)
 	}
-	if want := "Issue: " + childKey + ". Phase: implementing. Resume the existing phase work."; !strings.Contains(task, want) {
+	if want := resumeTaskOf(t, pool, engine, childKey); !strings.Contains(task, want) {
 		t.Fatalf("the implementer's start task = %q, want it to say %q", task, want)
 	}
 	run("the carry's rows once the implementer has stopped")
@@ -308,6 +309,7 @@ func carriedChildStops(t *testing.T, rootKey, childKey string, carry func(apply 
 // the cluster. The check before a start reads each claim's view, which only Retree changes, and
 // goes on while the issue's architect launches.
 func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
+	t.Parallel()
 	sup, fakeRuntime := newOutboxSupervisor(t, "legion", t.TempDir())
 	rt := newStallingRuntime(t, fakeRuntime, false)
 	sup.deps.Runtime = rt
@@ -340,6 +342,7 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 // lingers, or none recorded, leaves no close to wait for, so the stop is bounded at the stop timeout
 // from now, as an operator's is.
 func TestACarriedRolesStopDeadlineIsItsOldRootsLingerExpiry(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 10, 13, 1, 0, 0, 0, time.UTC)
 	until := now.Add(17 * time.Minute)
 	const stop = 10 * time.Second

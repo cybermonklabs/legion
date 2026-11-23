@@ -31,7 +31,7 @@ func TestTheVerdictAppSettingLeavesOutOnlyThatAppsSuites(t *testing.T) {
 	recorded := func(verdictAppID string) []string {
 		t.Helper()
 		rec := &mockRecorder{}
-		handler := GitHubHandler("s", "@legion", "", verdictAppID, &mockPublisher{}, rec)
+		handler := GitHubHandler("s", "@legion", "", verdictAppID, &mockPublisher{}, rec, NewBodyBudget(DefaultBodyBudget, nil))
 		for i, d := range deliveries {
 			postDelivery(t, handler, "check_suite", fmt.Sprintf("d-suite-%d", i), suite(d.id, d.app, d.status, d.conclusion), nil)
 		}

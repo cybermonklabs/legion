@@ -269,16 +269,17 @@ type spentProofs struct {
 }
 
 // CheckAndSetDPoPProofUsed records a proof as spent and reports whether it already was, which the
-// bucket answers by itself: a create of a key that is there is nats.ErrKeyExists, and the key is
-// gone once the bucket's TTL has outlived the proof's window. Two listeners creating one key at
-// the same moment therefore see one success and one ErrKeyExists, as two Dispatch pods see one
-// insert and one conflict. A key whose last record is the delete marker a release leaves
-// (proofSpend.release), which only an edge listener makes, is created again over that marker:
-// the edge's bucket handles read with stream message gets (bus.WithStreamMessageReads), so its
-// create reads the marker from the stream's leader and writes against the marker's revision, and
-// of two such creates the one that loses gets the server's wrong-last-sequence error, the second
-// write's own answer; it is the same answer, that another presentation holds the proof
-// (wrongLastSequence).
+// bucket answers by itself: a create of a key that is there is a lost compare-and-swap
+// (bus.IsCASConflict), and the key is gone once the bucket's TTL has outlived the proof's window.
+// Two listeners creating one key at the same moment therefore see one success and one conflict,
+// as two Dispatch pods see one insert and one conflict. A key whose last record is the delete
+// marker a release leaves (proofSpend.release), which only an edge listener makes, is created
+// again over that marker: the edge's bucket handles read with stream message gets
+// (bus.WithStreamMessageReads), so its create reads the marker from the stream's leader and
+// writes against the marker's revision, and of two such creates the one that loses gets the
+// server's wrong-last-sequence error, the second write's own answer, 10071 on a bucket of one copy
+// and 10164 on a replicated one; it is the same answer, that another presentation holds the proof
+// (bus.IsCASConflict reads both codes).
 //
 // The key is the proof's 'jti' and normalized target URI hashed together, for the reason
 // Dispatch's store keys on the same two: jkt, nonce and htm only ever widen the key, and this
@@ -304,7 +305,7 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 	revision, _, err := bus.Bounded(ctx, func() (uint64, error) {
 		return s.kv.Create(key, nil)
 	})
-	if errors.Is(err, nats.ErrKeyExists) || wrongLastSequence(err) {
+	if bus.IsCASConflict(err) {
 		return true, nil
 	}
 	if err != nil {
@@ -317,14 +318,6 @@ func (s spentProofs) CheckAndSetDPoPProofUsed(ctx context.Context, jti, _, _, _,
 		*spend = proofSpend{kv: s.kv, key: key, revision: revision}
 	}
 	return false, nil
-}
-
-// wrongLastSequence reports whether err is the server refusing a write made against a revision
-// the key is no longer at: 10071 on a bucket of one copy, 10164 on a replicated one.
-func wrongLastSequence(err error) bool {
-	var apiErr *nats.APIError
-	return errors.As(err, &apiErr) &&
-		(apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequence || apiErr.ErrorCode == nats.JSErrCodeStreamWrongLastSequenceConstant)
 }
 
 // proofReleaseBudget bounds the delete that gives a proof back (proofSpend.release). A 503 waits

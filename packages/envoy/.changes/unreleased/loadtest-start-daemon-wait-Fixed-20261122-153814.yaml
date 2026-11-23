@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  `loadtest/cluster/cluster.sh` waits for each background process it starts, the lock's heartbeat and the cgroup sampler, until that process writes its pidfile, however long a loaded machine takes to start it. It used to refuse after 50 checks 0.1 s apart with "the heartbeat daemon did not start", although the process was still starting, and the command that started it failed: `up` after it had taken the namespace's lock, and a later command that restarts it after it had read that lock. A process that exits before it writes its pidfile now ends the wait at once, and the command names that end and the process's log.
+time: 2026-11-22T15:38:14.000000000Z
+custom:
+  Issue: loadtest-start-daemon-wait
