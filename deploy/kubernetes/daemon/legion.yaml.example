@@ -25,7 +25,8 @@ state_dir: ./state                     # the daemon's local state
 bind: 0.0.0.0
 advertise_host: legion-daemon-widgets.legion.svc
 daemon_url: http://legion-daemon-widgets.legion.svc:13370
-admission_cap: 4                       # issues running at once, roots and children alike
+admission_cap: 4                       # issues holding a slot at once, roots and children alike; an issue in
+                                       # accepting, retro or merging holds none
 pod_update_max_open_rounds: 2          # issues holding an open pod-update round at once; a round asks every
                                        # worker of its issue to push its work, let its subagents and background
                                        # jobs finish or stop them, push what they made and wait. Leave the key
@@ -211,9 +212,14 @@ projects:
 #     roles: [implementer, tester, reviewer] # hook's own and is named once in the file. on is
 #                                      # the event: work_back, a move to an earlier phase, is the
 #                                      # one event the daemon has. moves are the moves back the
-#                                      # hook counts, each written <from>-<to> of two workflow
-#                                      # phases (testing-implementing, reviewing-implementing,
-#                                      # merging-implementing and the 18 other pairs), or
+#                                      # hook counts, each written <from>-<to> of two different
+#                                      # workflow phases (testing-implementing,
+#                                      # reviewing-implementing, merging-implementing, or any
+#                                      # other of the 28 moves back a task's line can make,
+#                                      # such as testing-reviewing on a task whose review step
+#                                      # comes before its test step; a move into retro or
+#                                      # merging, or from implementing to a later step, is
+#                                      # refused, since it never fires), or
 #                                      # the word any, which a hook that leaves the key out takes
 #                                      # as well. every is a positive whole number: the hook
 #                                      # fires when the counts of the moves it counts, added up,

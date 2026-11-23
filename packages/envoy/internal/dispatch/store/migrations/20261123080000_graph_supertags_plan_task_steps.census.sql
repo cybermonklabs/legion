@@ -1,0 +1,11 @@
+-- This migration inserts the attribute node plan_task/steps and its tuples, and sets the
+-- attributes of the five block type supertag nodes (callout, ask, requirement, plan_task and
+-- check) to what 20261109051232_graph_supertags, 20261113230000_graph_supertags_check_ci_check and
+-- 20261115130000_graph_supertags_element_versions left on them, the version moved from 4 to 5.
+-- Those rows are type nodes, and nothing but a migration writes a type node: no route and no
+-- command writes one (cmd/dispatch's requireNoRouteOrCommandWritesAType), and no migration
+-- between 20261115130000 and this one writes one. So the five nodes hold what those three left,
+-- and the update rewrites only their version; and no node plan_task/steps exists for the insert
+-- to meet. It reads no row of another table. The number of existing rows this migration would
+-- refuse or rewrite is therefore 0.
+select 0

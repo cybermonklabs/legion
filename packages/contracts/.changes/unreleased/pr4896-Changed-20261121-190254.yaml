@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `dispatch_issue` and `dispatch_issue_update` say a parent may be an issue of any project, and
+  that one of another project passes on no repository, components or legion label: the `repo`
+  descriptions name the nearest ancestor's repository in the issue's own project, and the
+  components `inherit` mode takes the parent chain's attachment within the issue's own project.
+  `dispatch_issue`'s `assignee` and `dispatch_whoami` say a parent in another project passes on no
+  assignee, and the create route's description in the OpenAPI document says the same.
+time: 2026-11-21T19:02:54Z
+custom:
+    Issue: pr4896

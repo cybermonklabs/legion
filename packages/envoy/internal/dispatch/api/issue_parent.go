@@ -62,8 +62,11 @@ var parentDepthCapSQL = strconv.Itoa(parentDepthCap)
 const legionLabel = "legion"
 
 // legionManagedStatusSQL answers whether the Legion daemon owns the status of the issue keyed by
-// $1: whether that issue, or any issue on its parent chain, carries the legion label. It lives
-// here because it is one more parent-chain walk bounded by parentDepthCap, like the ones above.
+// $1: whether that issue, or any issue of its own project on its parent chain, carries the legion
+// label. The walk climbs only to a parent of the issue's project, so it ends at the first
+// ancestor of another project as at a root: the label hands an issue to its own project's daemon,
+// and a parent of another project passes on none. It lives here because it is one more
+// parent-chain walk bounded by parentDepthCap, like the ones above.
 // Labels keep the case they were typed in and are only de-duplicated case-insensitively, so
 // `Legion` is a real stored value and the match is on lower(label). The walk starts at the issue
 // itself, so one query answers both its own labels and its ancestors'. A chain deeper than the
@@ -71,22 +74,23 @@ const legionLabel = "legion"
 // runs - but a write's advice does (computeWriteAdvice, write_advice.go), and there it means the
 // issue is treated as one Legion does not run: the "still in triage" line prints. A chain that
 // deep needs a reparent that refuseParentTooDeep would have refused.
-var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as depth from issues i where i.key = $1`)
+var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, i.project_key, 0 as depth from issues i where i.key = $1`)
 
 // legionManagedStatusOfRowSQL is legionManagedStatusSQL walking from an issue row given rather
-// than read - $1 its parent_key, $2 its labels - for a write that reads its advice before it
-// writes that row (writeAdviceBefore). The walk above it, and the depth cap, are the same.
-var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, 0 as depth`)
+// than read - $1 its parent_key, $2 its labels, $3 its project - for a write that reads its
+// advice before it writes that row (writeAdviceBefore). The walk above it, and the depth cap,
+// are the same.
+var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, $3::text as project_key, 0 as depth`)
 
 // legionWalkSQL is the legion-label walk up the parent chain from the row start selects: its
-// parent_key, its labels and depth 0.
+// parent_key, its labels, its project and depth 0. Each step joins only a parent of that project.
 func legionWalkSQL(start string) string {
 	return `
 	with recursive chain as (
 		` + start + `
 		union
-		select p.parent_key, p.labels, c.depth + 1
-		from issues p join chain c on p.key = c.parent_key
+		select p.parent_key, p.labels, c.project_key, c.depth + 1
+		from issues p join chain c on p.key = c.parent_key and p.project_key = c.project_key
 		where c.depth < ` + parentDepthCapSQL + `
 	)
 	select exists (
@@ -109,10 +113,10 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 }
 
 // legionManagedStatusOfRow is legionManagedStatus for key's row as a write leaves it, parent and
-// labels, which the write has not written yet (legionManagedStatusOfRowSQL).
-func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key string, parent *string, labels []string) (bool, error) {
+// labels, which the write has not written yet, and its project (legionManagedStatusOfRowSQL).
+func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key, project string, parent *string, labels []string) (bool, error) {
 	var managed bool
-	if err := tx.QueryRow(ctx, legionManagedStatusOfRowSQL, parent, labels).Scan(&managed); err != nil {
+	if err := tx.QueryRow(ctx, legionManagedStatusOfRowSQL, parent, labels, project).Scan(&managed); err != nil {
 		return false, fmt.Errorf("resolve whether Legion manages the status of %s: %w", key, err)
 	}
 	return managed, nil
@@ -178,7 +182,7 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 
 // lockIssueDependencyWrite takes the dependency locks a blocker or parent write needs, in the one
 // order every such write takes them: the project lock of the issue's own project and of each
-// project a target of this write belongs to, each through lockProjectIssueDependencies in
+// project a target or the parent of this write belongs to, each through lockProjectIssueDependencies in
 // docs.ProjectsInLockOrder's order (ascending lock id, then key), and then the deployment-wide
 // dependency lock (lockDeploymentIssueDependencies). Every other lock of the write follows: its
 // owner locks and its rank-allocation lock, and its row locks in its write phase. Its reads are
@@ -222,8 +226,36 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project string, wh
 	return lockDeploymentIssueDependencies(ctx, tx)
 }
 
-// foreignTarget is a blocked_by target of a project other than the issue's own, and the project
-// it belongs to.
+// foreignDependencyTargets is every blocked_by target of targets and the parent ("" for none)
+// that belongs to a project other than project, the issue's own, targets first, read with no
+// lock held. caller is the one project the request's credential may write, empty for a
+// credential that names none; such a caller is refused the first target outside it, then a
+// parent outside it, before anything else is read. The lock step, a create's check before its
+// near-copy gate and a PATCH's check before a close's settlement all run it, so each refuses the
+// same key in the same words.
+func foreignDependencyTargets(ctx context.Context, q queryer, project, caller string, targets []string, parent string) ([]foreignTarget, error) {
+	foreign, err := foreignTargets(ctx, q, project, targets)
+	if err != nil {
+		return nil, err
+	}
+	if caller != "" && len(foreign) > 0 {
+		return nil, refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
+	}
+	if parent == "" {
+		return foreign, nil
+	}
+	foreignParent, err := foreignTargets(ctx, q, project, []string{parent})
+	if err != nil {
+		return nil, err
+	}
+	if caller != "" && len(foreignParent) > 0 {
+		return nil, refuseParentOutsideCallerProject(caller, parent, foreignParent[0].project)
+	}
+	return append(foreign, foreignParent...), nil
+}
+
+// foreignTarget is a blocked_by target or a parent of a project other than the issue's own, and
+// the project it belongs to.
 type foreignTarget struct{ key, project string }
 
 // foreignTargets is every target who sees belonging to a project other than project, in key
@@ -392,8 +424,8 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, who model.Actor, key, p
 	if err != nil {
 		return err
 	}
-	if parentProject != project {
-		return errorf(http.StatusBadRequest, "PARENT_INPUT", "parent must be in the same project")
+	if caller != "" && parentProject != caller {
+		return refuseParentOutsideCallerProject(caller, parent, parentProject)
 	}
 	// parent and the issues above it, parent first: the server's one ancestor walk
 	// (refs.IssueAncestors) with parent itself at its head, since a parent key already stands
@@ -414,10 +446,12 @@ func validateIssueParent(ctx context.Context, tx pgx.Tx, who model.Actor, key, p
 
 // refuseParentTooDeep refuses a parent link that would put an issue, or the deepest issue under
 // it, more than parentDepthCap links below its root: 409 PARENT_INPUT. child is the issue being
-// moved, or "" for one being created, which has nothing under it. The caller holds the project's
-// dependency lock (lockProjectIssueDependencies), which every create with a parent and every
-// reparent takes, so two writes cannot each pass alone and together pass the cap. Both walks stop
-// one link past the cap, so a chain that loops or is already too deep ends them.
+// moved, or "" for one being created, which has nothing under it. The chain may cross projects,
+// and the cap counts every link of it. The caller holds the dependency locks
+// (lockIssueDependencyWrite), which every create with a parent and every reparent takes, and the
+// deployment-wide one among them orders every such write whatever projects it names, so two
+// writes cannot each pass alone and together pass the cap. Both walks stop one link past the
+// cap, so a chain that loops or is already too deep ends them.
 func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) error {
 	var above, below int
 	if err := tx.QueryRow(ctx, `

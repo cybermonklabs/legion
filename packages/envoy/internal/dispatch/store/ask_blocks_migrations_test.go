@@ -65,10 +65,7 @@ func assertAskOwed(t *testing.T, store *Store, what, id string) askBlockState {
 // reconciliation's owed read is served by the partial index.
 func TestAnOlderBuildsWriteLeavesTheAskBlocksOwed(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
 	seedBlockIndexIssue(t, store)
 
@@ -161,8 +158,7 @@ func TestAnOlderBuildsWriteLeavesTheAskBlocksOwed(t *testing.T) {
 // it (an older build's write during the migrations), each gets an owed state row.
 func TestTheAskBlockMigrationsOweEveryStoredAsk(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeAskBlocks)
+	store := openMigratedTestStore(t, beforeAskBlocks)
 	seedBlockIndexIssue(t, store)
 	insertAsk := func(question string) string {
 		return insertReturningID(t, store, `
@@ -171,7 +167,7 @@ func TestTheAskBlockMigrationsOweEveryStoredAsk(t *testing.T) {
 	}
 	olderAsk := insertAsk("Older?")
 
-	migrateThrough(t, store, askBlockTables)
+	migrateAbove(t, store, beforeAskBlocks, askBlockTables)
 	racedAsk := insertAsk("Raced?")
 
 	nameADefaultAssigneeOnEveryProject(t, store)

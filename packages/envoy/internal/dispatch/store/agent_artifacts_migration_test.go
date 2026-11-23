@@ -13,8 +13,7 @@ import (
 // write, as it was the generated column's; and a row with no owner, or two, is refused.
 func TestMigrate0071AddressesAnAgentsArtifactsAndKeepsEveryOtherRefKey(t *testing.T) {
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, 70)
+	store := openMigratedTestStore(t, 70)
 	if _, err := store.Pool.Exec(ctx, `
 		insert into projects (key, name) values ('CORE', 'Core');
 		insert into issues (key, project_key, number, title, created_by, rank)

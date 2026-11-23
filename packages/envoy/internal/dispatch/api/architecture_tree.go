@@ -214,7 +214,7 @@ func attachTreeIssues(ctx context.Context, q queryer, seen any, project string, 
 			where i.project_key = $1 and `+access.ProjectClause("i.project_key", "$2")+`
 			union
 			select c.start, p.key, p.parent_key, c.depth + 1
-			from chain c join issues p on p.key = c.parent_key
+			from chain c join issues p on p.key = c.parent_key and p.project_key = $1
 			where c.depth < `+parentDepthCapSQL+`
 		), owner as (
 			select distinct on (c.start) c.start as key, c.key as owner_key
