@@ -1,0 +1,6 @@
+kind: Fixed
+custom:
+  Issue: pr4622
+body: |-
+  The `tree-stalled` notice no longer tells the controller that it can move an issue back a
+  phase. No operation of the controller's `legion` tool makes that move.

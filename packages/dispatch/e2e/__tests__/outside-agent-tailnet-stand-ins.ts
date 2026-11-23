@@ -116,6 +116,8 @@ export interface StandIns {
   };
   /** A P row the public TSV holds twice, first with `first`'s verdict, then with `second`'s. */
   readonly duplicate?: { readonly name: string; readonly first: string; readonly second: string };
+  /** The verdict of a P or C row of the public TSV, by name, where it is not PASS. */
+  readonly verdicts?: Readonly<Record<string, string>>;
   /** With the T5 window's scripted peer: it is shown P4's ping and reply stamped this many ms ahead
    *  of this box's clock, and the public TSV's P4 row is a PASS of that exchange. */
   readonly peerAheadMs?: number;
@@ -328,8 +330,8 @@ export function liveStandInDispatches(): number {
 }
 
 /** The stand-in Dispatch (`outside-agent-stand-in-dispatch.ts`) as a process of its own, its
- *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers,
- *  the bounded runner's synchronous stop of a sibling run included. The child binds a port of the
+ *  /healthz naming the commit `serving` says: no event loop of a test worker holds its answers.
+ *  The child binds a port of the
  *  kernel's choosing and writes it to `<state>/dispatch-port`, so no port chosen here and closed
  *  can be taken by another process before the child binds it; and it answers `/_ready` with a
  *  nonce made here, so another run's stand-in on that port can never pass for this one. It
@@ -467,8 +469,8 @@ export async function prepareStandIn(
       "",
     ].join("\n")
   );
-  // The public leg's TSV: P1-P10 PASS but where a row is given, its revocations, its verdict, and
-  // in the T5 row a T5-agent row whose last answered trade the public command stamps.
+  // The public leg's TSV: P1-P10 and C0-C7 PASS but where a row is given, its revocations, its
+  // verdict, and in the T5 row a T5-agent row whose last answered trade the public command stamps.
   const tab = "\t";
   const publicTsv = [
     ["row", "want", "got", "verdict"],
@@ -489,7 +491,7 @@ export async function prepareStandIn(
                   "PASS",
                 ],
               ]
-            : [[name, `the row ${name}`, `what ${name} read`, "PASS"]]
+            : [[name, `the row ${name}`, `what ${name} read`, standIns.verdicts?.[name] ?? "PASS"]]
     ),
     ["revocations", "every login revoked", "the revoke command exited 0", "PASS"],
     ...(standIns.publicVerdict === "absent"

@@ -552,7 +552,7 @@ func TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt(t *testing.T) 
 		if err != nil {
 			t.Fatalf("the tester's stop: %v", err)
 		}
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the tester's stop never finished after the implementer's committed")
 	}
 
@@ -614,7 +614,7 @@ func TestAResumeWaitsForAStopTransactionUnderWay(t *testing.T) {
 	var got resumed
 	select {
 	case got = <-done:
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the resume never finished after the stop committed")
 	}
 	if got.err != nil {

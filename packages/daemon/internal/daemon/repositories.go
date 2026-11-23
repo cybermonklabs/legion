@@ -1237,6 +1237,15 @@ func (w *workflowRuntime) recoveringReasons() []string {
 // an issue GitHub failed for before another issue's preparation got GitHub's answer in the same
 // pass, or an event that fell silent meanwhile. That issue is in the next pass's scope, which
 // readAnswered's request runs at once.
+//
+// An issue of the scope whose summary admission found older than an issue fact of it the daemon
+// applied while the pass read GitHub records nothing (admit's Reconcile answers its key): that
+// fact decided the issue as the daemon stood when it applied, and a child's event applied while
+// its parent had no record leaves nothing behind it but this listing. So each such key is put in
+// the set, for the repository that brought it into the scope, before the pass settles: the
+// repository is not quiet, so it is neither counted recovered nor let go, and the next pass, on
+// the refresher's backoff, lists the issue again and decides it from a listing read after that
+// fact.
 func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	w.recoveringMu.Lock()
 	repos := make(map[string]bool, len(w.recovering)+len(w.unread))
@@ -1245,7 +1254,8 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		repos[repo] = true
 	}
 	taken := make(map[string]map[string]bool, len(repos))
-	silenced := map[string]bool{}
+	// silenced is every issue taken from the set, by key, with the repository it was taken for.
+	silenced := map[string]string{}
 	waits := make(map[string]map[string]releaseWait, len(repos))
 	// marks is each listed repository's last mark as the pass takes its set (unreadMarks, zero
 	// for none), which settleRecovery compares to let a repository go only where no preparation
@@ -1254,7 +1264,9 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	for repo := range repos {
 		if keys := w.silenced[repo]; len(keys) != 0 {
 			taken[repo] = keys
-			maps.Copy(silenced, keys)
+			for key := range keys {
+				silenced[key] = repo
+			}
 			delete(w.silenced, repo)
 		}
 		if held := w.releaseWaits[repo]; len(held) != 0 {
@@ -1278,13 +1290,20 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 	// keep is asked of every summary of the listing, against every record, which is where the
 	// records that say unrecorded are read.
 	todo := map[string]bool{}
+	// scopedOn is the repository that brought each issue of the scope into it (recoveredOn).
+	scopedOn := map[string]string{}
+	var refused []string
 	if err == nil {
 		scope := recoveredOn(repos, silenced, issues)
-		err = w.reconcileListing(attempt, issues, func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool {
+		refused, err = w.reconcileListing(attempt, issues, func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool {
 			if records[summary.Key] == nil && admissionBound(intake.ListedIssue(summary)) {
 				todo[strings.ToLower(summary.ResolvedRepo)] = true
 			}
-			return scope(records, summary)
+			repo, in := scope(records, summary)
+			if in {
+				scopedOn[summary.Key] = repo
+			}
+			return in
 		}, false)
 	}
 	if err != nil {
@@ -1292,6 +1311,19 @@ func (w *workflowRuntime) recoverRepositories(ctx context.Context) {
 		w.log.Warn("workflow: the issues of the repositories to recover were not recovered from Dispatch's listing; recovering them again",
 			"repositories", names, "error", err)
 		return
+	}
+	if len(refused) != 0 {
+		kept := make(map[string]map[string]bool, len(refused))
+		for _, key := range refused {
+			repo := scopedOn[key]
+			if kept[repo] == nil {
+				kept[repo] = map[string]bool{}
+			}
+			kept[repo][key] = true
+		}
+		w.putBackSilenced(kept)
+		w.log.Info("workflow: the recovery's listing was older than an issue fact the daemon applied for these issues, so they stay in the scope of its next pass",
+			"issues", refused)
 	}
 	answered, told, dropped := w.settleRecovery(names, waits, todo, marks)
 	held := w.admission != nil && w.admission.Held()
@@ -1536,7 +1568,8 @@ func (w *workflowRuntime) putBackLetGo(dropped []letGo) {
 }
 
 // putBackSilenced returns to the silenced set the issues a pass took out of it
-// (recoverRepositories) when the pass does not finish, beside any noted since.
+// (recoverRepositories) when the pass does not finish, or that it did not finish because its
+// listing was older than an issue fact of theirs the daemon applied, beside any noted since.
 func (w *workflowRuntime) putBackSilenced(taken map[string]map[string]bool) {
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
@@ -1900,32 +1933,42 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 
 // recoveredOn is recoverRepositories' scope over listing: an issue records does not hold whose
 // repository repos names (lowercased), one of whose ancestors in listing resolves to one, or one
-// silenced names.
-func recoveredOn(repos, silenced map[string]bool, listing []dispatch.IssueSummary) func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool {
+// silenced names, which maps each such key to the repository it was silenced for. It answers too
+// the repository of repos that brings the issue in: its own, its ancestor's, or the one silenced
+// names for it or for that ancestor.
+func recoveredOn(repos map[string]bool, silenced map[string]string, listing []dispatch.IssueSummary) func(records map[string]*record.Issue, summary dispatch.IssueSummary) (string, bool) {
 	byKey := make(map[string]dispatch.IssueSummary, len(listing))
 	for _, summary := range listing {
 		byKey[summary.Key] = summary
 	}
-	return func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool {
-		if records[summary.Key] != nil {
-			return false
+	// on is the repository that brings key, resolving to resolved, into the scope, if any.
+	on := func(key, resolved string) (string, bool) {
+		if repo, noted := silenced[key]; noted {
+			return repo, true
 		}
-		if silenced[summary.Key] || repos[strings.ToLower(summary.ResolvedRepo)] {
-			return true
+		repo := strings.ToLower(resolved)
+		return repo, repos[repo]
+	}
+	return func(records map[string]*record.Issue, summary dispatch.IssueSummary) (string, bool) {
+		if records[summary.Key] != nil {
+			return "", false
+		}
+		if repo, in := on(summary.Key, summary.ResolvedRepo); in {
+			return repo, true
 		}
 		seen := map[string]bool{summary.Key: true}
 		for parent := parentKey(summary.Parent); parent != "" && !seen[parent]; {
 			above, listed := byKey[parent]
 			if !listed {
-				return false
+				return "", false
 			}
-			if silenced[parent] || repos[strings.ToLower(above.ResolvedRepo)] {
-				return true
+			if repo, in := on(parent, above.ResolvedRepo); in {
+				return repo, true
 			}
 			seen[parent] = true
 			parent = parentKey(above.Parent)
 		}
-		return false
+		return "", false
 	}
 }
 
