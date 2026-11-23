@@ -499,14 +499,17 @@ func TestTheEdgeAnswersTheOutsideVerificationURI(t *testing.T) {
 // tells its caller nothing of whether the person it names is one the broker knows. A person whose
 // machine login the broker approved and who holds a launcher credential, and a person the broker
 // has never seen, are each answered 200 with the same members, the same page and polling
-// interval, a user code of the same shape, and a lifetime that is one of the values correct for
-// that request's own moments (askedDeviceLogin.lifetimeWindow). The known person's device code
-// takes more than a second longer to be written than the unknown person's (holdDeviceCodeWrites),
-// as a write to a busy database can, so the two lifetimes may differ by the second that write
-// crossed, and each is still read off its own stored expiry and nothing else.
+// interval, a user code of the same shape, and the same lifetime: each device code's stored
+// expiry is the rig's device lifetime from a moment of its own request, truncated to a second as
+// the provider truncates it (askedDeviceLogin.storedLifetime), and each expires_in is one of the
+// values correct for that request's own moments (askedDeviceLogin.lifetimeWindow). The known
+// person's device code takes more than a second longer to be written than the unknown person's
+// (holdDeviceCodeWrites), as a write to a busy database can, so the two answers may differ by the
+// second that write crossed, and each is still read off its own stored expiry and nothing else.
 //
-// The named revert: compare the two answers' expires_in with each other, which fails whenever one
-// write crosses a second boundary and the other does not.
+// The named reverts: compare the two answers' expires_in with each other, which fails whenever one
+// write crosses a second boundary and the other does not; and store and answer a shorter lifetime
+// for the known person than for the unknown one.
 func TestTheEdgeAnswersTheSameShapeForAKnownAndAnUnknownLoginHint(t *testing.T) {
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	const known, unknown = "known@outside.example", "unknown@outside.example"
@@ -544,6 +547,10 @@ func TestTheEdgeAnswersTheSameShapeForAKnownAndAnUnknownLoginHint(t *testing.T) 
 		asked := answers[person]
 		if code, _ := asked.answer["user_code"].(string); !userCodeShape.MatchString(code) {
 			t.Errorf("the user code for %s is %q, want one of the shape %s", person, code, userCodeShape)
+		}
+		if earliest, latest := asked.storedLifetime(ciphertest.DeviceLifetime); asked.stored.Before(earliest) || asked.stored.After(latest) {
+			t.Errorf("the device code for %s is stored to expire at %s, want from %s to %s: the device lifetime %s from the send, truncated to a second, to that lifetime from the answer",
+				person, asked.stored.UTC().Format(time.RFC3339Nano), earliest.UTC().Format(time.RFC3339Nano), latest.UTC().Format(time.RFC3339Nano), ciphertest.DeviceLifetime)
 		}
 		low, high := asked.lifetimeWindow()
 		t.Logf("%s: expires_in %v, correct from %d to %d", person, asked.answer["expires_in"], low, high)
@@ -655,6 +662,14 @@ func (a askedDeviceLogin) expiresIn(t *testing.T) int64 {
 // both read off that expiry and true of a moment in the request.
 func (a askedDeviceLogin) lifetimeWindow() (low, high int64) {
 	return int64(a.stored.Sub(a.answered) / time.Second), int64(a.stored.Sub(a.sent) / time.Second)
+}
+
+// storedLifetime is the span a's stored expiry must lie in when the provider gives its device code
+// lifetime: it stores that lifetime from a moment of the request, truncated to a whole second
+// (authelia.com/provider/oauth2 handler/rfc8628/device_authorize_handler.go:55), so from the
+// lifetime after the send, truncated, to the lifetime after the answer was read.
+func (a askedDeviceLogin) storedLifetime(lifetime time.Duration) (earliest, latest time.Time) {
+	return a.sent.Add(lifetime).Truncate(time.Second), a.answered.Add(lifetime)
 }
 
 // holdDeviceCodeWrites holds each device code the provider writes in rig's schema for hold, in a
