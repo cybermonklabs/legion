@@ -362,10 +362,13 @@ describe("app-logins.ts", () => {
   const drainMs = 2000;
   const drainEnv = { APP_LOGINS_DRAIN_MS: String(drainMs) };
 
-  test("with no APP_LOGINS_DRAIN_MS the drain bound is the five-second default", async () => {
-    // A pin of the production default: before the override, every drain row ran at it and failed
-    // when it changed, and a change to it is a change of the bound a token command gets.
+  // A pin of the production default: before the override, every drain row ran at it and failed
+  // when it changed, and a change to it is a change of the bound a token command gets.
+  test("the drain bound's default is five seconds", () => {
     expect(DEFAULT_DRAIN_LIMIT_MS).toBe(5000);
+  });
+
+  test("with no APP_LOGINS_DRAIN_MS the drain bound in effect is five seconds", async () => {
     // The silent escaped descendant of the row below, run with no override: the run ends once five
     // seconds have run and before seven and a half, written as numbers rather than read from the
     // constant, so a run whose bound in effect is not five seconds (1.5 s or 15 s, say) fails here
