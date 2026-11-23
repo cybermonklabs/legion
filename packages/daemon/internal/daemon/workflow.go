@@ -1024,7 +1024,7 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // looks once the connection reports itself closed, and Close does not clear what the connection
 // last recorded.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision), natsauth.LogEvents(w.log), natsauth.ReconnectForever())
 	if err != nil {
 		return fmt.Errorf("connect Envoy NATS: %w", err)
 	}

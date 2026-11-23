@@ -21668,6 +21668,55 @@ console.log(JSON.stringify(args));
     });
   }, 30_000);
 
+  // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
+  // of connections lists: the image's build-commit stamp, else a packed build's release version,
+  // else none.
+  test("the connection name the server sees ends with the plugin's build", async () => {
+    await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
+      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      const names: string[] = [];
+      setNatsConnectForTests(
+        (async (options: ConnectionOptions) => {
+          names.push(options.name ?? "");
+          throw NatsError.errorForCode(ErrorCode.ConnectionRefused);
+        }) as unknown as typeof realConnect,
+        NATS_DIAL_PLAN
+      );
+      const stampDirectory = mkdtempSync(join(tmpdir(), "pi-envoy-build-"));
+      try {
+        // An instance of its own (the query), as each row of this file loads one: the build source
+        // it is given is that instance's module state.
+        const entry = await import("./envoy.ts?connection-build");
+        const commit = "0123456789abcdef0123456789abcdef01234567";
+        const rows = [
+          { stamp: `${commit}\n`, packed: true, want: `omp-ses_build legion@${commit}` },
+          { stamp: undefined, packed: true, want: `omp-ses_build @sjawhar/pi-envoy@${packageVersion}` },
+          { stamp: undefined, packed: false, want: "omp-ses_build" },
+        ];
+        for (const [index, row] of rows.entries()) {
+          const stamp = join(stampDirectory, `build-commit-${index}`);
+          if (row.stamp !== undefined) writeFileSync(stamp, row.stamp);
+          entry.setBuildSourceForTests({ stamp, packed: row.packed });
+          const context: SessionContext = {
+            cwd: "/tmp/envoy-omp-test",
+            sessionManager: { ...topLevelSession, getSessionId: () => "ses_build" },
+            setInterval: () => {},
+            ui: sessionContext().ui,
+          };
+          const fixture = createPi();
+          entry.default(fixture.pi);
+          names.length = 0;
+          await fixture.handlers.get("session_start")?.({}, context);
+          await fixture.handlers.get("session_shutdown")?.({}, context);
+          expect(names[0]).toBe(row.want);
+        }
+      } finally {
+        rmSync(stampDirectory, { recursive: true, force: true });
+        setNatsConnectForTests(natsStandInConnect);
+      }
+    });
+  }, 30_000);
+
   for (const { row, error, shown, withheld } of [
     {
       row: "names the NATS failure in the refused registration and in every part of the notice",
