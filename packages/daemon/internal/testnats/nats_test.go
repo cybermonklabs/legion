@@ -277,9 +277,10 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 		durables = append(durables, jetstream.ConsumerConfig{Durable: name, AckPolicy: jetstream.AckExplicitPolicy, DeliverPolicy: jetstream.DeliverNewPolicy})
 	}
 	var streams, plant string
+	var held *server
 	t.Cleanup(func() {
 		if plant != "" {
-			onTheServersHost(t, "rm", "-rf", plant)
+			onServersHost(t, held, "rm", "-rf", plant)
 		}
 	})
 	leave := func(t *testing.T) {
@@ -290,7 +291,7 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 				t.Fatalf("create durable %s: %v", durable.Durable, err)
 			}
 		}
-		streams = streamsDirectory(t)
+		streams, held = streamsDirectory(t), heldBy(t)
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		plant = filepath.Join(streams, "."+config.Name)
 		onTheServersHost(t, "mkdir", "-p", filepath.Join(plant, "still-being-removed"))
@@ -306,6 +307,12 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 			t.Fatal("no earlier test left durables and a held removal of their stream (-run filtered out both subtests that lay them), so this subtest would prove nothing")
 		}
 		js := JetStream(t)
+		// The pool hands a test the server freed last, and this package's tests run one at a
+		// time, so this is the server the earlier subtest held; a run that hands it another fails
+		// here by name rather than on a store directory that server never had.
+		if heldBy(t) != held {
+			t.Fatal("this subtest holds another NATS server of the pool than the one the earlier subtest left its durables on, so it would prove nothing")
+		}
 		onTheServersHost(t, "test", "-d", filepath.Join(streams, config.Name))
 		stream := CreateStream(t, js, config)
 		published, err := js.Publish(t.Context(), "left.one", []byte("x"))
@@ -329,7 +336,7 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// streamsDirectory is the directory the shared server keeps its streams in: its JetStream store,
+// streamsDirectory is the directory the server t holds keeps its streams in: its JetStream store,
 // as its monitoring endpoint reports it, and in that the global account's directory, $G, which
 // holds every stream of a server with no accounts configured. The row that reads it acts on that
 // path where the server runs, so an external server's store must be on this host, writable by the
@@ -337,6 +344,7 @@ func TestADurableOfAnEarlierTestDoesNotReachTheNextTest(t *testing.T) {
 // server resolves from its own working directory, fails t by name.
 func streamsDirectory(t *testing.T) string {
 	t.Helper()
+	monitorURL := heldServer(t).monitor
 	response, err := monitorClient.Get(monitorURL + "/jsz")
 	if err != nil {
 		t.Fatalf("read the NATS server's JetStream configuration: %v", err)
@@ -362,19 +370,36 @@ func streamsDirectory(t *testing.T) string {
 	return filepath.Join(jsz.Config.StoreDir, "$G", "streams")
 }
 
-// onTheServersHost runs a command where the shared server keeps its store: in the package's
-// container, or on this host for an external server, which a host with no Docker runs itself
-// (the package comment). It fails t when the command fails, with what the command printed.
+// heldServer is the NATS server of the pool t holds, and fails t when it holds none.
+func heldServer(t *testing.T) *server {
+	t.Helper()
+	s := heldBy(t)
+	if s == nil {
+		t.Fatalf("testnats: %s holds no NATS server of the package: take one through URL or JetStream first", t.Name())
+	}
+	return s
+}
+
+// onTheServersHost runs a command where the server t holds keeps its store (onServersHost).
 func onTheServersHost(t *testing.T, name string, args ...string) {
 	t.Helper()
+	onServersHost(t, heldServer(t), name, args...)
+}
+
+// onServersHost runs a command where s keeps its store: in its container, or on this host for an
+// external server, which a host with no Docker runs itself (the package comment). It fails t when
+// the command fails, with what the command printed.
+func onServersHost(t *testing.T, s *server, name string, args ...string) {
+	t.Helper()
 	command := strings.Join(append([]string{name}, args...), " ")
-	if shared == nil {
+	container := s.container
+	if container == nil {
 		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 			t.Fatalf("%s on this host, where the external NATS server keeps its store: %v: %s", command, err, out)
 		}
 		return
 	}
-	code, reader, err := shared.Exec(context.Background(), append([]string{name}, args...), tcexec.Multiplexed())
+	code, reader, err := container.Exec(context.Background(), append([]string{name}, args...), tcexec.Multiplexed())
 	if err != nil {
 		t.Fatalf("%s in the NATS container: %v", command, err)
 	}
