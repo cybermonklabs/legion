@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -993,9 +994,7 @@ func uploadSearchDocument(t *testing.T, handler http.Handler, issueKey, name, bo
 // then yields that one document, and every other document the query matches by meaning is
 // lost. A comment, whose arm is its own, stands beside them as the rest of the page.
 func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
-	// Not parallel: among this package's parallel tests on CI's runner the meaning search missed
-	// the short document (job 137391716843), with nothing degraded; why the parallel run loses it
-	// is not yet known, so it runs alone as it did before.
+	t.Parallel()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "CROWD", "Crowded windows", "Body text.")
@@ -1018,8 +1017,16 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 		t.Fatalf("the long document holds %d windows, want more than the %d items an arm keeps", len(windows), contracts.SearchKindDepth)
 	}
 	// The long document's windows are the nearest rows of the document arm, so at a candidate
-	// depth of SearchKindDepth they are all of it.
-	embedWindowsAs(t, database, embedder, "document_block", long.ID, angledVector(0.9, 2))
+	// depth of SearchKindDepth they are all of it. Each window has a vector of its own, a hair
+	// apart from the next and every one nearer the query than the short document's: the arm's
+	// index walk (HNSW) does not promise its LIMIT among many identical vectors, so one vector for
+	// every window could leave the short document unreached for a reason of the index rather than
+	// of the arm's candidate depth, as it did among the package's parallel tests in envoy-go-race-api
+	// job 137391716843 (INFRA-1588's architect's reading of that run).
+	// The lowest of them, 0.9 - 0.0001 x the window count, stays far above the short document's 0.5.
+	for index, id := range slices.Sorted(maps.Keys(windows)) {
+		embedder.vectors[windows[id]] = angledVector(0.9-float64(index)*0.0001, 10+index)
+	}
 	embedWindowsAs(t, database, embedder, "document_block", short.ID, angledVector(0.5, 3))
 	embedWindowsAs(t, database, embedder, "comment_block", "comment/"+comment.ID, angledVector(0.5, 4))
 	processAllPending(t, database, embedder)

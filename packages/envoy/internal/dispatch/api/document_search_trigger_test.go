@@ -30,7 +30,12 @@ const (
 
 func newDocumentSearchTriggerFixture(t *testing.T) documentSearchTriggerFixture {
 	t.Helper()
-	handler, database := newTestHandlerWithStore(t)
+	// settle: an hour, so the document's room does not settle between a test's own writes of
+	// artifact_versions: a settlement then versions the room's text as one more number, which is
+	// none of these tests' subject. At the test server's default of 20 ms, under load one did,
+	// and document_search named version 5 where the test wrote 4 (envoy-go-race-api job
+	// 137442425018).
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TRIG", "Range survey", "The herd crosses in spring.")
 	document := uploadIssueDocument(t, handler, issue.Key, "field-notes.md", "# Field notes\n\nQuagga sightings in the north.\n")
 	uploadIssueDocument(t, handler, issue.Key, "field-notes.md", "# Field notes\n\nZebra sightings in the north.\n")

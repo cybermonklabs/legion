@@ -22,8 +22,9 @@ import (
 // each failure names the move it came from.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
 	// Not parallel: it reads the issue right after the move and wants the sequence the move
-	// committed, and among this package's parallel tests on CI's runner a later event of the issue
-	// landed before that read (it answered 20 for a close at 19, job 137359069610).
+	// committed, so it assumes no later event of its own issue lands between the move and that
+	// read. Among this package's parallel tests on CI's runner one did, and the read answered 20
+	// for a close at 19 (job 137359069610).
 	f := newCloseAsksFixture(t)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",
