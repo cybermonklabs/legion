@@ -101,7 +101,7 @@ func TestAWebhookDeliveryStillInProcessIsNotLoggedAsAFailedPublish(t *testing.T)
 		handler func(Publisher) http.Handler
 		request func() *http.Request
 	}{
-		{"github", func(p Publisher) http.Handler { return GitHubHandler(secret, "@legion", "", p, &mockRecorder{}) }, func() *http.Request {
+		{"github", func(p Publisher) http.Handler { return GitHubHandler(secret, "@legion", "", "", p, &mockRecorder{}) }, func() *http.Request {
 			req := httptest.NewRequest(http.MethodPost, "/webhook/github", bytes.NewReader(push))
 			req.Header.Set("X-GitHub-Delivery", "d-in-process")
 			req.Header.Set("X-GitHub-Event", "push")
