@@ -12,14 +12,26 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
+// TestMain runs the package's tests through testdb.Main, which drops the database testDatabaseURL
+// makes for them.
+func TestMain(m *testing.M) { os.Exit(testdb.Main(m)) }
+
+// testDatabaseURL is this test binary's own database on the BROKER_TEST_DATABASE_URL server
+// (testdb.ProcessDatabaseOn), skipping t when the variable is unset. Every migration takes the
+// broker's advisory lock, which Postgres holds for the whole database, so the tests here migrate in
+// a database of their own rather than in the one the variable names, where the migrations of every
+// other package's tests and of every other run on the server would hold it too
+// (storetest's package comment).
 func testDatabaseURL(t *testing.T) string {
+	t.Helper()
 	url := os.Getenv("BROKER_TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("BROKER_TEST_DATABASE_URL must be set to run Postgres store tests")
 	}
-	return url
+	return testdb.ProcessDatabaseOn(t, url, "broker_store_test_binary")
 }
 
 func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {
