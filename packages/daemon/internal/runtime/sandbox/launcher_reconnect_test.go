@@ -231,20 +231,6 @@ func awaitLaunch(t *testing.T, result <-chan launched) launched {
 	}
 }
 
-// nextGeneration is spec at generation, with that generation's boot token, as the supervisor builds
-// its next try.
-func nextGeneration(spec runtime.SpawnSpec, generation uint64) runtime.SpawnSpec {
-	spec.Generation, spec.BootToken = generation, fmt.Sprintf("boot-%s-g%d", spec.Claim, generation)
-	return spec
-}
-
-// launcherOf is the session the runtime holds for token's launcher, or nil.
-func launcherOf(g *rig, token claim.Token) *launcherSession {
-	g.r.launchers.mu.Lock()
-	defer g.r.launchers.mu.Unlock()
-	return g.r.launchers.sessions[token]
-}
-
 // dropLauncher ends the connection of token's launcher as the daemon sees a dropped connection end:
 // the session closes, its pending requests fail, and no launcher of token is connected until one
 // says hello again.
@@ -259,10 +245,9 @@ func dropLauncher(t *testing.T, g *rig, token claim.Token) {
 
 // redialedLauncher is one connection of a role's launcher that said hello through the runtime's
 // own LauncherResolver, as a launcher does on every dial. It answers a Start and a Stop as the
-// rig's fake launcher does (connectRunning) — one generation at a time, a stop of another
-// generation refused — unless it hangs up, when it ends its connection on the first Start it reads
-// without answering it. got is every command it read, so a row tells this connection's commands
-// from those of any other connection of the same role.
+// rig's fake launcher does (answerGeneration) unless it hangs up, when it ends its connection on
+// the first Start it reads without answering it. got is every command it read, so a row tells this
+// connection's commands from those of any other connection of the same role.
 type redialedLauncher struct {
 	mu  sync.Mutex
 	got []shimwire.Frame
@@ -271,9 +256,9 @@ type redialedLauncher struct {
 }
 
 // redial says hello for token's launcher from its pod as the tracker holds it, with the token of
-// the role's Secret, through the runtime's resolver, and serves the accepted connection as a
-// redialedLauncher whose first state reports running (0 for no child). It fails the test when the
-// resolver refuses the hello.
+// the role's Secret (rigLauncherHello), through the runtime's resolver, and serves the accepted
+// connection as a redialedLauncher whose first state reports running (0 for no child). It fails
+// the test when the resolver refuses the hello.
 func redial(t *testing.T, g *rig, token claim.Token, running uint64, hangUp bool) *redialedLauncher {
 	t.Helper()
 	_, role, ok := token.Cut()
@@ -281,14 +266,11 @@ func redial(t *testing.T, g *rig, token claim.Token, running uint64, hangUp bool
 		t.Fatalf("%s names no role", token)
 	}
 	name := SandboxName(token)
-	pod, secret := g.pod(name), g.secret(roleSecretName(name, role))
-	if pod == nil || secret == nil {
+	pod := g.pod(name)
+	if pod == nil || g.secret(roleSecretName(name, role)) == nil {
 		t.Fatalf("%s has no pod or no launcher Secret to say hello from", token)
 	}
-	handler, _, reason := g.r.LauncherResolver()(shimwire.LauncherHello{
-		Token: string(secret.Data[LauncherTokenFile]), Sandbox: name, Role: string(role), PodUID: string(pod.UID),
-		LauncherID: "redialed-" + string(token),
-	})
+	handler, _, reason := g.r.LauncherResolver()(rigLauncherHello(g, name, string(pod.UID), role))
 	if handler == nil {
 		t.Fatalf("the resolver refused %s's launcher saying hello again from pod %s: %s", token, pod.UID, reason)
 	}
@@ -302,11 +284,7 @@ func redial(t *testing.T, g *rig, token claim.Token, running uint64, hangUp bool
 
 func (l *redialedLauncher) serve(conn net.Conn, running uint64, hangUp bool) {
 	writer := shimwire.NewWriter(conn)
-	first := shimwire.LauncherState{}
-	if running != 0 {
-		first.Child = &shimwire.LauncherChild{Generation: running, PID: 42}
-	}
-	if writer.WriteFrame(first) != nil {
+	if writer.WriteFrame(launcherFirstState(running)) != nil {
 		return
 	}
 	frames := shimwire.NewReader(conn)
@@ -322,33 +300,14 @@ func (l *redialedLauncher) serve(conn net.Conn, running uint64, hangUp bool) {
 		l.mu.Lock()
 		l.got = append(l.got, frame)
 		l.mu.Unlock()
-		switch command := frame.(type) {
-		case shimwire.LauncherStart:
-			if hangUp {
-				_ = conn.Close()
-				close(l.hungUp)
-				return
-			}
-			if running != 0 {
-				_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, Error: fmt.Sprintf("generation %d is still running", running)})
-				continue
-			}
-			running = command.Generation
-			_ = writer.WriteFrame(shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation})
-			_ = writer.WriteFrame(shimwire.LauncherState{Child: &shimwire.LauncherChild{Generation: command.Generation, PID: 42}})
-		case shimwire.LauncherStop:
-			if running != 0 && running != command.Generation {
-				_ = writer.WriteFrame(shimwire.LauncherStopResult{ID: command.ID, Error: fmt.Sprintf("generation %d is running, not %d", running, command.Generation)})
-				continue
-			}
-			stopped := running
-			running = 0
-			_ = writer.WriteFrame(shimwire.LauncherStopResult{ID: command.ID, OK: true})
-			state := shimwire.LauncherState{}
-			if stopped != 0 {
-				state.LastExit = &shimwire.LauncherExit{Generation: stopped, Code: 143, Signal: "terminated"}
-			}
-			_ = writer.WriteFrame(state)
+		if _, start := frame.(shimwire.LauncherStart); start && hangUp {
+			_ = conn.Close()
+			close(l.hungUp)
+			return
+		}
+		answers, _ := answerGeneration(frame, &running)
+		for _, answer := range answers {
+			_ = writer.WriteFrame(answer)
 		}
 	}
 }

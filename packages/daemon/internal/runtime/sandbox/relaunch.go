@@ -1212,9 +1212,12 @@ func (r *Runtime) waitedOut(ctx context.Context, s *sandbox) string {
 }
 
 // writeLauncherSecrets makes, for each launcher role of the pod (l.roles), a role-private Secret
-// holding a fresh launcher token. It runs only before a new pod starts, so every pod's launchers
-// authenticate with tokens no earlier pod held; a role's launch credentials travel in its
-// launcher's start command instead (launcherCommand). The Secret also carries the role's GitHub
+// holding a fresh launcher token. It runs only before a pod a launch makes starts, so the launchers
+// of such a pod authenticate with tokens no pod of an earlier launch held. A pod Agent Sandbox
+// makes again outside a launch, after an eviction or a node loss, projects the same Secrets, so
+// its launchers hold the tokens of the pod it replaced, which is gone; it is bound to them at its
+// launchers' first hello (bindAtHello). A role's launch credentials travel in its launcher's start
+// command instead (launcherCommand). The Secret also carries the role's GitHub
 // credential, its gh bundle (gitHubBundles): each directory of that role's own bundle as its
 // hosts.yml and config.yml (GitHubHostsKey, GitHubConfigKey), the bundle's configured renames
 // (GitHubPairsKey, empty where the project has none that resolve) and the default owner

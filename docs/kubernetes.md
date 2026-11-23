@@ -8669,12 +8669,14 @@ a hello meanwhile is refused without a request, so three hundred launchers whose
 A launch into a kept pod reads its roles' Secrets to check their binding, and holds each bound one, so its launcher is not refused for an earlier failed read.
 A pod that Agent Sandbox made again outside a launch, after an eviction or a node loss, projects the Secrets that a launch bound to the pod before it.
 Its launchers hold their roles' current tokens and name a pod that no Secret binds.
-The first such hello from the Sandbox's current pod, one that is neither being deleted nor ended, binds each role's Secret of the pod to that pod, and the launcher is accepted (`bindAtHello`, `internal/runtime/sandbox/launcher_auth.go`).
+The first such hello binds each role's Secret of the pod to that pod, and the launcher is accepted (`bindAtHello`, `internal/runtime/sandbox/launcher_auth.go`), when the pod is the Sandbox's current pod, the Sandbox is not Suspended, and the pod is neither being deleted nor ended.
 The daemon logs `sandbox runtime: bound the role launchers of a pod made outside a launch to that pod`.
 It writes each Secret once for the pod, however many of its launchers say hello, and the roles' next launches keep the pod.
-The hello's token is checked before anything is written.
-While a launch, a suspension or a release holds the pod's launch turn, the hello binds nothing and is refused at once, and the launcher's next hello finds what that left.
-A binding that fails is logged (`sandbox runtime: binding the role launchers of a pod made outside a launch failed; …`) and is not tried again for that pod's Secrets for 10 s.
+Before it writes anything, it reads the hello's role Secret again and checks the hello's token against the token that Secret holds now, not against the copy the daemon keeps.
+Each role and token gets its own binding, and a hello never waits on a binding that another token started.
+While a launch, a suspension, a release or another binding holds the pod's launch turn, the hello binds nothing and is refused at once, and the launcher's next hello finds what that left.
+A binding holds the turn for at most 30 s: at that deadline its requests are cancelled and the turn is given back, and each Secret it bound by then stays bound.
+A binding that fails is logged (`sandbox runtime: binding the role launchers of a pod made outside a launch failed; …`) and is not tried again for that pod for 10 s.
 The daemon reads each Secret by name because its RBAC grants `get` and never `list` on Secrets (next section).
 
 ### RBAC the Go daemon needs
