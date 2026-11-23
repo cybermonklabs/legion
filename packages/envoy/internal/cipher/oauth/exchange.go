@@ -30,7 +30,7 @@ import (
 // the one place the broker and its callers share.
 const tokenTypeAccessToken = oauthwire.SubjectTokenTypeAccessToken
 
-// The form parameter of an exchange request the broker reads itself; the library reads the rest
+// The form parameters of an exchange request the broker reads itself; the library reads the rest
 // (RFC 8693 Section 2.1). The session name a caller asks to write under is oauthwire.FormSession,
 // whether the trade wants a launcher credential is oauthwire.FormLauncherCredential, and the
 // projects the token names are oauthwire.FormProjects, the broker's own three parameters, which
@@ -39,6 +39,9 @@ const (
 	// FormSubjectTokenType is the request's subject_token_type, which says which kind of
 	// identity the caller is presenting and so which decision the exchange makes.
 	FormSubjectTokenType = "subject_token_type"
+	// FormSubjectToken is the request's subject_token, which the broker reads itself only to
+	// judge, with no key, a subject token the library stopped short of (unjudgedSubject).
+	FormSubjectToken = "subject_token"
 )
 
 // The extra claims an exchanged access token carries, which are what an introspection answers
@@ -91,16 +94,25 @@ var subjectTokenAlgorithms = []jose.SignatureAlgorithm{
 
 // The lifetime tolerance each JWT subject token type allows, which the library applies to both
 // ends: a token whose iat is older than the window, and one whose exp is further ahead than it,
-// are refused.
+// are refused. Each is also the broker's window for the tokens of its type: the longest life from
+// now the broker admits for one, which it holds every token to before it reads any key
+// (refusedForLifetime), so a token that never expires is refused whether or not its issuer's key
+// set can be read.
 const (
-	// kubernetesTolerance admits a projected service-account token's whole life. Kubernetes
-	// bounds one at 24 hours, so a shorter window would refuse a freshly minted token outright
-	// for expiring too far in the future. It is also what a pod-session registration is kept for
-	// past its last write (oauthstore.PodSessionRetention), since a registration must outlive
-	// every token the pod it was written for can still present.
+	// kubernetesTolerance is the broker's own window for a cluster's tokens: the longest life
+	// from now a cluster token presented to the exchange may have, and the oldest iat it may
+	// carry. It is no limit Kubernetes sets: a pod asks for a projected token's lifetime
+	// (expirationSeconds), the kubelet rotates the token once 80 percent of it has passed or it
+	// is 24 hours old (k8s.io/api core/v1 ServiceAccountTokenProjection), and a cluster's own cap
+	// on that lifetime is named by no setting of the broker's. Every cluster token this deployment's
+	// pods send to the exchange is projected for 3,600 seconds (the daemon's
+	// exchangeTokenExpirySeconds, packages/daemon/internal/runtime/sandbox/manifest.go), well
+	// inside it. It is also what a pod-session registration is kept for past its last write
+	// (oauthstore.PodSessionRetention), since a registration must outlive every token the pod
+	// it was written for can still present.
 	kubernetesTolerance = 24 * time.Hour
-	// githubTolerance admits a workflow run's token, which lives minutes, while bounding how
-	// stale an iat the exchange accepts.
+	// githubTolerance admits a workflow run's token, which lives at most an hour, while bounding
+	// how stale an iat the exchange accepts.
 	githubTolerance = time.Hour
 	// googleTolerance admits a machine's Google identity token, which Google mints for an hour
 	// and which its metadata server hands out again until it is nearly spent, so the window has
@@ -119,7 +131,7 @@ type IssuerConfig struct {
 	// for GitHub's and Google's issuers.
 	Name string
 	// Issuer is the `iss` the subject token must carry, which the library compares exactly for
-	// GitHub and Google and the exchange chooses a cluster's keys by (kubernetesKeyFunc).
+	// GitHub and Google and the exchange chooses a cluster's keys by (tokenJudge.before).
 	Issuer string
 	// Audience is what the subject token's `aud` must carry. The library checks a subject
 	// token's issuer and its expiry and never its audience, so the exchange checks this itself:
@@ -160,16 +172,20 @@ type ExchangeConfig struct {
 	// Kubernetes is the cluster issuers a pod's projected service-account token may come from,
 	// each with its own name and keys and all of them for one audience. One token type takes
 	// them all: the exchange reads a token's `iss` without trusting it and checks the token
-	// against that issuer's keys alone (kubernetesKeyFunc), as the broker's other routes check a
+	// against that issuer's keys alone (tokenJudge.before), as the broker's other routes check a
 	// cluster's token (oidc.IssuerSet.VerifyClaims). A token whose `iss` names none of them is
 	// refused invalid_request, the answer the library gives a token of another issuer, and a
 	// token of an issuer whose keys cannot be read for want of a read of the issuer is answered
 	// 503 OIDC_ISSUER_UNAVAILABLE (issuerUnavailableRefusal).
 	Kubernetes []IssuerConfig
-	// GitHub is the issuer a continuous-integration workflow run's token comes from.
+	// GitHub is the issuer a continuous-integration workflow run's token comes from. A token
+	// whose key cannot be read for want of a read of its key set is answered 503
+	// OIDC_ISSUER_UNAVAILABLE (tokenJudge.validate), as a cluster's is.
 	GitHub IssuerConfig
 	// Google is the issuer a machine's identity token comes from, Google's own in a deployment
-	// and a stand-in for it on a dev stack.
+	// and a stand-in for it on a dev stack. A person's token and a machine's actor token are
+	// checked against its keys too, and each is answered 503 OIDC_ISSUER_UNAVAILABLE where its
+	// key cannot be read for want of a read of the key set (tokenJudge.validate).
 	Google IssuerConfig
 	// MachineCredentials creates or re-uses the launcher credential a machine holds, in the
 	// transaction the exchange carries (oauthstore.TxFrom), and answers its id. Every secrets
@@ -301,25 +317,19 @@ func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 	return names
 }
 
-// tokenTypes are the token types the library registers for the exchange, keyed by the exact
-// string a request names them with.
-//
-// The access token is always registered: it is the only kind this provider issues, so it is both
-// the default requested type and the type a dev box session presents its machine access token
-// under. Each JWT type is registered only where its issuer is configured, so a caller presenting
-// an issuer the broker was never told about is refused by the library rather than by a half-built
-// handler.
-func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
-	types := map[string]oauth2.RFC8693TokenType{
-		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
-	}
+// judges are the JWT token types the library registers for the exchange, each with the judgement
+// of its tokens (tokenJudge), keyed by the exact string a request names the type with. Each type
+// is registered only where its issuer is configured, so a caller presenting an issuer the broker
+// was never told about is refused by the library rather than by a half-built handler.
+func (c ExchangeConfig) judges() map[string]*tokenJudge {
+	judges := map[string]*tokenJudge{}
 	if len(c.Kubernetes) > 0 {
-		types[oauthwire.SubjectTokenTypeKubernetes] = &rfc8693.JWTType{
+		judges[oauthwire.SubjectTokenTypeKubernetes] = newTokenJudge(&rfc8693.JWTType{
 			Name: oauthwire.SubjectTokenTypeKubernetes,
 			// No issuer for the library to compare: the type takes the tokens of several
-			// clusters, and kubernetesKeyFunc refuses a token whose `iss` names none of them
-			// before it answers any key, so a token's signature is checked against the keys of
-			// the issuer its `iss` names and no other.
+			// clusters, and its judge refuses a token whose `iss` names none of them before it
+			// reads any key, so a token's signature is checked against the keys of the issuer
+			// its `iss` names and no other.
 			JWTValidationConfig: rfc8693.JWTValidationConfig{
 				// A pod's projected token is a standing credential its kubelet refreshes, and a
 				// long-running role exchanges many times with the one it holds, so single use
@@ -327,12 +337,11 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// pod is the pod binding the decision requires.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: kubernetesTolerance,
-				ValidateFunc:               kubernetesKeyFunc(c.Kubernetes),
 			},
-		}
+		}, c.Kubernetes, nil)
 	}
 	if c.GitHub.configured() {
-		types[oauthwire.SubjectTokenTypeGitHub] = &rfc8693.JWTType{
+		judges[oauthwire.SubjectTokenTypeGitHub] = newTokenJudge(&rfc8693.JWTType{
 			Name:   oauthwire.SubjectTokenTypeGitHub,
 			Issuer: c.GitHub.Issuer,
 			JWTValidationConfig: rfc8693.JWTValidationConfig{
@@ -340,12 +349,11 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// token needs and a leaked one cannot be replayed.
 				ValidateJTI:                true,
 				JWTLifetimeToleranceWindow: githubTolerance,
-				ValidateFunc:               keyFunc(c.GitHub.Keys),
 			},
-		}
+		}, nil, c.GitHub.Keys)
 	}
 	if c.Google.configured() {
-		types[oauthwire.SubjectTokenTypeGoogle] = &rfc8693.JWTType{
+		judges[oauthwire.SubjectTokenTypeGoogle] = newTokenJudge(&rfc8693.JWTType{
 			Name:   oauthwire.SubjectTokenTypeGoogle,
 			Issuer: c.Google.Issuer,
 			JWTValidationConfig: rfc8693.JWTValidationConfig{
@@ -356,9 +364,8 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 				// copied it is the DPoP key the minted token is bound to.
 				ValidateJTI:                false,
 				JWTLifetimeToleranceWindow: googleTolerance,
-				ValidateFunc:               keyFunc(c.Google.Keys),
 			},
-		}
+		}, nil, c.Google.Keys)
 	}
 	if c.PersonAudience != "" {
 		// A person's own token and the machine's actor token come from the one issuer and are
@@ -368,7 +375,7 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 		// subject with no actor is refused by the decision, and the machine type is an actor
 		// type the exchange client may present and no subject type at all.
 		for _, name := range []string{oauthwire.SubjectTokenTypePerson, oauthwire.ActorTokenTypeMachine} {
-			types[name] = &rfc8693.JWTType{
+			judges[name] = newTokenJudge(&rfc8693.JWTType{
 				Name:   name,
 				Issuer: c.Google.Issuer,
 				JWTValidationConfig: rfc8693.JWTValidationConfig{
@@ -379,10 +386,25 @@ func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 					// being spendable is the box key the sign-in is recorded against.
 					ValidateJTI:                false,
 					JWTLifetimeToleranceWindow: googleTolerance,
-					ValidateFunc:               keyFunc(c.Google.Keys),
 				},
-			}
+			}, nil, c.Google.Keys)
 		}
+	}
+	return judges
+}
+
+// tokenTypes are the token types the library registers for the exchange, keyed by the exact
+// string a request names them with: the JWT types of judges, and the access token.
+//
+// The access token is always registered: it is the only kind this provider issues, so it is both
+// the default requested type and the type a dev box session presents its machine access token
+// under.
+func tokenTypes(judges map[string]*tokenJudge) map[string]oauth2.RFC8693TokenType {
+	types := map[string]oauth2.RFC8693TokenType{
+		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
+	}
+	for name, judge := range judges {
+		types[name] = judge.typ
 	}
 	return types
 }
@@ -402,8 +424,8 @@ func (c ExchangeConfig) kubernetesIssuer(subjectToken map[string]any) (IssuerCon
 }
 
 // clusterIssuer is the one of issuers, the cluster issuers the exchange takes, whose Issuer is
-// iss, and false where iss names none of them. kubernetesKeyFunc chooses the keys a token is
-// checked against by it and kubernetesIssuer the issuer name the account's entry must hold, so
+// iss, and false where iss names none of them. The cluster type's judge chooses the keys a token
+// is checked against by it and kubernetesIssuer the issuer name the account's entry must hold, so
 // the two agree.
 func clusterIssuer(issuers []IssuerConfig, iss string) (IssuerConfig, bool) {
 	for _, issuer := range issuers {
@@ -414,48 +436,229 @@ func clusterIssuer(issuers []IssuerConfig, iss string) (IssuerConfig, bool) {
 	return IssuerConfig{}, false
 }
 
-// keyFunc is a JWT subject token type's ValidateFunc: the library hands it the parsed but
-// unverified token and checks the signature with whatever key it returns.
-//
-// The algorithm comes from a header nobody has verified, and the library's parse allows every
-// algorithm including 'none', so the header is refused before any key is returned: an issuer
-// publishes public keys, so a token signed with a shared secret or not signed at all is not one
-// of its tokens whatever key id it names.
-//
-// The read runs on its own context rather than the request's, because the library's signature
-// gives it none; the key source bounds its own fetch, and a set already cached costs no read.
-func keyFunc(keys oidc.KeySource) jwt.Keyfunc {
-	return func(token *jwt.Token) (any, error) {
-		if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
-			return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
-		}
-		return keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
-	}
+// tokenJudge is one JWT token type's judgement of the tokens presented under it. validate is the
+// type's ValidateFunc, which the library calls with the parsed but unverified token and checks the
+// signature with whatever key it answers. unkeyed is the part of that judgement that needs no key,
+// which exchangeGrant asks of a subject token the library stopped short of (unjudgedSubject).
+type tokenJudge struct {
+	// typ is the type itself, whose issuer, lifetime window and one-presentation rule the
+	// library judges its tokens by, and so does refusedWithoutKey.
+	typ *rfc8693.JWTType
+	// clusters is the cluster type's issuers, one chosen by each token's `iss`, and nil for any
+	// other type, whose tokens are checked against keys.
+	clusters []IssuerConfig
+	keys     oidc.KeySource
 }
 
-// errIssuerNotTaken is kubernetesKeyFunc's refusal of a token whose `iss` names none of the
-// cluster issuers the exchange takes, which exchangeGrant answers in the words the library
-// answers a token of another issuer with.
-var errIssuerNotTaken = errors.New("oauth: the subject token's iss names no issuer the exchange takes")
+// newTokenJudge is typ's judge, and sets typ's ValidateFunc to its validate, so the library's
+// judgement of a token and the exchange's own of a token the library never reached read one type.
+func newTokenJudge(typ *rfc8693.JWTType, clusters []IssuerConfig, keys oidc.KeySource) *tokenJudge {
+	judge := &tokenJudge{typ: typ, clusters: clusters, keys: keys}
+	typ.ValidateFunc = judge.validate
+	return judge
+}
 
-// kubernetesKeyFunc is the Kubernetes subject token type's ValidateFunc: it reads the unverified
-// token's `iss`, and answers keyFunc's key from the keys of the one of issuers that `iss` names,
-// so the library checks the token's signature against that issuer's keys alone. A token whose
-// `iss` names none of them, or whose `iss` is no string, is errIssuerNotTaken, with the claim's
-// own fault where it has one, and reads no issuer's keys.
-func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
-	return func(token *jwt.Token) (any, error) {
+// before is the judgement of token made before any key is read, whether or not its issuer's key
+// set can be read, and the keys its key is read from:
+//   - The algorithm comes from a header nobody has verified, and the library's parse allows every
+//     algorithm including 'none', so the header is refused before any key is returned: an issuer
+//     publishes public keys, so a token signed with a shared secret or not signed at all is not
+//     one of its tokens whatever key id it names.
+//   - A token of the cluster type is checked against the keys of the cluster its `iss` names. One
+//     whose `iss` names none of them, or is no string, is errIssuerNotTaken, with the claim's own
+//     fault where it has one, and reads no issuer's keys.
+//   - A token that does not expire within its type's window is refused (refusedForLifetime).
+func (j *tokenJudge) before(token *jwt.Token, now time.Time) (oidc.KeySource, error) {
+	if !slices.Contains(subjectTokenAlgorithms, token.SignatureAlgorithm) {
+		return nil, fmt.Errorf("oauth: a subject token signed with %q is refused: its issuer signs with a published key", token.SignatureAlgorithm)
+	}
+	keys := j.keys
+	if j.clusters != nil {
 		iss, err := token.Claims.GetIssuer()
 		if err != nil {
 			return nil, fmt.Errorf("%w: %w", errIssuerNotTaken, err)
 		}
-		issuer, taken := clusterIssuer(issuers, iss)
+		issuer, taken := clusterIssuer(j.clusters, iss)
 		if !taken {
 			return nil, errIssuerNotTaken
 		}
-		return keyFunc(issuer.Keys)(token)
+		keys = issuer.Keys
 	}
+	if err := refusedForLifetime(token.Claims, j.typ.JWTLifetimeToleranceWindow, now); err != nil {
+		return nil, err
+	}
+	return keys, nil
 }
+
+// validate is the type's ValidateFunc: before, then the token's key from its issuer's keys. The
+// read runs on its own context rather than the request's, because the library's signature gives
+// it none; the key source bounds its own fetch, and a set already cached costs no read.
+//
+// A key set that could not be read (oidc.ErrKeySet) is answered as oidc.ErrIssuerUnavailable,
+// which exchangeGrant answers 503 (issuerUnavailableRefusal): nothing was decided about the token.
+// The cluster issuers' source (oidc.LazyVerifier.Key) says so itself, alone before the issuer's
+// discovery document has been read and wrapping ErrKeySet after; the plain key sets Google's and
+// GitHub's tokens are checked against (*oidc.Keys) answer ErrKeySet alone, which the library would
+// otherwise refuse as a token it could not parse, a 400 its clients take as final. The exception is
+// a token the library refuses now whatever key signed it (refusedWithoutKey): it is refused here,
+// 400 invalid_request, as the library refuses it once the key set answers. The key's error is named
+// in that refusal and not wrapped in it, since a wrapped ErrIssuerUnavailable answers 503.
+func (j *tokenJudge) validate(token *jwt.Token) (any, error) {
+	now := time.Now()
+	keys, err := j.before(token, now)
+	if err != nil {
+		return nil, err
+	}
+	key, err := keys.Key(context.Background(), token.KeyID, string(token.SignatureAlgorithm))
+	if !errors.Is(err, oidc.ErrKeySet) && !errors.Is(err, oidc.ErrIssuerUnavailable) {
+		return key, err
+	}
+	if fault := refusedWithoutKey(token.Claims, j.typ, now); fault != nil {
+		return nil, fmt.Errorf("%w (and the issuer's keys could not be read: %v)", fault, err)
+	}
+	if !errors.Is(err, oidc.ErrIssuerUnavailable) {
+		return nil, fmt.Errorf("%w: %w", oidc.ErrIssuerUnavailable, err)
+	}
+	return nil, err
+}
+
+// errClaimsOnly is what unkeyed's parse is answered in place of a key, so the library reads the
+// token's claims and checks no signature.
+var errClaimsOnly = errors.New("oauth: the claims are read and no signature is checked")
+
+// unkeyed is the refusal of raw, a token of this type, that needs no key, and raw's claims: the
+// library's refusal of a token it cannot parse, before, and refusedWithoutKey; nil where only a
+// key, a wait or the replay store can judge raw. Its parse is the library's own, so it reads each
+// claim as the library reads it.
+func (j *tokenJudge) unkeyed(raw string, now time.Time) (jwt.MapClaims, error) {
+	token, err := jwt.ParseWithClaims(raw, jwt.MapClaims{}, func(*jwt.Token) (any, error) { return nil, errClaimsOnly })
+	if !errors.Is(subjectKeyError(err), errClaimsOnly) {
+		return nil, err
+	}
+	if _, err := j.before(token, now); err != nil {
+		return nil, err
+	}
+	claims := token.Claims.ToMapClaims()
+	return claims, refusedWithoutKey(claims, j.typ, now)
+}
+
+// errNeverExpires is the class of refusedForLifetime's answers.
+var errNeverExpires = errors.New("oauth: the subject token does not expire within the window the broker admits for its type")
+
+// refusedForLifetime refuses a token that never expires, or not within window, the broker's window
+// for its type (the type's JWTLifetimeToleranceWindow, an hour where it is zero as the library
+// reads it): an exp that is missing, or that the library reads as 0 (null, 0, any value under 1),
+// and an exp later than window from now. The exp is read as the library reads it
+// (jwt.MapClaims.GetExpirationTime, then NumericDate.Int64), and compared in whole seconds, so no
+// value overflows the comparison. An exp that is no number is left to the library, which refuses
+// it.
+//
+// It is a tightening of what the library admits, which no token this deployment's issuers mint for
+// the exchange meets: GitHub's live at most an hour and Google's an hour, inside their one-hour
+// window, and the cluster tokens this deployment's pods project live 3,600 seconds, their own
+// projection, inside kubernetesTolerance, the 24-hour cluster window. The library takes an exp it
+// reads as 0 for no exp at all and admits the token, and an exp near 9.22e18 overflows its own
+// window check (time.Unix) and passes it, so the broker would mint an access token for a token that
+// never expires. Every other exp it refuses as the library's window check does.
+func refusedForLifetime(claims jwt.Claims, window time.Duration, now time.Time) error {
+	if window == 0 {
+		window = time.Hour
+	}
+	exp, err := claims.GetExpirationTime()
+	switch {
+	case err != nil:
+		return nil
+	case exp == nil || exp.Int64() == 0:
+		return fmt.Errorf("%w: it carries no exp, or one that reads as 0", errNeverExpires)
+	case exp.Int64() > now.Unix()+int64(window/time.Second):
+		return fmt.Errorf("%w: its exp is more than %s away", errNeverExpires, window)
+	}
+	return nil
+}
+
+// errRefusedWithoutKey is the class of refusedWithoutKey's answers.
+var errRefusedWithoutKey = errors.New("oauth: the subject token is refused whatever key signed it")
+
+// refusedWithoutKey is the refusal authelia.com/provider/oauth2 v0.3.3 makes now of a token of typ
+// whatever key signed it, reading each claim as the library converts it, and nil for claims only a
+// key, a wait or the replay store can judge. It refuses:
+//   - an exp that is missing (rfc8693's validate: "Claim 'exp' from token is missing"), no number,
+//     or past (the parse's claim check, with no leeway), read as the parse reads it
+//     (jwt.MapClaims.GetExpirationTime, then NumericDate.Int64, an exp that reads as 0 being none);
+//   - an exp later than the window from now, read as validate reads it (libraryInt64, then
+//     time.Unix), so a value that overflows time.Unix passes here as it passes there;
+//   - an iat older than the window, read the same way, an iat that is no number reading as 0;
+//   - an nbf that is no number (the parse's claim check);
+//   - an iss that is not typ's issuer, where typ names one: no client of the broker lists issuers
+//     of its own, so the type's issuer is the one validate compares;
+//   - for a type that holds a token to one presentation, a jti that is missing or no string.
+//
+// It checks those and no others, so it never refuses a token the library admits;
+// TestRefusedWithoutKeyMirrorsTheLibrarysChecks holds it to the library's own handler. Left to the
+// library are an iat or an nbf in the future, which a wait can make valid, and a jti already spent,
+// which the replay store judges (unjudgedSubject).
+func refusedWithoutKey(claims jwt.Claims, typ *rfc8693.JWTType, now time.Time) error {
+	window := typ.JWTLifetimeToleranceWindow
+	if window == 0 {
+		window = time.Hour
+	}
+	mapped := claims.ToMapClaims()
+	raw, present := mapped["exp"]
+	if !present {
+		return fmt.Errorf("%w: it carries no exp", errRefusedWithoutKey)
+	}
+	exp, err := claims.GetExpirationTime()
+	switch {
+	case err != nil:
+		return fmt.Errorf("%w: its exp is not a time: %v", errRefusedWithoutKey, err)
+	case exp != nil && exp.Int64() != 0 && now.Unix() > exp.Int64():
+		return fmt.Errorf("%w: it expired at %s", errRefusedWithoutKey, time.Unix(exp.Int64(), 0).UTC().Format(time.RFC3339))
+	case now.Add(window).Before(time.Unix(libraryInt64(raw), 0)):
+		return fmt.Errorf("%w: its exp is more than %s away", errRefusedWithoutKey, window)
+	}
+	if issued, present := mapped["iat"]; present && time.Unix(libraryInt64(issued), 0).Add(window).Before(now) {
+		return fmt.Errorf("%w: its iat is more than %s ago, or not a time", errRefusedWithoutKey, window)
+	}
+	if _, err := claims.GetNotBefore(); err != nil {
+		return fmt.Errorf("%w: its nbf is not a time: %v", errRefusedWithoutKey, err)
+	}
+	if typ.Issuer != "" {
+		if iss, _ := mapped["iss"].(string); iss != typ.Issuer {
+			return fmt.Errorf("%w: its iss is not %s", errRefusedWithoutKey, typ.Issuer)
+		}
+	}
+	if typ.ValidateJTI {
+		if jti, _ := mapped["jti"].(string); jti == "" {
+			return fmt.Errorf("%w: it carries no jti, and a token of its type is presented once", errRefusedWithoutKey)
+		}
+	}
+	return nil
+}
+
+// libraryInt64 is a claim's whole seconds as rfc8693's validate reads them for its window checks
+// (its toInt64): a float or an integer as it is, a JSON number as an integer where it is one and
+// otherwise as a float, and anything else as 0.
+func libraryInt64(claim any) int64 {
+	switch value := claim.(type) {
+	case float64:
+		return int64(value)
+	case int64:
+		return value
+	case json.Number:
+		if whole, err := value.Int64(); err == nil {
+			return whole
+		}
+		if fraction, err := value.Float64(); err == nil {
+			return int64(fraction)
+		}
+	}
+	return 0
+}
+
+// errIssuerNotTaken is the cluster type judge's refusal of a token whose `iss` names none of the
+// cluster issuers the exchange takes, which exchangeGrant answers in the words the library
+// answers a token of another issuer with.
+var errIssuerNotTaken = errors.New("oauth: the subject token's iss names no issuer the exchange takes")
 
 // exchangeGrant is the token endpoint's RFC 8693 branch: a caller's platform identity for a
 // Dispatch access token, bound to the key its DPoP proof names.
@@ -489,8 +692,9 @@ func kubernetesKeyFunc(issuers []IssuerConfig) jwt.Keyfunc {
 // for every type once the library has built the answer, because that is when the issued token's
 // expiry is set, and the claim must not end before the token it is made for. A subject token the
 // library refused for its key is answered 503 OIDC_ISSUER_UNAVAILABLE where the key could not be
-// read for want of a read of its issuer (issuerUnavailableRefusal), and in issuerNotTakenRefusal's
-// words where the token's `iss` names no issuer the exchange takes.
+// read for want of a read of its issuer (issuerUnavailableRefusal), unless the subject token is one
+// the library would refuse without a key (unjudgedSubject), and in issuerNotTakenRefusal's words
+// where the token's `iss` names no issuer the exchange takes.
 //
 // trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
 // the library has validated the request, before the exchange decides anything, and a *Refusal it
@@ -506,6 +710,10 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	if err != nil {
 		switch cause := subjectKeyError(err); {
 		case errors.Is(cause, oidc.ErrIssuerUnavailable):
+			if refused := p.unjudgedSubject(ctx, request); refused != nil {
+				p.writeError(ctx, w, request, refused)
+				return
+			}
 			WriteRefusal(w, issuerUnavailableRefusal)
 		case errors.Is(cause, errIssuerNotTaken):
 			p.writeError(ctx, w, request, issuerNotTakenRefusal(err))
@@ -633,15 +841,17 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 	p.oauth.WriteAccessResponse(ctx, w, request, resp)
 }
 
-// issuerUnavailableRefusal answers a subject token whose key the broker cannot read for want of a
-// read of its issuer: the issuer's discovery document has not been read, or the token's key is
-// not among the keys the broker holds from its key set's last good read and the key set cannot
-// be read now (oidc.ErrIssuerUnavailable). It is the answer the broker's other routes give the
-// same fault (api.writeIssuerUnavailable), 503 OIDC_ISSUER_UNAVAILABLE with Dispatch's sentence,
+// issuerUnavailableRefusal answers a subject or actor token whose key the broker cannot read for
+// want of a read of its issuer: the issuer's discovery document has not been read, or the token's
+// key is not among the keys the broker holds from its key set's last good read and the key set
+// cannot be read now (oidc.ErrIssuerUnavailable, tokenJudge.validate). It is the answer the
+// broker's other routes give the same fault (api.writeIssuerUnavailable), 503
+// OIDC_ISSUER_UNAVAILABLE with Dispatch's sentence and Retry-After: oidc.IssuerUnavailableRetryAfter,
 // as the OAuth error a client's library parses (WriteRefusal). It is a 5xx because nothing was
 // decided about the token, and a caller tries again after a 5xx.
 var issuerUnavailableRefusal = &Refusal{
 	Status: http.StatusServiceUnavailable, Code: oidc.IssuerUnavailableCode, Message: oidc.IssuerUnavailableMessage,
+	RetryAfter: oidc.IssuerUnavailableRetryAfter,
 }
 
 // subjectKeyError is the error a subject token type's key function answered, out of the
@@ -662,6 +872,40 @@ func subjectKeyError(err error) error {
 // exchange takes, the answer and the status the library gives a token of another issuer.
 func issuerNotTakenRefusal(err error) error {
 	return oauth2.ErrInvalidRequest.WithHint("Claim 'iss' from token names no issuer this broker's exchange takes.").WithWrap(err).WithDebugError(err)
+}
+
+// unjudgedSubject is the refusal of the subject token of request, a trade the library stopped
+// short of judging because a key could not be read, that needs no key, written as the library
+// writes it: tokenJudge.unkeyed's, and for a type that holds a token to one presentation, a jti
+// the replay store already holds (oauthstore.Store.TokenExchangeJTISpent). The library judges the
+// actor token first, so in a person's trade a machine actor token whose key cannot be read
+// answers 503 before the library reads the person's token at all, and an expired person token
+// would be told to wait for a key set no wait makes it valid with. It answers nil where only a key
+// or a wait can judge the subject token, where the trade presents none of a JWT type, and where
+// the replay store cannot be read, which decides nothing either.
+func (p *Provider) unjudgedSubject(ctx context.Context, request oauth2.AccessRequester) error {
+	if request == nil {
+		return nil
+	}
+	form := request.GetRequestForm()
+	judge, judged := p.judges[form.Get(FormSubjectTokenType)]
+	if !judged {
+		return nil
+	}
+	claims, err := judge.unkeyed(form.Get(FormSubjectToken), time.Now())
+	switch {
+	case errors.Is(err, errIssuerNotTaken):
+		return issuerNotTakenRefusal(err)
+	case err != nil:
+		return oauth2.ErrInvalidRequest.WithHint("Unable to parse the JSON web token").WithWrap(err).WithDebugError(err)
+	case !judge.typ.ValidateJTI:
+		return nil
+	}
+	jti, _ := claims["jti"].(string)
+	if spent, err := p.store.TokenExchangeJTISpent(ctx, jti); err != nil || !spent {
+		return nil
+	}
+	return oauth2.ErrInvalidRequest.WithHint("Claim 'jti' from the token must be used only once.")
 }
 
 // reserveSessions holds every session name an entry fixes for that entry's principal
@@ -732,7 +976,7 @@ func (p *Provider) decide(_ context.Context, request oauth2.Requester, subjectTo
 	var claims exchange.Claims
 	switch subjectTokenType {
 	case oauthwire.SubjectTokenTypeKubernetes:
-		// The token's own issuer, whose keys kubernetesKeyFunc checked its signature against;
+		// The token's own issuer, whose keys its judge checked its signature against (tokenJudge);
 		// the entry of the account, an account entry or a read entry, must name it.
 		issuer, taken := p.exchange.kubernetesIssuer(subjectToken)
 		if !taken {

@@ -106,13 +106,24 @@ func (NoBrowserIdentity) Login(*http.Request) (string, error) {
 }
 
 // signInUnavailableMessage is what WriteError answers, with the code SIGNIN_UNAVAILABLE, a request
-// that needs the sign-in issuer while the issuer cannot be reached.
-const signInUnavailableMessage = "the sign-in issuer cannot be reached; try again in a minute"
+// that needs the sign-in issuer while the issuer cannot be reached. A person reads it, so it is
+// words and names no figure: the answer's Retry-After, signInUnavailableRetryAfter, is the wait.
+const signInUnavailableMessage = "the sign-in issuer cannot be reached; try again in a moment"
+
+// signInUnavailableRetryAfter is the Retry-After, in seconds, beside SIGNIN_UNAVAILABLE: the
+// Envoy listener's and the secrets broker's for an issuer that cannot be read
+// (oidc.IssuerUnavailableRetryAfter). What a caller that comes back this soon costs depends on the
+// cause. A sign-in before the issuer is discovered, and IAP's key set, are read again at most once
+// per their failure spacing however many requests arrive. A lapsed membership is not spaced: each
+// request that arrives after the person's last refresh ended makes one refresh request to the
+// issuer's token endpoint, and logs one WARN line (Membership.Confirm, which joins only a refresh
+// still in flight), so a person's page retrying once a second asks the issuer once a second.
+const signInUnavailableRetryAfter = "1"
 
 // WriteError renders an Identity error, or a sign-in's, as Dispatch's JSON error response: 401
-// NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE for ErrSignInUnavailable (Membership: the
-// person stays signed in, and the first request after the issuer answers is served); and 500
-// IDENTITY_ERROR for anything else.
+// NO_IDENTITY for ErrNoIdentity; 503 SIGNIN_UNAVAILABLE with Retry-After for ErrSignInUnavailable
+// (Membership: the person stays signed in, and the first request after the issuer answers is
+// served); and 500 IDENTITY_ERROR for anything else.
 func WriteError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}
@@ -123,6 +134,7 @@ func WriteError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrSignInUnavailable):
 		status = http.StatusServiceUnavailable
 		body = map[string]string{"error": signInUnavailableMessage, "code": "SIGNIN_UNAVAILABLE"}
+		w.Header().Set("Retry-After", signInUnavailableRetryAfter)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

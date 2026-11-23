@@ -1,0 +1,64 @@
+kind: Fixed
+body: |-
+  The secrets broker answers every `503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1`, the wait
+  the Envoy listener names for the same fault: at enrollment, renewal, the token login, the
+  pod-session routes, the listed caller's and the edge listener's routes, and the token exchange.
+  Dispatch's `503 OIDC_ISSUER_UNAVAILABLE` to a service-account token carries the same
+  `Retry-After: 1`. The answer's sentence now reads "the service-account token issuer cannot be
+  reached; try again after Retry-After", where it said "try again in a minute" beside a one-second
+  wait.
+  A listed caller's or an edge listener's Google identity token whose key the broker cannot read,
+  because Google's key set cannot be read, is answered that `503`, where it was
+  `401 ACCOUNT_TOKEN_INVALID`. At the token exchange, a machine's or a person's Google identity
+  token, a machine's actor token and a GitHub workflow run's token whose issuer's key set cannot be
+  read are answered that `503` too, where they were `400 invalid_request` as a token the exchange
+  could not parse, which the broker's token clients take as final. A token signed by a key its
+  issuer never published is refused as before. While a key set cannot be read, the exchange
+  refuses `400 invalid_request`, with no `Retry-After`, a token the library refuses whatever key
+  signed it: an `exp` that is not a number or is past, an `iat` older than its type's window or
+  not a number, an `nbf` that is not a number (a null `nbf` counts as none), an `iss` that is not
+  its type's issuer, and for a workflow run's token no `jti` string (none, an empty one, or one
+  that is not a string), or one the replay store holds as presented. That holds for a person's
+  token in a sign-in too, which the library reaches only after the machine's actor token. A token
+  whose only fault is an `iat` or an `nbf` in the future, which a wait can make valid, is answered
+  `503` until the key set can be read. The broker's own checks, made once
+  the token verifies (its audience, and whether an entry lists it), are not made meanwhile, so a
+  token that would fail only those is answered `503` too, and so is a workflow run's token while
+  the replay store cannot be read either. During such an outage a forged token can learn from a
+  `400` against a `503` whether a `jti` it names was presented; this is accepted, since only
+  GitHub's `jti`s are stored, they are random, naming one takes the token that carries it, and the
+  read admits and writes nothing.
+  The exchange now refuses `400 invalid_request` a token that does not expire within the broker's
+  window for its type, whether or not the key set can be read: an hour for GitHub's and Google's
+  tokens, and 24 hours for a cluster's, the broker's own window and not a limit Kubernetes sets.
+  That is a token with no `exp`, an `exp` of null, 0 or any value under 1, and an `exp` further
+  ahead than the window, such as 9223372036854774784. The library the exchange uses admits some of
+  these as tokens that never expire, and the broker minted an access token for them. The tokens
+  the issuers mint for this deployment are all within the window: a GitHub or Google token living
+  a whole hour fills its window, and the cluster tokens Legion's own pods send to the exchange are
+  projected for 3,600 seconds.
+  The broker logs `broker: key set cannot be read` at WARN once when a read of a key set it checks
+  callers' tokens against fails, and `broker: key set can be read again` at INFO once when a read
+  of it succeeds after that, each naming the issuer and the key set's address, never a token: each
+  cluster issuer's key set, Google's, and the token exchange's GitHub issuer's. The lines follow
+  the reads, so a key set that cannot be read shows in the log while the keys the broker holds
+  from its last good read still answer every token. They come in place of the token-driven
+  `broker: kubernetes issuer cannot be read` line #4049 added.
+  `broker: kubernetes issuer can be read again` is now written only for an issuer the broker's
+  start could not read; an issuer read at the start logs `broker: key set can be read again` when
+  its key set can be read again.
+  A token naming a key the broker's cached key set does not hold, arriving just as another token
+  for the same key started the read that finds that key, could be refused as unverified before
+  that read ended. It now waits for that read, or is answered from the set the read found.
+  Dispatch's `503 BROKER_UNAVAILABLE`, for a broker token the secrets broker gave no answer for,
+  carries `Retry-After: 1`, the Envoy listener's wait for the same fault. That answer and the Envoy
+  listener's 503s for a credential it could not check now end "try again after Retry-After", where
+  they said "try again in a minute" beside a one-second wait. Dispatch's `503 SIGNIN_UNAVAILABLE`
+  carries `Retry-After: 1` too, and its words now end "try again in a moment".
+  `agent-secrets enroll --pod` makes its token login, its enrollment, and the renewal of an
+  enrollment it already holds again after a `503`: after the answer's `Retry-After`, or 2 seconds
+  doubling to 10 where it names none, printing one line for each wait. It refuses as before once
+  its waits for one call would pass two minutes.
+time: 2026-11-22T02:39:23Z
+custom:
+    Issue: pr4942

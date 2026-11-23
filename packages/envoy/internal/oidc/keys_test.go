@@ -481,7 +481,7 @@ func TestAStaleSetThatHoldsTheKeyAnswersAtOnceAndRefreshesInTheBackground(t *tes
 	if _, err := keys.Key(context.Background(), "exchange-key", testAlgorithm); err != nil {
 		t.Fatalf("the first read: %v", err)
 	}
-	_, first := keys.state()
+	_, first, _ := keys.state()
 	keys.Lifetime = time.Millisecond
 	time.Sleep(5 * time.Millisecond)
 	issuer.DelayKeys(500 * time.Millisecond)
@@ -496,7 +496,7 @@ func TestAStaleSetThatHoldsTheKeyAnswersAtOnceAndRefreshesInTheBackground(t *tes
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, fetched := keys.state(); fetched.After(first) {
+		if _, fetched, _ := keys.state(); fetched.After(first) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -546,7 +546,7 @@ func TestACallerThatHangsUpEndsOnlyItsOwnWait(t *testing.T) {
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if _, fetched := keys.state(); !fetched.IsZero() {
+		if _, fetched, _ := keys.state(); !fetched.IsZero() {
 			break
 		}
 		if time.Now().After(deadline) {

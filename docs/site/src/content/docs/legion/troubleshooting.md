@@ -1965,7 +1965,7 @@ notice comes once per handoff commit, from whichever read finds it first.
   broker has not read the issuer of the daemon's cluster yet, which its boot line
   `broker: kubernetes issuer … read=false` says, or the token names a key the broker does not hold
   while it cannot read that issuer's key set, which it logs as
-  `broker: kubernetes issuer cannot be read`), `TOKEN_TOO_LONG_LIVED` (the
+  `broker: key set cannot be read name=<issuer name>`), `TOKEN_TOO_LONG_LIVED` (the
   token lives longer than an hour from its issue: set the projected token's `expirationSeconds`,
   or `kubectl create token`'s `--duration`, to at most an hour), `TOKEN_LOGIN_OFF` (the broker
   trusts no Kubernetes token issuer), `read the ServiceAccount token` (the file is missing), a

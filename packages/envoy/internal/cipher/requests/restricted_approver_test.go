@@ -832,7 +832,7 @@ func TestAnApproversRevokeGoesAheadOnlyWhileDispatchDoesNotAnswer(t *testing.T) 
 		{"a gateway in front of Dispatch answers 502", answers(http.StatusBadGateway, `<html>bad gateway</html>`)},
 		{"a gateway in front of Dispatch answers 504", answers(http.StatusGatewayTimeout, `<html>gateway timeout</html>`)},
 		{"Dispatch answers 503 DATABASE_UNAVAILABLE", answers(http.StatusServiceUnavailable, `{"code":"DATABASE_UNAVAILABLE","error":"database unavailable"}`)},
-		{"Dispatch answers 503 OIDC_ISSUER_UNAVAILABLE", answers(http.StatusServiceUnavailable, `{"code":"OIDC_ISSUER_UNAVAILABLE","error":"the service-account token issuer cannot be reached; try again in a minute"}`)},
+		{"Dispatch answers 503 OIDC_ISSUER_UNAVAILABLE", answers(http.StatusServiceUnavailable, `{"code":"OIDC_ISSUER_UNAVAILABLE","error":"the service-account token issuer cannot be reached; try again after Retry-After"}`)},
 		{"Dispatch answers after the read's bound", func(_ *testing.T, r approverRows) { r.dispatch.SetStall(dispatchRelayWait); r.asks() }},
 		{"Dispatch answers 500 INTERNAL", answers(http.StatusInternalServerError, `{"code":"INTERNAL","error":"internal server error"}`)},
 		{"Dispatch answers 500 naming no code", answers(http.StatusInternalServerError, `<html>internal server error</html>`)},

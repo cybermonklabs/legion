@@ -94,6 +94,22 @@ type Keys struct {
 	// HTTPClient reads the key set. A caller replaces it to route the read through a proxy or an
 	// instrumented transport; it is never nil.
 	HTTPClient *http.Client
+	// OnChange, when set, is told each time a read finds the key set other than the read before it
+	// found it: with the read's error when a read fails and the read before it succeeded, or there
+	// was none, and with nil when a read succeeds after one that failed. So a key set that cannot
+	// be read for a day is one call, however many tokens and background refreshes read it, and a
+	// cached key answered meanwhile changes nothing. The error wraps ErrKeySet and names the key
+	// set's address (URL), never a token. Calls come in the order the reads ran, outside the lock,
+	// and the callers waiting on that read wait for the call, so it does not block and does not
+	// call the Keys. It is set before the first Key, as the timing fields are.
+	//
+	// A residual, kept for the order: a read that finds a second change while OnChange is still
+	// telling the first waits for that call holding mu (complete, changeMu), so an OnChange that
+	// blocks — a log writer that has stopped — blocks every Key of this key set, a key the cache
+	// holds included, until it returns. The broker's OnChange writes one log line, which has to
+	// block past the next read of the key set, at least FailureSpacing after a failed one, for this
+	// to happen; by then every other log line of the process blocks too.
+	OnChange func(err error)
 
 	jwksURI string
 
@@ -102,12 +118,23 @@ type Keys struct {
 	fetched  time.Time
 	missed   time.Time
 	inflight *keysFetch
+	// generation counts the reads that succeeded, so settleMiss can tell that a read replaced the
+	// set a Key looked in after it looked, which two clock times cannot when they are equal.
+	generation uint64
 	// failure and failedAt are the last failed read, kept only until a read succeeds: a good read
 	// clears them. One read runs at a time (startReadLocked), so reads end in the order they start,
 	// and failure != nil says the key set's latest answer was a failure, never judged by comparing
 	// clock times, which can be equal.
 	failedAt time.Time
 	failure  error
+	// changeMu orders the OnChange calls by the reads they report (complete). It is taken while mu
+	// is held, and so it is the residual OnChange names.
+	changeMu sync.Mutex
+
+	// afterState and missOpened are a test's seams into Key, nil outside a test: afterState runs
+	// once Key has looked at the cached set, and missOpened once a key id the set does not hold
+	// has opened the miss window and the read it prompted is under way, before Key waits on it.
+	afterState, missOpened func()
 }
 
 // keysFetch is one key-set read in progress, which every caller that arrives while it runs waits
@@ -180,7 +207,10 @@ func NewKeysAt(jwksURI string) *Keys {
 // which is a public identifier, shortened so an oversized one cannot flood a log, and no other
 // part of the token.
 func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, error) {
-	set, fetched := k.state()
+	set, fetched, seen := k.state()
+	if k.afterState != nil {
+		k.afterState()
+	}
 	stale := !fetched.IsZero() && time.Since(fetched) >= k.Lifetime
 	if stale && time.Since(fetched) < k.Lifetime+k.MinRefresh {
 		if key, err := selectKey(set, kid, alg); err == nil {
@@ -210,63 +240,96 @@ func (k *Keys) Key(ctx context.Context, kid, alg string) (crypto.PublicKey, erro
 	if err == nil {
 		return key, nil
 	}
-	if read || !errors.Is(err, ErrNoKey) || !k.openMissWindow() {
+	if read || !errors.Is(err, ErrNoKey) {
 		if fetchErr != nil {
 			return nil, fetchErr
 		}
-		if !read && errors.Is(err, ErrNoKey) {
-			if settling, key, missErr := k.settleMiss(ctx, kid, alg); settling {
-				return key, missErr
-			}
+		return nil, err
+	}
+	inflight, spaced, opened := k.missRead(ctx)
+	if !opened {
+		if settling, key, missErr := k.settleMiss(ctx, seen, kid, alg); settling {
+			return key, missErr
 		}
 		return nil, err
 	}
-	fresh, err := k.fetch(ctx)
+	if spaced != nil {
+		return nil, spaced
+	}
+	if k.missOpened != nil {
+		k.missOpened()
+	}
+	fresh, err := k.wait(ctx, inflight)
 	if err != nil {
 		return nil, err
 	}
 	return selectKey(fresh, kid, alg)
 }
 
-// state is the cached set and when it was fetched, the zero time standing for a set never read.
-func (k *Keys) state() ([]jose.JSONWebKey, time.Time) {
+// URL is the address of the key set, its issuer's jwks_uri.
+func (k *Keys) URL() string { return k.jwksURI }
+
+// state is the cached set, when it was fetched, the zero time standing for a set never read, and
+// its generation, which a read that succeeds later moves on (settleMiss).
+func (k *Keys) state() ([]jose.JSONWebKey, time.Time, uint64) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	return k.keys, k.fetched
+	return k.keys, k.fetched, k.generation
 }
 
-// openMissWindow reports whether a key id the cached set does not hold may prompt a read now, and
-// opens the next MinRefresh window when it does. The window opens on the attempt rather than on
-// the answer, so an issuer that is failing is asked no more often than one that is rotating. A
-// window whose read has not succeeded, the key set's latest answer being a failure, closes early,
-// once FailureSpacing has passed since that failure: the read it opened settled nothing, so the
-// key may be looked for again, at most once per FailureSpacing while the key set keeps failing. A
-// good read clears the failure, so a window it settled stays shut.
-func (k *Keys) openMissWindow() bool {
+// missRead opens the miss window for a key id the cached set does not hold and, under the same
+// lock, starts the read the window allows or joins the read under way, so that a token for the
+// same key id which finds the window shut a moment later finds that read in flight (settleMiss)
+// and never a window shut with no read behind it. opened is false where the window is shut, and
+// spaced is the failure that answers in place of a read within FailureSpacing of it (fetch).
+//
+// The window opens on the attempt rather than on the answer, so an issuer that is failing is asked
+// no more often than one that is rotating. A window whose read has not succeeded, the key set's
+// latest answer being a failure, closes early, once FailureSpacing has passed since that failure:
+// the read it opened settled nothing, so the key may be looked for again, at most once per
+// FailureSpacing while the key set keeps failing. A good read clears the failure, so a window it
+// settled stays shut.
+func (k *Keys) missRead(ctx context.Context) (inflight *keysFetch, spaced error, opened bool) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	now := time.Now()
 	unsettled := k.failure != nil && now.Sub(k.failedAt) >= k.FailureSpacing
 	if !k.missed.IsZero() && now.Sub(k.missed) < k.MinRefresh && !unsettled {
-		return false
+		return nil, nil, false
 	}
 	k.missed = now
-	return true
+	switch {
+	case k.inflight != nil:
+		return k.inflight, nil, true
+	case k.spacedLocked():
+		return nil, k.failure, true
+	}
+	return k.startReadLocked(ctx), nil, true
 }
 
-// settleMiss answers a key id the cached set does not hold, once the miss window has closed, while
-// the read that would settle whether the issuer publishes it has not: a read under way is joined
-// and the key is looked for in the set it reads (ErrKeySet when the read fails or the caller's wait
-// ends first), and a last read that failed less than MinRefresh ago, with no good read since, is
-// ErrKeySet. Either way the answer is never ErrNoKey, a signature no published key makes, before a
-// read has said so. Its first result is false once a read since the miss has succeeded: that set's
-// verdict stands.
-func (k *Keys) settleMiss(ctx context.Context, kid, alg string) (bool, crypto.PublicKey, error) {
+// settleMiss answers a key id the cached set Key looked in, of generation seen, does not hold, once
+// the miss window has closed. A read that succeeded since Key looked has replaced that set: the key
+// is looked for in the set it read, and that set's verdict stands unless a read under way or a
+// failed read since may still find it. A read under way is joined and the key is looked for in the
+// set it reads (ErrKeySet when the read fails or the caller's wait ends first), and a last read
+// that failed less than MinRefresh ago, with no good read since, is ErrKeySet. None of these
+// answers ErrNoKey, a signature no published key makes, before a read has said so. Its first
+// result is false when none of them applies: the set Key looked in is the latest, and its verdict
+// stands.
+func (k *Keys) settleMiss(ctx context.Context, seen uint64, kid, alg string) (bool, crypto.PublicKey, error) {
 	k.mu.Lock()
+	set, replaced := k.keys, k.generation != seen
 	inflight := k.inflight
 	failedRecently := k.failure != nil && time.Since(k.failedAt) < k.MinRefresh
 	failure := k.failure
 	k.mu.Unlock()
+	var replacedErr error
+	if replaced {
+		var key crypto.PublicKey
+		if key, replacedErr = selectKey(set, kid, alg); replacedErr == nil {
+			return true, key, nil
+		}
+	}
 	switch {
 	case inflight != nil:
 		set, err := k.wait(ctx, inflight)
@@ -277,6 +340,8 @@ func (k *Keys) settleMiss(ctx context.Context, kid, alg string) (bool, crypto.Pu
 		return true, key, err
 	case failedRecently:
 		return true, nil, fmt.Errorf("%w: key id %s is not in the cached set, and the last read of %s failed: %w", ErrKeySet, keyIDName(kid), k.jwksURI, failure)
+	case replaced:
+		return true, nil, replacedErr
 	}
 	return false, nil, nil
 }
@@ -363,20 +428,34 @@ func (k *Keys) wait(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey
 }
 
 // complete runs inflight's read on ctx, which no caller ends, and releases every caller waiting on
-// it. A read that succeeds keeps its set and clears the recorded failure; a read that fails is
-// recorded as the last failure (settleMiss, FailureSpacing). One read runs at a time, so the
-// outcome recorded here is the latest, by the order the reads ran in, never their end times.
+// it. A read that succeeds keeps its set, moves the generation on and clears the recorded failure;
+// a read that fails is recorded as the last failure (settleMiss, FailureSpacing). One read runs at
+// a time, so the outcome recorded here is the latest, by the order the reads ran in, never their
+// end times. A read that finds the key set other than the read before it is reported to OnChange.
 func (k *Keys) complete(ctx context.Context, inflight *keysFetch) {
 	inflight.keys, inflight.err = k.read(ctx)
 	k.mu.Lock()
 	k.inflight = nil
+	// A failure is recorded exactly while the latest read failed, so this read changed the key set
+	// where it failed and the read before it did not, or the other way round.
+	changed := k.OnChange != nil && (k.failure != nil) != (inflight.err != nil)
 	if inflight.err == nil {
 		k.keys, k.fetched = inflight.keys, time.Now()
+		k.generation++
 		k.failedAt, k.failure = time.Time{}, nil
 	} else {
 		k.failedAt, k.failure = time.Now(), inflight.err
 	}
+	if changed {
+		// Taken before k.mu is let go: the next read starts only once k.inflight is nil under k.mu,
+		// so its call waits for this one, and the calls come in the order the reads ran.
+		k.changeMu.Lock()
+	}
 	k.mu.Unlock()
+	if changed {
+		k.OnChange(inflight.err)
+		k.changeMu.Unlock()
+	}
 	close(inflight.done)
 }
 

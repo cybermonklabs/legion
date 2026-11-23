@@ -21,12 +21,20 @@ var ErrIssuerUnavailable = errors.New("oidc: the issuer cannot be reached")
 // IssuerUnavailableCode and IssuerUnavailableMessage are the error code and the sentence of the
 // answer, 503, to a service-account token whose issuer could not be asked (ErrIssuerUnavailable).
 // The broker's routes, its token exchange and Dispatch's API all answer that token with this
-// pair, and a client compares the code. A sign-in whose issuer could not be asked is answered in
-// the sign-in's own words, not these.
+// pair, and a client compares the code. The sentence names no wait of its own: every one of those
+// answers carries IssuerUnavailableRetryAfter, which it points to. A sign-in whose issuer could
+// not be asked is answered in the sign-in's own words, not these.
 const (
 	IssuerUnavailableCode    = "OIDC_ISSUER_UNAVAILABLE"
-	IssuerUnavailableMessage = "the service-account token issuer cannot be reached; try again in a minute"
+	IssuerUnavailableMessage = "the service-account token issuer cannot be reached; try again after Retry-After"
 )
+
+// IssuerUnavailableRetryAfter is the Retry-After, in seconds, that the broker's routes, its token
+// exchange and Dispatch's API send beside that pair, and the Envoy listener beside its own words
+// for the same fault (refuseIdentityToken). A key set whose read failed is read again at most once
+// per DefaultKeysFailureSpacing, however many tokens arrive, so a client that tries again this
+// soon costs the issuer nothing.
+const IssuerUnavailableRetryAfter = 1
 
 // ErrGrantRefused means the issuer's token endpoint refused a refresh token (RFC 6749 section
 // 5.2, invalid_grant): it has expired, been revoked, or is not the client's. The sign-in it renews
@@ -174,6 +182,10 @@ func (d *discovery[T]) logFailure(err error) {
 // ErrIssuerUnavailable.
 type LazyVerifier struct {
 	discovery *discovery[*Verifier]
+	// onKeySetChange is told each change of the issuer's key set (Keys.OnChange) with the key
+	// set's address, once discovery has named it; IssuerSet.OnKeySetChange sets it before any
+	// read, and it is nil for a verifier no caller asked that of.
+	onKeySetChange func(keys string, err error)
 }
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
@@ -185,14 +197,19 @@ func NewLazyVerifier(issuer, audience string) *LazyVerifier {
 // newLazyVerifier is NewLazyVerifier with failureSpacing as its key set's FailureSpacing, for an
 // IssuerSet whose caller chooses the spacing (NewIssuerSet).
 func newLazyVerifier(issuer, audience string, failureSpacing time.Duration) *LazyVerifier {
-	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
+	v := &LazyVerifier{}
+	v.discovery = newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		keys, err := NewKeys(ctx, issuer)
 		if err != nil {
 			return nil, err
 		}
 		keys.FailureSpacing = failureSpacing
+		if change := v.onKeySetChange; change != nil {
+			keys.OnChange = func(err error) { change(keys.URL(), err) }
+		}
 		return NewWithKeys(issuer, audience, keys), nil
-	})}
+	})
+	return v
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not

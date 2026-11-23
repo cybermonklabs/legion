@@ -121,7 +121,8 @@ var brokerPersonScopes = []string{model.ScopePerson}
 //     its prose, as the broker's own 429s do.
 //   - 503 BROKER_UNAVAILABLE — the broker produced no answer, so the token was never judged. It
 //     is a 503 for the reason OIDC_ISSUER_UNAVAILABLE is: a caller told its token was refused
-//     would discard a token that may be perfectly live, where a 503 asks it to come back.
+//     would discard a token that may be perfectly live, where a 503 asks it to come back. It
+//     carries Retry-After (brokerUnavailableRetryAfter), and its words name no wait of their own.
 func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if s.deps.BrokerTokens == nil {
 		return model.Actor{}, false, errNoBrokerConfigured()
@@ -153,8 +154,10 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// The class only, as serviceTokenActor logs one: this runs before any authorization, so
 		// anything the caller chose would be theirs to write into the operator's log.
 		slog.Warn("dispatch: the secrets broker could not be reached to check an access token", "error", err)
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
-			"the secrets broker cannot be reached; try again in a minute")
+		refusal := errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
+			"the secrets broker cannot be reached; try again after Retry-After")
+		refusal.retryAfter = brokerUnavailableRetryAfter
+		return model.Actor{}, false, refusal
 	}
 	// A token the broker scoped to its person holds the person scope: that token is the person's
 	// own agent acting for them, so it reads, writes and answers their questions as they do. No
@@ -214,3 +217,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	accesslog.Note(r.Context(), accesslog.KindBrokerToken, writer)
 	return actor, false, nil
 }
+
+// brokerUnavailableRetryAfter is the Retry-After, in seconds, of a 503 BROKER_UNAVAILABLE: the
+// Envoy listener's for the same fault (cmd/listener, refuseBrokerToken). The introspection client
+// keeps no failed answer (ciphertoken), so a caller that comes back this soon has the broker asked
+// again.
+const brokerUnavailableRetryAfter = 1

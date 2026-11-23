@@ -170,7 +170,7 @@ func TestARefusalWrittenWithAnotherPackagesConstantsIsRead(t *testing.T) {
 		t.Fatalf("no serviceAuth class among %+v", a.classes)
 	}
 	class := a.classes[i]
-	const code, sentence = "OIDC_ISSUER_UNAVAILABLE", "the service-account token issuer cannot be reached; try again in a minute"
+	const code, sentence = "OIDC_ISSUER_UNAVAILABLE", "the service-account token issuer cannot be reached; try again after Retry-After"
 	if !slices.ContainsFunc(class.Refusals, func(o outcome) bool {
 		return o.Status == http.StatusServiceUnavailable && o.Code == code && slices.Equal(o.Messages, []string{sentence})
 	}) {

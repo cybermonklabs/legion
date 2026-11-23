@@ -178,7 +178,7 @@ Agents normally authenticate with a personal `dsp_` token minted in Settings, se
 With `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` set, a Kubernetes pod's projected service-account token is a third bearer credential:
 the server reads the issuer's discovery document in the background from boot, retrying after one second and doubling to thirty while it fails (each failure logged at ERROR at most once a minute), and an issuer that cannot be reached refuses nothing;
 it verifies a JWT-shaped bearer against the issuer's published keys, the configured audience, and the token's expiry.
-Until the document has been read, a JWT-shaped bearer is `503 OIDC_ISSUER_UNAVAILABLE`, never a 401, and every other credential is served.
+Until the document has been read, and while a token's key cannot be read from the issuer's key set, a JWT-shaped bearer is `503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1`, as the secrets broker answers it, never a 401, and every other credential is served.
 Half the pair refuses to boot, naming the missing variable; neither leaves bearer handling exactly as it is without them.
 A verified caller acts as the `session` it names in the request body, and every actor it writes carries `service`, the token's verified subject (`system:serviceaccount:<namespace>:<name>`)
 — set from the token, never from the body.
@@ -205,7 +205,7 @@ Each refusal is its own code and none repeats the token:
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
 it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
-nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
+nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` with `Retry-After: 1` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
 The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
@@ -589,6 +589,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
   The issuer's discovery document is read in the background from boot, on the service-account issuer's schedule (above), and an issuer that cannot be reached refuses nothing:
   until the document has been read, `/auth/start` and the callback answer `503 SIGNIN_UNAVAILABLE`, and the rest of Dispatch serves.
+  Every `503 SIGNIN_UNAVAILABLE` carries `Retry-After: 1`, and its words, "try again in a moment", name no wait of their own.
   A sign-in in flight (its state, its nonce, the page it returns to and when it lapses, ten minutes after it started) travels in the browser's `dispatch_oauth_state` cookie, signed under a key derived from the current signing key for that purpose alone, and no process keeps it:
   a sign-in one process started completes on whichever process the issuer's redirect reaches, given one `DISPATCH_SERVER_URL` on every process:
   the exchange must send the callback URL the sign-in started with, and each process builds it from that setting, or without one from the request's `Host`.

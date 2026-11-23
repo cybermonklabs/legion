@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -624,7 +625,7 @@ func issuerNamed(w http.ResponseWriter, identity tokenIdentity, issuers []string
 // (ACCOUNT_TOKENS_OFF), a token that has expired, one that does not verify — which for a Google
 // token includes one naming no verified account, since the email claim is what names the caller
 // — and one that lives longer than machine.MaxTokenLoginLifetime from its issue, so a copied
-// token is spendable for at most an hour. Each is a 401. A Kubernetes token whose issuer the
+// token is spendable for at most an hour. Each is a 401. A token of either kind whose issuer the
 // broker cannot read yet is 503 OIDC_ISSUER_UNAVAILABLE, since nothing was decided about it. No
 // refusal repeats the token.
 func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (tokenIdentity, bool) {
@@ -637,7 +638,7 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (tokenI
 		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
 		if !errors.Is(err, oidc.ErrIssuer) {
 			identity := tokenIdentity{account: claims.Subject, issuer: claims.Issuer.Name}
-			return identity, s.liveIdentityToken(w, err, identity.google, claims.IssuedAt, claims.Expiry)
+			return identity, s.liveIdentityToken(w, err, claims.IssuedAt, claims.Expiry)
 		}
 	}
 	if s.deps.GoogleAccountTokens != nil {
@@ -648,7 +649,7 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (tokenI
 				return tokenIdentity{}, false
 			}
 			identity := tokenIdentity{account: token.Identity.Account, google: true}
-			return identity, s.liveIdentityToken(w, err, identity.google, token.IssuedAt, token.Expiry)
+			return identity, s.liveIdentityToken(w, err, token.IssuedAt, token.Expiry)
 		}
 	}
 	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
@@ -656,16 +657,16 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (tokenI
 }
 
 // liveIdentityToken is identityAccount's judgement of one token its verifier judged, whichever
-// kind it is: err is what the verifier answered, and google whether that was the Google
-// verifier. It reports whether the token is sound, or writes the refusal. A Kubernetes token's
-// oidc.ErrIssuerUnavailable is 503 OIDC_ISSUER_UNAVAILABLE; the Google verifier's outage stays
-// the 401 it was.
-func (s *server) liveIdentityToken(w http.ResponseWriter, err error, google bool, issuedAt, expiry time.Time) bool {
+// kind it is: err is what the verifier answered. It reports whether the token is sound, or writes
+// the refusal. oidc.ErrIssuerUnavailable from either verifier is 503 OIDC_ISSUER_UNAVAILABLE, a
+// Google identity token's as much as a Kubernetes one's: a 401 would say that a token nobody
+// judged was refused.
+func (s *server) liveIdentityToken(w http.ResponseWriter, err error, issuedAt, expiry time.Time) bool {
 	switch {
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
 		return false
-	case !google && errors.Is(err, oidc.ErrIssuerUnavailable):
+	case errors.Is(err, oidc.ErrIssuerUnavailable):
 		writeIssuerUnavailable(w)
 		return false
 	case err != nil:
@@ -885,18 +886,22 @@ func answerUnavailable(w http.ResponseWriter, code, op string) {
 	writeError(w, http.StatusServiceUnavailable, code, op+" failed: a dependency the broker needs is unavailable")
 }
 
-// writeIssuerUnavailable answers a ServiceAccount token whose issuer the broker cannot read yet —
-// its discovery document has not been read, or the token's key is not among the keys the broker
-// holds from its key set's last good read and the key set cannot be read now
-// (oidc.ErrIssuerUnavailable) — with 503 OIDC_ISSUER_UNAVAILABLE and Dispatch's sentence for the
-// same fault (serviceTokenActor). It is a 5xx because nothing was decided about the token: the
-// Legion daemon stops trying after a 4xx and tries again after a 5xx. It logs nothing, since the
-// clusters' verifier the broker builds (cmd/cipherd, loggedIssuers) logs an issuer once when a
-// token of it is first answered this and once when a token of it verifies again, and a line here
-// would repeat the first for every token. The answer recorder (internal/cipher/answer) counts
-// each such answer in broker_answers_total as outcome failed with code HTTP_503, since it reads a
-// code from a 4xx answer alone, and writes no line for it.
+// writeIssuerUnavailable answers a token whose issuer the broker cannot read yet — a
+// ServiceAccount token, or a listed caller's Google identity token — because its discovery
+// document has not been read, or the token's key is not among the keys the broker holds from its
+// key set's last good read and the key set cannot be read now (oidc.ErrIssuerUnavailable). It
+// answers 503 OIDC_ISSUER_UNAVAILABLE with Dispatch's sentence for the same fault
+// (serviceTokenActor) and Retry-After: oidc.IssuerUnavailableRetryAfter, the Envoy listener's
+// answer to the same fault. It is a 5xx because nothing was decided about the token: the Legion
+// daemon stops trying after a 4xx and tries again after a 5xx. It logs nothing: the key set whose
+// read failed logs that once, when the read fails, and once when a read succeeds again
+// (cmd/cipherd, keySetUnreadableMessage and keySetReadableMessage), and an issuer whose discovery
+// document the boot could not read is logged at boot and once when it can be read
+// (loggedIssuers), so a line here would repeat one of those for every token. The answer recorder
+// (internal/cipher/answer) counts each such answer in broker_answers_total as outcome failed with
+// code HTTP_503, since it reads a code from a 4xx answer alone, and writes no line for it.
 func writeIssuerUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(oidc.IssuerUnavailableRetryAfter))
 	writeError(w, http.StatusServiceUnavailable, oidc.IssuerUnavailableCode, oidc.IssuerUnavailableMessage)
 }
 

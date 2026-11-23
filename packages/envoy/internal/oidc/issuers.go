@@ -67,6 +67,16 @@ func NewIssuerSet(issuers []NamedIssuer, audience string, failureSpacing time.Du
 	return set
 }
 
+// OnKeySetChange has change told each time a read finds the key set of an issuer of the set other
+// than the read before it found it (Keys.OnChange): the issuer, the key set's address, and the
+// read's error, nil for a read that succeeds after one that failed. A caller sets it before the
+// set reads anything: before Boot, Run and the first token.
+func (s *IssuerSet) OnKeySetChange(change func(issuer NamedIssuer, keys string, err error)) {
+	for _, entry := range s.entries {
+		entry.verifier.onKeySetChange = func(keys string, err error) { change(entry.issuer, keys, err) }
+	}
+}
+
 // VerifyClaims checks raw against the issuer its iss names, and answers the claims and that
 // issuer, unmarshalling the verified payload into each of into through that issuer's
 // LazyVerifier (Verifier.VerifyClaims): the one way a caller of the set reads a claim Claims does

@@ -524,17 +524,18 @@ func TestTheBrokerBootsWithAnIssuerItCannotRead(t *testing.T) {
 		if got := recordsWith(broker.Log(), issuerReadableMessage, map[string]any{"name": "b"}); len(got) != 1 {
 			t.Fatalf("B's recovery wrote %d lines %q, want one:\n%s", len(got), issuerReadableMessage, broker.Log())
 		}
-		if got := recordsWith(broker.Log(), issuerUnreadableMessage, map[string]any{"name": "b"}); len(got) != 0 {
-			t.Fatalf("the tokens of B answered 503 after the boot's line said B was not read wrote %d lines %q, want none:\n%s", len(got), issuerUnreadableMessage, broker.Log())
+		if got := recordsWith(broker.Log(), keySetUnreadableMessage, map[string]any{"name": "b"}); len(got) != 0 {
+			t.Fatalf("the tokens of B answered 503 while B's discovery document failed wrote %d lines %q, want none: they read no key set:\n%s", len(got), keySetUnreadableMessage, broker.Log())
 		}
 	})
 }
 
 // TestAKeySetTheBrokerCannotReadIsAnswered503: the broker reads B's discovery document at boot, and
 // B's key set fails before any token is checked. A token of B gets 503 OIDC_ISSUER_UNAVAILABLE at
-// enrollment and at the token login, and fifty tokens of B sent within 5 seconds cost B's issuer
-// at most two key-set requests. Once the key set answers, a token of B passes both routes within
-// 15 seconds.
+// enrollment and at the token login, fifty tokens of B sent within 5 seconds cost B's issuer at
+// most two key-set requests, and the broker logs one line naming B and its key set for all of
+// them. Once the key set answers, a token of B passes both routes within 15 seconds, and the broker
+// logs one line that B's key set can be read again.
 func TestAKeySetTheBrokerCannotReadIsAnswered503(t *testing.T) {
 	a, b := oidctest.New(t), oidctest.New(t)
 	aKey, bKey := a.PublishKey(t, "a-key"), b.PublishKey(t, "b-key")
@@ -582,6 +583,11 @@ func TestAKeySetTheBrokerCannotReadIsAnswered503(t *testing.T) {
 		if fetches := b.JWKSFetches() - fetchesBefore; fetches > 2 {
 			t.Fatalf("B's key set was requested %d times for the tokens of B, want at most 2: a key-set read that failed is not made again for 5 seconds", fetches)
 		}
+		unreadable := map[string]any{"severity": "WARNING", "name": "b", "url": b.URL(), "keys": b.URL() + "/keys"}
+		broker.AwaitRecord(t, keySetUnreadableMessage, unreadable)
+		if got := recordsWith(broker.Log(), keySetUnreadableMessage, map[string]any{"name": "b"}); len(got) != 1 {
+			t.Fatalf("the tokens of B wrote %d lines %q, want one:\n%s", len(got), keySetUnreadableMessage, broker.Log())
+		}
 	})
 
 	b.FailKeys(0)
@@ -603,6 +609,11 @@ func TestAKeySetTheBrokerCannotReadIsAnswered503(t *testing.T) {
 			}) {
 				t.Fatalf("a token of B at %s was not answered %d within 15 seconds of B's key set answering; it last answered %s", route.name, route.want, last)
 			}
+		}
+		readable := map[string]any{"severity": "INFO", "name": "b", "url": b.URL(), "keys": b.URL() + "/keys"}
+		broker.AwaitRecord(t, keySetReadableMessage, readable)
+		if got := recordsWith(broker.Log(), keySetReadableMessage, map[string]any{"name": "b"}); len(got) != 1 {
+			t.Fatalf("B's key set reading again wrote %d lines %q, want one:\n%s", len(got), keySetReadableMessage, broker.Log())
 		}
 	})
 }

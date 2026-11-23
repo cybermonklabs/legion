@@ -415,7 +415,7 @@ describe("DispatchClient's writes", () => {
   // R1-8710 (the review of 87105ed7e8): a 5xx can come after Dispatch committed the write, so a
   // write that runs out of attempts on 5xx answers ends unsettled, carrying its key, with the last
   // answer as `last`. It used to throw that answer as it stood, which a caller reads as a refusal
-  // ("try again in a minute") and resends under a new key.
+  // ("try again after Retry-After") and resends under a new key.
   test("stop after five attempts and end unsettled, the last attempt's refusal as its cause", async () => {
     const { fetchImpl, sent } = scripted(Array.from({ length: 5 }, () => page(502, "Bad Gateway")));
     const { retry, pauses } = pacing();
@@ -441,7 +441,7 @@ describe("DispatchClient's writes", () => {
 
   // The reviewer's R1-8710 case: a silence cut, then Dispatch's broker-token gate answering 503
   // BROKER_UNAVAILABLE (before its keyed layer reads the key) on every later attempt, echoed or
-  // not. The write ends unsettled with its key, never "try again in a minute".
+  // not. The write ends unsettled with its key, never "try again after Retry-After".
   test.each([
     ["un-echoed", false],
     ["echoed", true],
@@ -451,7 +451,7 @@ describe("DispatchClient's writes", () => {
       refusal(
         503,
         "BROKER_UNAVAILABLE",
-        "the secrets broker cannot be reached; try again in a minute"
+        "the secrets broker cannot be reached; try again after Retry-After"
       );
     const { fetchImpl, sent } = scripted([stall, ...Array.from({ length: 30 }, unavailable)], {
       echo: (request) => echoes && request > 1,

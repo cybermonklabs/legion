@@ -574,7 +574,7 @@ const KINDS: readonly Kind[] = [
       refused(
         503,
         "BROKER_UNAVAILABLE",
-        "the secrets broker cannot be reached; try again in a minute"
+        "the secrets broker cannot be reached; try again after Retry-After"
       ),
   },
   {

@@ -84,10 +84,13 @@ one of them cannot be read. Until it reads an issuer, it answers the tokens of t
 read: the token names a key that the broker does not hold from its last good read of the issuer's
 key set, and the key set cannot be read now. A token whose key the broker holds still verifies.
 It reads a key set that failed again at most once in 5 seconds, however many tokens arrive. A 503
-decides nothing about the token, so the Legion daemon and a pod's renewer try again. At its start
-the broker logs one line for each issuer, saying whether it read it. After that it logs one line
-when it first answers a token of an issuer it has read this way, and one line when an issuer it
-could not read, at its start or since, can be read again ([Health and logs](#health-and-logs)).
+decides nothing about the token, so the Legion daemon and a pod's renewer try again; every such
+answer carries `Retry-After: 1`, as the Envoy listener's does. At its start the broker logs one
+line for each issuer, saying whether it read it, and one line more when an issuer it could not
+read then can be read. Each issuer's key set logs its own lines, which its reads drive and not
+the answers to tokens: one line when a read of it fails, even while the keys the broker holds
+still verify every token, and one when a read of it succeeds again
+([Health and logs](#health-and-logs)).
 
 The token exchange takes the tokens of the issuers that `BROKER_EXCHANGE_K8S_ISSUER` names, by
 their names in `BROKER_K8S_OIDC_ISSUER` and separated by commas (`first,second`), for
@@ -149,7 +152,9 @@ callers use the Google audience: listing an API caller does not give it a machin
 its account as a VM service does. A project's default Google accounts and Google-managed service
 agents are refused here as they are in `BROKER_VM_SERVICES`. No secret is shared between the
 broker and its callers. A token that lives longer than an hour from its issue is refused, and
-an account the list does not name is answered `403 ACCOUNT_NOT_LISTED`. Through those routes
+an account the list does not name is answered `403 ACCOUNT_NOT_LISTED`. A Google identity token
+whose key the broker cannot read, because Google's key set cannot be read now, is answered
+`503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1`, as a cluster's token is. Through those routes
 Dispatch lists what waits on a person and relays a person's machine-login decisions, their
 machine-login revokes and their sign-in revokes; it decides no secret request
 ([Network and trust](#network-and-trust)).
@@ -895,7 +900,42 @@ A machine holding a Google identity token — a Compute Engine VM, a pod on Goog
 Engine, or anything a workload identity pool mints one for — trades that token at the broker's
 token exchange for a Dispatch access token and the machine login that trade mints. It holds no
 stored credential and no person approves it. Set the Google audience and list each exchanging
-account as a VM service. The remaining fleet settings are optional, subject to these checks:
+account as a VM service.
+
+Whether or not an issuer's key set can be read, the token exchange refuses with
+`400 invalid_request` a token that does not expire within the broker's window for its type: an
+hour for GitHub's and Google's tokens, and 24 hours for a cluster's. The 24 hours is the broker's
+own window, not a limit Kubernetes sets: the kubelet rotates a projected token once 80 percent of
+the lifetime the pod asked for has passed, or after 24 hours, and a cluster's own cap on that
+lifetime is named by no setting of the broker's. The cluster tokens Legion's own pods send to the
+exchange are projected for 3,600 seconds. A token is refused for this when it has no `exp`, an
+`exp` of null, of 0 or of any value under 1, or an `exp` further ahead than the window. The tokens
+the issuers mint for this deployment are all within it: a GitHub or Google token living a whole
+hour fills its window, and a cluster token of 3,600 seconds sits well inside 24 hours. The library
+the exchange uses admits some of the refused tokens as never expiring.
+
+When a token names a key the broker does not hold and its issuer's key set cannot be read now,
+the exchange answers as follows. This covers a cluster's, a machine's, a person's and a workflow
+run's token, and in a person's sign-in the person's token as well as the machine's.
+
+- `400 invalid_request`, with no `Retry-After`, for a token the library refuses whatever key
+  signed it: its `exp` is not a number or is past; its `iat` is older than its type's window, or
+  is not a number; its `nbf` is not a number (a null `nbf` counts as none); its `iss` is not its
+  type's issuer; or, for a workflow run's token, it carries no `jti` string (none, an empty one,
+  or one that is not a string), or one the replay store holds as presented.
+- `503 OIDC_ISSUER_UNAVAILABLE` with `Retry-After: 1` for any other token, including one whose
+  only fault is an `iat` or an `nbf` in the future, which a wait can make valid. It is never
+  refused as a token that does not verify. The broker's own checks, made once the token
+  verifies (its audience, and whether an entry lists it), are not made meanwhile, so a token
+  that would fail only those gets 503. So does a workflow run's token when the replay store
+  cannot be read either, since nothing then says whether its `jti` was presented.
+
+One residual is accepted. During such an outage, a token anyone can forge learns from a 400
+against a 503 whether a `jti` it names was presented. Only GitHub's `jti`s are stored, they are
+random, naming one takes the token that carries it, and the read that answers admits nothing
+and writes nothing.
+
+The remaining fleet settings are optional, subject to these checks:
 
 - `BROKER_GOOGLE_OIDC_AUDIENCE`: the audience the machines ask their metadata server for. The
   issuer is Google's, `https://accounts.google.com`, unless `BROKER_GOOGLE_OIDC_ISSUER` names a
@@ -1920,8 +1960,9 @@ severity it is written at (WARN is written `WARNING`). The lines worth alerting 
 | `approval sign-in: reach the provider issuer=<issuer> error=…` | At ERROR: the provider's discovery document could not be read at a sign-in, and the page answered `503` naming the issuer. |
 | `broker: kubernetes issuer name=<name> url=<issuer URL> read=<true or false>` | At startup, one line for each issuer of `BROKER_K8S_OIDC_ISSUER` (with no `name` for one bare URL), after one try to read each, all at once: `read=true` when its discovery document was read, `read=false` when it was not, and the broker then reads it in the background and answers its tokens `503 OIDC_ISSUER_UNAVAILABLE` until it can. No issuer refuses the start. Those 503 answers write no line of their own: this line said the issuer could not be read. |
 | `oidc: discover the issuer; retrying in the background, and what needs it answers 503 meanwhile issuer=<issuer URL> error=…` | At ERROR, at most once a minute for each issuer: the background read of a cluster's issuer failed. The broker tries again with a wait that doubles from 1 second to 30 seconds, and reads the issuer at most once in 5 seconds. Check the broker's route to that issuer. |
-| `broker: kubernetes issuer cannot be read name=<name> url=<issuer URL> error=…` | At WARN: the broker answered a token of an issuer it had read `503 OIDC_ISSUER_UNAVAILABLE`, because the token names a key that the broker does not hold and the issuer's key set cannot be read. `error` names the key set it could not read. The broker writes this line once, not once for each token, until the issuer can be read again. Check the broker's route to that issuer. |
-| `broker: kubernetes issuer can be read again name=<name> url=<issuer URL>` | At INFO, once for each issuer that could not be read, as the startup's `read=false` line or the line above said, when it can be read again: a token of it verifies, the token exchange reads a key of it, or the background read of an issuer the startup could not read succeeds, whichever comes first. From then the broker checks that issuer's tokens. |
+| `broker: kubernetes issuer can be read again name=<name> url=<issuer URL>` | At INFO, once for each issuer the startup could not read, as its `read=false` line said, when it can be read: a token of it verifies, the token exchange reads a key of it, or the background read of it succeeds, whichever comes first. From then the broker checks that issuer's tokens. |
+| `broker: key set cannot be read name=<name> url=<issuer URL> keys=<key set URL> error=…` | At WARN: a read of a key set the broker checks callers' tokens against failed, where the read before it succeeded or there was none. That is a cluster issuer's key set (`name=` as `BROKER_K8S_OIDC_ISSUER` names it, none for one bare URL), Google's (`url=` is `BROKER_GOOGLE_OIDC_ISSUER`) or the token exchange's GitHub issuer's (`url=` is `BROKER_EXCHANGE_GITHUB_ISSUER`). A token whose key the broker does not hold is answered `503 OIDC_ISSUER_UNAVAILABLE` meanwhile, except a token the library refuses whatever key signed it, which the token exchange refuses `400 invalid_request` (see the token exchange under [What to run](#what-to-run)); the NATS auth service refuses its connection; a key the broker holds from the key set's last good read still answers. `error` names the key set and the reason, never a token. The broker writes this line once, however many tokens and background refreshes read the key set, until a read of it succeeds. Check the broker's route to that issuer. |
+| `broker: key set can be read again name=<name> url=<issuer URL> keys=<key set URL>` | At INFO, once, when a read of a key set succeeds after the line above. From then the broker checks the tokens of that issuer against what it read. |
 | `broker listening addr=<host:port>` | Startup finished: configuration, migrations and the first read of the namespace all succeeded, and every port is bound: the API's, at this address; the airlock's proxy port, where the deployment has one (`airlock proxy listening addr=<host:port>`, just after); the edge, where the deployment has one (the line below); and the metrics port. |
 | `broker edge listening addr=<host:port> url=<BROKER_EDGE_URL> verification_uri=<BROKER_EDGE_MACHINE_LOGIN_URL> workspace_domains=<domains>` | After `broker listening`, and after `airlock proxy listening` where the deployment has an airlock, on a broker with `BROKER_EDGE_LISTEN_ADDR` set: the edge is bound at this address, takes request objects and proofs naming `url`, sends a person to `verification_uri`, and refuses a login on any of `workspace_domains` ([The edge](#the-edge-device-login-from-outside-the-private-network)). A broker with no edge writes no such line. |
 | `broker metrics listening addr=<host:port>` | After `broker listening`, after `airlock proxy listening` where the deployment has an airlock, and after `broker edge listening` where it has an edge: the metrics port is bound at this address ([Metrics](#metrics)). A pod that cannot bind it does not start, and logs `broker: fatal` naming the address. |

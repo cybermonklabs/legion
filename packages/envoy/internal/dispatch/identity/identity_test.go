@@ -269,10 +269,19 @@ func TestWriteErrorMapsNoIdentityToUnauthorized(t *testing.T) {
 	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), `"code":"NO_IDENTITY"`) {
 		t.Errorf("no identity: status %d body %s, want 401 NO_IDENTITY", w.Code, w.Body.String())
 	}
+	if got := w.Header().Get("Retry-After"); got != "" {
+		t.Errorf("no identity: Retry-After %q, want none: no wait changes a 401", got)
+	}
 	w = httptest.NewRecorder()
 	WriteError(w, fmt.Errorf("%w: %w", ErrSignInUnavailable, fmt.Errorf("oidc: refresh: %w: oauth2: 503", oidc.ErrIssuerUnavailable)))
-	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"code":"SIGNIN_UNAVAILABLE"`) || !strings.Contains(w.Body.String(), "try again in a minute") {
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), `"code":"SIGNIN_UNAVAILABLE"`) || !strings.Contains(w.Body.String(), "try again in a moment") {
 		t.Errorf("sign-in issuer unreachable: status %d body %s, want 503 SIGNIN_UNAVAILABLE", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Retry-After"); got != "1" {
+		t.Errorf("sign-in issuer unreachable: Retry-After %q, want \"1\", the wait its words point to", got)
+	}
+	if strings.Contains(w.Body.String(), "minute") {
+		t.Errorf("sign-in issuer unreachable: body %s names a wait of its own beside Retry-After", w.Body.String())
 	}
 	// An issuer outage that is not the sign-in's (a service-account token's issuer) is not
 	// SIGNIN_UNAVAILABLE: only ErrSignInUnavailable answers that, whatever else the error carries.

@@ -73,6 +73,9 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
+	// judges is each JWT token type the exchange registered, keyed by its name, with the judgement
+	// of its tokens, which exchangeGrant asks of a subject token the library stopped short of.
+	judges map[string]*tokenJudge
 	// verificationURL is Config.VerificationURL, and "" when it named no page, so the RFC 8628
 	// factories are not composed: what the broker mounts its device authorization route on, what
 	// its metadata document says, and the page a device authorization on the broker's own address
@@ -217,6 +220,9 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		}
 		c.Exchange.Policy = policy
 	}
+	// The JWT token types and their judges, one value for the library's configuration and the
+	// exchange's own judgement of a subject token the library stopped short of (unjudgedSubject).
+	judges := c.Exchange.judges()
 	cfg := &oauth2.Config{
 		GlobalSecret:                c.Secret,
 		RFC8628CodeLifespan:         c.DeviceLifetime,
@@ -243,7 +249,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		// that window the broker's own.
 		DPoPClockSkew:             c.ProofSkew,
 		DPoPProofLifespan:         time.Second,
-		RFC8693TokenTypes:         c.Exchange.tokenTypes(),
+		RFC8693TokenTypes:         tokenTypes(judges),
 		DefaultRequestedTokenType: tokenTypeAccessToken,
 	}
 	cfg.ClientAuthenticationStrategy = newExchangeClientAuth(store, cfg)
@@ -279,7 +285,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 		reservations[reservation.Session] = reservation.Principal
 	}
 	p := &Provider{
-		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange,
+		oauth: provider, store: store, strategy: strategy, exchange: c.Exchange, judges: judges,
 		verificationURL: c.VerificationURL, grantTypes: grantTypes,
 		subjectTokenTypes: subjectTokenTypes(cfg.RFC8693TokenTypes),
 		// Read from the configuration the provider was composed with rather than written down

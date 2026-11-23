@@ -1054,7 +1054,8 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
-	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
+	// brokerTokenActor's 429 and 503 BROKER_UNAVAILABLE, serviceTokenActor's 503
+	// OIDC_ISSUER_UNAVAILABLE, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
 	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
 	// writes the header.
 	retryAfter int
@@ -1226,12 +1227,15 @@ var (
 // never falls through to the personal-token lookup, so OIDC_TOKEN_INVALID tells
 // an operator the token was verified and refused rather than simply unknown. A
 // token the verifier could not judge because its issuer has not been discovered
-// is a 503 OIDC_ISSUER_UNAVAILABLE, never a 401: the caller retries rather than
-// reads its token as refused.
+// is a 503 OIDC_ISSUER_UNAVAILABLE with Retry-After: oidc.IssuerUnavailableRetryAfter, the
+// secrets broker's and the Envoy listener's answer to the same fault, never a 401: the caller
+// retries rather than reads its token as refused.
 func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, bool, error) {
 	claims, err := s.deps.OIDC.Verify(r.Context(), token)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, oidc.IssuerUnavailableCode, oidc.IssuerUnavailableMessage)
+		refusal := errorf(http.StatusServiceUnavailable, oidc.IssuerUnavailableCode, oidc.IssuerUnavailableMessage)
+		refusal.retryAfter = oidc.IssuerUnavailableRetryAfter
+		return model.Actor{}, false, refusal
 	}
 	if err != nil {
 		reason := oidc.Reason(err)

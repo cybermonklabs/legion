@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/cipher/leasetime"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
@@ -243,17 +244,29 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 		refuse(fmt.Sprintf("%s --pod: generate the login key: %v", prefix, err))
 		return 1
 	}
-	// The identifier names this pod in the signed request object; the broker names the credential
-	// it issues from the token's own subject, never from this.
-	request, err := record.Sign(launcherKey, base.Raw(), []record.AuthorizationDetail{
-		{Type: "launcher_credential", Identifier: identity.PodUID, Service: service},
-	}, "", "", nil, time.Now())
-	if err != nil {
-		refuse(fmt.Sprintf("%s --pod: sign the login request: %v", prefix, err))
+	c := newClient(base)
+	// Each of the broker's three calls below is made again after a 503 (untilAvailable). The
+	// login's request object is signed again for each call: the broker holds one to a minute of
+	// skew and refuses a jti it has seen, so one signed before a wait might not be taken after it.
+	var credentialID string
+	var signErr error
+	err = untilAvailable(stderr, prefix, "log in", identity, base, func() error {
+		// The identifier names this pod in the signed request object; the broker names the
+		// credential it issues from the token's own subject, never from this.
+		request, err := record.Sign(launcherKey, base.Raw(), []record.AuthorizationDetail{
+			{Type: "launcher_credential", Identifier: identity.PodUID, Service: service},
+		}, "", "", nil, time.Now())
+		if err != nil {
+			signErr = err
+			return err
+		}
+		credentialID, err = c.TokenLogin(ctx, token, request)
+		return err
+	})
+	if signErr != nil {
+		refuse(fmt.Sprintf("%s --pod: sign the login request: %v", prefix, signErr))
 		return 1
 	}
-	c := newClient(base)
-	credentialID, err := c.TokenLogin(ctx, token, request)
 	if err != nil {
 		refuse(podRefusal(prefix, "log in", identity, base, err))
 		return 1
@@ -268,7 +281,13 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 		refuse(fmt.Sprintf("%s --pod: thumbprint: %v", prefix, err))
 		return 1
 	}
-	enrollmentID, alreadyLive, err := c.CreatePodEnrollment(ctx, &podLauncherSigner{key: launcherKey, credentialID: credentialID}, identity.runtimeID(), thumbprint, token, projects.keys)
+	var enrollmentID string
+	var alreadyLive bool
+	err = untilAvailable(stderr, prefix, "enrol", identity, base, func() error {
+		var err error
+		enrollmentID, alreadyLive, err = c.CreatePodEnrollment(ctx, &podLauncherSigner{key: launcherKey, credentialID: credentialID}, identity.runtimeID(), thumbprint, token, projects.keys)
+		return err
+	})
 	if err != nil {
 		refuse(podRefusal(prefix, "enrol", identity, base, err) + projects.refusal(err))
 		return 1
@@ -276,8 +295,12 @@ func enrolPod(service, tokenFile, out string, projects podProjects, base ciphera
 	if alreadyLive {
 		// The broker gave back the enrollment this key already holds without extending its
 		// lease, so a pod that only ever re-runs enroll would let that lease lapse.
-		if _, err := c.RenewEnrollment(ctx, &fileSigner{key: key, enrollmentID: enrollmentID}, enrollmentID, token); err != nil {
-			refuse(podRefusal(prefix, "renew the lease of the enrollment it already holds", identity, base, err))
+		const renewal = "renew the lease of the enrollment it already holds"
+		if err := untilAvailable(stderr, prefix, renewal, identity, base, func() error {
+			_, err := c.RenewEnrollment(ctx, &fileSigner{key: key, enrollmentID: enrollmentID}, enrollmentID, token)
+			return err
+		}); err != nil {
+			refuse(podRefusal(prefix, renewal, identity, base, err))
 			return 1
 		}
 	}
@@ -327,6 +350,48 @@ func podRefusal(prefix, what string, identity podIdentity, base cipheraddr.Addre
 		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, answered, brokerSource(base))
 	}
 	return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s", prefix, identity, what, refusalText(brokerSource(base), err))
+}
+
+// podUnavailableBudget is how long enroll --pod waits in all, through the broker's 503 answers to
+// one of its calls, before it gives up and exits 1 as it does on any refusal. A 503 decides
+// nothing about the pod: the broker could not read the issuer of its token
+// (OIDC_ISSUER_UNAVAILABLE), could not ask Dispatch, or a front door had no broker behind it.
+// Two minutes outlasts the broker's own retry of an issuer it cannot read (a key set at most once
+// in 5 seconds, a discovery document at a wait doubling to 30 seconds) and still ends a run that
+// a pod's start is waiting on.
+const podUnavailableBudget = 2 * time.Minute
+
+// podRetryWait is the timer enroll --pod waits on between two calls (untilAvailable): a test
+// replaces it to read the waits without sleeping through them.
+var podRetryWait = time.After
+
+// untilAvailable makes call until it answers anything but a 503, and answers that. Between two
+// calls it waits the 503's Retry-After where it names one, and otherwise agent-secrets renew's
+// backoff (leasetime.NextBackoff: 2 seconds, doubling to 10), and prints one line: podRefusal's
+// for what, which says what could not be done and the answer, and the wait. When the next wait
+// would take its waits past podUnavailableBudget it waits no more and answers the last 503, which
+// the caller refuses as it refuses every other answer.
+func untilAvailable(stderr io.Writer, prefix, what string, identity podIdentity, base cipheraddr.Address, call func() error) error {
+	backoff := leasetime.RenewBackoffInitial
+	var waited time.Duration
+	for {
+		err := call()
+		var refused *apiError
+		if !errors.As(err, &refused) || refused.Status != http.StatusServiceUnavailable {
+			return err
+		}
+		wait := backoff
+		if refused.RetryAfter > 0 {
+			wait = refused.RetryAfter
+		}
+		if waited+wait > podUnavailableBudget {
+			return err
+		}
+		fmt.Fprintf(stderr, "%s; trying again in %s\n", podRefusal(prefix, what, identity, base, err), wait)
+		<-podRetryWait(wait)
+		waited += wait
+		backoff = leasetime.NextBackoff(backoff)
+	}
 }
 
 // podProjects is the Dispatch projects a pod names and where enroll --pod read them: --projects

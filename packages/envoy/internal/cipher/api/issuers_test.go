@@ -22,8 +22,8 @@ import (
 )
 
 // issuerUnavailableMessage is the sentence a 503 OIDC_ISSUER_UNAVAILABLE carries, Dispatch's own
-// for the same fault.
-const issuerUnavailableMessage = "the service-account token issuer cannot be reached; try again in a minute"
+// for the same fault. It names no wait of its own: the answer's Retry-After is the wait.
+const issuerUnavailableMessage = "the service-account token issuer cannot be reached; try again after Retry-After"
 
 // withNamedIssuers names the test server's issuers as BROKER_K8S_OIDC_ISSUER's
 // first=<URL>,second=<URL> does: first is the server's own issuer, which mints every token the

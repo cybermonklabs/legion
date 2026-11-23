@@ -226,11 +226,12 @@ func identityRefusal(err error, reason string) error {
 // that client makes a refused call again on the shared token with no role mark (cmd/dispatch's
 // listener client), so an issuer outage would send Dispatch's role-route messages unmarked, where
 // no takeover copies them for the role's next holder. Every other outcome is the 401 every other
-// refused credential gets here.
+// refused credential gets here. The 503's words name no wait of their own: Retry-After is the wait,
+// oidc.IssuerUnavailableRetryAfter, the secrets broker's and Dispatch's for the same fault.
 func refuseIdentityToken(w http.ResponseWriter, err error) {
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
-		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "this identity token could not be checked; try again in a minute")
+		w.Header().Set("Retry-After", strconv.Itoa(oidc.IssuerUnavailableRetryAfter))
+		writeJSONError(w, http.StatusServiceUnavailable, "this identity token could not be checked; try again after Retry-After")
 		return
 	}
 	writeJSONError(w, http.StatusUnauthorized, "unauthorized")
@@ -491,7 +492,8 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 // with no introspection left in its bucket is the 429 that bucket exists to write, carrying the
 // wait it must come back after; nothing of it reached the broker. Every other outcome is the
 // same 401 and the same body every other refused credential gets here, so the answer tells an
-// unauthenticated caller nothing about which credentials this listener takes.
+// unauthenticated caller nothing about which credentials this listener takes. No 503's words name
+// a wait of their own: Retry-After is the wait.
 func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, brokers *brokerTokens, err error) {
 	reason := brokerTokenReason(err)
 	logger.Warn("listener: broker token rejected",
@@ -503,13 +505,13 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
 	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")
+		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again after Retry-After")
 	case errors.Is(err, ciphertoken.ErrRateLimited):
 		w.Header().Set("Retry-After", strconv.Itoa(brokers.retryAfter()))
 		writeJSONError(w, http.StatusTooManyRequests, "too many access tokens checked from this address")
 	case reason == brokerTokenCheckFailed:
 		w.Header().Set("Retry-After", "1")
-		writeJSONError(w, http.StatusServiceUnavailable, "this access token could not be checked; try again in a minute")
+		writeJSONError(w, http.StatusServiceUnavailable, "this access token could not be checked; try again after Retry-After")
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}

@@ -276,6 +276,12 @@ refused `ALREADY_ENROLLED` — and records what the broker said in `<out>/enroll
 every later `agent-secrets` call in that directory reads out to the caller. A run that succeeds
 removes it.
 
+A `503` decides nothing about the pod — the broker could not read its token's issuer
+(`OIDC_ISSUER_UNAVAILABLE`), could not ask Dispatch, or a front door had no broker behind it — so
+`enroll --pod` makes the same call again, after the answer's `Retry-After` where it names one and
+otherwise after 2 seconds doubling to 10, and prints one line for each wait. It gives up, and
+refuses as above, once the next wait would take its waits for one call past two minutes.
+
 A pod whose account the broker's `BROKER_POD_OPERATORS` maps to a person acts for that person, and
 names its Dispatch projects as that person's session does: `enroll --pod` sends the list
 `AGENT_SECRETS_PROJECTS` holds, or `--projects` over it. The broker takes the list only when
