@@ -793,8 +793,10 @@ export class DispatchApiClient {
    *  none, and none for any other method that names none - that starts over as the request's body
    *  goes up (an upload's), as the response's headers arrive and as each piece of its body does,
    *  `read` included: a transfer that keeps moving goes on however slowly, either way, and one
-   *  that stops fails as headers that never come do. A caller's `init.signal` still aborts the
-   *  request, as itself. */
+   *  that stops fails as headers that never come do. The browser reports an upload's body as gone
+   *  up once its socket buffers take it, which they do megabytes ahead of the line, so an upload
+   *  under a key also counts Dispatch saying it has read more of the body (`askReceived`). A
+   *  caller's `init.signal` still aborts the request, as itself. */
   private async exchange<T>(
     path: string,
     init: RequestInit,
@@ -811,15 +813,26 @@ export class DispatchApiClient {
     if (limit === null) return read(await this.answered(path, init, undefined, uploaded));
     const deadline = new AbortController();
     let timer = setTimeout(() => deadline.abort(), limit);
-    const caller = init.signal ?? undefined;
-    const arrived = () => {
+    // The latest moment the request is known to have moved; the deadline is `limit` after it.
+    let movedAt = performance.now();
+    const moved = (at: number) => {
+      if (at <= movedAt) return;
+      movedAt = at;
       clearTimeout(timer);
-      timer = setTimeout(() => deadline.abort(), limit);
+      timer = setTimeout(() => deadline.abort(), Math.max(0, at + limit - performance.now()));
     };
+    const caller = init.signal ?? undefined;
+    const signal =
+      caller === undefined ? deadline.signal : AbortSignal.any([caller, deadline.signal]);
+    const key = new Headers(init.headers).get(IDEMPOTENCY_KEY_HEADER);
+    const asking =
+      init.body instanceof FormData && this.upload !== undefined && key !== null
+        ? this.askReceived(key, limit, signal, () => movedAt, moved)
+        : undefined;
     try {
-      const signal =
-        caller === undefined ? deadline.signal : AbortSignal.any([caller, deadline.signal]);
-      return await read(await this.answered(path, { ...init, signal }, arrived, uploaded));
+      return await read(
+        await this.answered(path, { ...init, signal }, () => moved(performance.now()), uploaded)
+      );
     } catch (error) {
       // An answer Dispatch gave stays its answer and the caller's abort stays the caller's: only
       // what the deadline cut short is a timeout.
@@ -831,7 +844,58 @@ export class DispatchApiClient {
       throw error;
     } finally {
       clearTimeout(timer);
+      asking?.abort();
     }
+  }
+
+  /** While an upload under `key` waits for its answer, asks Dispatch every quarter of `limit` that
+   *  it has not moved how much of the key's body it has read
+   *  (`GET /api/v1/request-keys/{key}/received`), and tells `moved` of each answer that is more
+   *  than the one before, at the time the earlier ask went out: the new bytes arrived after it, so
+   *  an upload whose line went silent still fails within `limit` of its last byte. An ask that
+   *  fails or is refused tells nothing. Answers the controller that stops the asking. */
+  private askReceived(
+    key: string,
+    limit: number,
+    request: AbortSignal,
+    movedAt: () => number,
+    moved: (at: number) => void
+  ): AbortController {
+    const stop = new AbortController();
+    const asking = AbortSignal.any([request, stop.signal]);
+    const everyMs = limit / 4;
+    const path = `/api/v1/request-keys/${encodeURIComponent(key)}/received`;
+    void (async () => {
+      let earlier: { readonly received: number; readonly at: number } | undefined;
+      while (!asking.aborted) {
+        const waited = Promise.withResolvers<void>();
+        const tick = setTimeout(waited.resolve, everyMs);
+        asking.addEventListener("abort", () => waited.resolve(), { once: true });
+        await waited.promise;
+        clearTimeout(tick);
+        if (asking.aborted) return;
+        if (performance.now() - movedAt() < everyMs) continue;
+        const at = performance.now();
+        let received: unknown;
+        try {
+          const response = await this.fetchImpl(path, {
+            credentials: "same-origin",
+            headers: { Accept: "application/json" },
+            signal: AbortSignal.any([asking, AbortSignal.timeout(everyMs)]),
+          });
+          const answer: unknown = response.ok ? await response.json() : undefined;
+          if (typeof answer === "object" && answer !== null && "received" in answer) {
+            received = answer.received;
+          }
+        } catch {
+          received = undefined;
+        }
+        if (typeof received !== "number") continue;
+        if (earlier !== undefined && received > earlier.received) moved(earlier.at);
+        earlier = { received, at };
+      }
+    })();
+    return stop;
   }
 
   /** Dispatch's response to one request, or its refusal as an `ApiError`; a connection that
