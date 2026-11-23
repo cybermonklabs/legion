@@ -199,6 +199,11 @@ type overrides struct {
 	// production mergeStateLadderWait. A whole-daemon test of those reads shortens it, so it waits
 	// out its own wait rather than half a minute a read.
 	mergeStateRetry time.Duration
+	// catchUpRetry is the wait between two reads of one root the boot's catch-up makes after
+	// Dispatch refused it with an error it may stop giving (workflowRuntime.catchUpRetryDelay);
+	// zero is the production catchUpRetryDelay. A whole-daemon test whose Dispatch stand-in refuses
+	// the catch-up's reads shortens it, so each of its boots does not wait out two seconds a read.
+	catchUpRetry time.Duration
 	// appCalls are the bounds of the start's App calls (appCallBounds): their attempt, the retry
 	// between attempts that failed transiently, and the rate-limit policy; nil is
 	// productionAppCalls. A test of the boot's App calls shortens them for the daemons it boots
@@ -473,6 +478,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
+		workflow.catchUpRetryDelay = o.catchUpRetry
 		plan.identity = workflow.identity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
