@@ -756,8 +756,9 @@ read 64 KiB at a time, with its `Content-Length`, and each read restarts the bou
 leaves in one write. The bound counts those reads, not the bytes that leave. Bun's fetch reads the
 next 64 KiB only once the connection's buffers have room for it, and they hold megabytes, so on a
 slow line the reads come seconds apart and the last read comes while megabytes are still to go.
-An upload is cut off while it is still going out when its next read, or the rest of its bytes and
-Dispatch's answer after its last read, take longer than `silenceMs`. Measured in build pods
+An attempt is cut off when its next read takes longer than `silenceMs`, or when the rest of its
+bytes and Dispatch's answer after its last read take longer together, and either can happen while
+the upload is still going out. Measured in build pods
 against a stand-in Dispatch that reads at a fixed rate, with the 20 s bound: at 128 KiB/s an
 upload was cut off 20 s after its last read, 0.88 MiB of its 12 MiB short of the stand-in, and at
 64 KiB/s 20 s after a read part way through, 9.88 MiB short. Once an attempt was cut off for
