@@ -1,8 +1,9 @@
 name: Browser Image
 
 on:
-  # ci.yaml's browser-image job calls this file on every pull request and every merge group
-  # whose diff its `browser_image` filter matches, and on a workflow_dispatch run of ci.yaml,
+  # ci.yaml's browser-image job calls this file on every pull request, merge group and
+  # workflow_dispatch run of a branch whose diff its `browser_image` filter matches, and on a
+  # workflow_dispatch run of ci.yaml that selects every job (main's, or one given every-job),
   # which forces that filter's output; ci.yaml runs on no other event, and in particular on no
   # push to main. This is the one path that pushes this image. The build decides for itself
   # whether to push (the decide step below), and that decision now gates the build itself, so a

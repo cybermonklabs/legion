@@ -38,10 +38,11 @@ its own workflows; this page covers this repository only.
 
 1. **A filter in `changes`** that names every file the job reads (the method is below).
 2. **An output of `changes`** for that filter.
-   Every output carries the dispatched term, since a dispatched run skips the filter step and selects every job:
-   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.<filter> }}`.
+   Every output carries the every-job term, since a run that selects every job (a dispatch of main, or one given `every-job`) skips the filter step:
+   `<filter>: ${{ steps.scope.outputs.every_job == 'true' && 'true' || steps.filter.outputs.<filter> }}`.
+   `ci-router-outputs.test.sh` fails an output without it, since a dispatch of main then leaves its job off.
    A slow suite carries the `full-ci` term too (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
-   `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.<filter> || 'false' }}`.
+   `<filter>: ${{ steps.scope.outputs.every_job == 'true' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.<filter> || 'false' }}`.
 3. **`needs: changes`** on the job, and
    `if: needs.changes.outputs.<filter> == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')`.
    The second term holds the job back on a re-run attempt of a merge-group run, where the group is tested already.

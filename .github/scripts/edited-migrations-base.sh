@@ -18,7 +18,7 @@
 #     the push's last commit alone, so the script exits 2, a check that could not be taken.
 #   * a workflow_dispatch on any other ref that names none: the merge base of HEAD with main,
 #     the newest commit of main the branch holds, which is what the branch lands onto. This is
-#     how a full run of a branch is started by hand (`gh workflow run ci.yaml --ref <branch>`).
+#     a run of a branch started by hand (`gh workflow run ci.yaml --ref <branch>`).
 #     The script fetches the two histories deeper until git finds a commit both hold and every
 #     commit above it is fetched with its parents, so no newer one can hide past the fetch, and
 #     exits 2 when the whole of both shares none, or when git merge-base fails rather than answers.

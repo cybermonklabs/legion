@@ -321,7 +321,9 @@
 #      skipped on every change it selects, and nothing else here would say so. Which step
 #      declares a name was the other half of this rule and has no subject left: the filters are
 #      one file, which the one step hands the action whole, so a name is a filter of the job
-#      exactly when that file holds it,
+#      exactly when that file holds it. The one other reference an output may carry is the
+#      every-job term's `steps.scope.outputs.every_job`, written by the job's scope step, which
+#      ci-router-outputs.test.sh runs and holds to what it selects,
 #  20. a step's vets for another platform - the Runs of mode vet whose env sets GOOS, one per
 #      tag set, today the three darwin vet steps ci_job_reads.py's darwin_vet pins - that
 #      between them pass over a file go builds for that platform under some tags, naming the

@@ -12,6 +12,15 @@
 # nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
 # fails its case rather than leaving the set.
 #
+# It holds a dispatched run's selection and the workflow's cancel key the same way, through the
+# changes job's own steps and the workflow's own `concurrency:`
+# (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
+# a dispatch of main selects every job whatever the filters say, a dispatch of a branch selects
+# what a merge group with the same verdicts selects and diffs its own commit with main,
+# `every-job` selects every job on a branch, and a newer dispatch of a branch cancels that
+# branch's older one while a dispatch of main is never cancelled. Copies of ci.yaml with one of
+# those terms broken show that each case fails without it.
+#
 # Run from anywhere: .github/scripts/ci-router-outputs.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
@@ -162,6 +171,125 @@ check "exits 2" "$(is "$status" 2)"
 check "names envoy_smoke and the read" \
   "$(contains "$err" 'output envoy_smoke: context github.event.pull_request is outside the modelled contexts')"
 
+ci="$repo/.github/workflows/ci.yaml"
+# selecting <outputs>: the outputs that select a job, as `name=value`, one per line: every output
+# but filter_verdicts, the filter's own verdicts as JSON over several lines, and ref_is_main.
+selecting() { grep -E '^[a-z0-9_]+=' <<<"$1" | grep -Ev '^(filter_verdicts|ref_is_main)=' || true; }
+# on_of / off_of <outputs>: the selecting outputs that are 'true' / not 'true', space-separated.
+on_of() { selecting "$1" | sed -n 's/=true$//p' | tr '\n' ' '; }
+off_of() { selecting "$1" | grep -v '=true$' | cut -d= -f1 | tr '\n' ' ' || true; }
+# How many outputs select a job, read from the file itself, so a case that reads fewer fails.
+n_selecting=$(python3 -c 'import sys, yaml; print(len(yaml.safe_load(open(sys.argv[1]))["jobs"]["changes"]["outputs"]) - 2)' "$ci")
+mapfile -t filters < <(python3 -c 'import sys, yaml; print("\n".join(yaml.safe_load(open(sys.argv[1]))))' "$repo/.github/ci-filters.yaml")
+old=1111111111111111111111111111111111111111
+new=2222222222222222222222222222222222222222
+
+echo "case: a dispatch of main selects every job, whatever each filter says"
+got=$(outputs --event workflow_dispatch --ref refs/heads/main --verdicts false)
+check "it reads all $n_selecting outputs that select a job" "$(is "$(selecting "$got" | wc -l)" "$n_selecting")"
+check "every one of them is true" "$(is "$(off_of "$got")" "")"
+check "ref_is_main is true" "$(is "$(value "$got" ref_is_main)" true)"
+check "filter_verdicts is {}, the filter step skipped" "$(is "$(value "$got" filter_verdicts)" "{}")"
+
+echo "case: a dispatch of a branch selects nothing when no filter matches"
+got=$(outputs --event workflow_dispatch --ref refs/heads/feature --verdicts false)
+check "it reads all $n_selecting outputs that select a job" "$(is "$(selecting "$got" | wc -l)" "$n_selecting")"
+check "none of them is true" "$(is "$(on_of "$got")" "")"
+
+echo "case: a dispatch of a branch selects what a merge group with the same verdicts selects"
+check "the filters file holds filters to try" "$(is "$([ "${#filters[@]}" -gt 1 ] && echo yes)" yes)"
+for parity in 0 1 all none; do
+  args=(--verdicts false)
+  case $parity in
+    all) args=(--verdicts true) ;;
+    none) ;;
+    *) for i in "${!filters[@]}"; do [ $((i % 2)) -ne "$parity" ] || args+=(--verdict "${filters[$i]}=true"); done ;;
+  esac
+  dispatched=$(outputs --event workflow_dispatch --ref refs/heads/feature "${args[@]}")
+  queued=$(outputs --event merge_group "${args[@]}")
+  check "filters $parity: the same outputs, value for value" "$(is "$(selecting "$dispatched")" "$(selecting "$queued")")"
+  check "filters $parity: all $n_selecting read" "$(is "$(selecting "$dispatched" | wc -l)" "$n_selecting")"
+  case $parity in
+    0 | 1) check "filters $parity: some jobs selected and some left off" \
+      "$(is "$([ -n "$(on_of "$dispatched")" ] && [ -n "$(off_of "$dispatched")" ] && echo both)" both)" ;;
+  esac
+done
+
+echo "case: every-job selects every job on a branch"
+got=$(outputs --event workflow_dispatch --ref refs/heads/feature --input every-job=true --verdicts false)
+check "every one of them is true" "$(is "$(off_of "$got")" "")"
+check "ref_is_main stays false" "$(is "$(value "$got" ref_is_main)" false)"
+got=$(outputs --event workflow_dispatch --ref refs/heads/feature --input every-job=false --verdicts false)
+check "every-job=false selects by the diff" "$(is "$(on_of "$got")" "")"
+
+# filter_step <argument>...: whether the filter step runs, and the base and ref it is handed.
+filter_step() { "$script_dir/ci_router_outputs.py" "$ci" --filter-step "$@" | tr '\n' ' '; }
+echo "case: the filter step diffs a dispatched branch's own commit with main, and reads a merge group's and a pull request's own event"
+check "a dispatch of a branch: base main, ref its commit" \
+  "$(is "$(filter_step --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "runs=true base=main ref=$old ")"
+check "a dispatch of main skips the step" "$(contains "$(filter_step --event workflow_dispatch --ref refs/heads/main)" '^runs=false ')"
+check "every-job skips the step" \
+  "$(contains "$(filter_step --event workflow_dispatch --ref refs/heads/feature --input every-job=true)" '^runs=false ')"
+check "a merge group: neither input, so its own base_sha..head_sha" "$(is "$(filter_step --event merge_group)" "runs=true base= ref= ")"
+check "a pull request: neither input, so the API's file list" "$(is "$(filter_step --event pull_request)" "runs=true base= ref= ")"
+
+# concurrency_of <workflow> <argument>...: the run's concurrency group and cancel-in-progress.
+concurrency_of() {
+  local workflow=$1
+  shift
+  "$script_dir/ci_router_outputs.py" "$workflow" --concurrency "$@" | tr '\n' ' '
+}
+echo "case: a newer dispatch of a branch cancels the older one; a dispatch of main never is"
+check "a pull request keys on its number and cancels" \
+  "$(is "$(concurrency_of "$ci" --event pull_request)" "group=ci-1 cancel-in-progress=true ")"
+check "a merge group keys on its commit and is never cancelled" \
+  "$(is "$(concurrency_of "$ci" --event merge_group --sha "$old")" "group=ci-$old cancel-in-progress=false ")"
+check "a dispatch of main keys on its commit and is never cancelled" \
+  "$(is "$(concurrency_of "$ci" --event workflow_dispatch --ref refs/heads/main --sha "$old")" "group=ci-$old cancel-in-progress=false ")"
+check "  so a second dispatch of main at another commit is a group of its own" \
+  "$(is "$(concurrency_of "$ci" --event workflow_dispatch --ref refs/heads/main --sha "$new")" "group=ci-$new cancel-in-progress=false ")"
+check "a dispatch of a branch keys on the branch and cancels" \
+  "$(is "$(concurrency_of "$ci" --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "group=ci-refs/heads/feature cancel-in-progress=true ")"
+check "  and a newer dispatch of it at another commit joins that group" \
+  "$(is "$(concurrency_of "$ci" --event workflow_dispatch --ref refs/heads/feature --sha "$new")" "group=ci-refs/heads/feature cancel-in-progress=true ")"
+check "  while another branch is another group" \
+  "$(is "$(concurrency_of "$ci" --event workflow_dispatch --ref refs/heads/other)" "group=ci-refs/heads/other cancel-in-progress=true ")"
+check "a branch spelled Main keys on its commit, since the expression ignores case, and is never cancelled" \
+  "$(is "$(concurrency_of "$ci" --event workflow_dispatch --ref refs/heads/Main --sha "$old")" "group=ci-$old cancel-in-progress=false ")"
+
+# copy_with <dir> <text> <replacement>: a copy of this repository's ci.yaml and filters under <dir>
+# with the one occurrence of <text> replaced; it fails when <text> is not there exactly once.
+copy_with() {
+  mkdir -p "$1/.github/workflows"
+  cp "$repo/.github/ci-filters.yaml" "$1/.github/ci-filters.yaml"
+  python3 - "$ci" "$1/.github/workflows/ci.yaml" "$2" "$3" <<'PY'
+import sys
+source, target, text, replacement = sys.argv[1:]
+body = open(source).read()
+if body.count(text) != 1:
+    sys.exit(f"copy_with: {text!r} occurs {body.count(text)} times in {source}, not once")
+open(target, "w").write(body.replace(text, replacement))
+PY
+  echo "$1/.github/workflows/ci.yaml"
+}
+
+echo "case: a scope step that reads no main fails the dispatch-of-main case"
+broken=$(copy_with "$work/scope-no-main" '{ [ "$IS_MAIN" = true ] || [ "$EVERY_JOB" = true ]; }' '[ "$EVERY_JOB" = true ]')
+got=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/main --verdicts false)
+check "a dispatch of main then selects nothing" "$(is "$(on_of "$got")" "")"
+
+echo "case: an output still forced on every dispatch fails the branch case"
+broken=$(copy_with "$work/output-every-dispatch" "typecheck: \${{ steps.scope.outputs.every_job == 'true'" "typecheck: \${{ github.event_name == 'workflow_dispatch'")
+got=$(outputs_of "$broken" --event workflow_dispatch --ref refs/heads/feature --verdicts false)
+check "a dispatch of a branch then selects exactly typecheck" "$(is "$(on_of "$got")" "typecheck ")"
+check "  which a merge group with the same verdicts does not" \
+  "$(is "$(on_of "$(outputs_of "$broken" --event merge_group --verdicts false)")" "")"
+
+echo "case: a cancel key without the dispatch arm fails the branch case"
+broken=$(copy_with "$work/no-dispatch-key" "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && github.ref || " "")
+check "a dispatch of a branch then keys on its commit" \
+  "$(contains "$(concurrency_of "$broken" --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "^group=ci-$old ")"
+
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"
 printf 'f: []\n' > "$work/.github/ci-filters.yaml"
@@ -178,4 +306,4 @@ set -e
 check "exits 2" "$(is "$status" 2)"
 check "names the output and the context" "$(contains "$err" 'output x: context github.actor is outside the modelled contexts')"
 
-summary "ci.yaml's changes outputs turn on what full-ci and the lane labels name, and nothing else"
+summary "ci.yaml's changes outputs turn on what full-ci, the lane labels and a dispatch's ref and diff name, and its cancel key cancels only a branch's older dispatch"

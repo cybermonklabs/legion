@@ -872,6 +872,13 @@ def check_filter_inputs(workflows: dict, problems: list[Annotation]) -> None:
 
 # A `steps.<id>.outputs.<name>` of an output of the changes job: which step's verdict it hands on.
 STEP_OUTPUT_REF = re.compile(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)")
+# The every-job term every output carries
+# (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
+# the changes job's scope step writes every_job, which is no filter's verdict and the one other
+# step output an output may read. ci-router-outputs.test.sh runs that step and holds what it
+# selects; this rule holds only that the job has the step.
+SCOPE_STEP_ID = "scope"
+SCOPE_OUTPUT = "every_job"
 
 
 def check_output_steps(document: dict, filters: dict, problems: list[Annotation]) -> None:
@@ -883,7 +890,8 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
     here, since rule 21 refuses that step and no filter of it was read to hold the name to; so is
     every name while no filter was read at all, since each way that happens is refused on its own
     (changes_filters, rule 21) and holding the names to nothing would refuse every output again.
-    REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it."""
+    REF_OUTPUT is no filter's verdict: check_ci_ok holds it and the one step that writes it. Nor is
+    the every-job term's SCOPE_STEP_ID.SCOPE_OUTPUT, which a step of the job must still write."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
     ids = [str(s.get("id", "")) for s in steps if s.get("id")]
@@ -896,6 +904,8 @@ def check_output_steps(document: dict, filters: dict, problems: list[Annotation]
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and the job has no step {step_id}, "
                                                 f"so the output is empty on every run"))
+            elif step_id == SCOPE_STEP_ID and name == SCOPE_OUTPUT and step_id not in filter_steps:
+                continue
             elif step_id not in filter_steps:
                 problems.append(error(WORKFLOW, f"the changes job's output {output} reads "
                                                 f"steps.{step_id}.outputs.{name}, and step {step_id} is no "

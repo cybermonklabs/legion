@@ -1059,8 +1059,9 @@ job ends with the step, as docs-site.yaml's and worker-image.yaml's do), the job
 ci-ok job's `needs:`, without which the verdict is reached before that job ends and says
 nothing about it, and a gate in
 .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
-rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-event must hold back, as the ten slow suites' pull-request case is
+rather than left to its filter, as every output's every-job case is
+(.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job),
+and so is one an event must hold back, as the ten slow suites' pull-request case is
 (.github/ci-notes/ci.md#the-ten-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the).
 The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
@@ -1175,16 +1176,46 @@ ci-ok reports there, so the required checks pass on the merged tree before anyth
 that tree again, and .github/workflows/ci-caches.yaml fills the Go caches on that push instead.
 workflow_dispatch is the bypass check's (.github/workflows/main-bypass-check.yaml): it starts a
 run at main's tip when a commit reached main without a passing merge-group ci-ok, and `changes`
-selects every job there. A dispatch of any other ref is a full run started by hand (`gh
-workflow run ci.yaml --ref <branch>`), and it reports under names of its own
+selects every job there. A dispatch of any other ref (`gh workflow run ci.yaml --ref <branch>`)
+selects what that ref's diff with its merge base with main touches, through the same filters a
+merge group reads, unless it asks for every job
+(.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job),
+and it reports under names of its own
 (.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own).
+
+## What a dispatched run of a branch selects, and when to ask for every job
+
+A dispatched run of any ref but exactly refs/heads/main selects the jobs its own commit's diff
+with its merge base with main touches: the filter step runs paths-filter over that diff with
+the filters and the predicate a merge group reads, and every output takes the filter's verdict
+as a merge group's does, the ten slow suites' included, since their `full-ci` term holds a suite
+back on a pull request alone. So a branch that touched only a shell script runs that script's
+harness step, lint and ci-ok, and not the Go suites, as the merge queue would. The bypass check's
+dispatch on main still selects every job: its run answers for a push the queue never tested, and
+the push's range, not one diff, is what it must cover.
+
+The `every-job` input (`gh workflow run ci.yaml --ref <branch> -f every-job=true`, default off)
+selects every job on a branch too, as a run of main does. Use it only when the result needed is
+of a job the branch's diff does not reach: checking that a suite still passes on the branch's
+tree after a change outside its filter (which is a missing pattern in .github/ci-filters.yaml to
+fix as well), or a full run to compare against main's. A test of the branch's own change needs no
+input: its diff selects every job that reads what it changed. A branch with an open pull request
+gets its result from the pull request's run and the merge group, and needs no dispatch at all.
+
+The changes job's step "Read whether this run selects every job" decides it, and writes
+every_job=true only on a workflow_dispatch run whose ref step read exactly refs/heads/main, or
+whose `every-job` input is true; every output and the filter step's `if:` read that one output.
+.github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own steps and outputs
+(.github/scripts/ci_router_outputs.py) and holds them to this: a dispatch of main, with every
+filter saying no, selects every job; a dispatch of a branch selects for each filter exactly what
+a merge group with the same verdict selects; and `every-job` selects every job on a branch.
 
 ## The commit main pointed at before the push the bypass check read
 
 The commit main pointed at before the push the bypass check read: envoy-go-checks compares
 every migration it holds with this run's tree, the range the push landed. A dispatch on
 main without it fails that check, which cannot tell what the run lands. A dispatch on
-another branch without it, a full run started by hand, compares with the branch's merge
+another branch without it compares with the branch's merge
 base with main (.github/scripts/edited-migrations-base.sh).
 
 ## What a newer push cancels, and what is never cancelled
@@ -1195,8 +1226,16 @@ closes, cancelling what still waits or runs, and a merged pull request's closed 
 github.ref = the base branch, so the number is the only key that names the pull request on every
 event. A reopen within about a minute of the close can race tests-closed.yaml's run:
 tests-closed.yaml says what happens and what to do. A merge group is a group of its own per
-commit (its head) and is never cancelled: the queue waits for its ci-ok. A dispatched run keys on
-the commit it runs at and is never cancelled either.
+commit (its head) and is never cancelled: the queue waits for its ci-ok. A dispatched run of a
+ref other than main keys on that ref (`ci-refs/heads/<branch>`) and cancels the ref's older
+dispatched run, waiting or running: the newer dispatch tests the ref's newer state, and the
+older run's `ci-ok (dispatch)` is required by nothing
+(.github/ci-notes/ci.md#why-a-dispatched-run-off-main-reports-under-names-of-its-own), so a
+cancelled one blocks no merge. A dispatch of main keys on the commit it runs at and is never
+cancelled: each bypass check's run answers for its own push. That one comparison is GitHub's
+`github.ref != 'refs/heads/main'`, which ignores case, so a dispatch of a branch spelled
+refs/heads/Main keys on its commit and is never cancelled either; it errs toward running, and
+the selection reads the ref step's exact shell test, not this.
 
 ## Why the router's permissions block holds those two scopes
 
@@ -1373,7 +1412,7 @@ turns on nothing.
 
 envoy-go's fast half (the format and generated-code checks, the shell-script tests and
 the build of the envoy commands), split out so it comes back on every push: no `full-ci`
-term, only the dispatched one, `github.event_name == 'workflow_dispatch' && 'true'`.
+term, only the every-job one, `steps.scope.outputs.every_job == 'true' && 'true'`.
 
 ## The two-build job builds the previous release and runs both halves against
 
@@ -1404,8 +1443,10 @@ beside them ci-ok's report tells the two apart and says which
 (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
 own: `toJSON(needs.changes)` carries every output of this job, so the ci-ok job and
 ci-ok-report.sh both already have it. It is the one filter step's outputs as one object.
-On a dispatched run that step is skipped and this is `{}`, which is right - the label
-holds nothing back there, and the changes job's other outputs are all 'true'.
+On a run that selects every job (a dispatch of main, or one asking for every job) that step is
+skipped and this is `{}`, which is right - the label holds nothing back there, and the changes
+job's other outputs are all 'true'. On a dispatch of a branch the step runs and this is its
+verdicts, which no label term rewrites.
 
 A job the label held back did not run at this head, and ci-ok passes over its skip, so
 ci-ok.sh names it once more after its verdict, pass or fail, on a line of its own:
@@ -1423,8 +1464,8 @@ label held nothing back and trimmed nothing writes no summary.
 
 On pull_request dorny/paths-filter reads the file list from the API and reads only the
 filters from the tree; merge_group diffs with git and needs the clone (a merge group diffs its
-base_sha..head_sha, fetching what the clone lacks). A dispatched run clones too, and
-filters nothing.
+base_sha..head_sha, fetching what the clone lacks). A dispatched run clones too, and on a
+branch diffs as .github/ci-notes/ci.md#what-the-filter-step-diffs-on-a-dispatched-run says.
 
 ## On a pull request this job reads the changed files from the
 
@@ -1432,11 +1473,18 @@ On a pull request this job reads the changed files from the API and the filters 
 .github/ci-filters.yaml, which dorny/paths-filter reads off the disk: so a pull
 request checks out that one file, and nothing else.
 
-## Why the filter step is skipped on a dispatched run
+## What the filter step diffs on a dispatched run
 
-A dispatched run selects every job through the changes job's outputs, so there is nothing to
-filter, and paths-filter has no diff base on workflow_dispatch: a step that failed here
-would fail `changes`, whose result every job's `if:` reads.
+On a dispatched run of a branch the step gets `base: main` and `ref: <the run's commit>`, and
+paths-filter diffs `main...<commit>`: it fetches main and the commit 100 commits deep, deepens
+both until git finds their merge base, and lists what the commit changed since it
+(dorny/paths-filter v4.0.3, src/git.ts getChangesSinceMergeBase). The commit, not the branch
+name, so a push to the branch after the dispatch does not change what this run selects. On a
+pull request and a merge group both inputs are empty, which paths-filter reads as unset: a pull
+request's files come from the API and a merge group's from its own base_sha..head_sha, and a
+non-empty `base` would override the merge group's. On a run that selects every job the step is
+skipped, since the outputs take 'true' without it, and a run of main has no merge base to diff
+with but its own tip.
 
 ## Why the lint job holds each of its scopes
 
