@@ -11,6 +11,16 @@ body: |-
   the reset above Dispatch. A version that proposes nothing keeps the gate open; one that proposes
   something closes it as before. A Dispatch older than the route keeps today's gate.
 
+  The change request reads its checks from the issue's Verification document, so the daemon reads
+  the change request again at every version and approval of the issue's documents. A version of
+  the Verification document that changes a check of the approved spec, which no person approved,
+  closes the gate, whether a person's approval or the change request opened it: it takes an
+  exemption back, and it holds a person's approval, which stays recorded, until the approved spec
+  holds the change. The tree is told the gate closed, in words that name the Verification document.
+  A person's approval that writes the change into the approved spec opens the gate again. An edit
+  of an acceptance check that names no statement closes nothing, and a gate under the rule of a
+  person's approval reads no Verification document.
+
   A tree whose gate opened with no person lands nothing until Dispatch's ending condition holds at
   the head that would land. The merger's start waits while it waits. A head move in merging, a
   recorded outcome list (`spec.outcomes_recorded`), and a version or an approval of the root's spec
@@ -32,10 +42,11 @@ body: |-
   a `conclusion` block, and is told what the two new notices ask.
 
   Daemon API contract 232: `GET /legion/v1/state` gains `designGate.exemptVersion`,
-  `designGate.rule`, each gated step's `exemptVersion` and the gated-step status `exempt`, all left
-  off for a caller below 232. Migration `20261122104755_spec_gate_exemption` adds the two gate
-  columns, the table `spec_endings` and the outbox kind `spec_ending_read`. Its header carries the way
-  back, which deletes the queued rows no earlier release decodes.
+  `designGate.rule`, `designGate.verificationVersion` and `designGate.checksUnapproved`, each gated
+  step's `exemptVersion`, `verificationVersion` and `checksUnapproved`, and the gated-step status
+  `exempt`, all left off for a caller below 232. Migration `20261122104755_spec_gate_exemption`
+  adds the four gate columns, the table `spec_endings` and the outbox kind `spec_ending_read`. Its
+  header carries the way back, which deletes the queued rows no earlier release decodes.
 time: 2026-11-22T11:36:03Z
 custom:
     Issue: pr4984

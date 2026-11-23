@@ -5,11 +5,17 @@ body: |-
   (`parseOutcomeLine`, `parseOutcomeLines`, `outcomeLine`). An outcome line is
   `(requires <statement-id>) <text>`, `(restored) <text>` or `<text>`.
 
-  Daemon API contract 232. The state's `designGate` gains `exemptVersion` (number or null) and
-  `rule` (`approval` or `change_request`). Each gated step gains `exemptVersion` and the status
-  `exempt`: a spec-source root's step that a version proposing nothing opened with no person. The
-  fixtures declare contract 232 (`version.json`, and `state.json`'s `contract`), and
-  `contract-shapes.json` records the new keys and the new value at 232.
+  Daemon API contract 232. The state's `designGate` gains `exemptVersion` (number or null),
+  `rule` (`approval` or `change_request`), `verificationVersion` (the version of the root's
+  Verification document its change request was read at, 0 for none) and `checksUnapproved`
+  (whether that read found a changed check of the approved spec that no person approved, which
+  holds the gate closed). Each gated step gains `exemptVersion`, `verificationVersion`,
+  `checksUnapproved` and the status `exempt`: a spec-source root's step that a version proposing
+  nothing opened with no person. The fixtures declare contract 232 (`version.json`, and
+  `state.json`'s `contract`), and `contract-shapes.json` records the new keys and the new value at
+  232. The tool `dispatch_spec_ending` names the ending reasons `proposes_without_approval` and
+  `changes_checks_without_approval`, and `dispatch_outcomes` says that a final list waits for the
+  author's list at its head and that who recorded which list is read on every issue that records it.
 time: 2026-11-22T12:24:18Z
 custom:
     Issue: pr4984
