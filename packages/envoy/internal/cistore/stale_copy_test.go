@@ -1,6 +1,8 @@
 package cistore
 
 import (
+	"bytes"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -115,6 +117,61 @@ func TestASettlementWhoseMarkReadsACopyBehindIsPublishedOnce(t *testing.T) {
 			st := getState(t, store, owner, repo, number, sha)
 			if !st.SettledEmitted || st.EmittedCount != 1 || st.Claim != nil {
 				t.Fatalf("the record after its settlement is %+v, want it settled once with no claim", st)
+			}
+		})
+	}
+}
+
+// A mark that does not apply is logged. When the claim a settlement was published under is gone
+// from the stream leader too - another listener reclaimed it between this listener's check
+// (ClaimStillHeld) and its mark - MarkSettled declines on the leader's read, and the pass logs
+// `checks settlement not marked` at WARN, naming the head and the generation it published: another
+// pass may publish that head again. Control: with the claim standing when the mark reads it, the
+// mark applies and logs no such line.
+func TestAMarkThatFindsNoClaimOnTheLeaderIsLogged(t *testing.T) {
+	const notMarked = "checks settlement not marked"
+	for _, tc := range []struct {
+		name      string
+		reclaimed bool
+	}{
+		{"another listener reclaimed the claim before the mark", true},
+		{"control: the claim stands when the mark reads it", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, cleanup := connectNATS(t)
+			defer cleanup()
+			store := openStore(t, conn)
+			h := head{owner: "example-org", repo: "example-repo", number: "42", sha: "3333333333333333333333333333333333333333"}
+			if err := recordCheck(store, h.owner, h.repo, h.number, h.sha, "build", "909", "https://example.test/909", "completed", "success", "2026-11-22T19:52:00Z"); err != nil {
+				t.Fatalf("record a finished check: %v", err)
+			}
+			waitCacheChecks(t, store, h.owner, h.repo, h.number, h.sha, 1)
+			setLastEventAt(t, store, h.owner, h.repo, h.number, h.sha, 0)
+			generation := getState(t, store, h.owner, h.repo, h.number, h.sha).Generation
+			pub := &recPub{onPublish: func(contracts.Envelope) {
+				if !tc.reclaimed {
+					return
+				}
+				// A stale-before past every claim: the reclaim another listener's pass makes of a
+				// claim it judged stale, which clears the claim and bumps the generation.
+				if reclaimed, err := store.ReclaimSettlement(h.key(), generation, math.MaxInt64); err != nil || !reclaimed {
+					t.Errorf("reclaim the published claim = %t, %v; want it reclaimed", reclaimed, err)
+				}
+			}}
+			var logs bytes.Buffer
+			runSummaryTick(store, pub, time.Second, logging.NewWithWriter("test", &logs))
+			if got := pub.count(); got != 1 {
+				t.Fatalf("the head was published %d times, want once", got)
+			}
+			if tc.reclaimed {
+				assertWarning(t, &logs, notMarked, h, map[string]any{"generation": float64(generation)})
+				return
+			}
+			if lines := warnings(&logs, notMarked); len(lines) != 0 {
+				t.Fatalf("%d lines %q where the mark applied, want none:\n%s", len(lines), notMarked, logs.String())
+			}
+			if st := getState(t, store, h.owner, h.repo, h.number, h.sha); !st.SettledEmitted {
+				t.Fatalf("the record after its settlement is %+v, want it settled", st)
 			}
 		})
 	}
