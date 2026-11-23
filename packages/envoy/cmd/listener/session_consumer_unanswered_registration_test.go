@@ -215,14 +215,21 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 }
 
 // refusingEntryKV is a session bucket whose writes all fail, after before has run: the write of
-// a registration's session entry, and the window before it where another writer's interest row
-// lands.
+// a registration's session entry, whichever call makes it (Put, or the Create and Update the
+// entry write sends conditionally, session.SessionRegistry.PutWithin), and the window before it
+// where another writer's interest row lands.
 type refusingEntryKV struct {
 	nats.KeyValue
 	before func()
 }
 
-func (kv refusingEntryKV) Put(string, []byte) (uint64, error) {
+func (kv refusingEntryKV) Put(string, []byte) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) Create(string, []byte) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) Update(string, []byte, uint64) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) refuse() (uint64, error) {
 	kv.before()
 	return 0, fmt.Errorf("injected session entry write failure")
 }

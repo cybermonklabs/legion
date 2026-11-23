@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 import { type ConnectionOptions, ErrorCode, type NatsConnection } from "nats";
 // Not part of nats.js's public surface; nats 2.29.x has them where its connection and server list
@@ -39,6 +40,44 @@ export const NATS_MAX_PINGS_OUT = 2;
  * `connectNats` dials again.
  */
 export const NATS_DIAL_TIMEOUT_MS = 10_000;
+
+/** A whole commit id: the only form of a build commit a connection name carries. */
+const FULL_COMMIT = /^[0-9a-f]{40}$/;
+
+/** A released package's version: three numbers, as the release workflow stamps it. */
+const RELEASE_VERSION = /^\d+\.\d+\.\d+$/;
+
+/**
+ * The build a session plugin names after its NATS connection's name (`clientConnectionName`), which
+ * legacy-subjects-gate.sh reads from the end of each name in the hub's census of connections:
+ * `legion@<commit>` when `stampFile` holds the whole commit the plugin was built from (the worker
+ * image writes `build-commit` beside each plugin's bundle, since a plugin it packs from its checkout
+ * keeps that checkout's manifest version), else `<package>@<version>` for a released package, which
+ * a caller passes as `release` only when it runs a release's packed build, else undefined: a plugin
+ * run from its source names no build, and the gate counts it as a client it cannot judge.
+ */
+export function clientBuild(
+  stampFile: string,
+  release?: { readonly name: string; readonly version: string }
+): string | undefined {
+  let stamp = "";
+  try {
+    stamp = readFileSync(stampFile, "utf8").trim();
+  } catch {
+    // No stamp: a build that is no image's.
+  }
+  if (FULL_COMMIT.test(stamp)) return `legion@${stamp}`;
+  if (release !== undefined && RELEASE_VERSION.test(release.version)) {
+    return `${release.name}@${release.version}`;
+  }
+  return undefined;
+}
+
+/** The name a session plugin's NATS connection presents: `name`, then a space and its build
+ *  (`clientBuild`) when it has one. */
+export function clientConnectionName(name: string, build: string | undefined): string {
+  return build === undefined ? name : `${name} ${build}`;
+}
 
 /** The `connect` options every session plugin dials NATS with: its credential (`natsAuthOptions`:
  * a seed's nkey user, the session's broker token, or none), reconnect attempts without limit, the

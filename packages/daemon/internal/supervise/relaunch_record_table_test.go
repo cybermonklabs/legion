@@ -463,8 +463,8 @@ func (h *harness) wantNoTaskSentInterruptedWithoutItsRecord(cause string, letGo 
 //   - A retirement after prompt failures, in a turn, idle with its task's result to come, and in
 //     a compaction with or without a turn: no prompt goes out to fail. sendPending hands a prompt
 //     only to a ready or idle claim holding an unconfirmed task, a turn's confirmation disarms the
-//     bound on a prompt's turn (confirm, TimerTurn), and a task handed to a working claim waits
-//     for it (deliverLater), so promptFailed and chargePrompt are never reached.
+//     bound on a prompt's turn (confirmCarrying, TimerTurn), and a task handed to a working claim
+//     waits for it (deliverLater), so promptFailed and chargePrompt are never reached.
 //   - A stale-plugin relaunch in a turn, and in a compaction with or without a turn: the claim is
 //     working, so the relaunch waits for that end (refreshPlugin's holdStaleRelaunch, run by
 //     afterTurn).

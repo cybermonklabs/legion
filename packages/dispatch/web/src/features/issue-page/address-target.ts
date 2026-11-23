@@ -1,7 +1,6 @@
 import { isIdPrefix, itemFromSearch } from "@legion/contracts";
 import { notifyManager, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
-import { useLocation } from "react-router-dom";
 
 import type { Ask, Comment, IssueDetails, MessageRead } from "../../api/types";
 import {
@@ -20,6 +19,7 @@ import {
   pathToTarget,
 } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
+import { useFollowing } from "./slots/following";
 
 /** The node an address names, read against the tree (`useAddressTarget`). Each field is one
  *  value for as long as the address and the tree say the same; the object holding them is new
@@ -213,7 +213,7 @@ function landingReadKey(route: ItemRoute): QueryKey {
   return messageQuery(route.key, route.id).queryKey;
 }
 
-/** What one following of an address - the location's own key, a new one at each navigation, a
+/** What one following of an address - `useFollowing`, a new one at each navigation, a
  *  link followed again to the same address among them - has seen so far
  *  (`useAddressFallback`). */
 interface Following {
@@ -230,7 +230,7 @@ interface Following {
   /** Whether the tree has held the address's node, or the nearest drawn ancestor of a turn only
    *  agents wrote in, at any time during this following. */
   readonly found: boolean;
-  /** The following: the location's own key (`useLocation().key`). */
+  /** The following: the location's key with its address (`useFollowing`). */
   readonly key: string;
   /** The landing the old page's landing settled on during this following, as last stored here,
    *  which the following draws again while the read runs again, and while the tree's reads are
@@ -249,7 +249,7 @@ interface Following {
  * naming no node or opening a document, and while the old page's landing reads the item
  * (`pending`) with no landing settled since the address was followed.
  *
- * Each following of the address (the location's own key) is decided on its own, once: a
+ * Each following of the address (`useFollowing`) is decided on its own, once: a
  * following whose tree has held the address's node, or the nearest drawn ancestor of a turn only
  * agents wrote in, draws no fallback for the rest of it, whatever the tree holds later - a block
  * deleted, the last child unlinked, the comment deleted while the reader is on its row leaves
@@ -306,7 +306,7 @@ export function useAddressFallback({
   const item = outlineItemRoute(route, search, address);
   // What this following has seen (`Following`), held from one render to the next, and anew for
   // each following.
-  const following = useLocation().key;
+  const following = useFollowing();
   const [followed, setFollowed] = useState<Following | undefined>(undefined);
   const before = followed?.key === following ? followed : undefined;
   // While the reads are out again, a following that has settled on a landing keeps its landing's

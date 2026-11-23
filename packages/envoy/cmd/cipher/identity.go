@@ -208,17 +208,52 @@ func enrollWait() (time.Duration, error) {
 }
 
 // awaitEnrollment waits, for wait at most, while dir holds a fresh marker and not yet both
-// key.pem and enrollment. It reports whether it gave up with the marker still there.
-func awaitEnrollment(dir string, wait time.Duration) (gaveUp bool) {
-	deadline := time.Now().Add(wait)
-	for freshMarker(dir) && !(exists(filepath.Join(dir, keyFile)) && exists(filepath.Join(dir, enrollmentFile))) {
+// key.pem and enrollment. With a wait above 0 it says on stderr what it waits for before it
+// waits, and again each time that changes (the launcher wrote key.pem and not yet enrollment), so
+// a call held at a box's start says why it is held and how far the launcher got; it names the key
+// dir by its setting (keyDirName), never its path. It says so before it reads its deadline, so a
+// call that gives up has always first said what it waited for, however late a loaded machine
+// runs it; a wait of 0 says nothing. It reports whether it gave up with the marker still there,
+// and then how long it waited, from the moment it set its deadline: a loaded machine's late start
+// of the call is not in it, so a caller that prints it says how long this wait lasted.
+func awaitEnrollment(stderr io.Writer, dir string, wait time.Duration) (waited time.Duration, gaveUp bool) {
+	begin := time.Now()
+	deadline := begin.Add(wait)
+	said := ""
+	for freshMarker(dir) {
+		missing := missingSessionFiles(dir)
+		if missing == "" {
+			return 0, false
+		}
+		if wait > 0 {
+			switch {
+			case said == "":
+				fmt.Fprintf(stderr, "agent-secrets: the launcher is still enrolling this process (%s holds %s); waiting up to %s for its %s\n",
+					keyDirName(), pendingMarker, wait, missing)
+			case missing != said:
+				fmt.Fprintf(stderr, "agent-secrets: still waiting for the launcher's %s\n", missing)
+			}
+			said = missing
+		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
-			return true
+			return time.Since(begin), true
 		}
 		time.Sleep(min(enrollPollInterval, remaining))
 	}
-	return false
+	return 0, false
+}
+
+// missingSessionFiles names the files of key.pem and enrollment that dir does not hold yet, as
+// "key.pem and enrollment", "key.pem" or "enrollment", and "" when it holds both.
+func missingSessionFiles(dir string) string {
+	var missing []string
+	for _, name := range []string{keyFile, enrollmentFile} {
+		if !exists(filepath.Join(dir, name)) {
+			missing = append(missing, name)
+		}
+	}
+	return strings.Join(missing, " and ")
 }
 
 // helperInstalled reports whether this machine has the helper's user unit, the file
@@ -305,8 +340,8 @@ func identitySource(stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	dir := keyDir()
-	awaitEnrollment(dir, wait)
-	name, detail, err := describeSource(dir)
+	awaitEnrollment(stderr, dir, wait)
+	name, detail, err := describeSource(dir, stderr)
 	if err != nil {
 		reportError(stderr, "agent-secrets identity", err)
 		return 1

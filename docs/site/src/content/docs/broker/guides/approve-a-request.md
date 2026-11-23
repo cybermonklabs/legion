@@ -34,10 +34,10 @@ end it, however old that read is. A member may approve a request their own sessi
 one owner of a person's secret may: a group owner is not a second person.
 
 Some requests never reach you. Where the deployment configures a model judge, a request for keys
-whose airlock rules entry gives the judge seconds, none of them an administrator's or an Anthropic
-federation key, is the judge's to decide: it grants or refuses it, each key against the guidance
-you gave in the rules file, and while it decides the request is on no list. A request the judge
-cannot decide comes to you once,
+whose profile's `proxy` block in the profiles file (`BROKER_PROFILES_FILE`) gives the judge seconds,
+none of them an administrator's or an Anthropic federation key, is the judge's to decide: it grants
+or refuses it, each key against the guidance its owner gave in that block, and while it decides the
+request is on no list. A request the judge cannot decide comes to you once,
 as an ordinary card. If you open such a request's page while the judge holds it, the page is
 read-only and says the judge is deciding it. A judged grant's **State** line reads
 `approved by the model judge judge:<model id> at <time>`, with no person beside it.
@@ -123,8 +123,8 @@ is in no list of yours, and you cannot decide it, whoever the approver line name
 To tell whose a request is, a broker set up to ask Dispatch about projects
 (`BROKER_PROJECT_ACCESS_URL`) asks it, for you, about each project the request touches, the project
 of each issue key its reason names included: `INFRA-12: rotate the deploy key` asks about `INFRA`,
-even when no secret is tagged. A session cannot make a request whose reason names the issues of
-more than 16 projects: the broker refuses it when it is made. While Dispatch cannot answer about a
+even when no secret is tagged. Such a broker refuses a request whose reason names the issues of
+more than 16 projects when it is made. While Dispatch cannot answer about a
 request, that request is in no list of yours, and its page answers with its record id and `The
 secrets broker could not ask
 Dispatch whether you may see this request, so it shows nothing of it and cannot decide it until

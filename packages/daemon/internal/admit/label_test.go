@@ -281,7 +281,7 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 		scoped, committed := intake.WithCommitHooks(context.Background())
 		scoped, settle := intake.OpenSettlers(scoped, admission)
 		inTx(t, pool, func(tx pgx.Tx) {
-			if err := admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
+			if _, err := admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
 				t.Fatalf("Reconcile: %v", err)
 			}
 			if err := settle(scoped, tx); err != nil {

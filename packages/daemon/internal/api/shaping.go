@@ -957,17 +957,20 @@ const pauseContract = 178
 // repositories the project's live records name (version.go's 202, dispatch://INFRA-4401): `live`,
 // one entry per repository with what GitHub and Dispatch answered of it, beside `caches` and
 // `withoutWebhookApp`, which it keeps in contract 152's shape for every caller, in place of
-// `owners`, `mapped` and `refused`. A plugin before it reads the block with the schema of contract
-// 152, which requires those three keys, so the block this contract writes refuses that plugin's
-// whole state, as surely as a key a strict reader does not name. That caller is served the block in
-// contract 152's shape, written from the same entries (withoutRepositoriesLive), and every other
-// caller the block this contract writes. shapedAnswersContract stands below it with no row of
-// stateNarrowings between the two, so a caller at or above shapedAnswersContract and below this
-// contract, 193 to 201, is served the block in contract 152's shape: one from 193 to 198 is served
-// 193's keys, and one from 199 to 201 is served those of 199, the recorded contract at or below
-// it, which are the same keys on this route. The block's one enumerated field, the cache's
-// `state` at `repositories.live.*.cache.state`, arrived with it (answers.go's liveCacheStates), so
-// the band takes every value of it off with the key and no value strip is owed.
+// `owners`, `mapped` and `refused`. A plugin from 152 to 189 reads the block with the schema of
+// contract 152, which requires those three keys, and one below 152 with an earlier schema that
+// requires them too, so the block this contract writes refuses that plugin's whole state, as surely
+// as a key a strict reader does not name. A plugin from 193 on reads every key of the block as
+// optional (main's #3659), so that block would not refuse its state, and it is served the older
+// block all the same. Every caller below this contract is served the block in contract 152's
+// shape, written from the same entries (withoutRepositoriesLive), and every other caller the block
+// this contract writes. shapedAnswersContract stands below it with no row of stateNarrowings
+// between the two, so a caller at or above shapedAnswersContract and below this contract is served
+// the block in contract 152's shape and every other key as a caller at shapedAnswersContract is.
+// That holds at whichever recorded contract at or below its own the caller is served
+// (recordedContractAtOrBelow). The block's one enumerated field, the cache's `state` at
+// `repositories.live.*.cache.state`, arrived with it (answers.go's liveCacheStates), so the band
+// takes every value of it off with the key and no value strip is owed.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only

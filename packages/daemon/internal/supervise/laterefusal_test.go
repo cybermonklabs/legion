@@ -755,9 +755,10 @@ func TestAReplayedRefusalLeavesATaskANewerConnectionReSent(t *testing.T) {
 	}
 }
 
-// confirm writes the claim and the delivery together, and its retry does too: a delivery written
-// confirmed beside a claim still ready is a turn a restart finds over, and it would retire the task
-// as served while the turn still runs - the task's own, or one whose refusal then finds no task.
+// confirmCarrying writes the claim and the delivery together, and its retry does too: a delivery
+// written confirmed beside a claim still ready is a turn a restart finds over, and it would retire
+// the task as served while the turn still runs - the task's own, or one whose refusal then finds
+// no task.
 func TestAFailedConfirmIsWrittenAgainWholeBeforeARestartReadsIt(t *testing.T) {
 	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	for _, foreign := range []bool{false, true} {

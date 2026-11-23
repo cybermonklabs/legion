@@ -693,7 +693,11 @@ topic elsewhere and a topic reaching the fanout is never a control topic.
 A role lane publishes its exception on the attempt itself, since nothing redelivers a core message.
 The `no_holder` exception the durable path stores carries
 `Nats-Msg-Id` `exception.no_holder.<origin>` (the message's own `Nats-Msg-Id`, else its stream
-sequence), so the stream keeps one copy however many listeners give the message up.
+sequence), so the stream keeps one copy however many listeners give the message up. A clustered
+stream still storing one listener's copy refuses another's as still in process
+(`bus.ErrDuplicateInProcess`); that listener logs WARN `listener exception publish in process`
+rather than the ERROR line the publish-failure alarm counts, since the first copy is the one the
+stream keeps.
 
 Role exceptions use core NATS with the role lane. Other control exceptions retain ordinary
 JetStream transport. Exception topics do not produce further exception events.

@@ -162,7 +162,7 @@ func TestWhoDecidesIsTheKeysSetting(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			m.Airlock.Secrets = append(m.Airlock.Secrets, proxyrules.SecretRule{Name: "DEEL_OTHER_KEY", Judge: new(uint32(900)), Guidance: "grant for the release job"})
+			m.Airlock.Secrets = append(m.Airlock.Secrets, proxyrules.SecretRule{Name: "DEEL_OTHER_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: "grant for the release job"})
 			retag(t, m, policytest.Secret("UNJUDGED_KEY", fixtureOperator, policy.TierHuman, "unjudged-v1"), adminSecret(),
 				policytest.Secret("DEEL_OTHER_KEY", fixtureOperator, policy.TierHuman, "other-v1"),
 				policytest.Secret("AGENT_KEY", fixtureOperator, policy.TierAgent, "agent-v1"))
@@ -207,7 +207,7 @@ func TestTheJudgesGrantBesideAKeyGrantedAtOnceReleasesBoth(t *testing.T) {
 	if err != nil || dec.State != "granted" || dec.GrantID == "" {
 		t.Fatalf("the judge's grant of a judge key beside an agent-tier key = %+v, %v; want it granted", dec, err)
 	}
-	release, err := m.Values(t.Context(), dec.GrantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), dec.GrantID, enr, ReleaseCall{})
 	if err != nil || releasedValue(release, "DEEL_API_KEY") == "" || releasedValue(release, "AGENT_KEY") == "" {
 		t.Fatalf("Values(the judge's grant) = %+v, %v; want both keys released", release, err)
 	}
@@ -228,12 +228,12 @@ func TestAJudgeKeysLifetimeIsItsJudgeSeconds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record.Sign: %v", err)
 	}
-	req, err := m.Create(t.Context(), enr, compact, "", nil)
+	req, err := m.Create(t.Context(), enr, compact, "")
 	if err != nil || req.LifetimeSeconds == nil || *req.LifetimeSeconds != 300 {
 		t.Fatalf("a request naming no lifetime = %+v, %v; want the key's judge seconds, 300", req, err)
 	}
 
-	_, err = m.Create(t.Context(), enr, signJudgeable(t, m, key, "post the release notes", 600, "DEEL_API_KEY"), "", nil)
+	_, err = m.Create(t.Context(), enr, signJudgeable(t, m, key, "post the release notes", 600, "DEEL_API_KEY"), "")
 	if !errors.Is(err, ErrGrantRequiresLifetime) || handed != 1 {
 		t.Fatalf("a request for 600 seconds of a key whose judge grants 300 = %v, handed %d times; want ErrGrantRequiresLifetime and no second judge run", err, handed)
 	}
@@ -264,7 +264,7 @@ func TestTheJudgeSecondsAreTheDecidedKeysAndComeBeforeMaxGrant(t *testing.T) {
 		capped := policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1")
 		capped.Tags[policy.TagMaxGrant] = "10m"
 		retag(t, m, capped)
-		req, err := m.Create(t.Context(), enr, unsigned(t, m, key, "DEEL_API_KEY"), "", nil)
+		req, err := m.Create(t.Context(), enr, unsigned(t, m, key, "DEEL_API_KEY"), "")
 		if err != nil || !req.JudgeDeciding || req.LifetimeSeconds == nil || *req.LifetimeSeconds != 300 {
 			t.Fatalf("a request naming no lifetime for a judge key with judge 300 and max-grant 10m = %+v, %v; want it held for the judge, for 300 seconds", req, err)
 		}
@@ -276,14 +276,14 @@ func TestTheJudgeSecondsAreTheDecidedKeysAndComeBeforeMaxGrant(t *testing.T) {
 			{Name: "AGENT_KEY", Hosts: []string{"agent.example"}, Judge: new(uint32(60))},
 		}}
 		retag(t, m, policytest.Secret("AGENT_KEY", fixtureOperator, policy.TierAgent, "agent-v1"))
-		req, err := m.Create(t.Context(), enr, unsigned(t, m, key, "DEEL_API_KEY", "AGENT_KEY"), "", nil)
+		req, err := m.Create(t.Context(), enr, unsigned(t, m, key, "DEEL_API_KEY", "AGENT_KEY"), "")
 		if err != nil || !req.JudgeDeciding || req.LifetimeSeconds == nil || *req.LifetimeSeconds != 600 {
 			t.Fatalf("a request naming no lifetime for a judge key (600) beside a key got at once (60) = %+v, %v; want it held for the judge, for 600 seconds", req, err)
 		}
 		if err := m.Cancel(t.Context(), req.ID, enr); err != nil {
 			t.Fatalf("cancel the first request: %v", err)
 		}
-		req, err = m.Create(t.Context(), enr, signJudgeable(t, m, key, "post the release notes", 300, "DEEL_API_KEY", "AGENT_KEY"), "", nil)
+		req, err = m.Create(t.Context(), enr, signJudgeable(t, m, key, "post the release notes", 300, "DEEL_API_KEY", "AGENT_KEY"), "")
 		if err != nil || !req.JudgeDeciding || req.LifetimeSeconds == nil || *req.LifetimeSeconds != 300 {
 			t.Fatalf("a request for 300 seconds of the same two keys = %+v, %v; want it held for the judge, for 300 seconds, with AGENT_KEY's 60 no bound", req, err)
 		}
@@ -313,7 +313,7 @@ func TestJudgeSecondsBoundOnlyARequestTheJudgeHolds(t *testing.T) {
 			if c.noJudge {
 				m.Judge = nil
 			}
-			req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "post the release notes", 600, c.names...), "", nil)
+			req, err := m.Create(t.Context(), enr, signJudgeable(t, m, key, "post the release notes", 600, c.names...), "")
 			if err != nil || req.State != "pending" || req.JudgeDeciding || req.LifetimeSeconds == nil || *req.LifetimeSeconds != 600 {
 				t.Fatalf("a person's request for 600 seconds beside a judge key whose judge grants 300 = %+v, %v; want it written pending for its person, for 600 seconds", req, err)
 			}

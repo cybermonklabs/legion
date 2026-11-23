@@ -123,15 +123,22 @@ func (m *Machine) claimAssignee(ctx context.Context, e enrollmentRow, set *polic
 	defer cancel()
 	// The read runs on its own goroutine so the bound holds even for a reader that does not
 	// watch its context; its answer, if it comes later, goes into the buffered channel and is
-	// dropped.
+	// dropped. A panic in it is the read's error, as a failed read's is (panicText): net/http
+	// recovers a panic only on a handler's own goroutine, so one here would end the broker.
 	type answer struct {
 		assignee string
 		err      error
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		assignee, err := m.Assignees.Assignee(bounded, key)
-		answered <- answer{assignee, err}
+		var a answer
+		defer func() {
+			if p := recover(); p != nil {
+				a = answer{err: fmt.Errorf("the assignee read panicked: %s", panicText(p))}
+			}
+			answered <- a
+		}()
+		a.assignee, a.err = m.Assignees.Assignee(bounded, key)
 	}()
 	select {
 	case a := <-answered:
