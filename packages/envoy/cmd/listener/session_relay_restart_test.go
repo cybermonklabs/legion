@@ -217,11 +217,10 @@ func startBurstStandIn(t *testing.T, url string, capacity int) *burstStandIn {
 
 // registerBurst registers every session with the listener on port in consumer mode, a few at a
 // time, with no resume point, and fails the test unless each answer says consumer. A session the
-// listener refuses with its bus-unavailable 503 (the error begins busUnansweredPrefix) is
-// registered again until it is answered: the listener refuses a registration so while it cannot
-// write the session's record (its bus or its store does not answer), and that 503 asks the client
-// to try the same route again, so the refusal is no verdict, and only the test's deadline limits
-// the retries. Any other answer, another 503 included, is the verdict.
+// listener refuses with a 503 that may pass of itself (retriedRefusal) is registered again until
+// it is answered: the refusal asks the client to try the same route again, so it is no verdict,
+// and only the test's deadline limits the retries. Any other answer, another 503 included, is the
+// verdict.
 func registerBurst(t *testing.T, port int, sessionIDs []string) {
 	t.Helper()
 	work := make(chan string)
@@ -265,9 +264,8 @@ func registerBurst(t *testing.T, port int, sessionIDs []string) {
 }
 
 // registerConsumerSession registers sessionID with the listener on port in consumer mode. It
-// reports the listener's bus-unavailable 503 (an error beginning busUnansweredPrefix), its refusal
-// while it cannot write the session's record, as refused with that answer, and any other answer
-// that is not 200 with consumer delivery, another 503 included, as an error.
+// reports a 503 that may pass of itself (retriedRefusal) as refused with that answer, and any
+// other answer that is not 200 with consumer delivery, another 503 included, as an error.
 func registerConsumerSession(port int, sessionID string) (refused bool, err error) {
 	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(port)+"/v1/interests/subscribe", strings.NewReader(consumerRegistration(sessionID, "epoch-1")))
 	if err != nil {
@@ -285,13 +283,10 @@ func registerConsumerSession(port int, sessionID string) (refused bool, err erro
 		return false, fmt.Errorf("register %s: status %d, answer unreadable: %w", sessionID, response.StatusCode, err)
 	}
 	if response.StatusCode == http.StatusServiceUnavailable {
-		var refusal struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(body, &refusal) == nil && strings.HasPrefix(refusal.Error, busUnansweredPrefix) {
+		if retriedRefusal(body) {
 			return true, fmt.Errorf("register %s: status 503: %s", sessionID, strings.TrimSpace(string(body)))
 		}
-		return false, fmt.Errorf("register %s: status 503 that is not the bus-unavailable refusal: %s", sessionID, strings.TrimSpace(string(body)))
+		return false, fmt.Errorf("register %s: status 503 that is no refusal to try again: %s", sessionID, strings.TrimSpace(string(body)))
 	}
 	var answer subscribeAnswer
 	if err := json.Unmarshal(body, &answer); err != nil {
@@ -301,6 +296,41 @@ func registerConsumerSession(port int, sessionID string) (refused bool, err erro
 		return false, fmt.Errorf("register %s: status %d, delivery %+v; want 200 in consumer mode", sessionID, response.StatusCode, answer.Delivery)
 	}
 	return false, nil
+}
+
+// retriedRefusal reports whether body, a 503's, is one of the two refusals of a registration that
+// may pass of themselves: the bus-unavailable one (an error beginning busUnansweredPrefix), while
+// the listener cannot write the session's record, and the consumer refusal with reason
+// consumer_error (deliveryReasonConsumerError), while a consumer call failed - deliveryRefusal
+// answers 503 for "a cause that may pass of itself". Every other 503 is a verdict.
+func retriedRefusal(body []byte) bool {
+	var refusal struct {
+		Error  string `json:"error"`
+		Reason string `json:"reason"`
+	}
+	if json.Unmarshal(body, &refusal) != nil {
+		return false
+	}
+	return strings.HasPrefix(refusal.Error, busUnansweredPrefix) || refusal.Reason == deliveryReasonConsumerError
+}
+
+// A registration refused with either 503 that may pass of itself is tried again, and every other
+// 503 is a verdict: the two answers the listener writes for those causes, and one with another
+// reason (consumer_limit, a refusal until an operator raises max_consumers).
+func TestRetriedRefusalTakesTheBusAndConsumerRefusalsAlone(t *testing.T) {
+	for _, tc := range []struct {
+		body  string
+		retry bool
+	}{
+		{`{"error":"` + busUnansweredPrefix + `read ses_x's interest record: context deadline exceeded"}`, true},
+		{`{"error":"the session consumer could not be created","reason":"` + deliveryReasonConsumerError + `"}`, true},
+		{`{"error":"the stream holds as many consumers as it allows","reason":"` + deliveryReasonConsumerLimit + `"}`, false},
+		{`not json`, false},
+	} {
+		if got := retriedRefusal([]byte(tc.body)); got != tc.retry {
+			t.Errorf("retriedRefusal(%s) = %v, want %v", tc.body, got, tc.retry)
+		}
+	}
 }
 
 // awaitPulled waits until every session's consumer has a pull request waiting: the listener's
