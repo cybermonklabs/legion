@@ -354,14 +354,17 @@ type Claim struct {
 	// evicted) — and LastStartFailure why its last start did not produce a running agent — a
 	// launcher that refused the start, an init container that failed, a pod that never became
 	// ready (launchAfter's error). They are two answers to two questions, kept apart because a
-	// claim that cannot start and a claim that keeps dying are different faults, and each is kept
-	// until another of its own kind replaces it. Both are a far side's text, kept as such:
+	// claim that cannot start and a claim that keeps dying are different faults, and neither
+	// overwrites the other. The death's cause is kept until another death replaces it. The start
+	// failure is kept until another failed start replaces it or the agent says it is ready, which
+	// ends the episode of launch failures it names (table.go's ready), so a start failure on the
+	// claim is always one from after LastReady. Both are a far side's text, kept as such:
 	// LastStartFailure as any far side's error text is (storetext.FarSideError), and LastDeathCause
 	// as a far side's text (storetext.FarSideText) under the runtime's own bound (deathCause).
-	// LastReady is when the agent last said it could be prompted, which is what says how old
-	// either cause is. All three are persisted: the operator reading a claim after a restart is
-	// the one who has to act on them, and the death's cause is what the record of that death
-	// names (endDied, EndedWork), which the restarted worker is told (RelaunchSentence,
+	// LastReady is when the agent last said it could be prompted, which says how old the death's
+	// cause is. All three are persisted: the operator reading a claim after a restart is the one
+	// who has to act on them, and the death's cause is what the record of that death names
+	// (endDied, EndedWork), which the restarted worker is told (RelaunchSentence,
 	// interruptedTask).
 	LastDeathCause   string
 	LastStartFailure string
