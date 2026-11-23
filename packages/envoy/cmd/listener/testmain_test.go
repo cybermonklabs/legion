@@ -1,5 +1,3 @@
-//go:build !natslive
-
 package main
 
 import (
@@ -9,6 +7,13 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// TestMain removes the NATS server the package's tests share (testnats.Main). Under the natslive
-// tag, whose tests start a broker, testmain_natslive_test.go's TestMain runs in its place.
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+// testMainHarness runs the package's tests inside whatever else their build needs around
+// testnats.Main: nothing, unless a tagged file sets it. Under natslive, whose relay socket rows
+// start a broker, testmain_natslive_test.go sets it to storetest.Run, so only that build links the
+// broker's test database harness. The hook stands in for a !natslive file, which
+// go-tagged-tests.sh refuses: a tag is read only in its bare form.
+var testMainHarness = func(run func() int) int { return run() }
+
+// TestMain removes the NATS server the package's tests share (testnats.Main), inside
+// testMainHarness.
+func TestMain(m *testing.M) { os.Exit(testMainHarness(func() int { return testnats.Main(m) })) }
