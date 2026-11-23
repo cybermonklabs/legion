@@ -949,7 +949,8 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 // A replacement whose launch waits at its issue pod's gate, while another role of the issue's
 // pod loads its session, is told as that (supervise.EndRelaunchWaitsForPod): the stalled turn
 // ended and its process stopped where the launch parked (supervise's askPod), the task still
-// owed, and the replacement starting once that other role's load ends. The claim alone —
+// owed, and the replacement starting when the gate grants it its start, behind whichever roles
+// of the issue start or load before it, one load at a time. The claim alone —
 // launching, with no process — reads as the relaunch still to make, and an owner told that no
 // replacement was started would wait for a retry nobody makes.
 func TestTheStallBackstopTellsAReplacementWaitingForItsIssuePod(t *testing.T) {
@@ -998,8 +999,8 @@ func TestTheStallBackstopTellsAReplacementWaitingForItsIssuePod(t *testing.T) {
 	for _, want := range []string{
 		"the daemon ended the implementer's turn and queued the replacement launch at its issue's start gate",
 		"still owed",
-		"the launch that replaces it waits at its issue's start gate while another role of the issue loads its session",
-		"the replacement starts once that load ends, or once the gate's bound on that load passes",
+		"the launch that replaces it waits at its issue's start gate behind the roles of the issue that start or load their sessions before it, one load at a time",
+		"the replacement starts when the gate grants it its start",
 		"nothing was charged to the claim",
 		stallProcessStopped,
 	} {

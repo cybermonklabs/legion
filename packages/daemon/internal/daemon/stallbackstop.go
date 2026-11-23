@@ -508,8 +508,8 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 		process: stallProcessKept},
 	supervise.EndRelaunchWaitsForPod: {
 		did: "and queued the replacement launch at its issue's start gate",
-		end: "the launch that replaces it waits at its issue's start gate while another role of the issue loads its session, since that gate lets one role of an issue load at a time: " +
-			"the replacement starts once that load ends, or once the gate's bound on that load passes. A suspension of this claim, a close that retires it, " +
+		end: "the launch that replaces it waits at its issue's start gate behind the roles of the issue that start or load their sessions before it, one load at a time, " +
+			"and the replacement starts when the gate grants it its start. A suspension of this claim, a close that retires it, " +
 			"or the daemon's own shutdown, which the daemon's next start takes up, can come before that start, and a start refused until the claim's launch budget runs out leaves it failed with nothing started for it",
 		process: stallProcessLetGo},
 	supervise.EndRelaunchPending: {

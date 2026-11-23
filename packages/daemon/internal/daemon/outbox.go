@@ -2805,11 +2805,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// claimRequest): none of those reads waits for a decision in flight, and the view is what
 		// the claim's latest decision left. The stop itself can wait: an issue_close or a tree_close
 		// takes the machine's lock behind a decision in flight, and only a suspension acts before
-		// that lock (supervise's stopStart). A suspend or tree_close row whose tree the issue has
-		// left goes through stopInLeftTree and stopCarried instead, which reads Machine.Claim,
-		// because its read decides whether to stop at all and must see a decision in flight. A
-		// launch that waits at its issue pod's gate parks on its claim (supervise's askPod), so no
-		// decision holds the machine through that wait (dispatch://INFRA-5297).
+		// that lock (supervise's stopStart). A launch that waits at its issue pod's gate parks on its
+		// claim (supervise's askPod), so no decision holds the machine through that wait
+		// (dispatch://INFRA-5297).
 		view := machine.View().Claim
 		switch view.State {
 		case supervise.StateFailed, supervise.StateRetired:
@@ -3040,6 +3038,12 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 // runs there; stopped says it ran when this call began and runs nothing when it returns. A
 // suspension the claim holds for its turn or its boot is no error: the caller waits on its backoff
 // and asks again.
+//
+// It reads the claim through Machine.Claim, before the stop and after it, rather than through the
+// published view the other stop rows read before they stop a claim (outbox.supervise's suspend
+// branch): this read decides whether to stop at all, so it must see a decision in flight, and
+// waits for it. A launch that waits at its issue pod's gate holds no decision through that wait
+// (supervise's askPod).
 func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, issue record.Issue) (still string, stopped bool, err error) {
 	held := machine.Claim()
 	token := held.Token

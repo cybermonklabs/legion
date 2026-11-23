@@ -193,8 +193,9 @@ const (
 	// TimerPodStart is the grant of its issue pod's start to a launch parked at the pod's gate
 	// (askPod): no wait of the clock's, but the gate's grant, posted to the machine as a timer's
 	// firing is (podHold.notify, fire). The launch asks the runtime for its process when it fires
-	// (podStartDue). The claim waits launching with no process until then, and whatever lets that
-	// launch go disarms it, which takes its start out of the gate (podPark).
+	// (podStartDue). The claim waits launching with no process until then, and whatever drops the
+	// parked launch's wake disarms it with the wake and takes its start out of the gate, naming
+	// that end (dropPodPark, podPark.cut).
 	TimerPodStart TimerKind = "pod_start"
 )
 
@@ -1114,9 +1115,10 @@ func fillTable(t *builder) {
 
 	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod). The park
 	// keeps the claim launching with no process, and every decision that moves the claim out of
-	// launching lets its launch go, which drops the park with the claim's timers (letGo), so the
-	// grant reaches a launching claim alone. Its launch ends as any launch does: started and
-	// launching, failed, or launching again for a retry.
+	// launching drops the parked launch's wake, which disarms this timer and takes the start out of
+	// the gate for that decision's end (dropPodPark: suspended, retire, and letGo, which a failure
+	// makes), so the grant reaches a launching claim alone. Its launch ends as any launch does:
+	// started and launching, failed, or launching again for a retry.
 	t.row(onPodStartTimer, "the issue pod's gate granted this claim's parked launch its start: ask the runtime for its process now", podStartDue,
 		[]ClaimState{StateLaunching, StateFailed}, StateLaunching)
 	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",

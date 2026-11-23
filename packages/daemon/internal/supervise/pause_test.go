@@ -159,14 +159,9 @@ func (h *harness) heldPause() (int64, bool) {
 
 // armed is whether timer kind is armed on the machine now.
 func (h *harness) armed(kind TimerKind) bool {
-	return armedOn(h.m, kind)
-}
-
-// armedOn is whether timer kind is armed on m now, read under m's lock.
-func armedOn(m *Machine, kind TimerKind) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	_, ok := m.timers[kind]
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	_, ok := h.m.timers[kind]
 	return ok
 }
 

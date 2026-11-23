@@ -1851,10 +1851,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // may be the very launch the resume let out.
 //
 // No decision waits for another role's session load in the claim's issue pod: a launch the pod's
-// start gate cannot grant at once parks on the machine and its decision ends (askPod), so a
-// suspension, a retirement and every read of the claim find the lock free, and the row each of
-// them runs takes the parked start out of the gate with the claim's process (letGo, podPark,
-// dispatch://INFRA-5297).
+// start gate cannot grant at once parks on the machine as a wake that carries a podPark and its
+// decision ends (askPod, wake.park), so a suspension, a retirement and every read of the claim
+// find the lock free, and the row each of them runs drops that wake, whose cut takes the start
+// out of the gate and names that row's end: a suspension's or a retirement's (dropPodPark,
+// podPark.cut, dispatch://INFRA-5297).
 //
 // Handle gives ev through the store's rule first; the comment that opens its body says why.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
@@ -2965,7 +2966,9 @@ type podGrant struct {
 // runtime of a try the pod's gate parked and then granted (granted): that try was written and
 // waited its backoff before it parked, so it goes on where it stopped, at the generation and with
 // the boot token it was written with. A try whose start fails and that is tried again asks the
-// gate again, and may park again.
+// gate again, and may park again. A try the gate parks ends the launch's decision with no error,
+// whatever the stop of the process the launch let go answered there (askPod, writeTry): the
+// launch waits for its grant, and has not failed.
 //
 // Every try runs on a context of the machine's own (startable), which a suspension cancels; the
 // decision a grant starts makes its own, so a suspension cuts short the start a grant began as it
@@ -3058,8 +3061,8 @@ func (m *Machine) launchTries(ctx context.Context, l launchTry, granted *podGran
 // ask of its issue pod's gate (askPod). It answers the boot token and the hold the gate granted,
 // or done where the launch ends at this try, with what launchTries returns: a write the store did
 // not take, which is tried again at the probe interval unless the try's own context ended
-// (relaunchAtProbe), a backoff cut short, or a try parked at the gate, which returns what the stop
-// of the process the launch let go answered (askPod).
+// (relaunchAtProbe), a backoff cut short, or a try parked at the gate, which returns no error,
+// whatever the stop of the process the launch let go answered (askPod).
 func (m *Machine) writeTry(starting context.Context, l launchTry) (token string, hold *podHold, done bool, err error) {
 	m.claim.Generation++
 	token = rand.Text()
@@ -3083,8 +3086,8 @@ func (m *Machine) writeTry(starting context.Context, l launchTry) (token string,
 			return "", nil, true, err
 		}
 	}
-	hold, done, err = m.askPod(starting, l, token)
-	return token, hold, done, err
+	hold, done = m.askPod(starting, l, token)
+	return token, hold, done, nil
 }
 
 // relaunchAtProbe leaves the launch launchTries was making to be tried again at the probe
@@ -3528,10 +3531,11 @@ func (m *Machine) spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Lo
 // kept, for the next launch to wait out.
 //
 // A refusal is recorded as well as returned, and a stop the runtime makes clears that record
-// (stopUnconfirmed): every caller joins a refusal to an error of its own, or returns it, and goes
-// on — to the retry, to the next try, to the park, or to the failed claim — so the process is left
-// possibly running, and the owner of a stalled worker is told that rather than that it was
-// stopped. The tries of one launch stop one process, the one letGo moved into previous
+// (stopUnconfirmed): every caller goes on — to the retry, to the next try, to the park, or to the
+// failed claim — joining a refusal to an error of its own or returning it, but for the park, which
+// logs it at Warn and answers no error, since the launch it parks has not failed (askPod). So the
+// process is left possibly running, and the owner of a stalled worker is told that rather than
+// that it was stopped. The tries of one launch stop one process, the one letGo moved into previous
 // (launchTries holds it until a start succeeds), so what the record answers is whether that
 // process was seen to stop, and the latest answer about it is the answer: a stop refused and then
 // made is a process somebody saw stop, and an owner told otherwise is sent after a pod that is not

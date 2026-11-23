@@ -114,15 +114,17 @@ const (
 	// again — while nothing has been relaunched yet, and the two sentences are not the same news.
 	EndRelaunchParked ProcessEnd = "relaunch parked"
 	// EndRelaunchWaitsForPod is the process let go and stopped and the launch that replaces it
-	// waiting at its issue pod's gate while another role of the pod starts or loads its session
-	// (askPod, wake.park). The claim is written launching and records no process, and the gate's
-	// grant starts the replacement once that other role's load ends or its bound passes
-	// (podStartDue) — unless a suspension or a retirement of the claim takes the launch out of the
-	// gate first (dropPodPark), the start the grant makes is refused until the claim's launch
-	// budget runs out (launchTries, fail), or the daemon's stop leaves the launch to its next boot.
-	// It is an end of its own because the claim alone reads as the relaunch still to make
-	// (EndRelaunchPending), where nothing refused or cut this one short: it is queued behind one
-	// load.
+	// waiting at its issue pod's gate behind the roles of the pod that start or load their
+	// sessions before it, one load at a time (askPod, wake.park): it asks as no request's
+	// (launch), so a start a request raised can go ahead of it, even one asked after it
+	// (podQueue.next), and it may wait out more than one load. The claim is written launching
+	// and records no process, and the gate's grant of its start starts the replacement
+	// (podStartDue) — unless a suspension or a retirement of the claim takes the launch out of
+	// the gate first (dropPodPark), the start the grant makes is refused until the claim's
+	// launch budget runs out (launchTries, fail), or the daemon's stop leaves the launch to its
+	// next boot. It is an end of its own because the claim alone reads as the relaunch still to
+	// make (EndRelaunchPending), where nothing refused or cut this one short: it is queued at
+	// the gate.
 	EndRelaunchWaitsForPod ProcessEnd = "relaunch waits for its pod"
 	// EndRelaunchPending is the process let go and stopped with nothing in its place: the
 	// launch's own write was refused and the same launch waits on the probe interval

@@ -35,16 +35,19 @@ package supervise
 // start no longer: the next role starts all the same. A registration before that stops the bound
 // (settle), and the load then ends at its settle, however long after its process's start.
 //
-// A parked start leaves the queue at once when anything ends the launch it belongs to, and the
-// start the gate grants next names what ended it (dropPodPark, podPark.cut, waitEndedBy): a
-// suspension of any source, the pause's and the idle release's among them, as a suspension; a
-// retirement — a close of the issue or of the tree, an operator's close — as a retirement; a
-// relaunch that replaces the launch, or a failure of its claim, as an end of its process, at the
-// let-go of the claim's process (letGo); and a park another park replaces as a failed launch
-// (waitOnMachine). A start granted and not yet run leaves all the same, and the next start is
-// granted at once. None of them waits for a load. The daemon's stop takes no park out: the gate
-// and every machine's context end together, and a grant that reaches a machine whose context has
-// ended starts nothing and gives the pod on as a failed launch (podStartDue).
+// A parked start is a wake that carries a podPark (askPod, wake.park). It leaves the gate at once
+// when anything ends the launch it belongs to, wherever that wake is dropped (dropPodPark), and
+// its cut names its end in the line of a launch cut short (podPark.cut): a suspension of any
+// source, the pause's and the idle release's among them, as a suspension; a retirement — a close
+// of the issue or of the tree, an operator's close — as a retirement; a relaunch that replaces
+// the launch, or a failure of its claim, as an end of its process, at the let-go of the claim's
+// process (letGo); and a park another park replaces as a failed launch (waitOnMachine). A start
+// still waiting leaves the queue; one granted and not yet run gives the pod on, and the start
+// granted next at once names that end as what ended its wait (waitEndedBy). None of them waits
+// for a load. The daemon's stop takes no park out, and nothing watches a machine's context for
+// it: the gate and every machine's context end together, and a grant (TimerPodStart) that reaches
+// a machine whose context has ended starts nothing and gives the pod on as a failed launch
+// (podStartDue).
 //
 // A launch stops the process it let go before it parks (askPod, stopPrevious), so a parked launch
 // holds no running process, and what that process held is free while the other role loads.
@@ -117,8 +120,9 @@ const (
 )
 
 // podLaunchCutShortLine is the line of a parked start that something took out of the gate before
-// it ran, naming what did: a let-go of its claim's process, a park that replaced it, or a grant
-// the daemon's stop reached (podPark.cut).
+// it ran, naming what did by the end its cut passes (podPark.cut): a suspension, a retirement, a
+// let-go of its claim's process, a park that replaced it, or a grant that reached a machine whose
+// context the daemon's stop had ended.
 const podLaunchCutShortLine = "supervise: launch cut short while it waited for its issue pod's start; its start left the gate"
 
 // podHoldEnd is why a hold of a pod's start ended, which is what ended the wait of the start
@@ -573,10 +577,9 @@ func (m *Machine) adoptPodLoad() {
 // runtime for its process (launchTries). It answers the hold the gate granted where it asked, or
 // nil for a claim the gate does not hold, with false; or true where the try waits — another role
 // of the pod starts or loads, or one ahead of this start in the order waits — and is parked on the
-// machine until its grant, with what the stop of the process its launch let go answered. A load
-// this machine still records is its earlier process's, which this launch has let go, so it ends
-// first, as that process's end (podProcessEnded). The phase is read only for a start no request
-// raised, since the order reads it of no other (podQueue.next).
+// machine until its grant. A load this machine still records is its earlier process's, which this
+// launch has let go, so it ends first, as that process's end (podProcessEnded). The phase is read
+// only for a start no request raised, since the order reads it of no other (podQueue.next).
 //
 // A try that waits stops the process its launch let go before it parks (stopPrevious), as a try
 // whose start failed stops it: that process is let go and still running (letGo, previous), and
@@ -584,8 +587,12 @@ func (m *Machine) adoptPodLoad() {
 // grant — a suspension, a retirement, a relaunch — would leave it running with no claim recording
 // it, and while the park lasts it would hold what the other role's load needs. A stop the runtime
 // refuses, or that the try's own context cuts short, leaves the try parked all the same, as every
-// caller of stopPrevious goes on: the refusal is recorded (stopUnconfirmed) and returned with the
-// decision.
+// caller of stopPrevious goes on: the refusal is recorded (stopUnconfirmed) and logged at Warn,
+// and the park answers no error. The launch has not failed — it waits at the gate to start as
+// asked — and an error would fail the request that raised it: an operator's resume or spawn
+// answered as a failure (internal/api's operatorFailure), and the decision logged at Error as an
+// event that failed (internal/daemon's supervisor). stopUnconfirmed is what carries the refusal to
+// whoever must hear that the process may be running still: the owner of a stalled worker.
 //
 // A parked try is a wake whose turn is the grant rather than a moment of the pacing's (wake.park):
 // it waits on the machine as a wake the pacing parks over no process does (parkWake), holding the
@@ -606,9 +613,9 @@ func (m *Machine) adoptPodLoad() {
 // it launch_uncertain, and relaunchUnfinished, once the boot's reconciliation has proved that no
 // process of it runs, releases it to queued and spawns it again (launchUnfinishedClaim), which
 // asks the new daemon's empty gate.
-func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHold, bool, error) {
+func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHold, bool) {
 	if !m.gated() {
-		return nil, false, nil
+		return nil, false
 	}
 	if m.podLoad != nil {
 		m.endLoad(podProcessEnded)
@@ -619,7 +626,7 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 	granted := Timer{Claim: m.claim.Token, Kind: TimerPodStart, Generation: m.claim.Generation, Seq: m.seq}
 	hold, now := m.deps.PodStarts.ask(ask, func() { go m.fire(granted) })
 	if now {
-		return hold, false, nil
+		return hold, false
 	}
 	stopped := m.stopPrevious(ctx)
 	m.timers[TimerPodStart] = armed{seq: granted.Seq}
@@ -631,7 +638,7 @@ func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHo
 		m.log.Warn("supervise: the runtime did not confirm the stop of the process this launch let go; the launch waits for its issue pod's start all the same",
 			"generation", m.claim.Generation, "error", stopped)
 	}
-	return hold, true, stopped
+	return hold, true
 }
 
 // podPark is a launch parked at its issue pod's gate (askPod, wake.park): the start it asked of
