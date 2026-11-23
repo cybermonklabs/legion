@@ -9,14 +9,17 @@ import {
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
  *  Dispatch asks a person to press Save, so a priority's title and description are saved as
  *  they are written: once the typing rests, and at once when the field is left. */
-const SAVE_AFTER_MS = 500;
+export const SAVE_AFTER_MS = 500;
 
 /**
  * A field edited where it is read: no edit mode, no Save button. What the reader types is kept
- * here until it rests, then written once; leaving the field writes it immediately, and Enter in
- * a one-line field does both. The reader's own text stands until `value` itself changes, so a
- * refresh of the row underneath never pulls a half-typed word out from under them and the
- * round trip of their own write never shows them the old text again.
+ * here until it rests, then written once; leaving the field writes what is not written yet, and
+ * Enter in a one-line field does both. A text the field has written over the server's text is
+ * not written again while that text stands: leaving the field just after the typing rested,
+ * while that write's answer is still on its way, sends nothing a second time. The reader's own
+ * text stands until `value` itself changes, so a refresh of the row underneath never pulls a
+ * half-typed word out from under them and the round trip of their own write never shows them
+ * the old text again.
  */
 export function InPlaceField({
   autoFocus = false,
@@ -52,6 +55,8 @@ export function InPlaceField({
   const latest = useRef({ draft, value, onSave });
   latest.current = { draft, value, onSave };
   const seen = useRef(value);
+  /** The text this field last wrote and the server's text it was written over. */
+  const written = useRef<{ readonly text: string; readonly over: string } | undefined>(undefined);
 
   // The server's text wins when it changes under a reader who is not holding the field:
   // another writer's rename, or this writer's own write coming back. The draft stands until
@@ -71,7 +76,10 @@ export function InPlaceField({
   const save = () => {
     stop();
     const { draft: typed, value: saved, onSave: write } = latest.current;
-    if (typed !== saved) write(typed);
+    if (typed === saved) return;
+    if (written.current?.text === typed && written.current.over === saved) return;
+    written.current = { text: typed, over: saved };
+    write(typed);
   };
   // The timer is cleared through the ref the render that set it wrote to, so the unmount takes
   // no dependency on this render's own `stop`.

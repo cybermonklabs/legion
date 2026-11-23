@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { minimumReasonWords } from "../fixed-waits";
 import { limitsOfFiles, refusedLimits, testFiles, type WallClockLimit } from "../row-limits";
@@ -17,6 +17,17 @@ const realLimits = limitsOfFiles(e2eDirectory, scannedFiles);
 // The rule is run over the directory once, here, because two tests below read the result: the
 // one that asserts it and the one that prints the evidence line only when it held.
 const realRefused = refusedLimits(realLimits);
+
+// The rows that plant test files of their own plant them in a directory `scratch` makes on
+// `memoryRoot()`, because a row that makes and removes many entries on a disk the host's other
+// programs share takes its time from those programs. Measured on 2026-11-21 at a load of 1,650 to
+// 1,670 on 288 CPUs, the 18 files of "the scan reads every spelling of a test file the lane
+// collects" took 27 to 1,823 ms to plant under `tmpdir()` and 0.4 to 1,805 ms to remove, against
+// 0.2 ms and 0.1 to 0.2 ms under `/dev/shm`, while the scan of them took 4 to 32 ms. Every row of
+// this file is synchronous, and Bun does not stop a synchronous row at its clock: it judges the
+// row once it returns, so a slow disk failed that row under Bun's 5 s default, which a
+// `bun test <file>` run applies, at 7,560 ms. Each row's directory is removed after the row.
+const scratch = temporaryDirectories("row-limits", { root: memoryRoot() });
 
 /** The planted controls, read by name rather than by pointing `testFiles` at their directory:
  *  they are no test of this directory, and all but seven of them are written to be refused. */
@@ -120,65 +131,61 @@ test("the scan leaves out every control of fixtures/", () => {
 // because the bare `test` is read whatever a file binds: only a reading of that `require`
 // makes `t(...)` a row.
 test("the scan reads every spelling of a test file the lane collects", () => {
-  const root = mkdtempSync(join(tmpdir(), "row-limits-spellings-"));
-  try {
-    const esm = 'import { test } from "bun:test";\ntest("planted", () => {}, 90_000);\n';
-    const cjs = 'const { test: t } = require("bun:test");\nt("planted", () => {}, 90_000);\n';
-    const jsx =
-      'import { test } from "bun:test";\n' +
-      "const element = <p>one ` tick</p>;\n" +
-      'test("planted", () => element, 90_000);\n';
-    const plants: [string, string][] = [
-      ["__tests__/zz.spec.ts", esm],
-      ["__tests__/zz_test.ts", esm],
-      ["__tests__/zz_spec.ts", esm],
-      ["__tests__/zz.test.tsx", jsx],
-      ["__tests__/zz.spec.jsx", jsx],
-      ["__tests__/zz.test.js", esm],
-      ["__tests__/zz.test.mjs", esm],
-      ["__tests__/zz.spec.cjs", cjs],
-      ["__tests__/zz_test.mts", esm],
-      ["__tests__/zz_spec.cts", cjs],
-      ["__tests__/zz.TEST.ts", esm],
-      ["__tests__/zz.fixture.ts", esm],
-      ["__tests__/test.ts", esm],
-      ["__tests__/zz.tests.ts", esm],
-      ["__tests__/zz-test.ts", esm],
-      ["__tests__/zz.test.d.ts", esm],
-      ["__tests__/node_modules/zz.test.ts", esm],
-      ["__tests__/.hidden/zz.test.ts", esm],
-    ];
-    for (const [file, source] of plants) {
-      mkdirSync(join(root, file, ".."), { recursive: true });
-      writeFileSync(join(root, file), source);
-    }
-    const read = [
-      "__tests__/zz.TEST.ts",
-      "__tests__/zz.spec.cjs",
-      "__tests__/zz.spec.jsx",
-      "__tests__/zz.spec.ts",
-      "__tests__/zz.test.js",
-      "__tests__/zz.test.mjs",
-      "__tests__/zz.test.tsx",
-      "__tests__/zz_spec.cts",
-      "__tests__/zz_spec.ts",
-      "__tests__/zz_test.mts",
-      "__tests__/zz_test.ts",
-    ];
-    expect(testFiles(root)).toEqual(read);
-    expect(collectedFiles(root, "__tests__").sort()).toEqual(read);
+  const root = scratch("spellings");
+  const esm = 'import { test } from "bun:test";\ntest("planted", () => {}, 90_000);\n';
+  const cjs = 'const { test: t } = require("bun:test");\nt("planted", () => {}, 90_000);\n';
+  const jsx =
+    'import { test } from "bun:test";\n' +
+    "const element = <p>one ` tick</p>;\n" +
+    'test("planted", () => element, 90_000);\n';
+  const plants: [string, string][] = [
+    ["__tests__/zz.spec.ts", esm],
+    ["__tests__/zz_test.ts", esm],
+    ["__tests__/zz_spec.ts", esm],
+    ["__tests__/zz.test.tsx", jsx],
+    ["__tests__/zz.spec.jsx", jsx],
+    ["__tests__/zz.test.js", esm],
+    ["__tests__/zz.test.mjs", esm],
+    ["__tests__/zz.spec.cjs", cjs],
+    ["__tests__/zz_test.mts", esm],
+    ["__tests__/zz_spec.cts", cjs],
+    ["__tests__/zz.TEST.ts", esm],
+    ["__tests__/zz.fixture.ts", esm],
+    ["__tests__/test.ts", esm],
+    ["__tests__/zz.tests.ts", esm],
+    ["__tests__/zz-test.ts", esm],
+    ["__tests__/zz.test.d.ts", esm],
+    ["__tests__/node_modules/zz.test.ts", esm],
+    ["__tests__/.hidden/zz.test.ts", esm],
+  ];
+  for (const [file, source] of plants) {
+    mkdirSync(join(root, file, ".."), { recursive: true });
+    writeFileSync(join(root, file), source);
+  }
+  const read = [
+    "__tests__/zz.TEST.ts",
+    "__tests__/zz.spec.cjs",
+    "__tests__/zz.spec.jsx",
+    "__tests__/zz.spec.ts",
+    "__tests__/zz.test.js",
+    "__tests__/zz.test.mjs",
+    "__tests__/zz.test.tsx",
+    "__tests__/zz_spec.cts",
+    "__tests__/zz_spec.ts",
+    "__tests__/zz_test.mts",
+    "__tests__/zz_test.ts",
+  ];
+  expect(testFiles(root)).toEqual(read);
+  expect(collectedFiles(root, "__tests__").sort()).toEqual(read);
 
-    const refused = refusedLimits(limitsOfFiles(root, testFiles(root)));
-    const jsxFiles = new Set(["__tests__/zz.spec.jsx", "__tests__/zz.test.tsx"]);
-    expect(refused.map((refusal) => `${refusal.limit.file}:${refusal.limit.line}`)).toEqual(
-      read.map((file) => `${file}:${jsxFiles.has(file) ? 3 : 2}`)
-    );
-    for (const refusal of refused) {
-      expect(refusal.why).toStartWith(`${refusal.limit.file}:${refusal.limit.line} the row `);
-      expect(refusal.why).toContain("stops at 90_000, which is no call of `rowLimit`");
-    }
-  } finally {
-    rmSync(root, { force: true, recursive: true });
+  const refused = refusedLimits(limitsOfFiles(root, testFiles(root)));
+  const jsxFiles = new Set(["__tests__/zz.spec.jsx", "__tests__/zz.test.tsx"]);
+  expect(refused.map((refusal) => `${refusal.limit.file}:${refusal.limit.line}`)).toEqual(
+    read.map((file) => `${file}:${jsxFiles.has(file) ? 3 : 2}`)
+  );
+  for (const refusal of refused) {
+    expect(refusal.why).toStartWith(`${refusal.limit.file}:${refusal.limit.line} the row `);
+    expect(refusal.why).toContain("stops at 90_000, which is no call of `rowLimit`");
   }
 });
 
@@ -188,33 +195,29 @@ test("the scan reads every spelling of a test file the lane collects", () => {
 // plants the same bare `90_000` at the top of a scratch `__tests__`, one directory below it, and
 // under its `fixtures/`, and proves the rule reads all three files and refuses the limit in each.
 test("the scan reads a test file of a subdirectory, which the lane runs too", () => {
-  const root = mkdtempSync(join(tmpdir(), "row-limits-reach-"));
-  try {
-    const planted = 'import { test } from "bun:test";\ntest("planted", () => {}, 90_000);\n';
-    for (const file of [
-      "__tests__/top.test.ts",
-      "__tests__/sub/nested.test.ts",
-      // `fixtures/` is walked like every other directory: a `*.test.ts` planted there runs on
-      // the lane, so the rule reads it.
-      "__tests__/fixtures/planted.test.ts",
-    ]) {
-      mkdirSync(join(root, file, ".."), { recursive: true });
-      writeFileSync(join(root, file), planted);
-    }
-    expect(testFiles(root)).toEqual([
-      "__tests__/fixtures/planted.test.ts",
-      "__tests__/sub/nested.test.ts",
-      "__tests__/top.test.ts",
-    ]);
-    const refused = refusedLimits(limitsOfFiles(root, testFiles(root)));
-    expect(refused.map((refusal) => refusal.limit.file)).toEqual([
-      "__tests__/fixtures/planted.test.ts",
-      "__tests__/sub/nested.test.ts",
-      "__tests__/top.test.ts",
-    ]);
-  } finally {
-    rmSync(root, { force: true, recursive: true });
+  const root = scratch("reach");
+  const planted = 'import { test } from "bun:test";\ntest("planted", () => {}, 90_000);\n';
+  for (const file of [
+    "__tests__/top.test.ts",
+    "__tests__/sub/nested.test.ts",
+    // `fixtures/` is walked like every other directory: a `*.test.ts` planted there runs on
+    // the lane, so the rule reads it.
+    "__tests__/fixtures/planted.test.ts",
+  ]) {
+    mkdirSync(join(root, file, ".."), { recursive: true });
+    writeFileSync(join(root, file), planted);
   }
+  expect(testFiles(root)).toEqual([
+    "__tests__/fixtures/planted.test.ts",
+    "__tests__/sub/nested.test.ts",
+    "__tests__/top.test.ts",
+  ]);
+  const refused = refusedLimits(limitsOfFiles(root, testFiles(root)));
+  expect(refused.map((refusal) => refusal.limit.file)).toEqual([
+    "__tests__/fixtures/planted.test.ts",
+    "__tests__/sub/nested.test.ts",
+    "__tests__/top.test.ts",
+  ]);
 });
 
 // The control for a false refusal, which belongs here rather than in either file below: a wrong
@@ -444,66 +447,62 @@ test("a row that polls with whether or eventually states a rowLimit of the short
 // file writes: a number below the bound, above it, at `rowLimit` of it, an expression, a `0`,
 // which sets no clock, or nothing, which leaves the row to the lane's `--timeout`.
 test("a file's own rowLimit states the limit of each waiting row that states none", () => {
-  const root = mkdtempSync(join(tmpdir(), "row-limits-file-wide-"));
-  try {
-    const file = "__tests__/waits.test.ts";
-    const refusedUnder = (fileLimit: string | undefined) => {
-      const source = [
-        'import { setDefaultTimeout, test } from "bun:test";',
-        'import { rowLimit, runBounded } from "./bounded-subprocess";',
-        ...(fileLimit === undefined ? [] : [`setDefaultTimeout(${fileLimit});`]),
-        'test("waits", () => runBounded({ argv: ["true"], bound: "short", from: "" }));',
-        "",
-      ];
-      writeFileSync(join(root, file), source.join("\n"));
-      return refusedLimits(limitsOfFiles(root, [file]));
-    };
-    mkdirSync(join(root, "__tests__"));
-    expect(refusedUnder('rowLimit("short")')).toEqual([]);
+  const root = scratch("file-wide");
+  const file = "__tests__/waits.test.ts";
+  const refusedUnder = (fileLimit: string | undefined) => {
+    const source = [
+      'import { setDefaultTimeout, test } from "bun:test";',
+      'import { rowLimit, runBounded } from "./bounded-subprocess";',
+      ...(fileLimit === undefined ? [] : [`setDefaultTimeout(${fileLimit});`]),
+      'test("waits", () => runBounded({ argv: ["true"], bound: "short", from: "" }));',
+      "",
+    ];
+    writeFileSync(join(root, file), source.join("\n"));
+    return refusedLimits(limitsOfFiles(root, [file]));
+  };
+  mkdirSync(join(root, "__tests__"));
+  expect(refusedUnder('rowLimit("short")')).toEqual([]);
 
-    const remedy =
-      "state `rowLimit(...)` naming the bounded children and the polls the row waits for - as " +
-      "its own limit, or as a file-wide `setDefaultTimeout` written before the row - so the " +
-      "limit is read from their bounds, fires after theirs and moves when they move.";
-    const reads =
-      '; it waits under the `short` bound of 60000 ms, and `rowLimit("short")` is 90000 ms: ';
-    const stoppedBy = (fileLimit: string) =>
-      `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +
-      `setDefaultTimeout on line 3 stops it at ${fileLimit}${reads}${remedy}`;
+  const remedy =
+    "state `rowLimit(...)` naming the bounded children and the polls the row waits for - as " +
+    "its own limit, or as a file-wide `setDefaultTimeout` written before the row - so the " +
+    "limit is read from their bounds, fires after theirs and moves when they move.";
+  const reads =
+    '; it waits under the `short` bound of 60000 ms, and `rowLimit("short")` is 90000 ms: ';
+  const stoppedBy = (fileLimit: string) =>
+    `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +
+    `setDefaultTimeout on line 3 stops it at ${fileLimit}${reads}${remedy}`;
 
-    const fileLimits = ["30_000", "60_000", "61_000", "70_000", "89_999", "90_000", "60 * 1_000"];
-    for (const fileLimit of fileLimits) {
-      const refused = refusedUnder(fileLimit);
-      expect(refused.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
-      expect(refused[1].why).toBe(stoppedBy(fileLimit));
-    }
-
-    const zero = refusedUnder("0");
-    expect(zero.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
-    expect(zero[0].why).toBe(
-      `${file}:3 the file's own setDefaultTimeout writes 0, which sets no clock for the rows ` +
-        "registered after it. That 0 is no call of `rowLimit` and has no reason on the line above " +
-        "it: call `rowLimit(...)` naming the bounded children the rows and hooks registered after " +
-        "it wait for, so the limit is read from their bounds and moves when they move; or, where " +
-        "the rows and hooks registered after it drive a process rather than waiting for one, give " +
-        "the limit a line of its own and write the sentence that says what it drives and why that " +
-        "long is enough as a comment on the line directly above it."
-    );
-    expect(zero[1].why).toBe(
-      `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +
-        "setDefaultTimeout on line 3 writes 0, which sets no clock, not even the lane's " +
-        `\`--timeout\`, for the rows registered after it${reads}${remedy}`
-    );
-
-    const none = refusedUnder(undefined);
-    expect(none.map((refusal) => refusal.limit.line)).toEqual([3]);
-    expect(none[0].why).toBe(
-      `${file}:3 the row "waits" waits for \`runBounded\` and states no limit, so the lane's ` +
-        `\`--timeout\` stops it${reads}${remedy}`
-    );
-  } finally {
-    rmSync(root, { force: true, recursive: true });
+  const fileLimits = ["30_000", "60_000", "61_000", "70_000", "89_999", "90_000", "60 * 1_000"];
+  for (const fileLimit of fileLimits) {
+    const refused = refusedUnder(fileLimit);
+    expect(refused.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
+    expect(refused[1].why).toBe(stoppedBy(fileLimit));
   }
+
+  const zero = refusedUnder("0");
+  expect(zero.map((refusal) => refusal.limit.line)).toEqual([3, 4]);
+  expect(zero[0].why).toBe(
+    `${file}:3 the file's own setDefaultTimeout writes 0, which sets no clock for the rows ` +
+      "registered after it. That 0 is no call of `rowLimit` and has no reason on the line above " +
+      "it: call `rowLimit(...)` naming the bounded children the rows and hooks registered after " +
+      "it wait for, so the limit is read from their bounds and moves when they move; or, where " +
+      "the rows and hooks registered after it drive a process rather than waiting for one, give " +
+      "the limit a line of its own and write the sentence that says what it drives and why that " +
+      "long is enough as a comment on the line directly above it."
+  );
+  expect(zero[1].why).toBe(
+    `${file}:4 the row "waits" waits for \`runBounded\` and states no limit, so the file's own ` +
+      "setDefaultTimeout on line 3 writes 0, which sets no clock, not even the lane's " +
+      `\`--timeout\`, for the rows registered after it${reads}${remedy}`
+  );
+
+  const none = refusedUnder(undefined);
+  expect(none.map((refusal) => refusal.limit.line)).toEqual([3]);
+  expect(none[0].why).toBe(
+    `${file}:3 the row "waits" waits for \`runBounded\` and states no limit, so the lane's ` +
+      `\`--timeout\` stops it${reads}${remedy}`
+  );
 });
 
 // The shape the listing files write: a listing started at module load,
@@ -627,44 +626,40 @@ test("a rowLimit below the bound of what its row waits for is refused", () => {
 // limit is taken as stated. Each shape is a file of its own in a scratch directory, because the
 // fixture's own `setDefaultTimeout` is a number.
 test("a file's own rowLimit is held to the bound of each waiting row it stands for", () => {
-  const root = mkdtempSync(join(tmpdir(), "row-limits-bound-"));
-  try {
-    mkdirSync(join(root, "__tests__"));
-    const plant = (name: string, lines: readonly string[]): string => {
-      const file = `__tests__/${name}.test.ts`;
-      const header = [
-        'import { setDefaultTimeout, test } from "bun:test";',
-        'import { rowLimit, runBounded } from "./bounded-subprocess";',
-        'import { listing, retained } from "./playwright-listing";',
-        'const lane = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));',
-      ];
-      writeFileSync(join(root, file), [...header, ...lines, ""].join("\n"));
-      return file;
-    };
-    const awaiting = ['test("awaits", async () => {', "  await lane;", "});"];
-    const short = plant("short", ['setDefaultTimeout(rowLimit("short"));', ...awaiting]);
-    const long = plant("long", ['setDefaultTimeout(rowLimit("listing"));', ...awaiting]);
-    const unread = plant("unread", [
-      'test("spread", () => lane, rowLimit(...(["short"] as const)));',
-      'const chosen = "listing";',
-      'const run = () => runBounded({ argv: [], bound: chosen, from: "" });',
-      'test("computed", () => run(), rowLimit("short"));',
-    ]);
+  const root = scratch("bound");
+  mkdirSync(join(root, "__tests__"));
+  const plant = (name: string, lines: readonly string[]): string => {
+    const file = `__tests__/${name}.test.ts`;
+    const header = [
+      'import { setDefaultTimeout, test } from "bun:test";',
+      'import { rowLimit, runBounded } from "./bounded-subprocess";',
+      'import { listing, retained } from "./playwright-listing";',
+      'const lane = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));',
+    ];
+    writeFileSync(join(root, file), [...header, ...lines, ""].join("\n"));
+    return file;
+  };
+  const awaiting = ['test("awaits", async () => {', "  await lane;", "});"];
+  const short = plant("short", ['setDefaultTimeout(rowLimit("short"));', ...awaiting]);
+  const long = plant("long", ['setDefaultTimeout(rowLimit("listing"));', ...awaiting]);
+  const unread = plant("unread", [
+    'test("spread", () => lane, rowLimit(...(["short"] as const)));',
+    'const chosen = "listing";',
+    'const run = () => runBounded({ argv: [], bound: chosen, from: "" });',
+    'test("computed", () => run(), rowLimit("short"));',
+  ]);
 
-    const refused = refusedLimits(limitsOfFiles(root, [short, long, unread]));
-    expect(refused.map((refusal) => `${refusal.limit.file}:${refusal.limit.line}`)).toEqual([
-      `${short}:6`,
-    ]);
-    expect(refused[0].why).toBe(
-      `${short}:6 the row "awaits" states no limit of its own, so the file's own ` +
-        'setDefaultTimeout on line 5 stops it at rowLimit("short"), 90000 ms, and waits for ' +
-        "`lane` (which waits for `listing`), under the `listing` bound of 360000 ms: the row " +
-        'needs `rowLimit("listing")`, 390000 ms, at the least. Name in `rowLimit(...)` every ' +
-        "bounded child and every poll the row waits for, so the limit is read from their bounds."
-    );
-  } finally {
-    rmSync(root, { force: true, recursive: true });
-  }
+  const refused = refusedLimits(limitsOfFiles(root, [short, long, unread]));
+  expect(refused.map((refusal) => `${refusal.limit.file}:${refusal.limit.line}`)).toEqual([
+    `${short}:6`,
+  ]);
+  expect(refused[0].why).toBe(
+    `${short}:6 the row "awaits" states no limit of its own, so the file's own ` +
+      'setDefaultTimeout on line 5 stops it at rowLimit("short"), 90000 ms, and waits for ' +
+      "`lane` (which waits for `listing`), under the `listing` bound of 360000 ms: the row " +
+      'needs `rowLimit("listing")`, 390000 ms, at the least. Name in `rowLimit(...)` every ' +
+      "bounded child and every poll the row waits for, so the limit is read from their bounds."
+  );
 });
 
 // A file reaches the bounded modules through `import()` and `require` as well as an import
@@ -672,28 +667,24 @@ test("a file's own rowLimit is held to the bound of each waiting row it stands f
 // namespace bound to `await import(...)` and a name destructured off `require(...)` under a name
 // of its own, each called by a row that states no limit.
 test("a bounded export reached through import() or require is read as an imported one", () => {
-  const root = mkdtempSync(join(tmpdir(), "row-limits-loaded-"));
-  try {
-    const file = "__tests__/loaded.test.ts";
-    mkdirSync(join(root, "__tests__"));
-    writeFileSync(
-      join(root, file),
-      [
-        'import { test } from "bun:test";',
-        'const bounded = await import("./bounded-subprocess");',
-        'const { listing: list } = require("./playwright-listing");',
-        'test("namespace", () => bounded.runBounded({ argv: [], bound: "short", from: "" }));',
-        'test("required", () => list(import.meta.url, "e2e/playwright.config.ts", {}));',
-        "",
-      ].join("\n")
-    );
-    const limits = limitsOfFiles(root, [file]);
-    expect(limits.map((limit) => limit.waitsFor)).toEqual([["`bounded.runBounded`"], ["`list`"]]);
-    expect(limits.map((limit) => limit.bound)).toEqual(["short", "listing"]);
-    expect(refusedLimits(limits).map((refusal) => refusal.limit.line)).toEqual([4, 5]);
-  } finally {
-    rmSync(root, { force: true, recursive: true });
-  }
+  const root = scratch("loaded");
+  const file = "__tests__/loaded.test.ts";
+  mkdirSync(join(root, "__tests__"));
+  writeFileSync(
+    join(root, file),
+    [
+      'import { test } from "bun:test";',
+      'const bounded = await import("./bounded-subprocess");',
+      'const { listing: list } = require("./playwright-listing");',
+      'test("namespace", () => bounded.runBounded({ argv: [], bound: "short", from: "" }));',
+      'test("required", () => list(import.meta.url, "e2e/playwright.config.ts", {}));',
+      "",
+    ].join("\n")
+  );
+  const limits = limitsOfFiles(root, [file]);
+  expect(limits.map((limit) => limit.waitsFor)).toEqual([["`bounded.runBounded`"], ["`list`"]]);
+  expect(limits.map((limit) => limit.bound)).toEqual(["short", "listing"]);
+  expect(refusedLimits(limits).map((refusal) => refusal.limit.line)).toEqual([4, 5]);
 });
 
 // The evidence a reader of CI records for this check. It prints the result the rule's own test
