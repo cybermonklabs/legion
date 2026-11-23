@@ -15,7 +15,8 @@ const (
 	myAnswersMaxLimit     = 200
 )
 
-// parseMyAnswersPage reads the complete offset page that GET /api/v1/me/answers always returns.
+// parseMyAnswersPage reads the complete offset page that GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each always return.
 func parseMyAnswersPage(r *http.Request) (limit, offset int, err error) {
 	query := r.URL.Query()
 	limit = myAnswersDefaultLimit
@@ -54,13 +55,15 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		`+answerEventsQuery(`e.created_at as at, 'answer' as kind, e.payload->>'id' as ask_id,
 		       e.payload->'answer' as answer, null::uuid as reply_id, null::text as body, e.id as event_id,
 		       null::timestamptz as reply_edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by`,
-		`e.actor->>'id' = $1`)+`
+		// The canonical login on both halves: a row a build stored under a login before sign-in
+		// lower-cased it is the same person's (user_threads_login, as the replies half reads).
+		`user_threads_login(e.actor->>'id') = $1`)+`
 		), mine as (
 			select * from answered
 			union all
 			select c.created_at, 'reply', c.ask_id::text, null, c.id, c.body, null, c.edited_at, c.deleted_at, c.deleted_by
 			from comments c
-			where c.ask_id is not null and c.author->>'kind' = 'user' and c.author->>'id' = $1
+			where c.ask_id is not null and c.author->>'kind' = 'user' and user_threads_login(c.author->>'id') = $1
 		)
 		select m.at, m.kind, m.ask_id, m.answer, m.reply_id, m.body, m.event_id, m.reply_edited_at, m.deleted_at, m.deleted_by, `+askItemRefExpression+` as ref,
 		       a.question, a.kind, a.state, a.edited_at,

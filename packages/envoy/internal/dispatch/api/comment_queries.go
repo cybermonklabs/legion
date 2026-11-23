@@ -70,7 +70,10 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	if s.listAnswers.answer(w, key) {
 		return
 	}
-	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, owner, artifactFilter)
+	// The answer is kept and handed to every reader whose request names this owner and ETag
+	// (listAnswers), so it is read as everyReader: one reader's view of a block reserved for its
+	// author must never be the answer kept for the next.
+	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -131,7 +134,7 @@ func (s *server) commentListETag(owner owner, artifactFilter string, watermark, 
 	return s.listETag(hash, trees)
 }
 
-func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {
+func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Actor, owner owner, artifactFilter string) ([]model.Comment, error) {
 	var ownerColumn, ownerValue string
 	switch {
 	case owner.IssueKey != nil:
@@ -162,7 +165,7 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return s.hydrateCommentSideTables(ctx, q, comments)
+	return s.hydrateCommentSideTables(ctx, q, who, comments)
 }
 
 func commentHasOwner(comment model.Comment, owner owner) bool {
@@ -182,12 +185,16 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
 		return
 	}
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	comment, err := s.loadComment(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, []model.Comment{comment})
+	comments, err := s.hydrateCommentSideTables(r.Context(), s.deps.Store.Pool, who, []model.Comment{comment})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -197,7 +204,7 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "reply_to", comment.ID)
+	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "reply_to", comment.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -244,12 +251,12 @@ const inboxAskReplyChainsQuery = `
 		order by thread_id, created_at, id`
 
 // loadReplyChain returns every comment transitively replying to the row(s)
-// matching "<seedColumn> = seedValue", ordered oldest first. seedColumn
-// selects the thread root: "reply_to" for a comment's own replies, "ask_id"
+// matching "<seedColumn> = seedValue", ordered oldest first, each reply's block read for who.
+// seedColumn selects the thread root: "reply_to" for a comment's own replies, "ask_id"
 // for an ask's directly-replying comments (plus, either way, every comment
 // that replies to one of those via reply_to). seedColumn is caller-controlled
 // and never derived from request input.
-func (s *server) loadReplyChain(ctx context.Context, q queryer, seedColumn, seedValue string) ([]model.Comment, error) {
+func (s *server) loadReplyChain(ctx context.Context, q queryer, who model.Actor, seedColumn, seedValue string) ([]model.Comment, error) {
 	rows, err := q.Query(ctx, fmt.Sprintf(replyChainQuery, seedColumn), seedValue)
 	if err != nil {
 		return nil, err
@@ -266,7 +273,7 @@ func (s *server) loadReplyChain(ctx context.Context, q queryer, seedColumn, seed
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return s.hydrateCommentSideTables(ctx, q, replies)
+	return s.hydrateCommentSideTables(ctx, q, who, replies)
 }
 
 // withReply is replies, a chain loadReplyChain read, with reply, a reply to the chain's root this
@@ -368,7 +375,7 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 // hydrateCommentSideTables loads mentions, delivery attempts and the block each reply answers once
 // per comment page, avoiding a per-comment query while keeping all reads of a Comment's visible
 // delivery state consistent.
-func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, comments []model.Comment) ([]model.Comment, error) {
+func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, who model.Actor, comments []model.Comment) ([]model.Comment, error) {
 	ids := make([]string, len(comments))
 	replies := make([]*model.Comment, len(comments))
 	for index := range comments {
@@ -383,7 +390,7 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, commen
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateCommentReplyBlocks(ctx, q, replies...); err != nil {
+	if err := hydrateCommentReplyBlocks(ctx, q, who, replies...); err != nil {
 		return nil, err
 	}
 	for index := range comments {
@@ -395,29 +402,30 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, commen
 
 // hydrateWrittenComment is the comment a write answers, with the side tables
 // GET /api/v1/comments/{id} reads it with (hydrateCommentSideTables): its mentions, its delivery
-// attempts and the block it replies to. A write calls it on its own transaction, tx, in its read
-// phase, before Commit runs its queued writes, so a read that fails ends the request with nothing
-// written. The rows it reads are ones no write that answers this way queues a change to, but for
-// the delete's settle of the attempts still pending, which the delete sets in what this returns
-// as its settle leaves them (deleteComment). The anchor's position stays out: getComment computes
-// it from the document, and no side table holds it.
-func (s *server) hydrateWrittenComment(ctx context.Context, tx pgx.Tx, comment model.Comment) (model.Comment, error) {
-	comments, err := s.hydrateCommentSideTables(ctx, tx, []model.Comment{comment})
+// attempts and the block it replies to, read for who, the writer the answer goes to. A write
+// calls it on its own transaction, tx, in its read phase, before Commit runs its queued writes,
+// so a read that fails ends the request with nothing written. The rows it reads are ones no
+// write that answers this way queues a change to, but for the delete's settle of the attempts
+// still pending, which the delete sets in what this returns as its settle leaves them
+// (deleteComment). The anchor's position stays out: getComment computes it from the document,
+// and no side table holds it.
+func (s *server) hydrateWrittenComment(ctx context.Context, tx pgx.Tx, who model.Actor, comment model.Comment) (model.Comment, error) {
+	comments, err := s.hydrateCommentSideTables(ctx, tx, who, []model.Comment{comment})
 	if err != nil {
 		return model.Comment{}, err
 	}
 	return comments[0], nil
 }
 
-// freshComment is one comment as GET /api/v1/comments/{id} reads it and a write of it answers
-// it (hydrateWrittenComment): the row with its mentions, its delivery attempts and the block it
-// replies to, read now from the pool.
-func (s *server) freshComment(ctx context.Context, id string) (model.Comment, error) {
+// freshComment is one comment as GET /api/v1/comments/{id} reads it for who and a write of it
+// answers it (hydrateWrittenComment): the row with its mentions, its delivery attempts and the
+// block it replies to, read now from the pool.
+func (s *server) freshComment(ctx context.Context, who model.Actor, id string) (model.Comment, error) {
 	comment, err := s.loadComment(ctx, s.deps.Store.Pool, id)
 	if err != nil {
 		return model.Comment{}, err
 	}
-	comments, err := s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, []model.Comment{comment})
+	comments, err := s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, who, []model.Comment{comment})
 	if err != nil {
 		return model.Comment{}, err
 	}
@@ -425,10 +433,15 @@ func (s *server) freshComment(ctx context.Context, id string) (model.Comment, er
 }
 
 // rereadComment is the keyedReread of each route that answers one comment shaped for the
-// dashboard - its edit, resolve, reopen, accept and reject: the comment as it stands now
-// (freshComment), shaped as those routes shape it, an accept's lost kept from the first answer.
+// dashboard - its edit, resolve, reopen, accept and reject: the comment as it stands now, read for
+// the caller the repeat answers (freshComment), shaped as those routes shape it, an accept's lost
+// kept from the first answer.
 func (s *server) rereadComment(w http.ResponseWriter, r *http.Request, id string, status int, stored []byte) {
-	comment, err := s.freshComment(r.Context(), id)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	comment, err := s.freshComment(r.Context(), who, id)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -445,7 +458,11 @@ func (s *server) rereadCommentReply(w http.ResponseWriter, r *http.Request, id s
 		s.rereadComment(w, r, id, status, stored)
 		return
 	}
-	reply, err := s.freshComment(r.Context(), id)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	reply, err := s.freshComment(r.Context(), who, id)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

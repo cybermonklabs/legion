@@ -153,7 +153,7 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	// below, so the index is planned from the body it writes, as the comment edit's is
 	// (planEditedItem).
 	referenceChanges, index, err := s.planEditedItem(
-		r.Context(), tx, refs.ItemMessage, message.ID, previousBody, message.Body, editedAt, nil)
+		r.Context(), tx, message.Author, refs.ItemMessage, message.ID, previousBody, message.Body, editedAt, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -229,7 +229,7 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	referenceChanges, clear, err := s.clearDeletedPostBody(
-		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, false, actor, deletedAt)
+		r.Context(), tx, refs.ItemMessage, message.ID, message.Body, false, message.Author, actor, deletedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -301,7 +301,9 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 // body is already cleared in the message this payload is built from, and of the post the reply
 // answers it carries no reply_body and the reply_block with every field but its text
 // (deleteEventReplyBlock). It keeps every field that routes it: in_reply_to, thread_target, the
-// block's node id and id, and the thread_logins.
+// block's node id and id, and the thread_logins. The payload reaches every subscriber and every
+// reader of the conversation, so the block is read as everyReader, as the create's is
+// (finishPendingMessageDelivery).
 func (s *server) messageCorrectionEvent(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -310,7 +312,7 @@ func (s *server) messageCorrectionEvent(
 	actor model.Actor,
 	changes model.ReferenceChanges,
 ) (model.Event, *events.Logins, error) {
-	if err := hydrateMessageReplyBlocks(ctx, tx, message); err != nil {
+	if err := hydrateMessageReplyBlocks(ctx, tx, everyReader, message); err != nil {
 		return model.Event{}, nil, err
 	}
 	thread, err := loadMessageReplyThread(ctx, tx, *message)

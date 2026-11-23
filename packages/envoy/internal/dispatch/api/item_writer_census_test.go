@@ -170,6 +170,12 @@ var itemRowWriters = map[string]map[string]string{
 			"it (errDecidedWordingsMoved). Settlement's own call holds the document's owner lock " +
 			"(restoreDocumentDecidedWordings, lockArtifactOwner)",
 	},
+	"internal/dispatch/refs/comment_nodes.go": {
+		"Queue": "the owner lock of every comment it names, which each of its callers takes before it " +
+			"reads the rows (LockCommentOwners): the backfill's comment batch (graphcensus's " +
+			"writeCommentBatch) and the block-index tick's read of the events after its cursor " +
+			"(docs' readEventsAfterCursor)",
+	},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": "the item's owner lock, which the window arm takes (LockItemOwner) " +
 			"and the post delete that queues TombstoneItem holds (api's clearDeletedPostBody)",
@@ -397,6 +403,7 @@ var itemRowLockNoRow = map[string]map[string]string{
 		"queueAskResolution": itemRowCallersTransaction,
 		"WriteRestoredAsks":  itemRowCallersTransaction,
 	},
+	"internal/dispatch/refs/comment_nodes.go": {"Queue": itemRowCallersTransaction},
 	"internal/dispatch/refs/item_blocks.go": {
 		"clearItemWindowsOwed": itemRowCallersTransaction,
 		"markItemBlocksOwed":   itemRowCallersTransaction,

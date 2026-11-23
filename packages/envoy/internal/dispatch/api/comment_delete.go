@@ -168,7 +168,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 	deletedAt = deletedAt.UTC()
 	referenceChanges, clear, err := s.clearDeletedPostBody(
-		ledger.ReadContext(r.Context()), tx, refs.ItemComment, comment.ID, comment.Body, quoteIsBody, actor, deletedAt)
+		ledger.ReadContext(r.Context()), tx, refs.ItemComment, comment.ID, comment.Body, quoteIsBody, comment.Author, actor, deletedAt)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -217,7 +217,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// below is queued, so the attempts it settles are set in the answer as it leaves them, and
 	// each one's receipt is built from that. The settle refuses should a row no longer stand as
 	// this read found it (queueDeletedPostSettlement).
-	answer, err := s.hydrateWrittenComment(r.Context(), tx, comment)
+	answer, err := s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -137,37 +137,41 @@ var errDeleteContended error = &apiError{
 // in the document, and the update then empties that quote too, leaving every other key of the
 // anchor as it is; a message carries no anchor. The clear rides the one update, so the kind's
 // search trigger rewrites the row's vector once from the cleared body and the deleted post stops
-// matching a keyword search. The post's embedding windows go in this transaction too
-// (refs.TombstoneItem): the cleared body splits into no block, so the write enqueues no window
-// and deletes each window the post held, and no meaning search finds the post once the delete
-// commits. No path of this build leaves a window of a deleted post behind; the mark is the
-// backstop for a hit that reaches one all the same, which search stamps with the post's delete
-// mark (stampSearchPostMarks, search.go).
+// matching a keyword search. Each form of that update is one literal statement, so every column
+// it sets is read where it is written (api's TestNoProjectionRowIsWrittenWithoutTheStore): none
+// is a column a tuple of the store projects, since the anchor's quote key keeps the artifact its
+// anchored_to tuple names, so the delete writes no node and no tuple. The post's embedding
+// windows go in this transaction too (refs.TombstoneItem): the cleared body splits into no block,
+// so the write enqueues no window and deletes each window the post held, and no meaning search
+// finds the post once the delete commits. No path of this build leaves a window of a deleted post
+// behind; the mark is the backstop for a hit that reaches one all the same, which search stamps
+// with the post's delete mark (stampSearchPostMarks, search.go).
 //
 // ctx is what the plan's reads run under: the context a comment's route derives from the ledger
 // it queues on (docs.Ledger.ReadContext), as queueEditedItemReferences derives it, and the
 // request's for a message, whose route queues on no ledger. Only an issue message is deleted, so
-// both kinds cite what they mention and the index reconciles the post's own references.
+// both kinds cite what they mention and the index reconciles the post's own references. author
+// is the author the post's row records, whom the index resolves the post's short ids for
+// (planEditedItem), and actor the caller the delete is recorded under.
 func (s *server) clearDeletedPostBody(
 	ctx context.Context,
 	tx pgx.Tx,
 	kind refs.ItemKind,
 	itemID, previousBody string,
 	quoteIsBody bool,
-	actor model.Actor,
+	author, actor model.Actor,
 	deletedAt time.Time,
 ) (model.ReferenceChanges, docs.WriteStep, error) {
-	items, _, err := postHistoryOwner(kind)
-	if err != nil {
-		return model.ReferenceChanges{}, nil, err
-	}
-	alsoClears := ""
+	statement := `update messages set body = '', deleted_at = $3, deleted_by = $2 where id = $1`
 	if kind == refs.ItemComment {
-		alsoClears = ", suggestion = null"
+		statement = `update comments set body = '', suggestion = null, deleted_at = $3, deleted_by = $2 where id = $1`
 		if quoteIsBody {
-			alsoClears += `, anchor = jsonb_set(anchor, '{quote}', to_jsonb(''::text))`
+			statement = `update comments set body = '', suggestion = null, anchor = jsonb_set(anchor, '{quote}', to_jsonb(''::text)),
+				deleted_at = $3, deleted_by = $2 where id = $1`
 		}
 	}
+	// The history step refuses a kind that is neither a comment nor a message, so no other
+	// kind's table is ever cleared.
 	history, err := postBodyHistoryStep(kind, itemID, previousBody, actor)
 	if err != nil {
 		return model.ReferenceChanges{}, nil, err
@@ -178,7 +182,7 @@ func (s *server) clearDeletedPostBody(
 	}
 	// The update that clears the body is queued, so the index is planned from the empty body the
 	// write leaves rather than read back, as an edit's is (planEditedItem).
-	changes, index, err := s.planEditedItem(ctx, tx, kind, itemID, previousBody, "", deletedAt, nil)
+	changes, index, err := s.planEditedItem(ctx, tx, author, kind, itemID, previousBody, "", deletedAt, nil)
 	if err != nil {
 		return model.ReferenceChanges{}, nil, err
 	}
@@ -186,11 +190,7 @@ func (s *server) clearDeletedPostBody(
 		if err := history(b); err != nil {
 			return err
 		}
-		b.Queue("", `
-			update `+items+`
-			set body = ''`+alsoClears+`, deleted_at = $3, deleted_by = $2
-			where id = $1
-		`, itemID, deletedBy, deletedAt)
+		b.Queue("", statement, itemID, deletedBy, deletedAt)
 		if err := index(b); err != nil {
 			return err
 		}

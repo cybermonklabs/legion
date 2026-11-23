@@ -204,7 +204,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -320,7 +320,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
+	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, comment.Author, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
 		return
@@ -347,7 +347,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -370,7 +370,9 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 //
 // Only the orphaned key is written, the one key this refusal decides: writing the whole anchor
 // would write back every other key of the column as this transaction read it, which is not what
-// orphaning an anchor means. The narrow write says what it changes.
+// orphaning an anchor means. The narrow write says what it changes, and the artifact the
+// comment's anchored_to tuple names stays among the rest, so this write restates nothing the
+// store holds.
 func recordOrphanedCommentAnchor(ledger *docs.Ledger, comment *model.Comment) error {
 	comment.Anchor.Orphaned = true
 	return queueExec(ledger, `
@@ -550,7 +552,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	}
 	s.registerCommentAnchor(ledger, comment, actor, true)
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -607,7 +609,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		return
 	}
 	events = append(events, event)
-	comment, err = s.hydrateWrittenComment(r.Context(), tx, comment)
+	comment, err = s.hydrateWrittenComment(r.Context(), tx, actor, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

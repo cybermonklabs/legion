@@ -745,17 +745,11 @@ func (s *Postgres) PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo stri
 	return pr, nil
 }
 
-// RowQuerier reads one row: a pool (*pgxpool.Pool), a connection or a transaction.
-type RowQuerier interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
-
 // PullRequestRecorded says whether a pull request of repo is recorded by number, as
-// PullRequestByNumber looks it up. It is one read of q: through a pool it takes no transaction and
-// no lock, so a caller with no fact lock can ask before it does any other work.
-func PullRequestRecorded(ctx context.Context, q RowQuerier, repo string, number int) (bool, error) {
+// PullRequestByNumber looks it up.
+func PullRequestRecorded(ctx context.Context, tx pgx.Tx, repo string, number int) (bool, error) {
 	var recorded bool
-	if err := q.QueryRow(ctx, `select exists(select 1 from pull_requests where lower(repo) = lower($1) and number = $2)`, repo, number).Scan(&recorded); err != nil {
+	if err := tx.QueryRow(ctx, `select exists(select 1 from pull_requests where lower(repo) = lower($1) and number = $2)`, repo, number).Scan(&recorded); err != nil {
 		return false, fmt.Errorf("read whether %s#%d is recorded: %w", repo, number, err)
 	}
 	return recorded, nil

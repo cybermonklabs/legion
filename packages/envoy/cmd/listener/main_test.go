@@ -3378,18 +3378,25 @@ func TestListenerDeliveryHandler_RoleForwardDedupeSkipsCapabilityRecheckOnRedeli
 // not acknowledge storing it (bus.ErrForwardNotStored), or the forward never
 // left this process -- a raw nats.ErrTimeout is what the client's flush returns
 // while a reconnecting or stalled connection still buffers it. No forward draws
-// a receipt (startRoleForward), so none is reported receipt_timeout.
+// a receipt (startRoleForward), so none is reported receipt_timeout. Only a
+// forward whose window ended before it was published (bus.ErrWindowEndedBeforePublish)
+// carries "window_ended_before_publish":true on its line; the same text from a window
+// that ended after the publish carries no mark.
 func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *testing.T) {
 	cases := []struct {
 		name       string
 		forwardErr error
 		reason     string
 		logMessage string
+		// beforePublish is whether the line carries "window_ended_before_publish":true.
+		beforePublish bool
 	}{
-		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed"},
-		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed"},
-		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed"},
+		{"raw nats.ErrTimeout from the flush", natsgo.ErrTimeout, "delivery_failed", "listener role forward failed", false},
+		{"flush timeout wrapped by the client", fmt.Errorf("bus: flush publish to \"agent.x\": %w", natsgo.ErrTimeout), "delivery_failed", "listener role forward failed", false},
+		{"bus.ErrForwardNotStored", bus.ErrForwardNotStored, "delivery_failed", "listener role forward failed", false},
+		{"bus.ErrForwardNotStored wrapped", fmt.Errorf("forward: %w", bus.ErrForwardNotStored), "delivery_failed", "listener role forward failed", false},
+		{"a window that ended before the publish", fmt.Errorf("bus: window elapsed before the publish to \"agent.x\" was flushed: %w: %w", context.DeadlineExceeded, bus.ErrWindowEndedBeforePublish), "delivery_failed", "listener role forward failed", true},
+		{"a window that ended after the publish", errors.New(`bus: window elapsed before the publish to "agent.x" was flushed`), "delivery_failed", "listener role forward failed", false},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3427,6 +3434,9 @@ func TestListenerDeliveryHandler_RoleForwardFailureIsAlwaysDeliveryFailed(t *tes
 			}
 			if strings.Contains(logs, "receipt") {
 				t.Fatalf("a failed forward must not be logged as a receipt outcome:\n%s", logs)
+			}
+			if marked := strings.Contains(logs, `"window_ended_before_publish":true`); marked != tc.beforePublish {
+				t.Fatalf("the failure line carries the window_ended_before_publish mark: %v, want %v:\n%s", marked, tc.beforePublish, logs)
 			}
 		})
 	}

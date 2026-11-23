@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -85,6 +86,34 @@ func parseConnectOptions[O ConnectOption](options []O) connectOpts {
 		o.apply(&opts)
 	}
 	return opts
+}
+
+// connectionBuild is the build every connection of this binary names after its name
+// (buildversion.ConnectionBuild): legion@<commit>, or "" for a build that holds no commit. A test of
+// this package replaces it.
+var connectionBuild = buildversion.ConnectionBuild
+
+// PrivacyRequiredSuffix is natsgrant.PrivacyRequiredSuffix, spelled here because natsgrant imports
+// this package and this one cannot import it back; natsgrant's tests hold the two equal. The auth
+// service admits a listener on a hub with private projects only when its client name ends with
+// it, so connectionName keeps it last.
+const PrivacyRequiredSuffix = " privacy-required"
+
+// connectionName is the name a connection presents: the client's name, then a space and this
+// binary's build when it has one, before PrivacyRequiredSuffix when the client's name ends with it
+// (`<name> legion@<commit> privacy-required`). legacy-subjects-gate.sh reads each connection's
+// build from the end of its name in the hub's census of connections ($SYS.REQ.SERVER.PING.CONNZ),
+// the last word or the one before a trailing privacy-required, and a connection that names none
+// keeps the gate from opening.
+func connectionName(name string) string {
+	build := connectionBuild()
+	if build == "" {
+		return name
+	}
+	if client, required := strings.CutSuffix(name, PrivacyRequiredSuffix); required {
+		return client + " " + build + PrivacyRequiredSuffix
+	}
+	return name + " " + build
 }
 
 // streamConfig is the stream ConnectOwningStream ensures: streamCfg at the deployment's replica
@@ -170,11 +199,12 @@ func WithEnvironment(lookup func(string) (string, bool)) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.environment = lookup })
 }
 
-// WithName names the client, in place of "envoy": the name the NATS server's connection listings
-// (its /connz endpoint, `nats server report connections`) show for the connection the client dials
-// first and for each one it dials to replace a closed one, and the name field of the client's
-// lifecycle log lines (`envoy nats disconnected`, `envoy nats recovery attempt` and the rest). Dial
-// takes its name as a parameter, and not this option.
+// WithName names the client, in place of "envoy": the name, with this binary's build after it or
+// before its trailing PrivacyRequiredSuffix (connectionName), that the NATS server's connection
+// listings (its /connz endpoint, `nats server report connections`, $SYS.REQ.SERVER.PING.CONNZ)
+// show for the connection the client dials first and for each one it dials to replace a closed
+// one, and the name field of the client's lifecycle log lines (`envoy nats disconnected`, `envoy
+// nats recovery attempt` and the rest). Dial takes its name as a parameter, and not this option.
 func WithName(name string) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.name = name })
 }
@@ -323,7 +353,10 @@ type recoverableSubscription struct {
 // other is refused with ErrSubscriptionHeld, so a caller that needs two durables takes one Client
 // per durable.
 type Client struct {
-	Conn                        *nats.Conn
+	Conn *nats.Conn
+	// severable is Conn with its dialer, set with Conn (noteSeverable), so Sever reaches them
+	// without mu, which a caller can hold while it waits for nats.go's lock (Connected).
+	severable                   atomic.Pointer[severableConnection]
 	js                          nats.JetStreamContext
 	urls                        []string
 	name                        string
@@ -490,6 +523,7 @@ type Client struct {
 // this codebase owns, ConnectOwningStream.
 func Dial(name string, urls []string, environment func(string) (string, bool), options ...DialOption) (*nats.Conn, error) {
 	opts := parseConnectOptions(options)
+	name = connectionName(name)
 	if err := refuseRemoteNATS(urls, environment); err != nil {
 		return nil, err
 	}
@@ -575,7 +609,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 	}
 	c := &Client{
 		urls:                        urls,
-		name:                        opts.name,
+		name:                        connectionName(opts.name),
 		connectionSettings:          opts.connectionSettings(credential),
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
@@ -687,6 +721,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	}
 	c.mu.Lock()
 	c.Conn, c.js = nc, c.readsOwnRefusals(nc, js)
+	c.noteSeverable(nc)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
 	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
@@ -1991,6 +2026,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
+		c.noteSeverable(nc)
 		c.js = c.readsOwnRefusals(nc, js)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()

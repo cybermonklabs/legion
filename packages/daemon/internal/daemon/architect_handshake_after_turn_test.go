@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -118,7 +120,7 @@ func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
 func (r *mainPathRig) rootView() api.Issue {
 	r.t.Helper()
 	var state api.State
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		state, err = projection.Project(r.ctx, projection.Inputs{
 			Tx: tx, Store: r.records, Project: mainPathProject, Steps: config.DesignGateRootIssues.Steps(),

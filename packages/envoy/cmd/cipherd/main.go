@@ -363,17 +363,11 @@ func main() {
 	// listener, and a broker that reads none answers every edge listener 503 REPOSITORIES_UNKNOWN.
 	// Both present the broker's own projected ServiceAccount token for Dispatch's audience through
 	// one reader, read at call time, so a rotation needs no restart and the broker has one Dispatch
-	// address and one account there. config.Load holds the two settings to both or neither. Built
-	// before the loader, which serves a tagged secret, and each profile of one, only when this
-	// broker can ask whether its project is private
+	// address and one account there (projectAccessClients). config.Load holds the two settings to
+	// both or neither. Built before the loader, which serves a tagged secret, and each profile of
+	// one, only when this broker can ask whether its project is private
 	// (policy.Loader.ProjectChecks).
-	var projectAccess projectaccess.Access
-	var projectRepositories api.ProjectRepositoriesReader
-	if cfg.ProjectAccessURL != "" {
-		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, account, nil)
-		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
-	}
+	projectAccess, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
 	// The broker's one reader of Google group members, which every decision site asks who is a
 	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
 	// its chain check and the approval page. A full policy load names its groups to it; it reads
@@ -1343,6 +1337,31 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		m.Assignees = dispatch
 	}
 	return m
+}
+
+// projectAccessHTTPClient is the HTTP client the broker reads Dispatch's project access with: Go's
+// default transport, but keeping requests.MaySeeAtOnce idle connections to Dispatch rather than
+// the default two, since one row, and one list, asks Dispatch that many questions at once. With
+// two kept, each round of a row's questions would close all but two of the connections the round
+// before it opened, and open as many again.
+func projectAccessHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = requests.MaySeeAtOnce
+	return &http.Client{Transport: transport}
+}
+
+// projectAccessClients is the broker's two clients of the Dispatch at baseURL, both reading the
+// broker's own projected ServiceAccount token at tokenFile, read at call time: its project access,
+// over projectAccessHTTPClient, and the repository answer GET /v1/project-repositories relays. Both
+// are nil, as interfaces, when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL
+// holds none. main wires the broker with these, and the test of the client's connections reads its
+// project access through this same call, so a client built here on another transport fails it.
+func projectAccessClients(baseURL, tokenFile string) (projectaccess.Access, api.ProjectRepositoriesReader) {
+	if baseURL == "" {
+		return nil, nil
+	}
+	account := ciphertoken.NewAccountToken(tokenFile)
+	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
 }
 
 // The broker's group reader answers every question a decision site asks of group members.

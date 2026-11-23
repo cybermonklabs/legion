@@ -33,7 +33,7 @@ func TestReadEventsKeepsNonAskPayloadRaw(t *testing.T) {
 		}
 	}
 
-	events, err := directServer(deps).readEvents(context.Background(), issueOwner(issue.Key), eventListOptions{limit: 200})
+	events, err := directServer(deps).readEvents(context.Background(), model.Actor{}, issueOwner(issue.Key), eventListOptions{limit: 200})
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
