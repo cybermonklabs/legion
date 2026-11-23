@@ -36,13 +36,14 @@
 # still holds the port, which the run reports inside 15 s rather than waiting on a request that
 # port never answers; a SIGTERM to the run while such a request is outstanding at a server that
 # stays alive ends it inside 15 s with 143 (those rows give a readiness request 1 s, every other
-# run the default 5 s, which every ready row checks); a process that ignores SIGTERM is killed when
-# the stop's grace runs out (2 s in that row; the default, 10 s, is read out of the stop), which
-# says so and still drops both databases; a SIGHUP while the stop runs does not end it; a stop by
-# the group's SIGTERM waits on no process that took the signal, even one bash still lists; and the
-# stop signals only a process the run started that is still running, never another process that
-# took the pid of one that exited early; (f) a run given no database URL refuses with exit 2,
-# naming all three sources;
+# run the driver's default, which every ready row checks); a process that ignores SIGTERM is killed
+# when the stop's grace runs out, by the stop's own record of its SIGTERM and its kill (2 s in that
+# row; the default, the driver's DEFAULT_STOP_GRACE_SECONDS, held by the stop's helpers under a
+# clock of their own shell), which says so and still drops both databases; a SIGHUP while the stop
+# holds on such a process does not end it; a stop by the group's SIGTERM waits on no process that
+# took the signal, even one bash still lists; and the stop signals only a process the run started
+# that is still running, never another process that took the pid of one that exited early; (f) a
+# run given no database URL refuses with exit 2, naming all three sources;
 # (g) the second box is printed with a path of its own for each of the first box's, every one
 # of them under this run's own work directory, the directories it writes into already there, and
 # its metadata stand-in taking its port file from the environment rather than from the one baked
@@ -117,10 +118,18 @@ readonly admin_url='postgres://tester:s3cret@127.0.0.1:5999/postgres?sslmode=dis
 # run's own database URL starts with.
 readonly admin_url_no_query=${admin_url%%\?*}
 readonly server_url=${admin_url%/postgres*}
-# The stop's grace and a readiness request's bound are the driver's defaults, 10 s and 5 s, unless
-# a row sets one: every ready row checks the 5 s, and (e10) reads the 10 s out of the stop itself,
-# so the caller's own environment decides neither.
+# The stop's grace and a readiness request's bound are the driver's defaults unless a row sets one,
+# so the caller's own environment decides neither. Each default is read from the one line of the
+# driver that sets it, not copied here: every ready row checks the readiness default by the bound
+# each of its requests was given, and (e10) the grace default by how long the stop waits with it.
 unset DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS
+stop_grace_default="$(sed -n 's/^DEFAULT_STOP_GRACE_SECONDS=\([1-9][0-9]*\)$/\1/p' "$driver")"
+readiness_default="$(sed -n 's/^DEFAULT_READINESS_REQUEST_SECONDS=\([1-9][0-9]*\)$/\1/p' "$driver")"
+if [[ ! "$stop_grace_default" =~ ^[1-9][0-9]*$ || ! "$readiness_default" =~ ^[1-9][0-9]*$ ]]; then
+  echo "FAIL: dev-stack.sh sets no DEFAULT_STOP_GRACE_SECONDS or DEFAULT_READINESS_REQUEST_SECONDS line of one whole number each ('$stop_grace_default', '$readiness_default')" >&2
+  exit 1
+fi
+readonly stop_grace_default readiness_default
 
 declare -a instance_pid=()
 cleanup() {
@@ -575,12 +584,18 @@ CLIENT
   # Every server stub ends the same way: stay alive as the backgrounded process dev-stack.sh waits
   # on, and end at 0 when it is stopped, killing the sleep so nothing of the stub outlives it. The
   # one named by DEV_STACK_TEST_IGNORES_TERM instead ignores SIGTERM and INT, as a server stuck in
-  # its shutdown does, and ends only at SIGKILL: it becomes the sleep (exec keeps both its pid, the
-  # port it reported, and the ignored signals), so nothing of it outlives that SIGKILL either.
+  # its shutdown does, and ends at SIGKILL, or at 0 on the SIGUSR1 a row sends it to let the stop
+  # go on (e9b). It waits in bash's own `read` on a FIFO it holds open both ways, which nothing ever
+  # writes, so it starts no process that could outlive that SIGKILL.
   if [[ "${DEV_STACK_TEST_IGNORES_TERM:-}" == "$name" ]]; then
     cat >>"$target" <<'IGNORES'
 trap '' TERM INT
-exec sleep 999999
+trap 'exit 0' USR1
+hold="${0%/*}/.held.$$"
+mkfifo "$hold"
+exec {held}<>"$hold"
+rm -f "$hold"
+while :; do read -r -t 86400 -u "$held" _ || :; done
 IGNORES
   else
     cat >>"$target" <<'IDLE'
@@ -908,14 +923,14 @@ assert_instance_ready() {
     fail "$label printed no line that starts the second box's helper from this run's own binaries"
 
   # Each readiness check this run made named its own process's port, so no check of it could have
-  # been answered by another run's server, and gave up after 5 s, so none could wait on a port
-  # nothing serves any longer (e7).
-  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[broker]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own broker's health at port ${process_port[broker]} with a 5 s bound"
-  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own listener's health at port ${process_port[listener]} with a 5 s bound"
-  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
-    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a 5 s bound"
+  # been answered by another run's server, and gave up after the driver's default bound, so none
+  # could wait on a port nothing serves any longer (e7).
+  grep -qxF -e "-sf --max-time ${readiness_default} http://127.0.0.1:${process_port[broker]}/healthz" "$curl_call_file" ||
+    fail "$label did not check its own broker's health at port ${process_port[broker]} with a ${readiness_default} s bound"
+  grep -qxF -e "-sf --max-time ${readiness_default} http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
+    fail "$label did not check its own listener's health at port ${process_port[listener]} with a ${readiness_default} s bound"
+  grep -qxF -e "-sf --max-time ${readiness_default} http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
+    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a ${readiness_default} s bound"
 
   # Two databases of this run's own, named for it, and no other; each server pointed at its own,
   # the broker with production's pool size (k), whole URL to whole URL.
@@ -1302,48 +1317,64 @@ assert_databases_dropped "$label" "$psql_calls1" "$(suffix_of "$silent_work_dir"
 : >"${unserved_file}.asked"
 printf 'PASS: SIGTERM to a run whose health check was outstanding at a listener that answers nothing stopped it with 143 inside 15 s, every process stopped and both databases dropped\n'
 
-# (e9) A process of the stack that ignores SIGTERM, as a server stuck in its shutdown does: the stop
-# gives each process its grace after its SIGTERM, 2 s here (DEV_STACK_STOP_GRACE_SECONDS; (e10)
-# reads the default, 10 s, out of the stop), then SIGKILL, saying so, and still drops both
-# databases, inside 20 s here. Before, the stop waited on that process for good, with its
-# databases, and ignored every further INT and TERM while it waited. The same row takes the
-# SIGHUP a terminal sends the group as it closes, here to the run alone, while the stop runs: it
-# is sent once natsd is gone and before either drop, which the row checks, so it lands inside the
-# stop's grace on the issuer, and the stop goes on. Before, HUP kept its default action there and
-# ended the run between the kills and the drops, with 129. The stop sends the issuer its SIGTERM
-# the moment natsd is gone (the issuer is the next process it stops), so the issuer's end is timed
-# from the moment this row sees natsd gone: from 1 s, for the polls between natsd's end and that
-# sight, to 6 s, for a loaded runner, around the 2 s grace. A stop that killed at once, or that
-# waited a grace of its own instead of the one it was given, fails here, whatever its log says.
+# (e9a) A process of the stack that ignores SIGTERM, as a server stuck in its shutdown does: the
+# stop gives each process its grace after its SIGTERM, 2 s here (DEV_STACK_STOP_GRACE_SECONDS;
+# (e10) holds the default), then SIGKILL, saying so with the time from its SIGTERM to the kill,
+# and still drops both databases. Before, the stop waited on that process for good, with its
+# databases, and ignored every further INT and TERM while it waited. The time is the stop's own
+# record of when it signalled and when it killed, so a row that is slow to look cannot fail a stop
+# that kept its grace. It is held from the grace to 1.5 s past it, for the stop's 0.1 s look on a
+# loaded runner: a stop that killed before its grace, or that waited a grace other than the one
+# it was given, fails here.
 label='the run whose issuer ignores SIGTERM'
 DEV_STACK_STOP_GRACE_SECONDS=2 DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
 stubborn_issuer="${process_port[dev-oidc-issuer]}"
+interrupt 1 "$label" "$log1"
+wait_for_exit 1 20 "$label"
+[[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status, not the 130 of the INT that began its stop"
+killed_line="$(grep -F "dev-stack: dev-oidc-issuer (pid ${stubborn_issuer}) did not stop within 2 s of its SIGTERM; killing it " "$log1" || true)"
+[[ "$killed_line" =~ \ killing\ it\ ([0-9]+)\.([0-9]{3})\ s\ after\ it$ ]] ||
+  fail "$label did not say it killed the issuer, and how long after its SIGTERM: $(grep 'did not stop' "$log1" || true)"
+issuer_held_ms=$((10#${BASH_REMATCH[1]} * 1000 + 10#${BASH_REMATCH[2]}))
+((issuer_held_ms >= 2000 && issuer_held_ms <= 3500)) ||
+  fail "$label killed the issuer ${issuer_held_ms} ms after its SIGTERM, not when its 2 s grace ran out"
+assert_everything_stopped "$label"
+assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
+printf "PASS: an issuer that ignores SIGTERM was killed when the stop's grace (2 s here) ran out, %s ms after its SIGTERM by the stop's own record, which the stop said, and both databases were dropped\n" "$issuer_held_ms"
+
+# (e9b) The SIGHUP a terminal sends the group as it closes, here to the run alone, while the stop
+# runs: the stop goes on and drops both databases. Before, HUP kept its default action there and
+# ended the run between the kills and the drops, with 129. The issuer ignores the stop's SIGTERM
+# under a grace of 60 s, which no row waits out, so the stop holds on it until this row lets it go
+# with SIGUSR1, on which the stub exits 0. The HUP is sent once natsd, which the stop stops just
+# before the issuer, is gone, and before either drop, which the row checks: the stop is then held
+# on the issuer, so the HUP lands inside it however late this row looks. Then the issuer is let go,
+# and the stop must end with the 130 of the INT that began it, having killed nothing.
+label='the run that takes a SIGHUP while its stop holds on an issuer'
+DEV_STACK_STOP_GRACE_SECONDS=60 DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
+held_issuer="${process_port[dev-oidc-issuer]}"
 stopped_natsd="${process_port[natsd]}"
 interrupt 1 "$label" "$log1"
-for _ in $(seq 1 50); do
+for _ in $(seq 1 150); do
   kill -0 "$stopped_natsd" 2>/dev/null || break
   sleep 0.1
 done
-natsd_gone="$EPOCHREALTIME"
-kill -0 "$stopped_natsd" 2>/dev/null && fail "$label had not stopped natsd 5 s after its INT"
+kill -0 "$stopped_natsd" 2>/dev/null && fail "$label had not stopped natsd 15 s after its INT"
 [[ -z "$(dropped_databases "$psql_calls1")" ]] ||
   fail "$label had dropped its databases before the SIGHUP, so the row tested nothing"
+kill -0 "$held_issuer" 2>/dev/null || fail "$label's issuer was gone before the SIGHUP, so the row tested nothing"
 kill -HUP "${instance_pid[1]}"
-for _ in $(seq 1 400); do
-  kill -0 "$stubborn_issuer" 2>/dev/null || break
-  sleep 0.05
-done
-issuer_held_ms=$(((${EPOCHREALTIME//[!0-9]/} - ${natsd_gone//[!0-9]/}) / 1000))
-wait_for_exit 1 20 "$label"
+kill -USR1 "$held_issuer"
+wait_for_exit 1 15 "$label"
 [[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status, not the 130 of the INT that began its stop"
-grep -qxF "dev-stack: dev-oidc-issuer (pid ${stubborn_issuer}) did not stop within 2 s of its SIGTERM; killing it" "$log1" ||
-  fail "$label did not say it killed the issuer: $(grep 'did not stop' "$log1" || true)"
-((issuer_held_ms >= 1000 && issuer_held_ms <= 6000)) ||
-  fail "$label ended the issuer ${issuer_held_ms} ms after natsd was gone, not when its 2 s grace ran out"
+if grep -q 'did not stop within' "$log1"; then
+  fail "$label killed a process it was meant to wait for: $(grep 'did not stop within' "$log1")"
+fi
 assert_everything_stopped "$label"
 assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
-printf "PASS: an issuer that ignores SIGTERM was killed when the stop's grace (2 s here) ran out, %s ms after natsd was gone, which the stop said, went on through a SIGHUP and dropped both databases\n" "$issuer_held_ms"
+printf 'PASS: a SIGHUP while the stop held on an issuer that ignores SIGTERM did not end the stop: it went on, killed nothing and dropped both databases\n'
 
 # (e10) The stop signals only a process this run started that is still running. A process of the
 # stack that exited early (a crash, or the second broker callout-check.sh kills) is reaped, and the
@@ -1359,15 +1390,14 @@ printf "PASS: an issuer that ignores SIGTERM was killed when the stop's grace (2
 # then a function that lists a reaped child and the stranger, as bash's table did, and the stop must
 # still wait on neither, signal neither and print nothing: before, it waited out the whole grace on
 # the lost child and said it killed it, and a restart's stop_process waited on it for good. The
-# stop's grace when nothing sets one is read out of the same helpers: 10 s.
-stop_helpers="$(sed -n -e '/^running_child() {$/,/^}$/p' -e '/^stop_bounded() {$/,/^}$/p' \
-  -e '/^stop_process() {$/,/^}$/p' "$driver")"
+# driver's DEFAULT_STOP_GRACE_SECONDS line is read out with them, for the stop and for (e10b).
+stop_helpers="$(sed -n -e '/^DEFAULT_STOP_GRACE_SECONDS=[1-9][0-9]*$/p' -e '/^running_child() {$/,/^}$/p' \
+  -e '/^stop_bounded() {$/,/^}$/p' -e '/^stop_process() {$/,/^}$/p' "$driver")"
 for helper in running_child stop_bounded stop_process; do
   grep -q "^${helper}() {\$" <<<"$stop_helpers" || fail "dev-stack.sh defines no ${helper}() at the start of a line"
 done
-# shellcheck disable=SC2016 # the text of the driver's own line, not an expansion here
-grep -qF 'grace="${DEV_STACK_STOP_GRACE_SECONDS:-10}"' <<<"$stop_helpers" ||
-  fail "dev-stack.sh's stop_bounded does not give each process 10 s when DEV_STACK_STOP_GRACE_SECONDS is unset"
+grep -qx "DEFAULT_STOP_GRACE_SECONDS=${stop_grace_default}" <<<"$stop_helpers" ||
+  fail "the stop's helpers were read without the driver's DEFAULT_STOP_GRACE_SECONDS line"
 stop_out="${temporary_dir}/stop-helpers.out"
 # A process this test's shells did not start: its own shell exits at once, so it belongs to no one
 # here, as a process that took a reused pid belongs to no one in the run.
@@ -1404,6 +1434,38 @@ kill "$stranger" 2>/dev/null || true
   fail "the stop signalled pid $stranger, a process the run never started, in place of one that exited: $(cat "$stop_out")"
 [[ "$(cat "$stop_out")" == returned ]] || fail "the stop's helpers printed more than they should: $(cat "$stop_out")"
 printf 'PASS: the stop stopped a running child, waited on no child that had exited, even one bash still listed, and left alone pid %s, which a process it never started held in place of one that exited\n' "$stranger"
+
+# (e10b) The stop's grace when nothing sets one, held by what the stop does, not by its text: the
+# same helpers run in a shell of their own with DEV_STACK_STOP_GRACE_SECONDS unset, on a child that
+# ignores SIGTERM, under that shell's own clock. EPOCHREALTIME, once unset, is a plain variable,
+# and `sleep` there is a function that moves it on by the 0.1 s the stop asks for and returns at
+# once, so the whole grace passes in the stop's own polls, with no real wait, and its kill line
+# names the time by that clock. It must be the driver's DEFAULT_STOP_GRACE_SECONDS exactly: a stop
+# that took another grace when the variable is unset, or killed before its grace, names another.
+# The child says it ignores SIGTERM before the stop signals it, so the signal cannot end it first.
+grace_out="${temporary_dir}/stop-grace-default.out"
+grace_status=0
+# shellcheck disable=SC2016 # the helpers' shell expands these, not this one
+env -u DEV_STACK_STOP_GRACE_SECONDS timeout 15 bash -c "$stop_helpers"$'\n''
+ready="$1"
+(trap "" TERM; : >"$ready"; exec sleep 600) &
+stubborn=$!
+for _ in $(seq 1 200); do [ -e "$ready" ] && break; sleep 0.05; done
+[ -e "$ready" ] || { echo "the child that ignores SIGTERM never said so"; exit 1; }
+unset EPOCHREALTIME
+EPOCHREALTIME=1000.000000
+sleep() {
+  local now=${EPOCHREALTIME//[!0-9]/}
+  now=$((now + 100000))
+  printf -v EPOCHREALTIME "%d.%06d" $((now / 1000000)) $((now % 1000000))
+}
+stop_bounded "a child that ignores SIGTERM" "$stubborn"
+kill -0 "$stubborn" 2>/dev/null && echo "a child that ignores SIGTERM outlived the grace"
+exit 0' _ "${temporary_dir}/stubborn-child.ready" >"$grace_out" 2>&1 || grace_status=$?
+[[ "$grace_status" -eq 0 ]] || fail "the stop's helpers with no grace set did not return within 15 s (status $grace_status): $(cat "$grace_out")"
+[[ "$(cat "$grace_out")" == "dev-stack: a child that ignores SIGTERM (pid "*") did not stop within ${stop_grace_default} s of its SIGTERM; killing it ${stop_grace_default}.000 s after it" ]] ||
+  fail "the stop with no grace set did not kill a child that ignores SIGTERM ${stop_grace_default} s after its SIGTERM, the driver's DEFAULT_STOP_GRACE_SECONDS: $(cat "$grace_out")"
+printf "PASS: with no grace set, the stop killed a child that ignores SIGTERM %s s after its SIGTERM by its own clock, the driver's DEFAULT_STOP_GRACE_SECONDS, and no sooner\n" "$stop_grace_default"
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
@@ -1475,7 +1537,9 @@ refuse_run() { # <label> <status> <dev-stack.sh arguments...>
     rm -f "${temporary_dir}/${tool}-calls-binaries"
   done
   refusal_status=0
-  env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
+  # A refusal ends at once. A run that does not refuse starts its stack and stays up, so it is
+  # given 60 s and then stopped, and the row fails naming the status, not the job's deadline.
+  timeout -k 10 60 env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
     DEV_STACK_TEST_PSQL_CALL_FILE="${temporary_dir}/psql-calls-binaries" \
     DEV_STACK_TEST_CURL_CALL_FILE="${temporary_dir}/curl-calls-binaries" \
     DEV_STACK_TEST_GO_CALL_FILE="${temporary_dir}/go-calls-binaries" \
@@ -1548,10 +1612,12 @@ printf 'PASS: --callout and --project-access together, in either order, are refu
 
 # (t2) DEV_STACK_STOP_GRACE_SECONDS and DEV_STACK_READINESS_REQUEST_SECONDS each take a whole number
 # of seconds from 1 to 9999, written without a leading zero (bash arithmetic reads 010 as 8). Any
-# other value is refused with exit 2 and one line naming the variable and the value, before anything
-# is created or started (refuse_run): a value bash arithmetic cannot read would end the stop between
-# its kills and its drops. The controls are (e3), (e7) and (e9), which run with values the driver
-# takes. refuse_bound exports the variable it is given to that one refusal alone (local -x).
+# other value, an empty one among them (set, but empty, which a `:-` default would take as unset),
+# is refused with exit 2 and one line naming the variable and the value, before anything is
+# created or started (refuse_run): a value bash arithmetic cannot read would end the stop between
+# its kills and its drops. The controls are (e3), (e7) and (e9a), which run with values the driver
+# takes, and every run with neither set. refuse_bound exports the variable it is given to that one
+# refusal alone (local -x).
 refuse_bound() { # <variable> <value>
   local label="a run given $1='$2'"
   local -x "$1=$2"
@@ -1560,11 +1626,11 @@ refuse_bound() { # <variable> <value>
     fail "$label printed '$(<"$refusal")', not the one line naming the variable and the value"
 }
 for bound in DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS; do
-  for value in 0 010 1.5 ten -1 10000 ' 3'; do
+  for value in '' 0 010 1.5 ten -1 10000 ' 3'; do
     refuse_bound "$bound" "$value"
   done
 done
-printf 'PASS: a stop grace or readiness bound that is no whole number of seconds from 1 to 9999 is refused with exit 2, naming the variable and the value, before anything is created or started\n'
+printf 'PASS: a stop grace or readiness bound that is empty or no whole number of seconds from 1 to 9999 is refused with exit 2, naming the variable and the value, before anything is created or started\n'
 
 # (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
 # auth service on it with the listener and Dispatch listed under their machine ids, the issuer

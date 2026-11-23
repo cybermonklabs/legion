@@ -177,6 +177,12 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 # shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
 . "$SCRIPT_DIR/lib/exec-env.sh"
 
+# The stop's grace and a readiness request's bound when the caller sets neither
+# DEV_STACK_STOP_GRACE_SECONDS nor DEV_STACK_READINESS_REQUEST_SECONDS (usage, below). Each is a
+# line of its own: scripts/dev-stack.test.sh reads both here rather than copying the numbers.
+DEFAULT_STOP_GRACE_SECONDS=10
+DEFAULT_READINESS_REQUEST_SECONDS=5
+
 usage() {
   cat <<'EOF'
 Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout]
@@ -206,10 +212,14 @@ option none of this runs, as before.
 --callout and --project-access cannot run together: both of --callout's brokers would take the
 airlock proxy's one port. The pair is refused with exit 2 before anything is created or started.
 
-DEV_STACK_STOP_GRACE_SECONDS (10 unless set) is how long the stop gives each process after its
-SIGTERM before it kills it, and DEV_STACK_READINESS_REQUEST_SECONDS (5 unless set) how long each
-readiness request waits for an answer; each is a whole number of seconds from 1 to 9999, and any
-other value is refused with exit 2 before anything is created or started.
+EOF
+  cat <<EOF
+DEV_STACK_STOP_GRACE_SECONDS ($DEFAULT_STOP_GRACE_SECONDS unless set) is how long the stop gives
+each process after its SIGTERM before it kills it, and DEV_STACK_READINESS_REQUEST_SECONDS
+($DEFAULT_READINESS_REQUEST_SECONDS unless set) how long each readiness request waits for an
+answer. Each is a whole number of seconds from 1 to 9999, written without a leading zero; any
+other value, an empty one among them, is refused with exit 2 before anything is created or
+started.
 EOF
 }
 
@@ -277,16 +287,17 @@ if [ "$CALLOUT" = true ] && [ "$PROJECT_ACCESS" = true ]; then
 fi
 
 # --- The stop's grace and a readiness request's bound (usage, above), checked before anything is
-# created: a value bash arithmetic cannot read would end the stop between the kills and the drops.
-# The stop reads its grace where it runs (stop_bounded), so scripts/dev-stack.test.sh can run it
-# alone. ---
+# created: a value bash arithmetic cannot read would end the stop between the kills and the drops,
+# and one with a leading zero it reads as octal. A variable that is set is checked even when
+# empty, which would otherwise read as unset. The stop reads its grace where it runs
+# (stop_bounded), so scripts/dev-stack.test.sh can run it alone. ---
 for bound in DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS; do
-  if [ -n "${!bound:-}" ] && ! [[ ${!bound} =~ ^[1-9][0-9]{0,3}$ ]]; then
+  if [[ -v $bound ]] && ! [[ ${!bound} =~ ^[1-9][0-9]{0,3}$ ]]; then
     echo "dev-stack: $bound must be a whole number of seconds from 1 to 9999, not '${!bound}'" >&2
     exit 2
   fi
 done
-READINESS_REQUEST_SECONDS="${DEV_STACK_READINESS_REQUEST_SECONDS:-5}"
+READINESS_REQUEST_SECONDS="${DEV_STACK_READINESS_REQUEST_SECONDS:-$DEFAULT_READINESS_REQUEST_SECONDS}"
 
 # --- The one input, checked before anything is created, so a missing or malformed URL leaves
 # nothing behind. The three sources in order, as the header names them. ---
@@ -542,26 +553,31 @@ running_child() {
 }
 
 # stop_bounded NAME PID stops one process of the stack for cleanup: SIGTERM, then up to the grace,
-# DEV_STACK_STOP_GRACE_SECONDS or 10 s, for it to exit, then SIGKILL, which the log names, so a
-# process that ignores or outlives its SIGTERM holds the stop that long at most and the drops below
-# still run. Cleanup ignores every further INT and TERM, so a `wait` on such a process would have
-# held the stop, and both databases, for good. The look is running_child every 0.1 s, so a process
-# that exits during the grace is never signalled again, whatever holds its pid by then. The grace
-# is counted in microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped, which a
-# locale may make a comma), so it is the whole grace: SECONDS counts whole seconds, and a deadline
-# of SECONDS plus 10 came up to a second short.
+# DEV_STACK_STOP_GRACE_SECONDS or DEFAULT_STOP_GRACE_SECONDS, for it to exit, then SIGKILL, which
+# the log names with the time from the SIGTERM to the kill, so a process that ignores or outlives
+# its SIGTERM holds the stop that long at most and the drops below still run. Cleanup ignores every
+# further INT and TERM, so a `wait` on such a process would have held the stop, and both
+# databases, for good. The look is running_child every 0.1 s, so a process that exits during the
+# grace is never signalled again, whatever holds its pid by then. The grace is counted in
+# microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped, which a locale may make
+# a comma), so it is the whole grace: SECONDS counts whole seconds, and a deadline of SECONDS plus
+# 10 came up to a second short.
 stop_bounded() {
-  local name="$1" pid="$2" grace="${DEV_STACK_STOP_GRACE_SECONDS:-10}" deadline
+  local name="$1" pid="$2" grace="${DEV_STACK_STOP_GRACE_SECONDS:-$DEFAULT_STOP_GRACE_SECONDS}"
+  local termed deadline waited
   if [ -z "$pid" ] || ! running_child "$pid"; then
     return 0
   fi
   kill "$pid" 2>/dev/null
-  deadline=$((${EPOCHREALTIME//[!0-9]/} + grace * 1000000))
+  termed=${EPOCHREALTIME//[!0-9]/}
+  deadline=$((termed + grace * 1000000))
   while running_child "$pid" && ((${EPOCHREALTIME//[!0-9]/} < deadline)); do
     sleep 0.1
   done
   if running_child "$pid"; then
-    echo "dev-stack: $name (pid $pid) did not stop within $grace s of its SIGTERM; killing it" >&2
+    waited=$((${EPOCHREALTIME//[!0-9]/} - termed))
+    printf 'dev-stack: %s (pid %s) did not stop within %s s of its SIGTERM; killing it %d.%03d s after it\n' \
+      "$name" "$pid" "$grace" $((waited / 1000000)) $((waited % 1000000 / 1000)) >&2
     kill -KILL "$pid" 2>/dev/null
   fi
   wait "$pid" 2>/dev/null
