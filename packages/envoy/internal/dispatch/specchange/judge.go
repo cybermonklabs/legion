@@ -80,7 +80,7 @@ func Judge(conclusion *Conclusion, final []Outcome, approved func(id string) boo
 	case conclusion.NoStatement && named:
 		add(ReasonStatementAndNoStatement, "", "The conclusion sets no_statement and also names a statement or a difference. Remove one of them.")
 	case conclusion.NoStatement:
-	case conclusion.Statement == "" && conclusion.Difference == "":
+	case !named:
 		add(ReasonNoStatementOrKind, "", "The conclusion names no statement and no difference, and it does not set no_statement. Name both, or set no_statement.")
 	case conclusion.Statement == "":
 		add(ReasonNoStatementOrKind, "", "The conclusion names the difference %s and no statement. Name the approved statement.", conclusion.Difference)

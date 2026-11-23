@@ -119,14 +119,12 @@ func outcomesOf(outcomes []model.SpecOutcome) ([]model.SpecOutcome, error) {
 	if outcomes == nil {
 		return nil, errorf(http.StatusBadRequest, "INVALID_OUTCOME", "outcomes is required: send [] to record an empty list")
 	}
-	checked := make([]specchange.Outcome, len(outcomes))
+	if err := specchange.CheckOutcomes(specOutcomes(outcomes)); err != nil {
+		return nil, errorf(http.StatusBadRequest, "INVALID_OUTCOME", "%s", err.Error())
+	}
 	stored := make([]model.SpecOutcome, len(outcomes))
 	for index, outcome := range outcomes {
-		checked[index] = specchange.Outcome{Text: outcome.Text, Statement: outcome.Statement, Restored: outcome.Restored}
 		stored[index] = model.SpecOutcome{Text: strings.TrimSpace(outcome.Text), Statement: outcome.Statement, Restored: outcome.Restored}
-	}
-	if err := specchange.CheckOutcomes(checked); err != nil {
-		return nil, errorf(http.StatusBadRequest, "INVALID_OUTCOME", "%s", err.Error())
 	}
 	return stored, nil
 }
@@ -495,12 +493,11 @@ func (s *server) readChangeRequest(ctx context.Context, q queryer, key string, v
 			return changeRequestState{}, err
 		}
 		approved = func(id string) bool {
-			history := state.Nodes[id]
-			current := (*specstore.Version)(nil)
-			if history != nil {
-				current = history.Current()
+			if history := state.Nodes[id]; history != nil {
+				current := history.Current()
+				return current != nil && current.Kind == specchange.KindStatement
 			}
-			return current != nil && current.Kind == specchange.KindStatement
+			return false
 		}
 	}
 	conclusion, err := specchange.ConclusionOf(statements)

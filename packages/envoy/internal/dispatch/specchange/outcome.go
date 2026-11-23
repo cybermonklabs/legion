@@ -92,7 +92,7 @@ func OutcomeKey(text string) string {
 // statement is no statement id, one whose text opens with a marker, so that its line would read
 // back as another outcome, and two outcomes of one key. An empty list has no fault.
 func CheckOutcomes(outcomes []Outcome) error {
-	seen := make(map[string]string, len(outcomes))
+	seen := make(map[string]int, len(outcomes))
 	for index, outcome := range outcomes {
 		text := strings.TrimSpace(outcome.Text)
 		switch {
@@ -111,9 +111,9 @@ func CheckOutcomes(outcomes []Outcome) error {
 		}
 		key := OutcomeKey(text)
 		if first, held := seen[key]; held {
-			return fmt.Errorf("outcomes %s and %d are one outcome: list each outcome once", first, index+1)
+			return fmt.Errorf("outcomes %d and %d are one outcome: list each outcome once", first, index+1)
 		}
-		seen[key] = fmt.Sprint(index + 1)
+		seen[key] = index + 1
 	}
 	return nil
 }
