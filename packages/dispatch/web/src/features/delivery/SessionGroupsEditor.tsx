@@ -4,6 +4,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
+import { CappedGroup } from "../../components/CappedGroup";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -87,17 +88,23 @@ function GroupCard({
           Rename
         </button>
       </div>
-      <ul className="flex flex-wrap gap-1">
+      {/* The group's sessions are a list as long as its data: the first ten, then "+N" for the
+          rest, each chip with its own ✕. A chip shrinks to the list's width and its name wraps
+          inside it (`AgentName`'s own `[overflow-wrap:anywhere]`): below the wide layout a link
+          is `inline-flex` (the 44 px touch rule in styles.css), and a cut line there would end
+          in no ellipsis. */}
+      <CappedGroup
+        className="flex flex-wrap gap-1 [&>li]:min-w-0 [&>li]:max-w-full"
+        label="sessions"
+        list={`Sessions in ${group.name}`}
+        name="group-sessions"
+      >
         {(group.sessions ?? []).map((session) => (
-          <li
-            className={`flex items-center gap-1 rounded border px-2 py-0.5 text-xs ${borderStrong}`}
+          <span
+            className={`flex min-w-0 max-w-full items-center gap-1 rounded border px-2 py-0.5 text-xs ${borderStrong}`}
             key={session}
           >
-            <AgentName
-              className="max-w-48 truncate"
-              sessionId={session}
-              storedTitle={storedTitle(session)}
-            />
+            <AgentName sessionId={session} storedTitle={storedTitle(session)} />
             <button
               aria-label={`Remove ${text.sessionText(session, storedTitle(session))}`}
               className={dismissButtonText}
@@ -115,9 +122,9 @@ function GroupCard({
             >
               ✕
             </button>
-          </li>
+          </span>
         ))}
-      </ul>
+      </CappedGroup>
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}

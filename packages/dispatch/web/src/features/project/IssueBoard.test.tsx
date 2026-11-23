@@ -190,6 +190,26 @@ test("board cards show the unread dot when events are newer than the viewer's la
   }
 });
 
+// INFRA-5200's rule, point 3: a card's labels are a list as long as the issue's data, so the
+// card shows ten and one "+N" that shows the rest in place.
+test("a board card shows ten of its labels and a +N that shows the rest", async () => {
+  const user = userEvent.setup();
+  const labels = Array.from({ length: 12 }, (_, index) => `label-${index + 1}`);
+  const { cleanup } = renderBoard({}, undefined, [issue({ labels })]);
+  try {
+    const board = await screen.findByRole("region", { name: "Project board" });
+    const card = within(board).getByRole("article", { name: "CORE-1 Plan the work" });
+    const group = card.querySelector<HTMLElement>('[data-layout-group="labels"]');
+    if (group === null) throw new Error("the card's labels are not a group");
+    const drawn = () => labels.filter((label) => within(group).queryByText(label) !== null);
+    expect(drawn()).toEqual(labels.slice(0, 10));
+    await user.click(within(group).getByRole("button", { name: "Show 2 more labels" }));
+    expect(drawn()).toEqual(labels);
+  } finally {
+    cleanup();
+  }
+});
+
 test("board shows a shared empty state when the project has no issues", async () => {
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});

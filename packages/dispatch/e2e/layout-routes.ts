@@ -162,6 +162,54 @@ const twoRowsSelected: LayoutState = {
   name: "two-rows-selected",
 };
 
+/** The board with every card's labels opened by its "+N": the stress issue's card holds 13
+ *  labels, past the cap, so they wrap inside the card. A state that opened nothing would read
+ *  the folded board again, so the card must have had a "+N" to press. */
+const boardLabelsOpened: LayoutState = {
+  act: async (page) => {
+    const opened = await openCappedGroups(page, { group: "labels" });
+    if (opened === 0) {
+      throw new Error(`labels-opened opened no labels group; a card needs a "+N" to press`);
+    }
+  },
+  name: "labels-opened",
+  requiredGroups: ["labels"],
+};
+
+/** The Delivery page's session-groups editor, which the Parent agent facet's "Edit groups"
+ *  opens: each group lists its sessions as chips, a list of R3, and the stress layer's group
+ *  holds eleven, past the cap. */
+const sessionGroupsEdited: LayoutState = {
+  act: async (page) => {
+    await page.getByRole("button", { exact: true, name: "Edit groups" }).click();
+    await page
+      .getByRole("dialog", { name: "Session groups" })
+      .locator('[data-layout-group="group-sessions"]')
+      .first()
+      .waitFor();
+  },
+  name: "session-groups",
+  requiredGroups: ["group-sessions"],
+};
+
+/** That editor with every group's sessions opened by its "+N". A state that opened nothing
+ *  would read the folded editor again, so a group must have had a "+N" to press. */
+const sessionGroupsOpened: LayoutState = {
+  act: async (page) => {
+    await sessionGroupsEdited.act(page);
+    const opened = await openCappedGroups(page.getByRole("dialog", { name: "Session groups" }), {
+      group: "group-sessions",
+    });
+    if (opened === 0) {
+      throw new Error(
+        `session-groups-opened opened no group-sessions group; a group needs a "+N" to press`
+      );
+    }
+  },
+  name: "session-groups-opened",
+  requiredGroups: ["group-sessions"],
+};
+
 /** Every capped group of the Agents page opened by its "+N": the roles of each drawn row (the
  *  stress layer's first session holds fourteen), then every agent selected and the composer's
  *  chosen agents. The rows are opened before the selection, so the composer that sticks to the
@@ -184,7 +232,7 @@ const groupsExpanded: LayoutState = {
 };
 
 /** Every agent selected for a broadcast, which draws the composer and its list of chosen agents
- *  (`AgentsPage.tsx`'s "Selected agents"): the stress layer's 17 sessions are past its cap. */
+ *  (`AgentsPage.tsx`'s "Selected agents"): the stress layer's 18 sessions are past its cap. */
 const allAgentsSelected: LayoutState = {
   act: async (page) => {
     await page.getByRole("checkbox", { name: "Select all matching agents" }).check();
@@ -293,6 +341,9 @@ const additions: Readonly<
   broadcast: { minElements: shortPage(48) },
   broadcasts: { minElements: shortPage(14) },
   "credentials-machine": { minElements: shortPage(24) },
+  // The editor that holds the session-group chips draws only once "Edit groups" opens it, so
+  // the group is required of those states and not of the plain page.
+  delivery: { states: [sessionGroupsEdited, sessionGroupsOpened] },
   // Each child's links are a capped group of their own, in every state: a state's groups replace
   // the route's.
   "issue-children": {
@@ -385,6 +436,7 @@ export const layoutRoutes: readonly LayoutRoute[] = [
     ready: (page) => [page.locator("[data-board-card]").first()],
     // The stress issue's card draws its 13 labels, a list of R3.
     requiredGroups: ["labels"],
+    states: [boardLabelsOpened],
   },
   {
     name: "project",

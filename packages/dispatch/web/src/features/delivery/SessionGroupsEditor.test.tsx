@@ -273,6 +273,25 @@ test("group members link to their live conversations, an untitled one by its sho
   }
 });
 
+// INFRA-5200's rule, point 3: a group's sessions are a list as long as its data, so the group
+// shows ten chips, each with its ✕, and one "+N" that shows the rest in place.
+test("a group shows ten of its sessions and a +N that shows the rest", async () => {
+  const user = userEvent.setup();
+  const sessions = Array.from({ length: 12 }, (_, index) => `member-${index + 1}`);
+  renderEditor([{ ...crew, sessions }]);
+  try {
+    const members = within(screen.getByRole("group", { name: "Release crew" })).getByRole("list", {
+      name: "Sessions in Release crew",
+    });
+    const removable = () => within(members).getAllByRole("button", { name: /^Remove / });
+    expect(removable()).toHaveLength(10);
+    await user.click(within(members).getByRole("button", { name: "Show 2 more sessions" }));
+    expect(removable()).toHaveLength(12);
+  } finally {
+    cleanup();
+  }
+});
+
 test("a refusal shows as the server wrote it", async () => {
   const user = userEvent.setup();
   const create = spyOn(api, "createDeliverySessionGroup").mockRejectedValue(

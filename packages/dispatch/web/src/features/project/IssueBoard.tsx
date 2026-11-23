@@ -19,6 +19,7 @@ import { Link } from "react-router-dom";
 import { projectIssuesQuery, userStateQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
+import { CappedGroup } from "../../components/CappedGroup";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
@@ -171,9 +172,15 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
         <ClaimChip claim={issue.claim} />
         <ProgressChips progress={issue.progress} />
         <UnreachableRouteMarker issue={issue} />
-        {(issue.labels ?? []).map((label) => (
-          <LabelPill key={label}>{label}</LabelPill>
-        ))}
+        {/* The labels are a list as long as the issue's data: the first ten, then "+N" for the
+            rest, flowing in this row with the card's other chips (`contents`). */}
+        {(issue.labels ?? []).length === 0 ? null : (
+          <CappedGroup className="contents" label="labels" name="labels">
+            {(issue.labels ?? []).map((label) => (
+              <LabelPill key={label}>{label}</LabelPill>
+            ))}
+          </CappedGroup>
+        )}
         {issue.open_asks === 0 ? null : (
           <span title={`${issue.open_asks} open asks`}>
             <AttentionBadge count={issue.open_asks} />
