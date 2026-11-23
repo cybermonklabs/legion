@@ -26,8 +26,12 @@ import (
 // past the connections testlimits.ServerConnections sizes the test server for, and under the race
 // detector past the memory envoy-go-race-docs allows its binary (RACE_MEM_LIMIT_KB).
 //
+// Six, not eight: at eight, three runs under the race detector on 4 vCPU peaked at 7.0, 7.7 and
+// 7.9 GB of the step's 8 GB RACE_MEM_LIMIT_KB, which leaves no room for the growth a merged tree
+// brings.
+//
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
-const docsTestParallelism = 8
+const docsTestParallelism = 6
 
 // TestMain runs the package's tests and then reports the services they left alive
 // (service_leak_test.go): the memory a test that never shuts its service down holds for the rest
