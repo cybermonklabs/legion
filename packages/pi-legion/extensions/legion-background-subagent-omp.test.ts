@@ -25,7 +25,7 @@ import {
   timersBetween,
 } from "@legion/test-fixtures/timer-record";
 import { completeLines } from "@legion/test-fixtures/transcript-lines";
-import { until } from "@legion/test-fixtures/wait";
+import { timeLeft, until } from "@legion/test-fixtures/wait";
 
 // On the real Oh My Pi: a Legion role pane dispatches `deep-worker`, gets its
 // `task` call back while the subagent is still running, reads a message that arrives in the
@@ -313,7 +313,10 @@ async function natsRelay(
   });
   return async (sessionID, payload, seq) => {
     // The moment of the send the session answered: the helper resends until one is answered, and
-    // each request of this send writes its own moment here as it goes out.
+    // each request of this send writes its own moment here as it goes out. The sends end at the
+    // row's deadline, as every other wait of the row does, rather than a fixed span after they
+    // start (the helper's own default); `timeLeft()` is floored, as the helper's refusal names the
+    // bound it kept.
     let sent = moment();
     await sendRelayFrame({
       connection: connectionStamping((at) => {
@@ -324,6 +327,7 @@ async function natsRelay(
       subject: `notifications.agent.${sessionID}`,
       payload: new TextEncoder().encode(payload),
       seq,
+      withinMs: Math.floor(timeLeft()),
       stopped,
     });
     return sent;

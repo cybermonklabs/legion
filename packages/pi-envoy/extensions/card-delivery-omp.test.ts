@@ -19,15 +19,8 @@ import {
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { settled, until as waitUntil } from "@legion/test-fixtures/wait";
-import {
-  connect,
-  createInbox,
-  headers,
-  type MsgHdrs,
-  type NatsConnection,
-  StringCodec,
-} from "nats";
+import { settled, timeLeft, until as waitUntil } from "@legion/test-fixtures/wait";
+import { connect, createInbox, headers, type NatsConnection, StringCodec } from "nats";
 import { z } from "zod";
 import { readCardLines } from "../test/card-entries";
 
@@ -54,6 +47,14 @@ const WAKE_TEXT = /Envoy messages? above arrived with no turn to read (it|them)/
 /** The one stream the stand-in listener answers a consumer registration with, and stamps every
  *  relay frame it publishes with: one stream for the run, so no frame reports a replaced one. */
 const RELAY_STREAM = "card-delivery-stream";
+
+/** One answer the test holds: what `Promise.withResolvers` returns, named here because the
+ *  package's `lib` (ES2023) has no `PromiseWithResolvers`. */
+interface HeldAnswer<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason?: unknown): void;
+}
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
@@ -321,7 +322,7 @@ async function startSession(
   await writeStandinProfile(home, base, config);
 
   const frames: object[] = [];
-  const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
+  const responses = new Map<string, HeldAnswer<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
   const rpc = spawnRpc(
     binary,
@@ -375,22 +376,30 @@ async function startSession(
 
   // Sends one frame as the listener's relay sends it (`sendRelayFrame`), under the sequence
   // after the last: one stream for the whole case. A run whose binary died fails the wait at
-  // once rather than at the frame's own deadline.
+  // once rather than at the frame's own deadline. The sends end at the row's deadline, as every
+  // other wait of the row does, rather than a fixed span after they start (the helper's own
+  // default); `timeLeft()` reads a fraction of a millisecond, and the helper's refusal names the
+  // bound it kept, so it is floored.
   let streamSeq = 0;
   const relayFrame = async (what: string, envelope: string): Promise<void> => {
     streamSeq += 1;
+    const within = Math.floor(timeLeft());
     try {
-      await sendRelayFrame<MsgHdrs>({
+      await sendRelayFrame({
         connection,
         newHeaders: headers,
         sessionID: sid,
         subject: stored,
         payload: codec.encode(envelope),
         seq: streamSeq,
+        withinMs: within,
         stopped: closed,
       });
     } catch (error) {
-      throw new Error(`${what} failed: ${String(error)}`);
+      throw new Error(
+        `${what} failed (its sends were bounded by the row's deadline, ${within} ms after they ` +
+          `began): ${String(error)}`
+      );
     }
   };
 
