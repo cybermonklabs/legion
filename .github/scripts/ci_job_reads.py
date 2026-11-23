@@ -1727,26 +1727,37 @@ LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
 # The packages whose skips envoy-go's unit step counts: it runs the module through
 # packages/envoy/scripts/database-skips.sh with --module-except, one `go test -json`, and the
-# script counts the skips of its default table (DEFAULT_PACKAGES there), the broker's tree,
-# internal/cipher and every package under it, and its command, cmd/cipherd, failing on any skip
-# there as on any failed test in the run. They ran in a step of their own after the unit step
-# until INFRA-1075: cmd/cipherd alone, 714 s, held that step at 15.3 minutes, in which its four -p
-# slots ran 1,817 s of package time, half what they had, while the unit step, 14.8 minutes, ran
-# before it (merge-group run 45048924209, job 137290624677); in one go test the two share the
-# slots. The script's own DEFAULT_EXCEPT, a
-# `grep -Ev` over that table's import paths, leaves out the race lane's packages under the tree
-# (DATABASE_SKIPS_PATTERN, today the auth service's natscallout), which open no database and which
-# the lane's race job runs: counting them would add them to the run, each one's second in the
-# same CI run. The pattern is built from ENVOY_RACE_LANE, as the unit step's is.
-# hold_database_skips_packages() below refuses a script whose table is not this list, or whose
-# DEFAULT_EXCEPT is not that pattern.
+# script counts the skips of its default table (DEFAULT_PACKAGES there): the broker's tree,
+# internal/cipher and every package under it, its command, cmd/cipherd, and
+# DATABASE_SKIPS_PACKAGES, each the package alone: the writer hold's client, internal/holdrecord,
+# whose journal tests run on the broker's own routes over its Postgres. It fails on any skip there
+# as on any failed test in the run. They ran in a step of their own after the unit step until
+# INFRA-1075: cmd/cipherd alone, 714 s, held that step at 15.3 minutes, in which its four -p slots
+# ran 1,817 s of package time, half what they had, while the unit step, 14.8 minutes, ran before
+# it (merge-group run 45048924209, job 137290624677); in one go test the two share the slots. The
+# script's own DEFAULT_EXCEPT, a `grep -Ev` over that table's import paths, leaves out
+# DATABASE_SKIPS_RACE_ONLY: race lane packages under the tree that open no database, which the
+# lane's race job runs, where a run here too would be each one's second in the same CI run and
+# would count nothing. It names none today. The auth service's natscallout is in the lane, and its
+# hold rows open the broker's Postgres and skip without it, so the count runs it too, its second
+# run in CI, for the count of its skips: UNIT_TEST_PATTERN keeps it in the unit step's run.
+# DATABASE_SKIPS_PATTERN is built from the lane's declaration of those packages, as the unit
+# step's is. hold_database_skips_packages() below refuses a script whose table is not this list,
+# or whose DEFAULT_EXCEPT is not that pattern.
 DATABASE_SKIPS_TREE = "internal/cipher"
 DATABASE_SKIPS_COMMAND = "cmd/cipherd"
-DATABASE_SKIPS_PKGS = [f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
+DATABASE_SKIPS_PACKAGES = ["internal/holdrecord"]
+DATABASE_SKIPS_PKGS = ([f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
+                       + [f"./{p}/" for p in DATABASE_SKIPS_PACKAGES])
 DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
+DATABASE_SKIPS_RACE_ONLY: list = []
+_lane_under_tree = {p.name: p for job in ENVOY_RACE_LANE for p in job.packages
+                    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/")}
+if any(name not in _lane_under_tree for name in DATABASE_SKIPS_RACE_ONLY):
+    raise ValueError(f"DATABASE_SKIPS_RACE_ONLY names {DATABASE_SKIPS_RACE_ONLY}, and only race lane packages under "
+                     f"{DATABASE_SKIPS_TREE} ({sorted(_lane_under_tree)}) can be left to the race job")
 DATABASE_SKIPS_PATTERN = "|".join(
-    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
-    if p.name == DATABASE_SKIPS_TREE or p.name.startswith(f"{DATABASE_SKIPS_TREE}/"))
+    f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for p in _lane_under_tree.values() if p.name in DATABASE_SKIPS_RACE_ONLY)
 # The -timeout of envoy-go's unit step, which bounds each package's test binary.
 UNIT_TEST_TIMEOUT = "20m"
 
@@ -1774,19 +1785,20 @@ def names_pattern(names):
 
 
 # The counter's own test, which envoy-go runs before the unit step: its six controls run the
-# counter on these four packages, each narrowed to its planted and expected tests.
+# counter on these five packages, each narrowed to its planted and expected tests.
 DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
 DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
-DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/dispatch/api/", "./internal/fold/"]
+DATABASE_SKIPS_TEST_PKGS = ["./internal/cipher/api/", "./cmd/cipherd/", "./internal/holdrecord/", "./internal/dispatch/api/",
+                            "./internal/fold/"]
 
 
 def hold_database_skips_packages():
     """Refuse a database-skips.sh whose default table is not DATABASE_SKIPS_PKGS, or whose
     DEFAULT_EXCEPT is not DATABASE_SKIPS_PATTERN. The unit step counts that table's skips less
-    the lane's packages, and runs every package of the table it counts, so a package the script
-    added without this list would be counted by nothing here that declares it, one it dropped
-    would run uncounted, and a lane package the script kept would be added to the unit step's run,
-    its second in the CI run, with every check green."""
+    DATABASE_SKIPS_RACE_ONLY, and runs every package of the table it counts, so a package the
+    script added without this list would be counted by nothing here that declares it, one it
+    dropped would run uncounted, and a lane package the script kept against that list would be
+    added to the unit step's run, its second in the CI run, with every check green."""
     text = Path(DATABASE_SKIPS_SCRIPT).read_text()
     found = re.findall(r"^DEFAULT_PACKAGES=\((.*)\)$", text, re.M)
     if found != [" ".join(DATABASE_SKIPS_PKGS)]:
@@ -1808,30 +1820,37 @@ hold_database_skips_packages()
 # LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs. Its
 # `grep -Ev` is `/integration`, then the text checks, then those packages, each the package
 # alone, then, in the lane's own order, each package in the form go list's import paths need - a
-# tree matching the package and everything under it, any other the package alone. It runs the
-# broker's tree and command too, whose skips it counts (DATABASE_SKIPS_PKGS above).
+# tree matching the package and everything under it, any other the package alone - but the lane's
+# packages whose skips the step counts, those under the broker's tree that DATABASE_SKIPS_RACE_ONLY
+# does not name (natscallout today), which it runs beside their race run. It runs the broker's
+# tree, its command and DATABASE_SKIPS_PACKAGES too, whose skips it counts (DATABASE_SKIPS_PKGS
+# above).
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
-    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages
+       if p.name not in _lane_under_tree or p.name in DATABASE_SKIPS_RACE_ONLY])
 
 
 def hold_counted_in_unit_run():
     """Refuse a package whose skips the unit step counts and which its `grep -Ev` takes out:
     database-skips.sh adds each such package to the run, and the step's Run, packages_kept over
     UNIT_TEST_PATTERN, would not name it, so a change to its files would not start this job.
-    The counted packages are those of DATABASE_SKIPS_PKGS that DATABASE_SKIPS_PATTERN keeps."""
+    The counted packages are those of DATABASE_SKIPS_PKGS that DATABASE_SKIPS_PATTERN keeps; an
+    empty pattern keeps them all (re.search of an empty pattern matches every path, so it is read
+    only when it names a package)."""
     module = next(line.split()[1] for line in (Path(ENVOY) / "go.mod").read_text().splitlines()
                   if line.startswith("module "))
-    counted = [Path(ENVOY) / DATABASE_SKIPS_COMMAND]
+    counted = [Path(ENVOY) / DATABASE_SKIPS_COMMAND] + [Path(ENVOY) / p for p in DATABASE_SKIPS_PACKAGES]
     for current, subdirs, names in os.walk(Path(ENVOY) / DATABASE_SKIPS_TREE):
         subdirs[:] = sorted(s for s in subdirs if not go_skips_dir(Path(current), s))
         if any(n.endswith(".go") for n in names):
             counted.append(Path(current))
     for directory in counted:
         path = f"{module}/{directory.relative_to(ENVOY).as_posix()}"
-        if not re.search(DATABASE_SKIPS_PATTERN, path) and re.search(UNIT_TEST_PATTERN, path):
+        excepted = bool(DATABASE_SKIPS_PATTERN) and re.search(DATABASE_SKIPS_PATTERN, path)
+        if not excepted and re.search(UNIT_TEST_PATTERN, path):
             raise ValueError(f"{path} is a package whose skips the unit step counts, and the step's `grep -Ev "
                              f"'{UNIT_TEST_PATTERN}'` takes it out: keep it in the step's run, or take it out of "
                              f"{DATABASE_SKIPS_SCRIPT}'s table")
@@ -3352,8 +3371,10 @@ GATES = [
         # step tests, the text checks, which the text-check job runs, and the architecture-note
         # and spec-file packages and LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck),
         # which envoy-go-checks runs, in one go test -json through database-skips.sh, which counts
-        # the skips of the broker's tree and command (DATABASE_SKIPS_PKGS less DEFAULT_EXCEPT, both
-        # kept by the pattern: hold_counted_in_unit_run()).
+        # the skips of the broker's tree, its command and the writer hold's client
+        # (DATABASE_SKIPS_PKGS less DEFAULT_EXCEPT, all kept by the pattern:
+        # hold_counted_in_unit_run()). The lane's packages whose skips it counts stay in the run
+        # beside their race run: natscallout today, whose hold rows open the broker's Postgres.
         # The Run names the packages the step's own --module-except keeps (packages_kept over
         # UNIT_TEST_PATTERN), so it is read from the pattern the step runs rather than claimed
         # beside it. A Run saying more would credit this job with tests other jobs run: the race
@@ -3378,11 +3399,12 @@ GATES = [
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
         # test of internal/bus that needs a real server image, the auth service's check that the
         # deployed server lets an empty allow list through, which its guard refuses, and the edge
-        # listener's grant and start under its rendered user. The rest
-        # of internal/testnats runs in the unit step; the rest of internal/bus and
-        # internal/cipher/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
-        # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
-        # per step, checks the testnats half alone.
+        # listener's grant and start under its rendered user. The rest of internal/testnats runs in
+        # the unit step; the rest of internal/bus runs in envoy-go-race, since UNIT_TEST_PATTERN
+        # leaves the race lane's packages out of the unit step, and the rest of
+        # internal/cipher/natscallout there and in the unit step, which keeps it for the count of
+        # its skips; the envoy_go entry of TAG_RUNS, one entry per step, checks the testnats half
+        # alone.
         pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),

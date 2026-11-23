@@ -457,9 +457,10 @@ answer `natsprobe` exits 4 for; the hub lists the listener's connection authoriz
 admitted within 2 s, the first counted from the kill. A session opened before the hub has
 read the killed broker's close can be routed to the dead replica and refused at the hub's
 authorization timeout, so the check opens the first session once the hub lists one
-`envoy-broker-callout` connection fewer (both brokers' connections carry that name), and says
-how long the drop took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
-assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
+`envoy-broker-callout` connection fewer (both brokers' connections carry that name, with the
+broker's build after it when the binary names one), and says how long the drop took. The last
+line is `all 6 assertions passed` (exit 0) or `<k> of 6 assertions failed` (exit 1); a probe that
+reports nothing reads `UNKNOWN` and fails.
 
 ```bash
 LEGION_TEST_PG_DSN=postgres://... bash scripts/callout-check.sh   # starts and stops its own stack
@@ -517,11 +518,14 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
-its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packages its
-`DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
-auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
-in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
-anything else). That is one `go test -json -count=1 -timeout 15m` from `packages/envoy`, then it
+its default table, `./internal/cipher/...`, `./cmd/cipherd/` and `./internal/holdrecord/` (the
+writer hold's client, whose journal tests run on the broker's own routes over its Postgres), less
+the packages its `DEFAULT_EXCEPT` takes out of them: race lane packages under the broker's tree
+that open no database, none today (`DATABASE_SKIPS_RACE_ONLY` and `DATABASE_SKIPS_PATTERN` in
+`.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says anything
+else). The auth service's `natscallout` is in the race lane, and its hold rows open the broker's
+Postgres and skip without it, so the count runs it too, beside its race run. That is one
+`go test -json -count=1 -timeout 15m` from `packages/envoy`, then it
 reads that report. `--var NAME` names a variable the packages need, and repeats; with none it is
 `BROKER_TEST_DATABASE_URL`. A named variable that is unset or empty prints
 `database_skips=UNKNOWN` naming it, and nothing runs.
@@ -561,8 +565,9 @@ time budget counts; one go test lets the broker's packages share its `-p` slots 
 of the module, where a step of their own after the unit step waited on `cmd/cipherd` alone.
 `envoy-go-race-api` runs the Dispatch API through it as the second line above.
 `database-skips.test.sh` holds it to six controls, which `envoy-go` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
-and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
+skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`,
+`./internal/holdrecord/` and `./internal/dispatch/api/` is counted; either variable unset or
+empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
 a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
 package spelled other than canonically is counted;
@@ -884,8 +889,12 @@ dispatch's `listenerImage`, which that stack sets on its listener in place of `e
 Dispatch server's (a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
 that key, deployment `dispatch/main.go`, and the listener runs no other image), and envoy's
 `listenerImage` when the deployment declares the VM hub, `gcp:NatsHub`, whose listener is that
-pin's only reader. The hub's removal deletes the pin with it, so the gate decides the hub from the
-deployment's program, never from the pin: it fetches the deployment repository as one archive at
+pin's only reader. It judges the Dispatch server's own `envoyImage` too, under the key
+`dispatch-server` and never in the listener's place: the server connects to the hub itself
+(`cmd/dispatch` `main.go`, its intakes and its agent conversation relay), and
+`legacy-subjects-gate.sh`'s fact (a3) maps each user of the hub that may publish a notification
+subject to one of these keys. The VM hub's removal deletes its pin with it, so the gate decides the
+hub from the deployment's program, never from the pin: it fetches the deployment repository as one archive at
 the head of its default branch and reads every Go file in it that is not a `_test.go`, outside
 comments and strings, a link at its target. GitHub makes the archive as `git archive` does, which
 leaves out each path a `.gitattributes` marks `export-ignore` and rewrites each it marks
@@ -1017,13 +1026,18 @@ moved: an issue event named by its key alone (`notifications.dispatch.issue.ACME
 or a role's name with no project (`notifications.agent.<session>`, `notifications.role.<role>`), a
 kept lane with no project, and a failed-delivery report of one. It is the reading a pull request
 quotes before it refuses the old form and deletes the code that reads both forms. One reading
-cannot show that nothing moved, so the gate is read twice, at least the stream's retention apart
-(`ENVOY_NOTIFICATIONS`' `max_age`, 72 hours):
+cannot show that nothing moved, so the gate is read twice, the second no sooner than 180 s after
+the first, so each listener's counter line at the second is newer than the one the first read:
 
 ```bash
 packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
 # at or after the time the first run names:
-packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]...
+packages/envoy/scripts/legacy-subjects-gate.sh --context <kube-context> --record second.json --since first.json [--listener <machine>=<url>]... [--bus-alias <nats-urls>]... \
+  --deployment <owner/repo> --new-form-commit <commit> --hub-statefulset <name> [--hub-server <name>]... \
+  --publisher <identity>=<pin key>... [--broker <namespace>/<deployment>]
+# once the second reading prints (a1), (a2), (a3) and (b) true and (c) false:
+packages/envoy/scripts/legacy-subjects-purge.sh --context <kube-context> --reading second.json
+# then a new pair of readings, which opens only when (c) is true too
 ```
 
 A listener outside the cluster is read over `https`; `--insecure` takes an `http://` URL, whose
@@ -1038,6 +1052,203 @@ hub is not static, `--token-file <path>` names where the listener Deployment mou
 NATS token, which the Job then connects with in place of the seed, and `--inbox-prefix <prefix>`
 the inbox prefix the listener identity's grant subscribes, which every `nats` call of the Job then
 takes.
+
+### The five facts
+
+The second reading opens only when the fleet is clean (below) and five facts read true. Each is
+printed on lines that name it first, `(a1) the pins`, `(a2) the running clients`,
+`(a3) the publishers`, `(b) the consumers`, `(c) the stream`, and kept in the record's `facts` as
+`true`, `false` or `unknown`; a fact the gate cannot read, and a census that enumerated nothing, is
+`unknown`, never `true`.
+
+- **(a1) The pins**, for the clients that start later: `daemon-release-gate.sh --deployment
+  <owner/repo> --clients [--dotfiles <dir>] <commit>`, run beside the gate, where `<commit>` is
+  `--new-form-commit`, the full commit from which every client writes only new-form names. It is
+  true when that gate prints `GATE OPEN` having read at least one pin, false on any of its
+  `GATE SHUT` lines, and unknown otherwise.
+- **(a2) The running clients**: every connection of every hub server, read with
+  `$SYS.REQ.SERVER.PING.CONNZ`, page by page, each from the last connection of the page before,
+  from a Job of its own (`lib/legacy-subjects-gate-census.sh`) as the `legacy-cutover` user, under
+  a connection name the reading draws and leaves out. Each server answers for the account that
+  user sits in, the clients' own (`$G` on a hub with no private project). Every server
+  `--hub-statefulset` names (its pods, `<name>-<ordinal>`, as each server names itself) and every
+  `--hub-server` must answer every page, and no other server may. Each connection must end its
+  name with its build, or with its build and then `privacy-required`, which a listener in required
+  privacy mode keeps last: `legion@<commit>`, judged by GitHub's compare of `--new-form-commit`
+  with that commit, or `@sjawhar/<plugin>@<version>`, judged by its release tag
+  (`pi-envoy-v<version>`; `claude-envoy-v<version>` for claude-envoy and codex-envoy). A build
+  behind or beside the commit makes it false; a connection that names no build, a server that does
+  not answer, a census that moved between its pages (a count that changed, or a page that does not
+  begin with the connection the page before ended on, which a connection closing below the pages
+  read shifts at an unchanged count) and one with no connection but its own make it unknown. It
+  never reads port 8222.
+- **(a3) The publishers**: every user of the hub that may publish a notification subject runs a
+  listener pin at or after `--new-form-commit`. The users are read from the hub's `auth.conf`, the
+  key of the one ConfigMap the `--hub-statefulset`'s pods mount that holds it, in the shape
+  `infra/core`'s `Authorization.Render` writes, each line read whole
+  (`lib/legacy-subjects-gate-publishers.jq`): each user, by its `# <name>` line, whose publish allow
+  list can match a notification subject (`notifications.>`, `notifications.<x>.>`, `*.>`, `>`) or
+  that has none, which allows every subject, unless one deny entry matches every notification
+  subject. A line that only begins as one of Render's, which nats-server can read on past its
+  value (`no_auth_user: "U…"; accounts { … }`), and a user's object with a key Render does not write
+  (`pub` beside `publish`, say) or written otherwise than Render writes it (a key twice, or
+  escaped) are another shape. Behind an auth callout, each entry of the auth service's
+  `BROKER_NATS_SERVICES`, read from the Deployment `--broker` names once it has settled on its spec
+  (its controller has seen its generation, every replica is of that spec and available, and none
+  is terminating where the cluster counts those), is one too when
+  `lib/legacy-subjects-gate-callout-publishers.json` marks its kind as publishing, by the name the
+  service gives its user (`<kind>/<machine id>`). That list classifies every kind config declares,
+  and a session's token; natscallout's
+  `TestTheGateCountsEveryCalloutKindWhoseGrantPublishesANotificationSubject` holds it to those kinds
+  and to the grants the service answers (`dispatch`, `edge-listener` and `listener` publish
+  today). Nothing the gate reads links a user to the stack that runs it, so the operator maps each
+  with `--publisher <identity>=<pin key>`, repeated for a user more than one process runs, to a key
+  of `daemon-release-gate.sh --listeners`, run beside the gate: `envoy` (the VM hub's listener),
+  `envoy-cluster`, `dispatch` (Dispatch's listener) or `dispatch-server`. An edge listener's entry
+  (`edge-listener/<machine id>`) maps to `envoy-cluster`: the deployment names the edge listener's
+  replicas as that stack's. No edge listener runs yet, so until that stack runs one on a pin
+  `--listeners` reads, the mapping is the operator's claim. It is true when every such user is
+  mapped and every key it maps to printed `PASS`; a key that printed `GATE SHUT` makes it false; a
+  user no `--publisher` maps, a key with no `PASS`, a `--hub-server` (whose users cannot be read),
+  an `auth.conf` of another shape, a callout with no `--broker`, whose Deployment cannot be read,
+  is rolling out or sets the variable through `valueFrom`, or whose auth service admits an entry
+  of a kind the list does not classify, and no such user at all make it unknown, never a pass. The
+  record keeps each `--publisher` as given, with its key's verdict (`facts.publishers`). The
+  operator's account needs `get` of the ConfigMaps the StatefulSet mounts in `envoy` and, with
+  `--broker`, of that Deployment in its namespace; a read it is refused is `UNKNOWN`, naming
+  kubectl's answer, and the reading exits 3, the gate's `UNKNOWN`, never 2, which stays the usage
+  error that reads nothing and writes no record. A user is judged by the pin it is mapped to, not
+  by the build its connections run: a process outside the pins that holds a mapped user's
+  credential is seen only by (a2), while it is connected. `lib/legacy-subjects-gate-publishers.jq`
+  includes no module and calls builtins alone: jq 1.8.2 fails an assertion (`src/compile.c`,
+  `expand_call_arglist`) when a function of an included module calls one its own module included,
+  so its readers answer what they read as read and the judge writes it out.
+- **(b) The consumers**: each consumer of the stream has acknowledged the newest message of the
+  old-form subjects its filters match: its ack floor's stream sequence equal to that message's
+  holds, since the floor's own message is acknowledged, and one below it shuts. It is unknown for
+  every read the surface lines call unread: the NATS reads' log cut short, a consumer list not read
+  whole, a consumer the server could not read (`missing`), fewer distinct consumers than the
+  server counts, an empty list, a list with no Legion daemon's consumer, the stream's subjects not
+  read whole or a read of the issue or agent family that saw nothing, and an old-form subject whose
+  last message was not read. `legacy-subjects-purge.sh` purges on this fact and reads no consumer
+  itself, so a consumer (b) did not read is one whose messages a purge would take unacknowledged.
+- **(c) The stream** holds no old-form message, under any of the four families; unknown when the
+  log is cut short, the subjects were not read whole, or a read of the issue or agent family saw
+  nothing.
+
+Every Envoy client names its build after its connection name: the listener, Dispatch and the
+broker by the commit the envoy image stamps (`internal/buildversion`), the listener of the release
+tarball by the commit its release build stamps the same way, the daemon by the commit
+`legion version` prints, and pi-envoy and claude-envoy by the `dist/build-commit` stamp the
+worker image writes beside their bundles, else a release's version.
+
+**What the five facts do not cover.** The 72-hour wait they replace saw any client that used an
+old form while the stream kept its messages, connected at the reading or not. The facts see a
+client only while a pin names its build, (a1) for the clients `daemon-release-gate.sh --clients`
+reads and (a3) for the listener pin each user of the hub that may publish is mapped to, or while it
+is connected as the census runs (a2); between the two readings the listeners' counters and the
+stream's old-form messages see one that writes. So no reading sees a client at an older build that
+no pin names, or older than the pin it is judged by, and that is not connected from the first
+reading to the census: a session started with a custom `--image`, a session parked or on a machine
+that is off, a session on a developer box other than the one `--clients` reads, or an Envoy
+listener outside the pins that connects as a mapped user. The span between the readings bounds it:
+the longer it is, the more such clients come back and write while it runs, and nothing here sets it
+longer than the 180 s above. What such a client meets when it comes back,
+read from the code at this commit and from what the switch is to do (refuse the old form and
+delete the code that reads both):
+
+- **A session plugin** (pi-envoy, claude-envoy, codex-envoy) publishes no notification subject
+  itself: its NATS grant publishes reply inboxes and its own agent-stream frames alone
+  (`natsgrant`'s `session`), and every message, interest and role claim it gives goes through the
+  listener's routes (`/v1/messages/send`, `/v1/messages/publish`, the registration). Until the
+  switch the listener takes an old form and counts it. After it, the listener refuses it with
+  `400 legacy_subject`, naming the new form: the call fails where the plugin sees it, nothing is
+  stored, and an interest it cannot register delivers it nothing.
+- **An Envoy listener at an older build** writes a session's agent subject in the old form itself,
+  for the messages it builds for a session (`contracts.LegacyAgentSubject` in `cmd/listener`'s
+  `role_lane.go`, `confirmed.go`, `role_keep.go` and `role_takeover.go` at this commit), straight
+  to the stream, which its grant (`notifications.>`) and the stream's subjects let it store. Until
+  the switch every reader takes both forms. After it no session consumer filters the old form, so
+  such a message is stored, acknowledged to the listener and never delivered: lost, with no error
+  to anyone. Its durable `listener-<machine>` on the stream names it to a reading (`UNKNOWN`)
+  until the durable lapses, 7 days after the listener last used it (`cmd/listener/durable.go`).
+  (a3) holds the user it connects as to a listener pin, so a listener the pins run is behind only
+  when that pin is, and then the gate shuts; one run outside the pins under that user is not seen.
+- **A session whose consumer is gone** (deregistered, swept, or unpulled past its inactive
+  threshold, an hour or more, `bus.InactiveThresholdFor`) is no consumer (b) reads. When it
+  registers again its consumer starts after its resume record's floor and takes what the stream
+  stored for it since, in both forms until the switch (`bus.SessionConsumers`' `create`). The purge
+  takes every old-form message up to the reading's last one, read by such a session or not, where
+  the wait left them until they aged out. So a session whose consumer went while it was away and
+  that comes back between the purge and the switch never gets the old-form messages sent to it
+  before the producers moved. After the switch its consumer filters the new form alone, so it would
+  not get them then either.
+- **A restore of the stream** is no client, and no fact reads one. A restore makes the stream an
+  archive holds, its messages and its consumers as they were when the archive was taken, and
+  nats-server refuses one while a stream of that name exists (v2.15.1's `jsStreamRestoreRequest`
+  and `jsClusteredStreamRestoreRequest`), so it follows a delete of the stream. The clustered hub's
+  move user may make both, as an operator's act: its grant holds the stream's delete, the restore
+  request and the subjects the archive's chunks go to (`$JS.API.STREAM.DELETE.*`,
+  `$JS.API.STREAM.RESTORE.*`, `$JS.SNAPSHOT.RESTORE.>`; `prodRenderMoveDestination` in
+  `infra/gcp/production_render_test.go`, as `infra/gcp/testdata/production-render.golden` renders
+  it), and no other user that render writes may publish the restore request. The same grant's
+  `$JS.API.STREAM.UPDATE.*` can instead name a copy restored under another name among the stream's
+  sources, and the stream stores what it sources under each message's own subject (nats-server
+  refuses an update of a stream's mirror, not of its sources). An archive taken before the purge
+  holds the old-form messages the purge took, and a restore keeps the stream's `envoy_stream_id`,
+  which lives in its configuration (`bus.StreamIDMetadataKey`). So a restore of such an archive
+  after the second reading that read (c) clean puts old-form messages back on
+  `ENVOY_NOTIFICATIONS`, and only a new reading would see them: the operator restores no such
+  archive, under any name, between that reading and the switch. Until the switch every reader
+  takes both forms. After it a consumer the listener sets filters the new form alone and delivers
+  no restored old-form message, which stays stored; a consumer the archive brings back keeps the
+  filters it had then, both forms, until the listener sets them again (`bus.SessionConsumers`'
+  `Ensure` and `UpdateFilter`).
+
+(a3) also reads the users the hub and its auth service are given, not the ones their running
+processes hold. A hub server loads `auth.conf` from the ConfigMap only once the kubelet updates the
+mounted file and the chart's config reloader reloads the server. The hub's pod template carries no
+checksum of the ConfigMap (`configChecksumAnnotation: false` in `infra/gcp/clusteredhub_kube.go`),
+so a change to it rolls no pod, and the StatefulSet reads settled while a server still admits a
+user the ConfigMap has dropped. In the same way, on a cluster that does not count terminating pods
+(`status.terminatingReplicas`), an auth service whose old pod is still stopping reads settled,
+and that pod can answer the callout by its old list until it stops. A user dropped in such a span
+that still connects at an older build is seen only by (a2), while it is connected.
+
+**The `legacy-cutover` user.** The census and the purge run as one temporary static NATS user of
+the hub, which the deployment adds for the cutover and removes before any project is private (a
+hub with a private project refuses every static client user). It publishes exactly
+`$SYS.REQ.SERVER.PING.CONNZ`, `$JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS`,
+`$JS.API.STREAM.INFO.ENVOY_NOTIFICATIONS`, `$JS.API.CONSUMER.LIST.ENVOY_NOTIFICATIONS` and
+`$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, and subscribes `_INBOX_legacy_cutover.>` alone.
+Its Jobs run in `envoy` as the ServiceAccount `legacy-cutover`, mount its nkey seed through the
+SecretProviderClass `legacy-cutover-nats-seed` as the file `nats-seed`, and take the inbox prefix
+`_INBOX_legacy_cutover`. The deployment grants that ServiceAccount alone the read of the seed, and
+no developer box's own identity reads it, but any principal that may create pods in `envoy` can
+start one as that ServiceAccount with that class mounted, as these Jobs do, and read the seed:
+the gate's operator already holds that role. So while the deployment keeps the user, the boundary
+around its grant, the purge of `ENVOY_NOTIFICATIONS` among it, is who may create pods in `envoy`,
+the boundary the listener's own seed has.
+
+### legacy-subjects-purge.sh
+
+`legacy-subjects-purge.sh --context <kube-context> --reading <record>` makes fact (c) true in place
+of waiting out the stream's retention. It refuses (`REFUSED`, exit 1), calling nothing, unless the
+record is a second reading of that cluster whose (a1), (a2), (a3) and (b) are `true`. It then runs
+one Job as the `legacy-cutover` user (`lib/legacy-subjects-purge-nats.sh`) that purges nothing when the
+stream is not the reading's (its `envoy_stream_id`), when its subjects cannot be read whole, or when
+an old-form subject holds a message after the newest one the reading found; otherwise it purges
+each old-form subject by itself (`$JS.API.STREAM.PURGE.ENVOY_NOTIFICATIONS` with that literal
+subject as the filter, so no new-form message goes, and the sequence after the newest old-form
+message the reading found as its `seq`, so an old-form message published after the Job's check
+stays) and reads the subjects back. It prints a `PURGED` line per subject and `PURGED` (exit 0)
+when the read-back holds no old-form subject, or `UNKNOWN` (exit 3). Its Job is created, deleted
+and read back as the gate's are, labelled `created-by: legacy-subjects-purge`.
+`legacy-subjects-purge.test.sh` proves each verdict against a fake `nats` that keeps the stream's
+messages, so each case reads what the stream holds after the driver ran; CI runs it beside the
+gate's test.
+
+### What the gate reads
 
 What it reads, all of it read-only:
 
@@ -1091,11 +1302,11 @@ What it reads, all of it read-only:
   ends that list's reads at once.
 
 The first reading shuts on no old-form name. The stream keeps the old-form messages published
-before every producer moved for its whole retention, and interest records and consumer filters may
-still be in an old form, so the first reading names each it finds (`FOUND`) and records the
-stream's last sequence, the newest old-form message and every old-form counter. The second reading,
-at least the retention later, shuts on any old-form message the stream still holds (one published
-after the first reading's last stream sequence named apart); a listener whose count rose
+before every producer moved, and interest records and consumer filters may still be in an old
+form, so the first reading names each it finds (`FOUND`) and records the stream's last sequence,
+the newest old-form message and every old-form counter. The second reading shuts on any old-form
+message the stream still holds (one published after the first reading's last stream sequence named
+apart); a listener whose count rose
 under any kind; a consumer one of whose filters only an old-form name matches and whose new form
 the same consumer does not also filter under every project its names carry (a Legion daemon's
 `legion-go-<project>-<kind>` or any other; a session consumer filters both forms of its topics
@@ -1103,8 +1314,9 @@ until the old form is refused, so its old filter loses nothing; a new form under
 beside an old filter whose names carry any, covers that project alone); an interest record holding
 an old-form topic other than its session's own agent subject, which the listener writes into every
 record itself until the old form is
-refused; a reading named with `--since` that shut the gate; and less than the retention between the
-two, the readings' and each listener's own two reads of its counter. The old form is the gate's own
+refused; a reading named with `--since` that shut the gate; less than 180 s between the two, or a
+listener whose counter line is no newer than the one the first reading read; and a fact read false.
+The old form is the gate's own
 rule (`lib/legacy-subjects-gate-forms.jq`, `old_form`, which the gate also hands the Job to choose
 the subjects whose last message it reads), so the gate stays right once the code that reads both
 forms is deleted. It takes as old a filter that matches some old-form name of a family the rename
@@ -1129,9 +1341,8 @@ listener of the first reading that is gone, a listener on another bus that serve
 a listener read or whose `ENVOY_MACHINE_ID` is no literal value, a start-time gauge served at one
 reading only, a record that cannot be written,
 and at the second reading: a first reading that did not read every surface, a stream that is not the
-one the first reading read (its `envoy_stream_id` changed), a stream that does not hold the whole
-window (its first message is younger than the window, less an hour: it was purged or made anew),
-and readings further apart than a listener's durable outlives its listener. A listener read at two
+one the first reading read (its `envoy_stream_id` changed), readings further apart than a
+listener's durable outlives its listener, and a fact it could not read. A listener read at two
 readings is compared only while both readings show it is the one process. A judgement that fails
 on what it was given prints `UNKNOWN` and writes its record too.
 
@@ -1160,18 +1371,20 @@ it. The last line is `GATE OPEN` (exit 0) at a clean second reading, `GATE SHUT`
 `FOUND` count, the stream sequence the second reading reads after, and when to read again (exit 4).
 It writes the reading to `--record` in every case, as a new file in a directory that exists when
 the gate starts: a file made at that path meanwhile is left as it is, and the reading prints
-`UNKNOWN`. A second reading that opened is a first reading for the next window. A usage error exits
+`UNKNOWN`. A second reading that opened is a first reading for the next one. A usage error exits
 2 and reads nothing. It
 needs `kubectl` signed in to the cluster as an account that may list pods in every namespace, read
 the logs of the listener pods in each namespace that runs one, read the listener Deployment, and
 create, read, read the logs of and delete Jobs and pods in `envoy` (a developer box's account: list
 through its `container.viewer` role, the rest through its `edit` role in `envoy` and its `pods/log`
-read in `dispatch`), plus `jq`, `curl` and `base64`.
+read in `dispatch`), plus `jq`, `curl` and `base64`; at a second reading, `gh` (read access to
+cybermonklabs/legion), read of the hub StatefulSet and of the ConfigMaps its pods mount in `envoy`,
+with `--broker` read of that Deployment in its namespace, and what `daemon-release-gate.sh` needs.
 
-`legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl` and a fake `curl`,
-with the Job's log written in its own format, runs the Job's own script under `sh` behind a fake
-`nats`, and holds the old-form rule row by row; CI runs it in the `envoy-go-checks` job of
-`.github/workflows/ci.yaml`.
+`legacy-subjects-gate.test.sh` proves every verdict behind a fake `kubectl`, a fake `curl`, a fake
+`gh` and a fake `daemon-release-gate.sh`, with each Job's log written in its own format, runs the
+Job's own script under `sh` behind a fake `nats`, and holds the old-form rule row by row; CI runs
+it in the `envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
 

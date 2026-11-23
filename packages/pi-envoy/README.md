@@ -122,6 +122,18 @@ result is one TOON block with recognized routing and delivery fields such as `to
 `id`, and `summary`; a structured `payload` appears once as `message`. Invalid JSON is represented
 as a safe `unrecognised` value rather than exposed as raw bytes.
 
+A collapsed card shows its first 12 lines and, when the words its sender wrote sit past them, the
+line that holds them: an Envoy message's `message`, or its `summary` when it carries no message,
+and a Dispatch message's `body` (`readInboundCard` in `@legion/envoy-client/inbound-card`). Ctrl+O
+shows the rest. Every card the session displays also reaches Dispatch's live view of the session,
+on the agent stream (`@legion/pi-shared/agent-stream`), as a user message that says who sent it
+and holds those words, with the card's `note` and `body_note` under them; a card with no such
+words, such as a Dispatch notification, an empty message or one of the plugin's own notices, shows
+there whole and verbatim. A card that delivers a Dispatch message to the session, or the agent's
+copy of a person's `!command` report, names that message in its `details` (`dispatchMessageId`)
+and stays out of the stream, since the live view shows the message from Dispatch's store and the
+report from its own frame.
+
 `envoy_inbox` returns the 50 most recent delivered envelopes as metadata (`event_id`, `at`, `from`,
 and `summary`) for recovery after an interrupt. `envoy_role_get` returns the current holder and
 last-seen timestamp for a role. `envoy_subscribe` reports listener warnings in both its text and

@@ -170,7 +170,8 @@ jobs:
       # The unit step below runs the module through the one skip counter of its database-backed
       # packages, which envoy-go-race-api runs the Dispatch API through too, so the counter's own
       # test runs first: packages/envoy/scripts/database-skips.test.sh plants a skipped test in
-      # ./internal/cipher/api/, ./cmd/cipherd/ and ./internal/dispatch/api/ through a Go overlay and
+      # ./internal/cipher/api/, ./cmd/cipherd/, ./internal/holdrecord/ and ./internal/dispatch/api/
+      # through a Go overlay and
       # holds the counter to count it; holds it to database_skips=UNKNOWN with a variable unset
       # and on a report that shows no run (no test of its packages ran, or one package's did not);
       # holds it to failing on a failed test; holds its --timeout to ending a test binary; holds a
@@ -196,12 +197,14 @@ jobs:
       # The rest of the module runs in one `go test -json` through database-skips.sh, which also
       # answers c8's ask that the database broker suites run with BROKER_TEST_DATABASE_URL set and
       # that none skips: go test reports a skip as a pass, so the script counts the skips of the
-      # broker's packages, ./internal/cipher/... and ./cmd/cipherd/ (less the race lane's packages
-      # under the tree, the auth service's natscallout, which envoy-go-race runs: the script's
-      # DEFAULT_EXCEPT), and fails on any there but the airlock's model comparisons, which the
-      # script's EXPECTED_SKIPS names (each needs a built Lean model of the airlock, and the
-      # airlock-lean job runs them). A report that shows no run of those packages prints
-      # database_skips=UNKNOWN and fails too, and so does a failed test of any package of the run.
+      # broker's packages, ./internal/cipher/..., its command, ./cmd/cipherd/, and the writer
+      # hold's client, ./internal/holdrecord/, and fails on any there but the airlock's model
+      # comparisons, which the script's EXPECTED_SKIPS names (each needs a built Lean model of the
+      # airlock, and the airlock-lean job runs them). The auth service's natscallout runs here too,
+      # beside its race run in envoy-go-race, since its hold rows open the broker's Postgres and
+      # skip without it: this run counts their skips, so the --module-except keeps it. A report
+      # that shows no run of those packages prints database_skips=UNKNOWN and fails too, and so
+      # does a failed test of any package of the run.
       # The skips of the rest of the module are not counted. The broker's packages ran in a step
       # of their own after this one until INFRA-1075, and each step waited on its longest package:
       # in merge-group run 45048924209 (job 137290624677) this step took 14.8 minutes behind
@@ -210,7 +213,9 @@ jobs:
       # both. The -timeout 20m bounds each package's test binary, and the packages run several at
       # a time, so one that starts late ends up to 20 minutes after its own start: the step's own
       # limit of 45 minutes leaves a package that starts within the first 25 its whole -timeout,
-      # and so its dump. The two tests of the web app's display-tree fixture are skipped: without
+      # and so its dump. natscallout and internal/holdrecord add 147 s and 50 s of package time (a
+      # dev box at a load average of 700 to 970, with -p 4), under a minute of this step's four
+      # slots. The two tests of the web app's display-tree fixture are skipped: without
       # `--check` TestWebDisplayFixture writes the committed fixture rather than checking it, so a
       # run here would ask nothing of it, and TestTheWebFixtureFindsItsFilesFromAnyDirectory stats
       # that same file, which would make it a read of this job; envoy-go-checks runs both, the
@@ -219,7 +224,7 @@ jobs:
       # this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
         timeout-minutes: 45
-        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'
+        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSettingsNameTheGoogleExchangeAudienceOnEitherStore|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' --module-except '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$'
         # The refs package's xid window test runs here, so this step judges gaps too.
         env:
           DISPATCH_XID_REQUIRE_GAP_JUDGMENT: "1"
@@ -260,8 +265,9 @@ jobs:
       # a revoke, a Reset, a person's removal, a changed answer and an unreachable broker. Each
       # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
       # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
-      # step above, and internal/bus and internal/cipher/natscallout in envoy-go-race, which the
-      # unit step's --module-except leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
+      # step above, internal/bus in envoy-go-race, which the unit step's --module-except leaves
+      # out, and internal/cipher/natscallout in envoy-go-race and the unit step above - so the -run
+      # comes from .github/scripts/go-tagged-tests.sh,
       # which reads the names off the source at run time, and no test name is spelled here. Each
       # assignment is a line of its own: under bash -e it carries the script's exit status, so an
       # empty or refused list fails the step instead of running -run "", which matches every test.

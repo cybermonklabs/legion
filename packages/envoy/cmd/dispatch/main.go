@@ -1123,12 +1123,14 @@ func main() {
 	// once ctx is cancelled, a fill still waiting for serving returns at once, having taken
 	// nothing, and a serving fill commits or rolls back its batch in flight and releases its hold
 	// through the pool, before the pool closes. DISPATCH_SEARCH_FILL=off starts no fill at all:
-	// the process says so once, and fillStopped is closed from the start, so nothing waits for it.
+	// the process says so once, with whether each table the fill writes holds a row
+	// (searchFillTableRows), and fillStopped is closed from the start, so nothing waits for it.
 	serving := make(chan struct{})
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
-		slog.Info(searchFillDeferredLine, "setting", "DISPATCH_SEARCH_FILL", "value", "off")
+		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
+			searchFillTableRows(ctx, database.Pool)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1984,6 +1986,77 @@ func positiveSetting(env settingValues, name string) (int, error) {
 // searchFillDeferredLine is the line a process logs once at boot when DISPATCH_SEARCH_FILL=off
 // keeps it from starting the keyword fill.
 const searchFillDeferredLine = "dispatch: the keyword fill is deferred; this process fills no keyword table"
+
+// searchFillTables are the tables the keyword fill writes: search_text_versions, the keyword
+// table, and search_text_versions_fill, its cursor. searchFillTableHoldsRow writes their names into
+// SQL, so they are fixed here and never read from input.
+var searchFillTables = [...]string{"search_text_versions", "search_text_versions_fill"}
+
+// The three bounds of each read of searchFillTableRows. Each read sets lock_timeout and
+// statement_timeout in a transaction of its own, so Postgres itself ends a read that waits for a
+// lock on its table (55P03, after searchFillTableLockTimeout) or that runs on for any reason
+// (57014, after searchFillTableStatementTimeout), and no read is left running at the server once
+// the boot moves on. searchFillTableReadTimeout is the client's own deadline for each table, for a
+// server that answers nothing: pgx then closes the connection and asks the server to cancel the
+// statement. It also covers taking a connection from the pool, a dial or a wait for a free one
+// included, so it sits 4 s past the statement timeout: a slow dial still leaves the server's own
+// errors to end the read. The two reads run one after the other before the server listens, so
+// they delay the boot by at most twice searchFillTableReadTimeout in all; a lock on a table alone
+// delays it by about searchFillTableLockTimeout for that table.
+const (
+	searchFillTableLockTimeout      = 5 * time.Second
+	searchFillTableStatementTimeout = 6 * time.Second
+	searchFillTableReadTimeout      = 10 * time.Second
+)
+
+// searchFillTableRows answers the deferral line's fields that say whether each of
+// searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow. A read
+// that fails, a timeout included, gives <table>_rows=unknown and the error in <table>_rows_error,
+// and the boot goes on: the line reports the tables and never decides whether the process starts.
+// The line is how a deployment learns, from the boot log alone, that a process booted with the
+// fill off found both tables empty.
+func searchFillTableRows(ctx context.Context, pool *store.Pool) []any {
+	fields := make([]any, 0, 4*len(searchFillTables))
+	for _, table := range searchFillTables {
+		key := table + "_rows"
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, table)
+		switch {
+		case err != nil:
+			fields = append(fields, key, "unknown", key+"_error", err.Error())
+		case holdsRow:
+			fields = append(fields, key, "some")
+		default:
+			fields = append(fields, key, "none")
+		}
+	}
+	return fields
+}
+
+// searchFillTableHoldsRow reads whether table holds a row by
+// `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
+// visible row; it may scan dead rows before that one, which searchFillTableStatementTimeout bounds.
+// It reads in a read-only transaction of its own that first sets the bounds above, local to that
+// transaction. The read takes ACCESS SHARE on the table and holds it until that transaction rolls
+// back (the deferred Rollback) or its connection ends, normally milliseconds after the read; no
+// statement timeout bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or
+// another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, searchFillTableReadTimeout)
+	defer cancel()
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true), set_config('statement_timeout', $2, true)`,
+		fmt.Sprintf("%dms", searchFillTableLockTimeout.Milliseconds()),
+		fmt.Sprintf("%dms", searchFillTableStatementTimeout.Milliseconds())); err != nil {
+		return false, err
+	}
+	var holdsRow bool
+	err = tx.QueryRow(ctx, "select exists(select 1 from public."+table+")").Scan(&holdsRow)
+	return holdsRow, err
+}
 
 // searchFillOff reads DISPATCH_SEARCH_FILL: on, or unset, starts the keyword fill, and off defers
 // it. Any other value refuses the boot, naming the variable.

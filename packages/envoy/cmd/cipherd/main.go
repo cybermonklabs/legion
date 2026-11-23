@@ -41,6 +41,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/bus/signedrecord"
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/approval"
@@ -223,6 +224,11 @@ func main() {
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
 	fatal(refuseAirlockTestSettingsInProduction(cfg, fakeSecrets))
+	// And the NATS writer hold's switch, in the same breath: BROKER_NATS_HOLD_READ on without the
+	// operator who writes the hold row, or without the keys it is signed by, would have the auth
+	// service refuse every client of the hub for good, so it refuses this start instead, before
+	// anything is migrated. A start with the switch on and no row is no refusal.
+	fatal(refuseHoldReadWithoutOperator(cfg))
 	// The profiles, read here beside the port-0 refusal: before the database is migrated, before
 	// the socket is bound and before anything reaches for AWS, so a pod given a file it cannot
 	// read or cannot serve refuses to start instead of running without the profiles its operator
@@ -325,6 +331,14 @@ func main() {
 	st, awsCfg, err := openStore(ctx, cfg, fakeSecrets == "" && cfg.SecretsStore == secrets.StoreAWS)
 	fatal(err)
 	fatal(st.Migrate(ctx))
+	// The schema those migrations created their tables in, by which the NATS writer hold's routes
+	// and the auth service's read of the hold row name the hold's tables.
+	holdSchema, err := migratedSchema(ctx, st)
+	fatal(err)
+	// This process's one floor of the hold row, which the hold's routes and the auth service's
+	// hold view share (api.NATSHold.RowFloor, natscallout.NewHoldView), so neither half trusts a row
+	// the other has moved past.
+	holdFloor := &signedrecord.Floor{}
 	// The secret store, logged with how it signs in so an operator reads it from the log: the
 	// fake file (an AWS-shaped store whatever BROKER_SECRETS_STORE says, since the file holds
 	// Secrets Manager's fields), Secrets Manager under the AWS SDK's credential chain, or Secret
@@ -363,17 +377,11 @@ func main() {
 	// listener, and a broker that reads none answers every edge listener 503 REPOSITORIES_UNKNOWN.
 	// Both present the broker's own projected ServiceAccount token for Dispatch's audience through
 	// one reader, read at call time, so a rotation needs no restart and the broker has one Dispatch
-	// address and one account there. config.Load holds the two settings to both or neither. Built
-	// before the loader, which serves a tagged secret, and each profile of one, only when this
-	// broker can ask whether its project is private
+	// address and one account there (projectAccessClients). config.Load holds the two settings to
+	// both or neither. Built before the loader, which serves a tagged secret, and each profile of
+	// one, only when this broker can ask whether its project is private
 	// (policy.Loader.ProjectChecks).
-	var projectAccess projectaccess.Access
-	var projectRepositories api.ProjectRepositoriesReader
-	if cfg.ProjectAccessURL != "" {
-		account := ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, account, nil)
-		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
-	}
+	projectAccess, projectRepositories := projectAccessClients(cfg.ProjectAccessURL, cfg.ProjectAccessTokenFile)
 	// The broker's one reader of Google group members, which every decision site asks who is a
 	// member of a group: the policy's sets (the loader stamps it on each), the request machine,
 	// its chain check and the approval page. A full policy load names its groups to it; it reads
@@ -733,7 +741,11 @@ func main() {
 			if err := notify(ctx, name); err != nil {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
-		}}
+		},
+		// The NATS writer hold's routes, which admit the operator entry alone, with the auth
+		// service's own verifier of its token, and store only what one of its keys signed.
+		NATSHold: holdRoutes(cfg, st, holdSchema, cfg.NATS.Services, natsTokens, holdFloor),
+	}
 	api.Register(mux, deps)
 	// The answer recorder wraps the mux itself, inside the request deadline, which writes no
 	// answer, so it sees every answer a handler of this port writes, whichever writer wrote it:
@@ -855,13 +867,24 @@ func main() {
 	// account it places each client in (BROKER_NATS_ACCOUNT).
 	if cfg.NATS.Enabled() {
 		slog.Info("NATS auth service", "state", "on", "services", len(cfg.NATS.Services), "edge_listeners", len(edgeListeners), "account", cfg.NATS.Account)
+		deps := natscallout.Deps{
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
+			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+		}
+		// The writer hold's rule, only with its switch on (BROKER_NATS_HOLD_READ): the hold row is
+		// read at every decision, on a pool of its own, and verified against the operator's keys,
+		// through one view for this replica, whose floor every decision shares. With the switch off
+		// Hold is nil, nothing reads the row and every decision is answered as before.
+		if cfg.NATS.HoldRead {
+			holdPool, err := openHoldPool(st, cfg.NATS.HoldPoolSize)
+			fatal(err)
+			defer holdPool.Close()
+			deps.Hold = natscallout.NewHoldView(holdReader(holdPool, holdSchema), cfg.NATS.HoldSigningKeys, holdFloor, deps.Metrics)
+		}
 		service, err := natscallout.Start(ctx, natscallout.Settings{
 			URLs: cfg.NATS.URLs, SeedFile: cfg.NATS.SeedFile, IssuerSeedFile: cfg.NATS.IssuerSeedFile,
 			XKeySeedFile: cfg.NATS.XKeySeedFile, Services: cfg.NATS.Services, Account: cfg.NATS.Account,
-		}, natscallout.Deps{
-			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
-			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
-		})
+		}, deps)
 		fatal(err)
 		callout.Store(service)
 		go func() {
@@ -1326,7 +1349,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
-		// endpoint and retry.
+		// endpoint and retry. A github-installations token has no give-back: it is the token the
+		// secret stores, which every other release of it hands over too.
 		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
@@ -1342,6 +1366,31 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		m.Assignees = dispatch
 	}
 	return m
+}
+
+// projectAccessHTTPClient is the HTTP client the broker reads Dispatch's project access with: Go's
+// default transport, but keeping requests.MaySeeAtOnce idle connections to Dispatch rather than
+// the default two, since one row, and one list, asks Dispatch that many questions at once. With
+// two kept, each round of a row's questions would close all but two of the connections the round
+// before it opened, and open as many again.
+func projectAccessHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = requests.MaySeeAtOnce
+	return &http.Client{Transport: transport}
+}
+
+// projectAccessClients is the broker's two clients of the Dispatch at baseURL, both reading the
+// broker's own projected ServiceAccount token at tokenFile, read at call time: its project access,
+// over projectAccessHTTPClient, and the repository answer GET /v1/project-repositories relays. Both
+// are nil, as interfaces, when baseURL is empty, so a broker with no BROKER_PROJECT_ACCESS_URL
+// holds none. main wires the broker with these, and the test of the client's connections reads its
+// project access through this same call, so a client built here on another transport fails it.
+func projectAccessClients(baseURL, tokenFile string) (projectaccess.Access, api.ProjectRepositoriesReader) {
+	if baseURL == "" {
+		return nil, nil
+	}
+	account := ciphertoken.NewAccountToken(tokenFile)
+	return projectaccess.New(baseURL, account, projectAccessHTTPClient()), projectrepos.New(baseURL, account, nil)
 }
 
 // The broker's group reader answers every question a decision site asks of group members.
@@ -1674,10 +1723,13 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 // no binding at all mints no secret of that type. The google-service-account and
 // anthropic-federation minters are pointers: a method value would otherwise copy the credentials
 // each caches away from the minter every later mint reads. The other two are copied, and each
-// Retry they hold is a pointer, so minters given one Retry still draw from its one budget.
+// Retry they hold is a pointer, so minters given one Retry still draw from its one budget. The
+// github-installations minter takes no setting and calls no endpoint: it reads the tokens the
+// secret stores, so it is built here.
 func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount, anthropicFederation *secrets.AnthropicFederation) map[string]requests.Minter {
 	return map[string]requests.Minter{
 		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGitHubInstallations:  secrets.GitHubInstallations{}.Mint,
 		policy.TypeGoogleLogin:          googleLogin.Mint,
 		policy.TypeAzureLogin:           azureLogin.Mint,
 		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
