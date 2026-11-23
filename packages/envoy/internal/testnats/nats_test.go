@@ -23,6 +23,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -215,6 +217,15 @@ type namedTB struct {
 
 func (n namedTB) Name() string { return n.name }
 
+// Deadline is the deadline of the test namedTB renames, so a wait given namedTB (a start, Connect,
+// deleteStreams) ends by the test's deadline as the test's own would.
+func (n namedTB) Deadline() (time.Time, bool) {
+	if timed, ok := n.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return timed.Deadline()
+	}
+	return time.Time{}, false
+}
+
 // ownAccountServer starts an account server of the test's own, declaring accounts accounts, which
 // is shut down and removed when the test ends.
 func ownAccountServer(t *testing.T, accounts int) *accountServer {
@@ -222,11 +233,12 @@ func ownAccountServer(t *testing.T, accounts int) *accountServer {
 	return startAccountServer(t, accounts)
 }
 
-// A server whose accounts are all handed out declares twice as many by a reload and hands out the
-// next, and an account a test is still using keeps its connection and its watcher across the
-// reload.
-func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) {
+// A server whose accounts are all handed out is left to the tests that hold them: the next account
+// is on a server started for it, the full server is never reloaded, and an account a test is still
+// using on it keeps its connection and its watcher.
+func TestAServerOutOfAccountsHandsTheNextOutFromAServerOfItsOwn(t *testing.T) {
 	server := ownAccountServer(t, 2)
+	full := server.srv
 	live := Connect(t, server.url(namedTB{t, "live"}))
 	defer live.Close()
 	js, err := live.JetStream()
@@ -248,25 +260,518 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 
 	server.url(namedTB{t, "second"})
 	third := server.url(namedTB{t, "third"})
-	if server.declared != 4 {
-		t.Fatalf("the server declares %d accounts after handing out its third, want 4", server.declared)
+	if server.srv == full {
+		t.Fatal("the third test's account is on the server whose two accounts were handed out")
 	}
-	if want := fmt.Sprintf("nats://t3:t3@%s", server.host); third != want {
-		t.Fatalf("the third test's URL is %q, want %q", third, want)
+	if want := fmt.Sprintf("nats://t1:t1@%s", strings.TrimPrefix(server.srv.URL(), "nats://")); third != want {
+		t.Fatalf("the third test's URL is %q, want %q, the first account of the next server", third, want)
 	}
-	if _, err := kv.Put("after-the-reload", []byte("1")); err != nil {
-		t.Fatalf("put after the reload: %v", err)
+	if strings.Contains(full.Log(), "Reloaded server configuration") {
+		t.Fatalf("the full server was reloaded:\n%s", full.Log())
 	}
-	select {
-	case entry := <-watcher.Updates():
-		if entry == nil || entry.Key() != "after-the-reload" {
-			t.Fatalf("the watcher delivered %v after the reload, want the put", entry)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the watcher of an account in use delivered nothing after the reload")
+	if _, err := kv.Put("after-the-next-server", []byte("1")); err != nil {
+		t.Fatalf("put after the next server started: %v", err)
+	}
+	entry := testwait.Receive(t, "the watcher of an account in use to deliver the put after the next server started", watcher.Updates())
+	if entry == nil || entry.Key() != "after-the-next-server" {
+		t.Fatalf("the watcher delivered %v after the next server started, want the put", entry)
 	}
 	if status := live.Status(); status != natsgo.CONNECTED {
-		t.Fatalf("the connection of an account in use is %v after the reload, want CONNECTED", status)
+		t.Fatalf("the connection of an account in use is %v after the next server started, want CONNECTED", status)
+	}
+}
+
+// A test that holds an account and asks again is answered at once, and the end of its hold runs,
+// while another test's first ask waits for the start of the account server's next server: only a
+// first ask waits for a start (accountServer.url). The row holds that start until the holder has
+// asked again and ended, so a holder that waited for it would wait to the test's deadline and fail
+// naming what it waited for.
+func TestAnAccountAskedAgainDoesNotWaitForAnotherTestsStart(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	held := make(chan string, 1)
+	end := make(chan struct{})
+	ended := make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(end) })
+	// The holder's subtest must return before this test does, whatever failed first.
+	defer func() { <-ended }()
+	defer letGo()
+	var holder string
+	go func() {
+		defer close(ended)
+		t.Run("holder", func(t *testing.T) {
+			holder = t.Name()
+			held <- server.url(t)
+			<-end
+		})
+	}()
+	uri := testwait.Receive(t, "the holder's account", held)
+
+	startServer := startNext
+	t.Cleanup(func() { startNext = startServer })
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	releaseStart := sync.OnceFunc(func() { close(release) })
+	defer releaseStart()
+	startNext = func(t testing.TB, config string, args []string) *Server {
+		close(entered)
+		<-release
+		return startServer(t, config, args)
+	}
+	next := make(chan string, 1)
+	go func() { next <- server.url(namedTB{t, "next"}) }()
+	testwait.Receive(t, "the next test's ask to reach the start of the account server's next server", entered)
+
+	again := make(chan string, 1)
+	go func() { again <- server.url(namedTB{t, holder}) }()
+	if got := testwait.Receive(t, "the holder's second ask while another test's start is held", again); got != uri {
+		t.Errorf("the holder's second ask answered %q, want its account %q", got, uri)
+	}
+	letGo()
+	testwait.Receive(t, "the end of the holder's hold while another test's start is held", ended)
+	releaseStart()
+	if got := testwait.Receive(t, "the next test's account once its start is let go", next); got == uri {
+		t.Errorf("the next test got the holder's account %q", uri)
+	}
+}
+
+// A start of an account server's next server that fails fails the test that asked, with its own
+// reason, and tears down at once what it set up: the server's registration, its relay's port and
+// its directory are gone before the ask returns, not when the account server ends. The next ask
+// starts a server afresh. The row plants the failure after a real start.
+func TestAFailedStartOfAnAccountServersNextServerLeavesNothingBehind(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	server.url(namedTB{t, "first"})
+	startServer := startNext
+	t.Cleanup(func() { startNext = startServer })
+	var planted *Server
+	startNext = func(t testing.TB, config string, args []string) *Server {
+		planted = startServer(t, config, args)
+		t.Fatalf("a planted failure after the start of the next server")
+		return nil
+	}
+	failed := &fatalRecorder{TB: namedTB{t, "failed"}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.url(failed)
+	}()
+	<-done
+	if !strings.Contains(failed.message, "planted failure") {
+		t.Fatalf("the ask whose start failed ended with %q, want the planted failure", failed.message)
+	}
+	if planted == nil {
+		t.Fatal("the planted start never ran")
+	}
+	address := strings.TrimPrefix(planted.URL(), "nats://")
+	serversMu.Lock()
+	_, registered := servers[address]
+	serversMu.Unlock()
+	if registered {
+		t.Errorf("the failed start's server is still registered at %s", address)
+	}
+	if conn, err := net.DialTimeout("tcp", address, time.Second); err == nil {
+		conn.Close()
+		t.Errorf("the failed start's relay still accepts connections at %s", address)
+	}
+	if _, err := os.Stat(filepath.Dir(planted.store)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the failed start's directory %s is still there: %v", filepath.Dir(planted.store), err)
+	}
+	startNext = startServer
+	Connect(t, server.url(namedTB{t, "after"})).Close()
+}
+
+// A wait given namedTB ends by the test's deadline and fails naming it: namedTB passes the
+// deadline of the test it renames on, as fatalRecorder does. Without it, a wait given namedTB (a
+// next server's start, Connect, deleteStreams) would run to go test's -timeout and panic instead.
+// The row dials a server whose handshake never comes (dialNATS) through namedTB.
+func TestAWaitGivenANamedTestEndsByItsDeadline(t *testing.T) {
+	server := &dials{}
+	dial := dialNATS
+	dialNATS = server.dial
+	t.Cleanup(func() { dialNATS = dial })
+	tb := heldWait(t, 450*time.Millisecond, func(tb testing.TB) { Connect(namedTB{tb, "named"}, "nats://127.0.0.1:1") })
+	if !strings.Contains(tb.message, "short of the test's deadline") {
+		t.Fatalf("Connect through namedTB against a server that never completes a handshake failed with %q, want it to name the test's deadline", tb.message)
+	}
+}
+
+// A server that hands accounts to many tests refuses a Reload: it fails the test that asked,
+// naming the server, and goes on serving the configuration it had.
+func TestAServerOtherTestsUseRefusesAReload(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	uri := server.url(namedTB{t, "holder"})
+	refused := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.srv.Reload(refused, accountsConfig(2))
+	}()
+	<-done
+	if want := fmt.Sprintf("a reload of the NATS server at %s, which other tests use", server.srv.URL()); !strings.Contains(refused.message, want) {
+		t.Fatalf("the reload ended with %q, want it to say %q", refused.message, want)
+	}
+	if strings.Contains(server.srv.Log(), "Reloaded server configuration") {
+		t.Fatalf("the server reloaded:\n%s", server.srv.Log())
+	}
+	Connect(t, uri).Close()
+}
+
+// directGetReloads is how many reloads TestAReloadUnderDirectGetsAnswersEveryOne makes under its
+// readers' direct gets, on reloadConnections connections with reloadRequesters readers each.
+const directGetReloads = 25
+
+// directGetForm is one way a client's direct get reaches a stream: config is the server's
+// configuration, and getter opens the bucket "direct" on conn, creating it with key "k" when
+// create is set, and returns one direct get of that key. Each request may wait until the test's
+// deadline, its wait taken when it starts (reloadWait).
+type directGetForm struct {
+	name   string
+	config string
+	getter func(t testing.TB, conn *natsgo.Conn, create bool) (func() error, error)
+}
+
+// kvGetter is the getter of a KV get, through a JetStream context with opts: the direct get of
+// the bucket's key that kv.Get sends for a bucket that allows direct gets, as every bucket nats.go
+// creates does. Each get takes its wait when it starts: a JetStream context's MaxWait is a span
+// fixed when the context is made, and nats.go times every request of the context from that span
+// (jsm.go:1833-1838 in v1.55.0), so a get started late would wait past the test's deadline.
+func kvGetter(opts ...natsgo.JSOpt) func(testing.TB, *natsgo.Conn, bool) (func() error, error) {
+	return func(t testing.TB, conn *natsgo.Conn, create bool) (func() error, error) {
+		js, err := conn.JetStream(append(opts, natsgo.MaxWait(reloadWait(t)))...)
+		if err != nil {
+			return nil, err
+		}
+		if create {
+			var kv natsgo.KeyValue
+			if kv, err = js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "direct"}); err == nil {
+				_, err = kv.Put("k", []byte("v"))
+			}
+		} else {
+			_, err = js.KeyValue("direct")
+		}
+		if err != nil {
+			return nil, err
+		}
+		return func() error {
+			msg, err := js.GetLastMsg("KV_direct", "$KV.direct.k", natsgo.DirectGet(), natsgo.MaxWait(reloadWait(t)))
+			if err == nil && string(msg.Data) != "v" {
+				err = fmt.Errorf("the get answered %q, want v", msg.Data)
+			}
+			return err
+		}, nil
+	}
+}
+
+// directGetForms are the three ways a direct get reaches a stream that the reload test runs: a KV
+// get, a KV get through the prefix of the server's JetStream domain, and a request on a subject the
+// global account's mapping turns into a direct get.
+var directGetForms = []directGetForm{
+	{name: "kv", config: hostOnlyConfig, getter: kvGetter()},
+	{name: "domain", config: "jetstream { domain: hub }\n", getter: kvGetter(natsgo.Domain("hub"))},
+	{name: "mapped", config: "mappings { \"dg.>\": \"$JS.API.DIRECT.GET.>\" }\n", getter: func(t testing.TB, conn *natsgo.Conn, create bool) (func() error, error) {
+		if create {
+			if _, err := kvGetter()(t, conn, true); err != nil {
+				return nil, err
+			}
+		}
+		return func() error {
+			reply, err := conn.Request("dg.KV_direct.$KV.direct.k", nil, reloadWait(t))
+			if err != nil {
+				return err
+			}
+			if stream := reply.Header.Get("Nats-Stream"); stream != "KV_direct" || string(reply.Data) != "v" {
+				return fmt.Errorf("the mapped request answered stream %q, status %q, data %q; want a direct get of KV_direct", stream, reply.Header.Get("Status"), reply.Data)
+			}
+			return nil
+		}, nil
+	}},
+}
+
+// A reload under clients' direct gets answers every get and keeps every connection, and under the
+// race detector it is no data race, whichever way the gets reach the stream (directGetForms).
+// nats-server reads its options without the lock as it answers a direct get, on the client's own
+// goroutine (Server.Reload), and every reload sets them anew (setOpts) whatever it changes: with
+// the hold and the barrier alone, without the lock order Reload takes (Server.ordered), -race
+// reported that race in each form.
+func TestAReloadUnderDirectGetsAnswersEveryOne(t *testing.T) {
+	for _, form := range directGetForms {
+		t.Run(form.name, func(t *testing.T) {
+			server, uri := StartConfig(t, form.config, []string{"-js"}, true)
+			first := Connect(t, uri)
+			t.Cleanup(first.Close)
+			if _, err := form.getter(t, first, true); err != nil {
+				t.Fatalf("create the bucket: %v", err)
+			}
+			stop := make(chan struct{})
+			var answered atomic.Int64
+			failures := make(chan error, reloadConnections*reloadRequesters)
+			var readers sync.WaitGroup
+			halt := sync.OnceFunc(func() {
+				close(stop)
+				readers.Wait()
+			})
+			defer halt()
+			for range reloadConnections {
+				conn := Connect(t, uri)
+				t.Cleanup(conn.Close)
+				get, err := form.getter(t, conn, false)
+				if err != nil {
+					t.Fatalf("open the bucket: %v", err)
+				}
+				for range reloadRequesters {
+					readers.Go(func() {
+						for {
+							select {
+							case <-stop:
+								return
+							default:
+							}
+							if err := get(); err != nil {
+								failures <- err
+								return
+							}
+							answered.Add(1)
+						}
+					})
+				}
+			}
+			for n := 1; n <= directGetReloads; n++ {
+				if err := server.Reload(t, form.config); err != nil {
+					t.Fatalf("reload %d: %v", n, err)
+				}
+			}
+			halt()
+			close(failures)
+			for err := range failures {
+				t.Errorf("a direct get across the reloads failed: %v", err)
+			}
+			if answered.Load() == 0 {
+				t.Fatal("no direct get was answered; this test says nothing about a reload under direct gets")
+			}
+			if reloads := strings.Count(server.Log(), "Reloaded server configuration"); reloads != directGetReloads {
+				t.Fatalf("the server reloaded %d times, want %d", reloads, directGetReloads)
+			}
+			t.Logf("%d direct gets answered across %d reloads", answered.Load(), directGetReloads)
+		})
+	}
+}
+
+// streamCreateReloads is how many reloads each form of TestAReloadUnderStreamCreatesAnswersEveryOne
+// makes while reloadConnections clients create streams, and streamCreateBurst how many creates a
+// client of the burst form sends before it reads their answers.
+const (
+	streamCreateReloads = 25
+	streamCreateBurst   = 50
+)
+
+// A reload while clients create streams answers every create, and under the race detector it is
+// no data race. nats-server answers a stream create on the JetStream API's own goroutines, where
+// it reads the options' stream limits without the lock (stream.go:1013 in v2.15.1), and a create a
+// client sent before the hold can still be served after the barrier; Reload waits until the API
+// serves none (apiSettled). In the burst form each client sends creates in bursts before it reads
+// their answers, so the API has a backlog when a reload holds the clients; in the fresh form each
+// client connects afresh and sends one create as its first request, so a reload holds clients
+// mid-handshake and finds clients the server has not yet dropped.
+func TestAReloadUnderStreamCreatesAnswersEveryOne(t *testing.T) {
+	for _, form := range []struct {
+		name   string
+		create func(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error
+	}{
+		{"burst", createInBursts},
+		{"fresh", createOnFreshClients},
+	} {
+		t.Run(form.name, func(t *testing.T) {
+			server, uri := Start(t)
+			Connect(t, uri).Close()
+			stop := make(chan struct{})
+			var created atomic.Int64
+			failures := make(chan error, reloadConnections)
+			var creators sync.WaitGroup
+			halt := sync.OnceFunc(func() {
+				close(stop)
+				creators.Wait()
+			})
+			defer halt()
+			for c := range reloadConnections {
+				creators.Go(func() {
+					if err := form.create(t, uri, c, stop, &created); err != nil {
+						failures <- err
+					}
+				})
+			}
+			for n := 1; n <= streamCreateReloads; n++ {
+				if err := server.Reload(t, hostOnlyConfig); err != nil {
+					t.Fatalf("reload %d: %v", n, err)
+				}
+			}
+			halt()
+			close(failures)
+			for err := range failures {
+				t.Errorf("a stream create across the reloads failed: %v", err)
+			}
+			if created.Load() == 0 {
+				t.Fatal("no stream was created; this test says nothing about a reload under stream creates")
+			}
+			if reloads := strings.Count(server.Log(), "Reloaded server configuration"); reloads != streamCreateReloads {
+				t.Fatalf("the server reloaded %d times, want %d", reloads, streamCreateReloads)
+			}
+			t.Logf("%d streams created across %d reloads", created.Load(), streamCreateReloads)
+		})
+	}
+}
+
+// createInBursts sends stream creates on one connection of client c in bursts of
+// streamCreateBurst, each burst's answers read before the next, until stop. Its connect and each
+// answer may wait until the test's deadline (reloadWait).
+func createInBursts(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
+	conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), natsgo.Timeout(reloadWait(t)))
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close()
+	inbox := natsgo.NewInbox()
+	replies := make(chan *natsgo.Msg, streamCreateBurst)
+	if _, err := conn.ChanSubscribe(inbox+".*", replies); err != nil {
+		return fmt.Errorf("subscribe to the answers: %w", err)
+	}
+	for burst := 0; ; burst++ {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+		for i := range streamCreateBurst {
+			name := fmt.Sprintf("C%d_%d_%d", c, burst, i)
+			config := fmt.Sprintf(`{"name":%q,"subjects":["created.%s"],"storage":"memory"}`, name, name)
+			if err := conn.PublishRequest("$JS.API.STREAM.CREATE."+name, inbox+"."+name, []byte(config)); err != nil {
+				return fmt.Errorf("send the create of %s: %w", name, err)
+			}
+		}
+		for range streamCreateBurst {
+			wait := reloadWait(t)
+			select {
+			case reply := <-replies:
+				if strings.Contains(string(reply.Data), `"error"`) {
+					return fmt.Errorf("a create was answered %s", reply.Data)
+				}
+				created.Add(1)
+			case <-time.After(wait):
+				return fmt.Errorf("a burst's create went unanswered for %s", wait)
+			}
+		}
+	}
+}
+
+// createOnFreshClients connects client c afresh for each stream create, its first request, until
+// stop. Each connect and create may wait until the test's deadline (reloadWait): a connect made
+// while holds stand has its CONNECT and PING held, and its handshake waits them out.
+func createOnFreshClients(t *testing.T, uri string, c int, stop <-chan struct{}, created *atomic.Int64) error {
+	for n := 0; ; n++ {
+		select {
+		case <-stop:
+			return nil
+		default:
+		}
+		conn, err := natsgo.Connect(uri, natsgo.NoReconnect(), natsgo.Timeout(reloadWait(t)))
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		js, err := conn.JetStream(natsgo.MaxWait(reloadWait(t)))
+		if err == nil {
+			name := fmt.Sprintf("C%d_%d", c, n)
+			_, err = js.AddStream(&natsgo.StreamConfig{Name: name, Subjects: []string{"created." + name}})
+		}
+		conn.Close()
+		if err != nil {
+			return fmt.Errorf("create a stream: %w", err)
+		}
+		created.Add(1)
+	}
+}
+
+// reloadWait is how long one connect or request of a row that reloads under clients may wait: until
+// the test's deadline (boundOf), or connectTimeout for a test with none. A reload's hold keeps a
+// client's bytes back, and back-to-back reloads keep them back across several holds, since the next
+// hold often starts before a held client's write gets through (a connect waited 6 to 9 s under
+// holds of 3 s). The wait cannot outlast the row's reloads, which release every hold when they end.
+// nats.go's own defaults, a 2 s connect timeout among them, are shorter than one hold a loaded
+// machine makes.
+func reloadWait(t testing.TB) time.Duration {
+	bound := boundOf(t)
+	if !bound.bounded {
+		return connectTimeout
+	}
+	return bound.step(time.Until(bound.end))
+}
+
+// A Reload of a server that a client reached around the relay, at the server's own port, and sent
+// a message fails the test naming that client, and the server does not reload: the hold cannot stop
+// that client, so nothing orders its gets before the reload. Such a client that has sent nothing
+// leaves the reload as it was.
+func TestAReloadOfAServerAClientReachedAroundTheRelayFailsNamingIt(t *testing.T) {
+	server, _ := Start(t)
+	address, err := server.address()
+	if err != nil {
+		t.Fatal(err)
+	}
+	around, err := natsgo.Connect("nats://"+address, natsgo.NoReconnect())
+	if err != nil {
+		t.Fatalf("connect at the server's own port: %v", err)
+	}
+	t.Cleanup(around.Close)
+	if err := server.Reload(t, hostOnlyConfig); err != nil {
+		t.Fatalf("a reload while that client has sent nothing: %v", err)
+	}
+	if err := around.Publish("around.relay", []byte("one")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := around.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	refused := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.Reload(refused, hostOnlyConfig)
+	}()
+	<-done
+	if want := "reached it around the relay and sent it 1 messages, which no hold reaches"; !strings.Contains(refused.message, want) {
+		t.Fatalf("the reload ended with %q, want it to say %q", refused.message, want)
+	}
+	if reloads := strings.Count(server.Log(), "Reloaded server configuration"); reloads != 1 {
+		t.Fatalf("the server reloaded %d times, want once, before the client sent a message", reloads)
+	}
+}
+
+// A Reload of a server whose configuration names routes, leafnodes or a gateway fails the test
+// naming them, whether or not such a link is up, and the server does not reload: it answers a
+// direct get that comes over such a link on the stream's own goroutine, which no hold of its
+// clients reaches. So does one whose new configuration names a link the running one does not.
+func TestAReloadOfAServerLinkedToOthersFailsNamingTheLinks(t *testing.T) {
+	for _, row := range []struct {
+		name, running, given, links string
+	}{
+		{"routes", "cluster { name: \"one\", listen: \"127.0.0.1:-1\" }\n", hostOnlyConfig, "routes"},
+		{"leafnodes", "leafnodes { listen: \"127.0.0.1:-1\" }\n", hostOnlyConfig, "leafnodes"},
+		{"gateway", "gateway { name: \"one\", listen: \"127.0.0.1:-1\" }\n", hostOnlyConfig, "a gateway"},
+		{"a link the new configuration adds", hostOnlyConfig, "leafnodes { listen: \"127.0.0.1:-1\" }\n", "leafnodes"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			server, uri := StartConfig(t, row.running, nil, true)
+			refused := &fatalRecorder{TB: t}
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				_ = server.Reload(refused, row.given)
+			}()
+			<-done
+			if want := fmt.Sprintf("a reload of the NATS server at %s, whose configuration names %s: it answers the direct gets that come over them", uri, row.links); !strings.Contains(refused.message, want) {
+				t.Fatalf("the reload ended with %q, want it to say %q", refused.message, want)
+			}
+			if strings.Contains(server.Log(), "Reloaded server configuration") {
+				t.Fatalf("the server reloaded:\n%s", server.Log())
+			}
+		})
 	}
 }
 

@@ -12,13 +12,15 @@
 // test runs. The relay listens on a loopback address of its own (testport.LoopbackIP), so a client
 // another test left dialing its own server's old address cannot reach it after that test.
 //
-// A package's tests share one server rather than start one each, and each test gets it as the user
+// A package's tests share servers rather than start one each, and each test gets one as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
 // stream another test made. nats-server moves a deleted stream's directory aside and removes it
 // from a background goroutine; a second delete of the same name before that goroutine has run
 // leaves the stream's files where they were while it answers success, and the next create of that
 // name recovers the deleted stream's messages. Every account keeps its streams in a directory of
-// its own, so the names one test uses cannot reach another.
+// its own, so the names one test uses cannot reach another. No test reloads a server another test
+// uses (Server.Reload says why): a shared server that has handed out every account it declares is
+// left to the tests that hold them, and the next test's account is on a server started for it.
 package testnats
 
 import (
@@ -27,9 +29,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -68,14 +72,12 @@ var (
 	sharedCleanup *sharedTB
 )
 
-// firstAccounts is how many accounts the shared server starts with. Every time a test asks for
-// one past them, the server doubles them by a reload: a server's start time grows faster than its
-// account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). The reload's wait,
-// connectTimeout, caps that growth: at half a CPU, doubling 4,096 accounts took 36 s and 65 s in
-// two measurements, so the test that asks for account 4,097 fails. A package run takes one account
-// for each test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40
-// of cmd/listener in one binary reaches the ceiling.
-const firstAccounts = 256
+// serverAccounts is how many accounts each server of an account server declares. A server's start
+// time grows faster than its account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000),
+// so a package whose tests take more accounts than that gets more servers of this size rather than
+// a larger one: each start costs the same, and one more server costs one more relay port and the
+// server's own two (client and monitoring).
+const serverAccounts = 256
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
 // server these helpers start has no users unless a test configures some, and nats.go refuses an
@@ -139,7 +141,7 @@ func sharedServer(t testing.TB) *accountServer {
 			attempt.run()
 		}
 	}()
-	server := startShared(attempt, firstAccounts)
+	server := startShared(attempt, serverAccounts)
 	started = true
 	shared, sharedCleanup = server, attempt
 	return server
@@ -149,10 +151,12 @@ func sharedServer(t testing.TB) *accountServer {
 // replaces to have a start fail.
 var startShared = startAccountServer
 
-// sharedTB stands in for the test that asks for the package's shared server and starts it. That
-// server outlives the test, so the cleanup start registers on it runs from Main, after the last
-// test, and what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that
-// has already ended panics. A start that fails runs its cleanups at once instead (sharedServer).
+// sharedTB stands in for a test whose ask starts a server that outlives it: the package's shared
+// server (sharedServer), or the next server of an account server (accountServer.url). The cleanup
+// start registers on it runs later, from Main after the last test or when the account server
+// ends, and what the cleanup reports goes to stderr and the exit code: a t.Errorf on a test that
+// has already ended panics. A start of the shared server that fails runs its cleanups at once
+// instead (sharedServer).
 type sharedTB struct {
 	testing.TB
 	cleanups []func()
@@ -166,8 +170,8 @@ func (s *sharedTB) Errorf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }
 
-// Deadline is the deadline of the test sharedTB stands in for, when it has one, so the shared
-// server's start waits as long as that test may run (awaitReady).
+// Deadline is the deadline of the test sharedTB stands in for, when it has one, so the start of
+// the server it stands in for waits as long as that test may run (awaitReady).
 func (s *sharedTB) Deadline() (time.Time, bool) {
 	if timed, ok := s.TB.(interface{ Deadline() (time.Time, bool) }); ok {
 		return timed.Deadline()
@@ -175,67 +179,133 @@ func (s *sharedTB) Deadline() (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// run runs the cleanups the shared server registered, the most recent first, as testing does.
+// run runs the cleanups the server registered, the most recent first, as testing does.
 func (s *sharedTB) run() {
 	for i := len(s.cleanups) - 1; i >= 0; i-- {
 		s.cleanups[i]()
 	}
 }
 
-// accountServer is a NATS server that hands each test a JetStream account no earlier test used.
+// accountServer hands each test a JetStream account no earlier test used. Its accounts are on
+// servers that each declare accounts accounts, and only the newest of them hands accounts out: once
+// it has handed out every one, the next test's account is on a server the account server starts
+// for that test, and the full one goes on serving the tests that hold its accounts until the
+// account server ends. No server of it is ever reloaded to declare more: a reload would hold every
+// test's clients, and it raced their direct gets (Server.Reload).
 type accountServer struct {
-	srv  *Server
-	host string
+	accounts int
 
+	// mu serialises the asks that hand an account out, the start of a next server among them, which
+	// can take until the asking test's deadline.
 	mu sync.Mutex
-	// declared is how many accounts the server's configuration declares, and handedOut how many of
-	// them it has handed to a test. handedOut only grows: an account is never handed out twice.
-	declared  int
+	// srv is the server handing accounts out, host its client address, and handedOut how many of
+	// its accounts it has handed to a test. handedOut only grows while srv is the same server: an
+	// account is never handed out twice.
+	srv       *Server
+	host      string
 	handedOut int
-	// holders maps each test holding an account to that account's URL.
-	holders map[string]string
+	// started stands in for each test whose ask started a server after the first. The server
+	// outlives that test, so what start registered on it runs when the account server ends.
+	started []*sharedTB
+
+	// holdersMu guards holders, which maps each test holding an account to that account's URL. It
+	// is not mu, so a test that asks again for the account it holds, and the cleanup that ends its
+	// hold, never wait for another test's start.
+	holdersMu sync.Mutex
+	holders   map[string]string
 }
 
-// startAccountServer starts a server declaring accounts accounts, removed when t ends.
+// startNext starts the next server of an account server: start, which a row of this package's
+// tests replaces to hold a start or have it fail.
+var startNext = start
+
+// startAccountServer starts an account server whose servers declare accounts accounts each, every
+// one of them shut down and removed when t ends.
 func startAccountServer(t testing.TB, accounts int) *accountServer {
 	t.Helper()
-	srv := start(t, accountsConfig(accounts), []string{"-js"})
-	return &accountServer{
-		srv:      srv,
-		host:     strings.TrimPrefix(srv.URL(), "nats://"),
-		declared: accounts,
-		holders:  map[string]string{},
-	}
+	s := &accountServer{accounts: accounts, holders: map[string]string{}}
+	s.serve(start(t, accountsConfig(accounts), []string{"-js"}))
+	t.Cleanup(func() {
+		for i := len(s.started) - 1; i >= 0; i-- {
+			starter := s.started[i]
+			starter.run()
+			if starter.failed {
+				t.Errorf("the NATS server started for %s did not shut down cleanly: its errors are above", starter.Name())
+			}
+		}
+	})
+	return s
 }
 
-// url is URL on s.
+// serve makes srv the server that hands accounts out, none of them handed out yet. srv is shared:
+// it refuses a Reload.
+func (s *accountServer) serve(srv *Server) {
+	srv.shared = true
+	s.srv, s.host, s.handedOut = srv, strings.TrimPrefix(srv.URL(), "nats://"), 0
+}
+
+// url is URL on s. A test that holds an account is answered from holders alone; a test's first
+// ask takes mu, and waits for the start of a next server when the newest has handed out all its
+// accounts.
 func (s *accountServer) url(t testing.TB) string {
 	t.Helper()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if uri, ok := s.holders[t.Name()]; ok {
+	name := t.Name()
+	if uri, ok := s.holder(name); ok {
 		return uri
 	}
-	if s.handedOut == s.declared {
-		if err := s.srv.Reload(t, accountsConfig(2*s.declared)); err != nil {
-			t.Fatalf("NATS refused %d accounts: %v", 2*s.declared, err)
-		}
-		s.declared *= 2
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// The same test may have asked on another goroutine while this one waited for mu.
+	if uri, ok := s.holder(name); ok {
+		return uri
+	}
+	if s.handedOut == s.accounts {
+		s.next(t)
 	}
 	s.handedOut++
 	account := s.handedOut
 	uri := fmt.Sprintf("nats://t%d:t%d@%s", account, account, s.host)
-	// Wait for the account to answer, after the start or the reload that declared it.
+	// Wait for the account to answer, after the start that declared it.
 	Connect(t, uri).Close()
-	name := t.Name()
+	s.holdersMu.Lock()
 	s.holders[name] = uri
+	s.holdersMu.Unlock()
 	t.Cleanup(func() {
-		s.mu.Lock()
+		s.holdersMu.Lock()
 		delete(s.holders, name)
-		s.mu.Unlock()
+		s.holdersMu.Unlock()
 		deleteStreams(t, uri)
 	})
 	return uri
+}
+
+// holder is the URL of the account the test named name holds, if it holds one.
+func (s *accountServer) holder(name string) (string, bool) {
+	s.holdersMu.Lock()
+	defer s.holdersMu.Unlock()
+	uri, ok := s.holders[name]
+	return uri, ok
+}
+
+// next starts the account server's next server for t, which asked when the newest had handed out
+// all its accounts, and makes it the server that hands accounts out. The server outlives t, so a
+// sharedTB stands in for t and the account server's cleanup runs what start registered on it. A
+// start that fails fails t, with its own reason, and tears down at once what it set up (its relay's
+// port, its registration and its directory), as sharedServer does for the shared server.
+func (s *accountServer) next(t testing.TB) {
+	t.Helper()
+	starter := &sharedTB{TB: t}
+	started := false
+	// A failed start ends this goroutine (t.Fatalf), so what it set up is torn down here.
+	defer func() {
+		if !started {
+			starter.run()
+		}
+	}()
+	srv := startNext(starter, accountsConfig(s.accounts), []string{"-js"})
+	started = true
+	s.started = append(s.started, starter)
+	s.serve(srv)
 }
 
 // accountsConfig declares accounts T1 to Tn, each with JetStream and one user, tn, whose password
@@ -290,6 +360,9 @@ type Server struct {
 	host string
 	// name is the server_name StartCluster gives a member, "" for a lone server.
 	name string
+	// shared marks a server that hands JetStream accounts to many tests (accountServer): no test
+	// owns it, so none may reload it (Reload).
+	shared bool
 
 	mu        sync.Mutex
 	srv       *natsserver.Server
@@ -434,8 +507,39 @@ func (s *Server) Freeze(t testing.TB) func() {
 // relay lets the clients' bytes through. Each client keeps its connection and sees its messages
 // delayed by the reload; what the server sends reaches the clients throughout, less the relay's
 // own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails.
+//
+// The barrier puts the reload after the direct gets the server answered, in time, but not for the
+// race detector. nats-server (v2.11.4 through v2.15.3, and its main at a0385c9af342 of 2026-11-20)
+// reads its options' MaxPending without the lock setOpts writes them under, as it answers a direct
+// get (getDirectRequest and getDirectMulti, stream.go:6365 and 6236 in v2.15.1; reported as
+// nats-io/nats-server#8914): -race reported a reload of the shared server, hold and all, against
+// another test's KV get (envoy-go-race at cybermonklabs/legion#3924's 6591974b). A server answers
+// a client's direct get on that client's own goroutine, whatever subject it came by (a mapping, a
+// JetStream domain's prefix), and answers the relay's PING later on that goroutine under the
+// client's lock (processPing, client.go:2805). So after the barrier Reload takes every client's
+// lock in turn (ordered), which orders each of those reads before the reload for the race detector
+// too: without that order, TestAReloadUnderDirectGetsAnswersEveryOne drew the race in every run.
+// A JetStream API request (a stream create among them, which reads the options' stream limits
+// without the lock, stream.go:1013 in v2.15.1) is answered on the API's own goroutines instead,
+// which can still be serving it after the barrier: so Reload then waits until the server serves
+// none (apiSettled), which orders their reads before the reload as well.
+// That covers only what the relay holds and the goroutines named above run. A server whose
+// configuration, the one it runs or the one it is given, names routes, leafnodes or a gateway
+// answers the direct gets that come over those links on the stream's goroutine (mset.gets,
+// stream.go:6143 and 6206 in v2.15.1), so it refuses the reload and fails t, whether or not such a
+// link is up yet; so does one that a client reached around the relay and sent a message (a
+// message Connz counts). Not seen: a client that first reaches the server around the relay during
+// the reload; one around the relay whose first message the server is still reading, which Connz
+// counts only once the server has read it; and a stream restore, whose API handler returns at once
+// and whose restore reaches the same read on a goroutine of its own, outside the count apiSettled
+// waits on (jsStreamRestoreRequest, jetstream_api.go:4439 in v2.15.1). A server that hands
+// JetStream accounts to many tests (accountServer) refuses every reload: it would hold every
+// test's clients.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
+	if s.shared {
+		t.Fatalf("testnats: a reload of the NATS server at %s, which other tests use: it would hold every one of their clients and change their server under them (Server.Reload); reload a server of the test's own", s.url)
+	}
 	s.mu.Lock()
 	srv, jetStream := s.srv, s.jetStream
 	s.mu.Unlock()
@@ -458,6 +562,13 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	// server's as well: a reload can neither move the one nor turn the other on or off.
 	opts.ConfigFile = s.configPath
 	opts.JetStream = jetStream
+	running, err := serverOptions(s.configPath, s.args, s.store, s.host)
+	if err != nil {
+		t.Fatalf("read the configuration the NATS server runs: %v", err)
+	}
+	if links := linksNamed(running, opts); links != "" {
+		t.Fatalf("testnats: a reload of the NATS server at %s, whose configuration names %s: it answers the direct gets that come over them on goroutines no hold reaches (Server.Reload)", s.url, links)
+	}
 	release, err := s.relay.hold()
 	if err == nil {
 		err = s.relay.barrier()
@@ -465,6 +576,16 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	if err != nil {
 		release()
 		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
+	}
+	// ordered first: a client around the relay that keeps sending API requests would keep
+	// apiSettled's count up to the test's deadline, and the failure would name the count, not it.
+	if err := s.ordered(srv); err != nil {
+		release()
+		t.Fatalf("testnats: a reload of the NATS server at %s: %v (Server.Reload)", s.url, err)
+	}
+	if err := apiSettled(t, srv); err != nil {
+		release()
+		t.Fatalf("testnats: a reload of the NATS server at %s: %v (Server.Reload)", s.url, err)
 	}
 	// ConfigureOptions and ReloadOptions meet over natsserver.FlagSnapshot, a package-level
 	// variable of nats-server; serverOptions clears it under the same lock this takes.
@@ -479,6 +600,78 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		t.Fatalf("keep the configuration the server took: %v", err)
 	}
 	return nil
+}
+
+// apiSettled waits, within t's bound (boundOf), until srv serves no JetStream API request:
+// nats-server counts each request its client's goroutine queues for the API's own goroutines, and
+// takes it off once the request's handler has returned, by atomic adds (apiDispatch and
+// processJSAPIRoutedRequests, jetstream_api.go:1015 and 1069 in v2.15.1), and Jsz reads the count
+// (Inflight). With the clients held past the barrier no request joins it, so a count of 0 means
+// every handler is done, and the race detector orders what each did before the read that saw the
+// count fall: a stream create's unlocked read of the options among them
+// (addStreamWithAssignmentAndMode, stream.go:1013 in v2.15.1). A stream restore is the exception:
+// its handler returns before the restore runs, on a goroutine of its own the count does not cover
+// (Server.Reload). It returns why the count did not fall in time.
+func apiSettled(t testing.TB, srv *natsserver.Server) error {
+	bound := boundOf(t)
+	for {
+		jsz, err := srv.Jsz(nil)
+		if err != nil {
+			return fmt.Errorf("read its JetStream state: %w", err)
+		}
+		inflight := jsz.JetStreamStats.API.Inflight
+		if jsz.Disabled || inflight == 0 {
+			return nil
+		}
+		if bound.over() {
+			return fmt.Errorf("its JetStream API still served %d requests by %s, short of the test's deadline", inflight, bound)
+		}
+		time.Sleep(bound.step(barrierPoll))
+	}
+}
+
+// ordered takes the lock of each client connection of srv in turn, through Connz, which reads each
+// one under its lock, once the barrier has had each held client's PONG: the race detector then
+// orders everything the server did on those clients' goroutines before the barrier's PING ahead of
+// whatever the caller does next (Reload). It returns why the reload is not ordered so: a client the
+// relay does not hold has sent srv a message.
+func (s *Server) ordered(srv *natsserver.Server) error {
+	connz, err := srv.Connz(&natsserver.ConnzOptions{Limit: math.MaxInt32})
+	if err != nil {
+		return fmt.Errorf("list its connections: %w", err)
+	}
+	listed := make(map[string]bool, len(connz.Conns))
+	for _, conn := range connz.Conns {
+		listed[net.JoinHostPort(conn.IP, strconv.Itoa(conn.Port))] = true
+	}
+	held := s.relay.upstreams(listed)
+	for _, conn := range connz.Conns {
+		if address := net.JoinHostPort(conn.IP, strconv.Itoa(conn.Port)); !held[address] && conn.InMsgs > 0 {
+			return fmt.Errorf("a client at %s reached it around the relay and sent it %d messages, which no hold reaches", address, conn.InMsgs)
+		}
+	}
+	return nil
+}
+
+// linksNamed names the links to other servers that any of configurations names, routes,
+// leafnodes or a gateway, "" when none does: a configuration names a link whether or not it is up.
+func linksNamed(configurations ...*natsserver.Options) string {
+	var routes, leafnodes, gateway bool
+	for _, c := range configurations {
+		routes = routes || c.Cluster.Name != "" || c.Cluster.Port != 0 || len(c.Routes) > 0
+		leafnodes = leafnodes || c.LeafNode.Port != 0 || len(c.LeafNode.Remotes) > 0
+		gateway = gateway || c.Gateway.Name != "" || c.Gateway.Port != 0 || len(c.Gateway.Gateways) > 0
+	}
+	var links []string
+	for _, link := range []struct {
+		named bool
+		name  string
+	}{{routes, "routes"}, {leafnodes, "leafnodes"}, {gateway, "a gateway"}} {
+		if link.named {
+			links = append(links, link.name)
+		}
+	}
+	return strings.Join(links, " and ")
 }
 
 // barrierPoll is how often hold and barrier look again at the connections they wait for.
