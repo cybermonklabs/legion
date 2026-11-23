@@ -28,30 +28,9 @@ request already makes a check's proof, write that check as `ci_check` rather tha
 1. Name the check run of the job that runs the proof, never a roll-up. On cybermonklabs/legion
    never `ci-ok`, which passes when the jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
-2. Name it as GitHub writes it, since Dispatch's reader matches the name exactly. A job of a
-   called workflow writes its check run as `<caller> / <job>`: the calling job's name, then the
-   called job's. On cybermonklabs/legion every job of ci.yaml but changes, pr-title,
-   cancel-started and ci-ok calls a workflow file, so no other job's proof is a check run of its
-   bare name: only a skipped one writes such a run (`test`), concluded `skipped`. The
-   builds and checks every pull request runs are `envoy-go-build / envoy-go-build`,
-   `tooling-checks / tooling-checks`, `pi-legion-build / pi-legion-build` and
-   `envoy-infra-build / envoy-infra-build`; the slow suites the merge queue runs beside the last
-   three are `test / test`, `pi-legion / pi-legion` and `envoy-infra-go / envoy-infra-go`; and the
-   browser suite's pull-request lane is `dispatch-browser-pr / <job>`, such as
-   `dispatch-browser-pr / merge`.
-3. A job held back from ordinary pull requests needs its label on the pull request for as long as
-   a check names it (`full-ci`, or the job's `lane:<output>`, on cybermonklabs/legion). Without it
-   a held-back job that calls a workflow file, as each one there does, leaves the check no run:
-   its own run (`test`) concludes `skipped`, no job of the file starts, and Dispatch reads the run
-   the check names (`test / test`) as `absent`, no result. No job runs there in part: on
-   cybermonklabs/legion the steps a pull request runs beside a slow suite are a job of their own
-   (tooling-checks beside test, pi-legion-build beside pi-legion, envoy-infra-build beside
-   envoy-infra-go), and the browser suite's pull-request lane is the job dispatch-browser-pr,
-   while its full lane is the held-back dispatch-browser.
-4. On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names
-   `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's
-   script tests, a held-back slow suite.
-5. Write in `negative_control` the case inside that job that fails when the property breaks: a
+2. A job held back from ordinary pull requests needs its label on the pull request for as long as
+   a check names it (`full-ci` on cybermonklabs/legion); without it the job reads `skipped`.
+3. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 
 ## Show the surface before you ask
