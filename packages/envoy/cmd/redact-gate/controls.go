@@ -795,7 +795,7 @@ func runControls(repo, only string) int {
 		}
 		fmt.Printf("control %s %s (%s): %s %s\n", ctl.id, status, time.Since(start).Round(time.Second), ctl.what, verdict)
 		for _, line := range strings.Split(output, "\n") {
-			if strings.HasPrefix(line, "FAIL ") || strings.HasPrefix(line, "gate: stopped") || strings.HasPrefix(line, "fixture ") || strings.HasPrefix(line, "leak ") {
+			if strings.HasPrefix(line, "FAIL ") || strings.HasPrefix(line, "gate: stopped") || strings.HasPrefix(line, "fixture ") || strings.HasPrefix(line, "leak ") || strings.HasPrefix(line, "judges ") {
 				fmt.Printf("    %s\n", line)
 			}
 		}

@@ -244,6 +244,8 @@ done
 # 0 and, for each triple, exactly <owed> lines of its output match the pattern. The FAIL and
 # UNKNOWN lines counted after each judge are its verdicts only when it ran to its end and printed
 # one for each package, row or print test it judges: an empty or short output counts no failure.
+# cmd/redact-gate's controls 31a-31c (controls_judges.go) run this script with each judge failing
+# or short, and require this refusal.
 judged() {
   local judge=$1 code=$2 output=$3 owed what pattern got
   shift 3
