@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,6 +88,31 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	testwait.Eventually(t, "the daemon's one connection to wait on the test's lock", func() bool {
 		return daemonBackends(t, pool, application, backendWaitingOnALock) == 1
 	})
+	// CONTROL ONLY: the daemon's waiting backend is woken again and again until the read below
+	// is done, as PostgreSQL's deadlock check wakes a waiter once deadlock_timeout into its wait:
+	// each pg_log_backend_memory_contexts call makes it leave its wait, write its memory contexts
+	// to the server log and wait again, its lock request queued the whole time.
+	stopWaking, wakes := make(chan struct{}), make(chan int, 1)
+	var stopOnce sync.Once
+	stop := func() int {
+		stopOnce.Do(func() { close(stopWaking) })
+		return <-wakes
+	}
+	t.Cleanup(func() { stop() })
+	go func() {
+		n := 0
+		defer func() { wakes <- n; close(wakes) }()
+		for {
+			select {
+			case <-stopWaking:
+				return
+			default:
+			}
+			if _, err := pool.Exec(context.Background(), "select pg_log_backend_memory_contexts(pid) from pg_stat_activity where application_name = $1", application); err == nil {
+				n++
+			}
+		}
+	}()
 
 	close(release)
 	var status int
@@ -102,7 +128,9 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 		t.Fatalf("the state request answered %d before the readiness read, so the daemon's connection was free for it", answered)
 	default:
 	}
-	if waiting := daemonBackends(t, pool, application, backendWaitingOnALock); waiting != 1 {
+	waiting := daemonBackends(t, pool, application, backendWaitingOnALock)
+	t.Logf("CONTROL: the daemon's backend was woken %d times while it waited", stop())
+	if waiting != 1 {
 		t.Fatalf("%d of the daemon's backends wait on the test's lock after the readiness read, want its one connection still held", waiting)
 	}
 
