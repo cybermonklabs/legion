@@ -4,14 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -255,48 +252,6 @@ func (s *server) redeemIdentityCheck(w http.ResponseWriter, r *http.Request, bod
 		return false
 	}
 	return s.refuseIfStaleClaimFailure(w, r, machine.Claim())
-}
-
-// appLease is the GitHub App token mint every credential route needs: the token source must be
-// configured, repo must name the repository the token acts on, whose owner holds the
-// installation it is minted from, and the mint itself must succeed. A request that names no
-// repository has no owner to mint for, and its answer says so; its code is
-// GITHUB_OWNER_UNCONFIGURED, the code the controller's credential route answers when its App is
-// installed on no account (controllerGitHubCredential). logRole names the role in the error log
-// line; it carries no secret.
-func (s *server) appLease(w http.ResponseWriter, r *http.Request, role appauth.AppRole, repo ghrepo.Repository, logRole string) (appauth.Lease, bool) {
-	if s.tokens == nil {
-		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
-		return appauth.Lease{}, false
-	}
-	if repo.IsZero() {
-		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED",
-			fmt.Sprintf("the request names no repository, so the %s App has no GitHub owner to mint a token for", role))
-		return appauth.Lease{}, false
-	}
-	lease, err := s.tokens.Token(r.Context(), role, repo.Owner())
-	if err != nil {
-		s.logRequestFailure(r, err, "api: mint GitHub App token", "role", logRole, "repo", repo.String())
-		s.writeFailure(w, r, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
-		return appauth.Lease{}, false
-	}
-	return lease, true
-}
-
-// leaseForGrant is appLease for a claim's grant, minted for repo, the repository the claim's
-// issue works as GitHub serves it now: the mint runs first since it is the slow step, then the
-// grant's claim must still hold the capability that minted it, so a claim revoked while the mint
-// was in flight is caught before its token is handed back.
-func (s *server) leaseForGrant(w http.ResponseWriter, r *http.Request, grant credential.Grant, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, bool) {
-	lease, ok := s.appLease(w, r, role, repo, string(grant.Role))
-	if !ok {
-		return appauth.Lease{}, false
-	}
-	if _, holds := s.claimHolds(grant); !holds {
-		s.writeFailure(w, r, http.StatusForbidden, "GRANT_REVOKED", grantRevoked)
-		return appauth.Lease{}, false
-	}
-	return lease, true
 }
 
 func (s *server) operatorAuthorized(r *http.Request) bool {

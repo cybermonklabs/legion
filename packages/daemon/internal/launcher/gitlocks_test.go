@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -275,16 +274,21 @@ func newGatedProc(t *testing.T, pids ...int) *gatedProc {
 // starter's own beforeDeadline. A starter's wait for a child's end ends no sooner than the child's
 // own deadline, so the child's failure, its cleanups and its alarm all come while the starter still
 // waits (reentry). A child started with too little time for a wait of its own fails at that wait,
-// on the line above, which its starter prints with the rest of what it said. The one re-entry whose
-// argv the test does not write, the session peer's shim (roleShim's `worker-shim`), waits on nothing
-// of its own and hands its agent the deadline its plan carries (peerPlan.End).
+// on the line above, which its starter prints with the rest of what it said. The re-entries whose
+// argv the test does not write wait on nothing of their own: the session peer's shim (roleShim's
+// `worker-shim`) hands its agent the deadline its plan carries (peerPlan.End), and mainHelpers,
+// the controller guard's shim, agent and eval kernel, which TestMain runs with no testing.T, live
+// until their parent's pipe ends (untilStdinEnds), with two minutes as a cap on what a failed run
+// leaves behind, never a wait a case reads.
 //
 // Not hang guards, so not bounded by it: a span that is part of a case's claim, or an answer a
 // re-entered process prints and then goes on from. These are the race cases' two-minute search
 // budget (raceSwaps); the racer's 30 s (raceTheSwap's deadline), which also sets how long the racer
-// keeps swapping; the role-drain bounds handed to role-init (roleDrainStaysBound); and the role's
+// keeps swapping; the role-drain bounds handed to role-init (roleDrainStaysBound); the role's
 // minute for a detached process, to report its trap to the agent and to be gone for the stage
-// (detachedGoneWithin), whose answers must leave the stage its time for the generations after it.
+// (detachedGoneWithin), whose answers must leave the stage its time for the generations after it;
+// and the gated live measurement's bounds (memoryguard_live_test.go's controllerLive…Bound), each a
+// part of that measurement's verdict, run only where a person or a measurement Job asks for it.
 // removeWhileFilling's writer is no span at all: it runs until the removal answers, and only the
 // wait for that answer is bounded, by beforeDeadline.
 func beforeDeadline(t *testing.T) time.Duration {
@@ -909,97 +913,42 @@ func TestTheSweepStopsWithTheContainerContextBeforeRunReturns(t *testing.T) {
 		}
 	})
 
-	// Run is ended while a pass of its sweep is inside a removal, held there through the removal
-	// gitLockRemove answers, the one place a pass can be held (the second row of
-	// TestTheFirstPassRunsBeforeTheBundleRestore). Run must not return while that pass is held,
-	// and when it returns the pass has taken its lock: the ticker that ran it has returned
-	// (gitLockSweep.serve), so no pass is left to run after Run. Ending Run between passes cannot
-	// test this wait: the ticker ends with the context unless a pass is under way.
 	t.Run("Run waits for the ticker", func(t *testing.T) {
 		c := newLockClone(t)
 		shortGitLockClock(t, 20*time.Millisecond, time.Millisecond)
-		reached := make(chan string, 1)
-		release := make(chan struct{})
-		var removed atomic.Bool
-		previous := gitLockRemove
-		gitLockRemove = func(path string) error {
-			select {
-			case reached <- path:
-			default:
-			}
-			<-release
-			err := os.Remove(path)
-			removed.Store(true)
-			return err
-		}
-		// Restored after the launcher's own cleanup, which waits for Run to return, since this
-		// is registered before newFleet registers that one; the pass is let go before either.
-		t.Cleanup(func() { gitLockRemove = previous })
-		released := false
-		free := func() {
-			if !released {
-				released = true
-				close(release)
-			}
-		}
-		defer free()
 		t.Chdir(c.dir)
 		useSweepingLauncher(t)
+		// The verdict is an event, not a window: the channel the sweep's ticker goroutine closes
+		// as it returns (gitLockServed), read once Run has returned. Closed, that goroutine has
+		// left its loop and no pass of it can run; open, it was still running when Run returned,
+		// however late its next pass would come. It is set before the launcher starts, and put
+		// back after the launcher's own cleanup, for the reason shortGitLockClock gives.
+		served := make(chan (<-chan struct{}), 1)
+		previous := gitLockServed
+		gitLockServed = func(done <-chan struct{}) { served <- done }
+		t.Cleanup(func() { gitLockServed = previous })
 		f := newFleet(t, 2*time.Second, "tester")
 		running := c.lock("refs/heads/running.lock", "stale", time.Hour)
-		select {
-		case path := <-reached:
-			if path != running {
-				t.Fatalf("the sweep's clock held at the removal of %s, not of %s; the launcher's log:\n%s", path, running, f.stderr.String())
-			}
-		case <-time.After(beforeDeadline(t)):
-			t.Fatalf("the sweep's clock never reached the removal of %s; the launcher's log:\n%s", running, f.stderr.String())
-		}
+		testwait.WithinPolling(t, beforeDeadline(t), testwait.Poll, "the sweep's clock to remove "+running, func() bool { return swept(running) })
 
-		// Whether the held pass had taken its lock when Run returned.
-		returned := make(chan bool, 1)
-		go func() {
-			err := <-f.result
-			taken := removed.Load()
+		f.cancel()
+		select {
+		case err := <-f.result:
 			// Put it back: newFleet's own cleanup waits for this same send.
 			f.result <- err
-			returned <- taken
-		}()
-		f.cancel()
-		// The role ends with the context and its connection closes, after which all Run has left
-		// is its waits for what it started (Run): a Run that does not wait for its sweep returns
-		// at once. The half second below bounds how long such a Run has to show itself, and a Run
-		// that waits cannot return in it, however loaded the machine is.
-		conn := f.role("tester")
-		if err := conn.conn.SetReadDeadline(time.Now().Add(beforeDeadline(t))); err != nil {
-			t.Fatal(err)
-		}
-		for {
-			if _, err := conn.reader.ReadBytes('\n'); err != nil {
-				var timeout net.Error
-				if errors.As(err, &timeout) && timeout.Timeout() {
-					t.Fatalf("the tester's connection stayed open after the container's context ended; the launcher's log:\n%s", f.stderr.String())
-				}
-				break
-			}
-		}
-		select {
-		case <-returned:
-			t.Fatalf("Run returned while a pass of its sweep was still held inside a removal: the sweep outlived the container's own process; the launcher's log:\n%s", f.stderr.String())
-		case <-time.After(500 * time.Millisecond):
-		}
-
-		free()
-		select {
-		case taken := <-returned:
-			if !taken {
-				t.Fatalf("Run returned before the pass of its sweep it was ended inside had taken its lock")
-			}
 		case <-time.After(beforeDeadline(t)):
-			t.Fatalf("Run did not return after its context ended and its sweep's pass was let go; the launcher's log:\n%s", f.stderr.String())
+			t.Fatalf("Run did not return after its context ended, to 30 s before the test binary's deadline; the launcher's log:\n%s", f.stderr.String())
 		}
-		if !swept(running) {
-			t.Fatalf("the held pass's lock %s is still there after Run returned", running)
+		var ticker <-chan struct{}
+		select {
+		case ticker = <-served:
+		default:
+			t.Fatal("Run returned with no git lock sweep started: the launcher swept nothing")
+		}
+		select {
+		case <-ticker:
+		default:
+			t.Fatalf("Run returned before the sweep's ticker goroutine did: a pass can still run after the container's own process is gone; the launcher's log:\n%s", f.stderr.String())
 		}
 	})
 }

@@ -760,6 +760,24 @@ listener_log_port() { grep -o '"addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | s
 dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 # The value of one "export NAME=..." line of the banner.
 exported() { grep -o "export $2=.*" "$1" | head -n1 | cut -d= -f2- || true; }
+# What a run asked at one port, from its fake curl's call file: each distinct call to
+# http://127.0.0.1:PORT as its path, its bound and its whole command line ("/healthz with a 5 s
+# bound (curl -sf --max-time 5 http://127.0.0.1:PORT/healthz)"), joined by "; ", or "no call".
+# A row that wants one path and one bound names this when the run asked something else, so its
+# failure says which of the two differed.
+calls_at_port() {
+  local port="$1" file="$2" line path bound entry seen=""
+  local at="http://127\.0\.0\.1:${port}(/[^ ]*)?( |$)" max_time=' --max-time ([^ ]+) '
+  while IFS= read -r line; do
+    [[ "$line" =~ $at ]] || continue
+    path="${BASH_REMATCH[1]:-/}"
+    bound="no bound"
+    [[ " $line " =~ $max_time ]] && bound="a ${BASH_REMATCH[1]} s bound"
+    entry="$path with $bound (curl $line)"
+    [[ "; $seen; " == *"; $entry; "* ]] || seen="${seen:+$seen; }$entry"
+  done <"$file"
+  printf '%s\n' "${seen:-no call}"
+}
 
 # The globals assert_instance_ready sets for the caller: the run's work directory, the suffix its
 # names are made from, the ports every process of it reported, the port its Dispatch keeper held,
@@ -928,11 +946,11 @@ assert_instance_ready() {
   # been answered by another run's server, and gave up after 5 s, so none could wait on a port
   # nothing serves any longer (e7).
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[broker]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own broker's health at port ${process_port[broker]} with a 5 s bound"
+    fail "$label did not check its own broker's health at port ${process_port[broker]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[broker]}" "$curl_call_file")"
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own listener's health at port ${process_port[listener]} with a 5 s bound"
+    fail "$label did not check its own listener's health at port ${process_port[listener]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[listener]}" "$curl_call_file")"
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
-    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a 5 s bound"
+    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a 5 s bound; it asked that port at $(calls_at_port "${process_port[dispatch]}" "$curl_call_file")"
 
   # Two databases of this run's own, named for it, and no other; each server pointed at its own,
   # the broker with production's pool size (k), whole URL to whole URL.
@@ -1269,7 +1287,7 @@ for server in listener dispatch; do
   asked_port="$(head -n1 "${unserved_file}.asked" 2>/dev/null || true)"
   [[ -n "$asked_port" ]] || fail "$label never sent it a readiness request, so the row tested nothing"
   grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${asked_port}${asked_path}" "$curl_calls1" ||
-    fail "$label asked port $asked_port without the 5 s bound"
+    fail "$label asked port $asked_port at $(calls_at_port "$asked_port" "$curl_calls1"), not at $asked_path with a 5 s bound"
   exited_work_dir="$(work_dir_of "$log1")"
   [[ -n "$exited_work_dir" ]] || fail "$label named no work directory"
   collect_started "$exited_work_dir"
