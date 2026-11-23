@@ -38,9 +38,9 @@ type fakeHub struct {
 	onLog     map[string]func()
 	unstamped map[string]bool
 	closed    bool
-	// closing are the routes nats-server is closing that a pod's /routez lists, each in its first
-	// reads reads (every read when -1); routezReads counts each pod's /routez reads.
-	closing     map[string][]*closingRoute
+	// listed are the routes a pod's /routez lists only in some of its reads (listedRoute);
+	// routezReads counts each pod's /routez reads.
+	listed      map[string][]listedRoute
 	routezReads map[string]int
 	// context is the kubeconfig context the hub was opened through, "" for the current one,
 	// example-context; its cluster's server is server, or, when that is "", named after the
@@ -52,11 +52,12 @@ type fakeHub struct {
 	mu sync.Mutex
 }
 
-// closingRoute is a route nats-server is closing, which a pod's /routez lists with no address in
-// its first reads reads (every read when -1).
-type closingRoute struct {
-	route routes.Route
-	reads int
+// listedRoute is a route a pod's /routez lists only in some reads: from read from (1 for the
+// first), in reads reads (every read from there on when -1). A route nats-server is closing has no
+// ip; a held route has one.
+type listedRoute struct {
+	route       routes.Route
+	from, reads int
 }
 
 func (h *fakeHub) Cluster(context.Context) (routes.Cluster, error) {
@@ -91,14 +92,11 @@ func (h *fakeHub) Monitor(_ context.Context, pod, path string) ([]byte, error) {
 			id = other
 		}
 		h.routezReads[pod]++
+		n := h.routezReads[pod]
 		listed := h.routes[pod]
-		for _, c := range h.closing[pod] {
-			if c.reads == 0 {
-				continue
-			}
-			listed = append(slices.Clone(listed), c.route)
-			if c.reads > 0 {
-				c.reads--
+		for _, l := range h.listed[pod] {
+			if n >= l.from && (l.reads < 0 || n < l.from+l.reads) {
+				listed = append(slices.Clone(listed), l.route)
 			}
 		}
 		return json.Marshal(routes.Routez{ServerID: id, Routes: listed})
@@ -285,7 +283,7 @@ func authInfo(id string, required bool) string {
 func cleanHub() *fakeHub {
 	h := &fakeHub{ids: map[string]string{}, routezIDs: map[string]string{}, routes: map[string][]routes.Route{}, logs: map[string]string{},
 		infos: map[string]string{}, answers: map[string]string{}, refused: map[string]error{}, onLog: map[string]func(){}, unstamped: map[string]bool{},
-		closing: map[string][]*closingRoute{}, routezReads: map[string]int{}}
+		listed: map[string][]listedRoute{}, routezReads: map[string]int{}}
 	for i := range 3 {
 		name := fmt.Sprintf("envoy-nats-%d", i)
 		h.pods = append(h.pods, routes.Pod{Name: name, UID: podUID(i), IP: fmt.Sprintf("10.0.0.%d", 10+i), Ready: true, Updated: true, RouteEnv: true, StartedAt: started})
@@ -656,53 +654,55 @@ func TestCheckJudgesNoRemoteIDWithoutEveryServerID(t *testing.T) {
 // nats-server lists a route it is closing with no address (closedRoute). Run 45052294482 of
 // cybermonklabs/legion#4049 read envoy-nats-1's own route to an impostor, which the impostor was
 // refusing for its duplicate name, and the check called it a route "from an address that is no pod
-// of the hub: ip ". A closing route's remote_id is judged in every read that lists it: one that is
-// none of the hub's other servers' is a password read, since nats-server lists a route only once
-// its login has passed, and is kept though a later read no longer lists it; one that is another
-// hub server's is read again for its address, and is Unknown when every read lists it, as is any
-// closing route when not every server id is known. Control: a route from an address outside the
-// hub stays PasswordRead.
+// of the hub: ip ". With every server id known, a closing route's remote_id is judged in every read
+// that lists it: one that is none of the hub's other servers' is a password read, since
+// nats-server lists a route only once its login has passed. One that is another hub server's is
+// read again for its address, and is Unknown when every read lists it, as is any closing route
+// when not every server id is known. A re-read never drops what an earlier read showed: every
+// read's routes, held or closing, are judged, each finding once. Control: a route from an address
+// outside the hub in every read stays PasswordRead.
 func TestCheckJudgesARouteNatsServerIsClosing(t *testing.T) {
 	peer := routes.Route{RemoteID: "NSERVER2", RemoteName: "envoy-nats-2"}
 	impostor := routes.Route{RemoteID: "NAOU3X5GZKLTWS6BIA5DOJBQXBPNQBHUMEFZOTGGKUKLXV2H4OYWYOJY", RemoteName: "envoy-nats-1"}
+	outside := routes.Route{RemoteID: "NSTRANGER", RemoteName: "envoy-nats-0", IP: "10.9.9.9"}
+	inPod := routes.Route{RemoteID: "NSTRANGER", RemoteName: "envoy-nats-0", IP: "10.0.0.10"}
+	misplaced := routes.Route{RemoteID: "NSERVER2", RemoteName: "envoy-nats-2", IP: "10.0.0.10"}
 	const stranger = `has a route, which nats-server was closing as /routez was read, to a server that is none of the hub's others: ` +
 		`remote_id "NAOU3X5GZKLTWS6BIA5DOJBQXBPNQBHUMEFZOTGGKUKLXV2H4OYWYOJY", remote_name "envoy-nats-1"`
-	type listing struct {
-		route routes.Route
-		reads int
-	}
+	type l = listedRoute
 	for _, row := range []struct {
 		name    string
-		closing []listing
-		outside bool
+		listed  []l
 		noIDs   bool
 		verdict routes.Verdict
 		reads   int
 		detail  string
 	}{
-		{"a peer's route in the first read", []listing{{peer, 1}}, false, false, routes.Clean, 2, ""},
-		{"a peer's route in the first five reads", []listing{{peer, 5}}, false, false, routes.Clean, 6, ""},
-		{"a peer's route in every read", []listing{{peer, -1}}, false, false, routes.Unknown, 6,
+		{"a peer's route in the first read", []l{{peer, 1, 1}}, false, routes.Clean, 2, ""},
+		{"a peer's route in the first five reads", []l{{peer, 1, 5}}, false, routes.Clean, 6, ""},
+		{"a peer's route in every read", []l{{peer, 1, -1}}, false, routes.Unknown, 6,
 			`its last /routez read, read 6 of at most 6, listed a route with no address (remote_id "NSERVER2", remote_name "envoy-nats-2")`},
-		{"the impostor's route in the first read", []listing{{impostor, 1}}, false, false, routes.PasswordRead, 1, stranger},
-		{"the impostor's route in every read", []listing{{impostor, -1}}, false, false, routes.PasswordRead, 1, stranger},
-		{"the impostor's route and a peer's in the first read", []listing{{impostor, 1}, {peer, 1}}, false, false, routes.PasswordRead, 2, stranger},
-		{"the impostor's route in every read and a peer's in the first", []listing{{impostor, -1}, {peer, 1}}, false, false, routes.PasswordRead, 2,
-			stranger},
-		{"the impostor's route in every read, with a server id unknown", []listing{{impostor, -1}}, false, true, routes.Unknown, 6,
+		{"the impostor's route in the first read", []l{{impostor, 1, 1}}, false, routes.PasswordRead, 1, stranger},
+		{"the impostor's route in every read", []l{{impostor, 1, -1}}, false, routes.PasswordRead, 1, stranger},
+		{"the impostor's route and a peer's in the first read", []l{{impostor, 1, 1}, {peer, 1, 1}}, false, routes.PasswordRead, 2, stranger},
+		{"the impostor's route in every read and a peer's in the first", []l{{impostor, 1, -1}, {peer, 1, 1}}, false, routes.PasswordRead, 2, stranger},
+		{"the impostor's route in the second read only, after a peer's in the first", []l{{peer, 1, 1}, {impostor, 2, 1}}, false,
+			routes.PasswordRead, 2, stranger},
+		{"the impostor's route in every read, with a server id unknown", []l{{impostor, 1, -1}}, true, routes.Unknown, 6,
 			`its last /routez read, read 6 of at most 6, listed a route with no address (remote_id "NAOU3X5GZKLTWS6BIA5DOJBQXBPNQBHUMEFZOTGGKUKLXV2H4OYWYOJY"`},
-		{"control: the impostor's route in the first read beside a route from outside the hub", []listing{{impostor, 1}}, true, false,
-			routes.PasswordRead, 1, "has a route from an address that is no pod of the hub: ip 10.9.9.9"},
+		{"a held route from outside the hub in the first read only, beside a peer's closing route", []l{{peer, 1, 1}, {outside, 1, 1}}, false,
+			routes.PasswordRead, 2, "has a route from an address that is no pod of the hub: ip 10.9.9.9"},
+		{"a held route from a pod's IP to a stranger in the first read only, beside a peer's closing route", []l{{peer, 1, 1}, {inPod, 1, 1}}, false,
+			routes.PasswordRead, 2, `has a route to a server that is none of the hub's others: ip 10.0.0.10, remote_id "NSTRANGER"`},
+		{"a held route naming a server from another pod's IP in the first read only, beside a peer's closing route", []l{{peer, 1, 1}, {misplaced, 1, 1}},
+			false, routes.PasswordRead, 2, `has a route from another pod's address than the server it names: ip 10.0.0.10, remote_id "NSERVER2" of envoy-nats-2`},
+		{"control: the impostor's route in the first read beside a route from outside the hub in every read", []l{{impostor, 1, 1}, {outside, 1, -1}},
+			false, routes.PasswordRead, 1, "has a route from an address that is no pod of the hub: ip 10.9.9.9"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			h := cleanHub()
 			rec := recordOf(t, h)
-			for _, l := range row.closing {
-				h.closing["envoy-nats-1"] = append(h.closing["envoy-nats-1"], &closingRoute{route: l.route, reads: l.reads})
-			}
-			if row.outside {
-				h.routes["envoy-nats-1"] = append(h.routes["envoy-nats-1"], routes.Route{RemoteID: "NSTRANGER", RemoteName: "envoy-nats-0", IP: "10.9.9.9"})
-			}
+			h.listed["envoy-nats-1"] = row.listed
 			if row.noIDs {
 				h.refused["envoy-nats-2 /varz"] = errors.New("refused")
 			}

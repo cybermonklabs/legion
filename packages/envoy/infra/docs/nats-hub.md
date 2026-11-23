@@ -1369,13 +1369,16 @@ reads with `--timestamps`.
   (`server/monitor.go:916-921`), and closing a route clears its socket
   (`server/client.go:6153-6165`) while the server goes on to remove the route
   (`server/client.go:6335`, `server/server.go:3795-3796`). Such a route had passed the route
-  login, since `/routez` lists a route only after `addRoute` (`server/route.go:894`), so the check
-  judges its `remote_id` in each read that lists it: one that is none of the hub's other servers'
-  is exit 1. One that is another hub server's needs its address, so the check reads that
-  `/routez` again, up to six reads with waits of 20 to 320 ms between them, and judges the last; a
-  route with no `ip` still in it is exit 2. Run 45052294482 of cybermonklabs/legion#4049 read
-  envoy-nats-1's own route to an impostor, which the impostor was refusing for its duplicate name,
-  and named it a route "from an address that is no pod of the hub: ip ".
+  login, since `/routez` lists a route only after `addRoute` (`server/route.go:894`). When the
+  check knows every server's id, it judges such a route's `remote_id` in each read that lists it:
+  one that is none of the hub's other servers' is exit 1. One that is another hub server's, or any
+  when an id is unknown, needs its address, so the check reads that `/routez` again, up to six
+  reads with waits of 20 to 320 ms between them. It judges every read's routes by the rules above,
+  so a later read never drops what an earlier one showed, takes the routes to the pod's peers from
+  the last read, and gives exit 2 for a route with no `ip` still in it. Run 45052294482 of
+  cybermonklabs/legion#4049 read envoy-nats-1's own route to an impostor, which the impostor was
+  refusing for its duplicate name, and named it a route "from an address that is no pod of the
+  hub: ip ".
 - **No peer that left had the password.** `/routez` shows only who still holds a route, so a
   process that read the password and then left passes it. The log keeps it: every
   `Route connection created` line (`server/route.go:2104`) names the connection's peer. The rule's
