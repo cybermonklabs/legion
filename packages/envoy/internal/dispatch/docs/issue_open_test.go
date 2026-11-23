@@ -60,20 +60,22 @@ func writeIssueClosedAgo(t *testing.T, database *store.Store, issueKey string, c
 	}
 }
 
-// waitPastCloseMargin waits on the database's clock until it stands more than closeMargin past
-// the moment issueKey closed (issues.closed_at), and fails the test unless it does. Inside the
-// margin the gate admits a browser's update whatever its age (observedBeforeClose), so a test of
-// the age term must put the close that far behind first. It waits in the database, in one
-// statement, rather than sleeping on this process's clock: the two terms the gate compares are
-// read on the database's clock and this one, and only the database's says when the margin is out.
-func waitPastCloseMargin(t *testing.T, database *store.Store, issueKey string) {
+// waitPastCloseMargin waits on the database's clock until it stands more than margin past the
+// moment issueKey closed (issues.closed_at), and fails the test unless it does. margin is the
+// close margin of the store the test's service appends through: closeMargin, or the
+// Deps.CloseMargin the test gave it (newHeldAppendsService). Inside the margin the gate admits a
+// browser's update whatever its age (observedBeforeClose), so a test of the age term must put the
+// close that far behind first. It waits in the database, in one statement, rather than sleeping
+// on this process's clock: the two terms the gate compares are read on the database's clock and
+// this one, and only the database's says when the margin is out.
+func waitPastCloseMargin(t *testing.T, database *store.Store, issueKey string, margin time.Duration) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
 		select pg_sleep(greatest(0::double precision,
 			$2::double precision - extract(epoch from clock_timestamp() - closed_at)::double precision))
 		from issues where key = $1
-	`, issueKey, (closeMargin + 50*time.Millisecond).Seconds()); err != nil {
+	`, issueKey, (margin + 50*time.Millisecond).Seconds()); err != nil {
 		t.Fatalf("wait out issue %s's close margin: %v", issueKey, err)
 	}
 	var micros *int64
@@ -85,9 +87,9 @@ func waitPastCloseMargin(t *testing.T, database *store.Store, issueKey string) {
 	if micros == nil {
 		t.Fatalf("issue %s is open, so no close margin applies and nothing waits it out", issueKey)
 	}
-	if closedFor := time.Duration(*micros) * time.Microsecond; closedFor <= closeMargin {
+	if closedFor := time.Duration(*micros) * time.Microsecond; closedFor <= margin {
 		t.Fatalf("the database's clock stands %s past issue %s's close, want more than the gate's close margin of %s",
-			closedFor.Round(time.Millisecond), issueKey, closeMargin)
+			closedFor.Round(time.Millisecond), issueKey, margin)
 	}
 }
 
@@ -273,7 +275,7 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateA
 	// The gate's margin covers the latency of the close's notification, so it admits any update
 	// while the close is that recent: the wait puts the close behind it, and the keystroke is
 	// then stored for its age alone, the term this test guards.
-	waitPastCloseMargin(t, database, "DOC-1")
+	waitPastCloseMargin(t, database, "DOC-1", closeMargin)
 	// The room's close waits for its persistence to store what it holds (CloseRoom's flush), so
 	// once the gate is open and alice's room is gone the keystroke's append has been decided. The
 	// wait is for that room alone, not for task A to hold none (waitForRoomGone).
@@ -428,18 +430,30 @@ func TestABrowserAppendOnAClosedIssueIsRefusedWithoutItsNotification(t *testing.
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
 }
 
+// heldAppendsCloseMargin is the close margin of newHeldAppendsService's store (Deps.CloseMargin):
+// a day, longer than any run of this package's test binary under the -timeout this repository's
+// CI gives it (the race step's 60 minutes, .github/workflows/ci-job-envoy-go-race-docs.yaml).
+// queueAKeystrokeEachSideOfTheClose dates the close back by this less closeMargin once the room
+// has taken the first keystroke, which puts that keystroke after the close and inside the margin
+// however long the machine took between the room's taking it and the close's write. A margin of
+// closeMargin could not promise that: a loaded machine can spend longer than two seconds there.
+const heldAppendsCloseMargin = 24 * time.Hour
+
 // newHeldAppendsService is newTestServiceInstance with the test hooks on, so a test can hold the
 // room's browser appends back until it releases them (HoldRoomPersistenceUntilReleased) and have
-// the keystrokes it makes meanwhile queue into one batch.
+// the keystrokes it makes meanwhile queue into one batch, and with heldAppendsCloseMargin as its
+// store's close margin, so a test can date an issue's close around keystrokes the room has
+// already taken (queueAKeystrokeEachSideOfTheClose).
 func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *httptest.Server) {
 	t.Helper()
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
-		TestHooks: true,
+		Store:       database,
+		Events:      events.NewBroker(),
+		Identity:    headerIdentity(database),
+		ServerURL:   "https://dispatch.example",
+		Settle:      time.Hour,
+		TestHooks:   true,
+		CloseMargin: heldAppendsCloseMargin,
 	})
 	t.Cleanup(func() {
 		if err := service.Shutdown(context.Background()); err != nil {
@@ -499,15 +513,26 @@ func TestABatchStraddlingTheIssuesCloseStoresWhatTheRoomTookInTime(t *testing.T)
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", stored)
 }
 
-// queueAKeystrokeEachSideOfTheClose closes issue DOC-1 and has alice type two keystrokes over
-// from: one the room takes while the close is still within closeMargin, which the gate admits,
-// and one it takes after the margin is out, which it refuses. The room's own appends are held
-// until the test calls release (HoldRoomPersistenceUntilReleased), so both are still queued when
-// it returns, one run of the two for a batch or a joined flush to take, however long the test's
-// staging takes on a loaded machine; it answers their classes in the room's commit order. The
-// release is registered as a cleanup at once, so a test that fails leaves no append held. No room
-// sync runs in these tests, so nothing tells the room its issue closed in between: the gate is
-// what notices.
+// queueAKeystrokeEachSideOfTheClose has alice type two keystrokes over from and closes issue DOC-1
+// between them, so that the room takes one inside the close margin of newHeldAppendsService's
+// store (heldAppendsCloseMargin), which the gate admits, and one after the margin is out, which
+// it refuses. Each side is a fact read on the database's clock, not a race with it. The room
+// stamps when it took a keystroke before it queues the keystroke's class (classifyDrained), so
+// once the first is queued its stamp is behind the database's now. The close is then dated so
+// that the margin ends closeMargin after that now: the first keystroke falls after the close,
+// since the margin is longer than the run, and inside the margin, however long the machine took
+// over any step before. The second is typed half a closeMargin after the database's clock passed
+// the margin's end, so it falls past the margin however late the room takes it. The two spans,
+// closeMargin after the first keystroke and half of it before the second, cover the drift between
+// this process's clock, on which the gate reads a keystroke's age, and the database's, on which it
+// reads the close's: the drift the product's own margin allows for.
+//
+// The room's own appends are held until the test calls release
+// (HoldRoomPersistenceUntilReleased), so both are still queued when it returns, one run of the two
+// for a batch or a joined flush to take, however long the test's staging takes on a loaded
+// machine; it answers their classes in the room's commit order. The release is registered as a
+// cleanup at once, so a test that fails leaves no append held. No room sync runs in these tests,
+// so nothing tells the room its issue closed in between: the gate is what notices.
 func queueAKeystrokeEachSideOfTheClose(t *testing.T, database *store.Store, service *Service, alice *docstest.Peer, artifactID, from string) (queued []*queuedClass, release func()) {
 	t.Helper()
 	if err := service.HoldRoomPersistenceUntilReleased(artifactID); err != nil {
@@ -519,25 +544,34 @@ func queueAKeystrokeEachSideOfTheClose(t *testing.T, database *store.Store, serv
 		}
 	}
 	t.Cleanup(release)
-	writeIssueClosed(t, database, "DOC-1", true)
 	typeOver(t, alice, from, "typed in time")
-	waitPastCloseMargin(t, database, "DOC-1")
-	// Half a margin past the margin: the gate judges the second keystroke's age on this process's
-	// clock against the close on the database's, so the two need only run at about the same rate.
+	waitForQueuedClasses(t, service, artifactID, 1)
+	writeIssueClosedAgo(t, database, "DOC-1", heldAppendsCloseMargin-closeMargin)
+	waitPastCloseMargin(t, database, "DOC-1", heldAppendsCloseMargin)
+	// Half a closeMargin past the margin: the gate judges the second keystroke's age on this
+	// process's clock against the close on the database's, so the two need only run at about the
+	// same rate.
 	time.Sleep(closeMargin / 2)
 	typeOver(t, alice, "typed in time", "typed after the close")
-	waitUntil(t, "both keystrokes to be queued on the room", func() bool {
+	waitForQueuedClasses(t, service, artifactID, 2)
+	state := service.lockExistingState(artifactID)
+	queued = slices.Clone(state.updateClasses)
+	service.unlockState(artifactID, state)
+	return queued, release
+}
+
+// waitForQueuedClasses waits until artifactID's room queues want update classes: the keystrokes a
+// room whose appends are held has taken and not stored (queueAKeystrokeEachSideOfTheClose).
+func waitForQueuedClasses(t *testing.T, service *Service, artifactID string, want int) {
+	t.Helper()
+	waitUntil(t, fmt.Sprintf("%d keystrokes to be queued on the room", want), func() bool {
 		state := service.lockExistingState(artifactID)
 		if state == nil {
 			return false
 		}
 		defer service.unlockState(artifactID, state)
-		return len(state.updateClasses) == 2
+		return len(state.updateClasses) == want
 	})
-	state := service.lockExistingState(artifactID)
-	queued = slices.Clone(state.updateClasses)
-	service.unlockState(artifactID, state)
-	return queued, release
 }
 
 // requireStillQueuedAndUnstored fails unless artifactID's room still holds queued, the classes a
