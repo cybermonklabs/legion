@@ -11,6 +11,7 @@ import (
 // and a row with no renamed_to is no pair. Two rows that name one old name in different cases
 // are one pair, with the greater new name, so every reader takes the same new name for it.
 func TestReadRepoRenamesAnswersOneLowerCasePairForEachOldName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(ctx, `
@@ -41,6 +42,7 @@ func TestReadRepoRenamesAnswersOneLowerCasePairForEachOldName(t *testing.T) {
 // dispatch://INFRA-4411 drops repo_projects. A process that boots after that reads no pairs and
 // no error, so it serves, and every reader then names each repository as it is stored.
 func TestReadRepoRenamesReadsNothingOnceRepoProjectsIsDropped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(ctx, `

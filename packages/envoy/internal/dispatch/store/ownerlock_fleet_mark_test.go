@@ -30,6 +30,7 @@ const ownerLockLegacyGateVersion = 20261115200014
 // Without the migration's insert the earlier build's write goes through while this build's is
 // held, and is lost under it.
 func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		publish bool

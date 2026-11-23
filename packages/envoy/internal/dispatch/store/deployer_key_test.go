@@ -40,6 +40,7 @@ var deployerKeyScripts = []string{
 // A script whose shape changed so far that no key can be read fails here too. A test that found
 // nothing and passed would report that the keys agree when it had not looked at one.
 func TestTheDeployerTakesTheMigrationKeyThisPackageDefines(t *testing.T) {
+	t.Parallel()
 	for _, script := range deployerKeyScripts {
 		text, err := os.ReadFile(script)
 		if err != nil {

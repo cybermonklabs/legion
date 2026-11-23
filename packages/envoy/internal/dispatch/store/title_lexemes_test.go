@@ -13,6 +13,7 @@ import (
 // after it, a title whose whole vector passes Postgres's limit on one tsvector included, whose
 // lexemes are those of the opening its bounded vector indexes.
 func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 87)
 	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name) values ('CORE', 'Core')`); err != nil {
@@ -111,6 +112,7 @@ func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 // reparent now takes owner advisory locks instead, and its rows only with its update; the row
 // locks below stand for that release's.)
 func TestMigrate0089WaitsForAReparentWithoutDeadlockingIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, 88)
 	// The issues name a person as their assignee, and that person has signed in, so the

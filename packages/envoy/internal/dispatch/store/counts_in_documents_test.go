@@ -44,6 +44,7 @@ import (
 // internal/dispatch/processes'), and a number of something else - a migration version, a review
 // round - belongs to no entry anywhere here.
 func TestTheDocumentsStateTheCountsThisPackageHolds(t *testing.T) {
+	t.Parallel()
 	const (
 		site      = "docs/site/src/content/docs/dispatch/running-dispatch.md"
 		readme    = "packages/envoy/cmd/dispatch/README.md"

@@ -14,6 +14,7 @@ import (
 // of that version before it applies anything, by the rule pgmigratetest.RunIdentityChecks holds it
 // to.
 func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
+	t.Parallel()
 	pgmigratetest.RunIdentityChecks(t, versionTable, func(t *testing.T) (pgmigratetest.Database, pgmigratetest.Migrate) {
 		store := openEmptyTestStore(t)
 		return store.Pool, store.migrate
@@ -26,6 +27,7 @@ func TestMigrateJudgesTheRecordedIdentityOfEveryVersion(t *testing.T) {
 // that table's shape with this runner and does not run main's). The check is the one
 // `envoy-dispatch versions` runs.
 func TestTheShippedSetMatchesADatabaseAnEarlierRunnerMigrated(t *testing.T) {
+	t.Parallel()
 	store := openEmptyTestStore(t)
 	migrations, err := pgmigrate.Load(migrationFiles, "migrations")
 	if err != nil {
@@ -49,6 +51,7 @@ func TestTheShippedSetMatchesADatabaseAnEarlierRunnerMigrated(t *testing.T) {
 // whole-table judgment when the version has no row, as it did when it read that version alone,
 // and the refused rows fail: 0002 is applied beside a version 3 the set refuses.
 func TestMigrateAppliesNothingWhileAnotherBootRecordsAConflictingVersion(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for name, second := range map[string]struct {
 		text, applied string

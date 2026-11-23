@@ -27,6 +27,7 @@ import (
 // lock reads the earlier build in the fleet and takes the owner's row, without the gate; a second
 // arrival then waits for nothing, though that writer is between its owner lock and its write too.
 func TestAnEarlierBuildsArrivalWaitsForATransactionThatReadNoEarlierBuild(t *testing.T) {
+	t.Parallel()
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)
@@ -268,6 +269,7 @@ func awaitFleetReadPause(t *testing.T, s *Store, pid uint32, done <-chan struct{
 // advisory lock alone: the row the pause stops at counts for nothing. A second read that answered
 // the first read's result again would leave the writer in the advisory mode beside the arrival.
 func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		arrival *earlierBuildArrival
@@ -394,6 +396,7 @@ func awaitUnblockedAnswer(t *testing.T, s *Store, pid uint32, answered <-chan er
 // the first of them queues behind the arrival until the transaction it waits for ends, and that
 // read sees it.
 func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *testing.T) {
+	t.Parallel()
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			s, owners := openFleetStore(t)

@@ -47,6 +47,7 @@ func writeIssuesForTheIndex(t *testing.T, ctx context.Context, store *Store, fro
 // index with fastupdate turned back on, so a test that answered 0 because the writes were too
 // small to fill a page would fail there too.
 func TestIssuesSearchFastupdateMigrationStopsTheIndexBatchingItsWrites(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, issuesSearchFastupdate)
 
@@ -79,6 +80,7 @@ func TestIssuesSearchFastupdateMigrationStopsTheIndexBatchingItsWrites(t *testin
 // the option stops new ones without moving those. This migrates a database that already batched
 // a list and reads the index clean afterwards.
 func TestIssuesSearchFastupdateMigrationEmptiesTheListItInherits(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, issuesSearchFastupdate-1)
 
@@ -108,6 +110,7 @@ func TestIssuesSearchFastupdateMigrationEmptiesTheListItInherits(t *testing.T) {
 // writes one catalog row and the flush moves the pending entries into the index, so neither
 // reads or rewrites a row of issues.
 func TestTheIssuesSearchFastupdateMigrationTouchesOnlyIssues(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, issuesSearchFastupdate)
 	const file = "20261108015800_issues_search_fastupdate.up.sql"

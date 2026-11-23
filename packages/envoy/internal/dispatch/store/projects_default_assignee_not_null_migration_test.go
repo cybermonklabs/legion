@@ -16,6 +16,7 @@ const projectsDefaultAssigneeNotNullVersion = 20261111210103
 // with no issue at all, one an agent session created, and one created with a person's own token.
 // After it, the column refuses a project with no default.
 func TestTheDefaultAssigneeBackfillFillsEveryProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, projectsDefaultAssigneeNotNullVersion-1)
 	seedProjectsOfEveryKind(t, store)
@@ -62,6 +63,7 @@ func TestTheDefaultAssigneeBackfillFillsEveryProject(t *testing.T) {
 // its `set not null` would refuse. Where every project names a person it answers 0, which is what
 // the deployment takes after it has run the fill on the release still serving.
 func TestTheCensusCountsAProjectWithNoDefault(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, projectsDefaultAssigneeNotNullVersion-1)
 	if _, err := store.Pool.Exec(ctx, `
