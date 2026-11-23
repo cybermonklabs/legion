@@ -802,6 +802,7 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 	defer letRouteAnswer()
 	var mu sync.Mutex
 	started := map[string]bool{}
+	reads := 0
 	together := make(chan struct{})
 	meet := sync.OnceFunc(func() { close(together) })
 	handler, database, _ := newTestServer(t, testServerOptions{
@@ -809,7 +810,8 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 		mentionLookupBound: func(target string) time.Duration {
 			mu.Lock()
 			started[target] = true
-			if len(started) == 2 {
+			reads++
+			if reads == 2 {
 				meet()
 			}
 			mu.Unlock()
@@ -834,10 +836,12 @@ func TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost(t *t
 	created := decodeMentionedComment(t, testwait.Receive(t,
 		"the comment to answer, which it does only once the route's lookup started beside the mention's", answered))
 	mu.Lock()
-	looked := len(started)
+	bounds, targets := reads, len(started)
 	mu.Unlock()
-	if looked != 2 {
-		t.Fatalf("the comment's lookups took %d bounds, want the mention's and the route's", looked)
+	// Exactly two bounds: a comment that waited a second bound after the first - a second
+	// resolution round, a lookup taken again - fails here, as the old two-bound wall-clock limit did.
+	if bounds != 2 || targets != 2 {
+		t.Fatalf("the comment's lookups read %d bounds for %d targets, want one each for the mention and the route", bounds, targets)
 	}
 
 	letMentionAnswer()

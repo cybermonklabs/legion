@@ -362,9 +362,9 @@ func (s *server) resolveThroughTakeover(
 	return resolved, takeover
 }
 
-// commentLookupBound is how long a comment's creation waits for the listener's answer on target:
-// mentionLookupTimeout on every server the deployment builds, which sets no mentionLookupBound,
-// and whatever a test set for that target otherwise.
+// commentLookupBound is the bound on one try of a comment's listener lookup of target, read as
+// that try starts: mentionLookupTimeout on every server the deployment builds, which sets no
+// mentionLookupBound, and whatever a test set for that target otherwise.
 func (s *server) commentLookupBound(target string) time.Duration {
 	if s.mentionLookupBound != nil {
 		return s.mentionLookupBound(target)
