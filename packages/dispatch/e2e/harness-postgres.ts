@@ -294,8 +294,8 @@ export async function ready(
 /** Whether the postmaster of the cluster in `data` has ended: the pid its `postmaster.pid` names,
  *  read once here, after `pg_ctl -w start` returned, is no running process, or there was no
  *  file to read. The postmaster is no child of this process (`pg_ctl` starts it as a daemon), so
- *  its pid is the one handle there is. */
-function postmasterGone(data: string): () => boolean {
+ *  its pid is the one handle there is. Exported for e2e/__tests__/harness-postgres-ends.test.ts. */
+export function postmasterGone(data: string): () => boolean {
   let pid = Number.NaN;
   try {
     pid = Number(readFileSync(join(data, "postmaster.pid"), "utf8").split("\n")[0]);
@@ -490,6 +490,7 @@ function binariesProvider(
       server,
       signal
     );
+    const stop = () => execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
     try {
       const admin = `postgres://postgres@127.0.0.1:${port}/postgres?sslmode=disable`;
       await ready(admin, "the stacks' Postgres template", postmasterGone(data), signal);
@@ -499,12 +500,24 @@ function binariesProvider(
         ["create extension vector"],
         signal
       );
-    } finally {
-      // Whatever happened above: the postmaster is up from `startCluster` on, and a throw that
-      // left it running would leave it serving a loopback port while the pool removes the data
-      // directory under it.
-      await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", "fast", "-w", "stop"]);
+    } catch (error) {
+      // The postmaster is up from `startCluster` on, and a throw that left it running would leave
+      // it serving a loopback port while the pool removes the data directory under it, so it is
+      // stopped. A stop that fails is a server that has already gone - the end `ready` reported -
+      // and the failure the caller sees stays the one above, which names what went wrong.
+      await stop().catch(() => {});
+      throw error;
     }
+    // The template is copied once it is stopped cleanly: a copy of a running server's data
+    // directory is no template, and its lock file names a server still running. So a stop that
+    // fails here refuses the start, by name.
+    await stop().catch((error: unknown) => {
+      throw new Error(
+        "The Dispatch e2e harness cannot start: the stacks' Postgres template's server would not " +
+          "stop, and no stack starts from a copy of a running server: " +
+          `${error instanceof Error ? error.message : String(error)}`
+      );
+    });
     return data;
   };
   return {

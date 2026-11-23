@@ -79,6 +79,17 @@
  *   that `row-map.test.ts` waits for cost 45.23 s at most.
  * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
  *   child builds two stacks, and each stack is a Go build and an initdb.
+ * - `oneDatabase`, against 141.79 s: the first provider row of `harness-postgres-ends.test.ts` to
+ *   run, whose child makes the binaries provider's template and starts one stack's Postgres from a
+ *   cold disk, in the first run of that file in a fresh build pod of 6 CPUs under 36 busy loops,
+ *   six per CPU, on 2026-11-23. Six per CPU is above the four per CPU of the loaded mode this
+ *   repository's flake checks use and the about five per CPU the development machine has run at.
+ *   Seven other such pods read 83.39 s to 127.29 s; six at 18 loops read 36.62 s to 75.11 s, and
+ *   two with none 13.58 s and 13.68 s. A file's later provider rows, warm, read 1.2 s to 20.2 s.
+ *   Three times 141.79 s, rounded up to the minute, is 480 s. A bound
+ *   of 60 s, three times a cold reading taken with no load, failed correct first runs at 18 and 36
+ *   loops. The bound is no budget: a provider row's start ends on the server's answer, its end or
+ *   its refusal, and this bound only stops a child that never will.
  * - `edgeRun`, against 175.0 s: the slowest of 30 runs, one after another, of
  *   `e2e/acceptance/outside-edge-refusals.sh` against one stand-in edge of its tests, with their
  *   lists and probe bounds, on a dev box of 288 CPUs at a 1-minute load of 1,024 to 1,892 on
@@ -92,7 +103,8 @@
  *
  * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
  * laptop as in CI: a `short` child after 60 s, a listing after 6 minutes, the generation after
- * 6.5 minutes, a run of the edge check after 9 minutes, and the two-stack build after 30 minutes.
+ * 6.5 minutes, a provider row's child of `harness-postgres-ends.test.ts` after 8 minutes, a run of
+ * the edge check after 9 minutes, and the two-stack build after 30 minutes.
  * A row's limit is what `rowLimit` reads from the bounds of what the row waits for, plus 30 s for
  * its own work, so the child's bound fires before the row's limit and the failure names the child.
  * The lane runs in the `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15
@@ -109,7 +121,8 @@
  * `round-robin-proxy.test.ts`, each read from its lists through a spread the guard does not
  * total): a hung child of either fails at its own 60 s bound. The two-stack row's 1 830 000 ms is
  * longer than the job and never fires there: that row skips unless `DISPATCH_E2E_PG_BIN` or
- * `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of `ci.yaml` names either.
+ * `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of `ci.yaml` names either. The provider
+ * rows of `harness-postgres-ends.test.ts` skip unless `DISPATCH_E2E_PG_BIN` names one, too.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -128,6 +141,9 @@ export const bounds = Object.freeze({
   generation: 390_000,
   /** The `bun --eval` of `second-global-setup.test.ts`, which builds two stacks. */
   twoStackBuild: 1_800_000,
+  /** The child of a provider row of `harness-postgres-ends.test.ts`, which makes the binaries
+   *  provider's template and starts one stack's Postgres, with no Go build. */
+  oneDatabase: 480_000,
   /** One run of `e2e/acceptance/outside-edge-refusals.sh` that probes a stand-in edge. */
   edgeRun: 540_000,
 });
