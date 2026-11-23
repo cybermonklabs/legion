@@ -243,9 +243,10 @@ func pageNumber(page int) int {
 }
 
 // ObjectPage is one page of a conditional read of GitHub check objects or commit statuses: the
-// objects as contracts.GithubCIObservation or contracts.GithubStatusObservation takes them, the
-// answer's ETag, whether GitHub answered 304 Not Modified (Objects is then empty), and whether the
-// page was full, so a caller knows another page may follow.
+// objects as contracts.GithubCIObservation or contracts.GithubStatusObservation takes them, each
+// holding the members its readers read (objects.go), the answer's ETag, whether GitHub answered
+// 304 Not Modified (Objects is then empty), and whether the page was full, so a caller knows
+// another page may follow.
 type ObjectPage struct {
 	Objects     []map[string]any
 	ETag        string
@@ -266,12 +267,12 @@ func (c *Client) CommitCheckRuns(ctx context.Context, token, owner, repo, sha st
 		"/check-runs?filter=all&per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
 	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {
 		var answer struct {
-			CheckRuns []map[string]any `json:"check_runs"`
+			CheckRuns []*listedRun `json:"check_runs"`
 		}
 		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the check_runs of %s: %w", repoFull, ShownErr(err))
 		}
-		return answer.CheckRuns, nil
+		return objectsOf(answer.CheckRuns, (*listedRun).object), nil
 	})
 }
 
@@ -286,20 +287,20 @@ func (c *Client) CommitCheckSuites(ctx context.Context, token, owner, repo, sha 
 		"/check-suites?per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
 	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {
 		var answer struct {
-			CheckSuites []map[string]any `json:"check_suites"`
+			CheckSuites []*listedSuite `json:"check_suites"`
 		}
 		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the check_suites of %s: %w", repoFull, ShownErr(err))
 		}
-		return answer.CheckSuites, nil
+		return objectsOf(answer.CheckSuites, (*listedSuite).object), nil
 	})
 }
 
 // CommitStatuses reads page page (1-based) of GET
 // /repos/{owner}/{repo}/commits/{sha}/status?per_page=100, conditional on etag: GitHub's combined
 // status of the commit, whose statuses list holds the newest status of each context. Only that
-// list is decoded, each status as GitHub lists it (context, state, created_at, target_url,
-// description); the combined state beside it is GitHub's verdict over those statuses, which no
+// list is decoded, each status's context, state, created_at, target_url and description
+// (listedStatus); the combined state beside it is GitHub's verdict over those statuses, which no
 // caller reads. A token without Commit statuses is answered 403, which is ErrRepositoryUnreadable
 // as every 403 here is.
 func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha string, page int, etag string) (ObjectPage, error) {
@@ -311,12 +312,12 @@ func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha str
 		"/status?per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
 	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {
 		var answer struct {
-			Statuses []map[string]any `json:"statuses"`
+			Statuses []*listedStatus `json:"statuses"`
 		}
 		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the statuses of %s: %w", repoFull, ShownErr(err))
 		}
-		return answer.Statuses, nil
+		return objectsOf(answer.Statuses, (*listedStatus).object), nil
 	})
 }
 
@@ -325,9 +326,9 @@ func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha str
 // the objects under the one key that listing carries. The caller passes that decode rather than
 // the key's name, so a listing nobody has written a decode for cannot be asked for at all, where a
 // name this function chose a field by could answer no objects and no error. Each decode takes the
-// objects alone into maps, as the webhook's own bodies reach contracts.GithubCIObservation:
-// total_count is GitHub's count of the whole list, which the page size and Full already say what
-// a caller needs of.
+// objects alone, typed with the members their readers read, and builds each into the map the
+// webhook's own bodies reach contracts.GithubCIObservation in (objectsOf): total_count is GitHub's
+// count of the whole list, which the page size and Full already say what a caller needs of.
 func (c *Client) readObjectPage(ctx context.Context, token, path, repoFull, etag string, objects func(redact.Answer) ([]map[string]any, error)) (ObjectPage, error) {
 	body, status, answerETag, err := c.readConditionalRepositoryJSON(ctx, token, path, repoFull, etag)
 	if err != nil {

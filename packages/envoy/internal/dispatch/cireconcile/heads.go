@@ -596,7 +596,7 @@ func everyPageNotModified[T any](pages []pageOf[T]) bool {
 // whether it was full, and none of its items. A page the pass kept is a page the next read
 // either sends that ETag for and is answered 304 on -- which record skips, since such a page is
 // not modified -- or reads in full and answers with items of its own, so the items held here
-// are never read again. A head's check runs carry each run's output.text, which GitHub caps at
+// are never read again. A head's check runs carry each run's output.summary, which GitHub caps at
 // 65,535 characters, so keeping them would hold megabytes a head for as long as the head is open.
 func withoutItems[T any](pages []pageOf[T]) []pageOf[T] {
 	kept := make([]pageOf[T], len(pages))
