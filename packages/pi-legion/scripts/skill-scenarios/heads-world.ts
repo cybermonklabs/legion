@@ -231,9 +231,10 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *     architect. The CI job's own pass and fail at #702's head are rig.sh's (ci_job_results), since
  *     only a job's results token records them through the route.
  * Each record is written as its role's session (IMPLEMENTER, TESTER, REVIEWER), with the fields its
- * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's
- * `implementerProof` is `{how}` alone, since no phase completion or record carries its verdict. It
- * adds each record's `{id, version}` and each pull request body's line of k1 to <file>. */
+ * role's prompt names (roles/tester.md, roles/reviewer.md) and no other: the tester's holds no
+ * `implementerProof`, `failures` or `failed`, since each failure is a fail result on its check and
+ * no phase completion or record carries a verdict. It adds each record's `{id, version}` and each
+ * pull request body's line of k1 to <file>. */
 export async function headsEvents(file: string, headsFile: string, world: string): Promise<void> {
   const fixture = HeadsFixture.parse(JSON.parse(readFileSync(file, "utf8")));
   const heads = z
@@ -391,9 +392,6 @@ export async function headsEvents(file: string, headsFile: string, world: string
               phase,
               issue: fixture.issue,
               head,
-              implementerProof: { how: `read k1 at ${head} with dispatch results` },
-              failures: [],
-              failed: 0,
               classSearch: [],
             }
           : {
