@@ -1,6 +1,7 @@
 package leakguard
 
 import (
+	"cmp"
 	"os"
 	"path/filepath"
 	"slices"
@@ -590,11 +591,17 @@ func TestAPushReadsACommitOnlyAnotherRemoteHolds(t *testing.T) {
 // remote whose fetch refspec names a ref there (remote.mirror.fetch). In each, a commit of the
 // other repository whose author a rule refuses is read, whether the push names origin or its URL,
 // and the report names it.
+//
+// The other remote is written to the configuration as `git remote add` writes it, its URL and its
+// fetch refspec, rather than added with that command: from git 2.51, `git remote add` refuses a
+// name that nests under another remote's (or that another nests under), but a remote such a git
+// reads and fetches can still be named so, added by an older git or written with `git config`, as
+// git 2.56.1 does for origin/private beside origin.
 func TestAPushReadsACommitAnotherRemoteFiledAmongTheDestinations(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// remote is the other remote's name, and refspec its fetch refspec, git's default where
-		// it is empty.
+		// remote is the other remote's name, and refspec its fetch refspec, git's default for that
+		// name where it is empty.
 		remote, refspec string
 		// filed is the ref the fetch files the other repository's main at.
 		filed string
@@ -626,10 +633,9 @@ func TestAPushReadsACommitAnotherRemoteFiledAmongTheDestinations(t *testing.T) {
 			fixture.Run(repo, "git", "checkout", "--quiet", "-b", "side")
 			elsewhere := commit(t, "side.md", "a commit of another repository", "GIT_AUTHOR_EMAIL=builder@"+theHost)
 			fixture.Run(another, "git", "fetch", "--quiet", repo, "side:main")
-			fixture.Run(repo, "git", "remote", "add", tc.remote, another)
-			if tc.refspec != "" {
-				fixture.Run(repo, "git", "config", "--replace-all", "remote."+tc.remote+".fetch", tc.refspec)
-			}
+			refspec := cmp.Or(tc.refspec, "+refs/heads/*:refs/remotes/"+tc.remote+"/*")
+			fixture.Run(repo, "git", "config", "remote."+tc.remote+".url", another)
+			fixture.Run(repo, "git", "config", "remote."+tc.remote+".fetch", refspec)
 			fixture.Run(repo, "git", "fetch", "--quiet", tc.remote)
 			if filed := fixture.Run(repo, "git", "rev-parse", tc.filed); filed != elsewhere {
 				t.Fatalf("%s is %s after the fetch from %s, want %s", tc.filed, filed, tc.remote, elsewhere)

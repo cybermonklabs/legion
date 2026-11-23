@@ -204,7 +204,8 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest) ([]Record, err
 // under a URL, so such a push can hold any remote. The URLs on both sides are git's own, after
 // its insteadOf rewriting. A push that holds no remote has every commit read that the
 // destination's ref does not reach: a remote that is not shown to be the destination says nothing
-// of what it holds.
+// of what it holds. The URLs read are the current ones, so refs a remote fetched before a
+// `git remote set-url` to another repository are held, as `--remotes=<name>` held them before.
 //
 // The URLs are read with `git remote get-url`, which prints a URL and nothing else, and not from
 // `git remote -v`, which writes a blobless clone's filter after its fetch URL. The refspecs are
