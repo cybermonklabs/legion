@@ -51,6 +51,7 @@ func pendingNewsOf(t *testing.T, machine *supervise.Machine) record.DeliveryNews
 // version that Dispatch carries approved, which changes decision blocks alone, then sends nothing:
 // the reconcile raises what the reviewer took.
 func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 3)
 	r.told(pathRoot, record.AudienceArchitect, 4)
@@ -152,6 +153,7 @@ func TestAnOpeningOwedAfterAHoldersTaskWasComposedIsToldByThatTaskOnce(t *testin
 // row still says version 4, and the merger's task, sent when the merger comes up, carries the
 // change list; its confirmation raises the row.
 func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 5, pathMember{key: pathRoot, at: phase.Implementing}, pathMember{key: pathChild, parent: pathRoot, at: phase.Reviewing})
 	r.told(pathRoot, record.AudienceHolder, 5)
 	r.told(pathChild, record.AudienceHolder, 4)
@@ -215,6 +217,7 @@ func TestAMemberThatLeftAcceptingBeforeItsArchitectsSendIsToldByItsMerger(t *tes
 // back and sends it again. The start waits on its backoff, also while the task is owed again on the
 // provider error's ladder, and its news goes once the claim holds no task.
 func TestAProviderErrorInTheTurnANewsOnlyStartReachedSendsThePhaseTaskAgain(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing})
 	r.told(pathRoot, record.AudienceHolder, 4)
 	r.told(pathRoot, record.AudienceArchitect, 4)

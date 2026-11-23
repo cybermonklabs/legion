@@ -98,7 +98,7 @@ GATE = gate("dispatch_browser", BROWSER_JOB, exact=[
      "before it started, which it makes a bucket in and writes, reads back and deletes one "
      "object in"),
     (".github/scripts/dispatch-browser-shard-suite.sh",
-     f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's rows"),
+     f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's row time"),
     (".github/scripts/dispatch-browser-shard-record.sh",
      f"{at_browser(BROWSER_RECORD_STEP)} runs it to print and collect the file store's log "
      "and the stacks' own logs"),
@@ -116,8 +116,8 @@ GATE = gate("dispatch_browser", BROWSER_JOB, exact=[
      "reports into the one HTML and JSON report of the run"),
     (".github/scripts/dispatch-browser-reading-rows.sh",
      f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs it for the rows each leg's "
-     "log printed against the rows the merged report holds, and for the legs that owed a "
-     "blob report and uploaded none"),
+     "log printed against the rows the merged report holds, for the legs that owed a "
+     "blob report and uploaded none, and for the shard legs' row lists held against each other"),
     (".github/scripts/dispatch-browser-reading-flake-rate.sh",
      f"{at_browser(BROWSER_READ_TWO_STEP, BROWSER_MERGE)} runs it for the count and the "
      "percentage of the rows that passed on a retry"),

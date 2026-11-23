@@ -25,7 +25,7 @@ sessions_stack() {
 # whose runtime.kubernetes sets plugins with <pi_envoy> when one is given and no plugins otherwise.
 golden() {
   local file
-  file="${case_root}/files/legion/testdata/$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')-legion.yaml"
+  file="${case_root}/files/legion/testdata/${1,,}-legion.yaml"
   mkdir -p "${case_root}/files/legion/testdata"
   printf 'project: %s\nruntime:\n  kubernetes:\n    namespace: legion\n    image: %s\n' "$1" "$lean_image" >"$file"
   [ -z "${2:-}" ] || printf '    plugins:\n      pi_legion: 19.28.1\n      pi_envoy: %s\n' "$2" >>"$file"
@@ -94,11 +94,11 @@ box_case() {
 readonly daemon_label="(the pi-envoy its daemon installs)"
 linked_note() {
   printf '; the pair its legion links, as legion/testdata/%s-legion.yaml sets no runtime.kubernetes.plugins' \
-    "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    "${1,,}"
 }
 golden_note() {
   printf '; legion/testdata/%s-legion.yaml sets it as runtime.kubernetes.plugins.pi_envoy' \
-    "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    "${1,,}"
 }
 # claude_install <version in the record> <version of the manifest at its path> [<installPath>]: one
 # claude-envoy@legion-plugins install in the dotfiles' Claude Code plugin record, its copy under

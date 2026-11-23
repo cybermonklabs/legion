@@ -46,9 +46,9 @@ func InterestReapAllowance(grace time.Duration) time.Duration {
 //
 // A candidate is deleted at exactly the revision the copy holds for it when the delete is sent
 // (reapInterest), so a write that lands after the re-read is kept: the delete fails with
-// JetStream's wrong last sequence (10071, nats.ErrKeyExists), and the candidate counts as
-// skipped. Where the copy holds no revision for it, the row and the revision come from the
-// bucket instead, and the delete is made only for the very row this pass judged.
+// JetStream's wrong last sequence (bus.IsCASConflict), and the candidate counts as skipped. Where
+// the copy holds no revision for it, the row and the revision come from the bucket instead, and
+// the delete is made only for the very row this pass judged.
 func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow time.Duration) (int, error) {
 	now := r.now().UnixMilli()
 	allowanceMs := InterestReapAllowance(graceWindow).Milliseconds()
@@ -103,8 +103,8 @@ func (r *Registry) Reap(live func(sessionID string) (bool, error), graceWindow t
 // candidates behind it too.
 //
 // The delete is fenced on the revision the copy holds for the key (deleteInterestAt), and a
-// write since then makes JetStream refuse it with wrong last sequence (10071, which nats.go
-// names nats.ErrKeyExists): the interest is kept, false and no error.
+// write since then makes JetStream refuse it with wrong last sequence (bus.IsCASConflict): the
+// interest is kept, false and no error.
 //
 // A copy that holds no revision for the key, because a watch moved the epoch since its read
 // began (kvwatch.Copy.FenceFor), names no revision for the delete to be fenced on, and that

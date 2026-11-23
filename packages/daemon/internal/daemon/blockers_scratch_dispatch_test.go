@@ -72,6 +72,7 @@ import (
 //     takes back and nothing else, so step 8 cannot pass by checking everything;
 //  10. the roots of step 8 are admitted when that blocker closes.
 func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
@@ -870,7 +871,7 @@ func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (a
 	t.Helper()
 	var state api.State
 	var body []byte
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, 20*time.Second), 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testwait.Remaining(t), 20*time.Millisecond, func() bool {
 		status, read := d.request(http.MethodGet, "/legion/v1/state", nil, false)
 		body = read
 		if status != http.StatusOK {

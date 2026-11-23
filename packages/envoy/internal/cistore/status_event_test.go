@@ -37,7 +37,7 @@ func TestTheListenerDropsAStatusEvent(t *testing.T) {
 	defer client.Close()
 	store := openListener(t, client.Conn)
 	const secret = "s"
-	handler := webhook.GitHubHandler(secret, "@legion", "", client, store)
+	handler := webhook.GitHubHandler(secret, "@legion", "", client, store, webhook.NewBodyBudget(webhook.DefaultBodyBudget, nil))
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	cistore.StartSummaryLoop(loopCtx, store, client, 50*time.Millisecond, 10*time.Millisecond,

@@ -1,6 +1,6 @@
 # What is left of the test job once the daemon's Go suite and the private-name port harness
-# have jobs of their own: the Claude Code plugin build, the changelog fold, about thirty
-# script harnesses - each behind a gate of its own (the test.<filter>.py files beside this one),
+# have jobs of their own: the Claude Code plugin build, the changelog fold, the script
+# harnesses - each behind a gate of its own (the test.<filter>.py files beside this one),
 # whose reads this job's filter carries too, since the job must be selected for the step to run
 # in it (ci_filter_coverage.gate_read_sets adds them) - and the Bun suites of scripts/. Two go
 # commands are left, the builds Bun tests start: the listener's, and the natsfloor command the pin

@@ -487,7 +487,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".github/actions/install-claude-code/**", at("claude-envoy", "./.github/actions/install-claude-code")),
         (".claude-code-pin", ".github/actions/install-claude-code/action.yml:16 pin=$(<.claude-code-pin), the release "
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
-        ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
+        ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 and tests/agent-stream-reply-grant.test.ts import modules of that directory, and tsc puts them in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "packages/claude-envoy/tests/legion-tool.test.ts:9 imports @legion/pi-shared/test/image-manifest"),
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:44-45, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:14-15"),
         (f"{FIX}/envelope-without-role.json", "packages/claude-envoy/tests/envelope-role-field.test.ts:5"),
@@ -518,6 +518,7 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (".github/scripts/check-private-names.sh", ".github/actions/private-names-packed-plugin/action.yml runs it, "
                                                    "called by " + at("private-names", "./.github/actions/private-names-packed-plugin",
                                                                      job_file("claude-envoy"))),
+        (f"{FIX}/session-grant.json", "packages/claude-envoy/tests/agent-stream-reply-grant.test.ts runs sessionGrantConfig, which packages/envoy-client/test/nats-server.ts:4 imports it for"),
 )
 
 
@@ -698,6 +699,51 @@ def ceiling_run(job):
 def ceiling_reads(job):
     """pg-connection-ceiling.sh itself, which `job`'s sizing step runs."""
     return reads((CEILING, f"{at(job, CEILING_STEP)} runs it"))
+
+
+# The forced-order steps run packages/envoy/scripts/forced-order.sh, whose go test builds each
+# package's TestForcedOrder tests under -tags odatrace and -race against a copy of nats-server
+# that the script hooks with internal/testnats/testdata/hooked/v<version>, and replaces through a
+# copy of the workspace file or of the module's go.mod: a replacement outside the repository, of a
+# third-party module, so the first-party closure is the plain one under those tags. The check reads the step's run: line,
+# not what the script runs, so each such gate declares the script and the hooks it applies, and
+# the go test on the script's line FORCED_ORDER_GO_TEST, pinned as a Run per step.
+FORCED_ORDER = f"{ENVOY}/scripts/forced-order.sh"
+FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
+FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
+                        "-run '^TestForcedOrder' \"$@\"")
+# The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
+# to a version with no hooks fails the step), and one on 2.10.29.
+ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
+ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
+DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
+DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
+# The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
+# forced-order.test.sh runs forced-order.sh in five cases, and the one run that gets as far as a
+# go test is over its fixture package, hooktest/skiponly, on the linked version; the other four
+# are refused before anything is built.
+FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
+ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
+ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]
+
+
+def envoy_forced_order_step(server):
+    """The envoy-go-race step that runs the forced-order tests on nats-server `server`, or, for "",
+    on the version the workspace links."""
+    return f"Forced-order tests on the hooked nats-server v{server}" if server else \
+        "Forced-order tests on the hooked nats-server the module links"
+
+
+def forced_order_run(job, step, workdir, pkgs):
+    """The go test forced-order.sh starts in `job`'s `step`, over `pkgs` of the module at `workdir`."""
+    return script_run(FORCED_ORDER, FORCED_ORDER_GO_TEST, f"run by {at(job, step)}", workdir, pkgs,
+                      tags="odatrace", race=True)
+
+
+def forced_order_reads(job, step):
+    """forced-order.sh itself and the hooks it applies, which `job`'s `step` reads."""
+    return reads((FORCED_ORDER, f"{at(job, step)} runs it"),
+                 (FORCED_ORDER_HOOKS, f"{FORCED_ORDER}, run by {at(job, step)}, patches nats-server with them"))
 
 
 def two_builds_go_step():

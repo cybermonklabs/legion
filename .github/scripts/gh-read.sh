@@ -8,13 +8,15 @@
 # gh_wait_reset [--stderr <file>] <command>...: runs the command once. When it fails on one of
 # GitHub's rate limits, it works out when GitHub will answer again and, when that falls before the
 # job's limit (or the step's, below) by at least GH_WAIT_MARGIN seconds, logs one ::warning:: line
-# naming the wait and the limit, sleeps until then and runs the command once more. When that time
-# falls later, or no limit can be read, it runs nothing more and fails by name at once. Any other
-# failure is the command's own: its stdout, its stderr and its exit status reach the caller as a
-# bare call's would. It returns the status of the run it ended on, or 75 when it failed by name:
-# a wait past the limit, no limit to wait within, a reset it could not read, or a refusal again
-# after the wait. Every line of its own goes to stderr; stdout holds the stdout of the run it
-# ended on and nothing else, so a run it repeats leaves no half page in the caller's hands.
+# naming the wait and the limit, sleeps until then and runs the command once more; when that time
+# has passed by the moment it would sleep (a slow host), it runs the command once more at once and
+# logs no wait. When that time falls past the limit, or no limit can be read, it runs nothing more
+# and fails by name at once. Any other failure is the command's own: its stdout, its stderr and
+# its exit status reach the caller as a bare call's would. It returns the status of the run it
+# ended on, or 75 when it failed by name: a wait past the limit, no limit to wait within, a reset
+# it could not read, or a refusal again after the wait. Every line of its own goes to stderr;
+# stdout holds the stdout of the run it ended on and nothing else, so a run it repeats leaves no
+# half page in the caller's hands.
 #
 # --stderr <file> writes the stderr of the run it ended on to <file> instead of stderr, for a
 # caller that reads gh's words (a 404 told apart from a refusal); an earlier run's stderr, and
@@ -72,9 +74,10 @@
 # three were refused otherwise, which is the caller's to answer: a refused jobs list leaves
 # ci-ok-report.sh with no result to name for the jobs that have not ended, a refused post leaves
 # no ci-ok at all, and a refused PATCH leaves a stale ci-ok on the head. Its callers: the jobs
-# list of ci-ok-report.sh, the check-run post of post-check-run.sh, the check-run list and each
-# PATCH of ci-ok-reconcile.sh, the check-run and annotation reads of runner-shutdown.sh, and the
-# jobs read of dispatch-browser-run-reads.sh, which bounds each attempt with `timeout 30`. GitHub
+# list and the queue branch's tip of ci-ok-report.sh, the `git ls-remote` ref reads of
+# ci-ok-hold.sh, the check-run post of post-check-run.sh, the check-run list and each PATCH of
+# ci-ok-reconcile.sh, the check-run and annotation reads of runner-shutdown.sh, and the jobs read of
+# dispatch-browser-run-reads.sh, which bounds each attempt with `timeout 30`. GitHub
 # refuses a call now and then (a 502), and ci-ok, the check main's ruleset requires, is posted
 # from what one call answered.
 
@@ -114,7 +117,9 @@ gh_wait_reset() {
       else
         seconds=60 named="GitHub's documented minimum, as the answer named no retry-after"
       fi
-      wake=$((now + seconds))
+      # A second past it, as for a reset: `now` is whole seconds, up to one behind the clock, so
+      # now + seconds can fall up to a second short of the wait GitHub asked for.
+      wake=$((now + seconds + 1))
       until="GitHub's secondary rate limit asks this call to wait $seconds s ($named), until $(_gh_read_utc "$wake")"
     fi
     if [ -z "$failure" ] && [ "$wake" -gt "$now" ]; then
