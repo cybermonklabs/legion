@@ -3,6 +3,8 @@ package duty
 import (
 	"context"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // WokenLoop is one change-driven background loop: the work a timer loop would redo every period
@@ -35,6 +37,12 @@ type WokenLoop struct {
 	// with no wake - an attempt's retry time, a claim's expiry - or the zero time for never.
 	// Each pass's answer replaces the last one's, and a due time is held to MinGap like a wake.
 	Pass func(context.Context) (next time.Time)
+	// Clock is the time the loop reads and waits on (package clock): when each pass starts, the
+	// gap after it, and the one timer it arms for an owed or due pass; nil, which every loop of
+	// a deployment leaves it, is clock.Real. Pass's due times are read on it, so a Pass that
+	// returns one reads this clock too. A test hands a clocktest.Fake and moves it, so whether a
+	// pass has run by a moment is not decided by how long a loaded machine takes.
+	Clock clock.Clock
 }
 
 // RunWoken runs loop until ctx is cancelled: one pass at once, then a pass on each wake and at each
@@ -57,6 +65,10 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 	if l.Lease != "" && l.MinGap <= 0 {
 		panic("duty: a leased WokenLoop needs a positive MinGap")
 	}
+	clk := l.Clock
+	if clk == nil {
+		clk = clock.Real()
+	}
 	var (
 		// owed is whether a pass is owed regardless of any due time: the boot pass, a wake, or an
 		// attempt whose pass did not run.
@@ -68,7 +80,7 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 		notBefore time.Time
 		// The one timer the loop owns, re-armed rather than replaced, and the time it is armed
 		// for (zero when it is not armed).
-		timer *time.Timer
+		timer clock.Timer
 		armed time.Time
 	)
 	defer func() {
@@ -81,11 +93,11 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 		if at, ok := nextAttempt(owed, due, notBefore); ok {
 			switch {
 			case timer == nil:
-				timer = time.NewTimer(time.Until(at))
+				timer = clk.NewTimer(at.Sub(clk.Now()))
 			case !at.Equal(armed):
-				timer.Reset(time.Until(at))
+				timer.Reset(at.Sub(clk.Now()))
 			}
-			armed, fire = at, timer.C
+			armed, fire = at, timer.C()
 		} else if !armed.IsZero() {
 			timer.Stop()
 			armed = time.Time{}
@@ -102,7 +114,7 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 		if ctx.Err() != nil {
 			return
 		}
-		started := time.Now()
+		started := clk.Now()
 		next, ran := l.attempt(ctx, exclusive)
 		if ran {
 			owed, due, notBefore = false, next, started.Add(l.MinGap)
@@ -112,7 +124,7 @@ func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 			return
 		}
 		owed = true
-		notBefore = later(notBefore, time.Now().Add(Jittered(l.MinGap)))
+		notBefore = later(notBefore, clk.Now().Add(Jittered(l.MinGap)))
 	}
 }
 

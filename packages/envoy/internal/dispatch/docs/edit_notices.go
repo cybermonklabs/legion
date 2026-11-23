@@ -215,13 +215,16 @@ func (s *Service) runEditNotices(ctx context.Context, leases duty.Leases, wake <
 		Wake:   wake,
 		MinGap: schedule.minGap,
 		Pass:   s.editNoticePass,
+		Clock:  s.clock,
 	})
 }
 
 // editNoticePass is one sweep: it sends the due notices (sendDueEditNotices) and returns when the
 // loop next needs to run with no wake, the earliest due time left (nextEditNoticeDue), or the zero
 // time when no notice has one. A sweep whose read of the due ids or of that time failed asks again
-// now, which the loop holds to its gap.
+// now, which the loop holds to its gap. Each time it returns is read on the service's clock, the
+// one the loop waits on (runEditNotices): the wait the database reports is added to that clock's
+// now.
 func (s *Service) editNoticePass(ctx context.Context) time.Time {
 	sent, err := s.sendDueEditNotices(ctx)
 	if sent > 0 {
@@ -232,7 +235,7 @@ func (s *Service) editNoticePass(ctx context.Context) time.Time {
 		return time.Time{}
 	case err != nil:
 		slog.Error("dispatch: send edit notices", "error", err)
-		return time.Now()
+		return s.clock.Now()
 	}
 	var wait *int64
 	if err := s.store.Pool.QueryRow(ctx, nextEditNoticeDue).Scan(&wait); err != nil {
@@ -240,12 +243,12 @@ func (s *Service) editNoticePass(ctx context.Context) time.Time {
 			return time.Time{}
 		}
 		slog.Error("dispatch: read the next edit notice's due time", "error", err)
-		return time.Now()
+		return s.clock.Now()
 	}
 	if wait == nil {
 		return time.Time{}
 	}
-	return time.Now().Add(time.Duration(*wait) * time.Microsecond)
+	return s.clock.Now().Add(time.Duration(*wait) * time.Microsecond)
 }
 
 // sendDueEditNotices sends up to editNoticeBatch due notices, each in a transaction of its own, and
