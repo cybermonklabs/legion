@@ -693,11 +693,12 @@ describe("the controls, against an outside origin stand-in", () => {
   );
 
   // `grants` judges what a restricted member reaches of other sessions' credential grants by who
-  // answered: the list PASS only holding the person's own grants alone (the operator matched
-  // whatever its letter case), the revoke PASS only on Dispatch's own 403 RESTRICTED_MEMBER; the
-  // broker's 403 NOT_APPROVER (Dispatch relayed it) and a 2xx are FAIL, every other answer
-  // UNKNOWN, and with no probe id, one that is no UUID or no cookie, nothing is revoked; nor where
-  // its own list shows the probe grant naming an approver or an operator (the person among them).
+  // answered: the list PASS only holding the person's own grants alone (the operator matched as
+  // Dispatch and the broker fold a login: A-Z in either case), the revoke PASS only on Dispatch's
+  // own 403 RESTRICTED_MEMBER; the broker's 403 NOT_APPROVER (Dispatch relayed it) and a 2xx are
+  // FAIL, every other answer UNKNOWN, and with no probe id, one that is no UUID or no cookie,
+  // nothing is revoked; nor where its own list shows the probe grant naming an approver or an
+  // operator (the person among them).
   test(
     "grants passes only on a list of the person's own grants and Dispatch's own refusal of the revoke",
     async () => {
@@ -901,6 +902,50 @@ describe("the controls, against an outside origin stand-in", () => {
     rowLimit({
       atOnce: ["short", "short", "short", "short", "short", "short", "short", "short", "short"],
     })
+  );
+
+  // A grant's operator is held to the person as Dispatch and the broker fold a login (fold.Login):
+  // the letters A-Z in either case are one person, and no other letter is folded, so an operator
+  // that differs from the person only in the case of a letter outside A-Z names another person,
+  // whose grant the list must not hold.
+  test(
+    "grants holds a grant's operator to the person in the one form Dispatch and the broker fold a login to",
+    async () => {
+      const person = "zoë@outside.example";
+      const own = { id: "5d1e2c4b-8a7f-4e3d-9c2b-1a0f9e8d7c6b", operator: " ZOë@Outside.Example " };
+      const other = { id: "6e2f3d5c-9b8a-4f4e-8d3c-2b1a0f9e8d7c", operator: "ZOË@outside.example" };
+      const folded = startOriginStandIn({ grants: [own] });
+      const apart = startOriginStandIn({ grants: [own, other] });
+      try {
+        const [foldedRun, apartRun] = await Promise.all(
+          [folded, apart].map((origin) =>
+            drive(
+              ["grants"],
+              {
+                OUTSIDE_EDGE_STATE: stateWith({
+                  origin: origin.url,
+                  cookie: "dsession=stand-in",
+                  person,
+                }),
+              },
+              "short"
+            )
+          )
+        );
+        expect(rowsOf(foldedRun).get("grants-list"), foldedRun.stdout).toMatchObject({
+          got: `listed 1 grants, 0 of a session that does not act for ${person}`,
+          verdict: "PASS",
+        });
+        expect(rowsOf(apartRun).get("grants-list"), apartRun.stdout).toMatchObject({
+          got: `listed 2 grants, 1 of a session that does not act for ${person}`,
+          verdict: "FAIL",
+        });
+      } finally {
+        folded.stop();
+        apart.stop();
+      }
+    },
+    rowLimit({ atOnce: ["short", "short"] })
   );
 
   test(

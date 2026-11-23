@@ -1868,6 +1868,14 @@ function statusWords(status: number, body: unknown): string {
   return typeof code === "string" && code !== "" ? `${status} ${code}` : `${status}`;
 }
 
+/** A person's login as Dispatch and the broker fold it before they store or compare it
+ *  (fold.Login: the blanks around it cut, the letters A-Z lowered and no other letter changed). A
+ *  grant's operator is written so (record.CanonicalLogin), and so is the login `GET /auth/whoami`
+ *  names, so the two are held to each other in that one form. */
+function foldLogin(login: string): string {
+  return login.trim().replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
 /** `grants`: what the person reaches, with the kept cookie, of the credential grants of sessions
  *  that do not act for them: the list, and a revoke of the grant OUTSIDE_GRANTS_PROBE_ID names. */
 async function grants(env: NodeJS.ProcessEnv): Promise<number> {
@@ -1893,7 +1901,7 @@ async function grants(env: NodeJS.ProcessEnv): Promise<number> {
   }
   const rows = new Rows(tsvSet || join(state, "outside-edge-grants.tsv"));
   const probe = (env.OUTSIDE_GRANTS_PROBE_ID ?? "").trim();
-  const self = person.toLowerCase();
+  const self = foldLogin(person);
   const headers = { Accept: "application/json", Cookie: cookie, Origin: origin };
   // The probe grant as the list below shows it, where it does: read again just before the revoke.
   let probeSeen: unknown;
@@ -1920,7 +1928,7 @@ async function grants(env: NodeJS.ProcessEnv): Promise<number> {
     } else {
       const foreign = listed.filter((grant) => {
         const operator = member(member(grant, "enrollment"), "operator");
-        return typeof operator !== "string" || operator.toLowerCase() !== self;
+        return typeof operator !== "string" || foldLogin(operator) !== self;
       });
       const probeWords =
         probe === ""

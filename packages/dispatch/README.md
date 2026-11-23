@@ -1055,8 +1055,9 @@ only when the list, read again after the revoke, no longer holds the login, and 
 when the list gave no answer, before the revoke or after it.
 `grants` reads, with the kept cookie, what the person reaches of other sessions' credential
 grants: row `grants-list`, `GET /api/v1/credential-grants?approver=me`, passes on 200 holding only
-grants whose enrollment names the person as its operator and fails on 200 holding any other,
-naming how many and no grant's id or secret; row `grants-revoke`, the revoke of the grant
+grants whose enrollment names the person as its operator (the two compared as Dispatch and the
+broker fold a login: blanks cut, A-Z lowered, no other letter changed) and fails on 200 holding any
+other, naming how many and no grant's id or secret; row `grants-revoke`, the revoke of the grant
 `OUTSIDE_GRANTS_PROBE_ID` names, passes only on Dispatch's own refusal, 403 `RESTRICTED_MEMBER`,
 and fails on a 2xx or on the broker's 403 `NOT_APPROVER`, which shows Dispatch relayed it. Any
 other answer, or none, is `UNKNOWN`, and so is the revoke with no probe id or one that is no
