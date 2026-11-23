@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	neturl "net/url"
 	"slices"
@@ -1721,7 +1722,32 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(1100 * time.Millisecond)
+	// CONTROL ONLY: wake the holder's backend again and again while the census reads it.
+	stop, woke := make(chan struct{}), make(chan string)
+	go func() {
+		wakes, last := 0, error(nil)
+		for {
+			select {
+			case <-stop:
+				woke <- fmt.Sprintf("%d wakes, last error %v", wakes, last)
+				return
+			default:
+			}
+			var sent bool
+			if err := store.Pool.QueryRow(ctx, "select pg_log_backend_memory_contexts($1)", int(holder.PgConn().PID())).Scan(&sent); err != nil {
+				last = err
+			} else if sent {
+				wakes++
+			}
+		}
+	}()
 	report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
+	close(stop)
+	control := <-woke
+	t.Logf("CONTROL: %s", control)
+	if strings.HasPrefix(control, "0 wakes") {
+		t.Fatalf("CONTROL: no wake reached the holder: %s", control)
+	}
 	if err != nil {
 		t.Fatalf("census: %v", err)
 	}
