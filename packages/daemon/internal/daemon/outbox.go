@@ -2798,13 +2798,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		switch machine.Claim().State {
+		// Every read of the claim a stop row makes before it stops the claim — here, and in the
+		// release, issue_close and tree_close rows below, and a pause's stop (pauseStop) — is the
+		// machine's published view (supervise.Machine.View), never Machine.Claim, as the operator's
+		// routes read it (api's claimRequest): a stop never waits for the decision in flight, and
+		// the view is what the claim's latest decision left (dispatch://INFRA-5297, a suspension,
+		// a release or a deletion of the pod never waits).
+		switch machine.View().Claim.State {
 		case supervise.StateFailed, supervise.StateRetired:
 			// The claim runs nothing, so there is nothing to suspend.
 			return nil
 		}
 		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too.
-		if last := machine.Claim().LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
+		if last := machine.View().Claim.LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
 			r.log.Info("outbox suspend superseded by a newer start; finished without acting",
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
 			return nil
@@ -2848,7 +2854,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		switch machine.Claim().State {
+		switch machine.View().Claim.State {
 		case supervise.StateFailed, supervise.StateRetired:
 			// The claim runs nothing, so there is nothing to release.
 			return nil
@@ -2872,7 +2878,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
-		if last := machine.Claim().LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
+		if last := machine.View().Claim.LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
 			r.log.Info("outbox issue close superseded by a newer start; finished without acting",
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "start-row", last)
 			return nil
@@ -2896,7 +2902,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err != nil {
 			return err
 		}
-		if !workflow.StopActs(row.ID, payload, machine.Claim().LastStartRow, root) {
+		if !workflow.StopActs(row.ID, payload, machine.View().Claim.LastStartRow, root) {
 			r.log.Info("outbox tree close of a linger that has ended; finished without acting", "row", row.ID, "issue", issue.Key,
 				"tree", issue.Tree, "role", payload.Role, "linger", payload.Linger)
 			return nil

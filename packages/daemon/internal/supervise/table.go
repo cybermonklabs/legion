@@ -190,6 +190,12 @@ const (
 	// no process of its own waits launching until it fires; one whose process runs waits as the
 	// gate found it.
 	TimerPause TimerKind = "pause"
+	// TimerPodStart is the grant of its issue pod's start to a launch parked at the pod's gate
+	// (askPod): no wait of the clock's, but the gate's grant, posted to the machine as a timer's
+	// firing is (podHold.notify, fire). The launch asks the runtime for its process when it fires
+	// (podStartDue). The claim waits launching with no process until then, and whatever lets that
+	// launch go disarms it, which takes its start out of the gate (podPark).
+	TimerPodStart TimerKind = "pod_start"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -740,6 +746,8 @@ const (
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
 	// The gate's own stop of a launch it held while the project is paused (pauseGate).
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
+	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod).
+	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1103,6 +1111,17 @@ func fillTable(t *builder) {
 		[]ClaimState{StateSuspended, StateLaunching, StateFailed}, live...)
 	t.ignore(onPauseTimer, "no launch is held by the pause's gate: a claim with no process it holds is written launching, and a suspension, a failure, a retirement and an undecided pane each leave the claim without one",
 		processless...)
+
+	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod). The park
+	// keeps the claim launching with no process, and every decision that moves the claim out of
+	// launching lets its launch go, which drops the park with the claim's timers (letGo), so the
+	// grant reaches a launching claim alone. Its launch ends as any launch does: started and
+	// launching, failed, or launching again for a retry.
+	t.row(onPodStartTimer, "the issue pod's gate granted this claim's parked launch its start: ask the runtime for its process now", podStartDue,
+		[]ClaimState{StateLaunching, StateFailed}, StateLaunching)
+	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",
+		StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle,
+		StateSuspended, StateFailed, StateRetired)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,

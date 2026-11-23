@@ -117,10 +117,11 @@ func (m *Machine) dropEndedPauseHold() {
 	m.dropHeld()
 }
 
-// launchMet is whether a launch of the claim waits on the machine now: a wake parked in the pacing
-// or held by the pause's gate (Machine.wake), or a relaunch waiting its retry (Machine.relaunch).
-// A pause's stop that meets one owes the role that launch (PauseStop.LaunchOwed), and it is read
-// before the stop lets the process go, which drops both (letGo).
+// launchMet is whether a launch of the claim waits on the machine now: a wake parked in the pacing,
+// held by the pause's gate or waiting at its issue pod's gate (Machine.wake), or a relaunch waiting
+// its retry (Machine.relaunch). A pause's stop that meets one owes the role that launch
+// (PauseStop.LaunchOwed), and it is read before the stop lets the process go, which drops both
+// (letGo).
 func (m *Machine) launchMet() bool { return m.wake != nil || m.relaunch != nil }
 
 // holdsTask is whether the claim holds a task no turn has taken: its pending delivery, while it

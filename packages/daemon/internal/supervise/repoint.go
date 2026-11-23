@@ -215,9 +215,11 @@ func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemo
 // The park is read first and by identity, because it is the one end the claim alone cannot show:
 // a parked launch leaves the claim exactly as the replacement found it, process and state and
 // all (parkWake), and the wake the machine holds after is this replacement's only where it is
-// not the one it began with. The caller holds mu.
+// not the one it began with. A launch waiting for its issue pod's start is no such park: it let
+// the process go and wrote the claim launching before it parked (askPod, wake.park), so the claim
+// says it, a relaunch still to make. The caller holds mu.
 func (m *Machine) endReached(found string, parked *wake) ProcessEnd {
-	if m.wake != nil && m.wake != parked {
+	if m.wake != nil && m.wake != parked && m.wake.park == nil {
 		return EndRelaunchParked
 	}
 	if loc := m.claim.Locator; loc != nil {

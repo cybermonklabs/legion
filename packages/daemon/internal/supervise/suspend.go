@@ -179,6 +179,13 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 // behind it keeps the turn it already holds, exactly as a wake dropped for a request that does not
 // wait leaves them (dropWakeFor, reparkWake).
 //
+// A claim whose launch waits for its issue pod's start does not wait either (askPod, wake.park):
+// the launch has let its process go and parked on the machine with no process started, waiting
+// only for another role's session load, and a suspension, a release or a deletion of the pod
+// never waits (dispatch://INFRA-5297). It is decided where it arrives by the same branch, and the
+// let-go of the suspension takes its start out of the pod's gate (letGo, podPark), where the
+// launch writes that it was cut short.
+//
 // A claim whose process still runs is untouched by any of this. The gate left such a claim exactly
 // as it stood (parkWake), so its suspend is decided by the row of the state it still holds — and a
 // launch that did start a process reaches the hold here as it always did, since that process is
@@ -218,8 +225,10 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 			Reason: "the claim's launch has not registered, and this suspension is not one that is held for it"}
 	}
 	if m.wake != nil && m.claim.Locator == nil {
-		m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
-			"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+		if m.wake.park == nil {
+			m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
+				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.at)
+		}
 		return m.suspendedFor(ctx, request, true)
 	}
 	if m.wake != nil && request.Pause != 0 {

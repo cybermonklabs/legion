@@ -13,7 +13,7 @@ package supervise
 // The gate is Kubernetes' OrderedReady rule inside one pod, with the end of a session load as the
 // readiness signal: a role's process starts only when no role of its pod is starting or loading
 // and no role ahead of it in the order waits. A machine asks right before it asks the runtime for
-// the process (launchNow, waitForPod), holds the pod from the grant until its process starts
+// the process (launchTries, askPod), holds the pod from the grant until its process starts
 // (podStartFailed ends a hold whose start failed), and from that start until its load ends,
 // which is podLoadSettle after its agent's registration (register moves the claim out of
 // booting, and a timer of the gate's own ends the load: PodStarts.settle), or an end of the
@@ -22,27 +22,44 @@ package supervise
 // so a path added later keeps the rule by ending its decision, as the refresh lane's credit is
 // kept (endRefreshLane).
 //
-// A load that does not end is bounded: podLoadBound after its process started, the next role
-// starts all the same. A waiting start leaves the queue when its own wait ends: a suspension
-// cancels the launch it belongs to (stopStart), a retirement cancels that launch's waits at the
-// gate and nothing else of it, the one waiting now or one a later try would come to (Handle,
-// stopPodWait), and the daemon's stop ends both. Neither waits for a load.
+// No start waits under its machine's lock. A start the gate cannot grant where it asks parks on
+// the machine, as the wake pacing parks a launch (askPod, wake.park): the claim stays written
+// launching with no process and the decision ends, so a suspension, a release or a close of the
+// claim, and every reader of it, finds the machine free, and the outbox row that raised the
+// launch finishes and frees its issue's lane. The grant reaches the machine as a timer's firing
+// does, an event of its own (TimerPodStart) posted from a goroutine outside the gate's lock, and
+// that event's decision asks the runtime for the process under the hold it was granted
+// (podStartDue).
+//
+// A load whose agent has not registered podLoadBound after its process started holds the next
+// start no longer: the next role starts all the same. A registration before that stops the bound
+// (settle), and the load then ends at its settle, however long after its process's start.
+//
+// A parked start leaves the queue at once when anything ends the launch it belongs to: each such
+// path lets the claim's process go, and the let-go drops the park with the claim's timers (letGo,
+// podPark) — a suspension of any source, the pause's and the idle release's among them, a
+// retirement, a close of the issue or of the tree, an operator's close, and a relaunch that
+// replaces the launch. A park another park replaces leaves too (waitOnMachine), and so does every
+// park at the daemon's stop, which ends the machines' context. A start granted and not yet run
+// leaves as a failed launch, and the next start is granted. None of them waits for a load.
 //
 // The order among the starts waiting in one pod is the spec's (dispatch://INFRA-5297/spec R3,
 // podQueue.next): the role whose task or message caused the pod's start goes first, and the others
 // follow in the order their starts were asked. A start a request raised — a task, a message, an
 // operator's spawn, resume or retry, which is every launch revive makes — is such a cause, and
 // the earliest asked of those waiting goes first; one goes first, not every one, so a later
-// request's start waits behind a recovery asked before it. With no such start waiting, no single
-// role caused the start — deaths, a roles container's restart, a pod an update round replaced —
-// and the role working the issue's current phase goes first (Deps.PhaseRole), then the others in
-// the order of claim.Roles, each in the order asked where the two say nothing. The order is read
-// at each grant, over the starts waiting then, and the pod remembers that a request has led its
-// run of starts until it holds nothing and nothing waits in it.
+// request's start waits behind a recovery asked before it. Where no single role caused the start
+// — deaths, a roles container's restart, a pod an update round replaced — the first start to reach
+// the gate of a pod that holds nothing goes first, whatever its role, since nothing is there for
+// it to wait behind (grant), and the starts that wait behind it go with the role working the
+// issue's current phase first (Deps.PhaseRole), then the others in the order of claim.Roles, each
+// in the order asked where the two say nothing. The order is read at each grant, over the starts
+// waiting then, and the pod remembers that a request has led its run of starts until it holds
+// nothing and nothing waits in it.
 //
 // It is one per daemon, shared by every machine and safe for concurrent use, as the refresh gate
-// is (RefreshGate): a machine waits inside its decision, holding its own lock, so the gate never
-// takes a machine's lock and no machine takes another's. A pod is keyed by its issue, which is
+// is (RefreshGate): a machine asks it inside its decision, holding its own lock, and the gate never
+// takes a machine's lock, so no machine takes another's. A pod is keyed by its issue, which is
 // what one Sandbox serves; the project controller runs in a pod of its own and asks nothing
 // (Machine.gated). A daemon whose roles run in no pod builds none (Deps.PodStarts), and the
 // daemon's own state holds no part of it: a restart builds an empty gate and gives each pod the
@@ -60,12 +77,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// podLoadBound is how long a role's session load holds its pod's start before the next start
-// goes all the same, counted from the moment its process started: the spec's decision, from the
-// measured peak of a long resume, which lasts some tens of seconds, so a hung load holds the roles
-// behind it a short time only. It is well below the 600 s boot timeout every deployment
-// configures (worker_boot_timeout_seconds), so the bound releases a start long before that
-// timeout probes the hung process. It is a constant: no setting names it.
+// podLoadBound is how long a role's session load holds its pod's start while its agent has not
+// registered, counted from the moment its process started: past it the next start goes all the
+// same. A registration inside it stops it (settle), and the load holds the pod until its settle
+// ends (podLoadSettle): a load that registers late is the one whose peak is late, and in the
+// measured resume of #5153 the agent registered at +90.7 s and the pod's memory peaked at
+// +119.9 s, so a bound that ran on past the registration would have started the next role 0.8 s
+// after the peak. It is the spec's decision, from the measured peak of a long resume, which lasts
+// some tens of seconds, so a hung load holds the roles behind it a short time only. It is well
+// below the 600 s boot timeout every deployment configures (worker_boot_timeout_seconds), so the
+// bound releases a start long before that timeout probes the hung process. It is a constant: no
+// setting names it.
 const podLoadBound = 2 * time.Minute
 
 // podLoadSettle is how long after its agent's registration a role's session load ends: the end
@@ -74,8 +96,9 @@ const podLoadBound = 2 * time.Minute
 // claim-session.ts), and in two resumes read every 0.5 s in an issue pod, of a 4.7 MB and a 75 MB
 // transcript, the process's memory kept rising after it and peaked 6.7 s and 16.4 s later. So a
 // load ends podLoadSettle after the registration rather than at it, nearly twice the later peak.
-// The bound still counts from the process start (podLoadBound), so a settle that would pass it is
-// cut short there for the next start, and the load's own line is written when its settle ends.
+// The registration stops the bound (podLoadBound), so the settle runs whole whenever the agent
+// registered; one that registers after the bound released the pod ends its load at its settle
+// all the same, and the load's own line is written then.
 const podLoadSettle = 30 * time.Second
 
 // The two lines the gate's record is read from (dispatch://INFRA-5297 R4 and R6): every process
@@ -94,7 +117,8 @@ const (
 	// podLoadEnded is the holder's load settled: podLoadSettle passed after its agent registered
 	// (register, PodStarts.settle), and its load is over.
 	podLoadEnded podHoldEnd = "load end"
-	// podFailedLaunch is the holder's start failing before its process started (podStartFailed).
+	// podFailedLaunch is the holder's start failing before its process started (podStartFailed),
+	// or a start granted and taken out of the gate before its machine ran it (PodStarts.cancel).
 	podFailedLaunch podHoldEnd = "failed launch"
 	// podProcessEnded is the holder's process ending before its load did: it died, it was
 	// relaunched at a new generation, or its claim failed.
@@ -103,7 +127,7 @@ const (
 	podSuspension podHoldEnd = "suspension"
 	// podRetirement is the holder's claim retired.
 	podRetirement podHoldEnd = "retirement"
-	// podBound is podLoadBound passing over a load that had not ended.
+	// podBound is podLoadBound passing over a load whose agent had not registered.
 	podBound podHoldEnd = "bound"
 )
 
@@ -158,17 +182,21 @@ type podEnd struct {
 
 // podHold is one start's place in its pod: waiting from its ask, then holding the pod from its
 // grant. Its fields are the gate's, under PodStarts.mu, but for three kinds: the ask's own
-// (podAsk, asked), which are set before the hold is queued and never change; the grant's, which
-// the machine reads once its wait returns, after the grant set them; and loadStart and line,
-// which the machine reads once started or adopt set them, and which never change after.
+// (podAsk, asked, notify), which are set before another goroutine can reach the hold and never
+// change; the grant's, which the machine reads once it runs the start granted — in the decision
+// that asked, or in the one the grant's event starts, which a goroutine the grant posts begins —
+// after the grant set them; and loadStart and line, which the machine reads once started or adopt
+// set them, and which never change after.
 type podHold struct {
 	podAsk
 	// asked is when the start asked; its place in the order asked is its place in its queue's
 	// waiting.
 	asked time.Time
+	// notify tells the start's machine of its grant (askPod), nil for a start granted where it
+	// asked. The gate calls it under its own lock at the grant (grant), so it neither blocks nor
+	// takes a lock: it posts the machine its event from a goroutine of its own (Machine.fire).
+	notify func()
 
-	// granted is closed at the grant, which is what a wait waits on.
-	granted chan struct{}
 	// grantedAt is the grant's moment; waited is whether the start waited for it, and waitedFor
 	// what ended that wait: the hold that left last when it was granted. A start granted where
 	// it asked waited for nothing.
@@ -185,8 +213,9 @@ type podHold struct {
 	bound           Cancel
 	releasedByBound bool
 	// registeredAt is when the hold's agent registered, zero before (settle); settle is the timer
-	// that ends the load podLoadSettle after it, nil before. ended is whether the load has ended,
-	// by its settle or by its machine (finish), so a load ends once and writes one line.
+	// that ends the load podLoadSettle after it, nil before. ended is whether the hold has ended:
+	// its load, by its settle or by its machine (finish), or the start itself, taken out of the
+	// gate before it ran (cancel). So a load ends once and writes one line.
 	registeredAt time.Time
 	settle       Cancel
 	ended        bool
@@ -203,11 +232,13 @@ type podLoadLine struct {
 }
 
 // next is the index of the start waiting first in the pod's order, and whether a request put it
-// there. Where no request has led the run yet (requestLed), the earliest-asked start a request
-// raised goes first; once one has, the order asked. With no start a request raised waiting and
-// none having led, the phase worker goes first, then claim.Roles, then the order asked. waiting
-// is in the order asked, so that order's first is its first. Called with PodStarts.mu held, over
-// a queue with a start waiting.
+// there. It orders the starts that wait behind a hold alone: the first start to reach a pod that
+// holds nothing is granted where it asks, whatever its role (grant), so next never orders it.
+// Where no request has led the run yet (requestLed), the earliest-asked start a request raised
+// goes first; once one has, the order asked. With no start a request raised waiting and none
+// having led, the phase worker goes first, then claim.Roles, then the order asked. waiting is in
+// the order asked, so that order's first is its first. Called with PodStarts.mu held, over a
+// queue with a start waiting.
 func (q *podQueue) next() (int, bool) {
 	if q.requestLed {
 		return 0, false
@@ -255,40 +286,56 @@ func NewPodStarts(clock Clock) *PodStarts {
 	return &PodStarts{clock: clock, pods: map[string]*podQueue{}}
 }
 
-// wait asks for the pod's start and waits for it: the hold granted, or ctx's error once ctx ends
-// first, with the start out of the queue. A start whose own claim still holds the pod — a hold no
-// machine ended, as a machine restarted over the same gate leaves one — ends that hold's load
-// first, as a process that was let go (podProcessEnded): a claim runs one process at a time.
-//
-// A grant that lands as ctx ends is given back as a failed launch, so no pod is held by a start
-// that will never ask the runtime for its process.
-func (g *PodStarts) wait(ctx context.Context, ask podAsk) (*podHold, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
+// ask asks for the pod's start of one try of a launch, and never waits: it answers the hold, and
+// whether the gate granted it where it asked. A start that is not granted waits in the pod's
+// queue, and notify is how its grant reaches its machine (podHold.notify); it leaves the queue by
+// that grant or by cancel. A start whose own claim still holds the pod — a hold no machine ended,
+// as a machine restarted over the same gate leaves one — ends that hold's load first, as a
+// process that was let go (podProcessEnded): a claim runs one process at a time.
+func (g *PodStarts) ask(ask podAsk, notify func()) (*podHold, bool) {
 	g.mu.Lock()
+	defer g.mu.Unlock()
 	if held := g.pods[ask.pod]; held != nil && held.holder != nil && held.holder.token == ask.token {
 		g.finish(held.holder, podProcessEnded)
 	}
 	q := g.queue(ask.pod)
-	h := &podHold{podAsk: ask, asked: g.clock.Now(), granted: make(chan struct{})}
+	h := &podHold{podAsk: ask, asked: g.clock.Now()}
 	q.waiting = append(q.waiting, h)
 	g.grant(q, false)
-	g.mu.Unlock()
-	select {
-	case <-h.granted:
-		return h, nil
-	case <-ctx.Done():
+	if q.holder == h {
+		return h, true
 	}
+	h.notify = notify
+	return h, false
+}
+
+// cancel takes h out of its pod's start where no process of it has started: a start still
+// waiting leaves the queue, and one granted that its machine has not run yet gives the pod's
+// start to the next start as a failed launch would (finish, podFailedLaunch), so the next is
+// granted at once. It answers whether it took h out: false for a start whose process started,
+// and for one already taken out or ended.
+func (g *PodStarts) cancel(h *podHold) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if q.holder == h {
-		g.release(q, podFailedLaunch)
-	} else {
-		q.waiting = slices.DeleteFunc(q.waiting, func(w *podHold) bool { return w == h })
-		g.tidy(q)
+	if h.ended || !h.loadStart.IsZero() {
+		return false
 	}
-	return nil, ctx.Err()
+	q := g.pods[h.pod]
+	if q == nil {
+		return false
+	}
+	if q.holder == h {
+		g.finish(h, podFailedLaunch)
+		return true
+	}
+	i := slices.Index(q.waiting, h)
+	if i < 0 {
+		return false
+	}
+	h.ended = true
+	q.waiting = slices.Delete(q.waiting, i, i+1)
+	g.tidy(q)
+	return true
 }
 
 // started is h's process started: the hold moves from starting to loading, its load counts from
@@ -305,8 +352,9 @@ func (g *PodStarts) started(h *podHold, line podLoadLine) {
 
 // settle is h's agent registered: its load ends podLoadSettle from now (settled), unless an end
 // of its process, its suspension or its retirement comes first (end), and a settle already under
-// way is left as it is. It answers whether the load has ended already, which the machine reads
-// as its record of the load to drop.
+// way is left as it is. The registration stops the bound, which holds a load only until its agent
+// registers (podLoadBound): the pod is held until the settle ends. It answers whether the load
+// has ended already, which the machine reads as its record of the load to drop.
 func (g *PodStarts) settle(h *podHold) (ended bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -316,6 +364,9 @@ func (g *PodStarts) settle(h *podHold) (ended bool) {
 	if h.settle == nil {
 		h.registeredAt = g.clock.Now()
 		h.settle = g.clock.AfterFunc(podLoadSettle, func() { g.settled(h) })
+		if h.bound != nil {
+			h.bound.Stop()
+		}
 	}
 	return false
 }
@@ -400,14 +451,15 @@ func (g *PodStarts) adopt(pod string, token claim.Token, line podLoadLine) (*pod
 	return h, true
 }
 
-// boundReached is the bound passing over h: a hold that still holds its pod is released, and the
-// next start granted. The bound is armed only once the hold's process started (started, adopt), so
-// such a hold is loading, or settling after its registration. Its load ends when that end comes
-// (finish), and its line says the bound released it.
+// boundReached is the bound passing over h: a hold that still holds its pod, and whose agent has
+// not registered, is released, and the next start granted. The bound is armed only once the
+// hold's process started (started, adopt), and a registration stops it (settle), so such a hold
+// is loading; a registration the timer's own goroutine raced is read here, and keeps the pod. Its
+// load ends when that end comes (finish), and its line says the bound released it.
 func (g *PodStarts) boundReached(h *podHold) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if q := g.pods[h.pod]; q != nil && q.holder == h {
+	if q := g.pods[h.pod]; q != nil && q.holder == h && h.registeredAt.IsZero() {
 		h.releasedByBound = true
 		g.release(q, podBound)
 	}
@@ -424,10 +476,12 @@ func (g *PodStarts) release(q *podQueue, why podHoldEnd) {
 }
 
 // grant hands q's start to the first start waiting in the order (podQueue.next), where no start
-// holds it. after is whether a hold has just left, which is the one way a start waits: the first
-// ask into a pod that holds nothing is granted where it asks, chosen over no other start, so it
-// leads no run of the pod's starts either. A pod left with nothing is dropped. Called with mu
-// held.
+// holds it, and tells that start's machine (podHold.notify) where it waited. after is whether a
+// hold has just left, which is the one way a start waits: the first ask into a pod that holds
+// nothing is granted where it asks, whatever its role and whoever asks after it, since nothing is
+// there for it to wait behind, so it is chosen over no other start and leads no run of the pod's
+// starts either. That is the spec's first start to reach the pod's gate where no single role
+// caused the pod's start. A pod left with nothing is dropped. Called with mu held.
 func (g *PodStarts) grant(q *podQueue, after bool) {
 	if q.holder != nil {
 		return
@@ -445,7 +499,9 @@ func (g *PodStarts) grant(q *podQueue, after bool) {
 	if after {
 		h.waitedFor = q.lastEnd
 	}
-	close(h.granted)
+	if h.notify != nil {
+		h.notify()
+	}
 }
 
 // queue is pod's queue, made where the pod has none. Called with mu held.
@@ -499,54 +555,113 @@ func (m *Machine) adoptPodLoad() {
 	}
 }
 
-// podWaitable is the context a launch's waits at the gate run on: starting's, which a suspension
-// and the daemon's stop end, and one of its own that a retirement ends alone (stopPodWait), kept
-// under startMu as the start's own is (startable). The returned function clears it and cancels
-// it. A claim the gate does not hold gets starting and nothing to clear.
-func (m *Machine) podWaitable(starting context.Context) (context.Context, func()) {
+// askPod asks the pod's gate for the start of one try of a launch, right before that try asks the
+// runtime for its process (launchTries). It answers the hold the gate granted where it asked, or
+// nil for a claim the gate does not hold, with false; or true where the try waits — another role
+// of the pod starts or loads, or one ahead of this start in the order waits — and is parked on the
+// machine until its grant. A load this machine still records is its earlier process's, which this
+// launch has let go, so it ends first, as that process's end (podProcessEnded). The phase is read
+// only for a start no request raised, since the order reads it of no other (podQueue.next).
+//
+// A parked try is a wake whose turn is the grant rather than a moment of the pacing's (wake.park):
+// it waits on the machine as a wake the pacing parks over no process does (parkWake), holding the
+// rest of the launch from that grant on (launchTries with the grant), and the decision ends here,
+// so nothing waits under the machine's lock. The claim is written launching at this try's
+// generation with no process already: the try wrote it before its backoff, and the launch let
+// its process go before its first try (launchNow). The grant reaches the machine as a timer's
+// firing does: the gate calls notify under its own lock, which posts the machine a Timer of
+// TimerPodStart from a goroutine of its own (fire), outside the gate's lock and holding no
+// machine's, and that event's decision runs the launch on (podStartDue). The timer's entry is the
+// park itself (podPark), so whatever disarms the claim's timers takes the start out of the gate
+// (letGo, waitOnMachine); the daemon's stop does too, through the machine's context.
+//
+// A restart finds a claim whose launch was parked here stored launching with no process, as it
+// finds one the wake pacing parked over no process: internal/daemon's supervisor.restore writes
+// it launch_uncertain, and relaunchUnfinished, once the boot's reconciliation has proved that no
+// process of it runs, releases it to queued and spawns it again (launchUnfinishedClaim), which
+// asks the new daemon's empty gate.
+func (m *Machine) askPod(ctx context.Context, l launchTry, token string) (*podHold, bool) {
 	if !m.gated() {
-		return starting, func() {}
-	}
-	waiting, cancel := context.WithCancel(starting)
-	m.startMu.Lock()
-	m.cancelPodWait = cancel
-	m.startMu.Unlock()
-	return waiting, func() {
-		m.startMu.Lock()
-		m.cancelPodWait = nil
-		m.startMu.Unlock()
-		cancel()
-	}
-}
-
-// stopPodWait cancels every wait at the gate of the launch in flight, if one is in flight — the
-// one waiting there now, or one a later try of that launch would come to — and nothing else: a
-// retirement does not wait for a load, and a start already in the runtime is not cut short by it
-// (Handle). It takes startMu alone, never mu, as stopStart does.
-func (m *Machine) stopPodWait() {
-	m.startMu.Lock()
-	defer m.startMu.Unlock()
-	if m.cancelPodWait == nil {
-		return
-	}
-	m.log.Info("supervise: a retirement of the claim cancels every wait for its issue pod's start that its launch in flight makes")
-	m.cancelPodWait()
-}
-
-// waitForPod is the gate's wait of one try of a launch, right before that try asks the runtime
-// for its process (launchNow): the hold granted, nil for a claim the gate does not hold, or the
-// error of the wait's context. A load this machine still records is its earlier process's, which
-// this launch has let go, so it ends first, as that process's end (podProcessEnded). The phase is
-// read only for a start no request raised, since the order reads it of no other (podQueue.next).
-func (m *Machine) waitForPod(waiting context.Context, requested bool) (*podHold, error) {
-	if !m.gated() {
-		return nil, nil
+		return nil, false
 	}
 	if m.podLoad != nil {
 		m.endLoad(podProcessEnded)
 	}
-	return m.deps.PodStarts.wait(waiting, podAsk{pod: m.claim.Issue, token: m.claim.Token, role: m.claim.Role,
-		requested: requested, phaseWorker: !requested && m.phaseWorker(waiting)})
+	ask := podAsk{pod: m.claim.Issue, token: m.claim.Token, role: m.claim.Role,
+		requested: l.requested, phaseWorker: !l.requested && m.phaseWorker(ctx)}
+	m.seq++
+	granted := Timer{Claim: m.claim.Token, Kind: TimerPodStart, Generation: m.claim.Generation, Seq: m.seq}
+	hold, now := m.deps.PodStarts.ask(ask, func() { go m.fire(granted) })
+	if now {
+		return hold, false
+	}
+	park := &podPark{gate: m.deps.PodStarts, hold: hold, log: m.log, generation: m.claim.Generation}
+	park.unwatch = context.AfterFunc(m.ctx, func() { park.cut() })
+	m.timers[TimerPodStart] = armed{seq: granted.Seq, cancel: park}
+	m.wake = &wake{kind: WakeLaunch, state: m.claim.State, park: park, run: func(ctx context.Context) error {
+		return m.launchTries(ctx, l, &podGrant{token: token, hold: hold})
+	}}
+	m.log.Info("supervise: the launch waits for its issue pod's start while another role of the pod starts or loads its session",
+		"generation", m.claim.Generation, "pod", m.claim.Issue)
+	return hold, true
+}
+
+// podPark is a launch parked at its issue pod's gate as the machine's timers keep it (askPod,
+// TimerPodStart): the start it asked of the gate, and the watch of the machine's context that
+// takes that start out of the gate when the daemon stops. Its Stop is what disarming the timer
+// does, at every let-go of the claim's process (letGo) and where another park replaces this one
+// (waitOnMachine), so every path that ends the launch takes its start out of the gate at once.
+type podPark struct {
+	gate       *PodStarts
+	hold       *podHold
+	log        *slog.Logger
+	generation uint64
+	// unwatch stops the watch of the machine's context (context.AfterFunc), and answers whether
+	// it stopped it before it ran. It is set once, by the decision that parked, before any other
+	// decision can reach it; the watch itself reads only cut.
+	unwatch func() bool
+}
+
+// Stop takes the parked start out of the gate, and the watch with it, and answers whether it took
+// the start out (cut).
+func (p *podPark) Stop() bool {
+	p.unwatch()
+	return p.cut()
+}
+
+// cut takes the parked start out of the gate (PodStarts.cancel) — one still waiting leaves the
+// queue, and one granted that its machine has not run yet gives the pod to the next start as a
+// failed launch — and writes the line of a launch cut short while it waited, once: a start
+// already taken out, or one its machine ran, is left as it is and writes nothing.
+func (p *podPark) cut() bool {
+	if !p.gate.cancel(p.hold) {
+		return false
+	}
+	p.log.Info("supervise: launch cut short while it waited for its issue pod's start; its start left the gate",
+		"generation", p.generation)
+	return true
+}
+
+// podStartDue is the grant of the pod's start to the launch parked at its gate (TimerPodStart,
+// askPod): the wake is taken off the machine and the launch runs on from that grant, asking the
+// runtime for its process under the hold it was granted (launchTries). Nothing else of a wake's
+// turn is taken here (runWake): the launch made its lifecycle check, passed its wake gate and
+// wrote the one line a wake writes before it reached the pod's gate (launchAfter, reserveWake),
+// and let its process go there (launchNow), so no turn of a process is left to take back.
+//
+// A grant whose park the daemon's stop has cut, or is cutting, starts nothing: the machine's
+// context has ended, and the start leaves the gate as that stop takes it out (podPark).
+func podStartDue(m *Machine, ctx context.Context, _ Event) error {
+	waiting := m.wake
+	if waiting == nil || waiting.park == nil {
+		return nil
+	}
+	m.wake = nil
+	if !waiting.park.unwatch() || ctx.Err() != nil {
+		waiting.park.cut()
+		return ctx.Err()
+	}
+	return waiting.run(ctx)
 }
 
 // phaseWorker is whether this claim's role works its issue's current phase (Deps.PhaseRole), read

@@ -9,7 +9,9 @@ package supervise
 // (dropWakeFor, reparkWake), and an operator's task over a launch parked above a process the
 // claim still records runs that launch there and then, unpaced (runParkedLaunchNow). Every wake
 // writes one line as it runs, in a shape the daemon's own catch-up lane shares (wakeRan,
-// WakeRanMessage, WakeRanFields).
+// WakeRanMessage, WakeRanFields). A launch the issue pod's start gate cannot grant at once parks
+// on the machine as a wake too, whose turn is that gate's grant rather than a moment of the
+// pacing's (askPod, wake.park, podStartDue).
 
 import (
 	"context"
@@ -168,6 +170,14 @@ type wake struct {
 	// stop for the pause (pauseStopDue) or by its let-out into the pacing once that pause has
 	// ended (letOutHeldLaunch), which gives it at and reserved.
 	pause int64
+	// park is the start this launch waits for at its issue pod's gate (askPod), nil for a wake the
+	// pacing or the pause's gate holds. Such a launch has let its process go and written its claim
+	// launching already (launchNow, launchTries), took no token and has no moment to run: it waits
+	// on the machine with no timer of the clock's, is published as no waiting wake (publish), is
+	// no wake of the pacing's for a request that does not wait to drop (dropWakeFor), and leaves
+	// by its grant (TimerPodStart, podStartDue) or by whatever drops the wake with the claim's
+	// timers (letGo, waitOnMachine), which takes its start out of the gate (podPark).
+	park *podPark
 }
 
 // reserveWake is the wake gate: it asks the pacing when this wake may run and, when that moment
@@ -305,7 +315,11 @@ func (m *Machine) parkWake(ctx context.Context, waiting *wake, after time.Durati
 // and the runtime's sweep observes the process throughout. TimerSuspend is kept: a suspension
 // held over this claim is still bounded by the deadline its arrival set (holdSuspension), which
 // the wake's turn does not run.
+//
+// A launch this wake replaces that waits at its issue pod's gate leaves the gate here: its
+// timer's entry is the park, which takes its start out of the gate's queue (askPod, podPark).
 func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
+	m.disarm(TimerPodStart)
 	m.wake = waiting
 	if m.claim.Locator != nil {
 		for _, kind := range []TimerKind{TimerBoot, TimerRegistration, TimerProbe, TimerTurn} {
@@ -602,8 +616,14 @@ func WakeRanFields(kind WakeKind, paced bool, waitedFor time.Duration, rate, bur
 //
 // A paced request drops nothing: a second wake request takes no second token, and the claim's
 // own wake is the launch it is asking for.
+//
+// Nor does a launch that waits at its issue pod's gate (wake.park) drop for any request. It is no
+// turn of the pacing's: the launch has started, letting its process go and writing its claim
+// launching, and waits only for another role's session load, which an operator's start waits for
+// too (dispatch://INFRA-5297). So every request decides that claim as the launch under way it is,
+// as it did while that wait held the decision, and the launch keeps its place in the pod's order.
 func (m *Machine) dropWakeFor(ev Event) *wake {
-	if m.wake == nil || m.claim.Locator != nil || !dropsWaitingWake(ev) {
+	if m.wake == nil || m.wake.park != nil || m.claim.Locator != nil || !dropsWaitingWake(ev) {
 		return nil
 	}
 	dropped := m.wake
