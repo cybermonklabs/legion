@@ -279,9 +279,11 @@ test("at a phone width the ring keeps the right edge of the box while the facts 
     await expect(dir).toBeVisible();
     const layout = await facts.evaluate((row) => {
       const box = row.getBoundingClientRect();
-      const parts = [...row.querySelectorAll("[data-testid]")].map((part) =>
-        part.getBoundingClientRect()
-      );
+      // The parts the row draws: a group with nothing in it (the session's pickers, before it
+      // reports them) draws no box, and a box at the page's corner says nothing about the row.
+      const parts = [...row.querySelectorAll("[data-testid]")]
+        .filter((part) => part.getClientRects().length > 0)
+        .map((part) => part.getBoundingClientRect());
       return {
         clientWidth: row.clientWidth,
         inside: parts.every((part) => part.left >= box.left - 0.5 && part.right <= box.right + 0.5),
