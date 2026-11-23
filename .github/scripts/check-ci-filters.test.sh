@@ -827,18 +827,18 @@ check "with the gate's own refusal, not the with: value's" \
 check "and says nothing about resolving the value" \
   "$(is "$(contains "$out" 'a value naming the changes job must be')" false)"
 
-# The `lane` shape: a job of the called file gated on an input the caller builds from the event,
-# with no gate declared on it. The suite runs behind the caller job's own `if:`, and the lane
-# input only chooses what it runs, so this rule reads it as no gate and nothing else fires.
+# A job of the called file gated on an input the caller builds from the event, with no gate
+# declared on it. The suite runs behind the caller job's own `if:`, and the input only chooses
+# what it runs, so this rule reads it as no gate and nothing else fires.
 echo "case: a called job gated on an input the caller builds from the event"
 root=$(fixture called-input-event)
 called_input_gate "$root"
 replace "$root/.github/workflows/called.yaml" "      ci-ok-changes:" \
-  $'      lane:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
+  $'      mode:\n        type: string\n        required: false\n        default: ""\n      ci-ok-changes:'
 replace "$root/.github/workflows/called.yaml" "  called:" \
-  $'  lane-only:\n    if: inputs.lane == \'full\'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the full lane\n  called:'
+  $'  mode-only:\n    if: inputs.mode == \'full\'\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo the full mode\n  called:'
 replace "$root/.github/workflows/ci.yaml" "      app: \${{ needs.changes.outputs.app }}" \
-  $'      app: ${{ needs.changes.outputs.app }}\n      lane: ${{ github.event_name == \'pull_request\' && \'pull-request\' || \'full\' }}'
+  $'      app: ${{ needs.changes.outputs.app }}\n      mode: ${{ github.event_name == \'pull_request\' && \'pull-request\' || \'full\' }}'
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 

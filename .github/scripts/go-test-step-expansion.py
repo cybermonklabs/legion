@@ -192,7 +192,7 @@ EXCEPTIONS = (
         requirement=(
             "R3 (dispatch://INFRA-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
             "running the whole package, untagged tests included, because envoy-smoke runs on a "
-            "Dispatch-only change where envoy-infra-go does not, and in such a run those untagged "
+            "Dispatch-only change where envoy-infra-build does not, and in such a run those untagged "
             "tests would otherwise run nowhere."
         ),
     ),

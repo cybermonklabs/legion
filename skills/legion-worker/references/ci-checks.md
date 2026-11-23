@@ -43,9 +43,10 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
-- A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites) reads `skipped` without it, and a job it runs there only in part (on cybermonklabs/legion, test, pi-legion, envoy-infra-go and dispatch-browser) reads `success` with its slow test steps not run.
-  The implementer adds the label, `full-ci` or that job's `lane:<output>` (dispatch-browser takes `full-ci` alone), then pushes, because the workflow starts on a push and not on a label.
+- A job the repository runs on a pull request only under a label (on cybermonklabs/legion, the slow suites) reads `skipped` without it.
+  The implementer adds the label, `full-ci` or that job's own `lane:<output>`, then pushes, because the workflow starts on a push and not on a label.
   The label stays on while a `ci_check` of the issue names such a job.
+  No job runs on a pull request in part: on cybermonklabs/legion test, pi-legion and envoy-infra-go are held back, while tooling-checks, pi-legion-build and envoy-infra-build, their builds and checks, run on every pull request; the browser suite's pull-request lane is dispatch-browser-pr, whose checks are named `dispatch-browser-pr / <job>`, and its full lane, dispatch-browser, is held back (`lane:dispatch_browser`).
 
 ## A name that no run answers
 
@@ -54,6 +55,7 @@ When the head's checks have settled and no run of the name answers:
 1. Read the merge state first (`gh pr view <n> --json mergeStateStatus`): a `DIRTY` head gets no `pull_request` run, and the forward merge cures it.
 
 2. A held-back job reads `skipped`, not absent: the label cures it.
+   A job inside a held-back called workflow, such as `dispatch-browser / merge`, reads `skipped` or is absent, and the label cures that too.
 
 3. Otherwise the check's words are wrong.
    Each tester and reviewer step sends it to the architect as a finding with `envoy_publish`; with neither step, the implementer sends it during retro.

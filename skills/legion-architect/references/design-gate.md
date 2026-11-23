@@ -28,11 +28,17 @@ request already makes a check's proof, write that check as `ci_check` rather tha
 1. Name the check run of the job that runs the proof, never a roll-up. On cybermonklabs/legion
    never `ci-ok`, which passes when the jobs it did not select were skipped
    (`.github/scripts/ci-ok.sh`).
-2. A job held back from ordinary pull requests, or run there only in part, needs its label on the
-   pull request for as long as a check names it (`full-ci`, or the job's `lane:<output>`, on
-   cybermonklabs/legion, where dispatch-browser takes `full-ci` alone); without it the job reads
-   `skipped`, or `success` with its slow test steps not run.
-3. Write in `negative_control` the case inside that job that fails when the property breaks: a
+2. A job held back from ordinary pull requests needs its label on the pull request for as long as
+   a check names it (`full-ci`, or the job's `lane:<output>`, on cybermonklabs/legion); without it
+   the job reads `skipped`. No job runs there in part: on cybermonklabs/legion the steps a pull
+   request runs beside a slow suite are a job of their own (tooling-checks beside test,
+   pi-legion-build beside pi-legion, envoy-infra-build beside envoy-infra-go), and the browser
+   suite's pull-request lane is the job dispatch-browser-pr, whose checks are
+   `dispatch-browser-pr / <job>`, while its full lane is the held-back dispatch-browser.
+3. On cybermonklabs/legion a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names
+   `envoy-go-build`, which every pull request runs; `envoy-go-checks` is envoy's script tests, a
+   held-back slow suite.
+4. Write in `negative_control` the case inside that job that fails when the property breaks: a
    step with `continue-on-error` keeps its job green.
 
 ## Show the surface before you ask

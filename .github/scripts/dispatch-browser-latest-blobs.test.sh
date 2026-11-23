@@ -43,9 +43,11 @@ fixture() {
 
 # leg <root> <leg> <attempt> <mark>: the artifact one leg's upload leaves at one attempt - a
 # directory named for the artifact, holding the leg's blob report and the row count beside it.
-# <mark> is written into both files, so the output says which attempt's copy arrived.
+# <mark> is written into both files, so the output says which attempt's copy arrived. The
+# artifact's name starts with $caller, the id of the job that calls dispatch-browser.yaml.
+caller=dispatch-browser
 leg() {
-  local dir="$1/down/dispatch-browser-blob-$2-$3"
+  local dir="$1/down/$caller-blob-$2-$3"
   mkdir -p "$dir/blob-report" "$dir/rows"
   printf '%s\n' "$4" > "$dir/blob-report/report-$2.zip"
   printf '%s\n' "$4" > "$dir/rows/$2.txt"
@@ -61,11 +63,12 @@ lone_leg() {
   printf '%s\n' "$3" > "$1/down/rows/$2.txt"
 }
 
-# run_select <root>: runs the script under test over that case's directories, setting `out` to
-# its combined output and `status` to its exit code. Not a subshell, so both survive the call.
+# run_select <root>: runs the script under test over that case's directories for $caller, setting
+# `out` to its combined output and `status` to its exit code. Not a subshell, so both survive the
+# call.
 run_select() {
   set +e
-  out=$("$select_script" "$1/down" "$1/out" 2>&1)
+  out=$("$select_script" "$1/down" "$1/out" "$caller" 2>&1)
   status=$?
   set -e
 }
@@ -239,6 +242,40 @@ check "for every leg" \
 check "and the output holds one file per leg per directory" \
   "$(is "$(find "$root/out" -type f | wc -l)" 4)"
 
+echo "case: the pull-request caller's artifacts read under its own id"
+# ci.yaml calls dispatch-browser.yaml twice, and a pull request labelled full-ci runs both callers
+# in one run, so every artifact name starts with the caller's id: the pull-request lane's merge
+# job reads dispatch-browser-pr-blob-<leg>-<attempt>.
+caller=dispatch-browser-pr
+root=$(fixture pr-caller)
+leg "$root" shard-1 1 first-attempt
+leg "$root" shard-1 2 second-attempt
+run_select "$root"
+check "exits 0" "$(is "$status" 0)"
+check "the output holds attempt 2's blob" "$(is "$(held "$root" blob-report/report-shard-1.zip)" second-attempt)"
+check "says which attempt it took" "$(contains "$out" '^shard-1: attempt 2, passing over attempt(s) 1$')"
+caller=dispatch-browser
+
+echo "case: the other caller's artifact is refused, never merged"
+# The download step's pattern takes only this caller's artifacts. One of the other caller's that
+# reached the directory anyway would merge that lane's rows into this one's report, so it fails
+# by name, as any name that does not read does.
+root=$(fixture other-caller)
+leg "$root" shard-1 1 full-lane
+caller=dispatch-browser-pr leg "$root" shard-1 1 pull-request-lane
+run_select "$root"
+check "fails" "$(is "$status" 1)"
+check "names the other caller's directory" "$(contains "$out" 'down/dispatch-browser-pr-blob-shard-1-1 is not a leg')"
+check "and merges nothing" "$(is "$(find "$root/out" -type f | wc -l)" 0)"
+
+root=$(fixture other-caller-reversed)
+leg "$root" shard-1 1 full-lane
+caller=dispatch-browser-pr
+run_select "$root"
+check "the pull-request caller refuses the full lane's artifact too" "$(is "$status" 1)"
+check "naming it" "$(contains "$out" 'down/dispatch-browser-blob-shard-1-1 is not a leg')"
+caller=dispatch-browser
+
 echo "case: a leg name holding a space is one leg"
 # This script never sees the merge job's capture: a leg reaches it as the tail of an artifact
 # directory name, which dispatch-browser.yaml builds from the project alone
@@ -263,6 +300,17 @@ out=$("$select_script" 2>&1)
 status=$?
 set -e
 check "fails" "$(is "$status" 1)"
-check "says what it takes" "$(contains "$out" '<download-dir> <out-dir>')"
+check "says what it takes" "$(contains "$out" '<download-dir> <out-dir> <job>')"
+
+echo "case: a call that names the directories and no caller"
+root=$(fixture no-caller)
+leg "$root" shard-1 1 lone
+set +e
+out=$("$select_script" "$root/down" "$root/out" 2>&1)
+status=$?
+set -e
+check "fails" "$(is "$status" 1)"
+check "says what it takes" "$(contains "$out" '<download-dir> <out-dir> <job>')"
+check "and merges nothing" "$(is "$(find "$root/out" -type f 2>/dev/null | wc -l)" 0)"
 
 summary "dispatch-browser-latest-blobs.sh"
