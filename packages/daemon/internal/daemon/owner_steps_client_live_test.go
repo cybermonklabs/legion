@@ -42,9 +42,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// clientPlan is the plan every issue of the run is given: one task a, the implementer then the
-// tester, so a tester's returnTo has an earlier step to name.
-var clientPlan = []string{"implementer", "tester"}
+// clientPlan is the plan every issue of the run is given: one task a, the planner, the implementer
+// and the tester. A tester's returnTo 1 then names the planner, a step before the first
+// implementation step before the tester, which is where a fail with no step named goes.
+var clientPlan = []string{"planner", "implementer", "tester"}
+
+// toImplementing opens the walk's issue's gate and runs its planner, which leaves the issue in
+// implementing with the implementer launched.
+func (l *ownerStepsClientLive) toImplementing() {
+	l.t.Helper()
+	l.openGate(phase.Planning)
+	l.runStep("planner", answerPass, phase.Implementing)
+}
 
 // ownerStepsClientLive is one run: the rig over four issues, the checkout the client runs from,
 // and the tree and contract of the release before, which older-client-tree builds.
@@ -147,7 +156,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	// A phase worker's grant is refused ARCHITECT_REQUIRED on both routes; the control is the
 	// architect's grant on the same call, which the same check must not pass.
 	l.check("client-phase-worker-refused", func() {
-		l.openGate(phase.Implementing)
+		l.toImplementing()
 		implementer := l.worker(claim.RoleImplementer)
 		register := l.client(l.root, implementer, "register_plan", map[string]any{"issue": planned, "artifactId": plan, "version": 1}, nil)
 		stop := l.client(l.root, implementer, "stop_task", map[string]any{"issue": planned, "task": "a"}, nil)
@@ -167,7 +176,8 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	// A tester's completion carries no verdict: the check state of the head it tested decides its
 	// step, and the store holds the state before the completion, as Dispatch's event of the
 	// tester's result puts it there (testedAs). With the state a fail, the tester's handoff_complete
-	// naming returnTo returns the task to that step.
+	// naming returnTo 1 returns the task to the planner. With none named, or with the step it names
+	// left unread, the fail would return it to the implementer.
 	l.check("client-return-to", func() {
 		l.runStep("implementer", answerPass, phase.Testing)
 		tester := l.worker(claim.RoleTester)
@@ -178,12 +188,14 @@ func TestOwnerStepsClientLive(t *testing.T) {
 			t.Fatalf("the tester's handoff_complete with return_to 1 and no verdict, on a failing check, %s, want it taken", outcome)
 		}
 		tester.endTurn()
-		l.waitPhase(phase.Implementing)
-		if starts := l.stepStarts(); !slices.ContainsFunc(starts, func(s string) bool { return strings.HasPrefix(s, "a step 1 starts 2 ") }) {
-			t.Fatalf("%s's step starts after the return are %v, want task a's step 1 started a second time", planned, starts)
+		l.waitPhase(phase.Planning)
+		starts := l.stepStarts()
+		if !slices.ContainsFunc(starts, func(s string) bool { return strings.HasPrefix(s, "a step 1 starts 2 ") }) ||
+			!slices.ContainsFunc(starts, func(s string) bool { return strings.HasPrefix(s, "a step 2 starts 1 ") }) {
+			t.Fatalf("%s's step starts after the return are %v, want task a's step 1, the planner, started a second time and step 2, the implementer, once", planned, starts)
 		}
-		l.note("executePhaseOp handoff_complete {return_to 1} by the tester, its check failing at %s: %s; %s stands in implementing, task a's step 1 started again (%v)",
-			stepRecordsHead, outcome, planned, l.stepStarts())
+		l.note("executePhaseOp handoff_complete {return_to 1} by the tester, its check failing at %s: %s; %s stands in planning, task a's step 1 started again and step 2 not (%v)",
+			stepRecordsHead, outcome, planned, starts)
 	})
 
 	// The control of returnTo: a place that is not earlier in the task is refused, so the field
@@ -193,19 +205,19 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	l.check("control-client-return-to-refused", func() {
 		l.on(returnRefused)
 		l.givePlan(clientPlan...)
-		l.openGate(phase.Implementing)
+		l.toImplementing()
 		l.runStep("implementer", answerPass, phase.Testing)
 		tester := l.worker(claim.RoleTester)
 		tester.take()
 		testedAs(t, l.st.Pool(), l.key, stepRecordsHead, false)
-		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "a criterion fails", "return_to": 2}, l.report(tester))
+		outcome := l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "a criterion fails", "return_to": 3}, l.report(tester))
 		if err := refused(outcome, http.StatusConflict, "RETURN_REFUSED"); err != nil {
-			t.Fatalf("return_to 2, the tester's own place: %v", err)
+			t.Fatalf("return_to 3, the tester's own place: %v", err)
 		}
 		if got := phase.Phase(l.d.state().Issues[returnRefused].Phase); got != phase.Testing {
 			t.Fatalf("%s stands in %s after the refused return, want testing", returnRefused, got)
 		}
-		l.note("control: handoff_complete {return_to 2} %s; %s still stands in testing, so the check of client-return-to fails on it", outcome, returnRefused)
+		l.note("control: handoff_complete {return_to 3} %s; %s still stands in testing, so the check of client-return-to fails on it", outcome, returnRefused)
 		testedAs(t, l.st.Pool(), l.key, stepRecordsHead, true)
 		taken = l.client(l.root, tester, "handoff_complete", map[string]any{"summary": "every criterion holds"}, l.report(tester))
 		if !taken.OK {
@@ -230,7 +242,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	l.check("older-client-reads", func() {
 		l.on(older)
 		l.givePlan(clientPlan...)
-		l.openGate(phase.Implementing)
+		l.toImplementing()
 		l.runStep("implementer", answerPass, phase.Testing)
 		tester := l.worker(claim.RoleTester)
 		tester.take()
@@ -289,7 +301,7 @@ func TestOwnerStepsClientLive(t *testing.T) {
 	l.check("client-stop-task", func() {
 		l.on(stopped)
 		l.givePlan(clientPlan...)
-		l.openGate(phase.Implementing)
+		l.toImplementing()
 		l.runStep("implementer", answerPass, phase.Testing)
 		l.worker(claim.RoleTester).take()
 		absent := l.client(l.root, l.worker(claim.RoleArchitect), "stop_task", map[string]any{"issue": stopped, "task": "zz"}, nil)
