@@ -40,27 +40,38 @@ func seedFoldableText(t *testing.T, service *Service, artifactID, markdown strin
 	ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
 }
 
-// failsFast runs op and requires ErrServiceUnavailable within the bound.
+// failsFast runs op and requires it to return ErrServiceUnavailable. An op that waited for the
+// failed room's recovery instead could be waiting on a lock its own transaction, or the test, holds
+// until op returns, and so never return: the wait sets no span of its own, and its one bound is the
+// test binary's deadline less testwait's margin (testwait.Receive), where such an op fails the test
+// by name. An op that fails the test from its own goroutine (t.FailNow, as a store hook it runs
+// may) ends that goroutine without returning; the deferred send still answers the wait, which then
+// ends the test at once rather than at the deadline.
 func failsFast(t *testing.T, what string, op func() error) {
 	t.Helper()
+	failedTheTest := errors.New(what + " failed the test before it returned")
 	returned := make(chan error, 1)
-	go func() { returned <- op() }()
-	select {
-	case err := <-returned:
-		if !errors.Is(err, ErrServiceUnavailable) {
-			t.Fatalf("%s on a failed room = %v, want ErrServiceUnavailable", what, err)
-		}
-	case <-time.After(recoveryBound):
-		t.Fatalf("%s waited for the failed room's recovery, which waits on a lock its transaction holds", what)
+	go func() {
+		err := failedTheTest
+		defer func() { returned <- err }()
+		err = op()
+	}()
+	err := testwait.Receive(t, what+" on the failed room to return", returned)
+	if err == failedTheTest {
+		t.FailNow()
+	}
+	if !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("%s on a failed room = %v, want ErrServiceUnavailable", what, err)
 	}
 }
 
-// awaitRecovered waits, outside any transaction, for the failed room's eviction to finish.
+// awaitRecovered waits, outside any transaction, for the failed room's eviction to finish. The
+// wait sets no span of its own: its context ends at the test binary's deadline less testwait's
+// margin (testwait.Context), so a recovery a loaded machine runs late still passes, and one that
+// never finishes fails the test by name.
 func awaitRecovered(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), recoveryBound)
-	defer cancel()
-	if err := service.awaitRoomRecovery(ctx, artifactID); err != nil {
+	if err := service.awaitRoomRecovery(testwait.Context(t), artifactID); err != nil {
 		t.Fatalf("the failed room did not recover: %v", err)
 	}
 }
@@ -147,13 +158,10 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 	loaded := make(chan error, 1)
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
 	<-persist.failed
-	select {
-	case err := <-loaded:
-		if !errors.Is(err, ErrServiceUnavailable) {
-			t.Fatalf("a load that meets its own room's failure = %v, want ErrServiceUnavailable", err)
-		}
-	case <-time.After(recoveryBound):
-		t.Fatal("the load never returned: it waited for the recovery that waits for it")
+	// A load that waited for the recovery that waits for it would never return, so the wait sets
+	// no span of its own.
+	if err := testwait.Receive(t, "the load that met its own room's failure to return", loaded); !errors.Is(err, ErrServiceUnavailable) {
+		t.Fatalf("a load that meets its own room's failure = %v, want ErrServiceUnavailable", err)
 	}
 	awaitRecovered(t, service, artifactID)
 
@@ -233,13 +241,24 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	<-persist.loading
 	// The refusal is handled only once the failure's recovery has finished - the window in
 	// which the publish would fail the replacement room instead of the failed one - so the hook
-	// closes refused there, and this row waits for the refusal itself rather than for the
-	// failure that causes it: the failure is this store's, set before the publish has even met
-	// it, while the refusal is what the row goes on to assert about.
-	refused := make(chan struct{})
+	// waits for that recovery there and hands what its wait returned to this goroutine, and this
+	// row waits for the refusal itself rather than for the failure that causes it: the failure is
+	// this store's, set before the publish has even met it, while the refusal is what the row
+	// goes on to assert about. The hook runs on the publish's goroutine, which may not end the
+	// test, so its wait's context ends at the test binary's deadline less twice roomWaitMargin,
+	// read here: a recovery that never finishes is named by the error it hands over, before this
+	// goroutine's own wait for the refusal gives up (testwait.Receive, testwait's margin before
+	// that deadline).
+	recovery, stopRecovery := context.WithDeadline(context.Background(), time.Now().Add(testwait.Remaining(t, 2*roomWaitMargin)))
+	t.Cleanup(stopRecovery)
+	refused := make(chan error, 1)
 	service.afterPublishRefused = func(room string) {
-		awaitRecovered(t, service, room)
-		close(refused)
+		err := service.awaitRoomRecovery(recovery, room)
+		// The first refusal is the one this row turns on; a later one goes on unheard.
+		select {
+		case refused <- err:
+		default:
+		}
 	}
 	// The publish runs on a goroutine of its own so that this one can hold the load until the
 	// publish has reached it.
@@ -248,17 +267,14 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		defer close(published)
 		ledger.publish()
 	}()
-	waitFor(t, recoveryBound, "the publish to reach the loading room", publishWaitsForALoadingRoom)
+	waitUntil(t, "the publish to reach the loading room", publishWaitsForALoadingRoom)
 	release()
 	// Nothing waits on persist.failed any more: the refusal is the event this row turns on, and
 	// the load that closes failed is the one that causes it, so the wait below orders everything
-	// failed could. The guard is twice the recovery bound - a publish and a recovery take
-	// milliseconds - so a recovery that hangs is reported by awaitRecovered above, which says
-	// more, and reaching this one means the publish was never refused at all.
-	select {
-	case <-refused:
-	case <-time.After(2 * recoveryBound):
-		t.Fatal("the publish was not refused by the room whose load failed, so nothing here is tested")
+	// failed could. A publish that is never refused leaves nothing here tested, and fails the
+	// test at the wait's one bound, the test binary's deadline less testwait's margin.
+	if err := testwait.Receive(t, "the room whose load failed to refuse the publish", refused); err != nil {
+		t.Fatalf("the failed room did not recover: %v", err)
 	}
 	// The publish has let go of its write's room, as it had by this point when it ran on this
 	// goroutine, so the retry below opens its own write on that room.
@@ -328,13 +344,9 @@ func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 		t.Fatalf("load the replacement room: %v", err)
 	}
 
-	deadline := time.Now().Add(recoveryBound)
-	for indexedAsks(t, service, artifactID) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the failed room's replacement never settled: its ask block is unindexed")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitUntil(t, "the failed room's replacement to settle, indexing its ask block", func() bool {
+		return indexedAsks(t, service, artifactID) != 0
+	})
 }
 
 func indexedAsks(t *testing.T, service *Service, artifactID string) int {
@@ -490,6 +502,8 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 		_, err := service.BlockPath(ctx, artifactID, blocks[0].ID)
 		waited <- err
 	}()
+	// A read that waits for the room's recovery cannot return before the lock holder lets go, and
+	// a loaded machine only shortens what this window watches.
 	select {
 	case err := <-waited:
 		t.Fatalf("a block path read without the mark returned %v before the room recovered", err)
@@ -498,13 +512,8 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release document lock: %v", err)
 	}
-	select {
-	case err := <-waited:
-		if err != nil {
-			t.Fatalf("a block path read on the recovered room: %v", err)
-		}
-	case <-time.After(recoveryBound):
-		t.Fatal("a block path read without the mark never returned after the room recovered")
+	if err := testwait.Receive(t, "the block path read without the mark to return once the room recovered", waited); err != nil {
+		t.Fatalf("a block path read on the recovered room: %v", err)
 	}
 }
 
@@ -633,17 +642,10 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 		firstLedger.publish()
 		close(published)
 	}()
-	select {
-	case <-published:
-	case <-time.After(recoveryBound):
-		t.Fatal("the first write's publish did not finish once its room could recover")
-	}
-	var secondErr error
-	select {
-	case secondErr = <-returned:
-	case <-time.After(recoveryBound):
-		t.Fatal("the second write waited for good behind a slot whose room failed")
-	}
+	testwait.Receive(t, "the first write's publish to finish once its room could recover", published)
+	// A second write that waited for good behind a slot whose room failed would never return, so
+	// the wait sets no span of its own.
+	secondErr := testwait.Receive(t, "the second write to return once its slot's room failed", returned)
 	switch {
 	case secondErr == nil:
 		t.Log("the second write ran on the reloaded room")
@@ -667,10 +669,11 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 
 // awaitOwnerLockTaken returns once another transaction holds DOC-1's owner lock, and fails at once
 // with the waiting operation's result if it returns first. The probe tries the lock without
-// waiting, in a statement of its own, and so holds it only for that statement.
+// waiting, in a statement of its own, and so holds it only for that statement. The wait sets no
+// span of its own (waitUntil).
 func awaitOwnerLockTaken(t *testing.T, ctx context.Context, database *store.Store, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(recoveryBound, time.Millisecond, func() bool {
+	waitUntil(t, "a transaction to take the owner lock", func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before it took the owner lock", err)
@@ -681,9 +684,7 @@ func awaitOwnerLockTaken(t *testing.T, ctx context.Context, database *store.Stor
 			t.Fatalf("probe the owner lock: %v", err)
 		}
 		return len(taken) == 0
-	}) {
-		t.Fatal("no transaction took the owner lock")
-	}
+	})
 }
 
 // Settlement is a transaction too: it holds the document's advisory lock while it stamps block
@@ -702,11 +703,9 @@ func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 		service.settleRoom(artifactID, 0)
 		close(settled)
 	}()
-	select {
-	case <-settled:
-	case <-time.After(recoveryBound):
-		t.Fatal("a settlement holding the document's lock waited for its failed room's recovery")
-	}
+	// A settlement that held the document's lock while it waited for its failed room's recovery
+	// would wait on its own lock for good, so the wait sets no span of its own.
+	testwait.Receive(t, "the settlement holding the document's lock to return once its room failed", settled)
 	awaitRecovered(t, service, artifactID)
 
 	service.afterSettleLock = nil
