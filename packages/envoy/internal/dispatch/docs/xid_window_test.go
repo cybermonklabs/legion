@@ -89,6 +89,8 @@ const rigInjectedGap = storetest.XidFaultGap
 // window keeps it. The test first holds that the work did take that long, so a machine that ran it
 // in no time cannot pass for one that kept it out of the gaps.
 func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
+	// Not parallel: it measures a window's statement-free gaps in CPU time on this machine, which
+	// other tests' work on the same cores would stretch.
 	storetest.RequireXidGapJudgment(t)
 	_, database, tracer := xidService(t)
 	long := "SELECT 1 /* " + strings.Repeat("Rig Work ", 1<<19) + "*/"

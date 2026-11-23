@@ -148,6 +148,7 @@ func TestAStoreSchemaAboveTheBuildInstallsItsOwnVersionAndClosesTheDocumentSocke
 // run in that gap through the service's hook (afterSocketAdmitted), once; the socket opened after
 // it is admitted.
 func TestASchemaSwitchBetweenASocketsAdmissionAndItsHoldClosesTheSocket(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	service, server := newTestServiceInstance(t, database)
 	artifactID := createDocuments(t, database, 1)[0]

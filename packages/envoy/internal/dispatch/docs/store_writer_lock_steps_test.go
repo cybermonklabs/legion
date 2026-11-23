@@ -80,6 +80,7 @@ const storeStepWait = 30 * time.Second
 // backend a run waits on is read from the holder: the one backend queued behind it. Every run is
 // then held to leaving no node or tuple row with a negative cause (storetest.RequireNoMarkedCause).
 func TestEveryDocsStoreWriterTakesTheStoreLockOrder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newDocsWriterRig(t)
 	for _, writer := range []docsWriter{rig.tick(), rig.settledVersion(), rig.settledAsk(), rig.settledAskAndVersion(), rig.tickEvents()} {

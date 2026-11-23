@@ -713,6 +713,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 // knows its host name, answers with the process's line among the upgrade's headers, and the
 // frames after that answer pass through the connection unchanged.
 func TestTheUpgradeThroughTheProcessHeaderWriterNamesTheProcess(t *testing.T) {
+	t.Parallel()
 	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)

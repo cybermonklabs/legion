@@ -26,6 +26,7 @@ import (
 // the gap on the clock past the bound, so a run that loaded nothing cannot pass for one that read
 // the load away.
 func TestXidWindowRigReadsTheMachinesLoadAsTheMachines(t *testing.T) {
+	// Not parallel: its subject is the machine's load, which the package's other tests would add to.
 	storetest.RequireXidGapJudgment(t)
 	for _, probe := range []struct {
 		name  string
