@@ -38,6 +38,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/testport"
@@ -250,23 +251,40 @@ func accountsConfig(n int) string {
 	return config.String()
 }
 
-// deleteStreams deletes every stream in the account uri names, as its test ends.
+// deleteStreams deletes every stream in the account uri names, as its test ends. The listing and
+// each delete wait on the server's answer until testDeadline (waitEnd.request) and are sent once:
+// nats.go gives a JetStream request whose context has no deadline 5 s of its own (jetstream.go:461
+// in v1.55.0), and at a load of 1,100 to 1,460 on 288 CPUs the shared server answered
+// cmd/listener's deletes of KV_envoy_sessions and KV_envoy_interests later than that, so the
+// cleanup failed two tests that had passed. A listing that fails fails the test as a delete does,
+// rather than leaving every stream of the account in place with nothing said. The server answers a
+// delete before goroutines of its own remove the stream's files and, after the account's last
+// stream, the account's directories (filestore.go:12246 and stream.go:8927-8931 in v2.15.1); no
+// step here waits for them, since nothing creates a stream in that account again (URL).
 func deleteStreams(t testing.TB, uri string) {
 	t.Helper()
 	conn := Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Errorf("open JetStream to delete the test's streams: %v", err)
 		return
 	}
+	bound := boundOf(t)
+	ctx, cancel := bound.request()
+	defer cancel()
+	names := js.StreamNames(ctx)
 	var streams []string
-	for name := range js.StreamNames() {
+	for name := range names.Name() {
 		streams = append(streams, name)
 	}
+	if err := names.Err(); err != nil {
+		t.Errorf("list the test's streams to delete them: %v", bound.unanswered(err))
+		return
+	}
 	for _, name := range streams {
-		if err := js.DeleteStream(name); err != nil && !errors.Is(err, natsgo.ErrStreamNotFound) {
-			t.Errorf("delete the test's stream %s: %v", name, err)
+		if err := js.DeleteStream(ctx, name); err != nil && !errors.Is(err, jetstream.ErrStreamNotFound) {
+			t.Errorf("delete the test's stream %s: %v", name, bound.unanswered(err))
 		}
 	}
 }
@@ -727,6 +745,29 @@ func (b waitEnd) step(d time.Duration) time.Duration {
 // stepContext is the context of one JetStream request of the wait, for d at most (step).
 func (b waitEnd) stepContext(d time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), b.step(d))
+}
+
+// request is the context of a request that waits on the server's answer for as long as the wait
+// lasts, and is sent once: until the wait's end, or for noEnd when the wait has none, since nats.go
+// gives a request whose context has no deadline 5 s of its own (jetstream.go:461 and js.go:303 in
+// v1.55.0). stepContext is instead for a wait that asks again, each ask cut to a step.
+func (b waitEnd) request() (context.Context, context.CancelFunc) {
+	if !b.bounded {
+		return context.WithTimeout(context.Background(), noEnd)
+	}
+	return context.WithDeadline(context.Background(), b.end)
+}
+
+// noEnd is how long a request of a wait with no end (waitEnd.request) waits: 1<<60 ns, about 36
+// years, as testwait.Remaining gives a wait under -timeout 0.
+const noEnd = time.Duration(1 << 60)
+
+// unanswered is err, naming the wait's end when that end came before the server's answer.
+func (b waitEnd) unanswered(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("no answer by %s, short of the test's deadline: %w", b, err)
+	}
+	return err
 }
 
 // over reports whether the wait has reached its end.
