@@ -1907,9 +1907,12 @@ describe("renderInbound non-dispatch envelopes", () => {
     });
 
     // The encoder reads the whole value before it lays out a line, with a recursion of its own:
-    // an object chain 20,000 deep overflows the stack there, and the card shows it as its text.
-    test("a message whose JSON payload is an object chain 20,000 deep, past the encoder's recursion, is shown as its text", () => {
-      const deeper = `${'{"a":'.repeat(20_000)}1${"}".repeat(20_000)}`;
+    // an object chain 100,000 deep overflows the stack there, and the card shows it as its text.
+    // Under `bun test` (Bun 1.4.4) that read overflows somewhere past 20,000 levels, by what ran
+    // before it; at 20,000 the bound was sometimes reached first. 100,000 levels is an 800 KB
+    // frame, inside the hub's limit.
+    test("a message whose JSON payload is an object chain 100,000 deep, past the encoder's recursion, is shown as its text", () => {
+      const deeper = `${'{"a":'.repeat(100_000)}1${"}".repeat(100_000)}`;
       const rendered = renderInbound(
         JSON.stringify(envelope({ event_id: "evt-deeper", payload: deeper })),
         reader
