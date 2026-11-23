@@ -66,14 +66,17 @@ for the stage 4b proof.
 
 ## Check runs census
 
-`check-runs-census.ts` is the one command the three readings of the rule on who runs a check run.
-It reads Dispatch as `ask-census.ts` does (`sessionDispatchSettings` over the harness `command`
-reads, eight issues at a time), and it prints one JSON object under `--json` and nothing else.
+`check-runs-census.ts` is the one command two readings of the rule on who runs a check run: `texts`
+and `rounds`. It reads no prompt text. It reads Dispatch as `ask-census.ts` does
+(`sessionDispatchSettings` over the harness `command` reads, eight issues at a time), and it prints
+one JSON object under `--json` and nothing else.
 
 Every mode answers the same way. **Exit 0**: the run is complete and nothing is listed. **Exit 1**:
 the run is complete and holds rows for a reader. **Exit 3**: UNKNOWN, with the reason — a list
 below its total, a text or handoff that did not load, an issue Dispatch does not know, or no issue
-at all. A run that enumerated nothing says UNKNOWN rather than reading clean.
+at all. A run that enumerated nothing says UNKNOWN rather than reading clean. **Exit 2**: the call
+is refused — a mode the census does not have, `main-read` among them, or an option it does not
+take — and nothing runs.
 
 ### `texts`: the documents and plans that still hold the old rule
 
@@ -145,27 +148,6 @@ result, one whose reading carries an earlier run, and one whose linked output sh
 another head. A result that links no output, whose output does not load, or whose output at the
 head does not show the check's own command, reports UNKNOWN, never a pass. The run also names
 each result it took whose actor does not carry `proven`.
-
-### `main-read`: the reading of main after a merge
-
-```bash
-bun scripts/dispatch/check-runs-census.ts main-read \
-  --merge <merge commit> --after <pull request number> \
-  --repo /path/to/clone/at/main --out /path/to/out
-```
-
-The reading reads one commit: the checkout's `HEAD`, which the report names as `subject.read`.
-First the order: the merge commit of the pull request `--after` names (`gh pr view`) must be an
-ancestor of `--merge`, and the read commit must hold `--merge`. A pull request with no merge commit
-fails the order; a `gh` that cannot answer is UNKNOWN. Then the three greps of the readings over
-the prompt files at the read commit — a file the commit lacks is UNKNOWN, never a clean grep — and
-the three pin tests, each run where a package under `packages/daemon` holds it and reported as
-`not run` with the reason where none does. A checkout whose tracked files differ from its commit
-is UNKNOWN, and runs no test. It writes each file its reader reads at the read commit under
-`<out>/files/`: the tester's parts as `Compose` in `prompts.go` names them there, `prompts.go`
-itself, and the other files of the readings. It lists them in `<out>/files.txt` with the ones the
-commit lacks, and writes the whole report to `<out>/report.json`. A part `Compose` names that the
-commit lacks, or a `Compose` of a form the census cannot read, is UNKNOWN.
 
 ## Display read census
 

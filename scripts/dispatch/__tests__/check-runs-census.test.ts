@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -1042,220 +1042,47 @@ describe("the rounds census", () => {
   );
 });
 
-const PROMPTS = "packages/daemon/internal/prompts";
-
-/** The two parts of `prompts.go` the reading takes the tester's parts from: where each kind of
- *  part lives, and `Compose`'s case for the tester, as the daemon's own source holds them. */
-function promptsSource(sharedOfWorkers: string): string {
-  return `package prompts
-
-func New(stateDir string) (*Composer, error) {
-	sharedDir := filepath.Join(stateDir, "prompts", "shared")
-	if err := eachPart(roleParts, "roles", func(name string, body []byte) error {
-		return syncPrompt(filepath.Join(sharedDir, name), body, "shared role prompt")
-	}); err != nil {
-		return nil, err
-	}
-	goDir := filepath.Join(stateDir, "prompts", "go")
-	if err := eachPart(goParts, "go", func(name string, body []byte) error {
-		return syncPrompt(filepath.Join(goDir, name), body, "Go daemon prompt")
-	}); err != nil {
-		return nil, err
-	}
-	return &Composer{sharedDir: sharedDir, goDir: goDir}, nil
-}
-
-func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
-	var shared, daemonParts []string
-	switch role {
-	case claim.RoleArchitect:
-		name := "architect.md"
-		shared, daemonParts = []string{name}, []string{name, "architect-common.md"}
-	case claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer:
-		name := string(role)
-		shared = []string{${sharedOfWorkers}}
-		daemonParts = []string{name + ".md", "worker-common.md"}
-	default:
-		return Parts{}, fmt.Errorf("compose role prompt: unsupported role %q", role)
-	}
-	return Parts{}, nil
-}
-`;
-}
-
-const WORKER_SHARED = `"core/common.md", filepath.Join("core", name+".md"), "mechanics/headless.md", name + ".md"`;
-
-const CLEAN_PROMPTS: Record<string, string> = {
-  [`${PROMPTS}/prompts.go`]: promptsSource(WORKER_SHARED),
-  [`${PROMPTS}/roles/core/common.md`]: "Read the task.\n",
-  [`${PROMPTS}/roles/core/tester.md`]:
-    "Start skeptical: the work is broken until your own run proves otherwise.\n",
-  [`${PROMPTS}/roles/mechanics/headless.md`]: "You run with no person watching.\n",
-  [`${PROMPTS}/roles/tester.md`]:
-    "You run each of your `before_merge` checks at each head you test.\n",
-  [`${PROMPTS}/go/tester.md`]:
-    "Record each fail you see as a fail result at the head your record names.\n",
-  [`${PROMPTS}/go/reviewer.md`]: "Read the states Dispatch publishes.\n",
-  [`${PROMPTS}/go/architect-common.md`]: "Read the results at each open head.\n",
-  [`${PROMPTS}/roles/architect.md`]: "Read the results at each open head.\n",
-  [`${PROMPTS}/roles/architect-root.md`]: "Read the results at each open head.\n",
-  [`${PROMPTS}/roles/implementer.md`]: "Read the results at each open head.\n",
-  [`${PROMPTS}/roles/core/implementer.md`]: "Read the results at each open head.\n",
-  [`${PROMPTS}/roles/reviewer.md`]: "Read the results at each open head.\n",
-  [`${PROMPTS}/roles/core/reviewer.md`]: "checks green at the head you review.\n",
-  [`${PROMPTS}/go/worker-common.md`]:
-    "Retract a result of your own that observed wrongly: `dispatch result --retract <result id> --reason '<why>'`.\n",
-};
-
-/** A planted main for the reading: the prompts, the merge of the pull request the reading names
- *  (`afterMerge`), this work's merge, which puts a removed field back in the tester's prompt
- *  (`merged`), a later main that takes it out again (`later`, the checkout's HEAD), a merge that
- *  holds none of them (`sibling`), and a stand-in `gh` that answers `afterMerge` as the merge
- *  commit of the named pull request. */
-function plantReading(prompts: Record<string, string> = CLEAN_PROMPTS): {
-  repository: string;
-  afterMerge: string;
-  merged: string;
-  later: string;
-  sibling: string;
-  path: string;
-} {
-  const directory = plantRepository(prompts);
-  const root = gitIn(directory, "rev-parse", "HEAD");
-  gitIn(directory, "commit", "-q", "--allow-empty", "-m", "the merge the reading names");
-  const afterMerge = gitIn(directory, "rev-parse", "HEAD");
-  writeFiles(directory, { [`${PROMPTS}/roles/tester.md`]: "Fill `implementerProof` in.\n" });
-  gitIn(directory, "commit", "-q", "-a", "-m", "the merge of this work");
-  const merged = gitIn(directory, "rev-parse", "HEAD");
-  writeFiles(directory, {
-    [`${PROMPTS}/roles/tester.md`]: prompts[`${PROMPTS}/roles/tester.md`] ?? "",
-  });
-  gitIn(directory, "commit", "-q", "-a", "-m", "a later main");
-  const later = gitIn(directory, "rev-parse", "HEAD");
-  gitIn(directory, "checkout", "-q", "-b", "sibling", root);
-  gitIn(directory, "commit", "-q", "--allow-empty", "-m", "a merge that holds none of them");
-  const sibling = gitIn(directory, "rev-parse", "HEAD");
-  gitIn(directory, "checkout", "-q", "main");
-
-  const path = makeDirectory();
-  writeFileSync(join(path, "gh"), `#!/bin/sh\necho '{"mergeCommit":{"oid":"${afterMerge}"}}'\n`, {
-    mode: 0o755,
-  });
-  return { repository: directory, afterMerge, merged, later, sibling, path };
-}
-
-async function mainRead(
-  planted: { repository: string; path: string },
-  merge: string
-): Promise<{ report: CensusReport; exitCode: number; out: string }> {
-  const out = makeDirectory();
-  const run = await runCensus(
-    ["main-read", "--merge", merge, "--after", "4230", "--repo", planted.repository, "--out", out],
-    { PATH: `${planted.path}:${process.env.PATH ?? ""}` }
-  );
-  const report = JSON.parse(await readFile(join(out, "report.json"), "utf8")) as CensusReport;
-  return { report, exitCode: run.exitCode, out };
-}
-
-function verdicts(report: CensusReport): Record<string, string> {
-  return Object.fromEntries((report.steps ?? []).map((step) => [step.name, step.verdict]));
-}
-
-describe("the reading of main", () => {
+describe("the modes", () => {
   test(
-    "it reads one commit: its greps, its files and the Go tests the packages lack as not run",
+    "main-read, whose prompt reading is gone, is refused, and reads and writes nothing",
     async () => {
-      const planted = plantReading();
-      const { report, exitCode, out } = await mainRead(planted, planted.merged);
-      expect(report.unknown).toEqual([]);
-      expect(report.rows).toEqual([]);
-      expect(exitCode).toBe(0);
-      expect(report.subject?.read).toBe(planted.later);
-      const steps = verdicts(report);
-      expect(steps.order).toBe("pass");
-      expect(steps["the read commit holds the merge"]).toBe("pass");
-      expect(steps["v-tester-failures step 1"]).toBe("pass");
-      expect(steps["v-prompt-readers step 1"]).toBe("pass");
-      expect(steps["v-retract step 1"]).toBe("pass");
-      expect(steps.TestJudgeStates).toBe("not run");
-      expect(steps.TestCIResultRulesLiveInRolePrompts).toBe("not run");
-      expect(steps.TestNoRolePartAsksAPassOfNamedRoles).toBe("not run");
-      const notRun = (report.steps ?? []).find(
-        (step) => step.name === "TestNoRolePartAsksAPassOfNamedRoles"
-      );
-      expect(notRun?.reason).toContain("no package under packages/daemon holds it");
-      // The tester's parts come from `Compose` at the read commit, and its source goes with them.
-      expect(report.files?.tester).toEqual([
-        `${PROMPTS}/roles/core/common.md`,
-        `${PROMPTS}/roles/core/tester.md`,
-        `${PROMPTS}/roles/mechanics/headless.md`,
-        `${PROMPTS}/roles/tester.md`,
-        `${PROMPTS}/go/tester.md`,
-        `${PROMPTS}/go/worker-common.md`,
-      ]);
-      expect(report.files?.written).toContain(`${PROMPTS}/prompts.go`);
-      // The files written are the read commit's, not the merge's.
-      const tester = await readFile(join(out, "files", PROMPTS, "roles/tester.md"), "utf8");
-      expect(tester).not.toContain("implementerProof");
-    },
-    SLOW
-  );
-
-  test(
-    "a checkout at the merge reads the merge, and its grep fails there",
-    async () => {
-      const planted = plantReading();
-      gitIn(planted.repository, "checkout", "-q", "--detach", planted.merged);
-      const { report, exitCode, out } = await mainRead(planted, planted.merged);
-      expect(report.subject?.read).toBe(planted.merged);
-      expect(verdicts(report)["v-tester-failures step 1"]).toBe("fail");
-      const tester = await readFile(join(out, "files", PROMPTS, "roles/tester.md"), "utf8");
-      expect(tester).toContain("implementerProof");
-      expect(exitCode).toBe(1);
-    },
-    SLOW
-  );
-
-  test(
-    "a checkout whose tracked files differ from its commit reports UNKNOWN",
-    async () => {
-      const planted = plantReading();
-      writeFiles(planted.repository, {
-        [`${PROMPTS}/roles/tester.md`]: "An edit not committed.\n",
+      let requests = 0;
+      const server = Bun.serve({
+        port: 0,
+        fetch() {
+          requests += 1;
+          return new Response("not found", { status: 404 });
+        },
       });
-      const { report, exitCode } = await mainRead(planted, planted.merged);
-      expect(report.unknown.map((row) => row.reason).join("\n")).toContain("differ from");
-      expect(exitCode).toBe(3);
-    },
-    SLOW
-  );
-
-  test(
-    "a part Compose names that the read commit lacks reports UNKNOWN",
-    async () => {
-      const planted = plantReading({
-        ...CLEAN_PROMPTS,
-        [`${PROMPTS}/prompts.go`]: promptsSource(`${WORKER_SHARED}, "mechanics/extra.md"`),
-      });
-      const { report, exitCode } = await mainRead(planted, planted.merged);
-      expect(report.unknown.map((row) => row.what).join("\n")).toContain(
-        `${PROMPTS}/roles/mechanics/extra.md`
+      servers.push(server);
+      const environment = {
+        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+        DISPATCH_TOKEN: "token",
+      };
+      const out = makeDirectory();
+      const bare = await runCensus(["main-read"], environment);
+      expect(bare.stderr).toContain("no such mode: main-read. The modes are texts and rounds.");
+      expect(bare.stdout).toBe("");
+      expect(bare.exitCode).toBe(2);
+      // The call an old caller of the mode makes, with its flags, is refused too.
+      const old = await runCensus(
+        [
+          "main-read",
+          "--merge",
+          "HEAD",
+          "--after",
+          "4230",
+          "--repo",
+          makeDirectory(),
+          "--out",
+          out,
+        ],
+        environment
       );
-      expect(exitCode).toBe(3);
-    },
-    SLOW
-  );
-
-  test(
-    "a merge that does not hold the other pull request's merge fails the order step",
-    async () => {
-      const planted = plantReading();
-      const { report, exitCode } = await mainRead(planted, planted.sibling);
-      expect(verdicts(report).order).toBe("fail");
-      expect(report.rows.map((row) => row.reason).join("\n")).toContain(
-        "is no ancestor of the merge read"
-      );
-      expect(exitCode).toBe(1);
+      expect(old.stdout).toBe("");
+      expect(old.exitCode).toBe(2);
+      expect(readdirSync(out)).toEqual([]);
+      expect(requests).toBe(0);
     },
     SLOW
   );

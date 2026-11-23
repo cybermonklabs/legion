@@ -1,9 +1,8 @@
 /**
- * The census the three readings of this work's checks run: `texts`, which reads the documents and
- * plans that still hold the old rule on who runs a check; `rounds`, which reads each testing round
- * since a merge and says which of the testing step's checks it has no run of; and `main-read`,
- * which reads main after a merge, runs the greps and the pin tests of the readings, and writes the
- * files their readers read.
+ * The census two readings of this work's checks run: `texts`, which reads the documents and plans
+ * that still hold the old rule on who runs a check; and `rounds`, which reads each testing round
+ * since a merge and says which of the testing step's checks it has no run of. It reads no prompt
+ * text.
  *
  * It is written in the form of `ask-census.ts`: Dispatch resolved with `sessionDispatchSettings`,
  * eight issues read at a time, and `--json` printing one object and nothing else.
@@ -16,7 +15,7 @@
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type {
   Artifact,
@@ -61,7 +60,7 @@ type DispatchConfig = Pick<ActiveDispatchConfig, "url" | "credential">;
  * One listed row. Each mode fills the members of its own reading, so one shape carries the whole
  * report: `texts` names the issue, the document, its version and token, the match and its
  * paragraph; `rounds` names the round, its head and session, the check, its words and the step
- * of the reading that lists it; `main-read` names the step and what it printed.
+ * of the reading that lists it.
  */
 export interface CensusRow {
   readonly issue: string;
@@ -113,16 +112,8 @@ export interface CensusCICheck {
   readonly command: string;
 }
 
-/** One step of the reading of main, and what it did. */
-export interface CensusStep {
-  readonly name: string;
-  readonly verdict: "pass" | "fail" | "not run";
-  readonly reason?: string;
-  readonly detail?: string;
-}
-
 export interface CensusReport {
-  readonly mode: "texts" | "rounds" | "main-read";
+  readonly mode: "texts" | "rounds";
   /** Whether every read the mode names answered. False where `unknown` holds a row. */
   readonly complete: boolean;
   readonly rows: CensusRow[];
@@ -139,21 +130,6 @@ export interface CensusReport {
   /** Each result the run took whose actor does not carry `proven`. */
   readonly unproven?: string[];
   readonly issues?: string[];
-  readonly steps?: CensusStep[];
-  /** The one commit the reading of main read, and the merges its order step held it to. */
-  readonly subject?: {
-    readonly read: string;
-    readonly merge: string;
-    readonly after: number;
-    readonly afterMerge?: string;
-  };
-  /** The files the reading of main wrote for its reader, the tester's parts among them as
-   *  `Compose` names them at the read commit, and the ones the commit lacks. */
-  readonly files?: {
-    readonly tester: string[];
-    readonly written: string[];
-    readonly missing: string[];
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1496,458 +1472,9 @@ async function judgeCheck(input: {
 }
 
 // ---------------------------------------------------------------------------
-// `main-read`
-
-interface ReadingOptions {
-  readonly mode: "main-read";
-  readonly merge: string;
-  readonly after: number;
-  readonly repo: string;
-  readonly out: string;
-}
-
-const PROMPTS = "packages/daemon/internal/prompts";
-const PROMPTS_GO = `${PROMPTS}/prompts.go`;
-
-/** The three files of the tester whose words the failure grep reads. */
-const TESTER_FILES = [
-  `${PROMPTS}/roles/tester.md`,
-  `${PROMPTS}/roles/core/tester.md`,
-  `${PROMPTS}/go/tester.md`,
-];
-
-/** The eight files whose readers the failure grep reads. */
-const READER_FILES = [
-  `${PROMPTS}/go/architect-common.md`,
-  `${PROMPTS}/roles/architect.md`,
-  `${PROMPTS}/roles/architect-root.md`,
-  `${PROMPTS}/roles/implementer.md`,
-  `${PROMPTS}/roles/core/implementer.md`,
-  `${PROMPTS}/roles/reviewer.md`,
-  `${PROMPTS}/roles/core/reviewer.md`,
-  `${PROMPTS}/roles/tester.md`,
-];
-
-const WORKER_COMMON = `${PROMPTS}/go/worker-common.md`;
-
-/** The files the reader of the other steps reads beside the tester's parts. A base that lacks one
- *  names it as absent, and that part of the reading is not run there. */
-const OTHER_READING_FILES = [
-  PROMPTS_GO,
-  ...TESTER_FILES,
-  ...READER_FILES,
-  WORKER_COMMON,
-  `${PROMPTS}/go/reviewer.md`,
-  `${PROMPTS}/roles_test.go`,
-  "packages/pi-legion/scripts/skill-scenarios/gate-search.ts",
-  "packages/pi-legion/scripts/skill-scenarios/label-rules.ts",
-  "packages/pi-legion/scripts/skill-scenarios/rule-search.test.ts",
-  "packages/daemon/.changes/unreleased/pr4230-ci-job-results.yaml",
-  "packages/claude-envoy/.changes/unreleased/pr4230-ci-job-results.yaml",
-];
-
-/** The three pin tests the reading runs where the packages hold them. */
-const PIN_TESTS = [
-  "TestJudgeStates",
-  "TestCIResultRulesLiveInRolePrompts",
-  "TestNoRolePartAsksAPassOfNamedRoles",
-];
-
-/** One grep of the reading: the pattern, the files, and whether a line printed is a failure. */
-interface GrepStep {
-  readonly name: string;
-  readonly pattern: string;
-  readonly files: readonly string[];
-  readonly wants: "nothing" | "a line";
-}
-
-const GREPS: readonly GrepStep[] = [
-  {
-    name: "v-tester-failures step 1",
-    pattern:
-      "implementerProof|`failures`|`failed`|no pass standing from the implementer|does not read yes from the implementer",
-    files: TESTER_FILES,
-    wants: "nothing",
-  },
-  {
-    name: "v-prompt-readers step 1",
-    pattern: "implementerProof|`failures`|`failed`|tester.s .?failures",
-    files: READER_FILES,
-    wants: "nothing",
-  },
-  {
-    name: "v-retract step 1",
-    pattern: "dispatch result --retract",
-    files: [WORKER_COMMON],
-    wants: "a line",
-  },
-];
-
-/** The parts of a Go string expression the census can evaluate, split at its top-level `sep`. */
-function splitTopLevel(text: string, separator: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let quoted = false;
-  let current = "";
-  for (const character of text) {
-    if (character === '"') quoted = !quoted;
-    if (!quoted && character === "(") depth += 1;
-    if (!quoted && character === ")") depth -= 1;
-    if (!quoted && depth === 0 && character === separator) {
-      parts.push(current);
-      current = "";
-      continue;
-    }
-    current += character;
-  }
-  parts.push(current);
-  return parts.map((part) => part.trim()).filter((part) => part !== "");
-}
-
-/** A Go string expression of `Compose` — a literal, `name`, `string(role)`, a `+` of those, or a
- *  `filepath.Join` of those — or nothing where it is of another form. */
-function evaluateGo(expression: string, name: string, role: string): string | undefined {
-  const text = expression.trim();
-  const literal = text.match(/^"([^"\\]*)"$/);
-  if (literal?.[1] !== undefined) return literal[1];
-  if (text === "name") return name;
-  if (text === "string(role)") return role;
-  const join = text.match(/^filepath\.Join\(([\s\S]*)\)$/);
-  if (join?.[1] !== undefined) {
-    const parts = splitTopLevel(join[1], ",").map((part) => evaluateGo(part, name, role));
-    return parts.some((part) => part === undefined) ? undefined : parts.join("/");
-  }
-  const sum = splitTopLevel(text, "+");
-  if (sum.length > 1) {
-    const parts = sum.map((part) => evaluateGo(part, name, role));
-    return parts.some((part) => part === undefined) ? undefined : parts.join("");
-  }
-  return undefined;
-}
-
-/**
- * The prompt parts `Compose` in `prompts.go` gives a phase worker's role, read from the source:
- * the case that names `claim.Role<Role>`, its `name`, `shared` and `daemonParts`, with each
- * shared part under `roles/` and each daemon part under `go/`, as `New` syncs the two. A source of
- * any other form returns the reason, which the reading reports UNKNOWN, never a list of its own.
- */
-export function composeParts(source: string, role: string): string[] | string {
-  if (
-    !source.includes('eachPart(roleParts, "roles"') ||
-    !source.includes('eachPart(goParts, "go"')
-  ) {
-    return "prompts.go does not sync its shared parts from roles and its own from go";
-  }
-  const compose = source.indexOf("func (c *Composer) Compose(");
-  if (compose === -1) return "prompts.go holds no Compose";
-  const roleName = `${role[0]?.toUpperCase() ?? ""}${role.slice(1)}`;
-  const clause = source
-    .slice(compose)
-    .match(
-      new RegExp(
-        `\\n\\s*case ([^\\n:]*\\bclaim\\.Role${roleName}\\b[^\\n:]*):\\n([\\s\\S]*?)(?=\\n\\s*(?:case |default:))`
-      )
-    )?.[2];
-  if (clause === undefined) return `Compose holds no case for claim.Role${roleName}`;
-  const nameExpression = clause.match(/\bname := ([^\n]+)/)?.[1];
-  const name = nameExpression === undefined ? role : evaluateGo(nameExpression, role, role);
-  const shared = clause.match(/\bshared(?:, daemonParts)? = \[\]string\{([^}]*)\}/)?.[1];
-  const daemon =
-    clause.match(/\bdaemonParts = \[\]string\{([^}]*)\}/)?.[1] ??
-    clause.match(/\bshared, daemonParts = \[\]string\{[^}]*\}, \[\]string\{([^}]*)\}/)?.[1];
-  if (name === undefined || shared === undefined || daemon === undefined) {
-    return `Compose's case for claim.Role${roleName} is of a form the census cannot read`;
-  }
-  const parts: string[] = [];
-  for (const [list, root] of [
-    [shared, "roles"],
-    [daemon, "go"],
-  ] as const) {
-    for (const element of splitTopLevel(list, ",")) {
-      const part = evaluateGo(element, name, role);
-      if (part === undefined) return `Compose names a part the census cannot read: ${element}`;
-      parts.push(`${PROMPTS}/${root}/${part}`);
-    }
-  }
-  return parts;
-}
-
-interface StepRun {
-  readonly step: CensusStep;
-  readonly row?: CensusRow;
-  readonly unknown?: CensusUnknown;
-}
-
-function failed(name: string, reason: string, detail?: string): StepRun {
-  const extra = detail === undefined ? {} : { detail };
-  return {
-    step: { name, verdict: "fail", reason, ...extra },
-    row: { issue: "", step: name, reason, ...extra },
-  };
-}
-
-function unreadable(name: string, reason: string): StepRun {
-  return {
-    step: { name, verdict: "not run", reason },
-    unknown: { issue: "", what: name, reason },
-  };
-}
-
-/** The order step: the merge commit of the pull request `--after` names must be an ancestor of
- *  `--merge`. A pull request with no merge commit fails it; a `gh` that cannot answer is UNKNOWN. */
-function orderStep(options: ReadingOptions): { run: StepRun; afterMerge?: string } {
-  const view = Bun.spawnSync(["gh", "pr", "view", String(options.after), "--json", "mergeCommit"], {
-    cwd: options.repo,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (view.exitCode !== 0) {
-    return {
-      run: unreadable(
-        "order",
-        `gh pr view ${options.after} answered ${view.exitCode}: ${command(view.stderr.toString()).slice(0, 200)}`
-      ),
-    };
-  }
-  let oid: unknown;
-  try {
-    const answer: unknown = JSON.parse(view.stdout.toString());
-    const merge =
-      answer !== null && typeof answer === "object" && "mergeCommit" in answer
-        ? answer.mergeCommit
-        : undefined;
-    oid = merge !== null && typeof merge === "object" && "oid" in merge ? merge.oid : undefined;
-  } catch (error) {
-    return {
-      run: unreadable("order", `gh pr view ${options.after} answered no JSON: ${why(error)}`),
-    };
-  }
-  if (typeof oid !== "string" || oid === "") {
-    return {
-      run: failed(
-        "order",
-        `pull request ${options.after} has no merge commit, so the order step fails`
-      ),
-    };
-  }
-  const ancestor = git(options.repo, ["merge-base", "--is-ancestor", oid, options.merge]);
-  if (ancestor.exitCode === 0) {
-    return { run: { step: { name: "order", verdict: "pass", detail: oid } }, afterMerge: oid };
-  }
-  if (ancestor.exitCode === 1) {
-    return {
-      run: failed(
-        "order",
-        `the merge commit of pull request ${options.after} (${oid}) is no ancestor of the merge read (${options.merge})`
-      ),
-      afterMerge: oid,
-    };
-  }
-  return {
-    run: unreadable(
-      "order",
-      `git merge-base --is-ancestor answered ${ancestor.exitCode}: ${command(ancestor.stderr)}`
-    ),
-    afterMerge: oid,
-  };
-}
-
-function holdsMergeStep(options: ReadingOptions, read: string): StepRun {
-  const name = "the read commit holds the merge";
-  const held = git(options.repo, ["merge-base", "--is-ancestor", options.merge, read]);
-  if (held.exitCode === 0) return { step: { name, verdict: "pass" } };
-  if (held.exitCode === 1) {
-    return failed(name, `the read commit ${read} does not hold the merge ${options.merge}`);
-  }
-  return unreadable(
-    name,
-    `git merge-base --is-ancestor answered ${held.exitCode}: ${command(held.stderr)}`
-  );
-}
-
-function holds(repo: string, read: string, path: string): boolean {
-  return git(repo, ["cat-file", "-e", `${read}:${path}`]).exitCode === 0;
-}
-
-function grepStep(repo: string, read: string, step: GrepStep): StepRun {
-  // A grep over a file the commit lacks prints nothing, which would read as a pass.
-  const absent = step.files.filter((path) => !holds(repo, read, path));
-  if (absent.length > 0) {
-    return unreadable(
-      step.name,
-      `the read commit lacks ${absent.join(", ")}, so the grep cannot read it`
-    );
-  }
-  const run = git(repo, ["grep", "-n", "-E", step.pattern, read, "--", ...step.files]);
-  if (run.exitCode > 1) {
-    return unreadable(
-      step.name,
-      `git grep answered ${run.exitCode}: ${command(run.stderr).slice(0, 300)}`
-    );
-  }
-  const printed = run.stdout.split("\n").filter((line) => line !== "");
-  if (step.wants === "nothing") {
-    if (printed.length === 0) return { step: { name: step.name, verdict: "pass" } };
-    return failed(
-      step.name,
-      `it printed ${printed.length} line(s) and must print none`,
-      printed.join("\n")
-    );
-  }
-  if (printed.length > 0) return { step: { name: step.name, verdict: "pass" } };
-  return failed(step.name, "it printed nothing and must print at least one line");
-}
-
-function pinTestStep(repo: string, read: string, name: string, coherent: boolean): StepRun {
-  const held = git(repo, ["grep", "-l", "-E", `^func ${name}\\(`, read, "--", "packages/daemon"]);
-  if (held.exitCode > 1) {
-    return unreadable(name, `git grep answered ${held.exitCode}: ${command(held.stderr)}`);
-  }
-  const file = held.stdout
-    .split("\n")
-    .filter((line) => line !== "")
-    .map((line) => line.slice(line.indexOf(":") + 1))[0];
-  if (file === undefined) {
-    return {
-      step: {
-        name,
-        verdict: "not run",
-        reason: `no package under packages/daemon holds it at ${read}`,
-      },
-    };
-  }
-  if (!coherent) {
-    return {
-      step: {
-        name,
-        verdict: "not run",
-        reason: "the checkout's tracked files differ from the read commit, so no test runs on it",
-      },
-    };
-  }
-  const relative = `./${dirname(file).replace(/^packages\/daemon\//, "")}/`;
-  const run = Bun.spawnSync(
-    [
-      "go",
-      "-C",
-      join(repo, "packages/daemon"),
-      "test",
-      "-count=1",
-      "-v",
-      "-run",
-      `^${name}$`,
-      relative,
-    ],
-    { stdout: "pipe", stderr: "pipe" }
-  );
-  const output = `${run.stdout.toString()}${run.stderr.toString()}`;
-  // A run that selected no test, or that skipped, proves nothing and fails its step.
-  if (output.includes("--- SKIP") || output.includes("no tests to run")) {
-    return failed(name, "the run selected no test, or skipped it", output.slice(-2000));
-  }
-  if (run.exitCode === 0) return { step: { name, verdict: "pass", detail: relative } };
-  return failed(name, `go test answered ${run.exitCode} in ${relative}`, output.slice(-2000));
-}
-
-async function runMainRead(options: ReadingOptions): Promise<CensusReport> {
-  const rows: CensusRow[] = [];
-  const unknown: CensusUnknown[] = [];
-  const steps: CensusStep[] = [];
-  const record = (run: StepRun): void => {
-    steps.push(run.step);
-    if (run.row !== undefined) rows.push(run.row);
-    if (run.unknown !== undefined) unknown.push(run.unknown);
-  };
-
-  // The one commit every step of the reading reads.
-  const head = git(options.repo, ["rev-parse", "--verify", "HEAD^{commit}"]);
-  if (head.exitCode !== 0) {
-    unknown.push({
-      issue: "",
-      what: options.repo,
-      reason: `it is no git checkout with a commit: ${command(head.stderr)}`,
-    });
-    return { mode: "main-read", complete: false, rows, unknown, steps };
-  }
-  const read = head.stdout.trim();
-  const status = git(options.repo, ["status", "--porcelain", "--untracked-files=no"]);
-  const coherent = status.exitCode === 0 && status.stdout.trim() === "";
-  if (!coherent) {
-    unknown.push({
-      issue: "",
-      what: "the checkout",
-      reason: `its tracked files differ from ${read}: ${command(status.stdout || status.stderr).slice(0, 300)}`,
-    });
-  }
-
-  const order = orderStep(options);
-  record(order.run);
-  record(holdsMergeStep(options, read));
-  for (const step of GREPS) record(grepStep(options.repo, read, step));
-  for (const name of PIN_TESTS) record(pinTestStep(options.repo, read, name, coherent));
-
-  // The tester's parts as `Compose` names them at the read commit, and the other files.
-  const source = git(options.repo, ["show", `${read}:${PROMPTS_GO}`]);
-  const composed =
-    source.exitCode === 0 ? composeParts(source.stdout, "tester") : `${read} lacks ${PROMPTS_GO}`;
-  const tester = typeof composed === "string" ? [] : composed;
-  if (typeof composed === "string") {
-    unknown.push({ issue: "", what: "the tester's parts", reason: composed });
-  }
-  const written: string[] = [];
-  const missing: string[] = [];
-  for (const path of [...new Set([...tester, ...OTHER_READING_FILES])]) {
-    const shown = git(options.repo, ["show", `${read}:${path}`]);
-    if (shown.exitCode !== 0) {
-      missing.push(path);
-      if (tester.includes(path) || path === PROMPTS_GO) {
-        unknown.push({ issue: "", what: path, reason: `Compose names it, and ${read} lacks it` });
-      }
-      continue;
-    }
-    const target = join(options.out, "files", path);
-    await mkdir(dirname(target), { recursive: true });
-    await writeFile(target, shown.stdout);
-    written.push(path);
-  }
-  await writeFile(
-    join(options.out, "files.txt"),
-    [
-      `read ${read}`,
-      ...written.map((path) => `written ${path}`),
-      ...missing.map((path) => `absent ${path}`),
-    ]
-      .map((line) => `${line}\n`)
-      .join("")
-  );
-
-  return {
-    mode: "main-read",
-    complete: unknown.length === 0,
-    rows,
-    unknown,
-    steps,
-    subject: {
-      read,
-      merge: options.merge,
-      after: options.after,
-      ...(order.afterMerge === undefined ? {} : { afterMerge: order.afterMerge }),
-    },
-    files: { tester, written, missing },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // The run
 
 function printReport(report: CensusReport): void {
-  if (report.subject !== undefined) {
-    console.log(`Read commit ${report.subject.read}; merge ${report.subject.merge}`);
-  }
-  if (report.steps !== undefined) {
-    console.log("Steps");
-    console.table(report.steps.map(({ name, verdict, reason }) => ({ name, verdict, reason })));
-  }
   if (report.read !== undefined) {
     console.log(`Read: ${report.read.issues} issues, ${report.read.texts} texts`);
   }
@@ -1974,11 +1501,6 @@ function printReport(report: CensusReport): void {
   if (report.unproven !== undefined && report.unproven.length > 0) {
     console.log(`Results taken whose actor does not carry proven: ${report.unproven.join(", ")}`);
   }
-  if (report.files !== undefined) {
-    console.log(
-      `Files written: ${report.files.written.length}; the read commit lacks ${report.files.missing.length}`
-    );
-  }
   console.log("Listed");
   console.table(report.rows);
   if (report.unknown.length > 0) {
@@ -1994,7 +1516,7 @@ function printReport(report: CensusReport): void {
   );
 }
 
-type Options = TextsOptions | RoundsOptions | ReadingOptions;
+type Options = TextsOptions | RoundsOptions;
 
 function parseArguments(argv: readonly string[]): Options {
   const { values, positionals } = parseArgs({
@@ -2008,8 +1530,6 @@ function parseArguments(argv: readonly string[]): Options {
       since: { type: "string" },
       repo: { type: "string" },
       out: { type: "string" },
-      merge: { type: "string" },
-      after: { type: "string" },
       json: { type: "boolean" },
     },
     allowPositionals: true,
@@ -2017,7 +1537,7 @@ function parseArguments(argv: readonly string[]): Options {
   });
   const mode = positionals[0];
   if (mode === undefined) {
-    throw new Error("name one mode: texts, rounds or main-read");
+    throw new Error("name one mode: texts or rounds");
   }
   if (positionals.length > 1) throw new Error(`one mode only, got ${positionals.join(" ")}`);
   const json = values.json === true;
@@ -2053,21 +1573,7 @@ function parseArguments(argv: readonly string[]): Options {
     if (out === undefined) throw new Error("--out is required: where the run writes keys.txt");
     return { mode, project, since, repo, out, json };
   }
-  if (mode === "main-read") {
-    const { merge, after, repo, out } = values;
-    if (merge === undefined) throw new Error("--merge is required: the merge commit of this work");
-    if (after === undefined) {
-      throw new Error("--after is required: the pull request whose merge must come first");
-    }
-    const number = Number(after);
-    if (!Number.isInteger(number) || number < 1) {
-      throw new Error("--after takes one pull request number");
-    }
-    if (repo === undefined) throw new Error("--repo is required: a checkout at main");
-    if (out === undefined) throw new Error("--out is required: where the run writes the files");
-    return { mode, merge, after: number, repo, out };
-  }
-  throw new Error(`no such mode: ${mode}. The modes are texts, rounds and main-read.`);
+  throw new Error(`no such mode: ${mode}. The modes are texts and rounds.`);
 }
 
 function dispatchConfig(): DispatchConfig {
@@ -2090,16 +1596,10 @@ function dispatchConfig(): DispatchConfig {
 
 async function run(options: Options): Promise<number> {
   const report =
-    options.mode === "main-read"
-      ? await runMainRead(options)
-      : options.mode === "texts"
-        ? await runTexts(dispatchConfig(), options)
-        : await runRounds(dispatchConfig(), options);
-  if (options.mode === "main-read") {
-    await mkdir(options.out, { recursive: true });
-    await writeFile(join(options.out, "report.json"), `${JSON.stringify(report, null, 1)}\n`);
-    printReport(report);
-  } else if (options.json) {
+    options.mode === "texts"
+      ? await runTexts(dispatchConfig(), options)
+      : await runRounds(dispatchConfig(), options);
+  if (options.json) {
     // One object and nothing else on stdout, so a program can read the whole of it.
     console.log(JSON.stringify(report));
   } else {
@@ -2109,4 +1609,15 @@ async function run(options: Options): Promise<number> {
   return report.rows.length > 0 ? 1 : 0;
 }
 
-if (import.meta.main) process.exit(await run(parseArguments(Bun.argv.slice(2))));
+if (import.meta.main) {
+  let options: Options;
+  try {
+    options = parseArguments(Bun.argv.slice(2));
+  } catch (error) {
+    // A refused call exits 2, which no answer of the census shares: exit 1 is a complete run with
+    // rows, and a refusal is no run at all.
+    console.error(`check-runs-census: ${why(error)}`);
+    process.exit(2);
+  }
+  process.exit(await run(options));
+}
