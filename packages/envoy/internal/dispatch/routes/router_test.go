@@ -240,8 +240,14 @@ func newDomainSignInRig(t *testing.T) *signInRig {
 
 func newSignInRigFor(t *testing.T, serverURL string, rule identity.SignInRule, hostedDomain string) *signInRig {
 	t.Helper()
+	// The callback the rig's sign-ins name: the configured origin's, else that of the Host every
+	// rig request carries, dispatch.test.
+	callback := "http://dispatch.test/auth/callback"
+	if serverURL != "" {
+		callback = strings.TrimSuffix(serverURL, "/") + "/auth/callback"
+	}
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), rigClientID, "dispatch-secret")
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), rigClientID, "dispatch-secret", callback)
 	flow := oidc.NewCodeFlow(issuer.URL(), rigClientID, "dispatch-secret", hostedDomain)
 	rig := &signInRig{issuer: issuer, people: newMemoryPeople(), sessions: &memorySessionStore{generations: map[string]int64{}}, now: time.Now()}
 	rig.people.sessions = rig.sessions

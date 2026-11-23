@@ -4353,7 +4353,7 @@ const multiprocessServerURL = "http://dispatch.multiprocess.test"
 // that started the sign-in, and B answered 400 "invalid or expired state".
 func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, multiprocessServerURL+"/auth/callback")
 	env := cookieSignIn(issuer)
 	env["DISPATCH_SERVER_URL"] = multiprocessServerURL
 	pair := startPair(t, env)
@@ -4422,7 +4422,7 @@ func TestASignInStartedOnOneProcessCompletesOnTheOther(t *testing.T) {
 // so no third process with a key of its own serves beside these two.
 func TestASessionMintedOnOneProcessAuthenticatesOnTheOtherUnderOneSigningKey(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	pair.start(t, cookieSignIn(issuer))
 
@@ -4598,7 +4598,7 @@ const (
 // DISPATCH_SIGNING_KEY of two keys was one key, so each process refused the other's cookie.
 func TestAKeyRotationKeepsPeopleSignedInAcrossTwoProcesses(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	pair.a = startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{
 		NATSURL: pair.nats, SigningKey: rotationK1 + " " + rotationK0, Env: cookieSignIn(issuer),
@@ -4730,7 +4730,7 @@ const (
 // expired on its own, so the drop refuses nobody who is still signed in.
 func TestAStagedKeyRotationAcrossThreeAppliesKeepsPeopleSignedIn(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret, loopbackCallback)
 	pair := newPair(t)
 	// Every process of the walk runs the same unstamped build, and only its DISPATCH_SIGNING_KEY
 	// differs, so the binary is built once rather than once per start.

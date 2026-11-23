@@ -286,11 +286,12 @@ func devSignIn(t *testing.T, boot bootConfig, login string) *httptest.ResponseRe
 }
 
 // signInPool is a sign-in pool on this machine with Dispatch's app client, clientID and
-// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case.
+// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case, registering the callback the
+// router signInRouter builds names for the Host startSignIn's request carries, dispatch.test.
 func signInPool(t *testing.T, clientID, clientSecret string) *oidctest.Issuer {
 	t.Helper()
 	pool := oidctest.New(t)
-	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret)
+	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret, "http://dispatch.test/auth/callback")
 	return pool
 }
 
