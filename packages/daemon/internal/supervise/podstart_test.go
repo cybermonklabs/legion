@@ -10,6 +10,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -342,6 +343,28 @@ func receive(t *testing.T, what string, done <-chan error, failed bool) {
 	t.Helper()
 	if err := testwait.Receive(t, what, done); (err != nil) != failed {
 		t.Fatalf("%s answered %v, want failed=%v", what, err, failed)
+	}
+}
+
+// wantNoStartsAfter is the pod with nothing left to start: no start waits at the gate, and the
+// clock passing a load's settle and its bound asks the runtime for no process of roles beyond the
+// starts it had been asked for by now, a launch cut short and tried again at the probe interval
+// included.
+func (h *harness) wantNoStartsAfter(roles ...*podRole) {
+	h.t.Helper()
+	before := make([]int, len(roles))
+	for i, r := range roles {
+		before[i] = h.starts(r.token)
+	}
+	h.clock.Advance(podLoadBound + podLoadSettle)
+	for i, r := range roles {
+		r.m.Wait()
+		if got := h.starts(r.token); got != before[i] {
+			h.t.Fatalf("the runtime was asked to start %s %d times, want %d: nothing is left to start", r.token, got, before[i])
+		}
+	}
+	if waiting := h.podWaiting(); len(waiting) > 0 {
+		h.t.Fatalf("starts waiting for the pod = %v, want none", waiting)
 	}
 }
 
@@ -687,6 +710,89 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h.wantStarts(second.token, 0)
 		h.loadEnds(first)
 		h.wantStarts(second.token, 0)
+	})
+
+	t.Run("a release of the pod during a wait does not wait", func(t *testing.T) {
+		h := podHarness(t, "")
+		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
+
+		h.mustPostTo(first.m, RequestResume{Claim: first.token})
+		started := h.postAsync(second.m, RequestResume{Claim: second.token})
+		h.wantWaitsForPod(second, 0)
+
+		// The idle release of the pod suspends every claim of the pod: the waiting one and the
+		// loading one.
+		release := func(r *podRole) <-chan error {
+			return h.postAsync(r.m, RequestSuspend{Claim: r.token, By: SuspendedByReleased, Reason: "the issue's idle pod is released"})
+		}
+		receive(t, "the waiting claim's release, while the first role still loads", release(second), false)
+		receive(t, "the waiting role's start, cut short", started, true)
+		h.wantClaimState(second, StateSuspended)
+		h.wantStarts(second.token, 0)
+		if waiting := h.podWaiting(); len(waiting) > 0 {
+			t.Fatalf("starts waiting for the pod = %v, want none", waiting)
+		}
+		if lines := h.logs.lines("launch cut short while it waited for its issue pod's start", "claim="+string(second.token)); len(lines) != 1 {
+			t.Fatalf("cut-short lines of the waiting role = %d, want 1", len(lines))
+		}
+
+		// The loading claim's agent has not registered, so its release is held until the agent is
+		// ready, as a suspension of a launch is: answered at once, without waiting for the load.
+		if err := testwait.Receive(t, "the loading claim's release", release(first)); !errors.Is(err, ErrSuspendHeld) {
+			t.Fatalf("the loading claim's release answered %v, want %v", err, ErrSuspendHeld)
+		}
+		h.wantClaimState(first, StateLaunching)
+		if waiting := h.podWaiting(); len(waiting) > 0 {
+			t.Fatalf("starts waiting for the pod = %v, want none", waiting)
+		}
+
+		// Its agent comes up and the held release runs: the load ends with the suspension.
+		h.registered(first)
+		h.mustPostTo(first.m, RequestReady{Claim: first.token, Generation: first.m.View().Claim.Generation, Session: first.session})
+		h.wantClaimState(first, StateSuspended)
+		h.wantLoadEndLine(first.token, podIssue, podLoadWant{endedBy: "suspension", registered: true})
+		for _, r := range []*podRole{first, second} {
+			if by := r.m.View().Claim.SuspendedBy; by != SuspendedByReleased {
+				t.Fatalf("%s is suspended by %q, want %q", r.token, by, SuspendedByReleased)
+			}
+		}
+		h.wantNoStartsAfter(first, second)
+	})
+
+	t.Run("a deletion of the pod during a wait does not wait", func(t *testing.T) {
+		h := podHarness(t, "")
+		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
+
+		h.mustPostTo(first.m, RequestResume{Claim: first.token})
+		started := h.postAsync(second.m, RequestResume{Claim: second.token})
+		h.wantWaitsForPod(second, 0)
+
+		// An issue that closes has its pod deleted, and its close retires every claim of the pod:
+		// the waiting one and the loading one.
+		closed := func(r *podRole) <-chan error { return h.postAsync(r.m, RequestIssueClose{Claim: r.token}) }
+		receive(t, "the waiting claim's close, while the first role still loads", closed(second), false)
+		receive(t, "the waiting role's start, cut short", started, true)
+		h.wantClaimState(second, StateRetired)
+		h.wantStarts(second.token, 0)
+		if waiting := h.podWaiting(); len(waiting) > 0 {
+			t.Fatalf("starts waiting for the pod = %v, want none", waiting)
+		}
+		if lines := h.logs.lines("launch cut short while it waited for its issue pod's start", "claim="+string(second.token)); len(lines) != 1 {
+			t.Fatalf("cut-short lines of the waiting role = %d, want 1", len(lines))
+		}
+
+		receive(t, "the loading claim's close", closed(first), false)
+		h.wantClaimState(first, StateRetired)
+		h.wantLoadEndLine(first.token, podIssue, podLoadWant{endedBy: "retirement"})
+		h.wantCalls("Release", 2)
+
+		// A close keeps each claim's session whole, for a reopen to resume.
+		for _, r := range []*podRole{first, second} {
+			if c := r.m.View().Claim; c.Session != r.session || c.SessionFile != r.sessionFile || c.Locator != nil {
+				t.Fatalf("%s is %+v after the close, want it retired with its session and resume path kept and no locator", r.token, c)
+			}
+		}
+		h.wantNoStartsAfter(first, second)
 	})
 }
 
