@@ -134,12 +134,13 @@ interface CodexScenario {
    *  leg has looked at the pane twice since, at most 3 s later, as the stand-in model logged one
    *  for the request Codex 0.171.0 sends 107 ms into an interactive turn (it offers apply_patch
    *  alone) before that request was ignored. A leg that took `end` for the turn's end would stop
-   *  Codex at its first look after it. */
+   *  Codex at its first read of the model log after it. */
   readonly endBeforeTurn?: boolean;
   /** The session record of each run comes late: 0.5 s after the turn's first request, before its
-   *  next (`before-next`), as a hook slower than that request would file it; or 1 s after the
-   *  turn's next request (`after-next`), when the leg reads none to come. */
-  readonly recordLate?: "before-next" | "after-next";
+   *  next (`before-next`), as a hook slower than that request would file it; or only as the leg
+   *  stops that run's Codex (`at-stop`), on the TERM the stand-in tmux's `kill-server` sends, which
+   *  comes after the turn's next request, once the leg has read that no record comes. */
+  readonly recordLate?: "before-next" | "at-stop";
 }
 
 /** Where the real provenance helper is: the stand-in imports its tree comparison. */
@@ -251,8 +252,9 @@ const menu = async (title, options) => {
 };
 const forever = () => new Promise(() => {});
 // The leg's looks at the pane, which the stand-in tmux counts. looked(n, ms): once the leg has
-// looked n times since, or ms have passed: after two looks past a line, the leg has read the model
-// log after it at least once and gone on.
+// looked n times since, or ms have passed. finish_run reads the model log before each of its looks,
+// so there two looks past a line hold a read of the log after it; drive looks twice in each loop,
+// its own look and answer_screen's, after one read of the log, so there two looks can hold none.
 const looks = () => (existsSync(join(pane, "looks")) ? statSync(join(pane, "looks")).size : 0);
 const looked = async (n, ms) => {
   const from = looks();
@@ -331,9 +333,14 @@ log({
   elsewhere: "",
   ...(wanted.exit === 0 ? {} : { detail: wanted.detail ?? "dispatch: Dispatch did not answer [exit " + wanted.exit + "]" }),
 });
-// A record 1 s after the turn's next request, past the moment the leg reads no record to come:
-// a time on purpose, as above.
-if (records && scenario.recordLate === "after-next") setTimeout(fileRecord, 1000);
+// A record filed only as the leg stops this Codex, on the TERM of the stand-in tmux's kill-server:
+// the leg stops it only after it has read that no record comes, so no clock decides what it reads.
+if (records && scenario.recordLate === "at-stop") {
+  process.on("SIGTERM", () => {
+    fileRecord();
+    process.exit(143);
+  });
+}
 if (run === "main") {
   if (scenario.registers === false) await forever();
   if (plan.issue !== "") {
@@ -1085,15 +1092,17 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
     async () => {
       const [inTime, late] = await Promise.all([
         codexStandInRun({ recordLate: "before-next" }),
-        codexStandInRun({ recordLate: "after-next" }),
+        codexStandInRun({ recordLate: "at-stop" }),
       ]);
       // The control: a record 0.5 s after the turn's first request is still read, and every row
       // passes, so the wait does not end at that first request.
       expect({ verdicts: verdictsOf(inTime.stdout), stdout: inTime.stdout }).toMatchObject({
         verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
       });
-      // A record that comes after the turn's next request is read as none, by name, in C1; C6,
-      // read only once C2 named the session, reads UNKNOWN with it.
+      // A record filed only as the leg stops Codex, after the turn's next request, is read as
+      // none, by name, in C1: the name says the wait ended at that request, where a wait that ran
+      // on to its bound names the bound. C6, read only once C2 named the session, reads UNKNOWN
+      // with it.
       expect({ C1: rowOf(late, "C1").row, C6: rowOf(late, "C6").row }).toMatchObject({
         C1: { verdict: "UNKNOWN" },
         C6: { verdict: "UNKNOWN" },

@@ -180,16 +180,18 @@ forget() {
 pause() { sleep 0.1; }
 
 # end_within PID SECONDS: waits for the child PID to end, for at most SECONDS (none at all for 0 or
-# less), and returns within a pause of its end. Once it has ended, waits for it: ended_exit is its
-# exit status; while it still runs, ended_exit is empty. It leaves `background` as it is.
+# less), and returns within a pause of its end. Once it has ended, waits for it: end_within_exit is
+# its exit status; while it still runs, end_within_exit is empty. await_child, stop_child and reap
+# hold end_within_exit local, so a wait through them sets no variable the leg's own code can read
+# or clash with. It leaves `background` as it is.
 end_within() {
   local deadline
   deadline=$(($(now) + $2))
-  ended_exit=''
+  end_within_exit=''
   while running_child "$1" && [ "$(now)" -lt "$deadline" ]; do pause; done
   running_child "$1" && return 0
   wait "$1" 2>/dev/null
-  ended_exit=$?
+  end_within_exit=$?
 }
 
 # shellcheck disable=SC2034 # child_exit is await_child's answer, which the leg that sources this file reads
@@ -197,8 +199,9 @@ end_within() {
 # a pause of its end (end_within). Once it has, forgets it and sets child_exit to its exit status;
 # while it still runs, child_exit is empty and the child stays on the list.
 await_child() {
+  local end_within_exit
   end_within "$1" "$2"
-  child_exit=$ended_exit
+  child_exit=$end_within_exit
   [ -z "$child_exit" ] || forget "$1"
 }
 
@@ -212,6 +215,7 @@ kill_child() {
 # to end (end_within), then KILL, and waits for it, so it writes nothing after the leg goes on; and
 # forgets it.
 stop_child() {
+  local end_within_exit
   forget "$1"
   running_child "$1" || return 0
   kill "$1" 2>/dev/null
@@ -224,7 +228,7 @@ stop_child() {
 # at once, within one 10 s, and empties the list. A pid of the list that bash no longer counts as
 # running is left alone.
 reap() {
-  local pid live='' deadline
+  local pid live='' deadline end_within_exit
   [ -n "${background:-}" ] || return 0
   for pid in $background; do
     running_child "$pid" && live="$live $pid"

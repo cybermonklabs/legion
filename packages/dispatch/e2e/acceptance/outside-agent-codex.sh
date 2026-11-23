@@ -913,10 +913,13 @@ else
 fi
 # C5 reads the receiver only once the model's envoy_send was answered (its `sent` line): then the
 # receiver has up to 15 s more for the message. With no such line, nothing the receiver reads is
-# read, so it is stopped at once.
+# read, so it is stopped at once. The line is read once, here, and C5 judges this same read: a
+# line written after it, by a Codex that outlived codex_stop's 10 s, came once the receiver was
+# stopped, and C5 reads no line.
+main_sent=$(logged main sent)
 if [ -n "$receiver_ready" ]; then
   child_exit=''
-  [ -z "$(logged main sent)" ] || await_child "$receive_pid" 15
+  [ -z "$main_sent" ] || await_child "$receive_pid" 15
   [ -n "$child_exit" ] || stop_child "$receive_pid"
 fi
 
@@ -1138,7 +1141,6 @@ fi
 
 # C5: the session's envoy_send, read by the probe's receiver.
 send=$(logged main send)
-sent=$(logged main sent)
 received=$(cat "$work/receive.out" 2>/dev/null)
 received_line=''
 while IFS= read -r each; do
@@ -1150,12 +1152,12 @@ if [ -z "$inbound" ]; then
   row C5 "$want5" "not run: the session never held the probe's message, after which the model sends" UNKNOWN
 elif [ -n "$receiver_problem" ]; then
   row C5 "$want5" "$receiver_problem" UNKNOWN
-elif [ -z "$sent" ]; then
+elif [ -z "$main_sent" ]; then
   row C5 "$want5" "the model's envoy_send call got no output ($main_end)$tools_note" UNKNOWN
-elif [ "$(json_field ok "$sent")" != true ]; then
-  row C5 "$want5" "envoy_send answered an error: $(json_field detail "$sent")" FAIL
+elif [ "$(json_field ok "$main_sent")" != true ]; then
+  row C5 "$want5" "envoy_send answered an error: $(json_field detail "$main_sent")" FAIL
 elif [ -z "$received_line" ] || [ "$(json_field read "$received_line")" = null ]; then
-  row C5 "$want5" "envoy_send answered $(json_field detail "$sent"); the probe's session $receiver got no message holding it" FAIL
+  row C5 "$want5" "envoy_send answered $(json_field detail "$main_sent"); the probe's session $receiver got no message holding it" FAIL
 elif [ "$(json_field from "$received_line")" != "$session" ]; then
   row C5 "$want5" "the probe read the message from $(json_field from "$received_line"), not from the Codex session $session" FAIL
 else
