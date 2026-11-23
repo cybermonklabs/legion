@@ -1321,7 +1321,7 @@ and each concludes the failure such an attempt must get in a step instead
 
 The daemon's Go suite, a job of its own since dispatch://INFRA-1413: the test job used
 to carry it behind the `test` output, so a change to a shell script ran it too. It is a slow
-suite (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request): 43.2 minutes at
+suite (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request): 43.1 minutes at
 the 90th percentile of a pull request's run on 2026-11-22.
 
 ## Why the plugin pack has an output of its own
@@ -1504,11 +1504,13 @@ ci-ok.sh names it once more after its verdict, pass or fail, on a line of its ow
 The same lines go to the ci-ok job's summary, apart from the jobs that ran and passed, so a
 green ci-ok on a pull request without the label is not read as those jobs passing.
 dispatch-browser, test, pi-legion and envoy-infra-go run there too, but each runs only its
-pull-request lane (.github/ci-notes/ci.md#what-the-lane-input-reads), so the ci-ok job hands
-ci-ok.sh their names in PARTIAL, built from the same label term as their `lane:` inputs, and a
-success of one is named `ran in part at this head: <job> (selected by paths, its full lane gated
-by full-ci; runs in the merge queue)` and left out of the jobs that ran and passed. A run in
-which the label held nothing back and trimmed nothing writes no summary.
+pull-request lane unless the pull request carries that job's own `lane:<output>` label
+(dispatch-browser takes `full-ci` alone; .github/ci-notes/ci.md#what-the-lane-input-reads), so
+the ci-ok job hands ci-ok.sh the names of those whose lane reads `pull-request` in PARTIAL, built
+from the same label terms as their `lane:` inputs, and a success of one is named `ran in part at
+this head: <job> (selected by paths, its full lane gated by full-ci; runs in the merge queue)` and
+left out of the jobs that ran and passed. A run in which the labels held nothing back and trimmed
+nothing writes no summary.
 
 ## On pull_request dorny/paths-filter reads the file list from the API and reads
 
@@ -1720,9 +1722,10 @@ script it tests, handed down as an input of the same name
 (.github/workflows/ci-job-test.yaml), so a change to one script runs one harness. The job's
 own filter names every one of those lists, since a job's `if:` tests one output and a step
 gate decides nothing in a job that was not selected. Every test step also reads the job's
-`lane` input: a pull request without `full-ci` runs the plugin build, the changelog fold, the
-lints and the typechecks alone, and the merge queue runs the tests
-(.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+`lane` input: a pull request without `full-ci` or `lane:test` runs the plugin build, the
+changelog fold, the lints and the typechecks alone, and the merge queue runs the tests
+(.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue). When
+`changes` did not succeed every step runs, on either lane.
 
 ## Why the daemon's Go suite is a job of its own
 
@@ -1911,9 +1914,9 @@ and gcp, so each call takes its -run from .github/scripts/go-tagged-tests.sh, wh
 names off the source at run time. The gcp natslive tests pull no image:
 they install helm, nats-server, the config reloader and the exporter with go install, at the
 versions the clustered hub runs, and render the vendored chart in gcp/testdata. The per-target
-compile runs in the lint job's notices step. On a pull request without `full-ci` the job runs
-its format check, its two vets and its unit tests, and leaves the natslive step to the merge
-queue (.github/ci-notes/ci.md#what-the-lane-input-reads).
+compile runs in the lint job's notices step. On a pull request without `full-ci` or
+`lane:envoy_infra_go` the job runs its format check, its two vets and its unit tests, and leaves
+the natslive step to the merge queue (.github/ci-notes/ci.md#what-the-lane-input-reads).
 
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 
