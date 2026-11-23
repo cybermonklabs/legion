@@ -799,7 +799,8 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
 // an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round in accepting, and any other state leaves the
+// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
+// (accepting, in the default steps); any other state leaves the
 // approval standing where it is and tells the architect and the reviewer so (workflow's
 // reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
 // one GitHub would merge now, which Mergeable cannot.
@@ -1899,7 +1900,7 @@ func stoppedSentence(issue, task, reason string) string {
 }
 
 // RetryOfHeldParent is the 409 HELD_FOR_CHILDREN refusal of a release of issue's hold where issue,
-// a parent whose plan has no acceptance step, waits before its retro for the issues beneath it,
+// a parent whose last step is not the owner's acceptance, waits before its retro for the issues beneath it,
 // beneath (record.HoldForChildren): the last of them to leave starts the retro.
 func RetryOfHeldParent(issue string, beneath []string) *Refusal {
 	return &Refusal{Status: 409, Code: "HELD_FOR_CHILDREN", Message: HeldParentWaitsForChildren(issue, beneath) + " This retry changed nothing."}

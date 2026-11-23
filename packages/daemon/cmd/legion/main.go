@@ -189,8 +189,8 @@ func pluginsLine(cfg config.Config) string {
 		line = fmt.Sprintf("plugins: @sjawhar/pi-legion %s @sjawhar/pi-envoy %s (from %s)",
 			pair.PiLegion, pair.PiEnvoy, pluginsSourceWords(source))
 	}
-	// The roles Claude Code may run at all (runtime.Backends), in the order the workflow reaches
-	// them: a role worker_backends puts on it is always one of them, since the loader refuses any
+	// The roles Claude Code may run at all (runtime.Backends), in claim.Roles' order, the default
+	// steps' order: a role worker_backends puts on it is always one of them, since the loader refuses any
 	// other.
 	var claude []string
 	for _, role := range runtime.Backends[runtime.BackendClaude].Roles {

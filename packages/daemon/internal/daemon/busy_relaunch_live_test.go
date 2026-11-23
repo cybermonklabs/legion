@@ -322,15 +322,17 @@ func (r *busyRelaunchLive) overrides() overrides {
 
 // seed records the five issues as the daemon would hold them at the moment each one's worker
 // began, as claim_compaction_live_test.go's seed does and for its reasons: each a root handed to
-// Legion, in the phase its worker works, holding its tree's admission slot with its lifecycle
-// open, and that worker's claim mid-launch, which this boot relaunches. Each phase worker's claim
-// holds the task its phase's start left pending, which is what keeps admission's repair of a
-// slotted worker holding no task off it (internal/admit/admit.go's resumeSlottedWorkers) — that
-// repair would give the claim its phase's resume task, and every deliver of this driver would be
-// refused `a delivery is already pending` — and every pane answers it before the first step. The
-// root architect's issue stands in accepting, where no phase worker runs, so the repair passes it
-// over as it passes over every architect; its claim holds nothing, as an architect's start leaves
-// it.
+// Legion, in the phase its worker works, with its lifecycle open, an admission slot the seed
+// writes (liveProof.admit), and that worker's claim mid-launch, which this boot relaunches. Each
+// phase worker's claim holds the task its phase's start left pending, which is what keeps
+// admission's repair of a slotted worker holding no task off it (internal/admit/admit.go's
+// resumeSlottedWorkers) — that repair would give the claim its phase's resume task, and every
+// deliver of this driver would be refused `a delivery is already pending` — and every pane
+// answers it before the first step. The root architect's issue stands in accepting, where no
+// phase worker runs, so the repair passes it over as it passes over every architect; its claim
+// holds nothing, as an architect's start leaves it. Its slot is the one a daemon would not hold:
+// accepting keeps none (record.KeepsSlot), so admission's release takes it back (admit's
+// releaseSlots).
 func (r *busyRelaunchLive) seed() {
 	t := r.t
 	t.Helper()

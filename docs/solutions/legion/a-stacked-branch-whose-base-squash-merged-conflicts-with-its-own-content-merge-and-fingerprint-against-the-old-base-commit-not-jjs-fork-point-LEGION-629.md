@@ -11,7 +11,7 @@ tags:
   - fork-point
   - conflict-resolution
 date: 2026-10-08
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker
 applies_when:
   - A pull request was opened against another issue's branch, that branch's pull request squash-merged into main, and GitHub retargeted yours to main

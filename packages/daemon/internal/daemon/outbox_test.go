@@ -2311,9 +2311,9 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"}
 			putOutboxIssue(t, pool, records, issue)
 			// The issue is at work in every phase this drives — reviewing, implementing, testing,
-			// retro — and the row seeded here covers the phases up to its review, so each start of
-			// those is delivered as soon as the drain reaches it. The retro start waits for no row
-			// at all: an issue past its review holds none, so that start carries no mark and is
+			// retro — and the row seeded here covers the three that keep one (record.PhaseKeepsSlot),
+			// so each start of those is delivered as soon as the drain reaches it. The retro start
+			// waits for no row at all: retro keeps none, so that start carries no mark and is
 			// claimable the moment it commits (record.PhaseKeepsSlot, workflow.StartOrOwe).
 			holdSlot(t, pool, issue.Key)
 			// The head is spelled as GitHub spells one, since a review the review App submits

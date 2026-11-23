@@ -1,7 +1,7 @@
 # The tool-fallback job: the live proof that every tool install reads the second source
 # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
 # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
-# the gate beside it, the rig and the fault proxy it drives, the eight actions it installs
+# the gate beside it, the rig and the fault proxy it drives, the nine actions it installs
 # through, and the two files a row's version is pinned in that a step of it reads.
 GATE = gate("tool_fallback", "tool-fallback", reads=reads(
     (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr-mirror row, "
@@ -33,7 +33,7 @@ GATE = gate("tool_fallback", "tool-fallback", reads=reads(
      "faulted installs left to the version its row pins"),
     (".github/scripts/tool-fallback-final-state.sh",
      f"{at('tool-fallback', TOOL_FINAL_STEP)} is that script, which reads what this runner "
-     "holds after the sixteen refusals"),
+     "holds after the eighteen refusals"),
     (".github/actions/install-crane/**", at("tool-fallback", "./.github/actions/install-crane")),
     (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
     (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),
@@ -43,6 +43,7 @@ GATE = gate("tool_fallback", "tool-fallback", reads=reads(
     (".github/actions/install-pulumi/**", at("tool-fallback", "./.github/actions/install-pulumi")),
     (".github/actions/install-docker-plugin/**",
      at("tool-fallback", "./.github/actions/install-docker-plugin")),
+    (".github/actions/install-helm/**", at("tool-fallback", "./.github/actions/install-helm")),
     (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
                                            "to name mise's own install directory for that tool, and "
                                            ".github/actions/install-jj reads that same ARG, while the mise row "

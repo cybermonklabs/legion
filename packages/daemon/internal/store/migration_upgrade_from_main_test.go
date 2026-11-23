@@ -22,7 +22,7 @@ import (
 // so the upgrade applies it after them. The nine versions of main's above the claim-death
 // charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
 // (20261109191929), the backward-move counts with the hook prompt (20261110225246), the
-// unmarked start of a phase past its review (20261110233602), the kind of the rule that wrote a
+// unmarked start of accepting, retro or merging (20261110233602), the kind of the rule that wrote a
 // release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
 // (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
 // (20261111212544), are

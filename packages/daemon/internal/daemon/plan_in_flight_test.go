@@ -227,7 +227,7 @@ func (r *inFlightRig) wentOn(issue *inFlightIssue) error {
 }
 
 // launchesOf is every launch of a claim of issue the daemon has made, in order.
-func (r *inFlightRig) launchesOf(issue string) []fake.Call {
+func (r *stepRecordsRig) launchesOf(issue string) []fake.Call {
 	var launches []fake.Call
 	for _, call := range r.rt.Calls() {
 		if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Issue == issue {

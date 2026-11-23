@@ -513,7 +513,8 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, a subset of `planner implementer tester reviewer acceptance:owner` in that order with `implementer` in it; a " +
+        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
+        "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Legion records nothing when it refuses a plan it does not carry out, with one reason for each cause " +
@@ -535,7 +536,8 @@ export function createLegionTool(deps: {
         "task with a later version of the plan, or stop it once the person has answered). It also refuses, changing nothing, a stop of " +
         "an issue outside your tree or one that left it (ISSUE_OUTSIDE_TREE), and a stop of a run of the issue that ended before Legion " +
         "applied it: read the issue again (TASK_STALE_GENERATION). " +
-        "sign_off is the architect's acceptance of an issue in accepting, moving it to retro. The daemon refuses, changing nothing, a " +
+        "sign_off is the architect's acceptance of an issue in accepting, moving its task to its next step, or to retro where the " +
+        "acceptance is the task's last step. The daemon refuses, changing nothing, a " +
         "sign-off of an issue you no longer own (ISSUE_NOT_OWNED, or ISSUE_OUTSIDE_TREE once it left your tree), one of a run of the " +
         "issue or of accepting that ended before Legion applied it (SIGNOFF_STALE_GENERATION, SIGNOFF_STALE_ENTRY: read the issue and " +
         "its evidence again) and one in every other phase (SIGNOFF_OUTSIDE_ACCEPTING); it also refuses it while an issue beneath it " +
@@ -565,7 +567,7 @@ export function createLegionTool(deps: {
         "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
         "because closing it would stop that work mid-turn. Answer that refusal the same way. " +
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
-        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
+        "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since the head that ancestor's last step passed cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it, where that ancestor is not the tree's root. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
@@ -838,7 +840,8 @@ export function createLegionTool(deps: {
             return jsonSuccess({});
           }
           case "sign_off": {
-            // A repeat after a sign-off that landed finds the issue in retro and changes nothing.
+            // A repeat after a sign-off that landed finds the issue out of accepting, at its task's next
+            // step or in retro, and changes nothing.
             const issue = requiredString(parameters, operation, "issue");
             await retryWhileDaemonRestarts(
               "sign_off",

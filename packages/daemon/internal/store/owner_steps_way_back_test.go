@@ -131,7 +131,7 @@ func TestTheOwnerStepsWayBackDeletesOnlyItsProjectsRowsTheReleaseBeforeCannotRea
 			{name: "the notice of an owner's stop", newKind: true, payload: record.Notice{Kind: "task-stopped", Role: claim.RoleTester, Phase: phase.Testing,
 				StoppedBy: stopper, Reason: "task a of " + key + " was stopped by its owner"}},
 			{name: "the notice of a stop no step could return from", newKind: true, payload: record.Notice{Kind: "task-stopped", Role: claim.RoleTester,
-				Phase: phase.Testing, Reason: "task a of " + key + " was stopped: step 1 (tester) failed"}},
+				Phase: phase.Testing, Reason: "task a of " + key + " was stopped: step 2 (tester) failed and no earlier step of the type implementation can take the work"}},
 			{name: "the notice of a retro held for the issues beneath", newKind: true, payload: record.Notice{Kind: "retro-held",
 				Role: claim.RoleImplementer, Phase: phase.Retro, Reason: key + " passed its last step"}},
 			{name: "the notice of a plan not taken", newKind: true, payload: record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect,

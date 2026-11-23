@@ -98,9 +98,9 @@ func silenceToken(t *testing.T, role claim.Role) claim.Token {
 }
 
 // seedSilence writes rec as the store holds it: the issue, the admission slot its phase keeps
-// (record.KeepsSlot: none past its review) and its open tree, the role's phase row with the
-// completion it carries, the claim with the moment its agent last stepped, the task it holds and
-// the start already queued for it.
+// (record.KeepsSlot: none in accepting, retro or merging) and its open tree, the role's phase row
+// with the completion it carries, the claim with the moment its agent last stepped, the task it
+// holds and the start already queued for it.
 func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Issue {
 	t.Helper()
 	issue := record.Issue{Key: silenceIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",

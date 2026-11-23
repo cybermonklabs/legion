@@ -7,7 +7,7 @@ tags:
   - planning
   - envoy-messages
 date: 2026-10-24
-status: active
+status: superseded in part — An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker
 applies_when:
   - A planner records decisions in the Dispatch plan document and a summary in the plan handoff

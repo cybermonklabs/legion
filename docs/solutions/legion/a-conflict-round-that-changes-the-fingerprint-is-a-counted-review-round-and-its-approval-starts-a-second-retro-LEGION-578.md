@@ -9,7 +9,7 @@ tags:
   - retro
   - workflow-table
 date: 2026-10-08
-status: superseded in part by INFRA-714 — `READY_UNREVIEWED_CHANGE` and the whole READY route are deleted, so nothing in the daemon compares the head that merges with the approved one: a conflict merge pushed after retro goes back to the reviewer by the branch's own procedure and the fingerprint rule, not by a refusal. The counted conflict round and the second retro below still hold
+status: superseded in part by INFRA-714 — `READY_UNREVIEWED_CHANGE` and the whole READY route are deleted, so nothing in the daemon compares the head that merges with the approved one: a conflict merge pushed after retro goes back to the reviewer by the branch's own procedure and the fingerprint rule, not by a refusal. The counted conflict round and the second retro below still hold. An approval moves the issue to its task's next step (accepting in the default steps), and retro starts once the task's last step passes. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: packages/daemon
 related_issues:
   - "LEGION-578"

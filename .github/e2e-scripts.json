@@ -319,7 +319,7 @@
     },
     {
       "script": "step-records-read.sh",
-      "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and starts nothing"
+      "needs": "a deployed Dispatch and the operator's own credential: the dispatch command on PATH, run in the operator's own shell with its session (DISPATCH_HOST and DISPATCH_SESSION_ID) and the deployed Dispatch and token its envoy.json or DISPATCH_URL and DISPATCH_TOKEN name, and the key of one issue a deployed Legion ran to done after the release that records each step; it reads that issue's step records and its project's plans, and starts nothing"
     },
     {
       "script": "verifiers-staging-token.sh",

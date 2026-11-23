@@ -948,8 +948,8 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 
   - **`suspendedBy: unknown`** (suspended before this release recorded who did): let the
     workflow start it. Stop the project's daemon, mark the claim as the daemon's, and start the
-    daemon again; at boot it queues the workflow's own start for the worker's phase, with the
-    right run, phase and, for a merger, approved head:
+    daemon again. At boot it queues the workflow's own start for the worker's phase, with the
+    right run and phase:
 
     ```sql
     update claims set suspended_by = 'daemon' where token = 'legion-widgets-widgets-12-implementer' and state = 'suspended';
@@ -969,8 +969,7 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     phase twice.
   - **`suspendedBy: operator`, otherwise:** deliver its phase's resume task. An operator's
     delivery resumes the claim and hands it the task. The task is the one the workflow gives a
-    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them
-    (a merger told no approved head sends the round back for review):
+    worker resuming its phase, with the issue's title, key and phase as `legion state` shows them:
 
     ```sh
     legion claims deliver --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-12-implementer \
@@ -981,9 +980,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   a new one once supervise's `forgetSession` has dropped that, with fresh budgets, and sends it a
   catch-up of its tree once it is ready, so the tree carries on at the generation and phase it
   stands at. The daemon drops every notice it could
-  not deliver to the failed architect, the reviewer's approval that moved an issue into `accepting`
-  among them, so the catch-up's reason names each issue of the tree waiting in `accepting` for the
-  architect's acceptance; no worker runs there, and nothing else would wake the architect for it:
+  not deliver to the failed architect, the one that moved an issue into `accepting` among them (in
+  the default steps, the reviewer's approval), so the catch-up's reason names each issue of the tree
+  waiting in `accepting` for the architect's acceptance. No worker holds that phase, and nothing
+  else would wake the architect for it:
 
   ```sh
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
@@ -1199,7 +1199,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue can keep its pod where it holds no slot — past its review, or while it waits on another
+  issue can keep its pod where it holds no slot — in `accepting`, `retro` or `merging`, or while it waits on another
   issue — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
@@ -1540,10 +1540,10 @@ These arrive as messages on the Dispatch issue:
   holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the merger merges the base forward itself
-  while the issue stays in `merging`. Where the task has a reviewer step, the daemon asks the
+  while the issue stays in `merging`. Where the task's reviewer step ran, the daemon asks the
   reviewer to read that merge, and the merger merges the new head once the reviewer's approval of
-  it is on the pull request; where it has none, the merger goes on at the new head. And it
-  enqueues nothing on a merge-queue base whose
+  it is on the pull request; where the task has no reviewer step, the merger goes on at the new
+  head. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
@@ -1555,16 +1555,16 @@ These arrive as messages on the Dispatch issue:
   parked.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
-  branch, `legion/<KEY>`: the issue moves to testing only on an open pull request, or one the
-  daemon recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
+  branch, `legion/<KEY>`. The issue moves on only on an open pull request, or one the daemon
+  recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
   waiting) is recorded there and the issue moves on. A pull request merged while the issue was in
   `implementing` already told the architect (`pr-merged`), and the completion is applied and moves
-  the issue to testing. With none, the completion is refused and nothing is recorded: `no open pull
+  the issue on. With none, the completion is refused and nothing is recorded: `no open pull
   request on <owner>/<repo> legion/<KEY>; nothing was recorded. Open the pull request and complete
   again.` The implementer opens it and completes again at the same commit. When the record holds
   the issue's pull request closed without merging, the refusal adds `pull request #<n> is closed;
   your architect was told and decides this issue's phase.`: the close already told the architect,
-  and a pull request closed without merging never moves an issue to testing. When
+  and a pull request closed without merging never moves an issue on. When
   GitHub cannot be read (the token mint or the read fails), the completion is applied unread and
   the daemon logs a warning, `api: read the open pull request on a completing implementer's
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
@@ -1609,10 +1609,11 @@ These arrive as messages on the Dispatch issue:
 An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
 conflicts with its base is waiting on a merge forward or on nothing at all. The daemon
 reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
-both reads report, and only when the next step needs a mergeable head: the issue stands in
-`merging`, a check the base requires has no green result on the head, the base requires a current
-branch, or the daemon could not read the base's rules. In `accepting` and `retro` the conflict
-waits for the merger. Its log says which: `workflow: a conflict
+both reads report, and only when the next step needs a mergeable head. That is so in four cases.
+The issue stands in `merging`. A check the base requires has no green result on the head. The
+base requires a current branch. The daemon could not read the base's rules. Where every step of
+the task has run, in `retro` or in `accepting` with no step of its task after the acceptance, the
+conflict waits for the merger. Its log says which: `workflow: a conflict
 read waits for a second read` for a first read, `workflow: a second read did not confirm the
 conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
 merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
@@ -1628,8 +1629,8 @@ names both heads. A completion of the phase the issue stands in that names a hea
 forward replaced, the head an earlier merge forward replaced included, or that names no head once
 a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
 made again at the new head; a completion of a phase the issue has already left is recorded as
-before. Past review, where the task has a reviewer step, the reviewer is asked to read the merge
-and approve the new head. A red check sends nothing back from anywhere.
+before. Where the task's reviewer step already ran, the reviewer is asked to read the merge and
+approve the new head. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 
@@ -1759,9 +1760,9 @@ open or merged pull request recorded and none GitHub lists open on its branch. T
 when the implementer's completion was applied without GitHub's answer (the read failed), or when
 the pull request was closed without merging since. A pull request merged since tells the architect
 `pr-merged` instead, and the implementer's completion moves the issue on it. The issue stays in
-`implementing` until a pull request
-is open on the branch: the implementer opens it, and the daemon records it from its webhook or
-from its next read of the issue, and moves the issue to `testing`. When the work should not
+`implementing` until a pull request is open on the branch. The implementer opens it, and the
+daemon records it from its webhook or its next read of the issue. The daemon then moves the issue
+to its task's next step, or toward its retro where implementing is the last step. When the work should not
 go on, the architect decides the issue's phase as for a pull request closed without merging. The
 notice comes once per handoff commit, from whichever read finds it first.
 

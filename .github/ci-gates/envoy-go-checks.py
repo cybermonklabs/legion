@@ -87,6 +87,11 @@ GATE = gate("envoy_go_checks", "envoy-go-checks", runs=[
     (f"{ENVOY}/loadtest/cluster/nats-*.tgz",
      f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh runs render-nats.sh, which checks "
      "the vendored archive's sha256 and renders it"),
+    # The helm the cluster suite's render runs, installed by its own step from the helm row.
+    (".github/actions/install-helm/**", at("envoy-go-checks", "./.github/actions/install-helm")),
+    (".github/ci-tools.yaml", ".github/actions/install-helm/action.yml:30-31 installs the tarball of the helm row"),
+    (".github/scripts/ci-tools.sh", ".github/actions/install-helm/action.yml:21 sources it, and ci_tools_fetch "
+                                    "reads that row's two sources"),
     (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
     (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
     # Each action builds its command with GOWORK=off, so it reads packages/envoy's go.mod and
