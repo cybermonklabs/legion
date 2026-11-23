@@ -28,11 +28,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// rowDeadline is the deadline every wait of these rows takes: the test binary's, less
-// roomWaitMargin for the failed row's cleanups (settlement_credit_test.go). A binary run with no
-// deadline (-timeout 0) gives the zero time, which puts no deadline on a socket's reads.
+// rowDeadline is the deadline every wait of these rows takes, and a socket read of a row that waits
+// for the server's first frame (newer_content_test.go): the test binary's, less roomWaitMargin for
+// the failed row's cleanups (settlement_credit_test.go). A binary run with no deadline (-timeout 0)
+// gives the zero time, which puts no deadline on a socket's reads.
 func rowDeadline(t *testing.T) time.Time {
 	t.Helper()
 	deadline, bounded := t.Deadline()
@@ -117,16 +119,20 @@ func page(version, creatable int) url.Values {
 	return query
 }
 
-// dialPage opens a document socket to artifactID's room as alice's page presenting query.
-func dialPage(serverURL, artifactID string, query url.Values) (*gws.Conn, *http.Response, error) {
+// dialPage opens a document socket to artifactID's room as alice's page presenting query. The dial
+// waits for the upgrade's answer until the test binary's deadline less testwait's margin
+// (testwait.Context): a zero Dialer has no HandshakeTimeout, where gorilla's default dialer has a
+// fixed 45 s.
+func dialPage(t *testing.T, serverURL, artifactID string, query url.Values) (*gws.Conn, *http.Response, error) {
+	t.Helper()
 	address := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws/doc/" + artifactID + "?" + query.Encode()
-	return gws.DefaultDialer.Dial(address, http.Header{"X-Dispatch-User": []string{"alice"}})
+	return (&gws.Dialer{}).DialContext(testwait.Context(t), address, http.Header{"X-Dispatch-User": []string{"alice"}})
 }
 
 // mustDialPage is dialPage for a socket that must be accepted. It closes when the test ends.
 func mustDialPage(t *testing.T, serverURL, artifactID string, query url.Values) *gws.Conn {
 	t.Helper()
-	connection, response, err := dialPage(serverURL, artifactID, query)
+	connection, response, err := dialPage(t, serverURL, artifactID, query)
 	if err != nil {
 		t.Fatalf("connect a page presenting %v: response=%#v err=%v", query, response, err)
 	}
@@ -526,7 +532,8 @@ func slowPageMarkdown(size int) string {
 
 // dialSlowPage is dialPage on a connection whose receive buffer holds far less than the document's
 // sync message, so the server's write of that message is still part way through it while the page
-// reads nothing. The socket must be accepted, and closes when the test ends.
+// reads nothing. The socket must be accepted, and closes when the test ends. As dialPage's does, the
+// dial waits for the upgrade's answer until the test binary's deadline less testwait's margin.
 func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) *gws.Conn {
 	t.Helper()
 	dialer := gws.Dialer{NetDial: func(network, address string) (net.Conn, error) {
@@ -545,7 +552,7 @@ func dialSlowPage(t *testing.T, serverURL, artifactID string, query url.Values) 
 		return tcp, nil
 	}}
 	address := "ws" + strings.TrimPrefix(serverURL, "http") + "/ws/doc/" + artifactID + "?" + query.Encode()
-	connection, response, err := dialer.Dial(address, http.Header{"X-Dispatch-User": []string{"alice"}})
+	connection, response, err := dialer.DialContext(testwait.Context(t), address, http.Header{"X-Dispatch-User": []string{"alice"}})
 	if err != nil {
 		t.Fatalf("connect a slow page presenting %v: response=%#v err=%v", query, response, err)
 	}

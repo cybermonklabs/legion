@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A warm fork takes the room's replica cloned under the replica's lock (Service.forkPoint),
@@ -261,8 +262,12 @@ func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
 	server := websocket.NewServer()
 	server.RoomIdleTimeout = time.Hour
 	service := &Service{srv: newRoomServer(server)}
+	// The server holds no peer, no persistence and no connection, so Shutdown waits only on its own
+	// work. t.Context() ends before a cleanup runs, so testwait.Context cannot bound it: its span is
+	// the test binary's deadline less roomWaitMargin, read in the cleanup, so a Shutdown that hangs
+	// fails by name rather than at go test's alarm.
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, roomWaitMargin))
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {
 			t.Errorf("shut the server down: %v", err)

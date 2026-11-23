@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // newerContentDocument is a document holding "before" and, after it, an element this build does
@@ -190,12 +191,17 @@ func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T
 			t.Cleanup(httpServer.Close)
 			headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 			wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
-			connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
+			// The dial waits for the upgrade's answer until the test binary's deadline less
+			// testwait's margin (testwait.Context): a zero Dialer has no HandshakeTimeout, where
+			// gorilla's default dialer has a fixed 45 s.
+			connection, response, err := (&gws.Dialer{}).DialContext(testwait.Context(t), wsURL, headers)
 			if err != nil {
 				t.Fatalf("connect a document holding newer content: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
 			t.Cleanup(func() { _ = connection.Close() })
-			connection.SetReadDeadline(time.Now().Add(time.Second))
+			// The first frame is what is judged, not how soon it came: the read waits until
+			// rowDeadline, the test binary's deadline less roomWaitMargin.
+			_ = connection.SetReadDeadline(rowDeadline(t))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError
 			if !errors.As(err, &closed) || closed.Code != documentNewerContentCloseCode {

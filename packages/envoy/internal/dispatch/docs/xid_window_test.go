@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -156,8 +157,11 @@ func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
 			}
 			_, database, tracer := xidService(t)
 			// Blind for longer than the whole operation: no poll is sent while the transaction is
-			// open, so nothing but its own statements says it held an xid.
-			tracer.BlindPoller(time.Minute)
+			// open, so nothing but its own statements says it held an xid. Measure stops the poller
+			// when the operation ends, so the blindness ends on that, bounded only by the test
+			// binary's deadline less roomWaitMargin: a loaded machine that runs the operation slowly
+			// cannot outlast it.
+			tracer.BlindPoller(testwait.Remaining(t, roomWaitMargin))
 			report := tracer.Measure(t, database.Pool, func() {
 				runRigTransaction(t, database, probe.gap)
 			})
@@ -302,18 +306,9 @@ func settlementFixture(t *testing.T, service *Service, database *store.Store, ed
 	editAsConnectedPeer(t, service, artifactID, 1, editor, replaceRun("Revision token r0", "Revision token r1"))
 	before := latestVersionNumber(t, service, artifactID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to become durable: %v", err)
-	}
-	state := service.room(artifactID)
-	state.mu.Lock()
-	generation := state.roomGeneration
-	state.mu.Unlock()
+	// The room's updates reach persistence and land as settleCurrentGeneration's do, on the room's
+	// idle signal rather than within a span of the test's choosing (roomGeneration).
+	generation := roomGeneration(t, service, artifactID)
 	t.Logf("xid fixture: document of %d bytes with 20 open anchored asks", len(spec))
 	return artifactID, before, generation
 }
