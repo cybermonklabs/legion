@@ -99,9 +99,12 @@ func (g *startingGate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 ```
 
 main registers two gates before `server.Serve`, one bare on every enabled webhook path and one
-inside `apiAuth` on `/v1`, so those paths answer 503 while the listener starts, and each refusal
-logs `request refused while starting` with the gate, the method and the path: that line is the
-listener's only record of a caller it turned away. Once NATS and the CI store are open,
+ahead of `apiAuth` on `/v1` (`v1API`), so those paths answer 503 while the listener starts, and
+each refusal logs `request refused while starting` with the gate, the method and the path: that
+line is the listener's only record of a caller it turned away. The `/v1` gate answers before
+`apiAuth` judges any credential, so a refusal while starting spends no request's DPoP proof, and
+the one retry Google's load balancer sends of a body-less request after that 503, with the same
+proof, is not refused as a replay. Once NATS and the CI store are open,
 `openWebhooks` builds the webhook handlers and opens the webhook gate onto them. In phase 6, once
 the interest and session caches are warm, the role lane subscribes and `openV1Routes` builds the
 `/v1` routes over the stores and opens the `/v1` gate onto them, logging `envoy-listener /v1 open`
@@ -118,7 +121,7 @@ webhookGate, v1Gate := newStartingGate("webhook", logger), newStartingGate("v1",
 for _, hook := range hooks {
     mux.Handle(hook.path, webhookGate)
 }
-v1Handler := apiAuth(apiAuthConfig, v1Gate)
+v1Handler := v1API(apiAuthConfig, v1Gate) // v1Gate.ahead(apiAuth(apiAuthConfig, v1Gate))
 mux.Handle("/v1", v1Handler)
 mux.Handle("/v1/", v1Handler)
 // ... phase 5, once NATS and the CI store are open:
