@@ -19,11 +19,14 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
+  markIndex,
+  markRecord,
+  stampAfter,
+  TIMER_APIS,
   TIMER_RECORD_FILE,
   TIMER_RECORD_ROOTS,
   type TimerStep,
   timersBetween,
-  writtenAfter,
 } from "@legion/test-fixtures/timer-record";
 import { completeLines } from "@legion/test-fixtures/transcript-lines";
 import { timeLeft, until } from "@legion/test-fixtures/wait";
@@ -353,11 +356,16 @@ interface RolePane {
   /** Every timer the pane's own plugin code armed and fired so far, in the pane process's order
    *  (`@legion/test-fixtures/timer-record`, loaded into the pane as one more extension). */
   timerRecord(): Promise<readonly TimerStep[]>;
-  /** Waits until the timer record holds a stamp of its writer past its first `length` steps:
-   *  the record was still being written, and its reads see the writes, after the read that found
-   *  `length`. A writer that stopped, or a read that returns an old copy, fails the wait by name
-   *  at the row's deadline. */
-  recordWrittenAfter(length: number): Promise<void>;
+  /** Writes a mark named `mark` into the timer record, from the test's process. */
+  markRecord(mark: string): void;
+  /**
+   * Waits until a read of the timer record holds the mark `mark` and a stamp of its writer past
+   * it, and returns that read: the record was still being written, and its reads see the writes,
+   * after the mark. A writer that stopped, or a read that returns an old copy, fails the wait by
+   * name at the row's deadline. A stamp whose canary misses a timer call the record wraps fails
+   * at once: the record could not see that call's timers.
+   */
+  recordThrough(mark: string): Promise<readonly TimerStep[]>;
 }
 
 /**
@@ -559,15 +567,28 @@ async function startRolePane(): Promise<RolePane> {
     publish: (payload) => relay(sessionId, payload, seq++),
     until: waitFor,
     timerRecord,
-    async recordWrittenAfter(length) {
-      await until(
-        `the pane's timer record to be written after the read that found ${length} steps (a ` +
+    markRecord: (mark) => markRecord(timerRecordFile, mark),
+    async recordThrough(mark) {
+      const { steps, stamp } = await until(
+        `the pane's timer record to be written after the mark ${JSON.stringify(mark)} (a ` +
           "record whose writer stopped, or a read that returns an old copy, never is)",
         async () => {
           if (closed.error !== undefined) throw closed.error;
-          return writtenAfter(await timerRecord(), length);
+          const read = await timerRecord();
+          const after = stampAfter(read, markIndex(read, mark));
+          return markIndex(read, mark) >= 0 && after !== undefined
+            ? { steps: read, stamp: after }
+            : undefined;
         }
       );
+      const unseen = TIMER_APIS.filter((api) => !stamp.canary.includes(api));
+      if (unseen.length > 0) {
+        throw new Error(
+          "the pane's timer record holds no canary, so its timer wrapping is not installed: " +
+            `the stamp after ${JSON.stringify(mark)} saw no canary through ${unseen.join(", ")}`
+        );
+      }
+      return steps;
     },
   };
 }
@@ -651,7 +672,7 @@ test.skipIf(skip)(
     // which are a millisecond apart at best and tie whenever the host does this work fast.
     expect(subagent.arrived.order).toBeLessThan(ended.order);
 
-    // How far the pane's timer record ran before the frame was sent: each later step came after.
+    // The pane's timer record holds steps before the frame was sent.
     const beforePublish = (await pane.timerRecord()).length;
     // The preload's writer stamps the record every `TIMER_RECORD_ALIVE_MS`, and the pane arms its
     // Envoy heartbeat as its session starts (`context.setInterval` in
@@ -661,17 +682,24 @@ test.skipIf(skip)(
       beforePublish,
       "the pane's timer record holds none of its timers before the frame was sent"
     ).toBeGreaterThan(0);
+    // The window runs between two marks the case writes into the record itself, and is read from
+    // the one read that shows the record still written after the second: no earlier read, which
+    // could be an old copy, supplies it.
+    const sentMark = `the frame is sent (${randomUUID()})`;
+    pane.markRecord(sentMark);
     const published = await pane.publish(
       forwardedRoleEnvelope(MESSAGE_SUMMARY, `bgsub-${randomUUID()}`)
     );
     const read = await pane.next("the role's turn carrying the message", (request) =>
       isRoleTurn(request) ? conversation(request).includes(MESSAGE_SUMMARY) : false
     );
-    const recordAtRead = await pane.timerRecord();
-    // The record read at the turn was a live one: its writer stamps it again after that read, and
-    // a later read sees the stamp. A window of no timers reads as 0 ms whether the plugins were
-    // quiet or the record had stopped; only a stamp after the read tells the two apart.
-    await pane.recordWrittenAfter(recordAtRead.length);
+    const turnMark = `the turn that read it is seen (${randomUUID()})`;
+    pane.markRecord(turnMark);
+    const record = await pane.recordThrough(turnMark);
+    const sentAt = markIndex(record, sentMark);
+    expect(sentAt, "the pane's timer record holds no mark of the frame being sent").toBeGreaterThan(
+      -1
+    );
     // The message is in the role's context at its next model turn: no turn of the role came
     // between the frame's arrival and the turn that read it.
     expect(published.order).toBeLessThan(read.arrived.order);
@@ -690,7 +718,7 @@ test.skipIf(skip)(
     // with that timer's delay, however the pane's load stretched the time either side of it: one
     // it armed through the host (`activeSessionContext.setTimeout`, whose frames are the host's
     // compiled bundle) included, and the read refuses a timer whose arming named no file at all.
-    const waits = timersBetween(recordAtRead, beforePublish - 1, recordAtRead.length);
+    const waits = timersBetween(record, sentAt, markIndex(record, turnMark));
     expect(
       waits.reduce((sum, wait) => sum + wait.delayMs, 0),
       `the plugins' own timers between the frame and the turn that read it: ${JSON.stringify(waits)}`

@@ -26,27 +26,64 @@ export const TIMER_RECORD_FILE = "LEGION_TIMER_RECORD_FILE";
 /** The roots of the program's own code, for the preload: absolute directories, `:`-separated. */
 export const TIMER_RECORD_ROOTS = "LEGION_TIMER_RECORD_ROOTS";
 
-/** How often the preload's writer stamps the record as alive (`{ alive }` steps). The stamp is
- *  how a reader tells a record still being written from one whose writer stopped: a window of no
- *  timers reads the same in both, and only a later stamp shows the writer was there to write one.
- *  The period sets how soon a wait for a stamp ends, never a verdict. */
+/** How often the preload's writer stamps the record as alive (`{ alive, canary }` steps). The
+ *  stamp is how a reader tells a record still being written from one whose writer stopped: a
+ *  window of no timers reads the same in both, and only a later stamp shows the writer was there to
+ *  write one. The period sets how soon a wait for a stamp ends, never a verdict. */
 export const TIMER_RECORD_ALIVE_MS = 100;
+
+/** The timer calls the record wraps, by the names its canary reports them. */
+export const TIMER_APIS = [
+  "setTimeout",
+  "setInterval",
+  "Bun.sleep",
+  "AbortSignal.timeout",
+] as const;
+export type TimerApi = (typeof TIMER_APIS)[number];
 
 /** One step of the record: a timer the program armed, with the delay it chose and the line that
  *  armed it; a timer whose arming stack named no file, with its delay; that timer's callback
  *  starting (an interval's, at each tick; a sleep's, as it resolves; a deadline's, as its signal
- *  aborts); or the preload's writer stamping the record as alive. Timers are numbered in the order
- *  they were armed; stamps, in the order they were written. */
+ *  aborts); the preload's writer stamping the record as alive, with the timer calls whose wrap saw
+ *  its canary (`probeCanary`); or a mark a test wrote into the record (`markRecord`). Timers are
+ *  numbered in the order they were armed; stamps, in the order they were written. */
 export type TimerStep =
   | { readonly timer: number; readonly delayMs: number; readonly from: string }
   | { readonly unplaced: number; readonly delayMs: number }
   | { readonly fired: number }
-  | { readonly alive: number };
+  | { readonly alive: number; readonly canary: readonly TimerApi[] }
+  | { readonly mark: string };
 
 /** A timer of the record that was armed and fired between two steps of a record it shares. */
 export interface TimerOnTheWay {
   readonly delayMs: number;
   readonly from: string;
+}
+
+/** True while `probeCanary` calls the timer API: a wrap that sees a call then notes it as seen
+ *  rather than recording a timer. */
+let canaryCalling = false;
+const canarySeen = new Set<TimerApi>();
+
+/**
+ * Calls each timer API the record wraps once, through the process's globals as they stand now,
+ * and returns the ones whose wrap saw the call. A record whose wrap was undone, or never
+ * installed, still has its writer and its stamps, and records no timer: its window reads 0 ms
+ * whatever the program did. Only a call through the globals tells that apart, since a wrap that
+ * is gone sees no call. Each call is cleared or ends at once.
+ */
+export function probeCanary(): TimerApi[] {
+  canarySeen.clear();
+  canaryCalling = true;
+  try {
+    globalThis.clearTimeout(globalThis.setTimeout(() => undefined, 0));
+    globalThis.clearInterval(globalThis.setInterval(() => undefined, 1_000_000));
+    void Bun.sleep(0);
+    AbortSignal.timeout(0);
+  } finally {
+    canaryCalling = false;
+  }
+  return TIMER_APIS.filter((api) => canarySeen.has(api));
 }
 
 const thisFile = new URL(import.meta.url).pathname;
@@ -162,8 +199,12 @@ export function recordTimers(
   };
   let armed = 0;
   /** Records the arming running now, when it is the program's or cannot be placed, and returns
-   *  its number. */
-  const arm = (delay: unknown): number | undefined => {
+   *  its number. A canary call (`probeCanary`) is noted as seen through `api` and not recorded. */
+  const arm = (api: TimerApi, delay: unknown): number | undefined => {
+    if (canaryCalling) {
+      canarySeen.add(api);
+      return undefined;
+    }
     const place = placeArming(armingStack(), prefixes);
     if (place === "foreign") return undefined;
     armed += 1;
@@ -181,22 +222,22 @@ export function recordTimers(
       write({ fired: timer });
       return handler(...args);
     };
-  const wrapped = (scheduler: typeof setTimeout | typeof setInterval) =>
+  const wrapped = (api: TimerApi, scheduler: typeof setTimeout | typeof setInterval) =>
     ((handler: unknown, delay?: unknown, ...args: unknown[]) => {
-      const timer = typeof handler === "function" ? arm(delay) : undefined;
+      const timer = typeof handler === "function" ? arm(api, delay) : undefined;
       const callback =
         timer === undefined ? handler : firing(timer, handler as (...args: unknown[]) => unknown);
       return (scheduler as (...args: unknown[]) => unknown)(callback, delay, ...args);
     }) as unknown;
-  globalThis.setTimeout = wrapped(original.setTimeout) as typeof setTimeout;
-  globalThis.setInterval = wrapped(original.setInterval) as typeof setInterval;
+  globalThis.setTimeout = wrapped("setTimeout", original.setTimeout) as typeof setTimeout;
+  globalThis.setInterval = wrapped("setInterval", original.setInterval) as typeof setInterval;
   Bun.sleep = ((until: number | Date) => {
-    const timer = typeof until === "number" ? arm(until) : undefined;
+    const timer = typeof until === "number" ? arm("Bun.sleep", until) : undefined;
     const sleeping = original.sleep(until);
     return timer === undefined ? sleeping : sleeping.then(() => write({ fired: timer }));
   }) as typeof Bun.sleep;
   AbortSignal.timeout = (delay: number): AbortSignal => {
-    const timer = arm(delay);
+    const timer = arm("AbortSignal.timeout", delay);
     const signal = original.abortTimeout.call(AbortSignal, delay);
     if (timer !== undefined) {
       signal.addEventListener("abort", () => write({ fired: timer }), { once: true });
@@ -215,9 +256,10 @@ export function recordTimers(
  * Installs the record as the preload does, when `env` names a file (`TIMER_RECORD_FILE`) and the
  * program's roots (`TIMER_RECORD_ROOTS`): each step is appended to the file as one JSON line. A
  * write that fails is dropped, so the record never changes what the program does. The writer also
- * stamps the record as alive every `TIMER_RECORD_ALIVE_MS` (`writtenAfter` reads the stamps), on
- * the process's own `setInterval` taken before the record wraps it, so the stamp is never one of
- * the program's timers; the interval is unref'd, so it keeps no process alive.
+ * stamps the record as alive every `TIMER_RECORD_ALIVE_MS`, with the timer calls whose wrap saw
+ * its canary at that moment (`probeCanary`; `stampAfter` reads the stamps). The stamp runs on the
+ * process's own `setInterval`, taken before the record wraps it, so it is never one of the
+ * program's timers; the interval is unref'd, so it keeps no process alive.
  *
  * The writer is `@legion/envoy-client/json-line-record`'s `jsonLineRecord` written again, and the
  * copy stays: that one shared form sits in `@legion/envoy-client` because the program seams that
@@ -244,7 +286,7 @@ export function recordTimersFromEnvironment(env: Record<string, string | undefin
   let alive = 0;
   realSetInterval(() => {
     alive += 1;
-    write({ alive });
+    write({ alive, canary: probeCanary() });
   }, TIMER_RECORD_ALIVE_MS).unref();
 }
 
@@ -264,14 +306,41 @@ function isFiring(step: unknown): step is Extract<TimerStep, { fired: number }> 
 }
 
 /**
- * Whether the record `steps` holds a stamp of its writer at or past index `length`: that the
- * writer was alive, and the reader saw its writes, after a read that found `length` steps. A record
- * whose writer stopped, or a read that returns an old copy, holds none however long one waits.
+ * Appends a mark named `mark` to the record `file`, from the test's own process: the record is
+ * appended to whole lines at a time by both, so a step the program wrote after the mark lies after
+ * it in the file. A test marks the moments its window runs between, so it reads the window from a
+ * later read of the record rather than from whatever an earlier read returned.
  */
-export function writtenAfter(steps: readonly unknown[], length: number): boolean {
+export function markRecord(file: string, mark: string): void {
+  appendFileSync(file, `${JSON.stringify({ mark } satisfies TimerStep)}\n`);
+}
+
+/** The index of the mark named `mark` in the record `steps`, or -1 when it holds none. */
+export function markIndex(steps: readonly unknown[], mark: string): number {
+  return steps.findIndex(
+    (step) => typeof step === "object" && step !== null && "mark" in step && step.mark === mark
+  );
+}
+
+/**
+ * The first stamp of the record's writer in `steps` past index `index`, or undefined: that the
+ * writer was alive, and the reader saw its writes, after the step at `index`. A record whose writer
+ * stopped, or a read that returns an old copy, holds none however long one waits.
+ */
+export function stampAfter(
+  steps: readonly unknown[],
+  index: number
+): Extract<TimerStep, { alive: number }> | undefined {
   return steps
-    .slice(Math.max(0, length))
-    .some((step) => typeof step === "object" && step !== null && "alive" in step);
+    .slice(Math.max(0, index + 1))
+    .find(
+      (step): step is Extract<TimerStep, { alive: number }> =>
+        typeof step === "object" &&
+        step !== null &&
+        "alive" in step &&
+        "canary" in step &&
+        Array.isArray(step.canary)
+    );
 }
 
 /**
