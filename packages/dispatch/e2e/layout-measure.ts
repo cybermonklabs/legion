@@ -95,8 +95,11 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
 
   const label = (el: Element): string => {
     const id = el.id === "" ? "" : `#${el.id}`;
+    // The DOM's own attribute, read in the page by `page.evaluate` after the row settled.
     const testId = el.getAttribute("data-testid");
+    // The DOM's own attribute, read in the page by `page.evaluate` after the row settled.
     const name = el.getAttribute("aria-label");
+    // The DOM's own attribute, read in the page by `page.evaluate` after the row settled.
     const group = el.getAttribute("data-layout-group");
     return (
       el.tagName.toLowerCase() +
@@ -128,6 +131,7 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
     const attributes = ["data-testid", "data-layout-group", "aria-label"];
     const named = el.closest(attributes.map((attribute) => `[${attribute}]`).join(", "));
     for (const attribute of attributes) {
+      // The DOM's own attribute, read in the page by `page.evaluate` after the row settled.
       const value = named?.getAttribute(attribute);
       if (value !== null && value !== undefined) return `[${attribute}=${JSON.stringify(value)}]`;
     }
@@ -353,6 +357,7 @@ export function measureLayout(listed: readonly string[] = []): LayoutReading {
   const groups = new Set<string>();
   for (const group of document.querySelectorAll("[data-layout-group]")) {
     groups.add(group.getAttribute("data-layout-group") ?? "");
+    // The DOM's own attribute, read in the page by `page.evaluate` after the row settled.
     const declared = group.getAttribute("data-layout-max");
     const max = declared === null ? 10 : Number(declared);
     if (declared !== null && !(/^\d+$/.test(declared) && max >= 1 && max <= 10)) {

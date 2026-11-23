@@ -182,7 +182,7 @@ async function loadSettled(page: Page, route: LayoutRoute, address: string): Pro
 
 /** Reads the settled page: the fonts landed, then `measureLayout` with the entries `place` may
  *  match. */
-async function read(page: Page, place: ReadingPlace): Promise<LayoutReading> {
+async function measureSettledPage(page: Page, place: ReadingPlace): Promise<LayoutReading> {
   // A web font that lands after the wait widens every line it sets.
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   return await page.evaluate(
@@ -209,7 +209,10 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
     await loadSettled(page, route, address);
     const plain = { route: route.name, width };
     failures.push(
-      ...judgeReading(plain, await read(page, plain), { groups: route.requiredGroups, minElements })
+      ...judgeReading(plain, await measureSettledPage(page, plain), {
+        groups: route.requiredGroups,
+        minElements,
+      })
     );
     for (const state of route.states ?? []) {
       await loadSettled(page, route, address);
@@ -219,7 +222,7 @@ export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSe
       await settle(page, route, address);
       const acted = { route: route.name, state: state.name, width };
       failures.push(
-        ...judgeReading(acted, await read(page, acted), {
+        ...judgeReading(acted, await measureSettledPage(page, acted), {
           groups: state.requiredGroups,
           minElements,
         })
