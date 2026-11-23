@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *testing.T) {
@@ -41,10 +42,10 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 				t.Fatalf("open dedicated table-race pool: %v", err)
 			}
 			database.Pool = store.NewPool(pool)
-			t.Cleanup(pool.Close)
+			testcleanup.Add(t, pool.Close)
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
 				if err := service.Shutdown(shutdown); err != nil {

@@ -15,6 +15,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A browser whose client id is lower than the server's writes 150,000 blocks into a paragraph the
@@ -207,7 +208,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 
 	t.Run("a room stores it and keeps it", func(t *testing.T) {
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(httpServer.Close)
+		testcleanup.Add(t, httpServer.Close)
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
 		waitFor(t, 10*time.Second, "the peer's room to open", func() bool {
 			return service.srv.GetDoc(artifactID) != nil

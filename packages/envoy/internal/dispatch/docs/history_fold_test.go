@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A stored history folds into a state that reads exactly as the whole history merged does, at its
@@ -470,12 +471,12 @@ func shrinkPendingItems(t *testing.T, service *Service, versioned *PgVersioned) 
 	if service != nil {
 		was := service.maxPendingItems
 		service.maxPendingItems, service.srv.MaxPendingItems = testPendingItems, testPendingItems
-		t.Cleanup(func() { service.maxPendingItems, service.srv.MaxPendingItems = was, was })
+		testcleanup.Add(t, func() { service.maxPendingItems, service.srv.MaxPendingItems = was, was })
 	}
 	if versioned != nil {
 		was := versioned.maxPendingItems
 		versioned.maxPendingItems = testPendingItems
-		t.Cleanup(func() { versioned.maxPendingItems = was })
+		testcleanup.Add(t, func() { versioned.maxPendingItems = was })
 	}
 }
 

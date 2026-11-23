@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Settlement repairs an ask block's server-owned attributes into the document as it stands when
@@ -371,7 +372,7 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -527,7 +528,7 @@ func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.
 			}
 
 			settled := settleUnderPause(t, service, pause, artifactID, generation)
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				if t.Failed() {
 					service.purgeSuppressedPersistence(artifactID)
 					endRoomLockHolders(t, service)
@@ -620,7 +621,7 @@ func requireNextSettlementStamps(t *testing.T, service *Service, artifactID, wan
 // settlement closes when it returns, once pause holds its stamp's commit.
 func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, artifactID string, generation uint64) <-chan struct{} {
 	t.Helper()
-	t.Cleanup(pause.let)
+	testcleanup.Add(t, pause.let)
 	pause.armed.Store(true)
 	settled := make(chan struct{})
 	go func() {

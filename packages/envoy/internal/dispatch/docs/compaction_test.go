@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A tail-rule compaction folds the rows older than the tail into the newest of them and leaves
@@ -575,7 +576,7 @@ func TestACompactionThatDoesNotWaitHoldsNoRoomLockWhileItWaitsForAConnection(t *
 			conn.Release()
 		}
 	})
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	if got, want := len(held), int(pool.Config().MaxConns); got != want {
 		t.Fatalf("the test holds %d of the compaction pool's %d connections, want all of them", got, want)
 	}
@@ -789,7 +790,7 @@ func renameDocUpdatesAway(t *testing.T, database *store.Store) {
 	if _, err := database.Pool.Exec(context.Background(), `alter table doc_updates rename to doc_updates_renamed`); err != nil {
 		t.Fatalf("rename doc_updates out of the way: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if _, err := database.Pool.Exec(context.Background(), `alter table doc_updates_renamed rename to doc_updates`); err != nil {
 			t.Errorf("rename doc_updates back: %v", err)
 		}
@@ -941,6 +942,6 @@ func holdDocumentLock(t testing.TB, database *store.Store, artifactID string) (u
 			t.Errorf("release the document's session lock: %v", err)
 		}
 	})
-	t.Cleanup(unlock)
+	testcleanup.Add(t, unlock)
 	return unlock
 }

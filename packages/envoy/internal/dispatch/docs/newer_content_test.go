@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // newerContentDocument is a document holding "before" and, after it, an element this build does
@@ -191,14 +192,14 @@ func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T
 				}
 			}
 			httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-			t.Cleanup(httpServer.Close)
+			testcleanup.Add(t, httpServer.Close)
 			headers := http.Header{"X-Dispatch-User": []string{"alice"}}
 			wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
 			connection, response, err := gws.DefaultDialer.Dial(wsURL, headers)
 			if err != nil {
 				t.Fatalf("connect a document holding newer content: response=%#v err=%v, want an upgrade the server closes", response, err)
 			}
-			t.Cleanup(func() { _ = connection.Close() })
+			testcleanup.Add(t, func() { _ = connection.Close() })
 			connection.SetReadDeadline(time.Now().Add(time.Second))
 			_, message, err := connection.ReadMessage()
 			var closed *gws.CloseError

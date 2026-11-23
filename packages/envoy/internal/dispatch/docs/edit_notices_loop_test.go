@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // newEditNoticeSweeper is a second document service on database that only sweeps, as another
@@ -20,7 +21,7 @@ import (
 func newEditNoticeSweeper(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
 
@@ -34,7 +35,7 @@ func runEditNoticeLoop(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		cancel()
 		select {
 		case <-done:
@@ -58,7 +59,7 @@ func startEditNoticeHub(t *testing.T, database *store.Store) <-chan struct{} {
 		defer close(done)
 		hub.Run(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop()
 		<-done
 	})

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // previousReleaseCommit is the commit a process of the release before this one registers under,
@@ -752,7 +753,7 @@ func registerProcess(t *testing.T, database *store.Store, commit string) func() 
 			t.Errorf("deregister the process serving commit %q: %v", commit, err)
 		}
 	})
-	t.Cleanup(deregister)
+	testcleanup.Add(t, deregister)
 	return deregister
 }
 

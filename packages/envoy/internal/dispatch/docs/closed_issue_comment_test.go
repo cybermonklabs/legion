@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A closed issue still takes a comment, so its document still takes that comment's anchor under
@@ -96,7 +97,7 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 	letSettle := func() { release.Do(func() { close(proceed) }) }
 	// Registered after the service's shutdown, so it runs before it: a test that fails while the
 	// settlement is held still lets it finish.
-	t.Cleanup(letSettle)
+	testcleanup.Add(t, letSettle)
 	service.beforeSettleStart = func(string) {
 		if hold.CompareAndSwap(true, false) {
 			close(started)
@@ -476,12 +477,12 @@ func closedIssueRoomService(t *testing.T, database *store.Store, artifactID stri
 		Identity: identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
-	t.Cleanup(held.let)
+	testcleanup.Add(t, held.let)
 	return service, held
 }
 

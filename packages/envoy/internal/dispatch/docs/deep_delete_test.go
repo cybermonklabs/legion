@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/stacktest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // An authenticated peer grows a nested element chain through the document websocket, in updates
@@ -39,7 +40,7 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 		service.settle = time.Hour
 		seedServiceText(t, service, artifactID, "before")
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(httpServer.Close)
+		testcleanup.Add(t, httpServer.Close)
 
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
 		// The peer writes on the room's document, as a browser does once the room has sent it, so

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A browser's keystrokes reach the store through the room's persistence, one call per update
@@ -521,7 +522,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 			letEviction := make(chan struct{})
 			var evictOnce, letOnce sync.Once
 			release := func() { letOnce.Do(func() { close(letEviction) }) }
-			t.Cleanup(release)
+			testcleanup.Add(t, release)
 			service.beforeFailedEviction = func(room string) {
 				if room != artifactID {
 					return
@@ -532,7 +533,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 
 			bob := model.Actor{Kind: "user", ID: "bob"}
 			service.addConnection(artifactID, 11, bob)
-			t.Cleanup(func() { service.removeConnection(artifactID, 11) })
+			testcleanup.Add(t, func() { service.removeConnection(artifactID, 11) })
 			updates := make([][]byte, 3)
 			credits := make([]*UpdateCredit, 3)
 			// A browser's update names the peer ygo applied it for; a nil origin is ygo's own
@@ -647,7 +648,7 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 		live := service.srv.GetDoc(artifactID)
 		before := storedHead(t, database, artifactID)
 		gate := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
-		t.Cleanup(gate.let)
+		testcleanup.Add(t, gate.let)
 		appends.mu.Lock()
 		appends.gates = append(appends.gates, gate)
 		appends.mu.Unlock()
@@ -847,7 +848,7 @@ func TestALoneUpdateAndABatchHoldingItStoreItOnce(t *testing.T) {
 				{entered: make(chan struct{}), release: make(chan struct{})},
 				{entered: make(chan struct{}), release: make(chan struct{})},
 			}
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				for _, gate := range gates {
 					gate.let()
 				}
@@ -1194,7 +1195,7 @@ func startBlockingProxy(t *testing.T, server string) *blockingProxy {
 		t.Fatalf("listen for the proxy: %v", err)
 	}
 	proxy := &blockingProxy{listener: listener, server: server, blocked: make(chan struct{}), released: make(chan struct{})}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		proxy.release()
 		_ = listener.Close()
 	})

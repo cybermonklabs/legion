@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -65,7 +66,7 @@ func testServiceDeps(database *store.Store) Deps {
 func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(testServiceDeps(database))
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -344,7 +345,7 @@ func TestSettlementStampingBlockIDsWritesNoVersion(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -378,7 +379,7 @@ func TestSettlementRepairThatRendersTheSameMarkdownRecordsNoContentChange(t *tes
 	artifactID := createDocument(t, database, "snake_case here")
 	seedUnidentifiedProofDocument(t, database, artifactID, "snake_case here")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -1351,7 +1352,7 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision(t *testing
 		noDelete                  = map[string]int{}
 		noDeleteShape             = map[string]string{}
 	)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		t.Logf("%d bodies enumerated, %d breaking the content rule: %d followed to a valid decision, %d naming no delete and saying why, %d failing",
 			len(bodies), broken, followed, unnamed, broken-followed-unnamed)
 		for reason, count := range noDelete {
@@ -1616,7 +1617,7 @@ func TestSetAskBlockTextRefusalOfEveryBrokenBodyHoldingADecisionLeadsToAValidDec
 		noDelete                         = map[string]int{}
 		noDeleteShape                    = map[string]string{}
 	)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		t.Logf("%d bodies enumerated, %d breaking the content rule: %d refusals followed to a valid decision, "+
 			"%d naming no delete and saying why; %d of the %d bodies end with the decision reading as one",
 			len(bodies), broken, followed, unnamed, valid, broken)
@@ -4180,7 +4181,7 @@ func TestSettleStampsPersistedLegacyProofDocument(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4220,7 +4221,7 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 		Events:      events.NewBroker(),
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4251,7 +4252,7 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 	if err != nil && !errors.Is(err, ygws.ErrNoChanges) {
 		t.Fatalf("warm document for settlement: %v", err)
 	}
-	t.Cleanup(unsubscribe)
+	testcleanup.Add(t, unsubscribe)
 
 	// The load armed the settlement the seeded update owes, which moved the generation.
 	state := service.room(artifactID)
@@ -4302,7 +4303,7 @@ func TestSettleStampsLegacyChangeInExactlyOneVersion(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4337,7 +4338,7 @@ func TestSettleDiscardsIdentityUpdateWhenVersionTransactionFails(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4361,7 +4362,7 @@ func TestSettleDiscardsIdentityUpdateWhenVersionTransactionFails(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create identity settlement failure trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = database.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_reject_identity_settlement on artifact_versions`)
 		_, _ = database.Pool.Exec(context.Background(), `drop function if exists dispatch_test_reject_identity_settlement()`)
 	})
@@ -4422,12 +4423,12 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 		Events:      events.NewBroker(),
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if persistence.released.CompareAndSwap(false, true) {
 			close(release)
 		}
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4451,7 +4452,7 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create successor settlement failure trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = database.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_reject_successor_settlement on artifact_versions`)
 		_, _ = database.Pool.Exec(context.Background(), `drop function if exists dispatch_test_reject_successor_settlement()`)
 	})
@@ -4481,7 +4482,7 @@ func TestBackfillStampsClosedIssueDocument(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4514,7 +4515,7 @@ func TestAClosedIssuesDocumentReadsItsBlocksWithoutFailingItsRoom(t *testing.T) 
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4544,7 +4545,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	seedUnidentifiedProofDocument(t, database, artifactID, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4558,7 +4559,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 	release := make(chan struct{})
 	var blocked atomic.Bool
 	var released atomic.Bool
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if released.CompareAndSwap(false, true) {
 			close(release)
 		}
@@ -4602,7 +4603,7 @@ func TestBackfillReportsStoppingDocumentAsSkipped(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4638,7 +4639,7 @@ func TestBackfillReportsDocumentPersistenceFailure(t *testing.T) {
 		Events: events.NewBroker(),
 		Settle: time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4665,7 +4666,7 @@ func TestSettleWritesArtifactOwnedEventForUnlinkedDocument(t *testing.T) {
 	artifactID := createProjectDocument(t, database, "before")
 	broker := events.NewBroker()
 	service := New(Deps{Store: database, Events: broker, Settle: 20 * time.Millisecond})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -4694,7 +4695,7 @@ func TestUnlinkedDocumentIsAlwaysOpen(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createProjectDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -5226,7 +5227,7 @@ func TestSettleRetriesTransientVersionWriteFailure(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create settlement failure trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = service.store.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_fail_first_settlement on artifact_versions`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop function if exists dispatch_test_fail_first_settlement()`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop sequence if exists dispatch_test_settle_failure`)
@@ -5262,7 +5263,7 @@ func TestSettleFailsRoomAfterPersistentVersionWriteFailure(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create persistent settlement failure trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = service.store.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_fail_every_settlement on artifact_versions`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop function if exists dispatch_test_fail_every_settlement()`)
 	})
@@ -5378,7 +5379,7 @@ func TestShutdownCompletesCompactionBeforeTestStoreCloses(t *testing.T) {
 	}
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), Settle: time.Hour})
 	service.settle = 0
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	seedServiceText(t, service, artifactID, "before")
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -5454,7 +5455,7 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 		release:        release,
 	}
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if persistence.released.CompareAndSwap(false, true) {
 			close(release)
 		}
@@ -5569,7 +5570,7 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 	}
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 10 * time.Millisecond})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := restarted.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
@@ -5655,7 +5656,7 @@ func TestCancelledTextLoadDoesNotQuarantineRoom(t *testing.T) {
 		Persistence: failingVersionedStore{VersionedStore: NewPgVersioned(database), respectContext: true},
 		Events:      events.NewBroker(),
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := service.Text(ctx, artifactID); !errors.Is(err, context.Canceled) {

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -94,7 +95,7 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 		Settle:   time.Hour,
 		MarkWait: 300 * time.Millisecond,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
 	go func() {
@@ -129,7 +130,7 @@ func TestVerifyMarkReadsTheDocumentAgainWhenItsWaitEnds(t *testing.T) {
 		Settle:   time.Hour,
 		MarkWait: 300 * time.Millisecond,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
 	written := make(chan struct{})
@@ -527,7 +528,7 @@ func newUnrecordedMarkService(t *testing.T) (*Service, string, func(age time.Dur
 	started := time.Now()
 	var aged atomic.Int64
 	service.now = func() time.Time { return started.Add(time.Duration(aged.Load())) }
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service, artifactID, func(age time.Duration) { aged.Store(int64(age)) }
 }
 
@@ -746,7 +747,7 @@ func TestSettleKeepsTheAnchoredMarkOfAnAskThatAlsoNamesABlock(t *testing.T) {
 	started := time.Now()
 	var aged atomic.Int64
 	service.now = func() time.Time { return started.Add(time.Duration(aged.Load())) }
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, documentA, "The quick brown fox")
 	seedServiceText(t, service, documentB, "The quick brown fox")
 	askID := insertAnchoredAsk(t, service, documentA, "brown")
@@ -1620,7 +1621,7 @@ func installCounterIDs(t *testing.T, prefix string) {
 		n++
 		return fmt.Sprintf("%s-%d", prefix, n)
 	})
-	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
+	testcleanup.Add(t, func() { pmdoc.SetBlockIDGenerator(nil) })
 }
 
 // insertAnchorRow records an open row of kind "ask", "comment" or "suggestion" with the given id,

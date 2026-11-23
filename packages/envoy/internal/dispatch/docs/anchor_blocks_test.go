@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
@@ -118,7 +119,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("create anchor refresh hold trigger: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		_, _ = service.store.Pool.Exec(context.Background(), `drop trigger if exists dispatch_test_hold_anchor_refresh on events`)
 		_, _ = service.store.Pool.Exec(context.Background(), `drop function if exists dispatch_test_hold_anchor_refresh()`)
 	})

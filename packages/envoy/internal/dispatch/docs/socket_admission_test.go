@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testport"
 )
 
@@ -51,7 +52,7 @@ func admitSocket(t *testing.T, serverURL, id, what string) *gws.Conn {
 		}
 		t.Fatalf("%s: the socket was refused (%s: %v), want it admitted", what, status, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if _, message, err := connection.ReadMessage(); err != nil {
 		t.Fatalf("%s: the socket's first frame = %q (%v), want the room's sync", what, message, err)
@@ -229,7 +230,7 @@ func TestAWarmSocketOpenRendersNothingAndAColdOpenRendersOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the room an update took outside the schema: response=%v err=%v, want an upgrade the server closes", response, err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	_ = connection.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, message, err := connection.ReadMessage()
 	var closed *gws.CloseError
@@ -262,7 +263,7 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 	var overtaken atomic.Bool
 	var releasedOnce sync.Once
 	releaseOvertaken := func() { releasedOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseOvertaken)
+	testcleanup.Add(t, releaseOvertaken)
 	service.admissionRendered = func(room string) {
 		if room != artifactID || overtaken.Swap(true) {
 			return
@@ -284,7 +285,7 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 	if overtakenSocket.err != nil {
 		t.Fatalf("the overtaken socket was refused (%v), want it admitted to the resident room", overtakenSocket.err)
 	}
-	t.Cleanup(func() { _ = overtakenSocket.connection.Close() })
+	testcleanup.Add(t, func() { _ = overtakenSocket.connection.Close() })
 	_ = overtakenSocket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, message, err := overtakenSocket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the overtaken socket's first frame = %q (%v), want the room's sync", message, err)
@@ -481,7 +482,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 		}
 		close(start)
 		dials.Wait()
-		t.Cleanup(func() {
+		testcleanup.Add(t, func() {
 			for _, connection := range admitted {
 				_ = connection.Close()
 			}
@@ -500,14 +501,14 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			MaxLiveRooms:      rooms,
 			MaxDocConnections: connections,
 		})
-		t.Cleanup(func() {
+		testcleanup.Add(t, func() {
 			if err := service.Shutdown(context.Background()); err != nil {
 				t.Errorf("shutdown document service: %v", err)
 			}
 		})
 		service.srv.RoomIdleTimeout = time.Hour
 		server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(server.Close)
+		testcleanup.Add(t, server.Close)
 		return service, server.URL
 	}
 	refusedOtherwise := func(refusals map[int]int) map[int]int {
@@ -566,7 +567,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	unloadGo := make(chan struct{})
 	var unloadOnce, unloadGoOnce sync.Once
 	letUnload := func() { unloadGoOnce.Do(func() { close(unloadGo) }) }
-	t.Cleanup(letUnload)
+	testcleanup.Add(t, letUnload)
 	unload := service.srv.OnUnloadDocument
 	service.srv.OnUnloadDocument = func(ctx context.Context, room string) {
 		if room == artifactID {
@@ -589,7 +590,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	var held atomic.Bool
 	var releaseOnce sync.Once
 	letOffer := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(letOffer)
+	testcleanup.Add(t, letOffer)
 	service.admissionRendered = func(room string) {
 		if room != artifactID || held.Swap(true) {
 			return
@@ -619,7 +620,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	if socket.err != nil {
 		t.Fatalf("the held cold socket was refused (%v), want it admitted to the resident room", socket.err)
 	}
-	t.Cleanup(func() { _ = socket.connection.Close() })
+	testcleanup.Add(t, func() { _ = socket.connection.Close() })
 	_ = socket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, message, err := socket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the held socket's first frame = %q (%v), want the room's sync", message, err)
@@ -642,7 +643,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	reading, release := make(chan struct{}), make(chan struct{})
 	var releaseOnce sync.Once
 	letLoad := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(letLoad)
+	testcleanup.Add(t, letLoad)
 	// The load holds inside its own read of the store, once that read has returned and before
 	// Load hands it back, which is where LoadDoc makes it: after takePreload has found nothing.
 	store := &insideFirstLoadStore{VersionedStore: NewPgVersioned(database), room: artifactID, during: func() {
@@ -658,14 +659,14 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		letLoad()
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	offered := make(chan struct{})
 	var offeredOnce sync.Once
 	service.afterSocketPreload = func(room string, _ *persistence.LoadResult) {
@@ -699,7 +700,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	if socket.err != nil {
 		t.Fatalf("the cold socket was refused (%v), want it admitted to the resident room", socket.err)
 	}
-	t.Cleanup(func() { _ = socket.connection.Close() })
+	testcleanup.Add(t, func() { _ = socket.connection.Close() })
 	_ = socket.connection.SetReadDeadline(time.Now().Add(roomWait(t)))
 	if _, message, err := socket.connection.ReadMessage(); err != nil {
 		t.Fatalf("the cold socket's first frame = %q (%v), want the room's sync", message, err)
@@ -732,12 +733,12 @@ func TestTheUpgradeThroughTheProcessHeaderWriterNamesTheProcess(t *testing.T) {
 	_ = server.Listener.Close()
 	server.Listener = listener
 	server.Start()
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	connection, response, err := gws.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http")+"/ws/doc/room", nil)
 	if err != nil {
 		t.Fatalf("dial the socket: %v", err)
 	}
-	t.Cleanup(func() { _ = connection.Close() })
+	testcleanup.Add(t, func() { _ = connection.Close() })
 	if served := response.Header.Values(ProcessHeader); !slices.Equal(served, []string{"task-a"}) {
 		t.Fatalf("the upgrade names %q as its process, want exactly [task-a]; header %v", served, response.Header)
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // readInvariant counts, per room, the settlements whose version reused the rendering of the tree
@@ -67,7 +68,7 @@ func requireReadUnchangedWhenReused(t *testing.T, service *Service) *readInvaria
 			t.Errorf("a settlement of room %s reused the rendering of the tree it read, which changed after the read:\nread:    %s\nversion: %s", room, before, after)
 		}
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		service.afterSettleTreeRead = nil
 		service.beforeSettleVersionRender = nil
 	})

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A write outside Join would reach no transaction to weigh it in and no ledger to record it, so
@@ -96,7 +97,7 @@ func TestSeedTextStoresTreeAndReturnsCanonicalMarkdown(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +139,7 @@ func TestSeedTextRollsBackWithCreatingTransaction(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -821,7 +822,7 @@ func TestColdSnapshotCapturesFirstEditAfterWarm(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	if err := service.srv.Apply(context.Background(), artifactID, func(_ *crdt.Doc, _ func(func(*crdt.Transaction))) {}); err != nil && !errors.Is(err, ygws.ErrNoChanges) {
 		t.Fatalf("warm cold document: %v", err)

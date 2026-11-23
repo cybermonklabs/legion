@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 const lostEditDocument = "Alpha paragraph.\n\nBravo paragraph.\n"
@@ -38,12 +39,12 @@ func startEditInFlight(t *testing.T, service *Service, artifactID string, ops ..
 	if err != nil {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
 		t.Fatalf("lock document owner: %v", err)
 	}
 	joined, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	testcleanup.Add(t, ledger.Discard)
 	if _, err := service.ApplyOps(joined, artifactID, ops, lostEditAgent, nil); err != nil {
 		t.Fatalf("apply agent operations: %v", err)
 	}

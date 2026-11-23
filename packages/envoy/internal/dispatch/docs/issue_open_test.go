@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Closing or reopening an issue changes every process's rooms of its documents (plan
@@ -272,7 +273,7 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateA
 	// Registered here, so it runs before every cleanup registered above it: a test that fails
 	// with the gate held leaves neither the room's close nor the service's shutdown waiting on an
 	// append that never comes.
-	t.Cleanup(appends.release)
+	testcleanup.Add(t, appends.release)
 	typeOver(t, alice, "before", "typed before the close")
 	waitFor(t, roomWait(t), "task A's room to take alice's keystroke and its append to reach the held gate", func() bool {
 		return appends.waiting.Load() > 0 &&
@@ -455,7 +456,7 @@ func newHeldAppendsService(t *testing.T, database *store.Store) (*Service, *http
 		Settle:    time.Hour,
 		TestHooks: true,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -1047,7 +1048,7 @@ func awaitConnectedBrowser(t *testing.T, dialed <-chan dialedBrowser, login stri
 		if connected.err != nil {
 			t.Fatalf("connect %s's browser: %v", login, connected.err)
 		}
-		t.Cleanup(connected.peer.Close)
+		testcleanup.Add(t, connected.peer.Close)
 		return connected.peer
 	case <-time.After(roomWait(t)):
 		t.Fatalf("%s's browser had not connected after %v", login, roomWait(t))
@@ -2334,7 +2335,7 @@ func holdSettlementsOnceArmed(t *testing.T, service *Service) (arm func()) {
 	t.Helper()
 	var armed atomic.Bool
 	release := make(chan struct{})
-	t.Cleanup(func() { close(release) })
+	testcleanup.Add(t, func() { close(release) })
 	service.beforeSettleStart = func(string) {
 		if armed.Load() {
 			<-release

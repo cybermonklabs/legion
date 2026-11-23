@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Room sync runs each handler on a lane of its own, at the same time as the others (roomSyncLane).
@@ -41,7 +42,7 @@ func TestAnIssueCloseReachesTheRoomsWhileAnotherRoomSyncLaneHoldsAConnection(t *
 			close(release)
 		}
 	}
-	t.Cleanup(releaseOnce)
+	testcleanup.Add(t, releaseOnce)
 	lane.push(func(ctx context.Context) {
 		tx, err := task.store.Pool.Begin(ctx)
 		if err != nil {

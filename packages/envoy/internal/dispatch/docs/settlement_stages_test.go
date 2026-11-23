@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A settlement's stages are tested one at a time, each over a live service and its PostgreSQL:
@@ -52,7 +53,7 @@ func openStageTransaction(t *testing.T, settle *settlement, parent context.Conte
 	if err != nil {
 		t.Fatalf("begin the settlement's transaction: %v", err)
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := tx.Rollback(context.Background()); errors.Is(err, pgx.ErrTxClosed) {
 			return
 		}

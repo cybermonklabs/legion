@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A room's close gate leaves with the last close or repair that held it: the server keeps none
@@ -74,7 +75,7 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 			service.srv.releaseGate(artifactID, closing)
 		}
 	}
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
@@ -155,7 +156,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 		close(evicting)
 		<-evict
 	}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		letGo()
 		recoverRoom()
 		<-applied

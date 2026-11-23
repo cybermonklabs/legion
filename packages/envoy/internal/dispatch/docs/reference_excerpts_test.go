@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // excerptVersionOf is the excerpt_version of the mention document writes, or nil while it is owed.
@@ -231,7 +232,7 @@ func backoffAttempts(t *testing.T, database *store.Store, document string) (vers
 func newExcerptService(t *testing.T, database *store.Store, persistence VersionedStore) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
 
@@ -245,7 +246,7 @@ func runExcerpts(t *testing.T, run func(ctx context.Context)) {
 		defer close(done)
 		run(ctx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		cancel()
 		select {
 		case <-done:
@@ -440,7 +441,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		defer close(hubDone)
 		hub.Run(hubCtx)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stopHub()
 		<-hubDone
 	})

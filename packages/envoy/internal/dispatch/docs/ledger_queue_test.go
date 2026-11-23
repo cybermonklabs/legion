@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // queueProbe makes the table the queue's tests write their steps' rows to, so what a commit left is
@@ -55,9 +56,9 @@ func joinProbe(t *testing.T, service *Service) (pgx.Tx, *Ledger) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	_, ledger := service.Join(context.Background(), tx)
-	t.Cleanup(ledger.Discard)
+	testcleanup.Add(t, ledger.Discard)
 	return tx, ledger
 }
 

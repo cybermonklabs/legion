@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func newSchemaRepairService(database *store.Store) *Service {
@@ -47,7 +48,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	}
 
 	second := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := second.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown second service: %v", err)
 		}
@@ -66,7 +67,7 @@ func TestStoredTreeOutsideSchemaIsRepairedByReplacementAfterRestart(t *testing.T
 	}
 
 	third := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := third.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown third service: %v", err)
 		}
@@ -93,7 +94,7 @@ func TestSchemaRepairRefusesAReplacementThatNamesAToken(t *testing.T) {
 	}
 
 	second := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := second.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown second service: %v", err)
 		}
@@ -136,7 +137,7 @@ func TestSchemaRepairKeepsOpenAskBlocks(t *testing.T) {
 	}
 
 	second := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := second.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown second service: %v", err)
 		}
@@ -176,7 +177,7 @@ func TestSchemaRepairRefusesAnAskBlockTheContentRuleRefuses(t *testing.T) {
 			database := storetest.Open(t)
 			artifactID := createDocument(t, database, "")
 			service := newSchemaRepairService(database)
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				if err := service.Shutdown(context.Background()); err != nil {
 					t.Errorf("shutdown document service: %v", err)
 				}
@@ -213,7 +214,7 @@ func TestStoredRenderOnlySchemaViolationLoadsForRepair(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := newSchemaRepairService(database)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown render-only service: %v", err)
 		}

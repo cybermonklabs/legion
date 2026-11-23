@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // recordedMarkRefs reads the marks the rows anchored on one document record: its anchored
@@ -23,7 +24,7 @@ func TestRecordedMarkRefsListsOnlyTheDocumentsAnchoredRows(t *testing.T) {
 	documentA := createDocument(t, database, "")
 	documentB := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, documentA, "The quick brown fox")
 	seedServiceText(t, service, documentB, "The quick brown fox")
 
@@ -74,7 +75,7 @@ func TestRecordedMarkRefsSkipsAnAnchorArtifactIDThatDoesNotCast(t *testing.T) {
 	documentA := createDocument(t, database, "")
 	documentB := createDocument(t, database, "")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, documentA, "The quick brown fox")
 
 	askID := insertAnchoredAsk(t, service, documentA, "brown")

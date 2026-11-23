@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Two processes editing one document settle it as one process does (plan D3.7): a content change
@@ -216,14 +217,14 @@ func newGatedServiceInstance(t *testing.T, database *store.Store) (*Service, *ga
 		ServerURL:   "https://dispatch.example",
 		Settle:      time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	// Registered after the shutdown, so it runs first: a test that fails with the gate held does
 	// not leave the shutdown waiting on an append that never comes.
-	t.Cleanup(gated.release)
+	testcleanup.Add(t, gated.release)
 	return service, gated
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A room of a document can report its unload after a later room of the same document has loaded,
@@ -184,7 +185,7 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 	loading, letLoad := make(chan struct{}), make(chan struct{})
 	var loadOnce sync.Once
 	releaseLoad := func() { loadOnce.Do(func() { close(letLoad) }) }
-	t.Cleanup(releaseLoad)
+	testcleanup.Add(t, releaseLoad)
 	var loadHeld atomic.Bool
 	countLoad := r.service.bootstrapping
 	r.service.bootstrapping = func(room string, state []byte) {
@@ -198,7 +199,7 @@ func writerTakesUpALoadingSettlementRoom(t *testing.T, writeFirst bool) {
 	forked, letWrite := make(chan struct{}), make(chan struct{})
 	var writeOnce sync.Once
 	releaseWrite := func() { writeOnce.Do(func() { close(letWrite) }) }
-	t.Cleanup(releaseWrite)
+	testcleanup.Add(t, releaseWrite)
 	var writeHeld atomic.Bool
 	r.service.afterForkRead = func(room string) {
 		if room == r.room && !writeHeld.Swap(true) {
@@ -391,7 +392,7 @@ func TestTwoRetirementsInsideASettlementRoomAtOnceRetireIt(t *testing.T) {
 	secondIn, firstReserved := make(chan struct{}), make(chan struct{})
 	var reserveOnce sync.Once
 	letSecond := func() { reserveOnce.Do(func() { close(firstReserved) }) }
-	t.Cleanup(letSecond)
+	testcleanup.Add(t, letSecond)
 	secondDone, secondWaits := make(chan struct{}), make(chan struct{}, 1)
 	r.service.retireEntered = func(room string) {
 		if room != r.room {
@@ -669,7 +670,7 @@ func TestARoomALateSettlementLoadedIsRetiredAsTheTimersRetryOfThatSettlementEnds
 	socketEnded := make(chan struct{})
 	var endOnce sync.Once
 	letRetry := func() { endOnce.Do(func() { close(socketEnded) }) }
-	t.Cleanup(letRetry)
+	testcleanup.Add(t, letRetry)
 	var versionWrites atomic.Int32
 	r.service.afterSettleVersionWrite = func(room string) error {
 		if room != r.room {
@@ -767,7 +768,7 @@ func TestUnloadsOfTwoRoomsInEitherOrderLeaveNoResidentBytes(t *testing.T) {
 	proceed := make(chan struct{})
 	var proceedOnce sync.Once
 	letProceed := func() { proceedOnce.Do(func() { close(proceed) }) }
-	t.Cleanup(letProceed)
+	testcleanup.Add(t, letProceed)
 	var held atomic.Bool
 	r.service.beforeUnloadEndsLoad = func(room string) {
 		if room != r.room || held.Swap(true) {
@@ -863,7 +864,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 		Settle:    time.Hour,
 	})
 	service.srv.RoomIdleTimeout = lateUnloadRoomIdleTimeout
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), lateUnloadShutdownWait)
 		defer cancel()
 		if err := service.Shutdown(ctx); err != nil {
@@ -878,7 +879,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 			ended <- struct{}{}
 		}
 	}))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	r := &reloadedRoom{t: t, service: service, url: server.URL, room: room, closed: make(chan error, 1), unloaded: make(chan struct{}, 3), ended: ended}
 	service.bootstrapping = func(room string, _ []byte) {
 		if room == r.room {
@@ -908,7 +909,7 @@ func unloadAcrossAReload(t *testing.T) *reloadedRoom {
 	enter := make(chan struct{})
 	var enterOnce sync.Once
 	r.letFirstUnload = func() { enterOnce.Do(func() { close(enter) }) }
-	t.Cleanup(r.letFirstUnload)
+	testcleanup.Add(t, r.letFirstUnload)
 	var entered atomic.Bool
 	unload := service.srv.OnUnloadDocument
 	service.srv.OnUnloadDocument = func(ctx context.Context, room string) {
@@ -946,7 +947,7 @@ func (r *reloadedRoom) holdDeparture() (held <-chan struct{}, letGo func()) {
 	hold := &departureHold{held: make(chan struct{}), release: make(chan struct{})}
 	var once sync.Once
 	letGo = func() { once.Do(func() { close(hold.release) }) }
-	r.t.Cleanup(letGo)
+	testcleanup.Add(r.t, letGo)
 	r.hold.Store(hold)
 	return hold.held, letGo
 }
@@ -1005,7 +1006,7 @@ func (r *reloadedRoom) holdLateSettlementInItsRoom() (settlementRoom *crdt.Doc, 
 	warmed, goOn := make(chan struct{}), make(chan struct{})
 	var goOnce sync.Once
 	letSettle = func() { goOnce.Do(func() { close(goOn) }) }
-	r.t.Cleanup(letSettle)
+	testcleanup.Add(r.t, letSettle)
 	var settling atomic.Bool
 	r.service.afterSettleWarm = func(room string) {
 		if room != r.room || settling.Swap(true) {
@@ -1057,7 +1058,7 @@ func (r *reloadedRoom) awaitSettlementLoadHeld(letDeparture func()) (letReady fu
 	reached, ready := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	letReady = func() { once.Do(func() { close(ready) }) }
-	r.t.Cleanup(letReady)
+	testcleanup.Add(r.t, letReady)
 	var holding atomic.Bool
 	load := r.service.srv.OnLoadDocument
 	r.service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {

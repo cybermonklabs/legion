@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -66,7 +67,7 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 		t.Fatalf("stop the service between close and reopen: %v", err)
 	}
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := restarted.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
@@ -208,7 +209,7 @@ func TestTwoCreditedWritersBothSurviveACrashRestart(t *testing.T) {
 	writeThroughLedger(t, service, artifactID, second, "Second writer's paragraph.\n", withoutVersion)
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := restarted.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
@@ -368,7 +369,7 @@ func TestAVersionedAuthorIsNotCreditedAgainAfterACrashRestart(t *testing.T) {
 	writeAskBeforeClose(t, service, artifactID, asking)
 
 	restarted := New(Deps{Store: service.store, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := restarted.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown restarted document service: %v", err)
 		}
@@ -394,7 +395,7 @@ func TestABrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 	delta := model.Actor{Kind: "session", ID: "delta-session"}
@@ -567,7 +568,7 @@ func TestATwoPeerBrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReo
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	dave := model.Actor{Kind: "user", ID: "dave", Proven: true}
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
@@ -642,7 +643,7 @@ func TestABrowserEditAfterAVersionsCaptureStaysOwed(t *testing.T) {
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	carol := model.Actor{Kind: "user", ID: "carol", Proven: true}
 	agent := model.Actor{Kind: "session", ID: "agent-session"}
 
@@ -680,13 +681,13 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
 
 	browser := connectBrowser(t, httpServer.URL, artifactID, bob.ID)
 	editAsBrowser(t, service, artifactID, browser, "First.\n\nSecond, bob.\n")
-	t.Cleanup(browser.Close)
+	testcleanup.Add(t, browser.Close)
 	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	if err := service.waitForDurableAppends(waitCtx, artifactID); err != nil {
 		waitCancel()
@@ -739,7 +740,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	bob := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	uploader := model.Actor{Kind: "session", ID: "uploader-session"}
 
@@ -763,7 +764,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	// commit rather than racing it - waiting for it here would deadlock against the open
 	// transaction below, so the only wait is the final one, after that commit.
 	browser := connectBrowser(t, httpServer.URL, artifactID, bob.ID)
-	t.Cleanup(browser.Close)
+	testcleanup.Add(t, browser.Close)
 	editAsBrowser(t, service, artifactID, browser, "First.\n\nSecond, bob.\n")
 
 	var nextNumber int
@@ -799,7 +800,7 @@ func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *htt
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -812,7 +813,7 @@ func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *htt
 func newTestServer(t *testing.T, service *Service) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	return server
 }
 
@@ -857,7 +858,7 @@ func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 		t.Fatalf("load the document's room: %v", err)
 	}
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 	// Several versioned writes before the reload, each taking its own author out of what the
@@ -879,7 +880,7 @@ func TestABrowserEditAfterARoomReloadIsOwed(t *testing.T) {
 	waitForNoLiveDocument(t, service, artifactID)
 
 	browser := connectBrowser(t, httpServer.URL, artifactID, alice.ID)
-	t.Cleanup(browser.Close)
+	testcleanup.Add(t, browser.Close)
 	editAsBrowser(t, service, artifactID, browser, "First.\n\nSecond, alice.\n")
 	waitForLandedAppends(t, service, artifactID)
 	if owed := pendingAuthorRows(t, service.store, artifactID); !slices.Contains(owed, alice) {
@@ -907,7 +908,7 @@ func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t
 	service.settle = time.Hour // no settlement runs between the edits
 	seedServiceText(t, service, artifactID, "# Decision\n\nContext.\n")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 
 	var authors []model.Actor
 	const rounds = 8
@@ -1206,7 +1207,7 @@ func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 	state.inflight[record.seq] = record
 	capture := captureAuthors(state, nil, nil, nil, nil, everyCredit)
 	service.unlockState(artifactID, state)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		state.mu.Lock()
 		delete(state.inflight, record.seq)
 		service.unlockState(artifactID, state)

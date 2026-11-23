@@ -14,6 +14,8 @@ import (
 
 	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/encoding"
+
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // socketCloseWait is how long the tests here give the service to close a socket it refuses. The
@@ -55,7 +57,7 @@ func TestADocumentSocketWhoseFirstMessageNamesNoDocumentIsClosedThroughARealUpgr
 			if err != nil {
 				t.Fatalf("connect a socket to document %s: response=%#v err=%v", artifactID, response, err)
 			}
-			t.Cleanup(func() { _ = socket.Close() })
+			testcleanup.Add(t, func() { _ = socket.Close() })
 
 			if err := socket.WriteMessage(gws.BinaryMessage, message.first); err != nil {
 				t.Fatalf("send a first message that names no document: %v", err)

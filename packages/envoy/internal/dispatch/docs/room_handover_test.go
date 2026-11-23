@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A forced close of a document's room used to throw the room's record away, so the next access
@@ -159,7 +160,7 @@ func TestAForcedCloseKeepsWhatTheRoomThatReplacedItLoaded(t *testing.T) {
 	closeWithABrowserJoining := func(t *testing.T, service *Service, artifactID string) *roomState {
 		t.Helper()
 		server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(server.Close)
+		testcleanup.Add(t, server.Close)
 		var joined atomic.Bool
 		service.afterRoomClosed = func(room string) {
 			if room != artifactID || !joined.CompareAndSwap(false, true) {

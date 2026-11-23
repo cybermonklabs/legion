@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A settlement already past its entry check when a transaction opens its write can reach the
@@ -40,7 +41,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		select {
 		case <-resume:
 		default:
@@ -231,7 +232,7 @@ func TestAWriteAfterItsTransactionStoredTheRoomsLingeringUpdateForksTheRoom(t *t
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
+	testcleanup.Add(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
 	seedServiceText(t, service, artifactID, "First.\n")
 	settleCurrentGeneration(t, service, artifactID)

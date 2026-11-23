@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Room queries (room_query.go) are how one process asks every other one about a document room: a
@@ -283,7 +284,7 @@ func TestAMemberThatNeverAnswersCostsTheWaitAndAWarn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect the silent member: %v", err)
 	}
-	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	testcleanup.Add(t, func() { _ = conn.Close(context.Background()) })
 	logs := captureWarnings(t)
 
 	for _, kind := range []string{roomQueryHolds, roomQueryFlush, roomQueryShare} {

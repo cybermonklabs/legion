@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func TestApplyOpsEditsLiveDocumentAndSettlesVersion(t *testing.T) {
@@ -333,7 +334,7 @@ func TestValidateUploadPreconditionRefusesInTheWordsOfAnUpload(t *testing.T) {
 
 func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
 	pmdoc.SetBlockIDGenerator(func() string { return "generated-body" })
-	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
+	testcleanup.Add(t, func() { pmdoc.SetBlockIDGenerator(nil) })
 	tree, err := pmdoc.Parse("Which transport should we expose?\n")
 	if err != nil {
 		t.Fatalf("parse source paragraph: %v", err)

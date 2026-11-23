@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Two envoy-dispatch processes serve one Postgres, and a room resident in one of them takes the
@@ -297,7 +298,7 @@ func TestASettlementFromARoomBehindTheHeadKeepsItsRoomWithWorkInFlightOnIt(t *te
 		}},
 		{"a shutdown", func(t *testing.T, pair processPair) func() {
 			pair.taskA.shutdownRooms.Store(pair.artifactID, struct{}{})
-			t.Cleanup(func() { pair.taskA.shutdownRooms.Delete(pair.artifactID) })
+			testcleanup.Add(t, func() { pair.taskA.shutdownRooms.Delete(pair.artifactID) })
 			return nil
 		}},
 	} {
@@ -663,7 +664,7 @@ func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *tes
 			t.Errorf("the Apply inside the room: %v", err)
 		}
 	})
-	t.Cleanup(leaveRoom)
+	testcleanup.Add(t, leaveRoom)
 
 	pair.taskA.catchUps.catchUp(context.Background(), pair.artifactID)
 	if pair.taskA.srv.GetDoc(pair.artifactID) != live {
@@ -706,7 +707,7 @@ func TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp(t *testing.T) {
 		{"its failure's own eviction", func(t *testing.T, pair processPair, live *crdt.Doc) func() {
 			hold := make(chan struct{})
 			release := sync.OnceFunc(func() { close(hold) })
-			t.Cleanup(release)
+			testcleanup.Add(t, release)
 			pair.taskA.beforeFailedEviction = func(room string) {
 				if room == pair.artifactID {
 					<-hold
@@ -744,7 +745,7 @@ func TestAReplacedRoomThatIsAnotherClosesIsAnAnswerForTheCatchUp(t *testing.T) {
 			// close's: the failure's own eviction closes the room.
 			hold := make(chan struct{})
 			release := sync.OnceFunc(func() { close(hold) })
-			t.Cleanup(release)
+			testcleanup.Add(t, release)
 			pair.taskA.beforeFailedEviction = func(room string) {
 				if room == pair.artifactID {
 					<-hold
@@ -873,7 +874,7 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	sentinel := createDocument(t, service.store, "Sentinel.")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	browser := connectPeer(t, server.URL, artifactID, "alice")
 	connected := func() int {
 		state := service.room(artifactID)
@@ -1026,7 +1027,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			service.settle = time.Hour
 			seedServiceText(t, service, artifactID, "before")
 			server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-			t.Cleanup(server.Close)
+			testcleanup.Add(t, server.Close)
 			browser := connectPeer(t, server.URL, artifactID, "alice")
 			waitFor(t, 10*time.Second, "the browser to join the document's room", func() bool {
 				return service.srv.GetDoc(artifactID) != nil
@@ -1515,7 +1516,7 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	var opened, closed sync.Once
 	releaseWindow := func() { closed.Do(func() { close(release) }) }
 	// Before the service's own cleanup, which cannot shut down while an append is held here.
-	t.Cleanup(releaseWindow)
+	testcleanup.Add(t, releaseWindow)
 	appends.afterAppendCommit = func(room string, _ persistence.Version) {
 		held := false
 		if room == artifactID {
@@ -1608,7 +1609,7 @@ func TestAReadInsideAnAppendsCursorWindowHoldsTheRoomsKeystroke(t *testing.T) {
 	var opened, closed sync.Once
 	releaseWindow := func() { closed.Do(func() { close(release) }) }
 	// Before the service's own cleanup, which cannot shut down while an append is held here.
-	t.Cleanup(releaseWindow)
+	testcleanup.Add(t, releaseWindow)
 	appends.afterAppendCommit = func(room string, _ persistence.Version) {
 		held := false
 		if room == artifactID {
@@ -2056,7 +2057,7 @@ func TestAFailedRoomsEvictionWaitsForTheStampsCommitAndReloadsIt(t *testing.T) {
 	// backfill's append, inside the transaction that holds the document's advisory lock.
 	appends := &failingBrowserAppendStore{VersionedStore: NewPgVersioned(database)}
 	service := New(Deps{Store: database, Persistence: appends, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

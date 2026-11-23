@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // newListenerHub is service's process listener as cmd/dispatch builds it: a pglisten.Hub on a
@@ -68,7 +69,7 @@ func startRoomSync(t *testing.T, hub *pglisten.Hub, rs *roomSync) (listening <-c
 			}
 		})
 	}
-	t.Cleanup(stop)
+	testcleanup.Add(t, stop)
 	return connected, stop
 }
 

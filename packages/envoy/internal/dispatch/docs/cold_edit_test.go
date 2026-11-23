@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A write to a document no room holds forks the stored document and loads no room while it runs:
@@ -169,7 +170,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				ServerURL:   "https://dispatch.example",
 				Settle:      time.Hour,
 			})
-			t.Cleanup(func() {
+			testcleanup.Add(t, func() {
 				if err := service.Shutdown(context.Background()); err != nil {
 					t.Errorf("shutdown document service: %v", err)
 				}

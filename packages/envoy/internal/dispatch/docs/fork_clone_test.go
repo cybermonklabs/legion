@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A warm fork takes the room's replica cloned under the replica's lock (Service.forkPoint),
@@ -264,7 +265,7 @@ func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
 	server := websocket.NewServer()
 	server.RoomIdleTimeout = time.Hour
 	service := &Service{srv: newRoomServer(server)}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(ctx); err != nil {

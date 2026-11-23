@@ -14,6 +14,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // What a room holds in memory beyond its document: the record of each update its persistence has
@@ -96,7 +97,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	release := make(chan struct{})
 	var released sync.Once
 	releaseSockets := func() { released.Do(func() { close(release) }) }
-	t.Cleanup(releaseSockets)
+	testcleanup.Add(t, releaseSockets)
 	service.afterSocketPreload = func(room string, loaded *persistence.LoadResult) {
 		if room != artifactID {
 			return
@@ -141,7 +142,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 			t.Fatalf("open a cold socket: %v", socket.err)
 		}
 		connections = append(connections, socket.connection)
-		t.Cleanup(func() { _ = socket.connection.Close() })
+		testcleanup.Add(t, func() { _ = socket.connection.Close() })
 	}
 	waitFor(t, roomWait(t), "both sockets to join the loaded room", func() bool {
 		return service.srv.GetDoc(artifactID) != nil && registeredConnections(service) == 2

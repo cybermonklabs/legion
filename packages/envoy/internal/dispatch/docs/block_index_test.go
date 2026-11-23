@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // blockIndexService is a document service whose settle delay is an hour, so no timer settles a
@@ -47,7 +48,7 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)

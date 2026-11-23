@@ -13,6 +13,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The rows the store keeps for a room fold to the room's own document when a peer's update parks in
@@ -28,7 +29,7 @@ func TestTheStoredRowsOfARoomFoldToItsDocumentWhenAPeerUpdateParks(t *testing.T)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "Seed.\n")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 	alpha := connectPeer(t, server.URL, artifactID, "alice")
 	beta := connectPeer(t, server.URL, artifactID, "alice")
 	waitFor(t, 10*time.Second, "both peers to hold the room's document", func() bool {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // An edit a browser makes after a settlement has read the document it versions is not in that
@@ -374,7 +375,7 @@ func holdObserver(t *testing.T, service *Service, artifactID string, hook *func(
 	held := make(chan struct{})
 	proceed := make(chan struct{})
 	let := sync.OnceFunc(func() { close(proceed) })
-	t.Cleanup(let)
+	testcleanup.Add(t, let)
 	var holding atomic.Bool
 	holding.Store(true)
 	*hook = func(name string) {

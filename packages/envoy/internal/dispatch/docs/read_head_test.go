@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A read is never older than the stored head, nor than the room (plan D8): a resident room whose
@@ -116,7 +117,7 @@ func newReadPair(t *testing.T) readPair {
 	runRoomSync(t, newRoomSync(reader))
 	// Runs before the room sync stops and the services shut down: a catch-up held then would
 	// keep the lane, and so both, from returning.
-	t.Cleanup(gate.open)
+	testcleanup.Add(t, gate.open)
 	waitFor(t, roomWait(t), "the reader's room to stand at the head", func() bool {
 		return !roomBehind(t, reader, artifactID)
 	})
@@ -165,7 +166,7 @@ func (pair readPair) typeIntoTheRoomBehindTheHead(t *testing.T, text string) (la
 	}
 	var once sync.Once
 	release := func() { once.Do(func() { _ = locked.Rollback(ctx) }) }
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	if err := lockDocumentRoom(ctx, locked, pair.artifactID); err != nil {
 		t.Fatalf("hold the document's lock: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The rig reads the machine's load as the machine's, not as the code's gap (storetest.XidGap):
@@ -124,7 +125,7 @@ func crowdACPU(t *testing.T) *crowdedCPU {
 	if cpu < 0 {
 		t.Fatalf("this thread may run on no CPU of %v", own)
 	}
-	t.Cleanup(crowded.stop)
+	testcleanup.Add(t, crowded.stop)
 	pinned := make([]time.Duration, 0, xidCrowdingProcesses)
 	for range xidCrowdingProcesses {
 		spinner := exec.Command("sh", "-c", fmt.Sprintf("while kill -0 %d 2>/dev/null; do :; done", os.Getpid()))

@@ -9,6 +9,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // The block-id backfill is a durable writer of the room like every other, so the rule this change
@@ -68,7 +69,7 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	committed, release := make(chan persistence.Version, 1), make(chan struct{})
 	var opened, closed sync.Once
 	releaseWorker := func() { closed.Do(func() { close(release) }) }
-	t.Cleanup(releaseWorker)
+	testcleanup.Add(t, releaseWorker)
 	appends.afterAppendCommit = func(room string, version persistence.Version) {
 		held := false
 		if room == artifactID {

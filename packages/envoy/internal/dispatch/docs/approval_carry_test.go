@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // decisionBlockFixture reads one of the decision-block fixtures the browser's line-based cut and
@@ -590,7 +591,7 @@ func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: 20 * time.Millisecond})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	approveStoredVersion(t, database, artifactID, 1, "alice")
 
@@ -668,7 +669,7 @@ func seededRegionDocument(t *testing.T, settle time.Duration) (*store.Store, *Se
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, regionSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: settle})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads.
 	service.ScheduleSettlement(artifactID)
@@ -766,7 +767,7 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
-	t.Cleanup(func() { _ = service.Shutdown(ctx) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(ctx) })
 	seedServiceText(t, service, artifactID, "Context\n")
 	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	// The approved version is one this service wrote, so the version named below restores its

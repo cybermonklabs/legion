@@ -9,6 +9,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Shutdown's drain waits for each room's appends to land before it settles the room, and a
@@ -38,7 +39,7 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 		}
 	}
 	appends := &heldStore{VersionedStore: persist, room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
+	testcleanup.Add(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
 	var wakes atomic.Int64
 	service.settlementWoke = func(room string) {

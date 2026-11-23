@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // storedOrderRounds is how many rounds TestStoredOrderSoak runs. The default fits the package in
@@ -422,8 +423,8 @@ func heldAppendService(t *testing.T) (service *Service, artifactID string, enter
 			close(releaseCh)
 		}
 	}
-	t.Cleanup(release)
-	t.Cleanup(func() {
+	testcleanup.Add(t, release)
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -752,7 +753,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 	})
 	// As typeIntoDocument's: the writing ends, the room applies the peer's last update, and the
 	// last peer of the room waits for every update to be stored, before the connection closes.
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		close(stopped)
 		done.Wait()
 		client := peer.Doc.ClientID()
@@ -848,13 +849,13 @@ func TestStoredOrderSoak(t *testing.T) {
 		Settle:      30 * time.Millisecond,
 	})
 	watched.service.Store(service)
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(server.Close)
+	testcleanup.Add(t, server.Close)
 
 	type soakDocument struct {
 		id             string

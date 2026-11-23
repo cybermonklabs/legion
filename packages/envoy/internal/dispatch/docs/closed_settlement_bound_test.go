@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // One resumption pass arms at most settlementResumeBatch documents, closed and open issues'
@@ -180,7 +181,7 @@ func boundedResumptionService(t *testing.T) (*store.Store, *Service) {
 		Settle:    time.Hour,
 		TestHooks: true,
 	})
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}

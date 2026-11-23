@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Writes through a room and joined writes leave, once the queue has checked their document, the
@@ -96,7 +97,7 @@ func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) 
 	t.Parallel()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
 	loads := map[string]func(t *testing.T, artifactID string){
 		"a room load": func(t *testing.T, artifactID string) { liveTree(t, service, artifactID) },
@@ -200,7 +201,7 @@ func TestTheCompactionQueueRetriesACompactionAPruneDropped(t *testing.T) {
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	backoff := 50 * time.Millisecond
 	steps := quickCompactionQueue(service, backoff)
 	artifactID := storeAgedRows(t, database, 6, 20*time.Minute)
@@ -245,7 +246,7 @@ func TestTheCompactionQueueRetriesABusyDocumentUntilItsLockIsFree(t *testing.T) 
 	t.Parallel()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	backoff := 20 * time.Millisecond
 	steps := quickCompactionQueue(service, backoff)
 	artifactID := storeAgedRows(t, database, 4, 20*time.Minute)
@@ -282,7 +283,7 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 	t.Parallel()
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 20*time.Millisecond)
 	artifactID := storeAgedRows(t, database, 4, 20*time.Minute)
 	unlock := holdDocumentLock(t, database, artifactID)
@@ -324,7 +325,7 @@ func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testi
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
 	artifactID := createDocument(t, database, "renoted")
 	writer := newProofHistory(t, 101)
@@ -391,7 +392,7 @@ func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
 	artifactID := createDocument(t, database, "burst")
 	writer := newProofHistory(t, 101)
@@ -489,7 +490,7 @@ func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testi
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
 	compacting := storeAgedRows(t, database, 4, 20*time.Minute)
 	later := storeAgedRows(t, database, 4, 20*time.Minute)
@@ -549,7 +550,7 @@ func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	steps := quickCompactionQueue(service, 50*time.Millisecond)
 	compacting := storeAgedRows(t, database, 4, 20*time.Minute)
 	young := storeAgedRows(t, database, 4, 0)
@@ -619,7 +620,7 @@ func TestShutdownsCompactionLeavesTheYoungRowsAsWritten(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "First.\n")
 	editLiveTree(t, service, artifactID, appendBlocks(t, "Second.\n"))
 	waitForLandedAppends(t, service, artifactID)
@@ -760,7 +761,7 @@ func holdCompactionFold(t *testing.T, versioned *PgVersioned, artifactID string)
 	held, released := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	release := func() { once.Do(func() { close(released) }) }
-	t.Cleanup(release)
+	testcleanup.Add(t, release)
 	duringCompactionFold(versioned, artifactID, func() {
 		close(held)
 		<-released
