@@ -41,19 +41,32 @@ const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasse
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
  *  sessions to add. While any group write is pending, every mutating button is disabled so a
- *  second click cannot race the one request that decides the membership. */
+ *  second click cannot race the one request that decides the membership.
+ *
+ *  Its groups, in this order, each on a line of its own: Name (the name's field and Rename),
+ *  Sessions (its members as chips, each with its ✕: the first ten, then "+N" for the rest) and
+ *  Actions (Add selected, Delete group). A chip shrinks to the list's width and its name wraps
+ *  inside it (`AgentName`'s own `[overflow-wrap:anywhere]`): below the wide layout a link is
+ *  `inline-flex` (the 44 px touch rule in styles.css), and a cut line there would end in no
+ *  ellipsis. */
 function GroupCard({
   group,
   storedTitle,
   selected,
   pending,
   write,
+  sessionsOpen,
+  onSessionsOpen,
 }: {
   group: DeliverySessionGroup;
   storedTitle: (session: string) => string | undefined;
   selected: readonly string[];
   pending: boolean;
   write: (change: GroupChange) => void;
+  /** Whether the reader opened this group's sessions past their "+N". The editor holds it, by
+   *  group id: a write moves the group's `updated_at`, which mounts this card again. */
+  sessionsOpen: boolean;
+  onSessionsOpen: (open: boolean) => void;
 }): ReactNode {
   const id = useId();
   const text = useAgentText();
@@ -88,16 +101,13 @@ function GroupCard({
           Rename
         </button>
       </div>
-      {/* The group's sessions are a list as long as its data: the first ten, then "+N" for the
-          rest, each chip with its own ✕. A chip shrinks to the list's width and its name wraps
-          inside it (`AgentName`'s own `[overflow-wrap:anywhere]`): below the wide layout a link
-          is `inline-flex` (the 44 px touch rule in styles.css), and a cut line there would end
-          in no ellipsis. */}
       <CappedGroup
         className="flex flex-wrap gap-1 [&>li]:min-w-0 [&>li]:max-w-full"
         label="sessions"
         list={`Sessions in ${group.name}`}
         name="group-sessions"
+        onOpenChange={onSessionsOpen}
+        open={sessionsOpen}
       >
         {(group.sessions ?? []).map((session) => (
           <span
@@ -186,6 +196,15 @@ export function SessionGroupsEditor({
   const dialog = useDialog<HTMLElement>({ initialFocusRef: closeButtonRef, onClose, open: true });
   const [selected, setSelected] = useState<string[]>([]);
   const [name, setName] = useState("");
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set());
+  const openGroup = (groupId: string, open: boolean) => {
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      if (open) next.add(groupId);
+      else next.delete(groupId);
+      return next;
+    });
+  };
   // The editor shows a refusal itself, as the server wrote it.
   const save = useKeyedWrite({
     inline: true,
@@ -351,8 +370,10 @@ export function SessionGroupsEditor({
             <GroupCard
               group={group}
               key={`${group.id}:${group.updated_at}`}
+              onSessionsOpen={(open) => openGroup(group.id, open)}
               pending={save.isPending}
               selected={selected}
+              sessionsOpen={openGroups.has(group.id)}
               storedTitle={storedTitle}
               write={(change) => save.mutate(change)}
             />

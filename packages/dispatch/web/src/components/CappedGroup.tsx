@@ -10,6 +10,12 @@ import {
  *  layout rule's cap (`packages/dispatch/web/src/AGENTS.md`, Layout; INFRA-1196's R13). */
 export const LAYOUT_GROUP_MAX = 10;
 
+/** Who keeps whether the group is open: its host, which passes both props, or the group itself,
+ *  given neither. A host that passed only `open` would draw a "+N" that nothing could open. */
+type CappedGroupOpenState =
+  | { open: boolean; onOpenChange: (open: boolean) => void }
+  | { open?: never; onOpenChange?: never };
+
 /**
  * A group whose length comes from data - labels, components, links, checks, subscribers,
  * options - drawn as the layout rule asks: at most `max` entries (10 unless given), then one
@@ -58,9 +64,7 @@ export function CappedGroup({
   list?: string;
   max?: number;
   name: string;
-  onOpenChange?: (open: boolean) => void;
-  open?: boolean;
-}): ReactNode {
+} & CappedGroupOpenState): ReactNode {
   const [ownOpen, setOwnOpen] = useState(false);
   const open = heldOpen ?? ownOpen;
   const setOpen = (next: boolean) => {

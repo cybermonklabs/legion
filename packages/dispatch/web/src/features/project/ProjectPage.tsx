@@ -40,6 +40,14 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
 
 type IssueView = "list" | "board";
 
+/**
+ * A project's page. Its header's groups, in this order: Identity (the project's name and its
+ * key), Attention (the questions on this project that wait on the reader), Navigation (the tabs)
+ * and View (list or board, and the board's two toggles). A row too narrow for them all moves the
+ * last group that does not fit to the next line whole. Below `md` Identity and Attention share
+ * the first line and the rest start the next; from `md` Attention goes last, after the view
+ * controls.
+ */
 export function ProjectPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
@@ -159,12 +167,6 @@ export function ProjectPage(): ReactNode {
 
   return (
     <section>
-      {/* The header's groups, in this order: Identity (the project's name and its key),
-          Attention (the questions on this project that wait on the reader), Navigation (the
-          tabs) and View (list or board, and the board's two toggles). A row too narrow for them
-          all moves the last group that does not fit to the next line whole. Below `md` Identity
-          and Attention share the first line and the rest start the next; from `md` Attention
-          goes last, after the view controls. */}
       <header className="flex flex-wrap items-center gap-2 md:min-h-12">
         <div className="flex min-w-0 max-w-full items-center gap-2 md:max-w-[50%]">
           <h1

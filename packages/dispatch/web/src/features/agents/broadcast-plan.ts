@@ -264,9 +264,27 @@ function exclusionLine(
   return parts;
 }
 
+/** The Not confirmed line: every recipient the agent list could not vouch for, with its reason.
+ *  Each is still sent to, and the server reads its liveness when it sends. On a phone the
+ *  composer shows one chip, cut to one line, so this line is where its reason is read. */
+function uncheckedLine(unchecked: readonly BroadcastUncheckedRecipient[]): AgentPart[] {
+  const parts: AgentPart[] = ["Not confirmed: "];
+  unchecked.forEach(({ reason, sessionID }, index) => {
+    if (index > 0) parts.push(", ");
+    parts.push({ sessionId: sessionID, storedTitle: undefined }, ` (${reason})`);
+  });
+  parts.push(
+    unchecked.length === 1
+      ? ". It is still sent to, and the server checks it."
+      : ". They are still sent to, and the server checks them."
+  );
+  return parts;
+}
+
 /**
  * What the composer says about the send, and where. The notice slot holds one line, highest
- * first: the recipient limit, then the Excluded line. Over the limit, or with nobody to reach,
+ * first: the recipient limit, then the Excluded line followed by the Not confirmed line, either
+ * alone when only it applies. Over the limit, or with nobody to reach,
  * that line is why Send refuses; otherwise an Excluded line is context beside Send, and an empty
  * message is Send's own reason, with no line of its own. A button that only counts - `Send to 0`
  * - reads as a number, not a refusal, so a selection none of whom this mode reaches reads
@@ -278,7 +296,7 @@ function exclusionLine(
  * is no case here.
  */
 export function broadcastSendState(
-  { excluded, recipients }: BroadcastPlan,
+  { excluded, recipients, unchecked }: BroadcastPlan,
   delivery: MessageDeliveryMode,
   body: string
 ): BroadcastSendState {
@@ -288,9 +306,16 @@ export function broadcastSendState(
     return { label, notice: [limit], refusal: [limit], refusalOnNotice: true };
   }
   if (recipients.length > 0) {
+    const lines = [
+      ...(excluded.length === 0 ? [] : [exclusionLine(excluded, null)]),
+      ...(unchecked.length === 0 ? [] : [uncheckedLine(unchecked)]),
+    ];
     return {
       label,
-      notice: excluded.length === 0 ? null : exclusionLine(excluded, null),
+      notice:
+        lines.length === 0
+          ? null
+          : lines.flatMap((line, index) => (index === 0 ? line : [" ", ...line])),
       refusal: body.trim() === "" ? ["Type a message first."] : null,
       refusalOnNotice: false,
     };

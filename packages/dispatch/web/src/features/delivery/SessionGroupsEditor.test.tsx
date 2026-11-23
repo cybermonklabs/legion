@@ -292,6 +292,29 @@ test("a group shows ten of its sessions and a +N that shows the rest", async () 
   }
 });
 
+// INFRA-5200's rule, point 6: a group the reader opened past its "+N" stays open when the group
+// changes. A write moves its `updated_at`, which draws its card again from nothing (the card's key
+// holds it, so the rename draft resets), and the editor, not the card, keeps the reader's choice.
+test("a group's opened sessions stay open after a member past the tenth is removed", async () => {
+  const user = userEvent.setup();
+  const sessions = Array.from({ length: 12 }, (_, index) => `member-${index + 1}`);
+  const editor = renderEditor([{ ...crew, sessions }]);
+  const members = () =>
+    within(screen.getByRole("group", { name: "Release crew" })).getByRole("list", {
+      name: "Sessions in Release crew",
+    });
+  try {
+    await user.click(within(members()).getByRole("button", { name: "Show 2 more sessions" }));
+    editor.regroup([
+      { ...crew, sessions: sessions.slice(0, 11), updated_at: "2026-10-12T00:00:00Z" },
+    ]);
+    expect(within(members()).getAllByRole("button", { name: /^Remove / })).toHaveLength(11);
+    expect(within(members()).getByRole("button", { name: "Show fewer sessions" })).toBeDefined();
+  } finally {
+    cleanup();
+  }
+});
+
 test("a refusal shows as the server wrote it", async () => {
   const user = userEvent.setup();
   const create = spyOn(api, "createDeliverySessionGroup").mockRejectedValue(

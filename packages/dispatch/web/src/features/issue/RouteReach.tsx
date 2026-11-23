@@ -131,6 +131,14 @@ export function UnresponsiveRouteMarker({
   );
 }
 
+/**
+ * The chip that says an issue's route reaches nobody. Its groups, in this order: Mark (⚠), Route
+ * (the route, or the session it names, when `showRoute`) and Verdict ("Nobody holds it right now"
+ * or "Not running right now"); the explanation follows for screen readers only. Beside a route,
+ * the route ends in an ellipsis and the verdict stays whole. Alone, the verdict gives way inside
+ * the chip when a narrow cell or card holds less than all of it: it ends in an ellipsis under the
+ * chip's own title, which says it whole, and inside `NoTooltips`, which draws no title, it wraps.
+ */
 function UnreachableRoute({
   route,
   showRoute,

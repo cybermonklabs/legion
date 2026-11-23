@@ -214,6 +214,20 @@ function deliveryModes(capabilities: readonly string[]): MessageDeliveryMode[] {
   return advertised.length === 0 ? ["aside"] : advertised;
 }
 
+/**
+ * One session's live view: its thread, its message box, and the one row under the message box
+ * (R6), which says what a message is delivered as, where the session runs, what it runs on, how
+ * full its window is, and holds the one question mark that holds every rule this page used to
+ * print. That row's groups, in this order: Facts and Window (the context ring and the question
+ * mark). Facts holds three groups, in this order: Delivery (the mode picker), Place (the machine
+ * and the directory, or the line that the session is not listed) and Session (the model and
+ * thinking pickers, `SessionSettings`). A row too narrow for all three facts moves the last group
+ * that does not fit to the next line whole; inside Place the machine and the directory shorten to
+ * an ellipsis, each with its whole text as its title, so on a laptop the row is one line and
+ * nothing scrolls sideways at any width. Window sits outside the facts, so the ring and the
+ * question mark keep the box's right edge however the facts wrap, and their panels open upwards
+ * from there.
+ */
 export function AgentConversationPage({
   front,
   sessionId,
@@ -494,17 +508,6 @@ export function AgentConversationPage({
         />
       </ErrorBoundary>
       <div className="shrink-0" ref={footerRef}>
-        {/* The one row under the message box (R6): what a message is delivered as, where the
-            session runs, what it runs on, how full its window is, and the one question mark that
-            holds every rule this page used to print. The facts are three groups, in this order:
-            Delivery (the mode picker), Place (the machine and the directory, or the line that the
-            session is not listed) and Session (the model and thinking pickers, `SessionSettings`).
-            A row too narrow for all three moves the last group that does not fit to the next line
-            whole; inside Place the machine and the directory shorten to an ellipsis, each with its
-            whole text as its title, so on a laptop the row is one line and nothing scrolls
-            sideways at any width. The ring and the question mark sit outside the facts, so they
-            keep the box's right edge however the facts wrap, and their panels open upwards from
-            here. */}
         <div className="mt-2 flex items-center gap-2 text-xs" data-testid="agent-composer-footer">
           <div
             className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1"

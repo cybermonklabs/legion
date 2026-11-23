@@ -108,6 +108,11 @@ function columnAround(node: Element | null): HTMLElement | null {
  * so the card is `tabIndex={-1}` - reached by those keys, not by Tab - and `data-board-card`
  * names it for them. dnd-kit's default drag attributes would make the card a `button`; it stays
  * an `article` so nothing interactive is nested in a control.
+ *
+ * Under its key and title, the card's row has these groups, in this order: Unread (the dot),
+ * Priority, Claim, Progress, Route (the mark of a route nobody holds), Labels (the first ten, then
+ * "+N" for the rest, flowing in the row) and Asks (the open-asks count). Each is one flex item, so
+ * a card too narrow for them moves the last group that does not fit to the next line whole.
  */
 function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }): ReactNode {
   const {

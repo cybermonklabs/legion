@@ -541,6 +541,18 @@ function lastPathSegment(dir: string): string {
  *  phone a line taller; its padding reaches the hit size instead. */
 const machineLink = `dispatch-inline-link rounded underline outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
 
+/**
+ * One session's row. Its groups, in this order: Who (the select box, the name that opens the row,
+ * its live link, and the copy buttons of its session ID and title, which stay in the name's
+ * group, after it), Place (the machine and the directory), Roles (at most ten, then a "+N" that
+ * shows the rest) and State (unresponsive, last activity, the unread and ask counts, the pin).
+ * Each is one flex item, so a row too narrow for all of them moves the last group that does not
+ * fit to the next line whole, and nothing is cut or scrolls sideways; on a phone Who wraps its
+ * live link and copy buttons under the name before the name is cut. From `md` the directory
+ * stays on the line while 160 px are left there and shortens to an ellipsis, with the whole path
+ * one hover away, and the name shortens past 256 px. Below `md` the directory takes a line of its
+ * own under the others and shows its whole path, since a phone has no hover.
+ */
 function AgentRow({
   agent,
   expanded,
@@ -638,16 +650,6 @@ function AgentRow({
       hidden={hidden}
       tabIndex={-1}
     >
-      {/* The row's groups, in this order: Who (the select box, the name that opens the row,
-          and the copy buttons of its session ID and title, which stay in the name's group, after
-          it), Place (the machine and the directory), Roles (at most ten, then a "+N" that shows
-          the rest) and State (unresponsive, last activity, the unread and ask counts, the pin).
-          Each is one flex item, so a row too narrow for all of them moves the last group that
-          does not fit to the next line whole, and nothing is cut or scrolls sideways; on a phone
-          Who wraps its live link and copy buttons under the name before the name is cut. From
-          `md` a usual row is one line: the name and the directory give way first, each to an
-          ellipsis with its whole text one hover away. Below `md` the directory takes a line of
-          its own under the others and shows its whole path, since a phone has no hover. */}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5">
         <span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-2">
           <input
@@ -1100,6 +1102,27 @@ function SelectionHeader({
  * that has come back since a refused send is shown as not in the request being re-sent. A
  * selected session the agent list could not vouch for (`unchecked`: missing from a list that is
  * not current) keeps its place in the send, and its chip says its state is unknown, not gone.
+ *
+ * Its groups, in this order: Heading ("Broadcast to N of M selected"), Recipients (the chosen
+ * agents: ten, then "+N"), Mode (the delivery picker), Message, Notice (the one line: the limit,
+ * the Excluded line, the Not confirmed line) and Send. On a wide screen each is a line of its own.
+ * On a narrow or short screen (`narrow-or-short`, styles.css) the composer is a compact grid, so
+ * it takes about a third of a phone screen: the heading on one line, the recipients on one line
+ * (the first chip, its name and reason on one line that ends in an ellipsis with the whole as its
+ * title, then "+N" for the rest; the notice names every excluded and not confirmed recipient
+ * whole), the message sized to its text (`field-sizing`) from two rows up to `max-h-32`, and Mode,
+ * Notice and Send on one line. A short screen (a phone in landscape) folds that into two lines -
+ * heading beside the recipients, then the message beside the mode and Send - with the message
+ * held at two rows. `min-h-16` is important because styles.css's unlayered below-1280 touch floor
+ * (`min-height: 44px`) would otherwise override it and shrink the message box on its first
+ * character. Elsewhere none of these classes apply, and the recipients show the first ten,
+ * wrapping, then "+N". Opening "+N" is the reader's: the recipients then wrap onto as many lines
+ * as they need, and the composer scrolls up and down inside its half of the screen.
+ *
+ * The line under the box saying what a pick does (`DISPATCH_WRITING_BOXES`) is the box's
+ * description there rather than a line of its own: this panel is held to 40% of a phone empty
+ * and 45% filled (`e2e/agents.e2e.ts`), and a hint of its own costs a line of that budget, which
+ * the recipients and the message are owed. Every wider screen shows it.
  */
 function BroadcastComposer({
   agents,
@@ -1169,22 +1192,6 @@ function BroadcastComposer({
   const [chosenOpen, setChosenOpen] = useState(false);
   const chipOnOneLine = compact && !chosenOpen;
 
-  // On a narrow or short screen (`narrow-or-short`, styles.css) the composer is a compact grid,
-  // so it takes about a third of a phone screen: the heading on one line, the recipients on one
-  // line (the first chip, its name and reason on one line that ends in an ellipsis with the
-  // whole as its title, then "+N" for the rest; the notice names every exclusion whole), the
-  // message sized to its text (`field-sizing`) from two rows up to `max-h-32`, and the mode
-  // beside Send. A short screen (a phone in landscape) folds that into two lines - heading beside
-  // the recipients, then the message beside the mode and Send - with the message held at two
-  // rows. `min-h-16` is important because styles.css's unlayered below-1280 touch floor
-  // (`min-height: 44px`) would otherwise override it and shrink the message box on its first
-  // character. Elsewhere none of these classes apply, and the recipients show the first ten,
-  // wrapping, then "+N". Opening "+N" is the reader's: the recipients then wrap onto as many
-  // lines as they need, and the composer scrolls up and down inside its half of the screen.
-  // The line under the box saying what a pick does (`DISPATCH_WRITING_BOXES`) is the box's
-  // description there rather than a line of its own: this panel is held to 40% of a phone
-  // empty and 45% filled (`e2e/agents.e2e.ts`), and a hint of its own costs a line of that
-  // budget, which the recipients and the message are owed. Every wider screen shows it.
   return (
     <section
       aria-label="Broadcast"

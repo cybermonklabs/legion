@@ -3244,10 +3244,21 @@ test("a selected session missing from an agent list that is not current is unkno
   expect(broadcastPlan(selected, failed, "aside").unchecked).toEqual([
     { reason: "couldn't check whether it is running", sessionID: planner.session_id },
   ]);
-  // Send counts it and does not refuse, even when it is the whole selection.
+  // Send counts it and does not refuse, even when it is the whole selection, and the notice names
+  // it with its reason: a phone's closed composer shows one chip, cut to one line.
   expect(
     broadcastSendState(broadcastPlan(selected, refilling, "aside"), "aside", "Status?")
-  ).toEqual({ label: "Send to 2", notice: null, refusal: null, refusalOnNotice: false });
+  ).toEqual({
+    label: "Send to 2",
+    notice: [
+      "Not confirmed: ",
+      { sessionId: planner.session_id, storedTitle: undefined },
+      ` (couldn't check whether it is running. ${AGENT_LIST_REFILLING})`,
+      ". It is still sent to, and the server checks it.",
+    ],
+    refusal: null,
+    refusalOnNotice: false,
+  });
   const alone = broadcastPlan(new Set([planner.session_id]), { ...refilling, agents: [] }, "btw");
   expect(broadcastSendState(alone, "btw", "Status?").label).toBe("Send to 1");
 });
@@ -3334,7 +3345,12 @@ test("a selected session listed without the mode on an agent list that is not cu
   ]);
   expect(broadcastSendState(broadcastPlan(selected, refilling, "btw"), "btw", "Status?")).toEqual({
     label: "Send to 2",
-    notice: null,
+    notice: [
+      "Not confirmed: ",
+      { sessionId: reviewer.session_id, storedTitle: undefined },
+      ` (couldn't check whether it is running. ${AGENT_LIST_REFILLING})`,
+      ". It is still sent to, and the server checks it.",
+    ],
     refusal: null,
     refusalOnNotice: false,
   });
@@ -3430,6 +3446,38 @@ test("the broadcast composer shows a selected agent missing from a refilling lis
     await user.click(within(composer()).getByRole("button", { name: "Send to 2" }));
     await waitFor(() => expect(page.createBroadcast).toHaveBeenCalledTimes(1));
     expect(posted(page, 0).session_ids).toEqual(["planner-session", "reviewer-session"]);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A phone's closed composer shows one chip, cut to one line, and a touch reader has no hover to
+// read its title with. A recipient the list could not confirm is named in the notice with its
+// reason, in the page's text: here one is chosen alone, so no "+N" opens the chips either.
+test("the composer names a recipient the agent list could not confirm, and its reason, in its notice text", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    await user.click(
+      within(region).getByRole("checkbox", { name: "Select Planner for broadcast" })
+    );
+    const composer = () => within(region).getByRole("region", { name: "Broadcast" });
+    // The last read that returned a list holds no Planner, and the next one fails: the list
+    // cannot vouch for it, so the chip names it by its id.
+    page.listAgents.mockResolvedValue([agents[1]]);
+    await refetchAgents(page.queryClient);
+    page.listAgents.mockRejectedValue(refillingError());
+    await refetchAgents(page.queryClient);
+    await screen.findByTestId("agent-list-refilling");
+
+    const notice = within(composer()).getByText(/^Not confirmed:/);
+    expect(notice.tagName).toBe("P");
+    expect(notice).not.toHaveAttribute("title");
+    expect(notice.textContent).toContain("session:planner-…");
+    expect(notice.textContent).toContain("couldn't check whether it is running");
   } finally {
     page.view.unmount();
     page.restore();

@@ -276,6 +276,14 @@ const COUNT_SEGMENT = `px-2 ${SEGMENT_TYPE} md:px-3`;
  *  and outranks every utility class; from `md` up each count with its padding is wider anyway. */
 const COUNT_SEGMENT_MIN = 24;
 
+/**
+ * The table's counts and its status bar. Its groups, in this order, each on a line of its own:
+ * Counts (in Legion's queue, running, epics), which wrap one count at a time, and Statuses (the
+ * status bar). The bar has one button per status that has issues - at most the nine statuses,
+ * never more - each as wide as its share of the issues. A box too narrow for them all wraps the
+ * rest onto the next line, where they share that line the same way, so every status stays in
+ * sight and nothing scrolls sideways.
+ */
 export function IssueTableStatus({
   table,
   items,
@@ -356,10 +364,6 @@ export function IssueTableStatus({
           </div>
         </div>
       ) : null}
-      {/* One button per status that has issues - at most the nine statuses, never more - each
-          as wide as its share of the issues. A box too narrow for them all wraps the rest onto
-          the next line, where they share that line the same way, so every status stays in sight
-          and nothing scrolls sideways. */}
       <fieldset
         aria-label="Issues by status"
         className={`flex min-h-11 min-w-0 flex-wrap rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
@@ -572,6 +576,13 @@ export function IssueTablePager<TData>({
  *  switches with those classes at any default font size. */
 const SM_VIEWPORT_QUERY = "(min-width: 40rem)";
 
+/**
+ * The selection toolbar, over the page, not in it: selecting a row moves nothing else. Its
+ * groups, in this order: Count ("N selected" and "Select all N matching"), Start next, Move (the
+ * epic picker and its Move), Epic (Take out of epic, New epic from these) and Clear. A screen too
+ * narrow for one line moves the last groups that do not fit to the next line whole, so every
+ * action stays in sight and nothing scrolls sideways.
+ */
 export function IssueTableSelection({
   table,
   epics,
@@ -606,11 +617,6 @@ export function IssueTableSelection({
   useFootInset(barRef, selectedKeys.length > 0 && atFoot, "page");
   return (
     <>
-      {/* Over the page, not in it: selecting a row moves nothing else. Its groups, in this
-          order: Count ("N selected" and "Select all N matching"), Start next, Move (the epic
-          picker and its Move), Epic (Take out of epic, New epic from these) and Clear. A screen
-          too narrow for one line moves the last groups that do not fit to the next line whole,
-          so every action stays in sight and nothing scrolls sideways. */}
       {selectedKeys.length === 0 ? null : (
         <div
           className={`fixed inset-x-2 top-14 z-30 mx-auto flex w-fit max-w-[calc(100vw-1rem)] flex-wrap items-center gap-2 rounded-2xl border px-4 py-2 text-sm shadow-xl sm:top-auto sm:bottom-4 ${card} ${textPrimaryOnCanvas}`}

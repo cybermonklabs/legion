@@ -179,6 +179,14 @@ function MachineView({ host }: { host: string }): ReactNode {
   );
 }
 
+/**
+ * One tmux server of the machine. Its groups, in this order, each on a line of its own: Heading
+ * (the socket, and its pid when two servers share it), the note on which windows have agents,
+ * Windows (the window navigation) and the drawn window. In Windows every window is a pick of its
+ * own, and the strip wraps onto as many lines as the windows need: nothing scrolls sideways, so
+ * every window stays in sight and one press away at any width. A window's name that is wider than
+ * the strip shortens to an ellipsis inside its own pick, with the whole name as the pick's title.
+ */
 function ServerPart({
   counts,
   now,
@@ -214,10 +222,6 @@ function ServerPart({
       <p className={`mt-1 text-xs ${textMutedOnCanvas}`} data-testid="machine-windows-with-agents">
         {WINDOWS_WITH_AGENTS}
       </p>
-      {/* Every window is a pick of its own, and the strip wraps onto as many lines as the
-          windows need: nothing scrolls sideways, so every window stays in sight and one press
-          away at any width. A window's name that is wider than the strip shortens to an
-          ellipsis inside its own pick, with the whole name as the pick's title. */}
       <ul className="mt-2 mb-3 flex flex-wrap items-center gap-2" data-testid="window-strip">
         {windows.map((entry) => {
           const current = entry.window.windowId === drawn?.window.windowId;

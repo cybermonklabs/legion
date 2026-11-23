@@ -559,23 +559,18 @@ function TableHeaderCell<TData>({
             onClick={column.getToggleSortingHandler()}
             onDragEnd={() => setDragColumn(undefined)}
             onDragStart={() => setDragColumn(column.id)}
-            title={
+            title={`${typeof column.columnDef.header === "string" ? `${column.columnDef.header}. ` : ""}${
               pinned
                 ? "Sort (shift-click to add a second sort)"
                 : "Sort (shift-click to add a second sort); drag to move the column"
-            }
+            }`}
             type="button"
           >
             {numeric ? mark : null}
             {numeric || wrap ? (
               flexRender(column.columnDef.header, header.getContext())
             ) : (
-              <TruncatedText
-                className="min-w-0"
-                title={
-                  typeof column.columnDef.header === "string" ? column.columnDef.header : undefined
-                }
-              >
+              <TruncatedText className="min-w-0">
                 {flexRender(column.columnDef.header, header.getContext())}
               </TruncatedText>
             )}
