@@ -224,3 +224,38 @@ func TestAReadOfANewVersionAgainstAnOlderApprovedSpecIsReadAgain(t *testing.T) {
 		t.Fatalf("the reads queued after a read that moved no mark back = %v, want the two before", got)
 	}
 }
+
+// R24 for the spec source itself: removing a repository's spec source (Dispatch then answers
+// spec_source false and approved_spec_mark 0, and appends no event) is a change of the rule, and a
+// gate that started under the rule of a change request keeps it and stands on the read it holds. A
+// read of the same versions with no spec source compares against no approved spec, which is older
+// than the gate's, so it changes nothing, whether a version of another document or a registration
+// carries it. A new version of the spec is read fresh, and a read with no spec source exempts
+// nothing, so the gate closes at that version and waits for a person, as today's gate does.
+func TestARemovedSpecSourceLeavesTheGateOnTheReadItStandsOn(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	pool := migratedPool(t)
+	apply := applyFacts(t, pool, specGateEngine())
+	mergingExemptRoot(t, pool, head)
+	exemptAtMark(t, pool, 10)
+	noSource := func(version int) *intake.ChangeRequestRead {
+		return &intake.ChangeRequestRead{Version: version, VerificationVersion: 1, ProposesNothing: true}
+	}
+
+	apply("verification-after-removal", ofVerification(intake.DispatchArtifactVersion, 1, 21, noSource(4)))
+	apply("registration-after-removal", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4, DispatchVersion: 4,
+		Since: record.EventMark{Seq: 30}, ChangeRequest: noSource(4)})
+	if gate := specGateOf(t, pool); !record.GateExempt(gate) || gate.ApprovedSpecMark != 10 || gate.Rule != record.GateRuleChangeRequest {
+		t.Fatalf("the gate after reads with no spec source at its own versions = %+v, want it exempt as it stood, at mark 10, under the rule of a change request", gate)
+	}
+	if moved := roleMessageBodies(t, pool, gatedRoot); len(moved) != 0 {
+		t.Fatalf("role messages after reads with no spec source at the gate's versions = %q, want none", moved)
+	}
+
+	apply("fifth-spec-after-removal", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: gateDoc, Kind: intake.DispatchArtifactVersion, Version: 5,
+		Mark: record.EventMark{Seq: 31}, ChangeRequest: noSource(5)})
+	if gate := specGateOf(t, pool); record.GateOpen(gate) || gate.LatestVersion != 5 || (gate.ExemptVersion != nil && *gate.ExemptVersion == 5) ||
+		gate.Rule != record.GateRuleChangeRequest {
+		t.Fatalf("the gate after a new version read with no spec source = %+v, want it closed at 5 for a person, under the rule it started with", gate)
+	}
+}
