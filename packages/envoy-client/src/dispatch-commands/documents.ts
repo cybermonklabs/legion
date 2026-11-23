@@ -50,13 +50,12 @@ import {
   resolvedTopic,
   writeResultDetails,
 } from "./results";
+import { storedUpload } from "./stored-spelling";
 import {
   artifactNameExistsProblem,
   artifactUnderName,
   roundTripRouteAbsent,
   storedTextCheckFailed,
-  storedTextProblem,
-  withoutFinalLineFeed,
 } from "./upload-checks";
 
 /** The asks of the document's `ask` blocks. An issue lists them under the issue, since the artifact
@@ -736,6 +735,11 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       ]);
     }
   }
+  // The text the upload sends: the text given, or the text Dispatch stores for it when the two
+  // differ only in the order of a typed block's attributes. `reordered` is the answer's line for
+  // each such block.
+  let sent = content;
+  let reordered: readonly string[] = [];
   // Inline text is stored as Markdown: Dispatch parses it and stores its rendering, so a
   // text it would write under another spelling is refused here rather than stored changed.
   // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
@@ -757,15 +761,17 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
         throw new Error(storedTextCheckFailed(error, name), { cause: error });
       }
     }
-    // The store ends a document with a line feed the writer's own text need not carry, and
-    // that one line feed is no other spelling: both sides lose at most one before they are
-    // compared. Every other difference is refused.
-    if (stored !== undefined && withoutFinalLineFeed(stored) !== withoutFinalLineFeed(content)) {
-      throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
+    // What goes up, and what is refused, is storedUpload's rule (stored-spelling.ts).
+    if (stored !== undefined) {
+      const upload = storedUpload(content, stored, name);
+      if ("refusal" in upload) throw new ToolInputError(input.tool, [upload.refusal]);
+      sent = upload.sent;
+      reordered = upload.reordered;
     }
   }
-  // A call with a path uploads that file, one with content stores that text, and one with
-  // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
+  // A call with a path uploads that file, one with content stores that text (`sent`, above),
+  // and one with neither makes an empty document the writer fills in afterwards with dispatch
+  // doc-edit.
   const artifactInput =
     path !== undefined
       ? {
@@ -779,8 +785,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
                   type: Bun.file(resolvePath(input.cwd, path)).type,
                 }),
         }
-      : content !== undefined
-        ? { ...options, content }
+      : sent !== undefined
+        ? { ...options, content: sent }
         : options;
   const result =
     artifactOwner.kind === "project"
@@ -801,6 +807,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       path === undefined && content === undefined
         ? `Made ${result.artifact.name} as an empty document (artifact slug ${result.artifact.slug}; ${artifactRef}). Write in it with dispatch doc-edit.${await notSubscribed(uploadOwner, input.subscriptions)}`
         : `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
+      ...reordered,
       ...adviceLines,
     ].join("\n"),
     details:

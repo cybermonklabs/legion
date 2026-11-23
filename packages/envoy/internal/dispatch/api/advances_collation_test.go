@@ -27,7 +27,7 @@ const (
 // cluster's Postgres was created with, glibc's en_US on the measured one. The test database's own
 // default (ICU en-US on the pod's test server) orders these two ids as Go does, so a test left to
 // it cannot see the defect; the ids are put under one known collation of the test's own, as
-// cireconcile's collateMappingsAsADeploymentDoes puts the mapped repositories.
+// cireconcile's collateDefaultsAsADeploymentDoes puts the project defaults' names.
 func collatePriorityIDsAsADeploymentDoes(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()

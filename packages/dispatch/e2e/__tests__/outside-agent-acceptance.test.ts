@@ -18,9 +18,11 @@
  *
  *  The blocks after those run the background shapes the legs start their children in, stopped by
  *  the shared `reap`, beside the shapes `reap` cannot stop and a pid that is no child of the leg,
- *  which `reap` must leave alone; and the tailnet leg against stand-ins of what it drives, reading
- *  the rows it judges by its own controls PASS where those controls answer and not PASS where they
- *  do not. The public leg's own judgments are `outside-agent-public.test.ts`'s.
+ *  which `reap` must leave alone; the stand-in Dispatch's port and readiness under a squat, which
+ *  takes over any port a listener of this process closed; and the tailnet leg against stand-ins of
+ *  what it drives, reading the rows it judges by its own controls PASS where those controls answer
+ *  and not PASS where they do not. The public leg's own judgments are
+ *  `outside-agent-public.test.ts`'s.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -32,7 +34,7 @@ import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporar
 import { rowLimit, runBounded } from "./bounded-subprocess";
 import {
   acceptance,
-  closedPort,
+  codexRows,
   copyLeg,
   type LegRun,
   publicLeg,
@@ -56,7 +58,11 @@ import {
   unknownsCounted,
   workflowInputs,
   workflowRepository,
+  writeIds,
 } from "./outside-agent-tailnet-stand-ins";
+import { closedPort } from "./outside-path-reach-fixtures";
+
+const { c1, m1, c2, m2 } = writeIds;
 
 /** The rows each leg prints, in order, after its header: the public leg's P1-P10, its
  *  revocations, its three T5 rows and its verdict; the tailnet leg's own rows, the public leg's
@@ -155,11 +161,11 @@ function noInput(): Record<string, string> {
   };
 }
 
-function publicInputs(): Record<string, string> {
-  const origin = `http://127.0.0.1:${closedPort()}`;
+async function publicInputs(): Promise<Record<string, string>> {
+  const origin = `http://127.0.0.1:${await closedPort()}`;
   const inputs = scratch("inputs");
   const targets = join(inputs, "targets.txt");
-  writeFileSync(targets, `hub 127.0.0.1 ${closedPort()}\n`);
+  writeFileSync(targets, `hub 127.0.0.1 ${await closedPort()}\n`);
   const approve = script(
     join(inputs, "approve"),
     '#!/bin/sh\necho "UNKNOWN: $1 no browser"\nexit 2\n'
@@ -184,8 +190,8 @@ function publicInputs(): Record<string, string> {
   };
 }
 
-function tailnetInputs(): Record<string, string> {
-  const origin = `http://127.0.0.1:${closedPort()}`;
+async function tailnetInputs(): Promise<Record<string, string>> {
+  const origin = `http://127.0.0.1:${await closedPort()}`;
   const inputs = scratch("inputs");
   const pins = join(inputs, "pins.txt");
   writeFileSync(
@@ -238,7 +244,7 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
   test(
     "the public leg reads UNKNOWN for every row and exits 2 when nothing answers behind its inputs",
     async () => {
-      const env = publicInputs();
+      const env = await publicInputs();
       const run = await runLeg(publicLeg, [], env);
       expect(unknownProblems(run, publicLegRows)).toEqual([]);
       expect(run.stdout).toContain("omp");
@@ -271,7 +277,7 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
   test(
     "the tailnet leg reads UNKNOWN for every row and exits 2 when nothing answers behind its inputs",
     async () => {
-      const env = tailnetInputs();
+      const env = await tailnetInputs();
       const run = await runLeg(tailnetLeg, ["EXAMPLE"], env);
       expect(unknownProblems(run, tailnetRows)).toEqual([]);
       expect(readFileSync(env.OUTSIDE_TAILNET_TSV as string, "utf8")).toBe(run.stdout);
@@ -285,9 +291,9 @@ describe.skipIf(withoutTools)("the outside agent's acceptance legs", () => {
     async () => {
       const runs = [
         await runLeg(passingCopy(publicLeg), [], noInput()),
-        await runLeg(passingCopy(publicLeg), [], publicInputs()),
+        await runLeg(passingCopy(publicLeg), [], await publicInputs()),
         await runLeg(passingCopy(tailnetLeg), [], noInput()),
-        await runLeg(passingCopy(tailnetLeg), ["EXAMPLE"], tailnetInputs()),
+        await runLeg(passingCopy(tailnetLeg), ["EXAMPLE"], await tailnetInputs()),
       ];
       const rowsOfRun = [publicLegRows, publicLegRows, tailnetRows, tailnetRows];
       runs.forEach((run, index) => {
@@ -408,13 +414,231 @@ async function runStandIn(prepared: PreparedStandIn): Promise<StandInRun> {
 async function runStandIns(...standIns: StandIns[]): Promise<StandInRun[]> {
   const prepared: PreparedStandIn[] = [];
   try {
-    for (const each of standIns) prepared.push(prepareStandIn(scratch, each));
+    for (const each of standIns) prepared.push(await prepareStandIn(scratch, each));
   } catch (error) {
     for (const done of prepared) done.dispatch.stop();
     throw error;
   }
   return Promise.all(prepared.map(runStandIn));
 }
+
+/** The squatter's pid, the first line `squat`'s shell prints: a whole number above 0, or a throw
+ *  that names what was printed. Never 0 or below, which `process.kill` reads as this process's
+ *  whole group or as every process it may signal, so no kill is sent on a pid this cannot read. */
+function squatterPid(printed: string): number {
+  const first = printed.trim().split("\n")[0] ?? "";
+  const pid = /^[0-9]+$/.test(first) ? Number(first) : 0;
+  if (pid <= 0)
+    throw new Error(`the squatter's pid could not be read from ${JSON.stringify(first)}`);
+  return pid;
+}
+
+/** Starts a process that binds `port` and answers there as another run's stand-in Dispatch does
+ *  (`/_ready` "ready", /healthz commit `another-run`), and waits until it answers there; returns
+ *  the squatter's pid, or stops it and throws. The squatter tries the port for at most 10 s by the
+ *  clock, and the wait reads it for at most 10 s by the clock, plus the 1 s of its last read, so a
+ *  port that takes connections and never answers holds the wait for 11 s at most. It is
+ *  synchronous because the listener stop it follows is: the port is taken before that stop
+ *  returns. */
+function squat(port: number): number {
+  const squatter = `const port = Number(process.argv[1]); const until = Date.now() + 10000; while (Date.now() < until) { try { Bun.serve({ hostname: "127.0.0.1", port, fetch: (r) => new URL(r.url).pathname === "/_ready" ? new Response("ready") : Response.json({ ok: true, commit: "another-run", fleet_commit: "another-run" }) }); break; } catch { await Bun.sleep(25); } }`;
+  const started = Bun.spawnSync([
+    "bash",
+    "-c",
+    `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; deadline=$((SECONDS + 10)); while [ "$SECONDS" -lt "$deadline" ]; do [ "$(curl -q -s --max-time 1 "http://127.0.0.1:$2/_ready")" = ready ] && exit 0; sleep 0.05; done; exit 1`,
+    process.execPath,
+    squatter,
+    String(port),
+  ]);
+  const pid = squatterPid(started.stdout.toString());
+  if (!started.success) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+    throw new Error(`the squatter did not take port ${port}`);
+  }
+  return pid;
+}
+
+/** Runs `body` with the next loopback listener this process stops taken over at once by another
+ *  process (`squat`), one that answers as another run's stand-in Dispatch does: the race a port
+ *  chosen by binding and closing a listener, and bound by a child later, is open to on a box where
+ *  other runs start servers. Returns what `body` returned and the ports taken over; the squatters
+ *  are stopped by their pids before it returns. */
+async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatted: number[] }> {
+  const listen = Bun.listen;
+  const squatted: number[] = [];
+  const squatters: number[] = [];
+  let armed = true;
+  Bun.listen = ((options: Parameters<typeof Bun.listen>[0]) => {
+    const listener = listen(options);
+    if (!armed || !("port" in listener)) return listener;
+    armed = false;
+    const port = Number(listener.port);
+    const stop = listener.stop.bind(listener);
+    listener.stop = (closeActiveConnections?: boolean) => {
+      stop(closeActiveConnections);
+      squatters.push(squat(port));
+      squatted.push(port);
+    };
+    return listener;
+  }) as typeof Bun.listen;
+  try {
+    return { result: await body(), squatted };
+  } finally {
+    Bun.listen = listen;
+    for (const pid of squatters) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {}
+    }
+  }
+}
+
+describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
+  "the stand-in Dispatch's port and readiness",
+  () => {
+    test(
+      "control: the squat takes a port a listener of this process closed, and answers there as another run's stand-in",
+      async () => {
+        const { result, squatted } = await withSquat(async () => {
+          const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+          const { port } = listener;
+          listener.stop(true);
+          return { port, ready: await (await fetch(`http://127.0.0.1:${port}/_ready`)).text() };
+        });
+        expect({ squatted, ready: result.ready }).toEqual({
+          squatted: [result.port],
+          ready: "ready",
+        });
+      },
+      {
+        // It drives one squat, a synchronous wait its own clock ends within 11 s, which Bun's 5 s
+        // default of a plain `bun test` would cut short; 20 s leaves that wait room under load.
+        timeout: 20_000,
+      }
+    );
+
+    test("squat throws on a squatter pid it cannot read, before any kill: an empty line, 0 and -1 are refused, and a whole number above 0 is read", () => {
+      // squat's shell stands in printing each line as its pid and failing, which is the path that
+      // kills the squatter; process.kill records every signal it is asked to send and sends none.
+      const spawnSync = Bun.spawnSync;
+      const kill = process.kill;
+      const sent: unknown[] = [];
+      const read: unknown[] = [];
+      process.kill = ((pid: number, signal?: string | number) => {
+        sent.push([pid, signal]);
+        return true;
+      }) as typeof process.kill;
+      try {
+        for (const printed of ["", "\n", "0\n", "-1\n"]) {
+          Bun.spawnSync = (() => ({
+            stdout: Buffer.from(printed),
+            success: false,
+          })) as unknown as typeof Bun.spawnSync;
+          try {
+            read.push(squat(1));
+          } catch (error) {
+            read.push(String(error));
+          }
+        }
+        read.push(squatterPid("4242\n"));
+      } finally {
+        Bun.spawnSync = spawnSync;
+        process.kill = kill;
+      }
+      expect({ read, sent }).toEqual({
+        read: [
+          `Error: the squatter's pid could not be read from ""`,
+          `Error: the squatter's pid could not be read from ""`,
+          `Error: the squatter's pid could not be read from "0"`,
+          `Error: the squatter's pid could not be read from "-1"`,
+          4242,
+        ],
+        sent: [],
+      });
+    });
+
+    test(
+      "the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s",
+      () => {
+        // The kernel takes each connection into this listener's queue while the wait blocks this
+        // file's event loop, so every read connects and then hears nothing until its 1 s passes.
+        const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+        const began = performance.now();
+        let thrown = "";
+        try {
+          squat(holder.port);
+        } catch (error) {
+          thrown = String(error);
+        } finally {
+          holder.stop(true);
+        }
+        const seconds = (performance.now() - began) / 1000;
+        expect({ thrown, withinTheCap: seconds < 15, seconds }).toEqual({
+          thrown: `Error: the squatter did not take port ${holder.port}`,
+          withinTheCap: true,
+          seconds: expect.any(Number),
+        });
+      },
+      {
+        // It drives one squat against a port that never answers, which the squat's own clock ends
+        // within 11 s by design; 20 s is past the 15 s it asserts, so the assertion fails first.
+        timeout: 20_000,
+      }
+    );
+
+    test(
+      "a prepared run's origin serves its own stand-in Dispatch under the squat, and the stand-in is given no port: no port of it is one this process chose and closed",
+      async () => {
+        const { result, squatted } = await withSquat(async () => {
+          let prepared: PreparedStandIn;
+          try {
+            prepared = await prepareStandIn(scratch, passingControls);
+          } catch (error) {
+            return { thrown: String(error) };
+          }
+          try {
+            const answer = (await (await fetch(`${prepared.dispatch.origin}/healthz`)).json()) as {
+              commit?: string;
+            };
+            // The settings the stand-in runs with, as the kernel holds them: a port handed to it
+            // by any means the squat of `Bun.listen` cannot see (`Bun.serve`, `node:net`) would
+            // show here as a `port` of its settings.
+            const settings = readFileSync(`/proc/${prepared.dispatch.pid}/environ`, "utf8")
+              .split("\0")
+              .filter((entry) => entry.startsWith("OUTSIDE_STAND_IN_DISPATCH="))
+              .map(
+                (entry) =>
+                  JSON.parse(entry.slice("OUTSIDE_STAND_IN_DISPATCH=".length)) as Record<
+                    string,
+                    unknown
+                  >
+              );
+            return {
+              built: prepared.repo.built,
+              served: answer.commit,
+              handed: settings.map((each) => each.port ?? null),
+            };
+          } finally {
+            prepared.dispatch.stop();
+          }
+        });
+        expect({ ...result, squatted }).toEqual({
+          built: expect.any(String),
+          served: "built" in result ? result.built : "the run's own build",
+          handed: [null],
+          squatted: [],
+        });
+      },
+      {
+        // It drives a preparation (a git checkout, and the stand-in's start, whose readiness its own
+        // clock ends within 11 s) and at most one squat, also 11 s by its clock; 30 s holds both.
+        timeout: 30_000,
+      }
+    );
+  }
+);
 
 describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
   "the tailnet leg's own controls, against stand-ins",
@@ -449,9 +673,9 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         expect(pass.get("sweep")?.got).toContain(
           `the full member's browser read ${proxyRepository}'s workflow runs through the proxy: 200`
         );
-        // The writer's line in its `write <UTC> <comment id> <message id> delivered` form.
+        // The writer's line in its `write <began> <ended> <comment id> <message id> delivered` form.
         expect(pass.get("sweep")?.got).toContain(
-          "the writer's write at 2026-01-01T00:00:05Z (comment cmt-1, message msg-1) was delivered"
+          `the writer's write from 2026-01-01T00:00:04Z to 2026-01-01T00:00:05Z (comment ${c1}, message ${m1}) was delivered`
         );
         // T3 enrolled through the full member's helper, whose broker is the one T2 asked.
         expect(readFileSync(join(answered.state, "t3-operator"), "utf8")).toBe(`${fullLogin}\n`);
@@ -606,14 +830,20 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the sweep counts no write the writer did not deliver, and reads UNKNOWN for a fills file fills mode refused and for a runner's UNKNOWN",
+      "the sweep counts no write the writer did not deliver nor a line of the old form, and reads UNKNOWN for a fills file fills mode refused and for a runner's UNKNOWN",
       async () => {
         const [undelivered, oldForm, refusedFills, unlisted] = await runStandIns(
           {
             ...passingControls,
-            sweep: { writer: "write 2026-01-01T00:00:05Z cmt-1 msg-1 not delivered" },
+            sweep: {
+              writer: `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} not delivered`,
+            },
           },
-          { ...passingControls, sweep: { writer: "write 2026-01-01T00:00:05Z delivered" } },
+          // The form before #4608 timed the write's two ends: one time, inside the window.
+          {
+            ...passingControls,
+            sweep: { writer: `write 2026-01-01T00:00:05Z ${c1} ${m1} delivered` },
+          },
           { ...passingControls, sweep: { fillsRefused: true } },
           {
             ...passingControls,
@@ -632,14 +862,16 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         ) {
           throw new Error("four runs, want four");
         }
-        // A write the full member's feed was not sent, or a line of another form, is no control.
-        for (const run of [undelivered, oldForm]) {
+        // A write inside the window the full member's feed was not sent is a dropped write; a line
+        // of the old form has a second stamp this leg cannot read. Neither is a control.
+        for (const [run, said] of [
+          [undelivered, "was not delivered, so the member's feed lost one"],
+          [oldForm, "the writer printed a line this leg cannot read"],
+        ] as const) {
           expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
             verdicts: { sweep: "UNKNOWN" },
           });
-          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
-            "no write of the writer was delivered inside its live window"
-          );
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(said);
         }
         // Fills mode refuses to write a file that lacks a fill, so no fills reach the runner.
         expect({
@@ -663,17 +895,155 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the sweep reads UNKNOWN for each refusal of a version 3 runner, and the leg sends no fills of another version",
+      "the sweep counts a delivered write only when it began after the live window opened and ended before it closed, and holds a write inside it that was not written",
       async () => {
-        // The runner's own refusals before its first request, as #4608's cd8a041312 words them.
+        // The runner's window is 2026-01-01T00:00:00Z to 2026-01-01T00:00:09Z; the answered run of
+        // the first test of this suite, a write from :04 to :05, is the control.
+        const lines = [
+          [
+            `write 2025-12-31T23:59:59Z 2026-01-01T00:00:01Z ${c1} ${m1} delivered`,
+            "no write of the writer was delivered inside its live window",
+          ],
+          [
+            `write 2026-01-01T00:00:08Z 2026-01-01T00:00:10Z ${c1} ${m1} delivered`,
+            "no write of the writer was delivered inside its live window",
+          ],
+          [
+            "write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z - not written",
+            "was not delivered, so the member's feed lost one",
+          ],
+        ] as const;
+        const runs = await runStandIns(
+          ...lines.map(([writer]) => ({ ...passingControls, sweep: { writer } }))
+        );
+        lines.forEach(([writer, said], index) => {
+          const run = runs[index];
+          if (run === undefined) throw new Error(`run ${index} is missing`);
+          expect({ writer, verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(said);
+        });
+      },
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "a writer line whose stamps are not of date's form, that began after it ended, or whose ids are not of Dispatch's form, holds the sweep beside a delivered write",
+      async () => {
+        // Each beside a delivered write from :04 to :05 inside the window, which alone passes (the
+        // answered run of the first test of this suite): a line this leg cannot read may hide a
+        // dropped write.
+        const good = `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} delivered`;
+        const lines = [
+          `write 9999 0000 ${c2} ${m2} delivered`,
+          // Stamps of another form that compare as text inside the window and in order: only
+          // their form tells them apart.
+          `write 2026-01-01T00:00:04z 2026-01-01T00:00:05z ${c2} ${m2} delivered`,
+          `write 2026-01-01T00:00:10Z 2026-01-01T00:00:05Z ${c2} ${m2} delivered`,
+          `write 2026-01-01T00:00:06Z 2026-01-01T00:00:05Z ${c2} ${m2} delivered`,
+          // Ids that are not of the form Dispatch gives them, as #4608's join refuses them.
+          "write 2026-01-01T00:00:06Z 2026-01-01T00:00:07Z cmt-1 msg-1 delivered",
+        ];
+        const runs = await runStandIns(
+          ...lines.map((bad) => ({ ...passingControls, sweep: { writer: `${good}\n${bad}` } }))
+        );
+        lines.forEach((bad, index) => {
+          const run = runs[index];
+          if (run === undefined) throw new Error(`run ${index} is missing`);
+          expect({ bad, verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
+            `the writer printed a line this leg cannot read`
+          );
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(bad);
+        });
+      },
+      // The five runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+    );
+
+    test(
+      "one delivered write inside the window is no control beside a dropped one, nor when its own line also says not delivered",
+      async () => {
+        const [beside, duplicated] = await runStandIns(
+          {
+            ...passingControls,
+            sweep: {
+              writer: `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} delivered\nwrite 2026-01-01T00:00:06Z 2026-01-01T00:00:07Z ${c2} ${m2} not delivered`,
+            },
+          },
+          {
+            ...passingControls,
+            sweep: {
+              writer: `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} not delivered\nwrite 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} delivered`,
+            },
+          }
+        );
+        if (beside === undefined || duplicated === undefined) throw new Error("two runs, want two");
+        // The control is the answered run of the first test of this suite: one delivered write
+        // and no other.
+        for (const run of [beside, duplicated]) {
+          expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
+            verdicts: { sweep: "UNKNOWN" },
+          });
+          expect(rowsOf(run.stdout).get("sweep")?.got).toContain(
+            "was not delivered, so the member's feed lost one"
+          );
+        }
+      },
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
+    );
+
+    test(
+      "a dropped write outside the window, across its opening, across its closing or wholly before it, holds the sweep beside a delivered write inside it",
+      async () => {
+        // The window is :00 to :09; each dropped line beside a delivered write from :04 to :05,
+        // which alone passes (the answered run of the first test of this suite).
+        const good = `write 2026-01-01T00:00:04Z 2026-01-01T00:00:05Z ${c1} ${m1} delivered`;
+        const dropped = [
+          `write 2025-12-31T23:59:58Z 2026-01-01T00:00:02Z ${c2} ${m2} not delivered`,
+          `write 2026-01-01T00:00:07Z 2026-01-01T00:00:11Z ${c2} ${m2} not delivered`,
+          "write 2025-12-31T23:59:50Z 2025-12-31T23:59:51Z - not written",
+        ];
+        const runs = await runStandIns(
+          ...dropped.map((line) => ({ ...passingControls, sweep: { writer: `${good}\n${line}` } }))
+        );
+        // Each line's sweep row at once, so a failure names every line that read otherwise.
+        const read = dropped.map((line, index) => {
+          const run = runs[index];
+          if (run === undefined) throw new Error(`run ${index} is missing`);
+          return { line, sweep: rowsOf(run.stdout).get("sweep") };
+        });
+        expect(read).toMatchObject(
+          dropped.map((line) => ({
+            line,
+            sweep: {
+              verdict: "UNKNOWN",
+              got: expect.stringContaining("was not delivered, so the member's feed lost one"),
+            },
+          }))
+        );
+      },
+      // The three runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "the sweep reads UNKNOWN for each refusal a runner makes before its first request, and the leg sends no fills of another version than 4",
+      async () => {
+        // The runner's own refusals before its first request, as #4608 words them.
         const refusals = [
           `UNKNOWN: SWEEP_FILLS_FILE was made from another route index: its routes.txt's SHA-256 is ${"a".repeat(64)}, and this run's is ${"c".repeat(64)}`,
           "UNKNOWN: SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills bbbbbbbbbbbb, here dddddddddddd)",
-          "UNKNOWN: SWEEP_LIVE_SECONDS must be at least 30 on a runner, whose live window leaves the writer's 15 s delivery bound before its feed closes: 20",
+          "UNKNOWN: SWEEP_LIVE_SECONDS must be at least 45 on a runner, whose live window leaves the writer's 15 s delivery bound before its feed closes and holds two of its writes at 15 s: 20",
         ];
         const runs = await runStandIns(
           ...refusals.map((verdict) => ({ ...passingControls, sweep: { verdict, exit: 2 } })),
-          { ...passingControls, sweep: { fillsVersion: 2 } }
+          { ...passingControls, sweep: { fillsVersion: 3 } }
         );
         refusals.forEach((verdict, index) => {
           const run = runs[index];
@@ -691,7 +1061,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           stdout: otherVersion.stdout,
         }).toMatchObject({ verdicts: { sweep: "UNKNOWN" } });
         expect(rowsOf(otherVersion.stdout).get("sweep")?.got).toContain(
-          "the sweep beside this leg wrote fills of another version than 3"
+          "the sweep beside this leg wrote fills of another version than 4"
         );
       },
       // The four runs at once, each a bounded child under the short bound.
@@ -812,34 +1182,70 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
+      "the gate counts only PASS: a Codex row the public TSV holds as UNKNOWN holds it, and the gate names that row; C4's PASS is held as P6's is, without the session outside the project",
+      async () => {
+        const [control, unknown] = await runStandIns(passingControls, {
+          ...passingControls,
+          verdicts: { C2: "UNKNOWN" },
+        });
+        if (control === undefined || unknown === undefined) throw new Error("two runs, want two");
+        // The control: every C row PASS in the public TSV, so the gate names none of them but
+        // C4. No peer starts here, so no session outside the project stands behind C4's control
+        // send, and its PASS reads UNKNOWN, as P6's does.
+        expect({ verdicts: verdictsOf(control.stdout), stdout: control.stdout }).toMatchObject({
+          verdicts: Object.fromEntries(
+            codexRows.map((name) => [name, name === "C4" ? "UNKNOWN" : "PASS"])
+          ),
+        });
+        expect(rowsOf(control.stdout).get("C4")?.got).toContain(
+          "PASS as the public leg read it, unproven here: its control's session outside the project: "
+        );
+        expect(rowsOf(control.stdout).get("gate")?.got).not.toContain("C2");
+        // C2 UNKNOWN: copied as it is, counted, named by the gate, and the leg exits non-zero.
+        expect({ verdicts: verdictsOf(unknown.stdout), stdout: unknown.stdout }).toMatchObject({
+          verdicts: { C2: "UNKNOWN", gate: "UNKNOWN" },
+        });
+        expect(unknownsCounted(unknown.stdout)).toBe(unknownsCounted(control.stdout) + 1);
+        expect(rowsOf(unknown.stdout).get("gate")?.got).toContain("C2 UNKNOWN");
+        expect(unknown.code).not.toBe(0);
+      },
+      // The two runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short"] })
+    );
+
+    test(
       "the workflow gets only the inputs its file declares, on stdin, the sweep's project among them, only in a private or internal repository, and a refused dispatch holds the gate at once",
       async () => {
-        const [started, refused, inPublic, unread, internal] = await runStandIns(
+        const [started, refused, inPublic, unread, internal, failedView] = await runStandIns(
           { ...passingControls, workflow: {} },
           { ...passingControls, workflow: { inputs: "edge_host=dispatch.edge.example" } },
           { ...passingControls, workflow: { visibility: "PUBLIC" } },
           { ...passingControls, workflow: { visibility: "" } },
-          { ...passingControls, workflow: { visibility: "INTERNAL" } }
+          { ...passingControls, workflow: { visibility: "INTERNAL" } },
+          { ...passingControls, workflow: { visibility: "INTERNAL", viewExit: 1 } }
         );
         if (
           started === undefined ||
           refused === undefined ||
           inPublic === undefined ||
           unread === undefined ||
-          internal === undefined
+          internal === undefined ||
+          failedView === undefined
         ) {
-          throw new Error("five runs, want five");
+          throw new Error("six runs, want six");
         }
         // An INTERNAL repository, which only the owning enterprise's members read, gets its run.
         expect({ verdicts: verdictsOf(internal.stdout), stdout: internal.stdout }).toMatchObject({
           verdicts: { T1: "PASS", public: "PASS" },
         });
         expect(existsSync(join(internal.state, "workflow-args"))).toBe(true);
-        // A repository read as neither PRIVATE nor INTERNAL gets no run: its inputs would be as
-        // readable as it is. The controls are the first run, in a PRIVATE one, and the one above.
+        // A repository read as neither PRIVATE nor INTERNAL gets no run, nor one whose `gh repo
+        // view` printed INTERNAL and exited 1: that view read nothing. The controls are the first
+        // run, in a PRIVATE one, and the one above.
         for (const [run, said] of [
           [inPublic, "is PUBLIC, not PRIVATE or INTERNAL"],
           [unread, "could not be read"],
+          [failedView, "gh repo view exited 1"],
         ] as const) {
           expect({ verdicts: verdictsOf(run.stdout), stdout: run.stdout }).toMatchObject({
             verdicts: { T1: "UNKNOWN", public: "UNKNOWN" },
@@ -879,8 +1285,8 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
         );
         expect(rowsOf(refused.stdout).get("T1")?.got).toContain("only the public leg approves");
       },
-      // The five runs at once, each a bounded child under the short bound.
-      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
+      // The six runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short", "short"] })
     );
 
     test(

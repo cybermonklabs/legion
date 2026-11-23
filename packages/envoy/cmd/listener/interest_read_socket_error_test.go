@@ -81,7 +81,7 @@ func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		return recorder
 	}
-	list := sessionsHandler(registry, sessions)
+	list := sessionsHandler(registry, sessions, nil)
 	entry := sessionEntryHandler(state)
 	for _, route := range []struct {
 		path    string

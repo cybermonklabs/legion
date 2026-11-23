@@ -21,7 +21,7 @@ import (
 // heads, learns their pages, and the pass after it paces itself by those again.
 func TestThePassAfterOneThatReadNoHeadWholeReadsAtTheFloor(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -100,7 +100,7 @@ const starveMargin = 30 * time.Second
 // arithmetic, which spreads the one identity read over the bound and lands on the ceiling again.
 func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -148,7 +148,7 @@ func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T
 // the floor never makes a pass slower than the pause configured.
 func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -173,7 +173,7 @@ func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.
 // cursor's own case -- at ten requests a second for good.
 func TestAPassThatReachesAHeadAndThenEndsOnItsBoundClearsTheFloor(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -221,7 +221,7 @@ func readBothHeads(t *testing.T, h *harness) {
 // Reconciler holds, not at the floor.
 func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -257,7 +257,7 @@ func TestACallersDeadlineLeavesThePaceAsItWas(t *testing.T) {
 // after it paces itself by the work the Reconciler holds.
 func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -296,13 +296,13 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 	}
 }
 
-// A bound that ends a pass before it reads GitHub at all -- inside the read of the repository
-// mappings, before the walk that counts a cut (counts.deadline) -- is the pass's own bound ending
+// A bound that ends a pass before it reads GitHub at all -- inside the read of the repositories
+// it covers, before the walk that counts a cut (counts.deadline) -- is the pass's own bound ending
 // it with no head reached, as a bound inside a head's reads is: the pass after it reads at the
 // floor.
 func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
@@ -310,8 +310,8 @@ func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
 	readBothHeads(t, h)
 
 	// A bound already over as the pass begins: every read it makes fails before anything is
-	// sent -- the shared limits', which the pass reads first, and the mappings' -- so no request
-	// reaches GitHub and the walk counts no cut.
+	// sent -- the shared limits', which the pass reads first, and the covered repositories' -- so
+	// no request reaches GitHub and the walk counts no cut.
 	h.reconciler.PassTimeout = time.Nanosecond
 	sentBefore := h.github.count()
 	h.pass()

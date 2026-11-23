@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    `legion gh` no longer reports a help read whose time ran out before gh started as gh's own
+    answer (`gh answered its help with context deadline exceeded`). It now says `gh did not answer
+    its help within <bound>: the time passed before gh started`.
+time: 2026-11-22T01:36:05Z
+custom:
+    Issue: INFRA-3904

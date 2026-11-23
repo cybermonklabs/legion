@@ -180,9 +180,10 @@ func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, owner suspende
 	if err != nil {
 		return err
 	}
+	// The merger's own merging start, not a start queued for news alone beside it (startsWork).
 	var queued *record.SuperviseRequest
 	for i := range run.Queued {
-		if request := &run.Queued[i].Request; request.Op == "start" && request.Phase == phase.Merging {
+		if request := &run.Queued[i].Request; startsWork(*request) && request.Phase == phase.Merging {
 			queued = request
 		}
 	}

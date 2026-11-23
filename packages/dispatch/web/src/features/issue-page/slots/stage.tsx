@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, useCallback, useEffect, useRef } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -9,8 +9,9 @@ import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
-import { BodySlot } from "./body";
+import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
+import { useFollowing } from "./following";
 import { ViewDecisionsSlot } from "./view-decisions";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
@@ -27,7 +28,23 @@ import { ViewVerificationSlot } from "./view-verification";
  * spec, or a `#b-` fragment on it - is the outline's on that node (`issue-address.ts`). A view
  * whose part has not filled its slot draws nothing to land on, which left the reader on the
  * page's body: under such a view the stage draws the body, which lands on the node, or says in
- * the outline's place that the tree holds none.
+ * the outline's place that the tree holds none. A view whose part has filled its slot draws the
+ * node in its own tree, with the focus on the row it lands on or on its tree's tab stop, and says
+ * whether its tree draws the node (`ViewSlotProps.onAddressDrawn`) once every read it needs has
+ * settled, held or refused (`useOutlineReads`'s `readsSettled`): before that the node may not
+ * have arrived, and the outline's fallback waits for those reads too (`useAddressFallback`). A
+ * refused read that rows come from (`FailedRead.placesRows`) and that the view draws no failed
+ * read's line of its own for is no row of the view: where one stands refused, the view says its
+ * tree draws no node, and the outline is drawn in its place with that read's line and Retry, as
+ * under a view whose part has not filled its slot. Where only reads the view draws its own line
+ * for stand refused, the view says nothing and keeps its line, whose Retry takes the focus
+ * (`ViewStage`). The stage takes the first thing the view says for each following of the address
+ * (`useFollowing`: the location's key with the address) and none after it, so a view may say it
+ * again on any render once its reads have settled. Where its tree draws no node - an item the
+ * issue holds none of, an item of another issue, an id written short, an item whose read failed,
+ * a turn of a thread only agents wrote in, a block no node carries - the stage draws the body in
+ * the view's place for the rest of that following, which lands as the outline does; a new
+ * following asks the view again.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
@@ -47,27 +64,77 @@ export function StageSlot({
   readonly views?: ViewSlots;
 }): ReactNode {
   const { hash, search } = useLocation();
+  const following = useFollowing();
   const address = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
   const { preset } = address;
-  const outline = !filled[preset] && address.target !== undefined && address.document === undefined;
+  // Whether the address names a node beside the view's own address and opens no document, which
+  // is the outline's to land on wherever the view draws none of it.
+  const beside = address.target !== undefined && address.document === undefined;
+  // The following of the address whose first call from the view the stage took, which takes no
+  // other call in it, and the following for which the view said its tree draws no node the
+  // address names (`ViewSlotProps.onAddressDrawn`): the body is drawn in the view's place for the
+  // rest of that following. With it, whether the focus was the view's as the view said so: in the
+  // box the view is drawn in (`viewBox`), or held by nothing, as where the view's Retry left the
+  // page with its line in the render in which the read it asked again answered.
+  const told = useRef<string | undefined>(undefined);
+  const [undrawn, setUndrawn] = useState<{ following: string; viewsFocus: boolean }>();
+  const viewBox = useRef<HTMLDivElement>(null);
+  const onAddressDrawn = useCallback(
+    (drawn: boolean) => {
+      if (!beside || told.current === following) return;
+      told.current = following;
+      if (drawn) return;
+      const box = viewBox.current;
+      const viewsFocus = focusIsLoose(box) || box?.contains(document.activeElement) === true;
+      setUndrawn({ following, viewsFocus });
+    },
+    [beside, following]
+  );
+  // The reader's acts since the address was followed (`ReaderActsWatch`), watched from the
+  // following's drawing whichever slot is drawn and handed to the body, so a body drawn in the
+  // view's place reads an act made while the view was drawn, as one made before its row drew
+  // (`IssueTree`'s `addressActs`, `BodySlot`'s `takesFocus`): a control pressed outside the stage
+  // keeps the focus. Where the focus was the view's, nothing outside the view holds it once the
+  // body is drawn: the stage hands that body none, and it watches from its own first draw, so it
+  // lands as it does where the reader made no act, a press on blank space included.
+  const acts = useRef<AbortController | undefined>(undefined);
+  const swapped = undrawn?.following === following;
+  const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
   return (
     <DocumentStages>
+      <ReaderActsWatch into={acts} key={following} />
       {View === undefined ? (
         <StageBox>
-          <BodySlot {...props} />
+          <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
         </StageBox>
       ) : (
-        <ViewStage key={preset}>
-          <View {...props} />
+        <ViewStage box={viewBox} key={preset}>
+          <View {...props} onAddressDrawn={onAddressDrawn} />
         </ViewStage>
       )}
     </DocumentStages>
   );
 }
 
+/** What the stage hands the view it draws in place of the outline: the slot's own props, and
+ *  how the view tells the stage whether its tree draws the node the address names. */
+export interface ViewSlotProps extends SlotProps {
+  /**
+   * Tells the stage whether the view's tree draws the node the address names (`drawn`). The
+   * stage takes the first call of each following of the address (`useFollowing`) that names a
+   * node beside the view's own address and opens no document, and no other call, so a view may
+   * call it on every render once its reads have settled, by the rule `StageSlot` gives. Given
+   * true first, the stage keeps the view, with the focus on the view's tab stop or the row it
+   * lands on; given false first, it draws the body in the view's place for the rest of that
+   * following, as under a view whose part has not filled its slot, and the body lands on the node
+   * or says in the outline's place that the issue holds none of it, with the focus.
+   */
+  readonly onAddressDrawn: (drawn: boolean) => void;
+}
+
 /** The slot each view draws in place of the outline, by preset. */
-export type ViewSlots = Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | undefined>>;
+export type ViewSlots = Readonly<Record<Preset, ((props: ViewSlotProps) => ReactNode) | undefined>>;
 
 /** The slot each view draws in place of the outline; none for Conversation, which is the
  *  outline itself. */
@@ -85,13 +152,14 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
 /** Whether each slot's own part has filled it: a view whose part has not draws nothing, and an
  *  address naming a node beside it draws the outline (`StageSlot`). Each view's part sets its
  *  entry here when it fills its slot; from then the address is that view's, which is to land on
- *  the node in its own tree. */
+ *  its tab stop or the row its tree draws for the node, and to tell the stage where it draws none
+ *  (`ViewSlotProps.onAddressDrawn`): the stage then draws the outline in the view's place. */
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
-  decisions: false,
+  decisions: true,
   plan: true,
   spec: false,
-  verification: false,
+  verification: true,
 };
 
 /** A slot's tree itself, which holds the focus only where it has no row to give it to. */
@@ -124,8 +192,16 @@ const SLOT_TREE = '[role="tree"]';
  * stage's box does (`StageBox`), and the view draws its own measure. The stage draws one for each
  * view, keyed on it, so a view turned on is a new one, which takes the focus once.
  */
-export function ViewStage({ children }: { children: ReactNode }): ReactNode {
-  const box = useRef<HTMLDivElement>(null);
+export function ViewStage({
+  box: given,
+  children,
+}: {
+  /** The box's element, for a caller that reads it too (`StageSlot`); else the stage's own. */
+  box?: RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}): ReactNode {
+  const own = useRef<HTMLDivElement>(null);
+  const box = given ?? own;
   useEffect(() => {
     const stage = box.current;
     if (stage === null) return;
@@ -203,7 +279,7 @@ export function ViewStage({ children }: { children: ReactNode }): ReactNode {
       stage.removeEventListener("focusin", treeFocused);
       for (const frame of ending) cancelAnimationFrame(frame);
     };
-  }, []);
+  }, [box]);
   return <StageBox box={box}>{children}</StageBox>;
 }
 

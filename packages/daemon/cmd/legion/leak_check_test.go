@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // theLeakCheckHost is the one refusable literal these tests need: a Tailscale MagicDNS host built
@@ -81,16 +82,23 @@ func aPushFixture(t *testing.T, message string) (dir, line string) {
 
 // leakCheck runs the command as git's hook and a pod's scripts run it: stdin is what they pipe
 // in, and the status and what reached stderr are what they read. Standard output is the hook's
-// own, and the command writes nothing to it.
+// own, and the command writes nothing to it. The command's context ends when what is left of the
+// test binary's deadline less testBoundMargin has passed, and a command still running then fails
+// the test by name: a check that a loaded machine makes slow passes. A fixed minute ended a slow
+// check, and the row read the guard's setup failure that followed.
 func leakCheck(t *testing.T, stdin string, args ...string) (int, string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	limit := testwait.Bounded(t, 1<<60, testBoundMargin)
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	t.Cleanup(cancel)
 	previous := leakCheckStdin
 	t.Cleanup(func() { leakCheckStdin = previous })
 	leakCheckStdin = strings.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	code := run(ctx, append([]string{"legion", "leak-check"}, args...), &stdout, &stderr)
+	if ctx.Err() != nil {
+		t.Fatalf("legion leak-check %q still ran when its limit of %s, %s before the test binary's deadline, passed (exit %d): %s", args, limit.Round(time.Millisecond), testBoundMargin, code, stderr.String())
+	}
 	if stdout.Len() > 0 {
 		t.Errorf("printed %q on standard output, want nothing", stdout.String())
 	}
@@ -256,7 +264,8 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 //
 // The command is this test binary run as `legion`, through main and its cobra command line, so
 // the guard's context is the one main's signal.NotifyContext cancels: a leakCheckCommand that
-// handed its shape another context leaves each SIGINT row's command running past its bound.
+// handed its shape another context leaves each SIGINT row's command running until the row gives up
+// on it, by name, before the test binary's deadline (signalWhileHeld).
 func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
@@ -269,16 +278,16 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 		// the push's guard reads no visibility and starts no gh, and the write is held in the
 		// check, the guard's first child.
 		args []string
-		// seconds is the holding stand-in's sleep for each signal, one per row.
+		// seconds is the holding stand-in's sleep for each signal, one per row (holdsStandIn).
 		seconds map[syscall.Signal]string
 	}{
 		{
 			name: "leak-check pre-push", stdin: line, args: []string{"leak-check", "pre-push", "origin", dir + ".git"},
-			seconds: map[syscall.Signal]string{syscall.SIGINT: "293", syscall.SIGHUP: "294"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "86393", syscall.SIGHUP: "86394"},
 		},
 		{
 			name: "leak-check text", stdin: "a title\na body of nothing in particular\n", args: []string{"leak-check", "text", "the pull request body"},
-			seconds: map[syscall.Signal]string{syscall.SIGINT: "291", syscall.SIGHUP: "292"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "86391", syscall.SIGHUP: "86392"},
 		},
 	} {
 		for _, tc := range []struct {
