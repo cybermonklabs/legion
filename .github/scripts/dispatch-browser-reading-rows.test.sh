@@ -330,6 +330,10 @@ check "the table marks that leg's blob MISSING" \
   "$(is "$(table_rows "$root" '^| shard-4 | not read | MISSING |$')" 1)"
 check "the notice counts the three legs read" \
   "$(contains "$(notice_line)" 'holds 120 rows, against 120 printed by the 3 legs whose count this job read')"
+# The row lists are read only once every owed blob arrived, so their reading adds no second error
+# line to a missing blob's (Tester4660-2's finding: the stand-in bun answers 0 whatever it reads,
+# so without this check a reading moved before the missing-blob branch passed every check).
+check "and reads no row list, since a leg's blob is missing" "$(is "$(bun_calls "$root")" "")"
 
 echo "case: the download and the selection succeeded and no leg uploaded a blob"
 # The download succeeds with no artifact, the selection writes empty directories and exits 0, and
@@ -345,6 +349,7 @@ check "rather than a merged report short of rows" \
 check "the table marks each leg's blob MISSING" "$(is "$(table_rows "$root" '| not read | MISSING |$')" 4)"
 check "the notice says this job has no merged report" \
   "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 not read, shard-2 not read, shard-3 not read, shard-4 not read$")"
+check "and reads no row list, since a leg's blob is missing" "$(is "$(bun_calls "$root")" "")"
 
 echo "case: the download and the selection succeeded, one leg uploaded no blob, and there is no merged report"
 # The merge step failed or the job's limit stopped it. The leg that sent no blob is named; there
@@ -362,6 +367,7 @@ check "rather than a merged report short of rows" \
   "$(is "$(contains "$(error_line)" 'merged report is short')" false)"
 check "the notice says the same of the report" \
   "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 30, shard-2 40, shard-3 50, shard-4 not read$")"
+check "and reads no row list, since a leg's blob is missing" "$(is "$(bun_calls "$root")" "")"
 
 echo "case: the download failed"
 root=$(fixture failure)
