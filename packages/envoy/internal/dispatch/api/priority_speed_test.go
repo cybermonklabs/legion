@@ -187,14 +187,14 @@ const (
 //
 // The read's whole count is not held, because it is mostly such fixed costs and moves with the
 // build: correct code allocates 10,876 to 10,878 objects for the body over the corpus in the
-// plain build and 11,078 to 11,128 under the race detector, whose sync.Pool drops one Put in four
-// (62 race readings on amd64, 40 of them the reviewer's, 2026-11-22 and 23). The growth does not
-// move with it. Correct code grows by 13.04 objects a relation for the whole body and 9.02 for the
-// summary in the plain build, and by 12.96 to 13.07 and 8.96 to 9.05 in the race build; a read
-// that copies each relation's issue key once more grows by 14.04 and 10.02, and 13.99 to 14.09
-// and 9.99 to 10.04 (8 plain and 10 race readings, and 3 of each with the copy, on amd64 in the
-// build cluster, 2026-11-23). The bounds stand halfway between. CI's run of this package is the
-// race build on arm64, where no reading was taken.
+// plain build and 11,069 to 11,128 under the race detector, whose sync.Pool drops one Put in four
+// (64 race readings on amd64, 40 of them the reviewer's, 2026-11-22 and 23). The growth does not
+// move with it. Correct code grows by 13.04 to 13.05 objects a relation for the whole body and
+// 9.02 for the summary in the plain build (11 readings), and by 12.96 to 13.09 and 8.96 to 9.06 in
+// the race build (12 readings); a read that copies each relation's issue key once more grows by
+// 14.04 and 10.02 (4 readings), and 13.99 to 14.09 and 9.99 to 10.04 (3 readings), all on amd64
+// in the build cluster, 2026-11-23. The bounds stand halfway between. CI's run of this package is
+// the race build on arm64, where no reading was taken.
 const (
 	speedBodyAllocsPerRelation    = 13.5
 	speedSummaryAllocsPerRelation = 9.5
