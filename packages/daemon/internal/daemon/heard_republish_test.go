@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // eachHeldSubscription stands in for the runtime's subscription update (workflowRuntime's
@@ -77,7 +78,7 @@ func TestPublishingTheHeardSetAgainHoldsNoTransactionAcrossItsStreamCall(t *test
 		}
 		serialized := make(chan error, 1)
 		go func() {
-			serialized <- pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error { return intake.SerializeFacts(ctx, tx) })
+			serialized <- store.Transact(ctx, w.pool, func(ctx context.Context, tx pgx.Tx) error { return intake.SerializeFacts(ctx, tx) })
 		}()
 		select {
 		case err := <-serialized:

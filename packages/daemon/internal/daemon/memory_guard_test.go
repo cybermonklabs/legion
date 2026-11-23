@@ -61,7 +61,7 @@ func boundMemoryGuardKills(t *testing.T) (*store.Pool, *memoryGuardKills, claim.
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, record.Issue{Key: memoryGuardIssue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 			Tree: memoryGuardIssue, Project: "LEGION", Title: memoryGuardIssue, Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", HandedOver: true})
 	}); err != nil {

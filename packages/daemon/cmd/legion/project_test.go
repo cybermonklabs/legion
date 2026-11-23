@@ -93,7 +93,7 @@ func newPauseCommandDaemon(t *testing.T) *pauseCommandDaemon {
 		t.Fatalf("build the pause service: %v", err)
 	}
 	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{
-		State: pauseState{store: st, now: clock.now}, StateTransactions: st,
+		State: pauseState{store: st, now: clock.now}, StateTransactions: st.Pool(),
 		Project: "legion", DispatchProject: "LEGION", OperatorToken: pauseOperatorToken, Pause: svc, Log: quiet,
 	}).Handler)
 	t.Cleanup(server.Close)

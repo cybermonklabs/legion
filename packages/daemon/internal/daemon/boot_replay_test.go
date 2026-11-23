@@ -72,7 +72,7 @@ func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T)
 		t.Fatalf("the first replay applied %d facts, want %d", got, len(claims))
 	}
 
-	live, err := pool.Begin(context.Background())
+	live, err := pool.BeginTx(context.Background(), pgx.TxOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

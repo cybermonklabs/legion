@@ -85,7 +85,7 @@ func TestEnqueueStartLeavesARowALaneTakesWhileItRuns(t *testing.T) {
 	})
 
 	// The lane's claim, in a transaction of its own that has not committed yet.
-	lane, err := st.Pool().Begin(ctx)
+	lane, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		t.Fatalf("begin the lane's transaction: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestEnqueueStartLeavesARowALaneTakesWhileItRuns(t *testing.T) {
 	// The transition's start, which reads the row before that claim and writes after it.
 	done := make(chan error, 1)
 	go func() {
-		tx, err := st.Pool().Begin(ctx)
+		tx, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			done <- err
 			return
