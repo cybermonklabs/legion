@@ -560,11 +560,14 @@ type closeStep struct {
 // reopen, whatever write of the closed pull request follows it: a second closed row of it under
 // its canonical name (the canonical-name writer's first write of a pull request it reads closed,
 // which then deletes the row of its old name), a re-key of the closed row, an edit, a rewrite of
-// it as merged. A close, a reopen and a second close begin it at the second close. A close of a
-// row of its old name while the row of its canonical name stays open ends the lifecycle there,
-// and a close of the canonical row after it ends it again, there, since a row of the pull request
-// was open until then. The named limit: a close and a reopen both before Dispatch records closes
-// are in no record, so the result from before that close comes back as a candidate.
+// it as merged. A close, a reopen and a second close begin it at the second close, whether that
+// close is an update of the open row or, after a reopen under the old name, the canonical-name
+// writer's closed row, which only the record of the reopen tells from a second observation of
+// one close. A close of a row of its old name while the row of its canonical name stays open ends
+// the lifecycle there, and a close of the canonical row after it ends it again, there, since a row
+// of the pull request was open until then. The named limit: a close and a reopen both before
+// Dispatch records closes are in no record, so the result from before that close comes back as a
+// candidate.
 func TestAClosedPeriodBeginsAtTheFirstCloseAfterTheLastReopen(t *testing.T) {
 	ctx := context.Background()
 	const (
@@ -616,6 +619,16 @@ func TestAClosedPeriodBeginsAtTheFirstCloseAfterTheLastReopen(t *testing.T) {
 					{what: "reopen #70 at 2222…", sql: `update pull_request_heads set state = 'open', head_sha = $1 where repo = 'acme/widgets' and number = 70`, args: []any{between}},
 					{what: "record a result at 2222… while #70 is open again", record: between},
 					closeCanonical,
+					{what: "record a result at 6666… while #70 is closed again", record: secondClosedH6}},
+				rows: "acme/widgets closed 2222", ended: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@6666 unverified"}},
+			{name: "its old name's row closes and reopens, and the pull request is then written closed under its canonical name",
+				story: []closeStep{rename, toOldName, openFirst, closeOldName, closedPeriod,
+					{what: "reopen #70's row under the old name at 2222…", sql: `update pull_request_heads set state = 'open', head_sha = $1 where repo = 'acme/old-widgets' and number = 70`, args: []any{between}},
+					{what: "record a result at 2222… while #70 is open again", record: between},
+					{what: "write #70 closed under its canonical name, as the canonical-name writer does", sql: `
+						insert into pull_request_heads (repo, number, head_sha, state, issue_key) values ('acme/widgets', 70, $1, 'closed', 'CORE-1')`,
+						args: []any{between}},
+					{what: "delete #70's row under the old name", sql: `delete from pull_request_heads where repo = 'acme/old-widgets' and number = 70`},
 					{what: "record a result at 6666… while #70 is closed again", record: secondClosedH6}},
 				rows: "acme/widgets closed 2222", ended: true, want: []string{"acme/widgets#70@3333", "acme/widgets#70@6666 unverified"}},
 			{name: "it closes and its closed row is then rewritten merged",
