@@ -746,6 +746,23 @@ export function answerAsk(
   return post("/api/v1/asks/{id}/answer", { body: input, params: { id } }, options);
 }
 
+/** `PUT /api/v1/asks/{id}/asked-of`: hands the open ask `id` to `login`, as alice does from its
+ *  card. */
+export async function handAskOn(id: string, login: string): Promise<void> {
+  // The person it is handed to has signed in, which the route requires of them.
+  await userHeaders(login);
+  const response = await fetch(new URL(`/api/v1/asks/${id}/asked-of`, baseUrlOf()), {
+    body: JSON.stringify({ asked_of: login }),
+    headers: { ...(await userHeaders("alice")), "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw new Error(
+      `handing ${id} on to ${login} failed: ${response.status} ${await response.text()}`
+    );
+  }
+}
+
 export function resolveAsk(
   id: string,
   input: Body<"/api/v1/asks/{id}/resolve", "post">,
