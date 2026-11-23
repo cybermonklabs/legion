@@ -497,8 +497,9 @@ its Dispatch consumer has nothing waiting before admission releases the roots it
 consumer to catch up; it only reads, one message at a time. A daemon whose user lacks it still
 runs. NATS does not answer a request it refuses, so the daemon's state shows each consumer with
 messages waiting as `unavailable: read the oldest waiting message: context deadline exceeded`, its
-waiting count still shown and the other consumers unchanged, the Dispatch consumer's idle is read
-from its own count alone, and the daemon's log names the refused subject.
+waiting count still shown and the other consumers unchanged; a reconcile reads the Dispatch
+consumer as not idle and holds the roots its listing shows behind their log, the hold poller
+releases them on the consumer's own count, and the daemon's log names the refused subject.
 
 The consumer subjects end in `>`, so the grant reaches every consumer of `ENVOY_NOTIFICATIONS`,
 not just the daemon's three: a holder of the daemon's seed can read, recreate with another filter,

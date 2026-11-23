@@ -208,13 +208,18 @@ func NewPool(pool *pgxpool.Pool) *Pool {
 // FactTurn waits for this pool's turn to apply a fact, which it gives to one caller at a time and
 // in the order they asked, and returns the release that hands it to the next; it returns ctx's
 // error, holding nothing, once ctx ends first. intake.ApplyFact takes it before it asks for a
-// connection. Facts apply one at a time anyway, each holding the fact lock
-// (intake.SerializeFacts, a transaction-scoped advisory lock) until it commits, so the turn costs
-// them no throughput: it only moves their wait out of the pool. Without it, every fact waiting on
-// the lock held a connection while it waited, and a burst of facts larger than the pool held every
-// connection, so any other read of the pool queued behind the whole burst. With it, at most one
-// connection of each pool waits on the lock: a second daemon process on the same database holds a
-// pool and a turn of its own, and so at most one more.
+// connection and hands it on at its COMMIT. Facts apply one at a time anyway, each holding the
+// fact lock (intake.SerializeFacts, a transaction-scoped advisory lock) until it commits, so the
+// turn moves their wait out of the pool at a small cost: a fact that follows another at once now
+// begins its transaction after the other's COMMIT rather than beside it, about two round trips to
+// the server (the BEGIN and the lock) more per back-to-back fact. Without the turn, every fact
+// waiting on the lock held a connection while it waited, and a burst of facts larger than the pool
+// held every connection, so any other read of the pool queued behind the whole burst. With it, at
+// most one fact applied through ApplyFact on each pool waits on the lock: a second daemon process
+// on the same database holds a pool and a turn of its own, and so at most one more. The turn is
+// for facts: the seven other transactions of the daemon that take the fact lock (the boot's
+// listing reconcile and the like, each calling SerializeFacts in its own transaction) take no
+// turn, and each still holds a connection while it waits on the lock.
 func (p *Pool) FactTurn(ctx context.Context) (release func(), err error) {
 	select {
 	case p.factTurn <- struct{}{}:

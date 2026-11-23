@@ -118,7 +118,10 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 // for a moment is open for the whole row:
 //   - a GitHub message, which the Dispatch consumer's filter never matches, leaves it idle;
 //   - a Dispatch message stored after the consumer's delivered sequence makes it not idle;
-//   - with the stored-message get refused, the position keeps the counts' idle and says so.
+//   - with the stored-message get refused at once, or never answered until its bound passes (as
+//     NATS answers a user without the grant, and as a loaded server can), the poller's reading
+//     (DispatchPosition) keeps the counts' idle and a reconcile's (ReconcilePosition) reads not
+//     idle, each saying so at Warn.
 func TestDispatchPositionIsNotIdleWhileTheStoreHoldsAMessageTheConsumerHasNotCounted(t *testing.T) {
 	ctx := context.Background()
 	served, _ := testJetStream(t)
@@ -130,16 +133,17 @@ func TestDispatchPositionIsNotIdleWhileTheStoreHoldsAMessageTheConsumerHasNotCou
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 	standIn.uncounted = true
-	position := func() DispatchConsumerPosition {
+	reading := func(read func(context.Context) (DispatchConsumerPosition, error)) DispatchConsumerPosition {
 		t.Helper()
-		read, cancel := rowRead(t)()
+		bounded, cancel := rowRead(t)()
 		defer cancel()
-		position, err := consumers.DispatchPosition(read)
+		position, err := read(bounded)
 		if err != nil {
-			t.Fatalf("DispatchPosition: %v", err)
+			t.Fatalf("reading the Dispatch consumer's position: %v", err)
 		}
 		return position
 	}
+	position := func() DispatchConsumerPosition { return reading(consumers.DispatchPosition) }
 
 	publish(t, served, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
 	if got := position(); !got.Idle {
@@ -151,13 +155,33 @@ func TestDispatchPositionIsNotIdleWhileTheStoreHoldsAMessageTheConsumerHasNotCou
 		t.Fatalf("position with a Dispatch message stored and not yet counted = %+v, want not idle", got)
 	}
 
-	refused := errors.New("nats: timeout")
-	standIn.getMsg = func(context.Context) (*jetstream.RawStreamMsg, error) { return nil, refused }
-	if got := position(); !got.Idle {
-		t.Fatalf("position with the stored-message get refused = %+v, want the counts' idle", got)
+	never := func(ctx context.Context) (*jetstream.RawStreamMsg, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
-	if line := logLine(logs.String(), "level=WARN", "$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS", refused.Error()); line == "" {
-		t.Fatalf("logs = %q, want a WARN line naming the stored-message get and its error", logs.String())
+	for _, failing := range []struct {
+		name   string
+		getMsg func(context.Context) (*jetstream.RawStreamMsg, error)
+		err    string
+	}{
+		{"refused", func(context.Context) (*jetstream.RawStreamMsg, error) {
+			return nil, errors.New("nats: permissions violation")
+		}, "nats: permissions violation"},
+		{"never answered", never, context.DeadlineExceeded.Error()},
+	} {
+		standIn.getMsg = failing.getMsg
+		logs.Reset()
+		if got := position(); !got.Idle {
+			t.Fatalf("the poller's position with the stored-message get %s = %+v, want the counts' idle", failing.name, got)
+		}
+		if got := reading(consumers.ReconcilePosition); got.Idle {
+			t.Fatalf("a reconcile's position with the stored-message get %s = %+v, want not idle", failing.name, got)
+		}
+		for _, wants := range [][]string{{"its idle is its own count alone"}, {"a reconcile reads the consumer as not idle"}} {
+			if line := logLine(logs.String(), append(wants, "level=WARN", "on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS", failing.err)...); line == "" {
+				t.Fatalf("logs with the stored-message get %s = %q, want a WARN line saying %q, naming both causes and the error", failing.name, logs.String(), wants[0])
+			}
+		}
 	}
 }
 

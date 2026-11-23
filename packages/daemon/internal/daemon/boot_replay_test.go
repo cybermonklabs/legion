@@ -156,11 +156,11 @@ func (h *slowFactHandler) applied(fact intake.Fact) int {
 // fact, replayed or live, is applied exactly once.
 //
 // One budget has to cover the longest single wait, which is the live burst: the 100 live facts
-// start first, and each holds one of the pool's connections while it waits on the fact lock, so the
-// replay's read of which facts are applied queues behind all of them, as does the first replayed
-// fact. At a 5 s budget that burst fit only while a fact cost under 50 ms, and a parallel race run
-// on four CPUs cost more (1 of 20 soak runs, "read which supervise facts are applied: context
-// deadline exceeded after 5.0s"). At 15 s a fact may cost 150 ms, and the replay still outlasts it.
+// start first, and the first replayed fact takes its pool's turn behind all of them
+// (store.Pool.FactTurn), so its budget covers the whole burst, 100 facts one after another. The
+// read of which facts are applied waits for none of them: they wait for the turn outside the pool,
+// and the read takes a free connection. At 15 s a fact of the burst may cost 150 ms, more than
+// seven times its 20 ms, and the 900 facts still outlast the budget.
 func TestAReplayOfHundredsOfUnappliedFactsBesideLiveFailuresOutlastsItsBudget(t *testing.T) {
 	t.Parallel()
 	const budget = 15 * time.Second

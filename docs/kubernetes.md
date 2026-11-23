@@ -4159,8 +4159,9 @@ It publishes on no core subject: role and controller notices go to the Envoy lis
 These subjects were verified live: a server granting exactly them logged no refusal across a boot creating both durables, a restart onto the existing ones, Dispatch and GitHub events acknowledged and a poison message terminated, and its trace showed no other API subject (no `$JS.API.INFO`, no `CONSUMER.DURABLE.CREATE`, which the TypeScript daemon uses instead);
 the daemon's permission test (`internal/daemon/nats_permissions_test.go`) creates all three durables and reads their lag under the same grant and expects no refusal.
 The same get confirms the Dispatch consumer idle before admission releases the roots it holds for that consumer to catch up: nats-server answers a publish before it counts the message as pending on a consumer, so the consumer's own count can read idle while a message waits, and the daemon reads the stream for the first message after the consumer's delivered sequence instead.
+When that get does not answer within its bound, because the NATS server is loaded or because the daemon's user lacks the grant (NATS refuses by not answering), a boot's or a recovery's reconcile reads the consumer as not idle and holds the roots its listing shows behind their log, and the hold poller, which reads again on its ticker, takes the consumer's own count, so holds are still released; each logs a WARN line naming both causes.
 The stored-message get reaches a deployment with the envoy-infra release that carries it:
-until then the daemon runs as before, the lag's oldest message is `unavailable`, and the Dispatch consumer's idle is its own count alone, with a WARN line naming the grant each time it is read so.
+until then the daemon runs as before, except that a reconcile's holds wait for the poller, and the lag's oldest message is `unavailable`.
 The daemon's seed is read by the same rule and refusals as the pane seed, the group-readable mount included, and neither seed falls back to the other:
 an unusable daemon seed refuses boot even beside a good pane seed.
 Unset, the daemon connects as the pane seed, and with neither, with no credential.

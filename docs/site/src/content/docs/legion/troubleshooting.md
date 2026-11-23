@@ -1734,11 +1734,13 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS` it is the stored-message get
   ([Envoy](/legion/dispatch/envoy/#the-nats-grant-a-legion-daemon-needs)). A deployment gets that
   grant with the envoy-infra plugin release that carries it: until that release is applied, the
-  oldest message is `unavailable` on each consumer while messages wait on it, and admission reads
-  the Dispatch consumer idle from the consumer's own count alone (a WARN line, `the Dispatch
-  consumer's next stored message could not be read`, says so each time). That count can miss a
-  message the server has stored and not yet counted, so a root held for the consumer to catch up
-  can be released a moment early.
+  oldest message is `unavailable` on each consumer while messages wait on it. The same get
+  confirms the Dispatch consumer idle; when it does not answer within its bound, from a missing
+  grant or a loaded NATS server, a reconcile reads the consumer as not idle and holds the roots its
+  listing shows behind their log, and the hold poller releases them on the consumer's own count
+  (WARN lines `the Dispatch consumer's next stored message could not be read` say which, naming
+  both causes). That count can miss a message the server has stored and not yet counted, so a held
+  root can be released a moment early.
 
 While a GitHub event waits, or was lost on its way, nothing comes round to make up for it on a
 timer. The daemon's read of an issue's pull request

@@ -445,35 +445,70 @@ func (c *Consumers) DispatchTarget(ctx context.Context) (int64, error) {
 // decided at once a key that message would still change. So when the counts say nothing waits,
 // the reading asks the store for the first message after the consumer's delivered sequence on its
 // filter subjects (firstStoredAfter), within consumerOldestBound, and a message there is waiting
-// whatever the counts say. A deployment whose daemon user lacks the stored-message get
-// (STREAM.MSG.GET) gets no answer to it: the reading then keeps the counts' idle, which is what
-// every reading was before this get, and says so at Warn.
+// whatever the counts say.
+//
+// That read can fail: its bound passes on a loaded server, or the daemon's user lacks the
+// stored-message get (STREAM.MSG.GET, which NATS refuses by not answering, so it too ends at the
+// bound). DispatchPosition, the reading pollHoldRelease takes on its ticker, then keeps the
+// counts' idle, which is what every reading was before this get, and says so at Warn: a daemon
+// without the grant must still release its holds, and the poller reads again at its next tick.
+// ReconcilePosition, the reading a reconcile decides on at once, reads such a failure as not idle
+// instead (unconfirmed), so the keys a listing shows behind their log stay held until the poller
+// releases them.
 func (c *Consumers) DispatchPosition(ctx context.Context) (DispatchConsumerPosition, error) {
+	position, unconfirmed, err := c.dispatchPosition(ctx)
+	if err != nil {
+		return DispatchConsumerPosition{}, err
+	}
+	if unconfirmed != nil {
+		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so its idle is its own count alone, which can miss a message the server stored and has not counted yet; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
+			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
+	}
+	return position, nil
+}
+
+// ReconcilePosition is DispatchPosition for a reconcile, which decides on the reading at once:
+// a counted idle the store could not confirm reads as not idle.
+func (c *Consumers) ReconcilePosition(ctx context.Context) (DispatchConsumerPosition, error) {
+	position, unconfirmed, err := c.dispatchPosition(ctx)
+	if err != nil {
+		return DispatchConsumerPosition{}, err
+	}
+	if unconfirmed != nil {
+		position.Idle = false
+		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so a reconcile reads the consumer as not idle and holds the keys its listing shows behind their log; the read's bound passed, on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET."+notificationStream,
+			"consumer", dispatchConsumerName(c.spec.Project), "error", unconfirmed)
+	}
+	return position, nil
+}
+
+// dispatchPosition is the reading DispatchPosition and ReconcilePosition share: the position, and
+// the store read's error when the counts said idle and the store could not confirm it
+// (unconfirmed, in which case position.Idle is the counts').
+func (c *Consumers) dispatchPosition(ctx context.Context) (position DispatchConsumerPosition, unconfirmed, err error) {
 	consumer, err := c.stream.Consumer(ctx, dispatchConsumerName(c.spec.Project))
 	if err != nil {
-		return DispatchConsumerPosition{}, fmt.Errorf("read Dispatch consumer info: %w", err)
+		return DispatchConsumerPosition{}, nil, fmt.Errorf("read Dispatch consumer info: %w", err)
 	}
 	info := consumer.CachedInfo()
-	position := DispatchConsumerPosition{
+	position = DispatchConsumerPosition{
 		AckFloorStream: int64(info.AckFloor.Stream),
 		Idle:           info.NumPending == 0 && info.NumAckPending == 0,
 	}
 	if !position.Idle {
-		return position, nil
+		return position, nil, nil
 	}
 	read, cancel := context.WithTimeout(ctx, consumerOldestBound)
 	defer cancel()
 	waiting, err := c.firstStoredAfter(read, info, info.Delivered.Stream)
 	if err != nil {
 		if ctx.Err() != nil {
-			return DispatchConsumerPosition{}, fmt.Errorf("read the Dispatch consumer's next stored message: %w", err)
+			return DispatchConsumerPosition{}, nil, fmt.Errorf("read the Dispatch consumer's next stored message: %w", err)
 		}
-		c.spec.Logger.Warn("intake: the Dispatch consumer's next stored message could not be read, so its idle is its own count alone, which can miss a message the server stored and has not counted yet; the daemon's NATS user needs $JS.API.STREAM.MSG.GET."+notificationStream,
-			"consumer", info.Name, "delivered_stream", info.Delivered.Stream, "error", err)
-		return position, nil
+		return position, err, nil
 	}
 	position.Idle = waiting == nil
-	return position, nil
+	return position, nil, nil
 }
 
 const (

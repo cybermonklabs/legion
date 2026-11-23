@@ -1416,7 +1416,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	if err != nil {
 		return nil, fmt.Errorf("read notification stream target: %w", err)
 	}
-	position, err := w.consumers.DispatchPosition(ctx)
+	position, err := w.consumers.ReconcilePosition(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}

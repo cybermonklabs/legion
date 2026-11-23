@@ -5,9 +5,11 @@ body: |-
     once it has stored the message and counts the message as pending on a consumer only afterwards,
     so a boot whose listing came just after such an event could read the consumer idle and decide
     the root before that event arrived. The daemon now confirms the consumer idle with the first
-    message stored after its delivered sequence on its filter (`STREAM.MSG.GET`). A daemon whose
-    NATS user lacks that get reads idle from the consumer's own count, as before, and logs a WARN
-    line naming the grant.
+    message stored after its delivered sequence on its filter (`STREAM.MSG.GET`). When that get does
+    not answer within its bound (a loaded NATS server, or a daemon user without the grant), a
+    reconcile reads the consumer as not idle and holds the roots its listing shows behind their
+    log, the hold poller releases them on the consumer's own count, and a WARN line names both
+    causes.
 time: 2026-11-23T05:46:13Z
 custom:
     Issue: INFRA-1075
