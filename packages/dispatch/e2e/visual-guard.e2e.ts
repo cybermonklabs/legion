@@ -40,9 +40,11 @@ test("the visual review's guard lets the Spec tab's read mark through and stops 
     );
     await page.goto(`/issues/${issue.key}/spec`);
     await expect(documentEditor(page)).toContainText(SEEDED_LINE);
-    // The pass: the Spec tab records its read of the version it shows, the one write the visual
-    // seed makes first for its own spec, and the server takes it.
+    // The passes: the Spec tab records its read of the version it shows, the one write the visual
+    // seed makes first for its own spec, and the server takes it; and the editor stamps the
+    // heading's id as it loads the spec, which the guard drops as derived rather than naming.
     expect((await markSent).status()).toBeLessThan(300);
+    await expect.poll(() => writes.derived).toBeGreaterThan(0);
     expect(writes.stopped).toEqual([]);
 
     // A planted POST, as a page that wrote as it drew would send it: stopped before it leaves the

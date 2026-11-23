@@ -1162,7 +1162,28 @@ request to `/api/` with a write method and every document-socket frame that woul
 document (a Yjs update, or a sync reply carrying structs of the page's own), and the row then
 fails with the list of what it stopped, by its own name. The two read marks a page of the shot set
 writes as it draws pass, because the seed writes them first (`markWhatTheShotPagesRead`,
-e2e/review-seed.ts) and the page's request is a repeat that moves nothing.
+e2e/review-seed.ts) and the page's request is a repeat that moves nothing. The editor's own
+stamps as it loads a document - a heading's id, an ordered list item's label, which Milkdown derives
+from the text and no rendering carries - are dropped without failing the row: the guard reads each
+frame against the server's document as the page was sent it and drops one that changes only those
+(`changesOnlyDerived`, web/src/features/doc/derived-attributes.ts, the classifier the editor's own
+pending-edit store reads). The first run of the guard stopped an update of 34 to 54 bytes that each
+of four documents sent as it loaded, with no person typing (job 137537803811).
+
+What a page cannot stop is a write the server makes while it answers a read. Three things close
+that. Each row fails on a read of a route that
+packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json does not name. The Go test
+TestTheVisualShotReadsWriteOnlyTheirCaches (visual_shot_reads_test.go) sends every route that list
+names, as the dashboard does, and reads every statement each one runs and every statement the
+work it detaches runs, through the tracer TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches
+reads with; a write to any table but the caches it names (the display-tree cache, the sign-in's
+rows, the related-item check's word statistics, the event horizon, a delivery read's warning
+bookkeeping) fails it by the read and the table. It opens and closes a document's room as a page
+does and holds the room to writing nothing. And the seed waits, before any row draws, until the
+document service owes no document a settlement, and holds that the corpus records no check result
+and no pull request's head (`awaitNothingOwed`, e2e/review-seed.ts): an owed settlement runs when a
+page opens the room and writes a version the shot would draw, and a result's commit is one the
+Verification tab's read asks GitHub the pull request of, writing what it learns.
 
 This replaces a second run of every row in reverse order, on a new stack and a new seed, about 67
 s a job (p50 of 2026-11-22's full-lane runs). That run caught a write only when some later row's

@@ -27,6 +27,7 @@ import {
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { blockId } from "./editor";
+import { awaitFact } from "./local-instance-support";
 import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
 import { seedWorkspace, workspaceSessions } from "./workspace";
@@ -143,6 +144,36 @@ async function markWhatTheShotPagesRead(
   await putDocumentRead(specId, Math.max(...numbers));
 }
 
+/** Waits, within `boundMs`, until the document service owes no document a settlement, then holds
+ *  that the corpus records no check result and holds no pull request's head, so no read of a shot
+ *  page has a settlement to run or a commit to ask GitHub about. */
+async function awaitNothingOwed(boundMs: number): Promise<void> {
+  await awaitFact({
+    boundMs,
+    fact: "seedReviewRoutes: the document service owes no document of the corpus a settlement",
+    holds: (owed) => owed === "",
+    // A tenth of a second between reads, as the seed's other waits read.
+    intervalMs: 100,
+    read: () =>
+      sql(
+        `SELECT coalesce(string_agg(artifact_id::text, ', ' ORDER BY artifact_id), '')
+           FROM doc_settlements_pending`
+      ),
+    show: (owed) => `settlements owed to ${owed}`,
+  });
+  const held = await sql(
+    `SELECT (SELECT count(*) FROM check_results) || ' ' || (SELECT count(*) FROM pull_request_heads)`
+  );
+  if (held !== "0 0") {
+    const [results, heads] = held.split(" ");
+    throw new Error(
+      `seedReviewRoutes: the corpus records ${results} check result(s) and ${heads} pull request ` +
+        "head(s): the Verification tab's read would ask GitHub which pull request holds a " +
+        "result's commit and write the answer, a write the visual rows' corpus must not take"
+    );
+  }
+}
+
 /** Seeds the review corpus into an empty database; the caller resets first. `boundMs` is the
  *  bound of the seed's waits, which `seedWorkspace` gives each of its own: the caller's, so a
  *  browser row's seed gives up at the bound that row's assertions use. */
@@ -244,6 +275,14 @@ Each page is read once it is drawn.
   // The slug of the `Runbook` document `seedWorkspace` creates: read back rather than assumed,
   // so a rename there fails this seed instead of the page it opens.
   const runbook = await getProjectArtifact("CORE", "runbook");
+
+  // Nothing owed before any row draws: a settlement the document service still owes runs when a
+  // page opens that document's room and writes a version the shot would draw, and a result's
+  // commit is one `GET /issues/{key}/results` asks GitHub the pull request of, writing what it
+  // learns. The rows stop every write their pages send (e2e/visual-guard.ts) and a Go test holds
+  // what the server writes while it answers their reads (visual_shot_reads_test.go); these two
+  // the seed must leave settled itself.
+  await awaitNothingOwed(boundMs);
 
   // Last, so the spec's newest version is the one its tab will show.
   await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);

@@ -357,6 +357,12 @@ var (
 	writeWord = regexp.MustCompile(`(?i)\b(insert|update|delete)\b`)
 	// upsertUpdate is an insert's own conflict clause, whose table is the insert's.
 	upsertUpdate = regexp.MustCompile(`(?i)\bdo\s+update\b`)
+	// updateWord is the word update wherever it stands, and updateVerb the word as it begins an
+	// update statement: its table, an alias the statement may give it and its set clause. Every
+	// other update is no write: a column of that name (doc_updates.update, read as `select update`
+	// or `d.update`) or a row lock (`for update`).
+	updateWord = regexp.MustCompile(`(?i)\bupdate\b`)
+	updateVerb = regexp.MustCompile(`(?i)^update\s+"?[a-z_][a-z0-9_."]*"?(\s+(as\s+)?[a-z_][a-z0-9_]*)?\s+set\b`)
 	// sourcesRead is the architecture's first read, of the project's architecture sources.
 	sourcesRead = regexp.MustCompile(`(?i)\bfrom\s+architecture_sources\b`)
 	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue.
@@ -370,6 +376,19 @@ var (
 // write word no table can be read for: such a statement fails the test rather than passing it.
 func writesOf(statement string) ([]string, bool) {
 	read := upsertUpdate.ReplaceAllString(statement, "do upsert")
+	var unverbed strings.Builder
+	last := 0
+	for _, at := range updateWord.FindAllStringIndex(read, -1) {
+		unverbed.WriteString(read[last:at[0]])
+		if updateVerb.MatchString(read[at[0]:]) {
+			unverbed.WriteString(read[at[0]:at[1]])
+		} else {
+			unverbed.WriteString("update_word")
+		}
+		last = at[1]
+	}
+	unverbed.WriteString(read[last:])
+	read = unverbed.String()
 	matches := tableWrite.FindAllStringSubmatch(read, -1)
 	writes := make([]string, 0, len(matches))
 	for _, match := range matches {
@@ -381,6 +400,34 @@ func writesOf(statement string) ([]string, bool) {
 		writes = append(writes, verb+" "+table)
 	}
 	return writes, len(writeWord.FindAllString(read, -1)) == len(matches)
+}
+
+// writesOf reads a write by its verb and its table, and the word update by where it stands: a
+// column of that name a document room reads (doc_updates.update) and a row lock are no write, an
+// update statement however it names its table is one, and a write word it cannot place a table
+// for leaves the statement unreadable.
+func TestWritesOfReadsAnUpdateByItsSetClause(t *testing.T) {
+	for _, tc := range []struct {
+		statement string
+		writes    []string
+		readable  bool
+	}{
+		{`select update from doc_updates where artifact_id = $1 and version <= $2 order by version asc`, nil, true},
+		{`select count(*), coalesce(sum(octet_length(d.update)), 0) from doc_updates d where d.artifact_id = $1`, nil, true},
+		{`select id from issues where key = $1 for update`, nil, true},
+		{`select id from issues where key = $1 for no key update skip locked`, nil, true},
+		{`update projects set name = name where key = $1`, []string{"update projects"}, true},
+		{`UPDATE "public"."projects" AS p SET name = p.name`, []string{"update projects"}, true},
+		{`with moved as (update issues set rank = $2 where key = $1 returning key) select key from moved`, []string{"update issues"}, true},
+		{`insert into text_trees (sum, tree) values ($1, $2) on conflict (sum) do update set tree = excluded.tree`, []string{"insert text_trees"}, true},
+		{`delete from doc_updates where artifact_id = $1 and version <= $2`, []string{"delete doc_updates"}, true},
+		{`insert /* a table this test cannot read */ ($1)`, []string{}, false},
+	} {
+		writes, readable := writesOf(tc.statement)
+		if readable != tc.readable || !slices.Equal(writes, tc.writes) {
+			t.Errorf("writesOf(%q) = %v, %v; want %v, %v", tc.statement, writes, readable, tc.writes, tc.readable)
+		}
+	}
 }
 
 // readOnlyTreeFiles is the model the test below imports: two components whose prose no other test

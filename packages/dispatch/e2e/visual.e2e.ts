@@ -85,7 +85,12 @@ import {
   waitForRouteSettled,
 } from "./review-routes";
 import { withAlice } from "./users";
-import { CORPUS_WRITE_MESSAGE, guardSharedCorpus } from "./visual-guard";
+import {
+  CORPUS_WRITE_MESSAGE,
+  guardSharedCorpus,
+  UNLISTED_READ_MESSAGE,
+  unlistedShotReads,
+} from "./visual-guard";
 import { workspaceSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
@@ -301,10 +306,10 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
         maxDiffPixels: 20,
       });
     }
-    // The routes the page read, one line per row in the job's log: the server answers them
-    // itself, so a write it made while answering is outside what the guard stops, and this line
-    // is what a reader checks that against (`CorpusWrites`, e2e/visual-guard.ts).
-    console.log(`VISUAL-READS ${route.name}: ${[...writes.reads].sort().join(" ")}`);
+    // The server answers the page's reads itself, so a write it made while answering one is
+    // outside what the guard stops; the Go test that holds those reads to their caches sends the
+    // routes its list names, and a read of any other route fails the row here, by name.
+    expect(unlistedShotReads(writes.reads), UNLISTED_READ_MESSAGE).toEqual([]);
     expect(writes.stopped, CORPUS_WRITE_MESSAGE).toEqual([]);
   });
 }

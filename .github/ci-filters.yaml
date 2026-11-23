@@ -1543,6 +1543,7 @@ dispatch_ui:
   # why: .github/ci-notes/ci.md#dispatch_ui-the-one-markdown-fixture-table-read-through-websrc__tests__pmdoc-fixturests
   - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
   - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
+  - 'packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json'
   - 'packages/envoy/scripts/fixtures/shell-quote.json'
   - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/envoy/scripts/fixtures/pg-url.json'
@@ -1618,6 +1619,8 @@ dispatch_browser:
   - 'packages/envoy/scripts/lib/pg-url.sh'
   - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
+  # The routes a visual row's page may read (e2e/visual-guard.ts reads it at module load).
+  - 'packages/envoy/internal/dispatch/api/testdata/visual-shot-reads.json'
   - 'scripts/third-party-notices.ts'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-workflow-that-holds-every-browser-step-which-this-job
   - '.github/workflows/dispatch-browser.yaml'
