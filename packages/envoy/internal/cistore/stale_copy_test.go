@@ -2,7 +2,9 @@ package cistore
 
 import (
 	"bytes"
+	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -172,6 +174,87 @@ func TestAMarkThatFindsNoClaimOnTheLeaderIsLogged(t *testing.T) {
 			}
 			if st := getState(t, store, h.owner, h.repo, h.number, h.sha); !st.SettledEmitted {
 				t.Fatalf("the record after its settlement is %+v, want it settled", st)
+			}
+		})
+	}
+}
+
+// A settlement whose snapshot a re-arm replaced after its claim is not published, even where the
+// check made just before the publication (ClaimStillHeld) would be answered by a copy of the bucket
+// that has not applied the re-arm: the check reads the stream's leader. A re-arm of a claimed
+// record bumps its generation (rearm), so the claim no longer holds; a copy behind answers the
+// record as it was claimed, and a check that read that copy published the replaced snapshot, then
+// the re-armed one. The re-arm is another listener's write, landing between the claim and the
+// check. Control: with the check's read answered by a current copy, the same re-arm leaves the
+// head published once, not at the replaced snapshot's generation.
+func TestASettlementAReArmReplacedAfterItsClaimIsNotPublishedWhileTheCopyIsBehind(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		behind bool
+	}{
+		{"the check's read answered by a copy behind the re-arm", true},
+		{"control: the check's read answered by a current copy", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, cleanup := connectNATS(t)
+			defer cleanup()
+			store := openStore(t, conn)
+			rearming := openStore(t, conn)
+			h := head{owner: "example-org", repo: "example-repo", number: "42", sha: "4444444444444444444444444444444444444444"}
+			if err := recordCheck(store, h.owner, h.repo, h.number, h.sha, "build", "910", "https://example.test/910", "completed", "success", "2026-11-22T19:53:00Z"); err != nil {
+				t.Fatalf("record a finished check: %v", err)
+			}
+			waitCacheChecks(t, store, h.owner, h.repo, h.number, h.sha, 1)
+			setLastEventAt(t, store, h.owner, h.repo, h.number, h.sha, 0)
+			claimedGeneration := getState(t, store, h.owner, h.repo, h.number, h.sha).Generation
+			key := h.key()
+			original := store.watcher.KV()
+			kv := &staleOnceKV{key: key}
+			rearmed := false
+			kv.KeyValue = &interleavingKV{KeyValue: original.Legacy(), afterUpdate: func(got string, _ []byte, _ uint64) {
+				// The pass's first write of the record is its claim; ClaimStillHeld comes next.
+				if got != key || rearmed {
+					return
+				}
+				rearmed = true
+				claimed, err := original.Legacy().Get(key)
+				if err != nil {
+					t.Errorf("read the claimed record: %v", err)
+					return
+				}
+				if err := recordCheck(rearming, h.owner, h.repo, h.number, h.sha, "lint", "911", "https://example.test/911", "completed", "success", "2026-11-22T19:54:00Z"); err != nil {
+					t.Errorf("re-arm the claimed record: %v", err)
+					return
+				}
+				if tc.behind {
+					kv.arm(claimed)
+				}
+			}}
+			useKV(t, store, kv)
+			t.Cleanup(func() { useKV(t, store, original.Legacy()) })
+			pub := &recPub{}
+			z := testSummarizer(store, time.Second)
+			logger := logging.New("test")
+			now := time.Now().UnixMilli()
+			for i := range int64(4) {
+				z.pass(pub, logger, now+i*time.Minute.Milliseconds())
+			}
+			if !rearmed {
+				t.Fatal("no claim of the head landed, so no re-arm replaced its snapshot: the row tested nothing")
+			}
+			if want := map[bool]int{true: 1, false: 0}[tc.behind]; kv.staleReads() != want {
+				t.Fatalf("the stale copy answered %d reads, want %d", kv.staleReads(), want)
+			}
+			published := pub.all()
+			keys := make([]string, len(published))
+			for i, env := range published {
+				keys[i] = env.DedupeKey
+			}
+			if len(published) != 1 {
+				t.Fatalf("the head was published %d times %v, want once, after its re-arm", len(published), keys)
+			}
+			if replaced := fmt.Sprintf(".g%d", claimedGeneration); strings.HasSuffix(keys[0], replaced) {
+				t.Fatalf("the head was published as %s, the snapshot its re-arm replaced (generation %d)", keys[0], claimedGeneration)
 			}
 		})
 	}
