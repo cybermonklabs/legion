@@ -4,17 +4,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -1464,26 +1469,63 @@ func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 	enqueueWindow(t, q, "comment_block", "comment/"+comment, "b1", body, "b1")
 }
 
+// scanPassStatements counts every statement Run's pool starts, as storetest.StatementCounter
+// does, and the scan passes those statements end. A scan pass's last statement is its read of
+// when the next pending row falls due (nextPendingDue, scanPass), and the scan loop starts no
+// statement after it until its next pass, so a pass has ended once that read is counted: a fact,
+// where a span with no statement in it is a guess that a stall inside a pass on a loaded machine
+// makes wrong.
+type scanPassStatements struct {
+	storetest.StatementCounter
+	ended atomic.Int64
+}
+
+// TraceQueryStart counts the statement before it counts a pass's end, so a reader that sees the
+// end counted also sees its statement counted.
+func (s *scanPassStatements) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	ctx = s.StatementCounter.TraceQueryStart(ctx, conn, data)
+	if data.SQL == nextPendingDue {
+		s.ended.Add(1)
+	}
+	return ctx
+}
+
 // Once Run has embedded what was pending at boot and its coverage pass has run, nothing
 // changes, so Run makes no statement between one identity recheck and the next: no scan timer,
-// no due time, no further pass. The row waits for a calm longer than retryInterval, the 5-second
-// period the scan ticker ran at before and the scan loop's MinGap, and far shorter than
-// identityRecheckInterval, which this test leaves at its ten minutes. It waits for that calm
-// rather than measuring a window after a shorter one: the boot work's own statements end when
-// they end, and a stall inside the boot pass on a loaded machine only delays the calm, while a
-// loop that scans on a timer never leaves one and fails by name at the test binary's deadline.
+// no due time, no further pass. The boot work ends on two facts, not on a calm: the scan loop's
+// boot pass has started its last statement (scanPassStatements), and the coverage pass has
+// logged its end, which it does after its last statement. With no wake, and a coverage pass that
+// finds nothing to settle, add, repair, drop or re-admit and so wakes no scan (coverStep), the
+// scan loop runs its boot pass alone. The window after those facts is longer than retryInterval,
+// the 5-second period the scan ticker ran at before, the scan loop's MinGap and the soonest due
+// time a pass returns, so a ticker, a due time or one further pass lands in it; and it is far
+// shorter than identityRecheckInterval, which this test leaves at its ten minutes. A loaded
+// machine cannot fail the window on a correct run: Run makes no statement after its boot work at
+// any pace, so a later start only shortens what the window sees.
 func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "IDLE", "IDLE-1", "Enqueued by its trigger")
 	insertCommentWithWindow(t, database.Pool, "IDLE-1", "A comment its indexer windowed")
-	counter := &storetest.StatementCounter{}
-	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	records := &logtest.Recorder{}
+	logtest.SetDefault(t, records)
+	statements := &scanPassStatements{}
+	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, statements, nil)}
 	runQueue(t, Deps{Store: counted, Embedder: newSyncEmbedder(configuredIdentity)})
 	eventually(t, "both items current", func() bool {
 		items, current, _, _, _ := coverage(t, database, configuredIdentity)
 		return items == 2 && current == 2
 	})
-	storetest.AwaitQuiet(t, counter, retryInterval+2*time.Second)
+	// The coverage pass logs its ordinary line after its last statement, or in its place a
+	// warning when its report alone failed, as a report Postgres ended at its statement_timeout
+	// on a loaded machine would. Either way the pass has run every step (coverPass), and its loop
+	// then waits identityRecheckInterval.
+	testwait.Until(t, "the scan loop's boot pass to end and the coverage pass to log its end (scan passes ended, coverage passes ended)", func() (string, bool) {
+		scans := statements.ended.Load()
+		covers := len(passRecords(records, slog.LevelInfo, "dispatch embedqueue: coverage pass")) +
+			len(passRecords(records, slog.LevelWarn, "dispatch embedqueue: coverage pass report failed"))
+		return fmt.Sprintf("%d, %d", scans, covers), scans >= 1 && covers >= 1
+	})
+	storetest.RequireNoStatements(t, &statements.StatementCounter, retryInterval+2*time.Second, "Run with nothing pending and nothing changing")
 }
 
 // A write's notification wakes the idle queue, through a real pglisten.Hub on WakeChannel: the
