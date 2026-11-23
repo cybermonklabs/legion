@@ -133,13 +133,15 @@ ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-21T18:04:21Z,
-# and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
+# newest, read with
+# `gh api --paginate repos/example-org/deployment/git/matching-refs/tags/leak-check-v` at
+# 2026-11-22T16:38:25Z, and a bump reads that list again. The runtime stage exports it as
+# LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
 # a bump moves both, by the steps ghReadsProvenCheck's comment gives.
-ARG LEAK_CHECK_TAG=leak-check-v31
+ARG LEAK_CHECK_TAG=leak-check-v33
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -255,10 +257,8 @@ ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS plugin
 WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
-# python3/make/g++: under Bun, better-sqlite3's install script in the install below ends in
-# node-gyp compiling it from source (oven-sh/bun#4290), and node-gyp needs all three.
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make g++ \
+RUN apt-get update && apt-get install -y --no-install-recommends jq \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
 COPY patches patches
@@ -277,7 +277,18 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-RUN bun install --frozen-lockfile
+# --ignore-scripts skips the lifecycle script of every package installed here, so the install
+# fetches what bun.lock pins and nothing else. better-sqlite3 is the reason for it:
+# packages/proof-editor reaches that package through proof-sdk, and under Bun its install script
+# ends in `bunx node-gyp@latest` compiling it from source (oven-sh/bun#4290). That fetches
+# node-gyp's newest release from npm and then the Node headers from nodejs.org, two downloads no pin
+# or digest holds, so the image build passed or failed on them: worker-image run 44089746339 failed
+# there once, and passed on its next attempt. Nothing of that build reaches the image, since no
+# later stage copies /repo/node_modules, and nothing in this stage runs esbuild, the one other
+# package here with an install script (Bun's bundler builds the plugins). Bun still applies the
+# patches the root package.json names. packages/envoy/docker/Dockerfile installs the same
+# workspace with the same flag.
+RUN bun install --frozen-lockfile --ignore-scripts
 # The playwright-core of the Playwright packages/dispatch locks, copied to /out/playwright-core:
 # the webkit-check stage launches this Playwright's WebKit. The install above uses Bun's isolated
 # linker, so playwright-core is not hoisted at /repo/node_modules, and

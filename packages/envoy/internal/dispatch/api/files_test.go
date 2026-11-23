@@ -173,10 +173,10 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 	}
 
 	memory := filestest.NewMemory()
-	deps, err := NewDeps(DepsInput{
+	deps, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example", Files: memory,
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new deps with a store: %v", err)
 	}
@@ -226,10 +226,10 @@ func TestAClearedRowIsAnsweredByWhatTheStoreSays(t *testing.T) {
 	}
 
 	// Without a store at all, a cleared row is a configuration the server names: 503.
-	noStore, err := NewDeps(DepsInput{
+	noStore, err := NewDeps(withDocumentService(t, DepsInput{
 		Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: "https://dispatch.example",
-	})
+	}))
 	if err != nil {
 		t.Fatalf("new deps without a store: %v", err)
 	}
@@ -289,10 +289,10 @@ func TestAnUploadBesideABucketlessProcessKeepsItsBytesInTheRow(t *testing.T) {
 				t.Fatalf("the row holds %d bytes; beside a %s it should hold the upload's %d", len(row), tc.name, len(image))
 			}
 
-			bucketless, err := NewDeps(DepsInput{
+			bucketless, err := NewDeps(withDocumentService(t, DepsInput{
 				Store: database, Identity: headerIdentity(database), AgentTokens: sharedAgentTokens(t, "agent-token"),
 				ServerURL: "https://dispatch.example",
-			})
+			}))
 			if err != nil {
 				t.Fatalf("new deps without a store: %v", err)
 			}

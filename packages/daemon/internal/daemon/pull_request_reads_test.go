@@ -209,7 +209,7 @@ func TestAnOpenedTheWorkflowDoesNotRecordIsAppliedAgainByEveryRead(t *testing.T)
 func seedDeclinedOpened(t *testing.T, pool *store.Pool, opened time.Time) {
 	t.Helper()
 	seedUnrecorded(t, pool, "handoff")
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: record.PullRequestClosed, Issue: "CAPTURE-1", Repo: "acme/widgets",
 			Number: 86, Branch: "legion/CAPTURE-1", HeadSHA: "handoff", HeadUpdatedAt: opened.Add(time.Hour), Failing: []string{}})
 	}); err != nil {
@@ -282,8 +282,7 @@ func TestFollowHeadKeepsARecordMovedSinceTheListByWhatItReadNoLater(t *testing.T
 func seedUnrecorded(t *testing.T, pool *store.Pool, handoff string) {
 	t.Helper()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "CAPTURE-1", Project: "CAPTURE", Title: "root",
 			Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}); err != nil {
 			return err
@@ -325,7 +324,7 @@ func TestTheReadRecordsAnOpenPullRequestWhoseOpenedHasNotArrived(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedUnrecorded(t, pool, tc.handoff)
 			if tc.recorded != "" {
-				if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+				if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 					return record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{State: tc.recorded, Issue: "CAPTURE-1", Repo: "acme/widgets",
 						Number: 86, Branch: "legion/CAPTURE-1", HeadSHA: "handoff", HeadUpdatedAt: opened.Add(-time.Hour), Failing: []string{}})
 				}); err != nil {

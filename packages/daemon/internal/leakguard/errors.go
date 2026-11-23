@@ -1,6 +1,10 @@
 package leakguard
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
+)
 
 // RefusedBy is the check a refusal names. Its two values are the two constants below: a named
 // type rather than a bare string, so a reader of a Refusal sees which values the field holds. An
@@ -30,15 +34,25 @@ type Refusal struct {
 	Lines []string
 }
 
+// Error, and the Error of a *SetupFailure and a *NotFound, print each part of the answer that
+// is not this file's own words through the URL rule (redact.URLCredentials), so every URL in it
+// keeps no userinfo and no query. An answer's What can hold a URL with a credential: git hands a
+// pre-push hook the remote's URL as its name too for a push to a URL rather than to a named
+// remote, and PushName writes that name into What. A SetupFailure's Why can quote a caller's
+// argument (a gh call's --body-file, readGhFile), and a failure underneath or a refusal's line a
+// URL. `legion` passes every command's stderr through the same rule (cmd/legion's newRoot), but an
+// in-process caller can write an answer anywhere, so each answer applies it itself. Each part is
+// read alone, since the rule ends a URL only at white space: read whole, a query would take the
+// `:` the answer writes after it. A remote's name that is no URL ("origin") reads as written.
 func (r *Refusal) Error() string {
 	var b strings.Builder
 	b.WriteString("LEAK CHECK: refusing ")
-	b.WriteString(r.What)
+	b.WriteString(redact.URLCredentials(r.What))
 	b.WriteString(": ")
 	b.WriteString(string(r.By))
 	for _, line := range r.Lines {
 		b.WriteString("\n  ")
-		b.WriteString(line)
+		b.WriteString(redact.URLCredentials(line))
 	}
 	return b.String()
 }
@@ -59,9 +73,9 @@ type SetupFailure struct {
 }
 
 func (f *SetupFailure) Error() string {
-	message := "LEAK CHECK SETUP ERROR: " + f.What + ": " + f.Why
+	message := "LEAK CHECK SETUP ERROR: " + redact.URLCredentials(f.What) + ": " + redact.URLCredentials(f.Why)
 	if f.Err != nil {
-		message += ": " + f.Err.Error()
+		message += ": " + redact.URLCredentials(f.Err.Error())
 	}
 	return message
 }
@@ -83,7 +97,7 @@ type NotFound struct {
 }
 
 func (f *NotFound) Error() string {
-	return f.What + ": " + notFoundText(f.Repo)
+	return redact.URLCredentials(f.What) + ": " + notFoundText(f.Repo)
 }
 
 // notFoundText is what a *NotFound and the read's own *notFoundError say of repo, a repository

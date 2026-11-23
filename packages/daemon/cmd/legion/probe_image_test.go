@@ -779,12 +779,15 @@ func TestProbeImageWithPodSafetyProbesOnThePodsBaseline(t *testing.T) {
 			}
 			sessions := map[string]int{}
 			for _, run := range runs {
-				fields := strings.Fields(run)
-				if len(fields) != 3 || !tc.overlays.MatchString(fields[0]+" "+fields[1]) {
+				// The record is PI_CONFIG_FILES, whether its first overlay exists, and
+				// OMP_SESSION_STORAGE, a space apart: the overlays are paths, which hold a space
+				// wherever the test's temporary directory does, so the record is read from its end.
+				last := strings.LastIndexByte(run, ' ')
+				if last < 0 || strings.LastIndexByte(run[:last], ' ') < 0 || !tc.overlays.MatchString(run[:last]) {
 					t.Errorf("a probe ran Oh My Pi with %q, want %s", run, tc.overlays)
 					continue
 				}
-				sessions[fields[2]]++
+				sessions[run[last+1:]]++
 			}
 			if want := map[string]int{tc.sessions: len(runs) - 1, "legion-launch-probe": 1}; !maps.Equal(sessions, want) {
 				t.Errorf("the probes ran Oh My Pi with OMP_SESSION_STORAGE %v, want %v: the session-storage probe's own value once, %q otherwise", sessions, want, tc.sessions)

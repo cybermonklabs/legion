@@ -3,16 +3,16 @@ import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { connect, nkeys } from "nats";
-import { natsSeedFromEnvironment } from "../envoy-settings";
-import { natsAuthOptions } from "../nats-auth";
-import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
 import {
   NATS_START_HOOK_MS,
   NATS_STOP_HOOK_MS,
   natsHookDeadline,
   natsServer,
   useNatsServerDirectory,
-} from "./nats-server";
+} from "../../test/nats-server";
+import { natsSeedFromEnvironment } from "../envoy-settings";
+import { natsAuthOptions } from "../nats-auth";
+import type { BrokerNatsCredential, NatsCredential } from "../nats-credential";
 
 interface TestKeyPair {
   getSeed(): Uint8Array;

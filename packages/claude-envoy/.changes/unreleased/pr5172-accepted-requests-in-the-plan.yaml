@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The `dispatch-first` skill the plugin injects records an accepted request as a task in the
+  issue's plan, an issue or an ask, never as a line in an `open-items.md` document. The generated
+  Legion plugin's worker skill reads the issue, its task and the earlier handoffs first, and takes
+  its architect's decisions from its task and its messages.
+time: 2026-11-23T03:13:45Z
+custom:
+    Issue: pr5172

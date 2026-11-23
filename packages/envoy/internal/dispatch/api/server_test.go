@@ -54,6 +54,34 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 	return tokens
 }
 
+// withDocumentService is input with a document service of the test's own, for a test that needs
+// none of its own making: one over the input's store, event broker, identity and server URL,
+// shut down once the test ends, after every cleanup registered later (a server's wait among
+// them). An input with no broker gets one, which the API and the service then share.
+func withDocumentService(t testing.TB, input DepsInput) DepsInput {
+	t.Helper()
+	if input.Events == nil {
+		input.Events = events.NewBroker()
+	}
+	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, ServerURL: input.ServerURL})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	input.Docs = documents
+	return input
+}
+
+// NewDeps builds no document service of its own: a service it built would have no holder to shut
+// it down, and its compaction worker would outlive every server it served. An input with none is
+// refused, naming the field.
+func TestNewDepsRefusesAnInputWithNoDocumentService(t *testing.T) {
+	if _, err := NewDeps(DepsInput{}); err == nil || !strings.Contains(err.Error(), "Docs is required") {
+		t.Fatalf("an input with no document service = %v, want it refused naming Docs", err)
+	}
+}
+
 // testServerOptions configure the server an API test drives.
 type testServerOptions struct {
 	// newIssueLabel and newIssueSession are the two settings the dashboard's search bar reads

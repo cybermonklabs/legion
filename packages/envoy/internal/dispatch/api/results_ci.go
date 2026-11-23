@@ -334,15 +334,23 @@ func ciUnconcluded(check model.CheckBlock, name, state, ciCase, detail string, w
 	}
 }
 
-// ciRunOfLine is the run a check's ci_check names as a pull-request body line names it, `CI run`
-// and the words words keeps of the name, since the name is text the check's author wrote; where
-// words keeps none of it, the line says `the CI run the check names`.
+// ciRunOfLine is the run a check's ci_check names as a pull-request body line names it: `CI run`
+// and the name's words joined by single blanks, when the line drops none of them (lineWords.drops).
+// The name is text the check's author wrote, so where the line drops any of its words, or the name
+// has none, the line says `the CI run the check names` instead. The words left of a name that lost
+// some are a run nobody can find (`0)` of `unit_tests (test_x.py, 0)`), and two such runs can read
+// the same.
 func ciRunOfLine(name string, words lineWords) string {
-	kept := words.keep(name)
-	if kept == "" {
+	fields := strings.Fields(name)
+	if len(fields) == 0 {
 		return "the CI run the check names"
 	}
-	return "CI run " + kept
+	for _, word := range fields {
+		if words.drops(word) {
+			return "the CI run the check names"
+		}
+	}
+	return "CI run " + strings.Join(fields, " ")
 }
 
 // ciVerdictLine is the pull-request body line of a derived result: the recorded line's grammar,

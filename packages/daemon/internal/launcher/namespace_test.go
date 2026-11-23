@@ -171,12 +171,13 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		err := command.Wait()
 		listener.codeReturned(err)
 		g.result <- err
+		close(g.result)
 	}()
 	t.Cleanup(func() {
 		g.cancel()
 		select {
-		case err := <-g.result:
-			if err != nil {
+		case err, ok := <-g.result:
+			if ok && err != nil {
 				t.Errorf("PID 1 launcher exited: %v\n%s", err, output.String())
 			}
 		case <-time.After(10 * time.Second):
@@ -271,8 +272,10 @@ while :; do /bin/sleep 600 & wait; done
 			published(t, ready)
 			g.cancel()
 			select {
-			case err := <-g.result:
-				g.result <- err
+			case err, ok := <-g.result:
+				if !ok {
+					t.Fatal("the launcher's result was taken before this test read it")
+				}
 				if err != nil {
 					t.Fatalf("launcher exit: %v", err)
 				}

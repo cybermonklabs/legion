@@ -269,11 +269,12 @@ func TestWhoamiRefusesWhenItCannotReadTheEventHead(t *testing.T) {
 			options.People = people
 			options.Identity = identity.HeaderIdentity{Header: "X-Dispatch-User", People: people}
 			options.Lifetime = t.Context()
-			ctx, err := BuildAppContext(options)
+			ctx, err := BuildAppContext(withDocuments(t, options))
 			if err != nil {
 				t.Fatalf("build context: %v", err)
 			}
-			handler, _ := New(ctx)
+			handler, background := New(ctx)
+			t.Cleanup(background.Wait)
 			request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 			request.Header.Set("X-Dispatch-User", "alice@d.example")
 			response := httptest.NewRecorder()
@@ -296,12 +297,12 @@ func TestWhoamiRefusesWhenItCannotReadTheEventHead(t *testing.T) {
 // only needs its sign-in. The same router signed in is answered the 503.
 func TestAnAnonymousWhoamiIsUnauthorizedWhileTheEventHeadCannotBeRead(t *testing.T) {
 	people := newMemoryPeople()
-	ctx, err := BuildAppContext(AppContextOptions{
+	ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 		SigningKey: testSigningKey,
 		People:     people,
 		Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:   t.Context(),
-	})
+	}))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -310,7 +311,8 @@ func TestAnAnonymousWhoamiIsUnauthorizedWhileTheEventHeadCannotBeRead(t *testing
 		reads.Add(1)
 		return 0, errors.New("the database stopped answering")
 	}
-	handler, _ := New(ctx)
+	handler, background := New(ctx)
+	t.Cleanup(background.Wait)
 	whoami := func(login string) (int, string) {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
@@ -357,17 +359,18 @@ func TestWhoamiAnswersEventHeadUnavailableOnlyWhileNoHeadIsProven(t *testing.T) 
 	} {
 		t.Run(name, func(t *testing.T) {
 			people := newMemoryPeople()
-			ctx, err := BuildAppContext(AppContextOptions{
+			ctx, err := BuildAppContext(withDocuments(t, AppContextOptions{
 				SigningKey: testSigningKey,
 				People:     people,
 				Identity:   identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 				Lifetime:   t.Context(),
-			})
+			}))
 			if err != nil {
 				t.Fatalf("build context: %v", err)
 			}
 			ctx.eventHead = func(context.Context) (int64, error) { return 0, tc.err }
-			handler, _ := New(ctx)
+			handler, background := New(ctx)
+			t.Cleanup(background.Wait)
 			request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 			request.Header.Set("X-Dispatch-User", "alice@d.example")
 			response := httptest.NewRecorder()
