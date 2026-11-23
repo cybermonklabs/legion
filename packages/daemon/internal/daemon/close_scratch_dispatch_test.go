@@ -29,6 +29,7 @@ import (
 // Both closes are driven here against the real Dispatch server, each with one unrelated event
 // between the row's read and its write, and each must end with Dispatch showing done.
 func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		close func(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string)
@@ -76,6 +77,7 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 // that one: writing it would close the issue the person just reopened. The row names the
 // generation it closed, so its retry reads the record and finishes having written nothing.
 func TestAReopenedIssueKeepsTheStatusThePersonGaveItAndTheCloseWritesNothing(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "in_progress")
@@ -123,6 +125,7 @@ func (d *failingStatus) SetStatusAt(context.Context, dispatch.Issue, string) (di
 // attempt must write nothing: the close it carries is of the run before the reopen, and writing
 // it would close the issue the person just took back.
 func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "in_progress")
@@ -179,7 +182,7 @@ func reopenTheIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 	reopened := recordOf(t, pool, records, issue)
 	reopened.Generation, reopened.Phase, reopened.Status = reopened.Generation+1, phase.Implementing, "in_progress"
 	reopened.LingerUntil = nil
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(context.Background(), tx, reopened)
 	}); err != nil {
 		t.Fatalf("reopen the issue: %v", err)
@@ -191,7 +194,7 @@ func reopenTheIssue(t *testing.T, pool *store.Pool, records record.Store, issue 
 func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: issue, Project: "LEGION", Title: issue, Phase: phase.Merging, Generation: 1,
 			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"}); err != nil {
@@ -214,7 +217,7 @@ func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, e
 func architectClosesTheRoot(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutIssue(ctx, tx, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main",
 			GitHubRepo: "acme/widgets", Tree: issue, Project: "LEGION", Title: issue, Phase: phase.Admitted, Generation: 1,
 			Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})

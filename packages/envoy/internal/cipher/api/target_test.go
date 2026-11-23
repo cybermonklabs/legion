@@ -2,7 +2,8 @@
 // POST /v1/requests's refusal of a target it cannot serve, 400 TARGET_REFUSED (C-5): a target
 // outside its profile, a target on a name with no github block, and a value-token profile asked
 // for with no target while it names more than one account. Each is refused at Create, before a
-// request row, a record or a check mint, so nobody is asked and GitHub is asked nothing.
+// request row, a record or a check mint, so nobody is asked and GitHub is asked nothing. A
+// requester the profile does not list is denied as such before its target is checked.
 package api_test
 
 import (
@@ -118,6 +119,42 @@ func TestTargetOutsideTheProfileIsRefused(t *testing.T) {
 				t.Fatalf("POST /v1/requests for %s %v = %d %s, want an automatic grant", row.profile, row.locations, status, body)
 			}
 		})
+	}
+}
+
+// TestAPolicyDenialComesBeforeTheTargetCheck: a session a GitHub profile's requesters do not name
+// is denied requester-not-listed, whatever target it names. Its request for a target outside the
+// profile is answered with that denial, 200 and state denied, and not with 400 TARGET_REFUSED,
+// whose text names the profile's accounts and repositories, which a requester the profile does
+// not list is not told. Nobody is asked: no record is made for a person to decide, and the minter
+// is asked nothing. The control is a session the profile lists: its request for the same target
+// is refused 400 TARGET_REFUSED, so the target is outside the profile, and it is the policy's
+// denial that answers the other session first.
+func TestAPolicyDenialComesBeforeTheTargetCheck(t *testing.T) {
+	const profile = "LISTED_READ"
+	const outside = "https://github.com/example-org"
+	s := newProfileServerOf(t, policytest.ProfilesFile(
+		`{"name": "`+profile+`", "source": "APP_KEY", "requesters": ["`+listedRequester+`"], "github": {"accounts": ["ada"], "repositories": ["ada/lean"], "permissions": {"contents": "read", "metadata": "read"}}}`,
+	), minting, appSources(), "APP_KEY", profile)
+
+	listedID, listedKey := s.newSessionEnrollment(t, "session-listed-"+t.Name(), listedRequester)
+	status, body := s.session(t, listedKey, listedID, http.MethodPost, "/v1/requests",
+		map[string]any{"request": signTargetRequest(t, listedKey, s.URL, profile, outside)})
+	s.requireTargetRefused(t, status, decode[wireError](t, body), body, profile, "example-org", "ada/lean")
+
+	status, body = s.request(t, profile, map[string]any{"request": signTargetRequest(t, s.key, s.URL, profile, outside)})
+	denied := decode[detailAnswer](t, body)
+	if want := profile + ": " + policy.ReasonRequesterNotListed; status != http.StatusOK || denied.State != "denied" || detailText(t, denied.Detail) != want {
+		t.Fatalf("POST /v1/requests for %s --target example-org from a session its requesters do not name = %d %s; want 200, state denied and detail %q", profile, status, body, want)
+	}
+	if strings.Contains(string(body), "ada/lean") {
+		t.Fatalf("the denial %s names the profile's repository ada/lean; want a requester the profile does not list told nothing of what it names", body)
+	}
+	if rows, records := s.pendingRows(t); rows != 1 || records != 0 {
+		t.Fatalf("the denied request left %d request rows and %d records; want its one denied row and no record for a person to decide", rows, records)
+	}
+	if minted := s.take(); len(minted) != 0 {
+		t.Fatalf("the minter was asked %d times for a denied request; want never", len(minted))
 	}
 }
 

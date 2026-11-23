@@ -15,6 +15,7 @@ import (
 )
 
 func TestTheAddressingTellsAFreshAgentThatItsSessionWasLost(t *testing.T) {
+	t.Parallel()
 	token, err := claim.NewToken("legion", "LEGION-209", claim.RoleTester)
 	if err != nil {
 		t.Fatal(err)

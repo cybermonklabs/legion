@@ -175,6 +175,7 @@ const dequeueRetry = 20 * time.Millisecond
 //     (mergerWaitsForTheDesignGate): it neither wakes the merger nor publishes while the change set
 //     is not recorded, and once the test records it, the merger is woken and told once.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
+	t.Parallel()
 	rig := newDequeueRig(t)
 	woken := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	merged := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
@@ -493,8 +494,7 @@ func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.Cla
 		claims = append(claims, r.claim(t, key, claim.RoleImplementer, supervise.StateSuspended))
 	}
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, startedAgainIssue(r.cfg, key, key, stands), claims...)
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutPullRequest(ctx, tx, openPullRequest(issue)); err != nil {
 			return err
 		}
@@ -535,7 +535,7 @@ func (r *dequeueRig) seedUnderSecondRoot(t *testing.T, lingering bool) dequeueIs
 	}
 	seedWorkflowTree(t, r.cfg.PostgresDSN, r.project, root, merger)
 	putOutboxIssue(t, r.pool, r.records, startedAgainIssue(r.cfg, key, rootKey, phase.Merging))
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutPullRequest(context.Background(), tx, openPullRequest(issue))
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", key, err)
@@ -589,7 +589,7 @@ func (r *dequeueRig) track(issue dequeueIssue) dequeueIssue {
 // between a person's approval and the reconcile's read of what changed.
 func (r *dequeueRig) oweNews(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(_ context.Context, tx pgx.Tx) error {
 		ctx := context.Background()
 		approved := 2
 		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: issue.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + issue.key,
@@ -606,7 +606,7 @@ func (r *dequeueRig) oweNews(t *testing.T, issue dequeueIssue) {
 // reconcile records a change set it read from Dispatch (the outbox's designChanges).
 func (r *dequeueRig) recordChanges(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return r.records.PutDesignChanges(context.Background(), tx, record.DesignChanges{
 			VersionPair: record.VersionPair{ArtifactID: "spec-" + issue.key, From: 1, To: 2}, State: record.DesignChangesRead,
 			Sections: []record.SectionChange{{Heading: "Scope", Change: "changed"}}, ReadAt: time.Now().UTC()})
@@ -628,7 +628,7 @@ func (r *dequeueRig) closePullRequest(t *testing.T, issue dequeueIssue) {
 func (r *dequeueRig) recordPullRequest(t *testing.T, issue dequeueIssue, change func(*record.PullRequest)) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		pr, err := r.records.PullRequest(ctx, tx, issue.key)
 		if err != nil {
 			return err

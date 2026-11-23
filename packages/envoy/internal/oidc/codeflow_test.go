@@ -41,7 +41,7 @@ func newCodeFlowFor(t *testing.T) (*oidctest.Issuer, *CodeFlow) {
 func newCodeFlowForDomain(t *testing.T, domain string) (*oidctest.Issuer, *CodeFlow) {
 	t.Helper()
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret, flowRedirect)
 	return issuer, NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, domain)
 }
 
@@ -528,7 +528,7 @@ func TestCodeFlowSendsNoRedirectWhenTheCallerNamesNone(t *testing.T) {
 func TestCodeFlowSendsASecretTheFormReservesByHTTPBasic(t *testing.T) {
 	const secret = "s+e/c=r%t &x"
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, secret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, secret, flowRedirect)
 	flow := NewCodeFlow(issuer.URL(), flowClientID, secret, "")
 	session := exchange(t, issuer, flow, personClaims("dispatch-members"))
 	if _, err := flow.Refresh(context.Background(), session.RefreshToken); err != nil {
@@ -774,7 +774,7 @@ func TestCodeFlowOnlineAuthURLCarriesPKCEAndAsksForNoOfflineAccess(t *testing.T)
 // does.
 func TestCodeFlowOnlineExchangeSignsInWithNoRefreshToken(t *testing.T) {
 	issuer := oidctest.New(t)
-	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), flowClientID, flowClientSecret, flowRedirect)
 	issuer.OmitRefreshTokens()
 	flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, flowDomain)
 
@@ -880,7 +880,7 @@ func TestCodeFlowOnlineExchangeRefusesAnIDTokenNotForThisSignIn(t *testing.T) {
 		published := issuer.PublishKey(t, "signing-key")
 		// A foreign key under the published key's id: the key set resolves, and only the
 		// signature fails.
-		issuer.EnableCodeFlow(oidctest.NewKey(t, published.KeyID()), flowClientID, flowClientSecret)
+		issuer.EnableCodeFlow(oidctest.NewKey(t, published.KeyID()), flowClientID, flowClientSecret, flowRedirect)
 		flow := NewCodeFlow(issuer.URL(), flowClientID, flowClientSecret, flowDomain)
 		issuer.SignInAs(googleClaims(true))
 		signIn := onlineSignIn("nonce-1")

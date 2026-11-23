@@ -723,14 +723,66 @@ export function refusalStream(id: string, refusal: Refusal = {}): string {
 }
 
 /**
+ * Oh My Pi's date/cwd reminder (`packages/coding-agent/src/prompts/system/date-cwd-reminder.md` at
+ * the pin) at the start of a text, with the newline or two the host puts between it and the
+ * text it leads. The host sends the reminder in one of two forms (`DateCwdReminderInjector`,
+ * `packages/coding-agent/src/session/date-cwd-reminder.ts`): ahead of a user turn that is new since
+ * the session's previous request, or, when the local date or the working directory has changed
+ * since then and the request holds no such turn, as a message of its own after the request's
+ * newest message, where it stays in every later request.
+ */
+const DATE_CWD_REMINDER = /^<system-reminder>\nToday: [^\n]*\n<\/system-reminder>(\n\n?|$)/;
+
+/** `message` without the host's date/cwd reminder: the reminder taken off the start of its text,
+ *  and undefined when the reminder was the whole message. */
+function withoutDateCwdReminder(message: unknown): unknown {
+  if (typeof message !== "object" || message === null || !("content" in message)) return message;
+  const { content } = message;
+  if (typeof content === "string") {
+    const rest = content.replace(DATE_CWD_REMINDER, "");
+    if (rest === content) return message;
+    return rest === "" ? undefined : { ...message, content: rest };
+  }
+  if (!Array.isArray(content)) return message;
+  const [first, ...others] = content;
+  if (typeof first !== "object" || first === null || !("text" in first)) return message;
+  if (typeof first.text !== "string") return message;
+  const rest = first.text.replace(DATE_CWD_REMINDER, "");
+  if (rest === first.text) return message;
+  const kept = rest === "" ? others : [{ ...first, text: rest }, ...others];
+  return kept.length === 0 ? undefined : { ...message, content: kept };
+}
+
+/**
+ * A Messages request's messages as the session sent them, without the host's date/cwd reminder in
+ * either form (`DATE_CWD_REMINDER`), so a case that reads a request's newest message, or a message
+ * by its place or its exact text, reads the same on a run that crosses midnight as on one that
+ * does not. Measured in the stall watch's live proof
+ * (`pi-legion/extensions/legion-stall-watchdog-omp.test.ts`): with the pane's local date moved on
+ * between two requests, the second ended with the reminder as a message of its own, so a case that
+ * took its last message for the one that started the turn waited for a turn that had already run,
+ * as CI's did on a case that ran across midnight UTC (merge-group run 44963211024, 00:00:14Z on
+ * 2026-11-22).
+ */
+export function ownMessages(body: Record<string, unknown>): unknown[] {
+  const messages: unknown[] = Array.isArray(body.messages) ? body.messages : [];
+  return messages.map(withoutDateCwdReminder).filter((message) => message !== undefined);
+}
+
+/** The newest of a Messages request's own messages (`ownMessages`), as JSON: the message the turn
+ *  the request asks for was started on. */
+export function newestMessage(body: Record<string, unknown>): string {
+  return JSON.stringify(ownMessages(body).at(-1) ?? null);
+}
+
+/**
  * Whether a Messages request is a side turn rather than a turn. The host sends one as an
- * ordinary Messages request over a snapshot of the conversation whose last message is the `<btw>`
- * block around the question, which pi-envoy adds for `ctx.runEphemeralTurn` — so the stand-in
- * answers it distinctly and nothing about it reaches the transcript.
+ * ordinary Messages request over a snapshot of the conversation whose newest message is the
+ * `<btw>` block around the question, which pi-envoy adds for `ctx.runEphemeralTurn` — so the
+ * stand-in answers it distinctly and nothing about it reaches the transcript.
  */
 export function isSelfCheck(request: Request): boolean {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null).includes("<btw>");
+  return newestMessage(request.body).includes("<btw>");
 }
 
 /** A `tool_result` block as the host sent it back to the gateway. */

@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -15,5 +16,7 @@ import (
 var testMainHarness = func(run func() int) int { return run() }
 
 // TestMain removes the NATS server the package's tests share (testnats.Main), inside
-// testMainHarness.
-func TestMain(m *testing.M) { os.Exit(testMainHarness(func() int { return testnats.Main(m) })) }
+// testMainHarness, inside cmdtest.Run, which removes the binaries they built in every build.
+func TestMain(m *testing.M) {
+	os.Exit(cmdtest.Run(func() int { return testMainHarness(func() int { return testnats.Main(m) }) }))
+}

@@ -132,6 +132,7 @@ func requireChanges(t *testing.T, changes servedChanges, sections []servedSectio
 // is added and one only the earlier holds is removed; a section left as it was, and the title
 // above every section, are not named. The answer names the document and the versions it read.
 func TestTheChangeSetNamesAChangedSectionByItsHeading(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		"# Plan\n\n## Goal\n\nShip the service behind a flag.\n\n## Scope\n\nTwo regions.\n\n## Risks\n\nNone known.\n",
@@ -153,6 +154,7 @@ func TestTheChangeSetNamesAChangedSectionByItsHeading(t *testing.T) {
 // the text outside every `##` section is named under the heading "" and occurrence 0, at its
 // place before the first section, and the `##` section after it, left as it was, is not named.
 func TestAChangeBeforeTheFirstSectionNamesTheRunBeforeTheFirstSection(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		"# Plan\n\nThe plan ships in May.\n\n## Goal\n\nShip the service behind a flag.\n",
@@ -166,6 +168,7 @@ func TestAChangeBeforeTheFirstSectionNamesTheRunBeforeTheFirstSection(t *testing
 // removed; a requirement left as it was is not named. The section holding them changed with
 // them, and is named too.
 func TestTheChangeSetNamesAnAddedAndARemovedRequirement(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "requirements.md",
 		"# Spec\n\n## Requirements\n\n:::requirement{#r1}\nThe read succeeds.\n:::\n\n:::requirement{#r2}\nThe read is fast.\n:::\n",
@@ -184,6 +187,7 @@ func TestTheChangeSetNamesAnAddedAndARemovedRequirement(t *testing.T) {
 // `##` section, and the document has none, so its whole text is one run before the first section,
 // the one section named.
 func TestTheChangeSetNamesACheckWhoseRunOrWordsChanged(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	const ciControl = `negative_control="Break the build and watch the run fail."`
 	check := func(id, attributes, words string) string {
@@ -228,6 +232,7 @@ func answeredDecisionSpec(t *testing.T, handler http.Handler) string {
 // it and the version it wrote: the change set is decision-only, and names no section and no block,
 // the section that holds the block included.
 func TestAnAnsweredAskAloneIsADecisionOnlyChange(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	artifactID := answeredDecisionSpec(t, handler)
 
@@ -243,6 +248,7 @@ func TestAnAnsweredAskAloneIsADecisionOnlyChange(t *testing.T) {
 // An answer beside a change to a section's words is no decision-only change: the changed section
 // is named, and neither the decision block nor the section holding it is.
 func TestAnAskAnsweredBesideAChangedSectionIsNoDecisionOnlyChange(t *testing.T) {
+	t.Parallel()
 	handler := approvalCarryHandler(t)
 	artifactID := answeredDecisionSpec(t, handler)
 	reviseDocument(t, handler, artifactID, "behind a flag.", "behind a flag and a canary.", 3)
@@ -254,6 +260,7 @@ func TestAnAskAnsweredBesideAChangedSectionIsNoDecisionOnlyChange(t *testing.T) 
 // Two sections under one heading are two sections, told apart by how many before each carry that
 // heading: a change to the second names occurrence 1 and leaves the first unnamed.
 func TestTwoSectionsOfOneHeadingAreToldApartByOccurrence(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "steps.md",
 		"# Steps\n\n## Step\n\nBuild it.\n\n## Step\n\nShip it.\n",
@@ -281,6 +288,7 @@ func sectionedPlan(sections ...string) string {
 // and it names exactly one of the two moved: the one the later version holds second, the other
 // keeping its place among the sections both versions hold. The section after them is not named.
 func TestTheChangeSetNamesOneOfTwoSwappedSectionsMoved(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, scopeSection, risksSection),
@@ -293,6 +301,7 @@ func TestTheChangeSetNamesOneOfTwoSwappedSectionsMoved(t *testing.T) {
 // A section lifted from last to first is the only section named: the three it passed keep their
 // order, so none of them moved, though each stands one place lower.
 func TestTheChangeSetNamesASectionLiftedToTheTopAsTheOnlyOneMoved(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, scopeSection, risksSection, rolloutSection),
@@ -307,6 +316,7 @@ func TestTheChangeSetNamesASectionLiftedToTheTopAsTheOnlyOneMoved(t *testing.T) 
 // first pair is the one whose words changed, while the one moved of the second kept its words and
 // is named moved.
 func TestAMovedSectionWhoseTextChangedIsNamedChangedNotMoved(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, scopeSection, risksSection, rolloutSection),
@@ -321,6 +331,7 @@ func TestAMovedSectionWhoseTextChangedIsNamedChangedNotMoved(t *testing.T) {
 // A reorder beside an added section names both, in the later version's order: the moved section
 // where the later version holds it, and the added one after it.
 func TestTheChangeSetNamesAReorderBesideAnAddedSection(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, scopeSection, risksSection),
@@ -358,6 +369,7 @@ func setextAppendixRun(words string) string {
 // holds the test to the setext form: a store that wrote these headings with `#`s would test
 // nothing here.
 func TestAChangeUnderASetextHeadingIsNamedUnderThatHeading(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md",
 		sectionedPlan(goalSection, setextScopeSection("Two regions."), risksSection, setextAppendixRun("Background.")),
@@ -388,6 +400,7 @@ func TestAChangeUnderASetextHeadingIsNamedUnderThatHeading(t *testing.T) {
 // units, so it is not named although another section now stands before it. Each case is one pair
 // of consecutive versions of one document, compared on its own.
 func TestATopLevelHeadingLiftedAboveASectionNamesEachRunWhereItStands(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		before, after string
@@ -460,6 +473,7 @@ func TestATopLevelHeadingLiftedAboveASectionNamesEachRunWhereItStands(t *testing
 // names it added where it now stands, and the other copy, which keeps its words and its place, is
 // not named, nor is any section that kept its place.
 func TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		before, after string
@@ -526,6 +540,7 @@ func TestTheChangeSetNamesEachRunOutsideTheSectionsWhereItStands(t *testing.T) {
 // upload, so a version that differs from the one before it in blank lines alone is stored as the
 // same text, and is unchanged as an identical version is.
 func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
+	t.Parallel()
 	const (
 		decisionOnly = "decision-only"
 		unchanged    = "unchanged"
@@ -652,6 +667,7 @@ func TestTheChangeSetEitherNamesWhatChangedOrReportsNoChange(t *testing.T) {
 // compared under it as any other. The texts are compared as the route compares two stored
 // versions (compareVersions): no write path stores a repeated id, so none can be uploaded.
 func TestAChangeSetNamesNoBlockUnderAnIDNeitherStoredVersionCarries(t *testing.T) {
+	t.Parallel()
 	requirement := func(id, words string) string { return ":::requirement{#" + id + "}\n" + words + "\n:::\n\n" }
 	for _, tc := range []struct {
 		name          string
@@ -689,6 +705,7 @@ func TestAChangeSetNamesNoBlockUnderAnIDNeitherStoredVersionCarries(t *testing.T
 // A pair whose from is not below its to is refused 400 INVALID_VERSION, as a version number that
 // is not positive is, and the refusal is the error envelope every artifact route answers.
 func TestTheChangeSetRefusesFromNotBelowTo(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
 
@@ -707,6 +724,7 @@ func TestTheChangeSetRefusesFromNotBelowTo(t *testing.T) {
 // gives it, and the version it names is in the message; an id that names no artifact is the 404
 // ARTIFACT_NOT_FOUND every artifact route answers.
 func TestTheChangeSetAnswersAMissingVersionNotFound(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
 

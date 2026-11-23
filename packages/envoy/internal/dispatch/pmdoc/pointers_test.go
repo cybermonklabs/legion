@@ -24,10 +24,10 @@ func blockPointerTestSchema(attributes BlockAttributes) BlockSchema {
 		attributes = oneAttribute("serves", BlockAttributeSchema{Kind: BlockAttributeBlockList, Targets: []string{"requirement"}})
 	}
 	return BlockSchema{
-		Version: active.schema.Version,
-		Nodes:   active.schema.Nodes,
-		Marks:   active.schema.Marks,
-		Types: append(slices.Clone(active.schema.Types),
+		Version: active.Load().schema.Version,
+		Nodes:   active.Load().schema.Nodes,
+		Marks:   active.Load().schema.Marks,
+		Types: append(slices.Clone(active.Load().schema.Types),
 			BlockTypeSchema{Name: "claim", Content: BlockContentParagraphs, Render: "host", Attributes: attributes},
 		),
 	}
@@ -198,12 +198,12 @@ func TestBuiltInBlockTargetsAreTheBlocksTheBlockListHolds(t *testing.T) {
 		}
 	}
 	for nodeType := range listed {
-		if !builtInBlockNode(active.schema, nodeType) {
+		if !builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("the block list holds %s, which a block[] attribute cannot target", nodeType)
 		}
 	}
 	for _, nodeType := range []string{"list_item", "table_header_row", "table_row", "table_cell", "table_header", "doc", "text", "nope"} {
-		if builtInBlockNode(active.schema, nodeType) {
+		if builtInBlockNode(active.Load().schema, nodeType) {
 			t.Errorf("a block[] attribute can target %s, which no block list holds", nodeType)
 		}
 	}

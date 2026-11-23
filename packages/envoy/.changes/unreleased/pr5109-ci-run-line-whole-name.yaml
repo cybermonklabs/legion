@@ -1,0 +1,2 @@
+kind: Fixed
+body: Dispatch's results read names a CI run in a check's pull-request body line only when the line keeps every word of the run's name; a name that loses a word (a word holding `_`, an issue key) reads `the CI run the check names`, where a matrix job's line read as a run nobody can find, such as `CI run 0)`.

@@ -23,7 +23,8 @@
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
 # cache family must carry
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
-# its own restores being lookups,
+# or that key followed by the commit, its own restores being lookups but those of a family it
+# saves under the commit, which download the newest entry,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
@@ -1873,6 +1874,18 @@ run_check "$root"
 check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
 check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 
+# GOCACHE names where go keeps what it compiled, keyed on the inputs, so a step that sets it in
+# its env - as envoy-go-checks' darwin vet does, for a build cache of its own - still compiles
+# what the bare command compiles.
+echo "case: a GOCACHE in a claimed simple go command's step env"
+root=$(fixture gocache-env)
+replace "$root/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
+  $'        env:\n          GOCACHE: ${{ runner.temp }}/go-build-app\n        run: go test ./cmd/app ./lib'
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+check "and the step does carry the env" "$(contains "$(<"$root/.github/workflows/ci.yaml")" 'GOCACHE: \${{ runner.temp }}/go-build-app')"
+
 echo "case: an assignment outside ENV_ALLOWED in front of a claimed simple go command"
 root=$(fixture goos-assignment)
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: GOOS=linux go test ./cmd/app ./lib"
@@ -2592,6 +2605,138 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
+
+# refill_workflow <root>: cache_workflow's shape with the fill made again on every push, as
+# ci-caches.yaml's Go families but go-envoy-infra are filled: the fill's restore
+# downloads the family's newest entry (no lookup-only, and its key and a `-` as restore-keys), its
+# builds and its save run on every push, and its save names the commit after the key ci.yaml
+# restores.
+refill_workflow() {
+  local caches="$1/.github/workflows/ci-caches.yaml" gate=$'      - if: steps.go-app.outputs.cache-hit != \'true\'\n'
+  cache_workflow "$1"
+  replace "$caches" $'          key: go-app-${{ runner.os }}\n          lookup-only: true' \
+    $'          key: go-app-${{ runner.os }}\n          restore-keys: go-app-${{ runner.os }}-'
+  replace "$caches" "${gate}        run: go test -count" '      - run: go test -count'
+  replace "$caches" "${gate}        run: go test -c" '      - run: go test -c'
+  replace "$caches" "${gate}        uses: actions/cache/save" '      - uses: actions/cache/save'
+  replace "$caches" \
+    $'cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-app-${{ runner.os }}' \
+    $'cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-app-${{ runner.os }}-${{ github.sha }}'
+}
+
+echo "case: a family ci-caches.yaml fills again on every push, under the key ci.yaml restores and the commit"
+root=$(fixture cache-refill)
+refill_workflow "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and the save does name the commit" \
+  "$(contains "$(<"$root/.github/workflows/ci-caches.yaml")" 'key: go-app-\${{ runner.os }}-\${{ github.sha }}')"
+
+echo "case: a family saved under the commit whose ci-caches.yaml restore is a lookup"
+root=$(fixture cache-refill-lookup)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" '          restore-keys: go-app-${{ runner.os }}-' '          lookup-only: true'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the family and what the fill then builds" \
+  "$(contains "$out" "job fill's actions/cache/restore of family go-app is \`lookup-only: true\`, but this workflow saves the family under \`-\\\${{ github.sha }}\`.* or each fill compiles everything from nothing")"
+
+# An expression can evaluate to true, and the check does not evaluate it, so the fill's restore of
+# a family saved under the commit may set no lookup-only at all.
+echo "case: a family saved under the commit whose ci-caches.yaml restore is a lookup by expression"
+root=$(fixture cache-refill-lookup-expression)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" '          restore-keys: go-app-${{ runner.os }}-' $'          restore-keys: go-app-${{ runner.os }}-\n          lookup-only: ${{ true }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the family and the expression" \
+  "$(contains "$out" "job fill's actions/cache/restore of family go-app is \`lookup-only: \\\${{ true }}\`, but this workflow saves the family under")"
+
+echo "case: a family saved under the commit whose ci-caches.yaml restore takes a shorter prefix"
+root=$(fixture cache-refill-prefix)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" '          restore-keys: go-app-${{ runner.os }}-' '          restore-keys: go-app-'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the family, its restore-keys and the one it may take" \
+  "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys go-app-, but a family this workflow saves under .* takes exactly \`go-app-\\\${{ runner.os }}-\`")"
+
+echo "case: a family saved under the commit whose ci-caches.yaml restore has no restore-keys"
+root=$(fixture cache-refill-no-prefix)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" $'          restore-keys: go-app-${{ runner.os }}-\n' ''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the family and the restore-keys it must take" \
+  "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys (none), but a family this workflow saves under .* takes exactly \`go-app-\\\${{ runner.os }}-\`")"
+
+# The entry under the restores' own key wins every restore as an exact match, so a family saved
+# both under the commit and without it fills nobody with its commit entries.
+echo "case: a family ci-caches.yaml saves both under the commit and without it"
+root=$(fixture cache-refill-both)
+refill_workflow "$root"
+cat >> "$root/.github/workflows/ci-caches.yaml" <<'YAML'
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-app-${{ runner.os }}
+YAML
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and what the bare entry does" \
+  "$(contains "$out" "this workflow saves family go-app both under \`-\\\${{ github.sha }}\` and without it: the entry under the restores' own key wins every restore")"
+
+echo "case: a save of ci-caches.yaml under the key ci.yaml restores and another suffix"
+root=$(fixture cache-refill-other-suffix)
+refill_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" 'key: go-app-${{ runner.os }}-${{ github.sha }}' 'key: go-app-${{ runner.os }}-${{ github.run_id }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and both keys" \
+  "$(contains "$out" 'job fill saves family go-app under key .*github.run_id.*, but job app of .github/workflows/ci.yaml restores it under ')"
+check "and says which keys a save may carry, and what another suffix does" \
+  "$(contains "$out" "a save's key must be the restore's, or the restore's followed by .*; that restore takes it only by prefix, .* so under any other suffix each fill's entry piles up beside the last")"
+
+# save_key <root> <key>: ci-caches.yaml's lookup fill saving under <key> instead of the key its
+# lookup names.
+save_key() {
+  replace "$1/.github/workflows/ci-caches.yaml" \
+    $'cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-app-${{ runner.os }}' \
+    $'cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: '"$2"
+}
+
+# A save under the key its lookup computed lands where the lookup and every reader look: the
+# rule reads that restore step's key text in its place.
+echo "case: a lookup fill of ci-caches.yaml that saves under the key its lookup computed"
+root=$(fixture cache-computed-key)
+cache_workflow "$root"
+save_key "$root" '${{ steps.go-app.outputs.cache-primary-key }}'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and the save does name the lookup's output" \
+  "$(contains "$(<"$root/.github/workflows/ci-caches.yaml")" 'key: \${{ steps.go-app.outputs.cache-primary-key }}')"
+
+echo "case: a save of ci-caches.yaml under the computed key of a step that is no restore of its job"
+root=$(fixture cache-computed-key-unknown)
+cache_workflow "$root"
+save_key "$root" '${{ steps.go-other.outputs.cache-primary-key }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the step id it cannot find" \
+  "$(contains "$out" "job fill saves under .*, but no actions/cache/restore of that job has the id go-other")"
+
+# A save evaluates its own hashFiles() after the build, which can change a file it hashes:
+# go-envoy-infra's save did, and every push missed its lookup (run 45088325195).
+echo "case: a save of ci-caches.yaml whose own key holds hashFiles()"
+root=$(fixture cache-save-hashfiles)
+cache_workflow "$root"
+save_key "$root" "go-app-\${{ runner.os }}-\${{ hashFiles('mod/go.mod') }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the key and what to save under instead" \
+  "$(contains "$out" "job fill saves under .*hashFiles('mod/go.mod').*, which holds hashFiles(): the save evaluates it after the build.*save under the key the lookup computed")"
 
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
 # real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,

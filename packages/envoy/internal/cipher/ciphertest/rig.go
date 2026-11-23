@@ -230,9 +230,13 @@ func WithAccessLifetime(d time.Duration) Option {
 	return func(c *rigConfig) { c.accessLifetime = d }
 }
 
-// WithProjectAccess holds every token exchange to what access answers about the projects its
-// token names, as BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch; by default the broker
-// checks no project, and so refuses every trade that names one.
+// WithProjectAccess gives the broker access, a client of Dispatch's project access, as
+// BROKER_PROJECT_ACCESS_URL wires the broker to Dispatch in cmd/cipherd/main.go: every token
+// exchange is held to what access answers about the projects its token names, and the enrollment
+// and the request machine ask it, the machine login reading it through that enrollment. By
+// default the broker checks no project, and so refuses every trade that names one, as on a broker
+// with that setting unset. The rig's secrets carry no project tag, so its policy is the same
+// either way.
 func WithProjectAccess(access projectaccess.Access) Option {
 	return func(c *rigConfig) { c.projectAccess = access }
 }
@@ -343,6 +347,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	enr := &enroll.Service{
 		Store: st, Lease: config.lease, Pod: enroll.K8sPodVerifier{Verifier: podVerifier},
 		ServiceLogins: serviceLogins, ServicesByAccount: servicesByAccount, PodOperators: podOperators,
+		Projects: config.projectAccess,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, srv.URL, time.Minute)
 	enr.Chain.EdgeAudience = edgeURL
@@ -356,7 +361,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	reqMachine := &requests.Machine{
 		Store: st, Policy: cur, Secrets: policytest.Store(local), PendingTTL: 12 * time.Hour,
 		Audience: srv.URL, EdgeAudience: edgeURL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
-		PodOperators: podOperators,
+		PodOperators: podOperators, Projects: config.projectAccess,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
 	provider := newOAuthProvider(t, st, issuer, config.accessLifetime, config.projectAccess)

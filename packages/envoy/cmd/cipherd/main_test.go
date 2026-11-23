@@ -598,8 +598,8 @@ type brokerOptions struct {
 	// Env is what the broker is started with on top of the test process's own environment and
 	// productionEnv: its addresses, its database, and whatever else the row configures.
 	Env []string
-	// Binary is the broker to start, buildBroker's own when empty. A file that starts several
-	// processes builds once and names the result here rather than paying a `go build` per start.
+	// Binary is the broker to start, buildBroker's when empty, which every test of this process
+	// shares (cmdtest.BuildCommand builds each command once per test process).
 	Binary string
 	// NoWaitForListening returns from startBroker as soon as the child is running, before it has
 	// logged "broker listening" — before it has migrated, even. A row about two processes racing
