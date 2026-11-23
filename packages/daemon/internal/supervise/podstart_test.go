@@ -74,26 +74,30 @@ func (h *harness) podRole(role claim.Role, state ClaimState) *podRole {
 // channel its decision's error comes back on.
 func (h *harness) postAsync(m *Machine, ev Event) <-chan error {
 	done := make(chan error, 1)
-	go func() {
-		err := m.Handle(h.ctx, ev)
-		m.Wait()
-		done <- err
-	}()
+	go func() { done <- h.postTo(m, ev) }()
 	return done
 }
 
-// registered is r's agent registering at r's current generation, which ends its process's load.
+// registered is r's agent registering at r's current generation, which settles its process's load:
+// the load ends podLoadSettle later (loadEnds).
 func (h *harness) registered(r *podRole) {
 	h.t.Helper()
 	h.mustPostTo(r.m, RequestRegister{Claim: r.token, Generation: r.m.View().Claim.Generation, Session: r.session,
 		SessionFile: r.sessionFile, CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
 }
 
-// runs brings a suspended r up and through its load: resumed, then registered.
+// loadEnds is r's agent registering, and its load ending podLoadSettle after (PodStarts.settle).
+func (h *harness) loadEnds(r *podRole) {
+	h.t.Helper()
+	h.registered(r)
+	h.clock.Advance(podLoadSettle)
+}
+
+// runs brings a suspended r up and through its load: resumed, registered and settled.
 func (h *harness) runs(r *podRole) {
 	h.t.Helper()
 	h.mustPostTo(r.m, RequestResume{Claim: r.token})
-	h.registered(r)
+	h.loadEnds(r)
 }
 
 // died is the runtime reporting r's process gone, on a goroutine of its own: the relaunch it raises
@@ -107,8 +111,10 @@ func (h *harness) died(r *podRole) <-chan error {
 	return h.postAsync(r.m, RuntimeObservation{Observation: runtime.Observation{Locator: *loc, Kind: runtime.Gone, At: h.clock.Now()}})
 }
 
-// podWaiting is every claim whose start waits at the gate for podIssue's pod, in the order asked;
-// none where the harness has no gate.
+// podWaiting is every claim whose start waits at the gate for podIssue's pod, in the order asked.
+// A harness with no gate has none waiting: that is the harness these tests' negative control runs
+// on (podHarness with its gate left nil), which must fail by what started rather than by a nil
+// gate.
 func (h *harness) podWaiting() []claim.Token {
 	g := h.deps.PodStarts
 	if g == nil {
@@ -156,7 +162,7 @@ func (h *harness) wantStartOrder(holder *podRole, order ...waitingStart) {
 		for _, w := range order[i:] {
 			before[w.r.token] = h.starts(w.r.token)
 		}
-		h.registered(holder)
+		h.loadEnds(holder)
 		testwait.Eventually(h.t, "the next start into the pod", func() bool {
 			for token, n := range before {
 				if h.starts(token) > n {
@@ -273,9 +279,19 @@ func (h *harness) wantStartLine(token claim.Token, pod string, wait *podWait) {
 	}
 }
 
-// wantLoadEndLine is token's latest load-end line: the claim and pod, how long it loaded, what ended
-// it, and whether the bound had released its hold.
-func (h *harness) wantLoadEndLine(token claim.Token, pod string, loaded time.Duration, endedBy string, byBound bool) {
+// podLoadWant is what a load-end line says: how long the load ran from its process's start, what
+// ended it, how long after that start its agent registered (registeredAfter, where registered),
+// and whether the bound had released its hold.
+type podLoadWant struct {
+	loaded          time.Duration
+	endedBy         string
+	registered      bool
+	registeredAfter time.Duration
+	byBound         bool
+}
+
+// wantLoadEndLine is token's latest load-end line: the claim and pod, and what want says.
+func (h *harness) wantLoadEndLine(token claim.Token, pod string, want podLoadWant) {
 	h.t.Helper()
 	lines := h.podRecords(podLoadEndedLine, token)
 	if len(lines) == 0 {
@@ -283,20 +299,24 @@ func (h *harness) wantLoadEndLine(token claim.Token, pod string, loaded time.Dur
 	}
 	line := lines[len(lines)-1]
 	h.wantAttr(line, "pod", pod)
-	h.wantAttr(line, "endedBy", endedBy)
-	if v, ok := line.attr("loaded"); !ok || v.Kind() != slog.KindDuration || v.Duration() != loaded {
-		h.t.Fatalf("%s's load-end line says it loaded %v, want %s", token, v, loaded)
+	h.wantAttr(line, "endedBy", want.endedBy)
+	if v, ok := line.attr("loaded"); !ok || v.Kind() != slog.KindDuration || v.Duration() != want.loaded {
+		h.t.Fatalf("%s's load-end line says it loaded %v, want %s", token, v, want.loaded)
 	}
-	if v, ok := line.attr("releasedByBound"); ok != byBound || ok && !v.Bool() {
-		h.t.Fatalf("%s's load-end line says releasedByBound %v (%v), want %v", token, v, ok, byBound)
+	if v, ok := line.attr("registered"); ok != want.registered || ok && (v.Kind() != slog.KindDuration || v.Duration() != want.registeredAfter) {
+		h.t.Fatalf("%s's load-end line says registered %v (%v), want %s (%v)", token, v, ok, want.registeredAfter, want.registered)
+	}
+	if v, ok := line.attr("releasedByBound"); ok != want.byBound || ok && !v.Bool() {
+		h.t.Fatalf("%s's load-end line says releasedByBound %v (%v), want %v", token, v, ok, want.byBound)
 	}
 }
 
-// wantNoLoadEndLine is token's machine having written no load-end line: its process never started.
-func (h *harness) wantNoLoadEndLine(token claim.Token) {
+// wantLoadEndLines is token's machine having written n load-end lines: one per load that ended,
+// and none for a start whose process never started.
+func (h *harness) wantLoadEndLines(token claim.Token, n int) {
 	h.t.Helper()
-	if lines := h.podRecords(podLoadEndedLine, token); len(lines) > 0 {
-		h.t.Fatalf("%s wrote %d load-end lines, want none: its process never started", token, len(lines))
+	if lines := h.podRecords(podLoadEndedLine, token); len(lines) != n {
+		h.t.Fatalf("%s wrote %d load-end lines, want %d", token, len(lines), n)
 	}
 }
 
@@ -316,19 +336,21 @@ func (h *harness) wantClaimState(r *podRole, state ClaimState) {
 	}
 }
 
-// receive is the decision on done, which must have ended as want says: in no error, or in one.
+// receive is the decision on done, which must have ended in an error where failed says so, and in
+// none where it does not.
 func receive(t *testing.T, what string, done <-chan error, failed bool) {
 	t.Helper()
 	if err := testwait.Receive(t, what, done); (err != nil) != failed {
-		t.Fatalf("%s answered %v, want an error: %v", what, err, failed)
+		t.Fatalf("%s answered %v, want failed=%v", what, err, failed)
 	}
 }
 
-// A second role's start into an issue pod waits until the first role's session load ends, at its
-// agent's registration, and a third waits behind the second rather than starting beside it; the
-// LINUX-1301 shape, where the second start was asked while the first role's pod was still coming
-// up, loads one at a time. Every start writes the line R4 reads, naming the claim and the pod, and
-// what a start that waited waited for, how long and what ended it; every load's end writes its own.
+// A second role's start into an issue pod waits until the first role's session load ends,
+// podLoadSettle after its agent's registration, and a third waits behind the second rather than
+// starting beside it; the LINUX-1301 shape, where the second start was asked while the first
+// role's pod was still coming up, loads one at a time. Every start writes the line R4 reads, naming
+// the claim and the pod, and what a start that waited waited for, how long and what ended it;
+// every load's end writes its own, one per load.
 func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 	t.Run("the second start waits for the first role's registration", func(t *testing.T) {
 		h := podHarness(t, "")
@@ -341,12 +363,36 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h.clock.Advance(19 * time.Second)
 		h.wantWaitsForPod(second, 0)
 
-		h.registered(first)
+		h.loadEnds(first)
 		receive(t, "the second role's start", started, false)
 		h.wantStarts(second.token, 1)
 		h.wantStartLine(first.token, podIssue, nil)
-		h.wantLoadEndLine(first.token, podIssue, 19*time.Second, "registration", false)
-		h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 19 * time.Second, endedBy: "load end"})
+		h.wantLoadEndLine(first.token, podIssue, podLoadWant{loaded: 19*time.Second + podLoadSettle, endedBy: "registration",
+			registered: true, registeredAfter: 19 * time.Second})
+		h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 19*time.Second + podLoadSettle, endedBy: "load end"})
+	})
+
+	t.Run("the second start waits for the settle after the first role's registration, not for the registration alone", func(t *testing.T) {
+		h := podHarness(t, "")
+		first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
+
+		h.mustPostTo(first.m, RequestResume{Claim: first.token})
+		started := h.postAsync(second.m, RequestResume{Claim: second.token})
+		h.wantWaitsForPod(second, 0)
+		h.clock.Advance(8 * time.Second)
+		h.registered(first)
+		h.wantWaitsForPod(second, 0)
+
+		// A second short of the settle the first role's load still holds the pod.
+		h.clock.Advance(podLoadSettle - time.Second)
+		h.wantWaitsForPod(second, 0)
+		h.wantLoadEndLines(first.token, 0)
+		h.clock.Advance(time.Second)
+		receive(t, "the second role's start", started, false)
+		h.wantLoadEndLines(first.token, 1)
+		h.wantLoadEndLine(first.token, podIssue, podLoadWant{loaded: 8*time.Second + podLoadSettle, endedBy: "registration",
+			registered: true, registeredAfter: 8 * time.Second})
+		h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 8*time.Second + podLoadSettle, endedBy: "load end"})
 	})
 
 	t.Run("the LINUX-1301 shape starts the second role at the first role's load end, not its bound", func(t *testing.T) {
@@ -367,16 +413,18 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h.wantStartLine(first.token, issueSandbox, nil)
 		h.wantWaitsForPod(second, 0)
 
-		// Its session load ends 19 s after its process started.
+		// Its agent registers 19 s after its process started, and its load ends podLoadSettle
+		// after that.
 		h.clock.Advance(19 * time.Second)
-		h.registered(first)
+		h.loadEnds(first)
 		door.at(t, second)
 		h.rt.ScriptResume(inIssuePod(second.token, 2))
 		door.release <- nil
 		receive(t, "the second role's start", secondStarted, false)
 
-		h.wantLoadEndLine(first.token, issueSandbox, 19*time.Second, "registration", false)
-		h.wantStartLine(second.token, issueSandbox, &podWait{claim: first.token, waited: 137 * time.Second, endedBy: "load end"})
+		h.wantLoadEndLine(first.token, issueSandbox, podLoadWant{loaded: 19*time.Second + podLoadSettle, endedBy: "registration",
+			registered: true, registeredAfter: 19 * time.Second})
+		h.wantStartLine(second.token, issueSandbox, &podWait{claim: first.token, waited: 137*time.Second + podLoadSettle, endedBy: "load end"})
 	})
 
 	t.Run("a third role asked while the second waits starts after the second, not beside it", func(t *testing.T) {
@@ -391,19 +439,20 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		h.wantWaitsForPod(third, 0)
 		h.clock.Advance(10 * time.Second)
 
-		h.registered(first)
+		h.loadEnds(first)
 		receive(t, "the second role's start", secondStarted, false)
 		h.wantStarts(second.token, 1)
 		h.wantWaitsForPod(third, 0)
 		h.clock.Advance(20 * time.Second)
 		h.wantWaitsForPod(third, 0)
 
-		h.registered(second)
+		h.loadEnds(second)
 		receive(t, "the third role's start", thirdStarted, false)
 		h.wantStarts(third.token, 1)
-		h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 10 * time.Second, endedBy: "load end"})
-		h.wantLoadEndLine(second.token, podIssue, 20*time.Second, "registration", false)
-		h.wantStartLine(third.token, podIssue, &podWait{claim: second.token, waited: 30 * time.Second, endedBy: "load end"})
+		h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 10*time.Second + podLoadSettle, endedBy: "load end"})
+		h.wantLoadEndLine(second.token, podIssue, podLoadWant{loaded: 20*time.Second + podLoadSettle, endedBy: "registration",
+			registered: true, registeredAfter: 20 * time.Second})
+		h.wantStartLine(third.token, podIssue, &podWait{claim: second.token, waited: 30*time.Second + 2*podLoadSettle, endedBy: "load end"})
 	})
 
 	t.Run("the bound counts from the first role's process start, not from the second's ask", func(t *testing.T) {
@@ -429,10 +478,12 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		receive(t, "the second role's start", secondStarted, false)
 		h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 118*time.Second + podLoadBound, endedBy: "bound"})
 
-		// The load the bound passed over ends when it ends, and its line says the bound released it.
+		// The load the bound passed over ends when its settle ends, and its line says the bound
+		// released it.
 		h.clock.Advance(5 * time.Second)
-		h.registered(first)
-		h.wantLoadEndLine(first.token, podIssue, podLoadBound+5*time.Second, "registration", true)
+		h.loadEnds(first)
+		h.wantLoadEndLine(first.token, podIssue, podLoadWant{loaded: podLoadBound + 5*time.Second + podLoadSettle, endedBy: "registration",
+			registered: true, registeredAfter: podLoadBound + 5*time.Second, byBound: true})
 	})
 
 	t.Run("each end of the first role's start or load ends the wait", func(t *testing.T) {
@@ -451,16 +502,16 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			door.release <- nil
 			receive(t, "the second role's start", secondStarted, false)
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 4 * time.Second, endedBy: "failed launch"})
-			h.wantNoLoadEndLine(first.token)
+			h.wantLoadEndLines(first.token, 0)
 
 			// The first role's launch tries again, and that try waits for the second role's load.
 			h.wantWaitsForPod(first, 1)
 			h.clock.Advance(7 * time.Second)
-			h.registered(second)
+			h.loadEnds(second)
 			door.at(t, first)
 			door.release <- nil
 			receive(t, "the first role's launch", firstStarted, false)
-			h.wantStartLine(first.token, podIssue, &podWait{claim: second.token, waited: 7 * time.Second, endedBy: "load end"})
+			h.wantStartLine(first.token, podIssue, &podWait{claim: second.token, waited: 7*time.Second + podLoadSettle, endedBy: "load end"})
 		})
 
 		t.Run("a process that ended before its registration", func(t *testing.T) {
@@ -473,15 +524,43 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.clock.Advance(5 * time.Second)
 			relaunched := h.died(first)
 			receive(t, "the second role's start", secondStarted, false)
-			h.wantLoadEndLine(first.token, podIssue, 5*time.Second, "process end", false)
+			h.wantLoadEndLine(first.token, podIssue, podLoadWant{loaded: 5 * time.Second, endedBy: "process end"})
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 5 * time.Second, endedBy: "process end"})
 
 			// The dead process's relaunch waits for the second role's load.
 			h.wantWaitsForPod(first, 1)
-			h.registered(second)
+			h.loadEnds(second)
 			receive(t, "the first role's relaunch", relaunched, false)
 			h.wantStarts(first.token, 2)
-			h.wantStartLine(first.token, podIssue, &podWait{claim: second.token, waited: 0, endedBy: "load end"})
+			h.wantStartLine(first.token, podIssue, &podWait{claim: second.token, waited: podLoadSettle, endedBy: "load end"})
+		})
+
+		t.Run("a process that ended during its settle", func(t *testing.T) {
+			h := podHarness(t, "")
+			first, second := h.podRole(claim.RoleArchitect, StateSuspended), h.podRole(claim.RoleImplementer, StateSuspended)
+
+			h.mustPostTo(first.m, RequestResume{Claim: first.token})
+			secondStarted := h.postAsync(second.m, RequestResume{Claim: second.token})
+			h.wantWaitsForPod(second, 0)
+			h.clock.Advance(4 * time.Second)
+			h.registered(first)
+			h.clock.Advance(10 * time.Second)
+			h.wantWaitsForPod(second, 0)
+
+			// The first role's process dies 10 s into its settle: the second starts at once.
+			relaunched := h.died(first)
+			receive(t, "the second role's start", secondStarted, false)
+			h.wantLoadEndLine(first.token, podIssue, podLoadWant{loaded: 14 * time.Second, endedBy: "process end",
+				registered: true, registeredAfter: 4 * time.Second})
+			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 14 * time.Second, endedBy: "process end"})
+
+			// The settle the death cut short ends nothing more: the load wrote one line.
+			h.clock.Advance(podLoadSettle)
+			h.wantLoadEndLines(first.token, 1)
+			h.wantWaitsForPod(first, 1)
+			h.loadEnds(second)
+			receive(t, "the first role's relaunch", relaunched, false)
+			h.wantStarts(first.token, 2)
 		})
 
 		t.Run("a suspension of the first claim", func(t *testing.T) {
@@ -502,7 +581,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			door.release <- nil
 			receive(t, "the second role's start", secondStarted, false)
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 6 * time.Second, endedBy: "suspension"})
-			h.wantNoLoadEndLine(first.token)
+			h.wantLoadEndLines(first.token, 0)
 		})
 
 		t.Run("a retirement of the first claim", func(t *testing.T) {
@@ -516,7 +595,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			h.mustPostTo(first.m, RequestStop{Claim: first.token})
 			receive(t, "the second role's start", secondStarted, false)
 			h.wantClaimState(first, StateRetired)
-			h.wantLoadEndLine(first.token, podIssue, 3*time.Second, "retirement", false)
+			h.wantLoadEndLine(first.token, podIssue, podLoadWant{loaded: 3 * time.Second, endedBy: "retirement"})
 			h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 3 * time.Second, endedBy: "retirement"})
 		})
 	})
@@ -551,13 +630,14 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 				h.wantWaitsForPod(second, 0)
 				h.clock.Advance(2 * time.Second)
 
-				h.registered(first)
+				h.loadEnds(first)
 				receive(t, "the second role's start", started, false)
 				if calls := h.calls(tc.method); len(calls) == 0 || calls[len(calls)-1].Spec.Claim != second.token {
 					t.Fatalf("the second role's start was no %s: %v", tc.method, h.rt.Methods())
 				}
-				h.wantLoadEndLine(first.token, podIssue, 2*time.Second, "registration", false)
-				h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 2 * time.Second, endedBy: "load end"})
+				h.wantLoadEndLine(first.token, podIssue, podLoadWant{loaded: 2*time.Second + podLoadSettle, endedBy: "registration",
+					registered: true, registeredAfter: 2 * time.Second})
+				h.wantStartLine(second.token, podIssue, &podWait{claim: first.token, waited: 2*time.Second + podLoadSettle, endedBy: "load end"})
 			})
 		}
 	})
@@ -582,7 +662,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 			t.Fatalf("cut-short lines of the waiting role = %d, want 1", len(lines))
 		}
 
-		h.registered(first)
+		h.loadEnds(first)
 		h.wantStarts(second.token, 0)
 	})
 
@@ -605,7 +685,7 @@ func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
 		second.m.Wait()
 		h.wantClaimState(second, StateRetired)
 		h.wantStarts(second.token, 0)
-		h.registered(first)
+		h.loadEnds(first)
 		h.wantStarts(second.token, 0)
 	})
 }

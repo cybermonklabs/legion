@@ -6739,23 +6739,27 @@ a role's process starts only when no other role of that pod is loading its sessi
   The wait sits in the daemon's own start path, before the runtime is called, and not in the pod's launch turn, which a suspension and a release take too and which never waits for a load.
   A suspension or a retirement of a waiting role ends its wait at once.
 
-- **Loading** runs from the role's process start until the agent registers, or until its launch fails, its process ends, or its claim is suspended or retired.
+- **Loading** runs from the role's process start until 30 seconds after the agent registers, or until its launch fails, its process ends, or its claim is suspended or retired.
+  The registration alone is too early: the plugin registers inside Oh My Pi's `session_start`, and in two resumes read every half second in an issue pod, of a 4.7 MB and a 75 MB transcript, the process's memory went on rising after it and peaked 6.7 and 16.4 seconds later.
+  The daemon keeps the 30 seconds itself.
 
 - **The bound** is two minutes from the start of the load of the role waited for:
   a load that has not ended by then lets the next role start all the same, and that start's line says so.
 
 - **The order** of the roles that wait together:
   the earliest whose start a request raised (a task, a message, an operator's start) goes first, then the others in the order their starts were asked for;
-  where no request raised any of them, as after a roles container restart or a pod an update round replaced, the role working the issue's current phase goes first, then the others in the order architect, planner, implementer, tester, reviewer, merger.
+  where no request raised any of them, as after a roles container restart or a pod an update round replaced, the role working the issue's current phase goes first (none does in the architect's own phases, admitted and accepting), then the others in the order architect, planner, implementer, tester, reviewer, merger.
   A lone start into an idle pod starts at once.
 
 The rule holds under `runtime: kubernetes` for every role of an issue pod, whatever starts it: a fresh session, a resume, an operator's start, a start the wake pacing exempts, and with or without a wake pace.
 The controller's own pod is not an issue pod and never waits.
 
-Each process start into an issue pod logs `supervise: started a role's process in its issue pod` with its claim and `pod`;
+Each process start into an issue pod logs `supervise: started a role's process in its issue pod` with its claim, `pod` and `generation`;
 a start that waited also names `waitedFor`, `waited` and `waitEndedBy`
 (`load end`, `failed launch`, `process end`, `suspension`, `retirement` or `bound`).
-Each load's end logs `supervise: a role's session load in its issue pod ended` with its claim, `pod`, `loaded` and `endedBy`.
+Each load's end logs `supervise: a role's session load in its issue pod ended` with its claim, `pod`, `generation`, `loaded` (from the process start) and `endedBy`
+(`registration`, the same end the next start names `load end`, or `process end`, `suspension` or `retirement`);
+a load whose agent registered also carries `registered`, the time from the process start to the registration, and a load the bound released carries `releasedByBound=true`.
 
 ### The disk dies with its pod
 

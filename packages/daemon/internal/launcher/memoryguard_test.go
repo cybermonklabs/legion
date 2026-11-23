@@ -724,11 +724,11 @@ func TestMemoryGuardSparesAnOhMyPiHelperThatAnotherHelperStarted(t *testing.T) {
 // The shim starts the CodeGraph warm-up during its agent's session load, beside the agent, and its
 // end ends no session, so the guard may end it and all it starts. In INFRA-2709's pod after its
 // relaunch at 23:42Z on 2026-11-22 one Oh My Pi held 1.34 GB and the warm-up 523 MB, and the pod
-// was killed twice with the guard able to end nothing: main's classifier spared every direct child
-// of the shim. The warm-up is told by its command, the image's `codegraph` script under its shell
-// before the script's exec and its bundled node on codegraph.js after it, never by an agent's
-// argument that only names the CodeGraph plugin. It stays the role's, and a session process like
-// every direct child of the shim, for the naming of a kill.
+// was killed twice with the guard able to end nothing: the classifier then spared every direct
+// child of the shim. The warm-up is told by its command, the image's `codegraph` script under its
+// shell before the script's exec and its bundled node on codegraph.js after it, never by an
+// agent's argument that only names the CodeGraph plugin. It stays the role's, and a session
+// process like every direct child of the shim, for the naming of a kill.
 func TestMemoryGuardMayEndTheCodeGraphWarmUp(t *testing.T) {
 	exe := launcherExe(t)
 	launcher := os.Getpid()
