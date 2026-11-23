@@ -1737,8 +1737,17 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 // budget shared by the whole replay. A fact may wait its turn on the lock behind a live one (a
 // restored claim's failure, a daemon of another project on the same database), so a replay of
 // hundreds of facts takes as long as they take, and the boot never exits on their count; a
-// Postgres that never answers still ends the boot within one budget, and the daemon's stop ends
-// the replay. supervision.start runs it before any hello is admitted.
+// Postgres that never answers still ends the boot within one wait for a connection and one budget
+// (below), and the daemon's stop ends the replay. supervision.start runs it before any hello is
+// admitted.
+//
+// Each budget counts from the moment its transaction holds a connection of the pool, and the wait
+// for that connection has replayAcquire of its own (store.BoundAfterAcquire). Counted from before
+// that wait, a budget was the pool queue's bound as well: the live failures of the restored claims
+// apply beside the replay, each on a connection of its own, and the replay's read waited behind
+// them for one of the pool's few connections until its budget ran out ("read which supervise facts
+// are applied: context deadline exceeded after 5.012s", TestAReplayOfHundredsOfUnappliedFacts
+// BesideLiveFailuresOutlastsItsBudget on main's CI).
 func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise.Claim, budget time.Duration) error {
 	var terminal []supervise.Claim
 	var ids []string
@@ -1749,7 +1758,7 @@ func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise
 		terminal = append(terminal, c)
 		ids = append(ids, terminalEventID(c, c.State))
 	}
-	read, cancel := context.WithTimeout(ctx, budget)
+	read, cancel := store.BoundAfterAcquire(ctx, replayAcquire, budget)
 	applied, err := intake.Applied(read, w.pool, terminalSource, ids)
 	cancel()
 	if err != nil {
@@ -1765,7 +1774,7 @@ func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise
 		w.log.Info("legion daemon is replaying the terminal facts no daemon applied", "count", len(unapplied), "terminalClaims", len(terminal))
 	}
 	for _, c := range unapplied {
-		fact, cancel := context.WithTimeout(ctx, budget)
+		fact, cancel := store.BoundAfterAcquire(ctx, replayAcquire, budget)
 		err := w.applyTerminal(fact, c, c.State)
 		cancel()
 		if err != nil {
@@ -1774,6 +1783,12 @@ func (w *workflowRuntime) replayTerminal(ctx context.Context, claims []supervise
 	}
 	return nil
 }
+
+// replayAcquire is how long each read and fact of the boot's terminal replay waits for a
+// connection of the pool before its budget starts (replayTerminal). The pool turns over as each
+// transaction ends, so thirty seconds is a queue many writes deep, against writes of milliseconds;
+// a Postgres that gives no connection at all still ends the boot within it and the budget.
+const replayAcquire = 30 * time.Second
 
 // Each retry of the boot fact waits twice the last, from bootRetryFirst to at most bootRetryMax.
 const (
