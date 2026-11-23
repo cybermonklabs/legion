@@ -36,9 +36,9 @@ jobs:
     env:
       JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # The built model the two runs below compare the Go code against. Naming no file makes
-      # FuzzAirlock, TestModelAgreesOnHostShapes and TestTheModelReadsAHostlessEntryWithGuidance skip
-      # (internal/cipher/proxyrules/airlock_fuzz_test.go:32-46), and a skip is a pass, so the build
-      # step checks the binary is there before those runs read this.
+      # FuzzAirlock, TestModelAgreesOnHostShapes and TestTheModelRefusesAHostlessEntry skip
+      # (modelPath in internal/cipher/proxyrules/airlock_fuzz_test.go), and a skip is a pass, so the
+      # build step checks the binary is there before those runs read this.
       AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/cipher/proxyrules/lean/.lake/build/bin/airlock-model
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -79,9 +79,10 @@ jobs:
         run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/cipher/proxyrules/lean
       # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides; the
       # host shapes a rules file may hold, which no seed decodes to, through both validations; and
-      # a host-less entry carrying guidance, a field the generator never writes.
+      # a host-less entry carrying guidance, a field the generator never writes, which both
+      # validations refuse.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelReadsAHostlessEntryWithGuidance)$' ./internal/cipher/proxyrules/
+        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
         run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/

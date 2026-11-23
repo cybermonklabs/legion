@@ -358,9 +358,8 @@ func appTransient(err error) bool {
 // runTokenCommand shares: an attempt whose bound ends while the command runs is pending
 // (ErrCommandPending), the next attempt joins the run still going, and a run that finishes
 // between two attempts is kept for the next one (appauth's finishedRunKeep), so the command does
-// not run again for it. The logins read takes and forgets every run it is answered with, so the
-// key proof that follows it never takes a release the logins read was answered with (appauth's
-// anyInstallation).
+// not run again for it. The logins read shares those runs; appauth's anyInstallation says why the
+// key proof never takes a release the logins read was answered with.
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)
@@ -1025,7 +1024,7 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // looks once the connection reports itself closed, and Close does not clear what the connection
 // last recorded.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, "legion-daemon "+cfg.Project, natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision), natsauth.LogEvents(w.log), natsauth.ReconnectForever())
 	if err != nil {
 		return fmt.Errorf("connect Envoy NATS: %w", err)
 	}
@@ -1341,7 +1340,19 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list Dispatch issues for admission: %w", err)
 	}
-	return w.reconcileListing(ctx, issues, nil, true)
+	refused, err := w.reconcileListing(ctx, issues, nil, true)
+	if err != nil {
+		return err
+	}
+	// The boot's listing is read before the catch-up, the API and the consumers apply any fact, so
+	// no applied fact should be newer than it and it should refuse no summary (reconcileListing).
+	// A summary it did refuse leaves its issue unrecorded until that issue's next event or the next
+	// boot, so each one is said at Info, naming the issue.
+	if len(refused) != 0 {
+		w.log.Info("workflow: the boot's listing was older than an issue fact the daemon had applied for these issues, so it recorded nothing of them; each waits for its next event or the next boot",
+			"issues", refused)
+	}
+	return nil
 }
 
 // reconcileListing applies issues, a Dispatch listing of the project, as reconcile says: the
@@ -1349,8 +1360,11 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 // out of admission's decision and refills the project's rows of the copy of Dispatch's issues
 // where its mark asks for it), or a recovery's (recoverRepositories), scoped to the summaries
 // keep keeps, judged against every record, while every summary of the listing is still the walk
-// each chain is read up.
-func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
+// each chain is read up. Once it commits it answers the keys admission found older than an issue
+// fact of theirs the daemon applied and so recorded nothing from (admit's Reconcile), for a
+// recovery to keep in the scope of its next pass. The boot's listing finds none: it is read
+// after every fact the daemon applied before it starts, and before the consumers apply any.
+func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) ([]string, error) {
 	// The transaction performs no I/O: what admission reads of a todo issue's repository, the
 	// Dispatch chain above its parent, and who set the label of a labelled triage root the workflow
 	// does not record, are read now, up one walk over the whole listing (listingAncestry); each
@@ -1360,7 +1374,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	var err error
 	if keep != nil {
 		if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	scope := make([]dispatch.IssueSummary, 0, len(issues))
@@ -1374,7 +1388,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		if fact.Status == "todo" || labelledTriageRoot {
 			if walk == nil {
 				if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
@@ -1382,7 +1396,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		case fact.Status == "todo":
 			prepared, err := w.prepareListed(ctx, records, walk, fact, boot)
 			if err != nil {
-				return fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
+				return nil, fmt.Errorf("prepare the repository of %s for admission: %w", summary.Key, err)
 			}
 			// What the preparation read: the chain it walked, and the refusal GitHub answered for
 			// the repository the issue resolves to, which this listing's own apply says on the issue
@@ -1393,7 +1407,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			// a recorded root a person moved back to triage is never queued again, so its log is
 			// not read.
 			if fact.LabelSetter, err = w.labelSetter(ctx, summary.Key); err != nil {
-				return fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
+				return nil, fmt.Errorf("prepare who set the label of %s for admission: %w", summary.Key, err)
 			}
 		}
 		scope = append(scope, summary)
@@ -1401,11 +1415,11 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	}
 	target, err := w.consumers.DispatchTarget(ctx)
 	if err != nil {
-		return fmt.Errorf("read notification stream target: %w", err)
+		return nil, fmt.Errorf("read notification stream target: %w", err)
 	}
 	position, err := w.consumers.DispatchPosition(ctx)
 	if err != nil {
-		return fmt.Errorf("read Dispatch consumer position: %w", err)
+		return nil, fmt.Errorf("read Dispatch consumer position: %w", err)
 	}
 	// The reconcile is its own transaction, so it owns the commit hooks its admission and workflow
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
@@ -1414,6 +1428,7 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// writes end as a fact does (intake.OpenSettlers), before it commits.
 	scoped, committed := intake.WithCommitHooks(ctx)
 	scoped, settle := intake.OpenSettlers(scoped, w.handlers...)
+	var refused []string
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
@@ -1473,15 +1488,16 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+		var err error
+		if refused, err = w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
 			return err
 		}
 		return settle(scoped, tx)
 	}); err != nil {
-		return fmt.Errorf("reconcile admission: %w", err)
+		return nil, fmt.Errorf("reconcile admission: %w", err)
 	}
 	committed()
-	return nil
+	return refused, nil
 }
 
 // identity is the bot a role's commits are authored by: its App's, from the lease the token

@@ -164,14 +164,8 @@ func TestNearCopyChecksRecordACheckNotMadeAndNoneForAnExternalCreate(t *testing.
 		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
-	mapping := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice")
-	if mapping.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", mapping.Code, mapping.Body.String())
-	}
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
-		"external": "owner/repo#41", "title": "Astrolabe calibration drifts after a reseat",
+		"external": "owner/repo#41", "project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
 	}))
 

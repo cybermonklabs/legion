@@ -264,8 +264,23 @@ codex plugin marketplace add cybermonklabs/legion
 codex plugin add codex-envoy@legion-plugins
 ```
 
+The package's `bin/dispatch` is the `dispatch` command for a terminal of your own, and its npm
+`bin`. Run there what the plugin's `dispatch` tool cannot hold: the tool ends a command after
+120 s, and the device login of a machine with no identity of its own,
+`dispatch login --device --person <address>`, waits until that person approves its code. Run it
+from the installed plugin, or from npm:
+
+```bash
+"${CODEX_HOME:-$HOME/.codex}"/plugins/cache/legion-plugins/codex-envoy/<version>/bin/dispatch login --device --person <address>
+npx --package @sjawhar/codex-envoy dispatch login --device --person <address>
+```
+
+It runs `dist/dispatch.js` with `bun`, as the plugin's server does, and follows the link npm
+makes for a package `bin` to find it.
+
 `bun scripts/build.ts --codex-out <dir>` builds it from this tree into a directory outside the
-repository: `codex/`'s manifests, hooks and README, this package's skills and a fresh `dist/`.
+repository: `codex/`'s manifests, hooks, README and `bin/dispatch`, this package's skills and a
+fresh `dist/`.
 A skill that sets `disable-model-invocation: true`, which Codex's validator refuses, is shipped
 with Codex's own form of it, an `agents/openai.yaml` whose `policy.allow_implicit_invocation`
 is `false`: the skill stays out of the model's context until a person names it as `$<skill>`.

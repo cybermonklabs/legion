@@ -35,7 +35,7 @@ A `code_scanning` rule requires an analysis that no status-check list names. A r
 
 Never approve a head while a required item has no run. Sort it, in this order. Cases 2, 3, 4 and 6 end: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
 
-1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first. `DIRTY` takes a forward merge, which is the implementer's: the daemon asks for it and tells you the new head when it lands. `UNKNOWN`: read again each minute for up to five minutes, then report it to the architect as a refused read.
+1. Read `gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus` first. `DIRTY` takes a forward merge, which is the implementer's before the review and the merger's in `merging`: the daemon asks for it and tells you the new head when it lands. `UNKNOWN`: read again each minute for up to five minutes, then report it to the architect as a refused read.
 2. A fork head whose runs stand `action_required` waits on a maintainer. Never close and reopen it.
 3. A check only a commit status reports, or a workflow another repository defines: nothing here starts it. Never close and reopen it.
 4. A required workflow whose `paths` or `paths-ignore` filter, as the base holds it, skips every file of the change: a reopen sends the same event, so the head or the workflow must change.

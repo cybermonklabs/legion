@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -206,23 +207,18 @@ func enrollUnderCredential(ctx context.Context, base cipheraddr.Address, key *ec
 // does, enrolls the box key under the launcher credential that trade mints, and keeps the
 // enrollment in the record. A machine or a sign-in client the deployment no longer configures is
 // refused by name, and so is a record made with another client than this machine now has, since
-// nothing here could renew that person's identity token.
+// nothing here could renew that person's identity token (signInRenewal).
 func registerSignInSession(ctx context.Context, record cipherclient.SignInRecord, boxKey *ecdsa.PrivateKey) (cipherclient.SignInRecord, error) {
 	base := brokerBaseURL()
 	if base.Empty() {
 		return record, fmt.Errorf("%s is required: it names the secrets broker %s's session registers at", brokerURLVar, record.Person)
 	}
-	flow, err := cipherclient.SignInFlow(clientGetenv)
+	flow, err := signInRenewal(record)
+	if errors.Is(err, errSignInUnrenewable) {
+		return record, cipherclient.WithHint(err, cipherclient.FailureSignInRefused)
+	}
 	if err != nil {
 		return record, err
-	}
-	switch {
-	case flow == nil:
-		return record, cipherclient.WithHint(fmt.Errorf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then sign in again",
-			record.Person, cipherclient.SignInClientIDVar, cipherclient.SignInClientSecretFileVar), cipherclient.FailureSignInRefused)
-	case record.ClientID != "" && record.ClientID != flow.ClientID:
-		return record, cipherclient.WithHint(fmt.Errorf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed",
-			record.Person, record.ClientID), cipherclient.FailureSignInRefused)
 	}
 	machine, skipped, err := machineSource(ctx, true)
 	if err != nil {
@@ -255,4 +251,44 @@ func registerSignInSession(ctx context.Context, record cipherclient.SignInRecord
 		return record, err
 	}
 	return record, cipherclient.SignIns(homeGetenv).Write(record)
+}
+
+// errSignInUnrenewable is what signInRenewal answers, through unrenewableSignIn, for a sign-in
+// this machine cannot renew.
+var errSignInUnrenewable = errors.New("this machine cannot renew the sign-in")
+
+// unrenewableSignIn is why this machine cannot renew a sign-in: reason in the words a refusal
+// prints as they stand, and why, the same cause in a clause that names neither the person nor the
+// cure, for the line that says the chain passed the sign-in over (signInPassedOver). It is
+// errSignInUnrenewable to errors.Is.
+type unrenewableSignIn struct{ reason, why string }
+
+func (e *unrenewableSignIn) Error() string        { return e.reason }
+func (e *unrenewableSignIn) Is(target error) bool { return target == errSignInUnrenewable }
+
+// signInRenewal is the device-flow client this machine renews record's identity token with. It
+// is errSignInUnrenewable, saying why, where this machine is told of no sign-in client, or of
+// another client than the one the person signed in with: nothing here could renew that sign-in.
+// A sign-in client it cannot read (one of its two settings alone, a secret file it cannot open)
+// is that error, which is not errSignInUnrenewable.
+func signInRenewal(record cipherclient.SignInRecord) (*cipherclient.DeviceFlow, error) {
+	flow, err := cipherclient.SignInFlow(clientGetenv)
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case flow == nil:
+		return nil, &unrenewableSignIn{
+			reason: fmt.Sprintf("this machine is told of no sign-in client, so %s's sign-in cannot be renewed: set %s and %s, then sign in again",
+				record.Person, cipherclient.SignInClientIDVar, cipherclient.SignInClientSecretFileVar),
+			why: fmt.Sprintf("no sign-in client is set (%s and %s)", cipherclient.SignInClientIDVar, cipherclient.SignInClientSecretFileVar),
+		}
+	case record.ClientID != "" && record.ClientID != flow.ClientID:
+		return nil, &unrenewableSignIn{
+			reason: fmt.Sprintf("%s signed in with another client than this machine now has (%s), so their sign-in cannot be renewed",
+				record.Person, record.ClientID),
+			why: fmt.Sprintf("it was made with the sign-in client %s, and this machine has %s", record.ClientID, flow.ClientID),
+		}
+	}
+	return flow, nil
 }

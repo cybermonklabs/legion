@@ -43,7 +43,7 @@ func newTakeOverProcess(t *testing.T, pool *store.Pool, natsURL string) *takeOve
 	}
 	t.Cleanup(client.Close)
 	intake := newIntake(client, second.Pool, leases, newFakeGitHub(t).newTestClient(), events.NewBroker(),
-		loadedSettingsCache(t, t.Context(), second.Pool))
+		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
 	t.Cleanup(func() {
 		stopping, cancel := context.WithTimeout(context.Background(), intakeStopBudget)
 		defer cancel()

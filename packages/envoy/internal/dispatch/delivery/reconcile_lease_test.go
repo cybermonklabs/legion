@@ -20,7 +20,7 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	leases := deliveryTestLeases(t, pool)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newFakeGitHub(t)
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	// 0: this caller stands for the other process's pass while it is inside it, which is all
 	// this row is about, and records no pass of its own -- so what the passes below do is the
@@ -90,7 +90,7 @@ func TestTwoReconcileTicksTheShortestWaitApartBothRun(t *testing.T) {
 		checks.Add(1)
 		mustEncode(t, w, map[string]any{"id": fake.installID, "app_slug": "delivery-test", "permissions": fake.permissions})
 	})
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed())
 
 	interval := ReconcileInterval.Nanoseconds()
 	first := time.Unix(0, time.Now().UnixNano()/interval*interval)

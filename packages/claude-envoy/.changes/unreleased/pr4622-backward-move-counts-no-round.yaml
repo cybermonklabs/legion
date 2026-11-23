@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr4622
+body: |-
+  The `legion` tool's description of `request_backward_move` no longer says that the architect's
+  move back from `accepting` counts a review round. It counts none: `review_round_cap` counts only
+  a review that requests changes.

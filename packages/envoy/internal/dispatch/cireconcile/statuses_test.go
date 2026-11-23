@@ -84,12 +84,12 @@ func commitStatus(id int64, context, state, createdAt string) object {
 	}
 }
 
-// headWithStatuses maps the harness's repository and gives its one head a completed check run
-// under a completed check suite and these commit statuses, and every token the stand-in mints
-// these permissions.
+// headWithStatuses makes the harness's repository a project's default and gives its one head a
+// completed check run under a completed check suite and these commit statuses, and every token the
+// stand-in mints these permissions.
 func (h *harness) headWithStatuses(permissions map[string]string, statuses ...object) {
 	h.t.Helper()
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setTokenPermissions(permissions)
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -394,7 +394,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 	// statuses alone, and no request for the head follows it. The head beside it reads its own.
 	t.Run("a refused REST status read", func(t *testing.T) {
 		h := newHarness(t, reviewerAppID)
-		h.mapRepository(rowRepository)
+		h.seedProjectDefault(rowRepository)
 		refused, read := head(7), head(8)
 		h.listHeads(refused, read)
 		h.github.setTokenPermissions(tokenWithStatuses)
