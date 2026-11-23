@@ -776,7 +776,7 @@ func useKV(t *testing.T, r *SessionRegistry, kv natsgo.KeyValue) {
 	r.mu.RUnlock()
 	base := previous.KV()
 	previous.End(ctx)
-	rebuilt := kvwatch.New("session registry", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), sessionCache{r})
+	rebuilt := kvwatch.New("session registry", bus.NewKeyValue(kv, watchHandleFor(kv, base.WatchHandle()), base.Streams()), sessionCache{r})
 	r.mu.Lock()
 	r.watcher = rebuilt
 	r.mu.Unlock()

@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // wrongLastSequenceReplicated is JetStream's wrong last sequence as the leader of a stream of more
@@ -282,7 +284,7 @@ func (kv *RacedKeyValue) race(key string, write func() error) error {
 	release := kv.cluster.HoldReplicatingWrite(kv.t, "KV_"+bucket, "$KV."+bucket+"."+key)
 	err := write()
 	release()
-	if !errors.Is(err, wrongLastSequenceReplicated) {
+	if !replicatedWrongLastSequence(err) {
 		kv.t.Errorf("the write of %s raced against a write still being replicated was answered %v, want the replicated stream's wrong last sequence, 10164", key, err)
 	}
 	kv.mu.Lock()
@@ -309,4 +311,47 @@ func (kv *RacedKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) error {
 
 func (kv *RacedKeyValue) Purge(key string, opts ...natsgo.DeleteOpt) error {
 	return kv.race(key, func() error { return kv.KeyValue.Purge(key, opts...) })
+}
+
+// replicatedWrongLastSequence reports whether err is the replicated stream's wrong last sequence,
+// 10164, as the legacy handle answers it (nats.APIError) or as the jetstream handle does
+// (jetstream.APIError).
+func replicatedWrongLastSequence(err error) bool {
+	var api *jetstream.APIError
+	return errors.Is(err, wrongLastSequenceReplicated) ||
+		errors.As(err, &api) && api.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant
+}
+
+// Watching wraps inner, the bucket's jetstream handle, so that its conditional writes race as the
+// legacy handle's do and count with them: a handle given its caller's context (bus.KeyValue.Within)
+// writes through the jetstream handle, so a test installs both (bus.NewKeyValue(raced,
+// raced.Watching(inner), streams)).
+func (kv *RacedKeyValue) Watching(inner jetstream.KeyValue) jetstream.KeyValue {
+	return &racedJetStream{KeyValue: inner, raced: kv}
+}
+
+// racedJetStream is RacedKeyValue's jetstream twin.
+type racedJetStream struct {
+	jetstream.KeyValue
+	raced *RacedKeyValue
+}
+
+func (j *racedJetStream) Create(ctx context.Context, key string, value []byte, opts ...jetstream.KVCreateOpt) (uint64, error) {
+	var revision uint64
+	err := j.raced.race(key, func() (err error) { revision, err = j.KeyValue.Create(ctx, key, value, opts...); return err })
+	return revision, err
+}
+
+func (j *racedJetStream) Update(ctx context.Context, key string, value []byte, last uint64) (uint64, error) {
+	var revision uint64
+	err := j.raced.race(key, func() (err error) { revision, err = j.KeyValue.Update(ctx, key, value, last); return err })
+	return revision, err
+}
+
+func (j *racedJetStream) Delete(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	return j.raced.race(key, func() error { return j.KeyValue.Delete(ctx, key, opts...) })
+}
+
+func (j *racedJetStream) Purge(ctx context.Context, key string, opts ...jetstream.KVDeleteOpt) error {
+	return j.raced.race(key, func() error { return j.KeyValue.Purge(ctx, key, opts...) })
 }

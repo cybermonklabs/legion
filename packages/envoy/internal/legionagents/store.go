@@ -381,11 +381,12 @@ func claim(ctx context.Context, kv bus.KeyValue, next prepared, value []byte) er
 		return fmt.Errorf("write legion agent %s: %w", next.entry.SessionID, err)
 	}
 	key := sessionKey(next.entry.SessionID)
+	bound := kv.Within(ctx)
 	var err error
 	if next.revision == 0 {
-		_, err = kv.Create(key, value)
+		_, err = bound.Create(key, value)
 	} else {
-		_, err = kv.Update(key, value, next.revision)
+		_, err = bound.Update(key, value, next.revision)
 	}
 	if err != nil {
 		return fmt.Errorf("claim legion agent key %s: %w", key, err)
@@ -399,7 +400,7 @@ func putIndexKeys(ctx context.Context, kv bus.KeyValue, entry Entry, value []byt
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("write legion agent %s: %w", entry.SessionID, err)
 		}
-		if _, err := kv.Put(key, value); err != nil {
+		if _, err := kv.Within(ctx).Put(key, value); err != nil {
 			return fmt.Errorf("write legion agent key %s: %w", key, err)
 		}
 	}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -234,14 +235,17 @@ func TestEdgeAloneGivesAProofBackOnA503(t *testing.T) {
 // store that did not answer, whose 503 would be no refusal: bus.IsCASConflict reads both codes,
 // and the store answers a create refused with either as spent. The race itself is not driven
 // here: nothing orders the two writes of one create against another's, so the store's bucket
-// answers the second write's refusal itself. Control: the store reading only nats.ErrKeyExists as
+// answers the second write's refusal itself. The store sends its create through the handle given
+// the request's context, so the refusal arrives through the jetstream handle, as jetstream's
+// APIError, and is read through bus's mapping of it to the legacy handle's (legacyWriteError); the
+// legacy handle refuses it the same way. Control: the store reading only nats.ErrKeyExists as
 // spent; the lost create reads as a store that did not answer, and the row fails naming it.
 func TestEdgeSpentProofsReadALostCreateAfterAReleaseAsSpent(t *testing.T) {
 	for _, code := range []nats.ErrorCode{nats.JSErrCodeStreamWrongLastSequence, nats.JSErrCodeStreamWrongLastSequenceConstant} {
 		if err := fmt.Errorf("record the proof: %w", &nats.APIError{Code: http.StatusBadRequest, ErrorCode: code}); !bus.IsCASConflict(err) {
 			t.Errorf("a create refused with error code %d reads as no replay", code)
 		}
-		store := spentProofs{kv: bus.NewKeyValue(lostCreate{code: code}, nil, nil)}
+		store := spentProofs{kv: bus.NewKeyValue(lostCreate{code: code}, lostCreateJS{code: code}, nil)}
 		if spent, err := store.CheckAndSetDPoPProofUsed(t.Context(), "jti-lost-create", "", "", http.MethodGet, listenerBrokerOrigin+"/v1/sessions", time.Time{}); err != nil || !spent {
 			t.Errorf("a create that lost over a released proof's marker (error code %d) = spent %v, error %v; want spent, no error", code, spent, err)
 		}
@@ -264,6 +268,17 @@ func (lostCreate) Bucket() string { return bus.DPoPProofBucket }
 
 func (k lostCreate) Create(string, []byte) (uint64, error) {
 	return 0, &nats.APIError{Code: http.StatusBadRequest, ErrorCode: k.code, Description: "wrong last sequence"}
+}
+
+// lostCreateJS is lostCreate's jetstream twin: every create is refused with code, as the jetstream
+// handle reports the second write's refusal.
+type lostCreateJS struct {
+	jetstream.KeyValue
+	code nats.ErrorCode
+}
+
+func (k lostCreateJS) Create(context.Context, string, []byte, ...jetstream.KVCreateOpt) (uint64, error) {
+	return 0, &jetstream.APIError{Code: http.StatusBadRequest, ErrorCode: jetstream.ErrorCode(k.code), Description: "wrong last sequence"}
 }
 
 // A release deletes the record its own request's presentation wrote, and no other: the delete is

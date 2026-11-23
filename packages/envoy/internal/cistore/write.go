@@ -36,11 +36,15 @@ const (
 // refused. A lasting error fails it at once. Each attempt takes the handle the latest Rewatch
 // installed, and each KV call is given up on if the store is rewatched before it is answered. A KV
 // call is also given up on when ctx ends (errKVUnanswered, the caller's wait: update), which fails
-// the write at once, since no retry fits in an ended ctx. A write that runs out of the budget, or
-// of ctx, logs `ci record exceeded its retry budget`, one JSON line naming the head, the checks the
-// record would have held (0 when no attempt read it), the attempts it made, the observations it
-// carried (each a delivery the webhook answers 503) and the last attempt's error, so an alarm can
-// count those 503s by their cause. It is an ERROR because each one means GitHub was answered 503.
+// the write at once, since no retry fits in an ended ctx. A write is sent through a handle given
+// ctx (bus.KeyValue.Within), whose sends end 100 ms before ctx's deadline: a write still unanswered
+// then answers nats.ErrTimeout, a transient error, and its retries each answer at once and send
+// nothing, until kvCall answers errKVUnanswered at ctx's end or the budget ends, with the same
+// ERROR line either way. A write that runs out of the budget, or of ctx, logs `ci record exceeded
+// its retry budget`, one JSON line naming the head, the checks the record would have held (0 when
+// no attempt read it), the attempts it made, the observations it carried (each a delivery the
+// webhook answers 503) and the last attempt's error, so an alarm can count those 503s by their
+// cause. It is an ERROR because each one means GitHub was answered 503.
 //
 // A write given up on that way may still land after its callers have answered. It is a
 // compare-and-swap at the revision its attempt read (a create when it read none), so it never
@@ -139,9 +143,9 @@ func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 		}
 		_, err = kvCall(ctx, s.logger, s.nextRewatch(), func() (uint64, error) {
 			if rev == 0 {
-				return kv.Create(key, buf)
+				return kv.Within(ctx).Create(key, buf)
 			}
-			return kv.Update(key, buf, rev)
+			return kv.Within(ctx).Update(key, buf, rev)
 		})
 		switch {
 		case err == nil:
@@ -422,7 +426,9 @@ func (s *Store) nextRewatch() <-chan struct{} {
 // rewatch that follows it), a JetStream 503 while a server restarts, and no responders, which a
 // request gets whenever no server answers for the stream it names. A timeout is transient too,
 // though one at the JetStream MaxWait never comes: the caller's wait (update, two budgets) ends
-// first, and the call is given up on then (errKVUnanswered, which write fails on first).
+// first, and the call is given up on then (errKVUnanswered, which write fails on first). A write's
+// own timeout 100 ms before that wait ends (bus.KeyValue.Within) is retried as transient, and each
+// retry answers at once and sends nothing until the wait ends.
 //
 // No responders is transient because it cannot be told apart from a restart: a restarting server
 // answers it for as long as it is away, and a batch that should have been retried failed instead.

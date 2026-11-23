@@ -1858,7 +1858,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentChange(t 
 		t.Fatalf("seed lapsed role claim: %v", err)
 	}
 	roleKV := registry.roleKV
-	registry.roleKV = bus.NewKeyValue(&racingDeleteKeyValue{
+	registry.roleKV = withTwin(&racingDeleteKeyValue{
 		KeyValue: roleKV.Legacy(),
 		beforeFirstDelete: func() {
 			entry, err := roleKV.Get(role)
@@ -1877,7 +1877,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentChange(t 
 			}
 		},
 		err: natsgo.ErrKeyExists,
-	}, registry.roleKV.WatchHandle(), registry.roleKV.Streams())
+	}, registry.roleKV)
 
 	// The release is handed the claim its caller read, as the reaper's pass hands it the claim it
 	// read to find the holder gone (ReapRoleClaims).
@@ -1905,7 +1905,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentRemoval(t
 		t.Fatalf("seed lapsed role claim: %v", err)
 	}
 	roleKV := registry.roleKV
-	registry.roleKV = bus.NewKeyValue(&racingDeleteKeyValue{
+	registry.roleKV = withTwin(&racingDeleteKeyValue{
 		KeyValue: roleKV.Legacy(),
 		beforeFirstDelete: func() {
 			entry, err := roleKV.Get(role)
@@ -1917,7 +1917,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentRemoval(t
 			}
 		},
 		err: natsgo.ErrKeyNotFound,
-	}, registry.roleKV.WatchHandle(), registry.roleKV.Streams())
+	}, registry.roleKV)
 
 	claim, err := registry.RoleClaim(context.Background(), role)
 	if err != nil {
@@ -1944,11 +1944,11 @@ func TestReleaseReadExpiredRoleClaimReturnsErrorWithoutRelease(t *testing.T) {
 	}
 	releaseErr := errors.New("injected conditional delete failure")
 	roleKV := registry.roleKV
-	registry.roleKV = bus.NewKeyValue(&racingDeleteKeyValue{
+	registry.roleKV = withTwin(&racingDeleteKeyValue{
 		KeyValue:          roleKV.Legacy(),
 		beforeFirstDelete: func() {},
 		err:               releaseErr,
-	}, registry.roleKV.WatchHandle(), registry.roleKV.Streams())
+	}, registry.roleKV)
 
 	claim, err := registry.RoleClaim(context.Background(), role)
 	if err != nil {
@@ -2199,10 +2199,10 @@ func TestReapKeepsAnInterestWrittenAfterItsRecheck(t *testing.T) {
 	// reaches the bucket.
 	fresh := Interest{SessionID: "ses_raced", MachineID: "m2", Topics: []string{"notifications.>"}, UpdatedAt: time.Now().UnixMilli()}
 	current := reg.watcher.KV()
-	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(&putBeforeDeleteKeyValue{
+	reg.watcher = kvwatch.New("interest registry", withTwin(&putBeforeDeleteKeyValue{
 		KeyValue:     kv,
 		beforeDelete: func() { putInterest(t, kv, fresh) },
-	}, current.WatchHandle(), current.Streams()), interestCache{reg})
+	}, current), interestCache{reg})
 
 	count, err := reg.Reap(func(string) (bool, error) { return false, nil }, 0)
 	if err != nil {
@@ -2497,11 +2497,11 @@ func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 		t.Fatalf("seed role claim: %v", err)
 	}
 
-	reg.roleKV = bus.NewKeyValue(&failingKeyValue{
+	reg.roleKV = withTwin(&failingKeyValue{
 		KeyValue:     reg.roleKV.Legacy(),
 		failUpdateAt: 1,
 		err:          errors.New("injected role write failure"),
-	}, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	}, reg.roleKV)
 	if _, err := reg.SetRole(newSession, "example-host", role, false); err == nil {
 		t.Fatal("SetRole must return the failed role update")
 	}
@@ -2522,11 +2522,11 @@ func TestSetRoleRollsBackWhenRoleCreateFails(t *testing.T) {
 		sessionID = "ses_new"
 		role      = "legion-controller"
 	)
-	reg.roleKV = bus.NewKeyValue(&failingKeyValue{
+	reg.roleKV = withTwin(&failingKeyValue{
 		KeyValue:     reg.roleKV.Legacy(),
 		failCreateAt: 1,
 		err:          errors.New("injected role create failure"),
-	}, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	}, reg.roleKV)
 	if _, err := reg.SetRole(sessionID, "example-host", role, true); err == nil {
 		t.Fatal("SetRole must return the failed role create")
 	}
@@ -2635,7 +2635,7 @@ func useKV(t *testing.T, r *Registry, kv natsgo.KeyValue) {
 	t.Helper()
 	base := r.watcher.KV()
 	r.watcher.Stop()
-	r.watcher = kvwatch.New("interest registry", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), interestCache{r})
+	r.watcher = kvwatch.New("interest registry", withTwin(kv, base), interestCache{r})
 	r.watcher.Start()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -2754,7 +2754,7 @@ func TestSetRoleSoftTreatsSameProcessCASConflictAsConcurrentSuccess(t *testing.T
 	)
 	claim := RoleClaimRequest{SessionID: sessionID, MachineID: "example-host", ClientInstanceID: roleClaimInstance, Role: role, Soft: true}
 	racingKV := &racingCreateKeyValue{KeyValue: reg.roleKV.Legacy()}
-	reg.roleKV = bus.NewKeyValue(racingKV, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racingKV, reg.roleKV)
 
 	var concurrent Interest
 	var concurrentErr error
@@ -2918,7 +2918,7 @@ func TestSetRoleOldHolderCleanupDoesNotDeleteNewerClaim(t *testing.T) {
 	// B's role-row write is what makes B the holder; fire A's re-claim right
 	// after it lands and before B proceeds to old-holder cleanup.
 	racing := &afterRoleWriteKeyValue{KeyValue: reg.roleKV.Legacy()}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racing, reg.roleKV)
 	racing.after = func() {
 		racing.after = nil
 		if _, err := reg.SetRole("ses_a", "m1", role, false); err != nil {

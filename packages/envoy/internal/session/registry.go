@@ -859,10 +859,13 @@ func (r *SessionRegistry) Put(sessionID string, entry SessionEntry) error {
 }
 
 // PutWithin writes sessionID's entry, each bucket call waiting no longer than ctx (bus.Bounded): an
-// HTTP route passes its request's own context. A write ctx abandoned may still land after this
-// answer. That is safe: it writes the entry the caller's retry writes again, it rides the
-// connection ahead of any write this listener sends on it later, so it cannot undo one, and it is
-// conditional on the revision it replaces.
+// HTTP route passes its request's own context. Each write goes through the handle given ctx
+// (bus.KeyValue.Within, writeEntryAt), so no request of it is sent after ctx is canceled, nor after
+// ctx's deadline while the lag of a deadline's timer stays under 100 ms, sends again included. What
+// may still land after this answer is a request already on the wire then. That is safe: it writes
+// the entry the caller's retry writes again, it rides the connection ahead of any write this
+// listener sends on it later, so it cannot undo one, and it is conditional on the revision it
+// replaces.
 //
 // The entry written carries the gap mark of the entry it replaces (RepositoryGap), whatever
 // entry's own field says: the mark is SetRepositoryGap's and ClearRepositoryGap's alone to write,
@@ -1048,11 +1051,12 @@ func readEntry(ctx context.Context, kv bus.KeyValue, sessionID string) (SessionE
 
 // writeEntryAt is the one write of sessionID's entry every write of it sends (PutWithin,
 // PutClearingGap, rewriteStoredEntry): entry, created where revision is 0 and updated at revision otherwise,
-// waiting no longer than ctx (bus.Bounded), and put in the copy through epoch once it lands
-// (kvwatch.Copy.Put), so a write made through a handle on a bucket since recreated is dropped
-// rather than fencing out the new bucket's rows. lost reports a write another writer landed first,
-// as bus.IsCASConflict reads it (it reads a replicated bucket's answer too): the entry is left as
-// that writer wrote it, and the error is nil.
+// waiting no longer than ctx (bus.Bounded) and sent through the handle given ctx
+// (bus.KeyValue.Within), so no request of it is sent after ctx ends, and put in the copy through
+// epoch once it lands (kvwatch.Copy.Put), so a write made through a handle on a bucket since
+// recreated is dropped rather than fencing out the new bucket's rows. lost reports a write another
+// writer landed first, as bus.IsCASConflict reads it (it reads a replicated bucket's answer too):
+// the entry is left as that writer wrote it, and the error is nil.
 //
 // The stop rule of every caller: a conditional write loses to a write that landed, which is
 // another writer's progress, or to a read that a copy of a replicated bucket answered a write
@@ -1067,11 +1071,12 @@ func (r *SessionRegistry) writeEntryAt(ctx context.Context, kv bus.KeyValue, epo
 	if err != nil {
 		return false, err
 	}
+	bound := kv.Within(ctx)
 	written, _, err := bus.Bounded(ctx, func() (uint64, error) {
 		if revision == 0 {
-			return kv.Create(sessionID, buf)
+			return bound.Create(sessionID, buf)
 		}
-		return kv.Update(sessionID, buf, revision)
+		return bound.Update(sessionID, buf, revision)
 	})
 	if err != nil {
 		if bus.IsCASConflict(err) {

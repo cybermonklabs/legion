@@ -32,11 +32,13 @@ func openReplicatedRegistry(t *testing.T) (*testnats.Cluster, *Registry) {
 }
 
 // raceRoles has the next conditional write of reg's role claims lose a race to a write of its key
-// still being replicated (testnats.Cluster.RaceKeyValue).
+// still being replicated (testnats.Cluster.RaceKeyValue), through the legacy handle and its
+// jetstream twin alike (withTwin), since a role claim write given its caller's context goes
+// through the jetstream handle.
 func raceRoles(t *testing.T, cluster *testnats.Cluster, reg *Registry) *testnats.RacedKeyValue {
 	t.Helper()
 	race := cluster.RaceKeyValue(t, reg.roleKV.Legacy(), 1)
-	reg.roleKV = bus.NewKeyValue(race, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(race, reg.roleKV)
 	return race
 }
 

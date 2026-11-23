@@ -25,5 +25,5 @@ func setRegistryRoleKV(t *testing.T, registry *store.Registry, kv natsgo.KeyValu
 	current := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 	// The replacement keeps the bucket's jetstream handle, which every scan of it goes through.
 	base := current.Interface().(bus.KeyValue)
-	current.Set(reflect.ValueOf(bus.NewKeyValue(kv, base.WatchHandle(), base.Streams())))
+	current.Set(reflect.ValueOf(bus.NewKeyValue(kv, watchHandleFor(kv, base.WatchHandle()), base.Streams())))
 }

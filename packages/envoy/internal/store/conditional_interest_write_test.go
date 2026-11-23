@@ -80,7 +80,7 @@ func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T
 	if err != nil {
 		t.Fatalf("wrap the bucket the race goes through: %v", err)
 	}
-	reg.watcher = kvwatch.New("interest registry", handle, interestCache{reg})
+	reg.watcher = kvwatch.New("interest registry", withTwin(racing, handle), interestCache{reg})
 
 	row, err := reg.UpsertPlanned(context.Background(), Interest{SessionID: sessionID, MachineID: "m1"}, plan)
 	if racing.writes == 0 {
@@ -127,7 +127,7 @@ func TestAMergingInterestWriteIsBuiltAgainOverARowStoredUnderTheRevisionItRead(t
 	if err != nil {
 		t.Fatalf("wrap the bucket the race goes through: %v", err)
 	}
-	reg.watcher = kvwatch.New("interest registry", handle, interestCache{reg})
+	reg.watcher = kvwatch.New("interest registry", withTwin(racing, handle), interestCache{reg})
 
 	row, err := reg.UpsertWithin(context.Background(), Interest{SessionID: sessionID, MachineID: "m1"}, []string{merging})
 	if racing.writes == 0 {

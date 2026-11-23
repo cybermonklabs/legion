@@ -409,8 +409,9 @@ type roleClaimWrite struct {
 	writes func(claim RoleClaim) bool
 	// send sends the write itself, conditional on the revision claim was read at, and answers
 	// the revision the record stands at after it, as the bucket's writes do; a delete answers
-	// none and its caller reads the revision it deleted off claim.
-	send func(claim RoleClaim) (uint64, error)
+	// none and its caller reads the revision it deleted off claim. ctx is the context the write's
+	// caller gives up at, which the write takes through the bucket handle (bus.KeyValue.Within).
+	send func(ctx context.Context, claim RoleClaim) (uint64, error)
 	// landed moves this registry's own copy of the role's holder to what the write left
 	// (setOwnRoleHolder, forgetRoleHolder), over the claim the write was made at, the revision
 	// it answered and the epoch of the handle it was sent through, read before the write.
@@ -459,7 +460,7 @@ func (r *Registry) writeRoleClaim(ctx context.Context, claim RoleClaim, w roleCl
 		}
 		at := claim
 		epoch := r.roleViewEpoch()
-		revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return w.send(at) })
+		revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return w.send(ctx, at) })
 		switch {
 		case !answered:
 			return roleClaimWriteFailed, claim, err

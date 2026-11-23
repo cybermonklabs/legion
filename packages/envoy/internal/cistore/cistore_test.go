@@ -149,7 +149,7 @@ func useKV(t testing.TB, s *Store, kv natsgo.KeyValue) {
 	t.Helper()
 	base := s.watcher.KV()
 	s.watcher.Stop()
-	s.watcher = kvwatch.New("cistore", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), ciCache{s})
+	s.watcher = kvwatch.New("cistore", bus.NewKeyValue(kv, watchHandleFor(kv, base.WatchHandle()), base.Streams()), ciCache{s})
 	s.watcher.Start()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

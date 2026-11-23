@@ -477,7 +477,7 @@ func TestARenewalThatLosesItsCompareAndSwapWritesNothingAndIsNotRetried(t *testi
 			t.Errorf("the claim that wins the race: %v", err)
 		}
 	}
-	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
+	reg.roleKV = withTwin(racing, reg.roleKV)
 
 	if _, err := renewRoleClaims(t, reg, holder, roleClaimInstance); err != nil {
 		t.Fatalf("a renewal that lost its compare-and-swap: %v; want it dropped, not reported", err)

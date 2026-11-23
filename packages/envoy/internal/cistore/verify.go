@@ -169,7 +169,8 @@ type verifyRequest struct {
 // requestVerify writes the verify request of st's head for the episode of generation and answers
 // the revision the write got. It is a put, never a compare-and-swap: every write gets a revision
 // past every earlier one, which is all a request needs, and a request another listener wrote for
-// the head is served by the same read.
+// the head is served by the same read. The put goes through the handle given ctx
+// (bus.KeyValue.Within), as every write kvCall leaves running when ctx ends does.
 func (s *Store) requestVerify(ctx context.Context, st State, generation uint64) (uint64, error) {
 	buf, err := json.Marshal(verifyRequest{Kind: verifyKeyPrefix, Owner: st.Owner, Repo: st.Repo, Number: st.Number, SHA: st.SHA, Generation: generation})
 	if err != nil {
@@ -177,7 +178,7 @@ func (s *Store) requestVerify(ctx context.Context, st State, generation uint64) 
 	}
 	kv := s.kv()
 	key := verifyKey(st.Owner, st.Repo, st.Number, st.SHA)
-	return kvCall(ctx, s.logger, s.nextRewatch(), func() (uint64, error) { return kv.Put(key, buf) })
+	return kvCall(ctx, s.logger, s.nextRewatch(), func() (uint64, error) { return kv.Within(ctx).Put(key, buf) })
 }
 
 // dropRequest deletes the verify request of the record under key where the bucket still holds it
@@ -188,7 +189,7 @@ func (s *Store) dropRequest(key string, revision uint64) {
 	defer cancel()
 	kv := s.kv()
 	_, err := kvCall(ctx, s.logger, s.nextRewatch(), func() (struct{}, error) {
-		return struct{}{}, kv.Delete(verifyKeyPrefix+"."+key, nats.LastRevision(revision))
+		return struct{}{}, kv.Within(ctx).DeleteFenced(verifyKeyPrefix+"."+key, revision)
 	})
 	if err != nil && !bus.IsCASConflict(err) && !errors.Is(err, nats.ErrKeyNotFound) {
 		s.logger.Warn("checks verify request not deleted", slog.String("key", key), slog.Uint64("request", revision), slog.String("error", err.Error()))
@@ -336,7 +337,7 @@ func (w *Writer) DoneVerifying(ctx context.Context, head contracts.CIHead, revis
 	kv := w.store.kv()
 	key := verifyKey(head.Owner, head.Repo, head.Number, head.SHA)
 	_, err := kvCall(ctx, w.store.logger, w.store.nextRewatch(), func() (struct{}, error) {
-		return struct{}{}, kv.Delete(key, nats.LastRevision(revision))
+		return struct{}{}, kv.Within(ctx).DeleteFenced(key, revision)
 	})
 	if err == nil || bus.IsCASConflict(err) || errors.Is(err, nats.ErrKeyNotFound) {
 		return nil

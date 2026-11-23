@@ -444,7 +444,7 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 	held := &holdingCache{Cache: sessionCache{r}}
 	// No probe: the Rewatch below is the only thing that moves the epoch, so the new bucket's one
 	// read is the one whose apply of ses_a the test holds.
-	r.watcher = kvwatch.New("session registry", bus.NewKeyValue(delayed, base.WatchHandle(), base.Streams()), held,
+	r.watcher = kvwatch.New("session registry", bus.NewKeyValue(delayed, delayed.watching(base.WatchHandle()), base.Streams()), held,
 		kvwatch.WithStreamProbeInterval(0))
 	t.Cleanup(r.StopWatch)
 	r.watcher.Start()

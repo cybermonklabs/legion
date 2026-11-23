@@ -770,7 +770,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		}
 	}
 	kv, epoch := watcher.Handle()
-	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Put(record.SessionID, buf) })
+	revision, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.Within(ctx).Put(record.SessionID, buf) })
 	if !answered {
 		return fmt.Errorf("write the known-session record of %s: %w", record.SessionID, err)
 	}

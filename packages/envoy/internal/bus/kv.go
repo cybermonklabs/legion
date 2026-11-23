@@ -24,14 +24,16 @@ import (
 // and deletes, and still reads while its get fits: a store serves it or skips it, and a reaper
 // removes it.
 //
-// Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
-// a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
-// (ReadHistory) and its stream's state (ReadStreamState) go through the same bucket's
-// jetstream.KeyValue instead, and the leader-answered read of one key (GetFromLeader) makes
-// nats.go's legacy GetLastMsg call on that jetstream context's connection. nats.go's legacy KV
-// watcher, which its legacy Watch, History and Keys all run, arms an init timer while its scan is
-// pending whose callback can send on the channels the subscription's end has just closed, a "send
-// on closed channel" panic in a goroutine nats.go owns (the `initDoneTimer.Reset` of
+// Every read and every write through a handle no caller bound goes through the bucket's legacy
+// nats.KeyValue, except what nats.go runs as a watcher and the reads beside them: a watch of the
+// bucket (WatchKeys), a key's history (ReadHistory) and its stream's state (ReadStreamState) go
+// through the same bucket's jetstream.KeyValue instead, and the leader-answered read of one key
+// (GetFromLeader) makes nats.go's legacy GetLastMsg call on that jetstream context's connection. A
+// write through a handle given its caller's context (Within) goes through the jetstream handle too
+// (writtenOn). nats.go's legacy KV watcher, which its legacy Watch, History and Keys all run, arms
+// an init timer while its scan is pending whose callback can send on the channels the
+// subscription's end has just closed, a "send on closed channel" panic in a goroutine nats.go owns
+// (the `initDoneTimer.Reset` of
 // `(*kvs).WatchFiltered` in v1.55.0). The jetstream package's watcher has no
 // such timer and closes its updates only on the subscription goroutine's own exit (its own
 // `(*kvs).WatchFiltered`). So the legacy handle is held unexported and KeyValue forwards only the
@@ -42,14 +44,16 @@ import (
 // EnsureKeyValue and OpenKeyValue are how the listener and Dispatch open every bucket, and
 // WrapKeyValue pairs a legacy handle a caller already holds with its connection. A test that
 // injects faults builds its handle with NewKeyValue, from the legacy handle (Legacy), the jetstream
-// one (WatchHandle) and the jetstream context (Streams) it wraps. A zero KeyValue has none of them
-// and is a programming error: every call on it panics.
+// one (WatchHandle) and the jetstream context (Streams) it wraps. A write fault is injected into
+// both handles: a write through Within takes the jetstream one, so a test that wraps the legacy
+// handle alone misses every such write. A zero KeyValue has none of them and is a programming
+// error: every call on it panics.
 type KeyValue struct {
-	// legacy is the bucket's legacy handle, which every checked read and write goes through. It is
-	// not embedded, so none of its watcher calls is promoted.
+	// legacy is the bucket's legacy handle, which every checked read goes through, and every write
+	// of a handle no caller bound. It is not embedded, so none of its watcher calls is promoted.
 	legacy nats.KeyValue
 	// watch is the same bucket as a jetstream handle, the one every watch, history and stream read
-	// goes through.
+	// goes through, and every write of a handle given its caller's context (Within).
 	watch jetstream.KeyValue
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
 	// goes through (ReadStreamState), and whose connection the leader read takes (GetFromLeader):
@@ -63,6 +67,27 @@ type KeyValue struct {
 	// built (clientOwning), whose record of the server's refusals the handle's calls read
 	// (refusedOn, refusedAfterOn, watchRefused); nil on a connection no client owns.
 	owner *Client
+	// noStreamWait is how long a write the server answers "no response from stream" is sent again
+	// (writtenOn): RequestTimeout when zero, as every constructor leaves it. A test sets its own.
+	noStreamWait time.Duration
+	// caller is the context of the caller the handle was given to by Within, which ends the sends
+	// again of its writes too (writtenOn); nil for a handle no caller bound.
+	caller context.Context
+}
+
+// Within is kv for a caller that gives up on a write when ctx ends (Bounded, or a call it runs on
+// its own goroutine, or one that holds its request's context). A write through it goes through the
+// jetstream handle under a context that ends noStreamMargin before ctx's deadline or when ctx is
+// canceled (writtenOn); nats.go sends no request of it once that context reports its end, its own
+// sends again included, and the bus sends it again only before then. A context reports a deadline
+// when its timer fires, which runs late under load, so the bound is writtenOn's: while that lag
+// stays under noStreamMargin, no part of a write its caller has given up on is sent after the
+// caller's deadline, and none after the caller canceled. Without Within the legacy handle's write
+// runs on to its own wait, and it is sent again for the whole noStreamWait. A request already on
+// the wire still reaches the server.
+func (kv KeyValue) Within(ctx context.Context) KeyValue {
+	kv.caller = ctx
+	return kv
 }
 
 // RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
@@ -220,6 +245,80 @@ func refusedAfterOn[T any](kv KeyValue, subjects func() []string, call func() (T
 	return refusedAfter(kv.owner, subjects, call)
 }
 
+// writtenOn is refusedAfterOn for a write of one key, sent again while the server answers that no
+// stream took it (sentAgainWhileNoStream), for up to kv's noStreamWait from the first send
+// (RequestTimeout, the JetStream wait every production handle is opened with) and while kv's
+// caller's context lasts (Within), no send again starting within noStreamMargin of that span's end.
+//
+// A handle with no caller sends each write through the legacy handle (legacy), whose calls take no
+// context: the one in flight when the span ends runs out its own wait, nats.go's own sends again
+// included, so the write costs at most about two RequestTimeouts. A handle given its caller's
+// context sends each write through the jetstream handle (bound) under a context that ends
+// noStreamMargin before the span does, and at once when the caller cancels: nats.go there sends no
+// request once that context has ended, its own sends again included (nats.go v1.55.0
+// jetstream/publish.go:281-287), and the margin covers the lag of a deadline's timer under load
+// (noStreamMargin), so nothing of the write goes out after its caller's deadline. Its answer is
+// read as the legacy handle's (legacyWriteError). bound nil is a write the jetstream handle cannot
+// send as the legacy one does (a delete with options), which goes through legacy whatever the
+// caller.
+func writtenOn[T any](kv KeyValue, subjects func() []string, legacy func() (T, error), bound func(context.Context) (T, error)) (T, error) {
+	wait := kv.noStreamWait
+	if wait <= 0 {
+		wait = RequestTimeout
+	}
+	caller := kv.caller
+	if caller == nil {
+		caller = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(caller, wait)
+	defer cancel()
+	send := legacy
+	if kv.caller != nil && kv.watch != nil && bound != nil {
+		deadline, _ := ctx.Deadline()
+		sends, cancelSends := context.WithDeadline(ctx, deadline.Add(-noStreamMargin))
+		defer cancelSends()
+		send = func() (T, error) {
+			value, err := bound(sends)
+			return value, legacyWriteError(err)
+		}
+	}
+	gone := func(ctx context.Context) bool {
+		return kv.streams != nil && streamGone(ctx, func() error {
+			_, err := kv.streams.Stream(ctx, "KV_"+kv.Bucket())
+			return err
+		})
+	}
+	return refusedAfterOn(kv, subjects, func() (T, error) { return sentAgainWhileNoStream(ctx, send, gone) })
+}
+
+// legacyWriteError is err, the jetstream handle's answer to a write, as the legacy handle answers
+// the same write, so that a caller reads the two alike: nats.ErrNoStreamResponse for "no
+// responders", which sentAgainWhileNoStream reads; nats.ErrKeyExists for a revision the key moved
+// past (errors.Is and IsCASConflict); nats.ErrKeyNotFound; any other API error as the legacy
+// handle's *nats.APIError of the same code, which nats.go's errors.Is matches by code; and
+// nats.ErrTimeout for the end of the span's context, where the legacy handle's request times out.
+// Each keeps err itself beside it.
+func legacyWriteError(err error) error {
+	if err == nil {
+		return nil
+	}
+	switch {
+	case errors.Is(err, jetstream.ErrNoStreamResponse):
+		return nats.ErrNoStreamResponse
+	case errors.Is(err, jetstream.ErrKeyExists):
+		return fmt.Errorf("%w: %w", nats.ErrKeyExists, err)
+	case errors.Is(err, jetstream.ErrKeyNotFound):
+		return fmt.Errorf("%w: %w", nats.ErrKeyNotFound, err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return fmt.Errorf("%w: %w", nats.ErrTimeout, err)
+	}
+	var api *jetstream.APIError
+	if errors.As(err, &api) {
+		return fmt.Errorf("%w: %w", &nats.APIError{Code: api.Code, ErrorCode: nats.ErrorCode(api.ErrorCode), Description: api.Description}, err)
+	}
+	return err
+}
+
 // keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.55.0
 // kv.go:383-385, the default KV prefix).
 func (kv KeyValue) keySubjects(key string) func() []string {
@@ -347,8 +446,10 @@ func (create watchCreate) matches(subject string) bool {
 	return filtered && filter == create.filter
 }
 
-// Legacy is the legacy handle kv's checked reads and writes go through, for a test that wraps it to
-// inject a fault (NewKeyValue). Production code calls kv's own methods, which check the key first.
+// Legacy is the legacy handle kv's checked reads go through, and the writes of a handle no caller
+// bound, for a test that wraps it to inject a fault (NewKeyValue): a write through Within goes
+// through WatchHandle instead, so a write fault needs a twin there too. Production code calls kv's
+// own methods, which check the key first.
 func (kv KeyValue) Legacy() nats.KeyValue {
 	return kv.legacy
 }
@@ -359,7 +460,8 @@ func (kv KeyValue) Opened() bool {
 	return kv.legacy != nil
 }
 
-// WatchHandle is the jetstream handle kv's watches go through.
+// WatchHandle is the jetstream handle kv's watches go through, and the writes of a handle given its
+// caller's context (Within).
 func (kv KeyValue) WatchHandle() jetstream.KeyValue {
 	return kv.watch
 }
@@ -568,7 +670,9 @@ func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Put(key, value) })
+	revision, err := writtenOn(kv, kv.keySubjects(key),
+		func() (uint64, error) { return kv.legacy.Put(key, value) },
+		func(ctx context.Context) (uint64, error) { return kv.watch.Put(ctx, key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -576,7 +680,9 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.PutString(key, value) })
+	revision, err := writtenOn(kv, kv.keySubjects(key),
+		func() (uint64, error) { return kv.legacy.PutString(key, value) },
+		func(ctx context.Context) (uint64, error) { return kv.watch.PutString(ctx, key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -584,15 +690,48 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Create(key, value) })
+	revision, err := writtenOn(kv, kv.keySubjects(key),
+		func() (uint64, error) { return kv.legacy.Create(key, value) },
+		func(ctx context.Context) (uint64, error) { return kv.boundCreate(ctx, key, value) })
 	return revision, invalidKey(key, err)
+}
+
+// boundCreate is Create through the jetstream handle under ctx (writtenOn). nats.go's jetstream
+// Create reads the key with a direct get after a write it refused, to tell a delete marker from a
+// live value, and a client that reads with stream message gets (WithStreamMessageReads, an edge
+// listener) sends no direct get: its grant holds none. So a handle whose legacy reads are stream
+// message gets creates as streamMessageReads.Create does, its writes through the jetstream handle
+// under ctx and its read of a marker a stream message get under ctx too; every other handle takes
+// nats.go's. A read that fails is no marker, and the write's own refusal is the answer, as in
+// streamMessageReads.Create and nats.go's two Creates: a wrong last sequence is nats.ErrKeyExists.
+func (kv KeyValue) boundCreate(ctx context.Context, key string, value []byte) (uint64, error) {
+	reads, ok := kv.legacy.(streamMessageReads)
+	if !ok {
+		return kv.watch.Create(ctx, key, value)
+	}
+	revision, err := kv.watch.Update(ctx, key, value, 0)
+	if err == nil {
+		return revision, nil
+	}
+	if _, marker, readErr := reads.read(key, 0, nats.Context(ctx)); readErr == nil || errors.Is(readErr, nats.ErrKeyNotFound) {
+		if marker > 0 {
+			return kv.watch.Update(ctx, key, value, marker)
+		}
+	}
+	var apiErr *jetstream.APIError
+	if errors.As(err, &apiErr) && (apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence || apiErr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequenceConstant) {
+		return 0, fmt.Errorf("%w: %w", err, jetstream.ErrKeyExists)
+	}
+	return 0, err
 }
 
 func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := refusedAfterOn(kv, kv.keySubjects(key), func() (uint64, error) { return kv.legacy.Update(key, value, last) })
+	revision, err := writtenOn(kv, kv.keySubjects(key),
+		func() (uint64, error) { return kv.legacy.Update(key, value, last) },
+		func(ctx context.Context) (uint64, error) { return kv.watch.Update(ctx, key, value, last) })
 	return revision, invalidKey(key, err)
 }
 
@@ -618,11 +757,36 @@ func IsCASConflict(err error) bool {
 // 10164, which nats.APIError's Is matches by code.
 var wrongLastSequenceReplicated = &nats.APIError{Code: 400, ErrorCode: nats.JSErrCodeStreamWrongLastSequenceConstant}
 
+// Delete deletes key. With options it goes through the legacy handle whatever the caller, since a
+// nats.DeleteOpt cannot be read outside nats.go to give the jetstream handle (writtenOn): a caller
+// that gives up on a delete at a revision deletes with DeleteFenced, or with DeleteAt, which sends
+// its deletes through DeleteFenced.
 func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
+	var bound func(context.Context) (struct{}, error)
+	if len(opts) == 0 {
+		bound = func(ctx context.Context) (struct{}, error) { return struct{}{}, kv.watch.Delete(ctx, key) }
+	}
+	_, err := writtenOn(kv, kv.keySubjects(key),
+		func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) }, bound)
+	return invalidKey(key, err)
+}
+
+// DeleteFenced deletes key if its latest revision is still revision, as Delete with
+// nats.LastRevision(revision) does, and through the jetstream handle under its caller's context
+// when the handle was given one (Within, writtenOn). It makes no second delete: a caller that may
+// meet a record the server wrote takes DeleteAt, which sends each of its deletes through it.
+func (kv KeyValue) DeleteFenced(key string, revision uint64) error {
+	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
+		return err
+	}
+	_, err := writtenOn(kv, kv.keySubjects(key),
+		func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, nats.LastRevision(revision)) },
+		func(ctx context.Context) (struct{}, error) {
+			return struct{}{}, kv.watch.Delete(ctx, key, jetstream.LastRevision(revision))
+		})
 	return invalidKey(key, err)
 }
 
@@ -683,9 +847,10 @@ func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(v
 // stream's sequence however its value reads, is deleted at the sequence it is stored at and that
 // sequence returned; any other compare-and-swap refusal is returned as its error with revision, a
 // write that landed between the read and the delete being kept. A delete refused for any other
-// reason is that error.
+// reason is that error. Each delete is DeleteFenced's: through the jetstream handle under the
+// caller's context when the handle was given one (Within, writtenOn).
 func (kv KeyValue) DeleteAt(ctx context.Context, key string, revision uint64) (uint64, error) {
-	err := kv.Delete(key, nats.LastRevision(revision))
+	err := kv.DeleteFenced(key, revision)
 	if err == nil || !IsCASConflict(err) {
 		return revision, err
 	}
@@ -694,16 +859,23 @@ func (kv KeyValue) DeleteAt(ctx context.Context, key string, revision uint64) (u
 	// reports it stored at, fenced there. Any other newest message - a writer's record, a marker,
 	// none - and a leader read that failed, leave the refusal standing for the caller to answer.
 	if leader, readErr := kv.ReadFromLeader(ctx, key); readErr == nil && leader.WrittenByServer() {
-		return leader.Revision, kv.Delete(key, nats.LastRevision(leader.Revision))
+		return leader.Revision, kv.DeleteFenced(key, leader.Revision)
 	}
 	return revision, err
 }
 
+// Purge purges key. With options it goes through the legacy handle whatever the caller, as Delete
+// does.
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	_, err := refusedAfterOn(kv, kv.keySubjects(key), func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
+	var bound func(context.Context) (struct{}, error)
+	if len(opts) == 0 {
+		bound = func(ctx context.Context) (struct{}, error) { return struct{}{}, kv.watch.Purge(ctx, key) }
+	}
+	_, err := writtenOn(kv, kv.keySubjects(key),
+		func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) }, bound)
 	return invalidKey(key, err)
 }
 

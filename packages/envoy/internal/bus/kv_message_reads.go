@@ -86,9 +86,10 @@ func (kv streamMessageReads) Create(key string, value []byte) (uint64, error) {
 }
 
 // read is the stream message get of key's newest message (revision 0) or of the message at
-// revision. It answers the entry of a live value; and for a delete or purge marker,
+// revision, with opts (a caller's nats.Context, boundCreate) or, with none, on js's own
+// RequestTimeout. It answers the entry of a live value; and for a delete or purge marker,
 // nats.ErrKeyNotFound with the marker's revision, which Create writes over.
-func (kv streamMessageReads) read(key string, revision uint64) (nats.KeyValueEntry, uint64, error) {
+func (kv streamMessageReads) read(key string, revision uint64, opts ...nats.JSOpt) (nats.KeyValueEntry, uint64, error) {
 	if !natsKeyValid(key) || strings.Contains(key, "..") {
 		return nil, 0, nats.ErrInvalidKey
 	}
@@ -99,9 +100,9 @@ func (kv streamMessageReads) read(key string, revision uint64) (nats.KeyValueEnt
 		err     error
 	)
 	if revision == 0 {
-		message, err = kv.js.GetLastMsg(stream, subject)
+		message, err = kv.js.GetLastMsg(stream, subject, opts...)
 	} else {
-		message, err = kv.js.GetMsg(stream, revision)
+		message, err = kv.js.GetMsg(stream, revision, opts...)
 		if err == nil && message.Subject != subject {
 			return nil, 0, nats.ErrKeyNotFound
 		}

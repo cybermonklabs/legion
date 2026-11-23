@@ -261,17 +261,24 @@ func (kv *faultyDeleteKeyValue) armFault(fault func(n int) error) {
 }
 
 func (kv *faultyDeleteKeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
+	if err := kv.faulted(); err != nil {
+		return err
+	}
+	return kv.KeyValue.Delete(key, opts...)
+}
+
+// faulted counts a delete through this handle or its jetstream twin and answers the armed fault's
+// error for it, nil when no fault is armed or the fault lets it through.
+func (kv *faultyDeleteKeyValue) faulted() error {
 	kv.mu.Lock()
 	fault := kv.fault
 	kv.deletes++
 	n := kv.deletes
 	kv.mu.Unlock()
-	if fault != nil {
-		if err := fault(n); err != nil {
-			return err
-		}
+	if fault == nil {
+		return nil
 	}
-	return kv.KeyValue.Delete(key, opts...)
+	return fault(n)
 }
 
 // lostToAReplicatingWrite is what nats.go v1.55.0 answers a Delete with nats.LastRevision that the
@@ -417,11 +424,17 @@ type raceOnFirstUpdate struct {
 }
 
 func (kv *raceOnFirstUpdate) Update(key string, value []byte, last uint64) (uint64, error) {
+	kv.beforeUpdate()
+	return kv.KeyValue.Update(key, value, last)
+}
+
+// beforeUpdate counts an update through this handle or its jetstream twin and runs before ahead
+// of the first.
+func (kv *raceOnFirstUpdate) beforeUpdate() {
 	kv.updates++
 	if kv.updates == 1 && kv.before != nil {
 		kv.before()
 	}
-	return kv.KeyValue.Update(key, value, last)
 }
 
 // N1: PutClearingGap writes no gap mark, so a claim refresh over a forged record drops the forged

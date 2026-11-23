@@ -1099,7 +1099,8 @@ func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
 func swapSessionBucket(t *testing.T, sessions *session.SessionRegistry, wrap func(nats.KeyValue) nats.KeyValue) {
 	t.Helper()
 	swapSessionHandle(t, sessions, func(old bus.KeyValue) bus.KeyValue {
-		return bus.NewKeyValue(wrap(old.Legacy()), old.WatchHandle(), old.Streams())
+		wrapped := wrap(old.Legacy())
+		return bus.NewKeyValue(wrapped, watchHandleFor(wrapped, old.WatchHandle()), old.Streams())
 	})
 }
 
