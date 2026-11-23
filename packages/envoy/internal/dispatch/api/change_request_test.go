@@ -694,3 +694,141 @@ func TestAProblemOfFormAloneProposesNothing(t *testing.T) {
 	rig.approve(t, rig.request(t, quiet, true))
 	rig.requireVersions(t, specRepo, "a-bill-shows-its-number", "A bill names its order. It shows the order's number.")
 }
+
+// TestTheEndingWaitsForWhatTheChangeRequestChangesUntilAPersonApprovesIt: the ending of a change
+// is judged with its change request as the latest spec version and the latest settled version of
+// the Verification document hold it (R23, R25, D10). An edit of the Verification document alone
+// that changes an approved check makes the ending wait (changes_checks_without_approval) until a
+// person approves the spec with that document; the same edit of an acceptance check that names no
+// statement is no part of the change request and changes nothing. A version of the spec that
+// proposes a statement makes it wait too (proposes_without_approval), until the person approves
+// that version.
+func TestTheEndingWaitsForWhatTheChangeRequestChangesUntilAPersonApprovesIt(t *testing.T) {
+	rig := newSpecRig(t)
+	rig.seed(t)
+	conclusion := conclusionBlock("c-deploy-host", ` no_statement="true"`, "Evidence: The deploy job named the wrong host.")
+	checked := rig.issue(t, "A deploy fix beside the approved payment check", specRepo, "Why the deploy changes.\n\n"+conclusion, paidOnceCheck("1"))
+	accepted := rig.issue(t, "A deploy fix that holds its own acceptance check", specRepo, "Why the deploy changes.\n\n"+conclusion, acceptanceCheckDocument)
+	proposing := rig.issue(t, "A deploy fix that gains a statement", specRepo, "Why the deploy changes.\n\n"+conclusion, "")
+	for place, issue := range []model.Issue{checked, accepted, proposing} {
+		recordThreeLists(t, rig, issue.Key, fmt.Sprintf("acme/app#%d", 41+place), headOne)
+		if ending := endingOf(t, rig, issue.Key, headOne); ending.State != "ready" {
+			t.Fatalf("the ending of %s before any edit reads %s %v, want ready: it proposes nothing and changes no approved check",
+				issue.Key, ending.State, endingCodes(ending))
+		}
+	}
+
+	// The Verification document alone changes the approved check; the spec stands as it was.
+	editIssueDocument(t, rig.handler, checked.Key, "verification-md", []map[string]any{{"op": "replace",
+		"find": "Claim: A second payment of one order is refused.", "with": "Claim: A second payment of one order is refused at once."}})
+	if read, body := changeRequestOf(t, rig, checked.Key, ""); read.Version != 1 || read.VerificationVersion != 2 || read.Proposes || !read.ChangesChecks {
+		t.Fatalf("the change request after the edit of the check reads %s; want spec version 1, Verification version 2 and a changed check alone", body)
+	}
+	waits := endingOf(t, rig, checked.Key, headOne)
+	if waits.State != "waiting" || !reflect.DeepEqual(endingCodes(waits), []string{"changes_checks_without_approval"}) {
+		t.Errorf("the ending after an edit of the approved check alone reads %s %v, want waiting for changes_checks_without_approval",
+			waits.State, endingCodes(waits))
+	}
+	for _, reason := range waits.Reasons {
+		if reason.Detail == "" {
+			t.Errorf("the reason %s carries no detail", reason.Code)
+		}
+	}
+
+	// The same edit of the acceptance check, which names no statement, changes nothing.
+	editIssueDocument(t, rig.handler, accepted.Key, "verification-md", []map[string]any{{"op": "replace",
+		"find": "Claim: The deploy log names the host it deploys to.", "with": "Claim: The deploy log names the host it deploys to, first."}})
+	if read, body := changeRequestOf(t, rig, accepted.Key, ""); read.VerificationVersion != 2 || read.Proposes || read.ChangesChecks {
+		t.Fatalf("the change request after the edit of the acceptance check reads %s; want Verification version 2 and no change", body)
+	}
+	if ending := endingOf(t, rig, accepted.Key, headOne); ending.State != "ready" {
+		t.Errorf("the ending after an edit of the acceptance check reads %s %v, want ready", ending.State, endingCodes(ending))
+	}
+
+	// A version of the spec that proposes a statement waits for the person too.
+	editSpec(t, rig.handler, proposing.Key, []map[string]any{{"op": "insert", "after": "end",
+		"markdown": ":::requirement{#a-deploy-names-its-host kind=\"behavior\" about=\"billing\"}\nA deploy names its host.\n:::\n"}})
+	proposes := endingOf(t, rig, proposing.Key, headOne)
+	if proposes.State != "waiting" || !reflect.DeepEqual(endingCodes(proposes), []string{"proposes_without_approval"}) {
+		t.Errorf("the ending after a version that proposes a statement reads %s %v, want waiting for proposes_without_approval",
+			proposes.State, endingCodes(proposes))
+	}
+
+	// The person's approval of the spec, with the Verification document where it changed, releases each.
+	rig.approve(t, rig.request(t, checked, true))
+	if ending := endingOf(t, rig, checked.Key, headOne); ending.State != "ready" {
+		t.Errorf("the ending after the person approved the spec with its Verification document reads %s %v, want ready",
+			ending.State, endingCodes(ending))
+	}
+	rig.approve(t, rig.request(t, proposing, false))
+	if ending := endingOf(t, rig, proposing.Key, headOne); ending.State != "ready" || !ending.Approved {
+		t.Errorf("the ending after the person approved the version that proposes a statement reads %s %v approved %t, want ready and approved",
+			ending.State, endingCodes(ending), ending.Approved)
+	}
+}
+
+// The sessions of the tests below beside authorSession and reviewerSession: a second writer of an
+// author's list of the same pull request.
+const secondAuthorSession = "session-second-author-0123456789"
+
+// TestTheListsOfAPullRequestAreOneHistoryWhicheverIssueOfTheTreeRecordsThem (R27): the ending of
+// a tree reads the final lists recorded for every issue of the tree, so the author and reviewer
+// separation is the pull request's, whichever issue a list is recorded for. The session that
+// recorded the author's list of a pull request through one issue cannot record its reviewer's or
+// final list through another issue of the tree, a session that recorded a reviewer's list cannot
+// record the author's list through another issue, and the ending takes no final list written that
+// way. Another session records the reviewer's and final lists through any issue of the tree, and
+// the ending takes them.
+func TestTheListsOfAPullRequestAreOneHistoryWhicheverIssueOfTheTreeRecordsThem(t *testing.T) {
+	rig := newSpecRig(t)
+	rig.seed(t)
+	const pullRequest = "acme/app#31"
+	root := rig.issue(t, "A change whose pull request two issues record", specRepo, "Why the deploy changes.\n\n"+
+		conclusionBlock("c-two-issues", ` no_statement="true"`, "Evidence: The deploy job named the wrong host."), "")
+	child := childIssue(t, rig, root.Key, "The work that holds the pull request")
+
+	recordOutcomes(t, rig, child.Key, authorSession, pullRequest, headOne, "author")
+	// A second author's list of the same pull request, through the root.
+	recordOutcomes(t, rig, root.Key, secondAuthorSession, pullRequest, headOne, "author")
+	refusedWith(t, "the author's reviewer list through another issue of the tree",
+		postOutcomes(t, rig, root.Key, authorSession, pullRequest, headOne, "reviewer"), http.StatusForbidden, "OUTCOME_LIST_BY_AUTHOR")
+	refusedWith(t, "the author's final list through another issue of the tree",
+		postOutcomes(t, rig, root.Key, authorSession, pullRequest, headOne, "final"), http.StatusForbidden, "OUTCOME_LIST_BY_AUTHOR")
+	ending := endingOf(t, rig, root.Key, headOne)
+	if ending.State != "waiting" || ending.FinalList != nil || !reflect.DeepEqual(endingCodes(ending), []string{"no_final_list_for_head"}) {
+		t.Errorf("the ending after the author tried its own final list through the root reads %s %v with the final list %+v, "+
+			"want waiting for no_final_list_for_head and no final list", ending.State, endingCodes(ending), ending.FinalList)
+	}
+
+	// The reviewer's own list through the child; then it cannot write the author's list through the root.
+	recordOutcomes(t, rig, child.Key, reviewerSession, pullRequest, headOne, "reviewer")
+	refusedWith(t, "the reviewer's author list through another issue of the tree",
+		postOutcomes(t, rig, root.Key, reviewerSession, pullRequest, headOne, "author"), http.StatusForbidden, "OUTCOME_LIST_BY_REVIEWER")
+
+	// The comparison: the reviewer, which wrote no author's list, records its final list through the
+	// root, and the ending takes it.
+	final := recordOutcomes(t, rig, root.Key, reviewerSession, pullRequest, headOne, "final")
+	ready := endingOf(t, rig, root.Key, headOne)
+	if ready.State != "ready" || ready.FinalList == nil || ready.FinalList.ID != final.ID {
+		t.Errorf("the ending after the reviewer's final list reads %s %v with the final list %+v, want ready on record %d",
+			ready.State, endingCodes(ready), ready.FinalList, final.ID)
+	}
+}
+
+// TestAFinalListNeedsTheAuthorsListAtItsHead (R27): the final list of a head judges what the
+// change makes different at that head, so it waits for the author's list at the same head (409
+// OUTCOME_AUTHOR_LIST_FIRST); the reviewer's own list at that head does not, since the reviewer
+// writes it before it reads the author's.
+func TestAFinalListNeedsTheAuthorsListAtItsHead(t *testing.T) {
+	rig := newSpecRig(t)
+	issue := rig.issue(t, "Lists of outcomes at two heads", specRepo, "Prose.\n", "")
+	const pullRequest = "acme/app#32"
+	recordOutcomes(t, rig, issue.Key, authorSession, pullRequest, headOne, "author")
+	recordOutcomes(t, rig, issue.Key, reviewerSession, pullRequest, headTwo, "reviewer")
+	refusedWith(t, "a final list at a head the author's list is not of",
+		postOutcomes(t, rig, issue.Key, reviewerSession, pullRequest, headTwo, "final"), http.StatusConflict, "OUTCOME_AUTHOR_LIST_FIRST")
+	recordOutcomes(t, rig, issue.Key, authorSession, pullRequest, headTwo, "author")
+	if final := recordOutcomes(t, rig, issue.Key, reviewerSession, pullRequest, headTwo, "final"); final.Head != headTwo {
+		t.Errorf("the final list reads the head %s, want %s", final.Head, headTwo)
+	}
+}
