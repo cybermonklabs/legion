@@ -20,6 +20,7 @@ import (
 // delivery either and is answered the same, and the control is the attempt that was delivered,
 // which each route takes.
 func TestAnAttemptNumberAReplyNamesAboveTheColumnsRangeIsNotFoundNotAFault(t *testing.T) {
+	t.Parallel()
 	listener, _ := closedIssueListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)
 	issue := createInteractionIssue(t, handler, "TEST", "Reply attempts", "before")

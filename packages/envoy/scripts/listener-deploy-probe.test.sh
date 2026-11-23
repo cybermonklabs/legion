@@ -5,6 +5,13 @@
 # both, three ticks a run. The name itself resolves nowhere for curl, so every run also lists
 # probe.test as unreached, which names it without failing the run. Cases (l) to (n) run the probe
 # until a signal to its whole process group stops it.
+#
+# Time between ticks is the test's: the probe's sleep to its next tick is a fake on its PATH that
+# returns at once, since no verdict depends on the wall clock between ticks (each fake task counts
+# its requests, not seconds), and cases (l) to (n), whose subject is a signal during that sleep,
+# take a real one. A fake curl records each call's arguments and runs the real curl, so case (b)
+# reads the bounds the probe gives every request by default (1 s to connect, 3 s in all), and the
+# slow case, which gives --request-timeout 1, reads that bound reaching curl.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -50,6 +57,24 @@ printf '%s\n' '127.0.0.1       STREAM probe.test' '127.0.0.1       DGRAM' '127.0
 EOF
 chmod +x "${fake_bin_dir}/getent"
 
+# The probe's sleep between ticks in every case but (l) to (n): it returns at once.
+cat >"${fake_bin_dir}/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "${fake_bin_dir}/sleep"
+
+# curl records its arguments, one call per line, in $PROBE_CURL_ARGS and then becomes the real curl.
+readonly curl_args="${temporary_dir}/curl-args"
+real_curl="$(command -v curl)"
+readonly real_curl
+cat >"${fake_bin_dir}/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$PROBE_CURL_ARGS"
+exec "$PROBE_REAL_CURL" "$@"
+EOF
+chmod +x "${fake_bin_dir}/curl"
+
 # The probe's sleep between ticks in cases (l) to (n), on its PATH there alone: it writes its PID to
 # $PROBE_SLEEP_MARK, so the case knows the probe is in that sleep, and then becomes the real sleep.
 readonly signal_bin_dir="${temporary_dir}/signal-bin"
@@ -71,13 +96,13 @@ chmod +x "${signal_bin_dir}/sleep"
 # so that tick's /v1 finds nothing listening), unhealthy (/healthz 503 and /v1 503 at every tick).
 # empty, reset and slow fail /v1 at its first two requests and answer 200 at the third: empty
 # closes the connection without an answer and reset resets it, as Go's net/http does after a
-# handler panics, and slow answers after 4 s, past the probe's 3 s. held holds every /v1 request
-# past the probe's 3 s without answering, and once it holds one it writes a file named as the port
-# file plus .held, so a case knows a request is in flight. none binds the address without
-# listening, so it refuses every connection while no other process can take the port. Any /v1
-# request without the probe's bearer is 401 too, so a pass also proves the bearer was sent. Each
-# address keeps its own mode and request count and serves in its own thread, so a task that exits
-# closes only its own socket.
+# handler panics, and slow answers after 4 s, past any bound a case gives the probe (3 s by
+# default, 1 s in the slow case). held holds every /v1 request past the probe's 3 s without
+# answering, and once it holds one it writes a file named as the port file plus .held, so a case
+# knows a request is in flight. none binds the address without listening, so it refuses every
+# connection while no other process can take the port. Any /v1 request without the probe's bearer
+# is 401 too, so a pass also proves the bearer was sent. Each address keeps its own mode and
+# request count and serves in its own thread, so a task that exits closes only its own socket.
 cat >"$server" <<'EOF'
 import errno
 import http.server
@@ -242,7 +267,9 @@ run_case() {
   stop_servers
   start_tasks "$first" "$second"
   status=0
+  : >"$curl_args"
   env -u ENVOY_TOKEN_FILE PATH="${fake_bin_dir}:${PATH}" ENVOY_TOKEN=probe-token \
+    PROBE_CURL_ARGS="$curl_args" PROBE_REAL_CURL="$real_curl" \
     bash "$driver" --url "http://probe.test:${port}" --interval 1 --duration 3 "$@" >"$output_file" 2>&1 || status=$?
 }
 
@@ -283,6 +310,16 @@ expect_status 0 "two tasks serving /v1"
 expect_text 'target 127.0.0.1: pass - ' "two tasks serving /v1"
 expect_text 'target 127.0.0.2: pass - ' "two tasks serving /v1"
 expect_text 'verdict: pass - 2 target(s)' "two tasks serving /v1"
+# expect_curl_bounds BOUNDS WHAT holds every request of the last run, 18 of them (three ticks,
+# three targets, /healthz and /v1 each), to the curl options BOUNDS.
+expect_curl_bounds() {
+  local calls bounded
+  calls="$(wc -l <"$curl_args")"
+  bounded="$(grep -cF -- " $1 " "$curl_args" || true)"
+  [[ "$calls" == 18 && "$bounded" == 18 ]] ||
+    fail "$2: $bounded of $calls curl calls hold '$1', want 18 of 18"
+}
+expect_curl_bounds '--connect-timeout 1 --max-time 3' "two tasks serving /v1"
 printf 'PASS: two tasks serving /v1 at every tick pass the run (exit 0)\n'
 
 # (c) A flap mid-deploy: /v1 answers 200, 503, 200.
@@ -458,10 +495,11 @@ expect_text 'target 127.0.0.1: fail - ' "a task whose /v1 resets the connection"
 expect_line '  2 x 000:connection reset' "a task whose /v1 resets the connection"
 printf 'PASS: a task whose /v1 resets the connection fails the run (exit 1)\n'
 
-run_case slow ok
-expect_status 1 "a task whose /v1 answers after the probe's 3 s"
-expect_text 'target 127.0.0.1: fail - ' "a task whose /v1 answers after the probe's 3 s"
-expect_line '  2 x 000:timeout' "a task whose /v1 answers after the probe's 3 s"
+run_case slow ok --request-timeout 1
+expect_status 1 "a task whose /v1 answers after the probe's --request-timeout"
+expect_text 'target 127.0.0.1: fail - ' "a task whose /v1 answers after the probe's --request-timeout"
+expect_line '  2 x 000:timeout' "a task whose /v1 answers after the probe's --request-timeout"
+expect_curl_bounds '--connect-timeout 1 --max-time 1' "a task whose /v1 answers after the probe's --request-timeout"
 printf 'PASS: a task whose /v1 answers too late fails the run (exit 1)\n'
 
 # (l) to (n): a signal sent to the probe's whole process group, as Ctrl-C at a terminal and
@@ -487,6 +525,7 @@ run_signal_case() {
   set -m
   env -u ENVOY_TOKEN_FILE PATH="${signal_bin_dir}:${fake_bin_dir}:${PATH}" ENVOY_TOKEN=probe-token \
     PROBE_SLEEP_MARK="$sleep_mark" PROBE_REAL_SLEEP="$real_sleep" \
+    PROBE_CURL_ARGS="$curl_args" PROBE_REAL_CURL="$real_curl" \
     bash "$driver" --url "http://probe.test:${port}" --interval 5 --duration 0 >"$output_file" 2>&1 &
   probe_pid=$!
   set +m
@@ -534,7 +573,11 @@ status=0
 bash "$driver" >"$output_file" 2>&1 || status=$?
 expect_status 2 "no --url"
 expect_text 'ERR: --url is required' "no --url"
-printf 'PASS: a run without --url is a usage error (exit 2)\n'
+status=0
+bash "$driver" --url "http://probe.test:1" --request-timeout 0 >"$output_file" 2>&1 || status=$?
+expect_status 2 "a --request-timeout of 0"
+expect_text 'ERR: --request-timeout must be a number of seconds > 0, got 0' "a --request-timeout of 0"
+printf 'PASS: a run without --url, or with a --request-timeout of 0, is a usage error (exit 2)\n'
 
 mkdir -p "${temporary_dir}/no-curl"
 ln -s "$(command -v sed)" "${temporary_dir}/no-curl/sed"

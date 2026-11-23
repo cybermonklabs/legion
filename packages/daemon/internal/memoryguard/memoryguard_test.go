@@ -6586,8 +6586,8 @@ func TestMemoryGuardNamesAProcessByItsExecutablesBaseNameOrItsStatName(t *testin
 		{"a control character in the stat name", Process{Name: "gr\tow\u202e"}, `gr\tow\u202e`},
 		{"a byte that is not UTF-8", Process{Name: "grow", Exe: "/tmp/gr\xffow"}, `gr\xffow`},
 		{"the longest base name, whole", Process{Name: "aaa", Exe: "/usr/bin/" + longest}, longest},
-		{"an overlong name, cut between characters", Process{Name: "é", Exe: "/tmp/" + strings.Repeat("é", 200)}, strings.Repeat("é", 126) + ellipsis},
-		{"an overlong name, cut between escapes", Process{Name: "x", Exe: "/tmp/" + strings.Repeat("\x01", 100)}, strings.Repeat(`\x01`, 63) + ellipsis},
+		{"an overlong name, cut between characters", Process{Name: "é", Exe: "/tmp/" + strings.Repeat("é", 200)}, strings.Repeat("é", 126) + "…"},
+		{"an overlong name, cut between escapes", Process{Name: "x", Exe: "/tmp/" + strings.Repeat("\x01", 100)}, strings.Repeat(`\x01`, 63) + "…"},
 	} {
 		got := processName(&tc.p)
 		if got != tc.want || len(got) > shimwire.MemoryKillExecutableBytes || !utf8.ValidString(got) {

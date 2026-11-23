@@ -209,9 +209,8 @@ func (r *SessionRegistry) goneCandidates(now time.Time) []goneCandidate {
 
 // deleteGone deletes candidate's record only while the bucket's latest revision is the one the
 // pass judged it on, and reports whether it did. A registration that landed since makes JetStream
-// refuse the delete with wrong last sequence (10071, which nats.go names nats.ErrKeyExists), and
-// the record is kept: false and no error, as store's interest reaper keeps a row written again
-// (store.Registry.deleteInterestAt).
+// refuse the delete with wrong last sequence (bus.IsCASConflict), and the record is kept: false and
+// no error, as store's interest reaper keeps a row written again (store.Registry.deleteInterestAt).
 //
 // A copy that holds no revision for the key, because a watch moved the epoch since its read began
 // (kvwatch.Copy.FenceFor), names none for the delete to be conditioned on, which a conditional
@@ -242,7 +241,7 @@ func (r *SessionRegistry) deleteGone(ctx context.Context, candidate goneCandidat
 	if !answered {
 		return false, fmt.Errorf("delete session %s's record at revision %d: %w", candidate.sessionID, revision, err)
 	}
-	if errors.Is(err, nats.ErrKeyExists) {
+	if bus.IsCASConflict(err) {
 		return false, nil
 	}
 	if err != nil {

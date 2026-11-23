@@ -97,6 +97,7 @@ type admissionIssuesArchitect struct {
 // architect's backlog of the two children, which frees the rows that return and that parent's
 // first phase then take.
 func TestTheCapCountsIssuesAndAParentWaitsForItsChildrenLive(t *testing.T) {
+	t.Parallel()
 	r := newAdmissionIssuesLive(t)
 	r.step("step1-two-live-trees-hold-no-slot", r.liveTreesHoldNoSlot)
 	r.step("step2-the-released-children-hold-both-slots-and-their-parent-waits", r.childrenHoldTheSlots)

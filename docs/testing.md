@@ -36,7 +36,8 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
-  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  Each build is made once per test process and shared by every test that asks for the same one, in a directory `cmdtest.Main` makes and removes, so a package that builds a command runs its tests through it: `func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }`, or `cmdtest.Run` around another harness's `Main`.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
@@ -168,6 +169,16 @@ itself, whose tests import its sources by relative path.
   `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
   (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
 
+- A test that requires a command to have left in place a signal it was started ignoring, as
+  `nohup` starts one ignoring SIGHUP and a shell's `&` job ignoring SIGINT, reads the command's
+  `SigIgn` mask with `ignoresSignal` (`@legion/test-fixtures/held-process`): a listener for the
+  signal clears the bit, so the read shows whether the command undid the ignore. gVisor's
+  `/proc/<pid>/status` has no `SigIgn` line, and macOS has no `/proc`, so such a file calls
+  `skipWithoutIgnoreMasks(file)` once, at module scope, as it would `skipWithout`, and hands the
+  answer to the `test.skipIf` of each row that reads the mask or rests on what is read from it. On
+  GitHub Actions on Linux it never skips: a runner there can read the mask, so one that cannot is
+  broken, and the rows run and fail rather than pass in silence.
+
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
   container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`). Remove it with `docker rm -f
@@ -193,6 +204,21 @@ itself, whose tests import its sources by relative path.
   it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
   own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
   `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
+
+- The real-binary harness's stand-in server (`serveStandin` in
+  `packages/pi-shared/test/omp-harness.ts`, and claude-envoy's copy of it) takes two pieces of
+  `@legion/test-fixtures`. It listens at `loopbackHost()` (`loopback-host`): on Linux an address
+  of `127.0.0.0/8` chosen at random and never `127.0.0.1`, as the Go tests' listeners have
+  (`LoopbackIP`, above), and `127.0.0.1` elsewhere, with its clients' URLs built from the address
+  the server reports (`server.url`). A client of a test that has ended keeps dialing the address
+  its own server had, and the kernel gives that port to the next listener on the same address: an
+  OAuth client's form POST reached that stand-in on `127.0.0.1` and failed the row that was
+  running. On Linux such a client no longer reaches it; elsewhere it still can. And it reads each
+  POST body with `readStandinBody` (`standin-body`), which refuses a non-empty body that is no
+  JSON object with a 400 naming the request, prints the same line, and leaves the request
+  unrecorded, where a parse that throws out of `Bun.serve`'s `fetch` fails whichever test is
+  running. A request with a JSON object body, an empty body or no body is recorded and answered as
+  the case's own answer decides.
 
 ## A test that looks for a process it started
 
@@ -403,6 +429,29 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
+## A test in `internal/dispatch/api` runs beside the others
+
+Every top-level test of `packages/envoy/internal/dispatch/api` calls `t.Parallel()` as its first
+statement, and the package's `TestMain` runs 8 of them at once. Each test already has a database
+and a server of its own (`storetest.Open`), so run alone it spends most of its time waiting on
+Postgres while the machine's other cores sit idle.
+
+A test stays serial when it, or a helper it calls, changes or measures something the whole test
+process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), the environment
+(`t.Setenv`), a package variable, flags, the GC or `GOMAXPROCS`, heap statistics or goroutine
+counts, or pmdoc's schema manifest, display tree version or block ID generator
+(`pmdoc.UseManifestForTest`, `pmdoc.UseStagedBlockForTest`, `pmdoctest.UseBlockSchema`,
+`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). go test runs every serial
+test before it starts the parallel ones, so such a test runs alone. A serial test whose reason is
+not a call in its own body or a helper of the package's says why on its first line: a wall-clock
+bound that missed under parallel load, or a write through another package's test hook.
+
+A test that reads `pg_locks` or `pg_stat_activity` names its own database in the predicate
+(`database = (select oid from pg_database where datname = current_database())`, or
+`datname = current_database()`). The tests beside it hold the same tables, OIDs and lock keys in
+databases cloned from the same template, so a predicate on a relation or a lock key alone counts
+their waiters as its own.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -525,10 +574,9 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
-A package whose tests migrate into the database their DSN names, rather than taking one each,
-takes one database for its whole run instead: `testdb.RunDatabaseMain` from its `TestMain`, and
-`testdb.RunDatabaseFor` wherever it reads the DSN (`internal/daemon`, whose daemons migrate the
-database they are given).
+`internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
+daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
+in place, and the tests run beside each other on databases of their own.
 
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater

@@ -65,6 +65,7 @@ func mergeForwardRunnerAt(t *testing.T, publisher notify.Publisher, at phase.Pha
 // with nothing published (workflow.MergeForwardAt); a landed still queued once the merge landed is
 // delivered.
 func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
+	t.Parallel()
 	ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",
 		Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Phase: phase.Testing, Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
@@ -196,6 +197,7 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 // message to the merger still queued ends with nothing published: the phase the issue moved to
 // works the workspace now.
 func TestAMergeForwardAskInMergingGoesToTheMerger(t *testing.T) {
+	t.Parallel()
 	asked := &record.MergeForward{Head: "sha-1", Base: "main", Role: claim.RoleMerger, Phase: phase.Merging,
 		Why: record.ConflictMergeNext, AskedAt: time.Now()}
 	toMerger := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: "sha-1", Base: "main",

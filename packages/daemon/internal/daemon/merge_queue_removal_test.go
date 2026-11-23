@@ -175,6 +175,7 @@ const dequeueRetry = 20 * time.Millisecond
 //     (mergerWaitsForTheDesignGate): it neither wakes the merger nor publishes while the change set
 //     is not recorded, and once the test records it, the merger is woken and told once.
 func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
+	t.Parallel()
 	rig := newDequeueRig(t)
 	woken := rig.seed(t, phase.Merging, supervise.StateSuspended, false)
 	merged := rig.seed(t, phase.Merging, supervise.StateSuspended, false)

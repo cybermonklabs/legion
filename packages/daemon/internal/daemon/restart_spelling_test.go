@@ -28,6 +28,7 @@ import (
 // the record keeps GitHub's spelling beside its own, so the boot subscribes from the database, not
 // from a read a restart forgets. The workspace keeps the clone's spelling.
 func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := projectRecords{Store: record.NewStore(), project: "LEGION"}
@@ -106,6 +107,7 @@ func TestARestartStillHearsARecordsRepositoryInGitHubsSpelling(t *testing.T) {
 // boot goes on hearing nothing for it, rather than subscribing in a spelling its events are not
 // published under (INFRA-4401 D11).
 func TestTheBootNamesARecordWithNoGitHubSpellingBeforeSubscribing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	seed := func(t *testing.T) (*workflowRuntime, projectRecords) {
 		t.Helper()

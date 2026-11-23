@@ -263,6 +263,7 @@ legion_command: &legion_command
   - 'packages/daemon/internal/stream/*'
   - 'packages/daemon/internal/supervise/*'
   - 'packages/daemon/internal/tlsalert/*'
+  - 'packages/daemon/internal/termsafe/*'
   - 'packages/daemon/internal/treelifecycle/*'
   - 'packages/daemon/internal/volumestat/*'
   - 'packages/daemon/internal/wait/*'
@@ -559,6 +560,7 @@ plugin_pack:
   - '!packages/daemon/internal/store/**/*_test.go'
   - '!packages/daemon/internal/stream/**/*_test.go'
   - '!packages/daemon/internal/supervise/**/*_test.go'
+  - '!packages/daemon/internal/termsafe/**/*_test.go'
   - '!packages/daemon/internal/testbin/**/*_test.go'
   - '!packages/daemon/internal/testfifo/**/*_test.go'
   - '!packages/daemon/internal/testnats/**/*_test.go'
@@ -915,6 +917,7 @@ ci_ok_report_test: &ci_ok_report_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/ci-ok-report.test.sh'
   - '.github/scripts/ci-ok-report.sh'
+  - '.github/scripts/ci-ok-hold.sh'
   - '.github/scripts/post-check-run.sh'
   - '.github/scripts/gh-read.sh'
   - '.github/scripts/runner-shutdown.sh'
@@ -965,6 +968,14 @@ dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.test.sh'
   - '.github/scripts/dispatch-browser-latest-blobs.sh'
+dispatch_browser_reading_rows_test: &dispatch_browser_reading_rows_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.test.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.sh'
+  - '.github/workflows/dispatch-browser.yaml'
 dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
   - *ci_router
   - *ci_filters_data
@@ -1101,6 +1112,7 @@ test:
   - *main_bypass_check_test
   - *edited_migrations_base_test
   - *dispatch_browser_latest_blobs_test
+  - *dispatch_browser_reading_rows_test
   - *dispatch_browser_run_reads_test
   - *gh_read_test
   - *dispatch_browser_samples_test

@@ -21,6 +21,7 @@ import (
 // held task's place (supervise.Delivery.SupersededBy), and the relaunched architect's first prompt
 // is generation 2's task, the claim holding nothing of generation 1.
 func TestALostReadmissionStartIsWrittenAgainPastTheTaskOfTheRunBefore(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()

@@ -27,6 +27,7 @@ import (
 // lease where it was, and three refused ticks in a row lapse it while the database answers, so
 // the sweep runs the row a second time beside the first.
 func TestALaneRenewsItsRowsLeaseWhileTheRowIsInsideATransaction(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	clock := microClock()

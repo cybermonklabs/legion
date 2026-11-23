@@ -15,6 +15,7 @@ import (
 // so the two answer alike. The control is the largest number the column holds, which each route
 // already answers 404.
 func TestAVersionNumberAboveTheColumnsRangeIsRefusedNotAFault(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	artifactID := uploadDocumentVersions(t, handler, "plan.md", "# Plan\n\nOne.\n", "# Plan\n\nTwo.\n")
 

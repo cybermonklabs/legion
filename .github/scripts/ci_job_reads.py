@@ -604,6 +604,7 @@ RULES = {
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
+    f"{DAEMON}/internal/podsafety/podsafety_test.go": reads((f"{DAEMON}/docker/worker.Dockerfile", "internal/podsafety/podsafety_test.go:543")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
@@ -2575,12 +2576,13 @@ SCRIPT_TEST_GATES = [
     harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
             f"{SCRIPTS}/ci-ok-report.test.sh", [
         (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
-        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:287 posts with it, and ci-ok-report.test.sh:437,453 runs it on its own"),
-        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:116 sources it for its bounded gh reads"),
+        (f"{SCRIPTS}/ci-ok-hold.sh", "the ci-ok job's hold step, the other script under test"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:292 posts with it, and ci-ok-report.test.sh:459,475 runs it on its own"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:121 and ci-ok-hold.sh:94 source it for their bounded reads"),
         (f"{SCRIPTS}/runner-shutdown.sh",
-         "ci-ok-report.sh:118 sources it, and no early ci-ok is posted for a failure it reads as "
+         "ci-ok-report.sh:123 sources it, and no early ci-ok is posted for a failure it reads as "
          "a runner shutdown"),
-        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:263 reaches its verdict with it, and ci-ok-report.test.sh's "
+        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:268 reaches its verdict with it, and ci-ok-report.test.sh's "
                                 "verdict helper runs it for the group behind the front of the queue"),
         (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh's program includes it"),
     ]),
@@ -2610,6 +2612,13 @@ SCRIPT_TEST_GATES = [
     harness("dispatch_browser_latest_blobs_test", "Test the browser lane's blob attempt selection",
             f"{SCRIPTS}/dispatch-browser-latest-blobs.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-latest-blobs.sh", "the script under test"),
+    ]),
+    harness("dispatch_browser_reading_rows_test", "Test the browser lane's reading of its rows",
+            f"{SCRIPTS}/dispatch-browser-reading-rows.test.sh", [
+        (f"{SCRIPTS}/dispatch-browser-reading-rows.sh", "the script under test"),
+        (".github/workflows/dispatch-browser.yaml",
+         "the harness runs the script through the merge job's own call, the run: line of the step "
+         "\"Reading one, the rows\", and reads that the selection step carries the id it passes"),
     ]),
     harness("dispatch_browser_run_reads_test", "Test the browser lane's run reads",
             f"{SCRIPTS}/dispatch-browser-run-reads.test.sh", [
@@ -2832,7 +2841,7 @@ GATES = [
     ) + setup_go(PRIVATE_NAMES_PORT_JOB, f"{DAEMON}/go.mod")),
 
     # What is left of the test job once the daemon's Go suite and the private-name port harness
-    # have jobs of their own: the Claude Code plugin build, the changelog fold, about thirty
+    # have jobs of their own: the Claude Code plugin build, the changelog fold, the
     # script harnesses - each behind a gate of its own below (SCRIPT_TEST_GATES), whose reads
     # this gate carries too, since the job must be selected for the step to run in it - and the
     # Bun suites of scripts/. Two go commands are left, the builds Bun tests start: the listener's,
@@ -2900,7 +2909,7 @@ GATES = [
     # job that needs a database (scripts/sessions/__tests__/message-wait.test.ts:20-28 refuses
     # without LEGION_TEST_PG_DSN, since a store it cannot measure is a measurement of nothing),
     # and a Postgres service on the test job would start one for every change that selects any
-    # of its thirty-two harness steps. The test reads the script it spawns and nothing else: both
+    # of its harness steps. The test reads the script it spawns and nothing else: both
     # are under scripts/sessions, and both import node: builtins and bun alone, so the job
     # installs no dependencies and this filter names no lockfile.
     gate("sessions_script", SESSIONS_JOB, reads=reads(

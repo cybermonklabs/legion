@@ -27,6 +27,7 @@ import (
 // with its authored_by tuple to carol's person node. bob reads her page as a login nobody holds,
 // and carol reads it 200, listing the comment.
 func TestAPersonPageAnswersOnlyWhereThePersonHoldsANodeTheReaderMaySee(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "PAGE", "A person's page", "# Spec\n\nA passage.\n")
 	const first, second, nobodyLogin = "bob", "carol", "nobody-at-all"

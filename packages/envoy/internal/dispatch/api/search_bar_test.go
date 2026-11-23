@@ -48,6 +48,7 @@ func searchIssueMessage(t *testing.T, handler http.Handler, issueKey, login, bod
 // project in the query the number alone names one issue of every project, and all of them head
 // the list, in project order, before any other row.
 func TestSearchLeadsWithTheIssueTheQueryNamesInEveryForm(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	for _, project := range []string{"SRCH", "OTHER"} {
@@ -118,6 +119,7 @@ func TestSearchLeadsWithTheIssueTheQueryNamesInEveryForm(t *testing.T) {
 // behind the issue the query names, and makes the total two rather than one, so a duplicate
 // would read as three.
 func TestSearchListsAnIssueItsKeyAndItsWordsBothMatchOnce(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	named := createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "").Key
@@ -160,6 +162,7 @@ func TestSearchListsAnIssueItsKeyAndItsWordsBothMatchOnce(t *testing.T) {
 // matches nothing, because a key is indexed with its project ('srch' <-> '-1042') and the number
 // on its own is a lexeme no vector holds, and the issue still leads the page.
 func TestSearchAnswersTheIssueAKeyNamesWhenItsWordsMatchNothing(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
@@ -205,6 +208,7 @@ func TestSearchAnswersTheIssueAKeyNamesWhenItsWordsMatchNothing(t *testing.T) {
 // reads the number in the project it filters by, since a row that filter leaves out could not be
 // on the page whatever the context says.
 func TestSearchReadsABareNumberInThePageProjectWithoutNarrowingToIt(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	for _, project := range []string{"SRCH", "OTHER"} {
@@ -289,6 +293,7 @@ func TestSearchReadsABareNumberInThePageProjectWithoutNarrowingToIt(t *testing.T
 // 3,710 issues matched for a query whose AND matched one ask). The query as typed is the AND of
 // those words, and one ask holds them all.
 func TestSearchFindsAnAskByItsOwnWordsPastWhatBroadeningWouldBury(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Ferry schedule", "")
 
@@ -319,6 +324,7 @@ func TestSearchFindsAnAskByItsOwnWordsPastWhatBroadeningWouldBury(t *testing.T) 
 // exists. Length decides nothing now (searchBroadenWords bounds the fallback's own words, not
 // the queries that reach it).
 func TestSearchAnswersAQueryThatMatchesFromTheQueryAsTyped(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Controller restarts deploy", "")
 	comment := searchComment(t, handler, issue.Key, "alice", "The agent pool is drained first.")
@@ -347,6 +353,7 @@ func TestSearchAnswersAQueryThatMatchesFromTheQueryAsTyped(t *testing.T) {
 // broadened, whatever its length, and the words the question excludes are ANDed onto the
 // fallback's own, so a -word still leaves its rows out.
 func TestSearchBroadensAQuestionThatAnswersNothing(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Controller restarts deploy", "")
 	comment := searchComment(t, handler, issue.Key, "alice", "The agent pool is drained first.")
@@ -400,6 +407,7 @@ func TestSearchBroadensAQuestionThatAnswersNothing(t *testing.T) {
 // what the question is about are what the fallback searches for, so the dozen comments holding a
 // common word are no part of the answer.
 func TestSearchBroadensToTheRarestWordsNotTheFirstOnes(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "SRCH", "Instrument notes", "")
@@ -429,6 +437,7 @@ func TestSearchBroadensToTheRarestWordsNotTheFirstOnes(t *testing.T) {
 // item the row names, a document's being whoever created it; and updated_since is when that item
 // was itself last written, not when anything on its issue moved.
 func TestSearchNarrowsEveryLegByStatusAuthorAndDate(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	ctx := context.Background()
 	survey := createInteractionIssue(t, handler, "SRCH", "Astrolabe survey", "")
@@ -802,6 +811,7 @@ func TestDeleteDropsThePostsWindowsBeforeAnyTick(t *testing.T) {
 // weakest match of its kind, behind every one of the contracts.SearchKindDepth comments the kind
 // is read to, so a filter applied to the rows the search had already chosen could never reach it.
 func TestSearchFiltersNarrowEachLegRatherThanThePage(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "SRCH", "Astrolabe survey", "")
 	weakest := searchComment(t, handler, issue.Key, "bob", "A quiet astrolabe.")
@@ -834,6 +844,7 @@ func TestSearchFiltersNarrowEachLegRatherThanThePage(t *testing.T) {
 // A filter is refused as the project and the page parameters beside it are: a repeated, blank or
 // unreadable value answers 400 under a code of its own rather than an answer nobody asked for.
 func TestSearchRefusesAFilterItCannotRead(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	cases := map[string]string{
 		"q=astrolabe&status=":                                          "INVALID_STATUS",
@@ -874,6 +885,7 @@ func TestSearchRefusesAFilterItCannotRead(t *testing.T) {
 // The answer says what search made of the words and what it narrowed by, so a caller can show a
 // person what was done with their question instead of parsing it again itself.
 func TestSearchAnswersHowItReadTheWordsAndWhatItNarrowed(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createInteractionIssue(t, handler, "SRCH", "Astrolabe survey", "")
 

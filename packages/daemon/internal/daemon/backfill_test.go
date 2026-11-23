@@ -33,6 +33,7 @@ func (d *listingDispatch) ListIssues(context.Context, string, []string) ([]dispa
 // are logged, while every other record is filled: one record's repository never stops the boot,
 // and the backfill answers that a record is left, for the refresher to try it again.
 func TestTheBootFillsRecordsWithNoRepository(t *testing.T) {
+	t.Parallel()
 	seed := func(t *testing.T) *workflowRuntime {
 		t.Helper()
 		pool := isolatedOutboxPool(t)

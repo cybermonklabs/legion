@@ -32,6 +32,7 @@ import (
 // that does not hold the named commit (a shallow clone, an archive) has nothing to read, which is
 // the reason cmd/dispatch's older-build test reads its base the same way.
 func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
+	t.Parallel()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
 	commit := testbaseline.Commit(t)
 	base := decodeServedDocument(t, "the fork point's document", []byte(gitOutput(t, root, "show", commit+":"+OpenAPIDocumentPath)))

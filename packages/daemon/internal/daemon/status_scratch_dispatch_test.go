@@ -45,6 +45,7 @@ func (d *interleaving) GetIssue(ctx context.Context, key string) (dispatch.Issue
 // its own messages included, so a refusal says only that the read was overtaken: the row reads
 // again and writes, and Dispatch ends at the phase's status.
 func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")
@@ -88,6 +89,7 @@ func TestTheBootsStatusWriteLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t
 // through its own event, with its actor; until that event arrives the record stands where the
 // workflow left it, which is what this case reads.
 func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")
@@ -124,6 +126,7 @@ func TestABootStatusWriteDoesNotLandOverACloseScratchDispatchTookAfterItsRead(t 
 // issue to another lifecycle status in that moment keeps it, and the row finishes having written
 // nothing (dispatch://INFRA-714/spec A6).
 func TestABootStatusWriteDoesNotLandOverAPersonsMoveWithinTheWorkflow(t *testing.T) {
+	t.Parallel()
 	baseURL, token := startScratchDispatch(t)
 	issue := createScratchDispatchIssue(t, baseURL)
 	setDispatchStatus(t, baseURL, issue, "todo")

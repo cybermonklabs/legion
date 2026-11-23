@@ -40,6 +40,7 @@ import (
 // something is owed (applyEntrySweep, admit's OwesEntryWork). So over many further periods no
 // later sweep is applied at all, and no second start row is written.
 func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()
@@ -145,6 +146,7 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 // controller is woken once. The project's controller is registered, as the daemon tells a stall
 // only to a controller that is (admit's wakeStalledArchitects).
 func TestTheArchitectSweepWakesTheControllerForAStallInAQuietProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()
@@ -253,6 +255,7 @@ func seedQuietArchitectStall(t *testing.T, pool *store.Pool) record.Issue {
 // sweep has told that controller: `legion state` prints that key and judges no arm of its own, so
 // the view is the one place an operator reads which arms hold.
 func TestTheArchitectSweepsStallArmsAreServedOnTheStateWhetherOrNotTheControllerWasTold(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	log := quietLogger()

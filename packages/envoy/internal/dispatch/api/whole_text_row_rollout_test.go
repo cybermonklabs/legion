@@ -66,6 +66,7 @@ func reconcileBlockIndexPass(t *testing.T, deps Deps) docs.BlockIndexTick {
 // row's own order. docs/block_index_test.go's TestRetirementWaitsForACurrentWindow is its
 // neighbour at the layer below, which proves the retirement arm's own rule without a search.
 func TestAWindowedItemKeepsItsWholeTextRowUntilItsWindowIsCurrent(t *testing.T) {
+	t.Parallel()
 	const query = "wibbleflorp"
 	const body = "The canary pours the astrolabe over the quiet wharf.\n\nA second paragraph."
 	ctx := context.Background()
