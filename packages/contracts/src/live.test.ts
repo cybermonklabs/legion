@@ -104,6 +104,7 @@ const VIEW_KINDS = allOf<LiveView["kind"]>()([
   "measures",
   "pipeline",
   "legion",
+  "legion_issue",
   "events",
   "agent",
 ]);

@@ -4520,6 +4520,12 @@ Each item below names a path with its method and identity, then its purpose.
 - `/ws/live` (GET; cookie, trusted header, or bearer)
 
   One WebSocket per browser tab, serving delivery, events, and agent subscriptions.
+  A `legion_issue` view, `{kind: "legion_issue", issue}`, names one issue and nothing else, and its snapshot and deltas carry the body of `GET /api/v1/issues/{key}/legion`, as a `legion` view's carry the body of its project's board.
+  A frame that names a project, a window, an `at` or a `query` beside the issue, or names no issue, is `INVALID_FRAME`.
+  The view moves when the sampler reads the daemon of the issue's project, when `PUT` or `DELETE /api/v1/projects/{key}/legion/daemon` names or removes that daemon, and when a write of one of the issue's runs commits (`dispatch_workflow_runs`).
+  At each connection of the hub's listener to Postgres, the hub reads every `legion` and `legion_issue` view again, so a notification sent while the listener was down leaves no view stale.
+  Dispatch never refuses a `legion_issue` view for a project that names no daemon: its body then says `configured` `false`.
+  A well-formed view has one refusal, an `error` frame with the route's code `NOT_FOUND`, for a key that names no issue.
   An events subscription resumes after a decimal event id;
   its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before it goes live and a client may skip the refresh it would owe the gap, and `false` with no resume, past either bound, or above the head (a log that was reset).
   An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on;
@@ -4665,6 +4671,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/legion` (GET; cookie, trusted header, or bearer)
 
   One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: `{issue, project, configured, state, read, runs_revision}`.
+  The `/ws/live` `legion_issue` view carries the same body and sends each change.
   `project` is the project of the issue, and `configured` is `true` when that project names a daemon.
   `state` is `null` when the daemon does not record the issue.
   Otherwise it is `{phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}`.

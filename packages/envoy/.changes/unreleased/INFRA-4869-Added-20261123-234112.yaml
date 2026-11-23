@@ -1,0 +1,31 @@
+kind: Added
+body: |-
+  Dispatch serves one issue's Legion state at `GET /api/v1/issues/{key}/legion`, from what the
+  sampler recorded of the daemon of the issue's project. The answer is
+  `{issue, project, configured, state, read, runs_revision}`:
+  - `configured` is `false` when the issue's project names no daemon. The answer then holds
+    `state` `null` and `read` `null`, and still the runs' revision. Dispatch never refuses an issue
+    of a project with no daemon, because the daemons of other projects write runs to Dispatch too.
+  - `state` is `null` when the daemon does not record the issue. Otherwise it holds the phase, when
+    Dispatch stored it and whether Dispatch saw it start, the claim of each role, the slot, the
+    place in the daemon's waiting line, the issues that block the issue, and what it waits on from
+    a person. The board's cards and this answer read an issue through one rule, so they agree.
+  - `read` is the newest read of the daemon, and `runs_revision` counts the tuples of the issue's
+    runs.
+  - The one refusal is `404 NOT_FOUND`, for a key that names no issue.
+
+  The live socket (`/ws/live`) takes a new view kind, `legion_issue`, which names one issue and
+  carries the route's body. The view moves when the sampler reads the daemon of the issue's
+  project, when `PUT` or `DELETE /api/v1/projects/{key}/legion/daemon` names or removes that
+  daemon, and when a write of one of the issue's runs commits. A write of a run that stores
+  something new now notifies `dispatch_workflow_runs` with the issue's key at its commit, and a
+  write sent again notifies nothing. Dispatch never refuses the view for a project that names no
+  daemon: its body says `configured` `false`.
+
+  At each connection of the live hub's listener to Postgres, the first one included, the hub reads
+  every Legion view again: the `legion` board views and the `legion_issue` views. Postgres does not
+  keep a notification sent while the listener was down, so before this change a board view could
+  stay stale until the sampler's next read of its daemon.
+time: 2026-11-23T23:41:12Z
+custom:
+    Issue: INFRA-4869

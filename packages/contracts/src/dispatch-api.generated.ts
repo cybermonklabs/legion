@@ -1703,6 +1703,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/legion": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One issue's Legion state, from what the sampler recorded of the daemon of the issue's project: {issue, project, configured, state, read, runs_revision}. project is the project of the issue. configured is true when that project names a Legion daemon. state is null when the daemon does not record the issue. Otherwise state is {phase, phase_since, phase_start_seen, roles, slot, waiting_line, blocked_by, waiting_on}. phase_since is when Dispatch stored the phase. phase_start_seen is false when that phase is the first value that Dispatch stored for the issue. roles is [{role, state}], one entry for each role with a claim, or [] when no role has one. slot is the index of the slot that the issue holds, or null. waiting_line is {place, length}, or null when the daemon's waiting line does not name the issue. place counts from 1, and length is the number of issues in that line. blocked_by lists the issues that block the issue, in the order the daemon stored them, or [] when no issue blocks it. waiting_on is the daemon's object exactly as stored, or null. read is the newest read of the daemon, {at, ok, error}, or null when no read was recorded. runs_revision counts the tuples of the issue's runs. It is 0 for an issue with no run, and each write of a run makes it larger. A project that names no daemon is not refused. Its issue answers configured false, state null and read null, whatever rows an earlier daemon left, and its runs_revision. The one refusal is 404 NOT_FOUND, for a key that names no issue. */
+    get: operations["getApiV1IssuesByKeyLegion"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/messages": {
     parameters: {
       query?: never;
@@ -5719,6 +5736,65 @@ export interface components {
       kind: string;
       /** Format: date-time */
       since: null | string;
+    };
+    LegionIssueRead: {
+      /** Format: date-time */
+      at: string;
+      error: null | string;
+      ok: boolean;
+    };
+    LegionIssueResponse: {
+      configured: boolean;
+      issue: string;
+      project: string;
+      read: components["schemas"]["LegionIssueRead"] | null;
+      /** Format: int64 */
+      runs_revision: number;
+      state: components["schemas"]["LegionIssueState"] | null;
+    };
+    LegionIssueState: {
+      blocked_by: string[] | null;
+      phase: string;
+      /** Format: date-time */
+      phase_since: string;
+      phase_start_seen: boolean;
+      roles: components["schemas"]["LegionRoleClaim"][] | null;
+      slot: null | number;
+      waiting_line: components["schemas"]["LegionIssueWaitingLine"] | null;
+      waiting_on:
+        | ({
+            /**
+             * Format: date-time
+             * @description an RFC3339 timestamp
+             */
+            answeredAt?: string;
+            /** @description how the wait was answered, once it was, and not always by a person */
+            answeredBy?: string;
+            /** @description for a gate, the id of the document whose version no person has reviewed */
+            artifactId?: string;
+            /** @description for an ask, the id of the oldest question of the issue's tree still with a person */
+            ask?: string;
+            /** @description for a gate, the spec version no person has reviewed */
+            gateVersion?: number;
+            /** @description the kind of wait: ask, gate, or a kind a later daemon names */
+            kind: string;
+            /**
+             * Format: date-time
+             * @description an RFC3339 timestamp
+             */
+            since?: string;
+          } & {
+            [key: string]: unknown;
+          })
+        | null;
+    };
+    LegionIssueWaitingLine: {
+      length: number;
+      place: number;
+    };
+    LegionRoleClaim: {
+      role: string;
+      state: string;
     };
     LegionSetting: {
       created_by: components["schemas"]["Actor"];
@@ -11287,6 +11363,40 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyLegion: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionIssueResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeyMessages: {
     parameters: {
       query?: {
@@ -15261,6 +15371,11 @@ export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
 export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionIssueRead = components["schemas"]["LegionIssueRead"];
+export type LegionIssueResponse = components["schemas"]["LegionIssueResponse"];
+export type LegionIssueState = components["schemas"]["LegionIssueState"];
+export type LegionIssueWaitingLine = components["schemas"]["LegionIssueWaitingLine"];
+export type LegionRoleClaim = components["schemas"]["LegionRoleClaim"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
