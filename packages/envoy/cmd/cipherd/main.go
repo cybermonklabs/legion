@@ -1326,7 +1326,8 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			}),
 		// A GitHub App token a release minted and hands to nobody - a release that failed after
 		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
-		// endpoint and retry.
+		// endpoint and retry. A github-installations token has no give-back: it is the token the
+		// secret stores, which every other release of it hands over too.
 		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
@@ -1674,10 +1675,13 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 // no binding at all mints no secret of that type. The google-service-account and
 // anthropic-federation minters are pointers: a method value would otherwise copy the credentials
 // each caches away from the minter every later mint reads. The other two are copied, and each
-// Retry they hold is a pointer, so minters given one Retry still draw from its one budget.
+// Retry they hold is a pointer, so minters given one Retry still draw from its one budget. The
+// github-installations minter takes no setting and calls no endpoint: it reads the tokens the
+// secret stores, so it is built here.
 func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount, anthropicFederation *secrets.AnthropicFederation) map[string]requests.Minter {
 	return map[string]requests.Minter{
 		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGitHubInstallations:  secrets.GitHubInstallations{}.Mint,
 		policy.TypeGoogleLogin:          googleLogin.Mint,
 		policy.TypeAzureLogin:           azureLogin.Mint,
 		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
