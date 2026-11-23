@@ -73,6 +73,14 @@ func newLauncherCommand(stdout, stderr io.Writer) *cobra.Command {
 				fmt.Fprintln(stderr, "launcher: --roles-dir holds every role's own launcher token and private directory: no --token-file or --private-dir")
 				return 2
 			}
+			// An issue pod's container starts in the issue's workspace (the pod spec's working
+			// directory), which is the one the pod's bundle restore works and records in use.
+			dir, err := os.Getwd()
+			if err != nil {
+				fmt.Fprintf(stderr, "launcher: read the working directory, the pod's workspace: %v\n", err)
+				return 1
+			}
+			cfg.Workspace = dir
 		} else if *testPostgres {
 			// The controller's pod runs no tests, and its container is not where the server belongs.
 			fmt.Fprintln(stderr, "launcher: --test-postgres is an issue pod's container: it needs --roles-dir")
@@ -112,8 +120,11 @@ const roleInitUsage = "usage: legion launcher role-init --roles-dir <dir> --role
 // --help` does not offer it: run outside those namespaces it refuses, since it would otherwise
 // mount a role's private view over the container's own. ctx ends at the launcher's stop (main's
 // SIGTERM), which it forwards to the role. A failure before the shim started exits
-// launcher.RoleInitSetupFailedExit, the one status the launcher reports as a setup failure.
+// launcher.RoleInitSetupFailedExit, the one status the launcher reports as a setup failure. Its
+// own lines pass the URL rule (redact.Writer); stderr itself goes to the role's shim as that
+// child's own stream (launcher.RoleInitConfig.Stderr).
 func newRoleInitCommand(stdout, stderr io.Writer) *cobra.Command {
+	own := redact.Writer(stderr)
 	cmd := &cobra.Command{
 		Use:    strings.TrimPrefix(roleInitUsage, "usage: legion launcher "),
 		Short:  "the init of one role generation's namespaces (the launcher runs it, never a person)",
@@ -130,23 +141,23 @@ func newRoleInitCommand(stdout, stderr io.Writer) *cobra.Command {
 	// A role-init the launcher started with flags it cannot read failed before its shim as much as
 	// one whose mounts failed, so it exits the same status; only --help, which nothing runs, exits 0.
 	cmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
-		fmt.Fprintf(stderr, "legion launcher role-init: %v\n%s\n", err, roleInitUsage)
+		fmt.Fprintf(own, "legion launcher role-init: %v\n%s\n", err, roleInitUsage)
 		return exitCode(launcher.RoleInitSetupFailedExit)
 	})
 	cmd.RunE = runs(func(ctx context.Context, args []string) int {
 		argv, err := afterDash(cmd, args)
 		if err != nil || len(argv) == 0 {
 			if err != nil {
-				fmt.Fprintf(stderr, "legion launcher role-init: %v\n", err)
+				fmt.Fprintf(own, "legion launcher role-init: %v\n", err)
 			}
-			fmt.Fprintln(stderr, roleInitUsage)
+			fmt.Fprintln(own, roleInitUsage)
 			return launcher.RoleInitSetupFailedExit
 		}
 		if err := launcher.RoleInit(ctx, launcher.RoleInitConfig{
 			RoleCover: cover(), Role: *role, Generation: *generation, StatusFD: *statusFD,
 			Argv: argv, Stdout: stdout, Stderr: stderr,
 		}); err != nil {
-			fmt.Fprintln(stderr, err)
+			fmt.Fprintln(own, err)
 			return launcher.RoleInitSetupFailedExit
 		}
 		return 0
@@ -174,7 +185,9 @@ const volumeTrimDeleteUsage = "usage: legion launcher volume-trim-delete --roles
 // it, and its namespaces give it no privilege outside them, so what it can remove is what the
 // uid that started it could remove anyway. It reads no context: the sweep ends it by closing the
 // requests, and kills it if it outlives the grace. It takes no word, so a word is a usage error.
+// Its own lines pass the URL rule; stdout carries its answers to the sweep as written.
 func newVolumeTrimDeleteCommand(stdout, stderr io.Writer) *cobra.Command {
+	stderr = redact.Writer(stderr)
 	cmd := &cobra.Command{
 		Use:    strings.TrimPrefix(volumeTrimDeleteUsage, "usage: legion launcher "),
 		Short:  "the cache trimmer's deleter, which one sweep makes its removals through (the launcher runs it, never a person)",

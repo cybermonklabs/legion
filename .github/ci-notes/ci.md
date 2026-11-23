@@ -1069,11 +1069,11 @@ every job of the file but the exempt ones, and the re-run term to every job but 
 passing required check, so each refuses such an attempt in a step of its own instead.
 docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 
-Caches: one step of the jobs this workflow calls saves an Actions cache entry itself,
-dispatch-two-builds' `Cache the previous build` (ci-job-dispatch-two-builds.yaml), which keeps
-the build of the previous commit that job compares against; three actions its jobs call can
-save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
-this paragraph's end).
+Caches: two steps of the jobs this workflow calls save an Actions cache entry themselves,
+dispatch-two-builds' `Cache the previous build` and `Cache the first-rollout build`
+(ci-job-dispatch-two-builds.yaml), which keep the builds that job compares against; three
+actions its jobs call can save one too, and only in a dispatched run (setup-bun, and
+architecture-check and spec-check at this paragraph's end).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
 included). The jobs that cache Go restore, in steps of their own, one of six families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
@@ -1088,27 +1088,42 @@ and visual jobs of dispatch-browser.yaml, which build the Dispatch server and th
 broker's commands out of that same set), go-envoy-infra
 (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
-go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
-entry per runner architecture, keyed on the runner's architecture and on the Go version its
-job's setup-go installed: a build cache holds the objects of the architecture that compiled
-them, so an entry an x86_64 runner filled would give a job on ubuntu-24.04-arm its modules and
-none of its objects, so each family is filled on every runner one of its jobs runs on.
+go-docs stays with docs-pages.yaml, which saves it on that same push. Each family is kept per
+runner architecture, keyed on the runner's architecture and on the Go version its job's
+setup-go installed: a build cache holds the objects of the architecture that compiled them, so
+an entry an x86_64 runner filled would give a job on ubuntu-24.04-arm its modules and none of
+its objects, so each family is filled on every runner one of its jobs runs on.
 go-notices puts the architecture before the OS in its key and the other families put it after:
 its entry holds go-licenses, a program lint's notices step runs, and a run of a workflow file
 older than the architecture in the key restores by go-notices-<os>-, which an <os>-<arch> key
-starts with (ci-job-lint.yaml's restore step says what that did). An entry is
-refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
-build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
-go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy-infra is
-the exception: what changed under it in eleven days cost its linux vet 83 to 85% of what the
-same vet for darwin took with nothing cached, so its key carries the hash of its module files
-too, and ci-caches.yaml deletes the entry each fill replaces (its envoy-infra job says how). The
-fallback by
-prefix, when the exact key misses, now applies on every run, a dispatched one on main
-included: it was held off main so that the entry a run saved after a Go bump held nothing the
-older Go built, and no step of this workflow saves a family any more (the two check actions
-below fall back only to an entry of their own Go version, so an entry one saves holds nothing an
-older Go built). There is no browser cache beside the Go
+starts with (ci-job-lint.yaml's restore step says what that did). go-daemon, go-notices,
+go-envoy and go-envoy-test are filled on every push to main: the fill restores the newest entry
+of the family, runs on it the build the job runs, which compiles only what changed since, and
+saves the result under the job's key followed by the commit (`-${{ github.sha }}`). No entry
+carries the job's key itself, so GitHub's matching gives each job the newest entry whose key
+starts with it, the last fill's, and ci-caches.yaml's refill-superseded job then deletes every
+other entry of the family, so each family keeps one entry per runner, as before. A job that is
+downloading a deleted entry at that moment gets a cache miss: actions/cache/restore warns and the
+job goes on, compiling what the entry would have given it, slower but not failed. Their keys
+named only the Go version before, and the fill saved only when that exact key was missing, so an
+entry was filled once per Go version: on 2026-11-22 every job restored go-daemon, go-envoy and
+go-envoy-test entries saved on 2026-11-18, and at main's e7381b7d4c9 a job that restored them
+compiled again 312 of the daemon module's 335 packages and 573 of the envoy module's 618, against
+135 and 321 from an entry five merges old. The key still holds no go.sum hash: a go.sum change
+downloads only the changed modules, and Go's build cache is content-addressed, so the next fill
+compiles only what changed. go-envoy-infra keeps a key with the hash of its module files, filled
+only when that key is missing, and ci-caches.yaml deletes the entry each such fill replaces (its
+envoy-infra job says how); its save takes the key its lookup computed, since a hash of the module
+files taken after the build drifted from the lookup's and made every push build it again (run
+45088325195). What changed under it in eleven days had cost its linux vet 83 to 85%
+of what the same vet for darwin took with nothing cached. Since no entry of the four refilled
+families carries a job's key itself, every restore of them takes the newest entry by prefix, on
+main too: the key is a prefix of the fill's keys, so the dispatch-browser.yaml jobs that hold
+their restore-keys off main still find the last fill's entry. Those restore-keys were held off
+main so that the entry a run saved after a Go bump held nothing the older Go built, and no step
+of this workflow saves a family any more (the two check actions below fall back only to an entry
+of their own Go version, and a ci-caches.yaml fill builds only on an entry of its own Go, so an
+entry either one saves holds nothing an older Go built). There is no browser cache beside the Go
 families any more: dispatch-browser.yaml's shard and alone jobs run in the image this
 repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 ~/.cache/ms-playwright restore would carry nothing they do not already have, and
@@ -1637,6 +1652,9 @@ Postgres, the tools and the cache they need. It left the test job in dispatch://
 where one filter had to cover both: a change to a shell script, to packages/claude-envoy or
 to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
 and test, for the reason #the-fail-open-jobs-and-what-they-buy-while-changes-is-broken gives.
+
+It runs as two jobs of .github/workflows/ci-job-daemon-go.yaml at the same time: the race step
+in one, the rest in the other (ci-job-daemon-go.md#why-the-race-step-is-a-job-of-its-own).
 
 ## Why the three plugin pack tests are a job of their own
 

@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/config"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -209,7 +210,7 @@ func envoyJSONHome(t *testing.T) string {
 func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) http.Handler {
 	t.Helper()
 	built.Lifetime = t.Context()
-	appCtx, err := appContextFor(boot, built)
+	appCtx, err := appContextFor(t, boot, built)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}
@@ -224,15 +225,31 @@ var testSigningKey = auth.SingleSigningKey("signing-key")
 // appContextFor is routes.BuildAppContext as main calls it, with the signing key, the session store
 // and the request identity main builds for boot (requestIdentityFor) filled in, so a request
 // carrying signedIn's cookie is that person's. built.People is a store with no database unless the
-// case's requests record people (dev sign-in, a pool sign-in, header identity).
-func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+// case's requests record people (dev sign-in, a pool sign-in, header identity). A case that gives no
+// document service (built.Docs) gets one over the router's store, event broker, identity and
+// server URL, which is shut down once t ends.
+func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions) (*routes.AppContext, error) {
+	t.Helper()
 	built.SigningKey = testSigningKey
 	if built.People == nil {
 		built.People = store.NewPgPeopleStore(nil, built.SigningKey, nil)
 	}
 	built.Sessions = currentSessions{}
 	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn)
-	return routes.BuildAppContext(appContextOptions(boot, built))
+	options := appContextOptions(boot, built)
+	if options.Docs == nil {
+		if options.Events == nil {
+			options.Events = events.NewBroker()
+		}
+		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
+		t.Cleanup(func() {
+			if err := documents.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut the document service down: %v", err)
+			}
+		})
+		options.Docs = documents
+	}
+	return routes.BuildAppContext(options)
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a
@@ -286,11 +303,12 @@ func devSignIn(t *testing.T, boot bootConfig, login string) *httptest.ResponseRe
 }
 
 // signInPool is a sign-in pool on this machine with Dispatch's app client, clientID and
-// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case.
+// clientSecret, the one DISPATCH_SIGNIN_ISSUER names in a case, registering the callback the
+// router signInRouter builds names for the Host startSignIn's request carries, dispatch.test.
 func signInPool(t *testing.T, clientID, clientSecret string) *oidctest.Issuer {
 	t.Helper()
 	pool := oidctest.New(t)
-	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret)
+	pool.EnableCodeFlow(pool.PublishKey(t, "signing-key"), clientID, clientSecret, "http://dispatch.test/auth/callback")
 	return pool
 }
 
@@ -2210,7 +2228,13 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		if got := capOf(newDocumentService(boot, docs.Deps{}).RoomCapsForTest()); got != want {
+		documents := newDocumentService(boot, docs.Deps{})
+		t.Cleanup(func() {
+			if err := documents.Shutdown(context.Background()); err != nil {
+				t.Errorf("shut the document service down: %v", err)
+			}
+		})
+		if got := capOf(documents.RoomCapsForTest()); got != want {
 			t.Errorf("%s=%q: the document service's cap is %d, want %d", name, value, got, want)
 		}
 	}

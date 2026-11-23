@@ -338,7 +338,7 @@ func (r *busyRelaunchLive) seed() {
 	for _, pane := range r.panes {
 		r.board.show(pane.issue, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		keys := make([]string, 0, len(r.panes))
 		for _, pane := range r.panes {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
@@ -1396,7 +1396,13 @@ func readStandinRequest(body []byte, at time.Time) seenRequest {
 		conversation.WriteString(text)
 	}
 	seen.conversation = conversation.String()
-	last := request.Messages[len(request.Messages)-1]
+	// The newest message the session sent: past any date/cwd reminder the host sends after it
+	// (isDateCwdReminder), which on a run that crosses midnight would read as a prompt.
+	newest := len(request.Messages) - 1
+	for newest > 0 && isDateCwdReminder(request.Messages[newest].Content) {
+		newest--
+	}
+	last := request.Messages[newest]
 	text, prompted := contentText(last.Content)
 	seen.last, seen.prompt = text, prompted && last.Role == "user"
 	return seen

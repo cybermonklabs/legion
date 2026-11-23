@@ -48,6 +48,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -358,7 +359,7 @@ func (r *claimCompactionLive) seed() {
 	for _, seeded := range r.seededPanes() {
 		r.board.show(seeded.issue, "in_progress")
 	}
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		for _, seeded := range r.seededPanes() {
 			if err := r.records.PutIssue(ctx, tx, record.Issue{
 				Key: seeded.issue, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: seeded.issue,
@@ -1807,16 +1808,57 @@ func (s *paneStandin) turnsHolding(marker string) int {
 }
 
 // isSideQuestion is whether a Messages request is the plugin's own side question rather than a
-// turn of the task: its last message carries the `<btw>` tag, which is how the plugins' own pane
-// harness tells the two apart (packages/pi-shared/test/omp-harness.ts:528-531, `isSelfCheck`).
-// Such a question rides beside the task's turns, so a proof that counts how often a task was put
-// in front of the agent counts turns and not requests.
+// turn of the task: its newest message, past the host's own date/cwd reminders
+// (isDateCwdReminder), carries the `<btw>` tag, which is how the plugins' own pane harness tells
+// the two apart (packages/pi-shared/test/omp-harness.ts, `isSelfCheck`). Such a question rides
+// beside the task's turns, so a proof that counts how often a task was put in front of the agent
+// counts turns and not requests.
 func isSideQuestion(body string) bool {
 	var request struct {
 		Messages []json.RawMessage `json:"messages"`
 	}
-	if json.Unmarshal([]byte(body), &request) != nil || len(request.Messages) == 0 {
+	if json.Unmarshal([]byte(body), &request) != nil {
 		return false
 	}
-	return strings.Contains(string(request.Messages[len(request.Messages)-1]), "<btw>")
+	for i := len(request.Messages) - 1; i >= 0; i-- {
+		var message struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(request.Messages[i], &message) == nil && isDateCwdReminder(message.Content) {
+			continue
+		}
+		return strings.Contains(string(request.Messages[i]), "<btw>")
+	}
+	return false
+}
+
+// dateCwdReminder is Oh My Pi's date/cwd reminder when it sends it as a message of its own: the
+// whole text of the message is the reminder. The host sends it so, after a request's newest
+// message, when the local date or the working directory has changed since the session's previous
+// request and that request holds no new user turn to prefix it to, as on a run that crosses
+// midnight; ownMessages in packages/pi-shared/test/omp-harness.ts says where that was measured.
+var dateCwdReminder = regexp.MustCompile(`^<system-reminder>\nToday: [^\n]*\n</system-reminder>$`)
+
+// isDateCwdReminder is whether a message's content is one of the host's own date/cwd reminders:
+// all of it is text, and that text is the reminder and nothing else.
+func isDateCwdReminder(content json.RawMessage) bool {
+	var plain string
+	if json.Unmarshal(content, &plain) == nil {
+		return dateCwdReminder.MatchString(plain)
+	}
+	var blocks []struct {
+		Type string  `json:"type"`
+		Text *string `json:"text"`
+	}
+	if json.Unmarshal(content, &blocks) != nil || len(blocks) == 0 {
+		return false
+	}
+	var text strings.Builder
+	for _, block := range blocks {
+		if block.Type != "text" || block.Text == nil {
+			return false
+		}
+		text.WriteString(*block.Text)
+	}
+	return dateCwdReminder.MatchString(text.String())
 }

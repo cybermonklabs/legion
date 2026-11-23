@@ -1,6 +1,7 @@
 import { rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import sessionGrantFixture from "../../contracts/fixtures/session-grant.json";
 
 /**
  * The NATS server image the tests run; CI pulls it before the tests.
@@ -35,6 +36,79 @@ export interface NatsServer {
    * killed throws naming the container.
    */
   stop(deadline: number): Promise<void>;
+  /**
+   * The server's own log so far (nats-server writes it to stderr), where it names every publish
+   * it refused: `Publish Violation`, then the subject. The `docker logs` call is killed at
+   * `deadline` (a `performance.now()` reading), and one that fails throws naming the container.
+   */
+  log(deadline: number): Promise<string>;
+}
+
+/**
+ * The authorization of a server whose one requester may do anything, as the listener and Dispatch
+ * may, and whose session user holds the grant the NATS auth service gives one session. That grant
+ * is `natsgrant.Session` itself: packages/envoy/natsgrant's TestTheSessionGrantFixtureIsNatsgrantSession
+ * writes it to packages/contracts/fixtures/session-grant.json for a placeholder id and fails when
+ * the two drift, and this reads the fixture with the placeholder swapped, token by token, for
+ * `sessionID`. Each user is the nkey whose public key is named. A row's requester asks the
+ * session on a reply subject {@link sessionReplySubject} makes, and the session answers on
+ * whatever reply subject it is handed.
+ */
+export function sessionGrantConfig(options: {
+  readonly sessionID: string;
+  readonly sessionKey: string;
+  readonly requesterKey: string;
+}): string {
+  const { sessionID, sessionKey, requesterKey } = options;
+  const placeholder = sessionGrantFixture.session_id;
+  const list = (subjects: readonly string[]) =>
+    subjects
+      .map((subject) =>
+        JSON.stringify(
+          subject
+            .split(".")
+            .map((token) => (token === placeholder ? sessionID : token))
+            .join(".")
+        )
+      )
+      .join(", ");
+  // The fixture writes a deny list only where natsgrant.Session sets one.
+  const fixture: {
+    readonly publish: readonly string[];
+    readonly subscribe: readonly string[];
+    readonly publish_deny?: readonly string[];
+    readonly subscribe_deny?: readonly string[];
+  } = sessionGrantFixture;
+  const rules = (allow: readonly string[], deny: readonly string[] | undefined) =>
+    deny === undefined || deny.length === 0
+      ? `{ allow: [${list(allow)}] }`
+      : `{ allow: [${list(allow)}], deny: [${list(deny)}] }`;
+  const publish = rules(fixture.publish, fixture.publish_deny);
+  const subscribe = rules(fixture.subscribe, fixture.subscribe_deny);
+  return `jetstream {}
+authorization {
+  users = [
+    { nkey: ${JSON.stringify(requesterKey)} }
+    { nkey: ${JSON.stringify(sessionKey)}, permissions: { publish: ${publish}, subscribe: ${subscribe} } }
+  ]
+}
+`;
+}
+
+/** The 32 letters and digits of Go's crypto/rand.Text, which the listener's and Dispatch's
+ *  reply tokens are written in. */
+const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/**
+ * A reply subject a listener or Dispatch asks session `sessionID` on: `inbox`, then the session's
+ * id, then 26 random characters, as `bus.SessionReplySubject` makes it.
+ */
+export function sessionReplySubject(inbox: string, sessionID: string): string {
+  const token = Array.from(
+    crypto.getRandomValues(new Uint8Array(26)),
+    (byte) => TOKEN_ALPHABET[byte % TOKEN_ALPHABET.length]
+  ).join("");
+  return `${inbox}.${sessionID}.${token}`;
 }
 
 /** Runs `docker args…` and returns its stdout and stderr, trimmed. It throws on a non-zero exit,
@@ -212,6 +286,15 @@ export function natsServerWithConfig(directory: string, configuration: string): 
       } finally {
         rmSync(config, { force: true });
       }
+    },
+    async log(deadline) {
+      // `docker logs` splits the container's output into the two streams it was written to.
+      const { stdout, stderr } = await docker(deadline, "the log read's", "logs", name).catch(
+        (error: unknown) => {
+          throw new Error(`NATS container ${name}: its docker logs failed: ${reason(error)}`);
+        }
+      );
+      return `${stdout}\n${stderr}`;
     },
   };
 }

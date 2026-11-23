@@ -35,6 +35,7 @@ import {
   headerLabels,
   headerParts,
   holdClipboard,
+  holdFrames,
   holdLabelsAtTheirChips,
   holdReviewReads,
   IPHONE_13,
@@ -3181,6 +3182,52 @@ test("a change request sent from the header leaves the focus in the header", asy
         `the change request sent from ${from} left the focus on ${focus.what}`
       ).toBe(false);
     }
+  });
+});
+
+// Request changes gives its Reason the focus a frame after it opens, and a loaded machine draws
+// that frame late. A key typed into the dialog before that frame presses nothing behind it: the
+// dialog holds the focus itself from the moment it opens. Shift+R opens it from Approve, so a
+// Space that reached Approve would approve the document. The page's frames are held while the row
+// types, then let go.
+// SLOW(>=2s): 2.2 to 2.5 s in three one-worker runs on a dev box: one load after an approval
+// request, Shift+R and the typing with the page's frames held, two frames once they go, and
+// Escape.
+test("a key typed into Request changes in its first frame presses no Approve behind it", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    const reviewed = reviewsSent(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const approve = header.getByRole("button", { exact: true, name: "Approve" });
+    await expect(approve, "the chip carries no Approve while its request waits").toBeVisible();
+    await approve.focus();
+    await expect(approve).toBeFocused();
+
+    const frames = await holdFrames(page);
+    await page.keyboard.press("Shift+R");
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    await expect(dialog, "Shift+R on Approve opened no Request changes").toBeVisible();
+    await page.keyboard.type("One change.");
+    await frames.release();
+    await framesDrawn(page, 2);
+
+    expect(reviewed, "a key typed in Request changes' first frame sent a review").toEqual([]);
+    expect(
+      (await getArtifact(seeded.specArtifactId)).approval?.state,
+      "a key typed in Request changes' first frame answered the request"
+    ).toBe("awaiting");
+    await expect(
+      dialog.getByRole("textbox", { name: "Reason" }),
+      "the frame after Request changes opened gave its Reason no focus"
+    ).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(dialog, "Escape left Request changes open").toHaveCount(0);
   });
 });
 

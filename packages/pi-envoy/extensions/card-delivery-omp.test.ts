@@ -10,6 +10,7 @@ import {
   deliveryFor,
   isSummarization,
   messageStream,
+  newestMessage,
   ompNatsGuard,
   ompRoot,
   type Request,
@@ -61,12 +62,6 @@ afterEach(async () => {
 /** A Messages request's conversation, as one string to find texts and their order in. */
 function conversation(request: Request): string {
   return JSON.stringify(request.body.messages ?? null);
-}
-
-/** The text of a Messages request's last message: what the turn it answers was started on. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
 }
 
 function text(reply: string): Block {
@@ -536,7 +531,7 @@ async function probe(session: CardSession, expected: number): Promise<Request> {
     const extra = session.turns[expected];
     if (extra !== undefined) {
       throw new Error(
-        `Messages request ${expected} came before the probe, on ${lastMessage(extra.request)}`
+        `Messages request ${expected} came before the probe, on ${newestMessage(extra.request.body)}`
       );
     }
     return (await session.state()).isSettled ? true : undefined;
@@ -546,7 +541,7 @@ async function probe(session: CardSession, expected: number): Promise<Request> {
   await session.command({ type: "prompt", message: prompt });
   const turn = await session.nextTurn("the probe's model request");
   expect(turn.index).toBe(expected);
-  expect(lastMessage(turn.request)).toContain(prompt);
+  expect(newestMessage(turn.request.body)).toContain(prompt);
   turn.reply([text("Probe answered.")]);
   await session.settled();
   expect(session.turns.length).toBe(expected + 1);
@@ -727,7 +722,7 @@ test.skipIf(skip)(
     const first = await session.card("c1");
     const cardTurn = await session.nextTurn("the turn the idle card's wake started");
     expect(conversation(cardTurn.request)).toContain(first);
-    expect(lastMessage(cardTurn.request)).toMatch(WAKE_TEXT);
+    expect(newestMessage(cardTurn.request.body)).toMatch(WAKE_TEXT);
     cardTurn.reply([text("Read the first card.")], 150_000);
 
     const summary = await session.nextTurn("the automatic compaction's summary request");
@@ -744,7 +739,7 @@ test.skipIf(skip)(
       woken = await session.nextTurn("the turn the folded card got");
     }
     expect(conversation(woken.request)).toContain(late);
-    const startedBy = lastMessage(woken.request);
+    const startedBy = newestMessage(woken.request.body);
     expect(WAKE_TEXT.test(startedBy) || startedBy.includes(late)).toBe(true);
     // The card-started run ended with a continuation still owed: the late aside.
     const agentEndsSince = (from: number): object[] =>
@@ -795,13 +790,13 @@ test.skipIf(skip)(
     const first = await session.card("d1");
     const woken = await session.nextTurn("the turn the first idle card's wake started");
     expect(conversation(woken.request)).toContain(first);
-    expect(lastMessage(woken.request)).toMatch(WAKE_TEXT);
+    expect(newestMessage(woken.request.body)).toMatch(WAKE_TEXT);
     woken.reply([text("Read the first card.")]);
     await session.settled();
 
     const card = await session.card("d2");
     const turn = await session.nextTurn("the turn the idle card started");
-    expect(lastMessage(turn.request)).toContain(card);
+    expect(newestMessage(turn.request.body)).toContain(card);
     turn.reply([text("Read the card.")]);
     await probe(session, turn.index + 1);
 
@@ -928,7 +923,7 @@ test.skipIf(skip)(
 
     const messages = conversation(woken.request);
     for (const card of cards) expect(messages).toContain(card);
-    expect(lastMessage(woken.request)).toMatch(WAKE_TEXT);
+    expect(newestMessage(woken.request.body)).toMatch(WAKE_TEXT);
     woken.reply([text("Read the startup cards.")]);
     await probe(session, woken.index + 1);
   },

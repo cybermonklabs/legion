@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -107,7 +108,7 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 		return "", nil, fmt.Errorf("decode the news the task held for %s carries: %w", c.Token, err)
 	}
 	var sent renderedNews
-	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		sent, err = renderNews(ctx, tx, w.records, w.gatedSteps, c.Token, carried, d.News, d.RoundNamed, time.Now)
 		return err

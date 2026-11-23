@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // The other half of the backfill, and the one the release ships against: a root whose first spec
@@ -31,7 +32,7 @@ func TestTheMigrationLeavesTheGateOfARootWaitingOnItsFirstApprovalUnopened(t *te
 	pool := st.Pool()
 	records := record.NewStore()
 	waiting := bootProject + "-1"
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		// The root as the pre-release daemon left it: version 1 of its spec with a person, the
 		// wait recorded, and the row it keeps while that wait lasts.
 		root := bootIssue(waiting, waiting, "in_progress", phase.AwaitingPerson)
@@ -70,7 +71,7 @@ func TestTheMigrationReadsAMemberInAPhaseAsAGateThatOpened(t *testing.T) {
 	pool := st.Pool()
 	records := record.NewStore()
 	root, child := bootProject+"-3", bootProject+"-4"
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, bootIssue(root, root, "in_progress", phase.Admitted)); err != nil {
 			return err
 		}
