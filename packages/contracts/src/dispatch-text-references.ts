@@ -48,6 +48,11 @@ export interface DispatchTextReferenceRow {
   inCode?: readonly string[];
   /** Only a reader of the bare key, `#id` and prefix grammar writes this row's `refs`. */
   grammar?: true;
+  /** The lists of issues the text writes (`dispatch://issues?<query>`), each once, in order of
+   *  first appearance, each as the list its query chooses: two references whose parameters
+   *  stand in another order, or repeat a value, are one list. A list names no node, so it is
+   *  never among `refs` and nothing links it; omitted, the text writes none. */
+  lists?: readonly string[];
 }
 
 /** The rows written out, which are every row but the code-context ones (`CODE_CONTEXT`) and the
@@ -306,6 +311,32 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     refs: ["dispatch://CORE/component/dispatch-server"],
   },
   { body: "No component: dispatch://CORE/component/Dispatch_Server here.", refs: [] },
+  // A list of issues a query chooses: no node, so the text cites nothing, and each reader reads
+  // the query's fields. The order of the parameters, a repeated value and the spelling of a
+  // space change no list.
+  {
+    body: "Lists dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0 and dispatch://issues?priority=P0&status=todo&label=overnight&project=OSSV&project=INFRA here.",
+    refs: [],
+    lists: ["dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0"],
+  },
+  {
+    body: "Lists dispatch://issues?label=needs+review&label=needs%20review&status=in_progress&status=done&status=in_progress and dispatch://issues?priority=none.",
+    refs: [],
+    lists: [
+      "dispatch://issues?label=needs%20review&status=done&status=in_progress",
+      "dispatch://issues?priority=none",
+    ],
+  },
+  // A parameter the form does not take, a value outside its field's words and an empty value
+  // make no list, and so does the form with no query, a path or a fragment.
+  {
+    body: "No list: dispatch://issues?assignee=x, dispatch://issues?priority=P7 and dispatch://issues?label= here.",
+    refs: [],
+  },
+  {
+    body: "Nor dispatch://issues, dispatch://issues?project=infra, dispatch://issues?status=almost, dispatch://issues?priority=p0, dispatch://issues/?label=x or dispatch://issues?label=x#b-1.",
+    refs: [],
+  },
   // A picture's address is read through the image syntax that shows it.
   {
     body: "![shot.png](dispatch://LEGION-1/artifact/shot-png@v1)",
@@ -943,6 +974,15 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
  * `dispatch://CORE-1/plan` and `https://dispatch.test/issues/CORE-1/plan` each cite
  * `dispatch://CORE-1`; a document's page reads the same at `artifacts/<slug>` and at
  * `artifact/<slug>`.
+ *
+ * A list of issues, `dispatch://issues?<query>`, names no node, so a text cites none and nothing
+ * links one; each reader reads its query into the `lists` a row names. The query takes
+ * `project` (a project key), `status` (a status of the lifecycle, `ISSUE_STATUSES`), `label`
+ * (any value but an empty one) and `priority` (`P0` to `P3`, or `none`), each as often as it
+ * likes, read as `URLSearchParams` reads a query. Another parameter, an empty value, a value
+ * outside its field's words or a control character in a value makes no list, and so do the form
+ * with no query, with a path and with a fragment. A list is its fields' values, each once and in
+ * code-unit order, so the order of the parameters and a repeated value change none.
  *
  * A text also cites what it writes bare: an issue key (`CORE-12`) that names an existing issue,
  * as `dispatch://CORE-12`, and `#` with the id of a question block of the text's document, as

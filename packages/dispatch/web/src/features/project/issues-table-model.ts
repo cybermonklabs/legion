@@ -3,6 +3,7 @@ import type { ColumnFiltersState, GroupingState, SortingState } from "@tanstack/
 import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
+import type { IssueListQuery } from "../refs/routes";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
 import type { LayoutColumns } from "./issues-table-layout";
 
@@ -297,8 +298,9 @@ const phoneMin = (id: ColumnId): number => COMPACT_COLUMN_MIN[id] ?? COLUMN_MIN[
  * width and never below its minimum, with Updated hidden until a reader shows it. Select,
  * Priority, Key and Title stay pinned within 60% of a box 640 px wide or wider, Title narrowing
  * first; on a phone, where the key and the title are what identify a row, Select, Key and Title
- * stay pinned within 85% of the box, Key at its phone width and Title taking what is left down
- * to its phone minimum, so an edge of the next column shows the table scrolls sideways. Every
+ * stay pinned within 85% of the box, Key as wide as the widest key the rows draw and never
+ * narrower than its phone width, and Title taking what is left down to its phone minimum, so an
+ * edge of the next column shows the table scrolls sideways. Every
  * saved `dispatch.project-table.<key>` record was written for these columns, whether its key is
  * a project or the one key every table scoped to a priority shares (`IssuesTable`).
  */
@@ -314,6 +316,8 @@ export const ISSUE_TABLE_COLUMNS: LayoutColumns = {
       share: 0.85,
       widths: { key: phoneMin("key") },
       flexibleMin: phoneMin("title"),
+      // A key is as long as its number: the column is as wide as the widest key the rows draw.
+      measured: "key" satisfies ColumnId,
     },
     flexible: "title" satisfies ColumnId,
   },
@@ -534,7 +538,68 @@ const paramFor = (id: string) => {
 const columnForParam: ReadonlyMap<string, string> = new Map(
   COLUMNS.map((column) => [paramFor(column.id), column.id])
 );
-const defaultSort = defaultView.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
+/** A sort as the address writes it: each column id, `-` before it for a descending one. */
+const sortParam = (sorting: SortingState) =>
+  sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
+
+/**
+ * The view a table starts from where its address says nothing: its sort, its filters and its page
+ * size, and whether it reads the address's bare `only=` narrowing (`readSelection`). The address
+ * holds only what the reader changed from it (`writeUrl`), and `readUrl` puts the rest back.
+ */
+export interface StartView {
+  readonly sorting: SortingState;
+  readonly filters: ColumnFiltersState;
+  readonly pageSize: number;
+  readonly readsSelection: boolean;
+}
+/** The Issues tab's start, and every priority page's: the not-done Status filter, the Queue sort
+ *  and the `only=` narrowing a number clicked elsewhere sends (`defaultView`). */
+export const issuesTabStart: StartView = {
+  sorting: defaultView.sorting,
+  filters: defaultView.filters,
+  pageSize: defaultView.pageSize,
+  readsSelection: true,
+};
+/**
+ * The start of a list of issues a document holds (`IssueListQuery`): the query's statuses and
+ * priorities as the picks of the Status and Priority filters, where the reader sees and changes
+ * them, and nothing else - no sort, so the rows stand in the server's order, no group, no search,
+ * no `only=` - so a list hides nothing its query and its controls do not show
+ * (dispatch://INFRA-4935/spec#b-r-visible-filters). The Priority column picks `0` to `3`, and
+ * the empty value for no priority.
+ */
+export function issueQueryStart(query: IssueListQuery): StartView {
+  return {
+    sorting: [],
+    filters: [
+      ...(query.statuses.length === 0 ? [] : [{ id: "status", value: [...query.statuses] }]),
+      ...(query.priorities.length === 0
+        ? []
+        : [
+            {
+              id: "priority",
+              value: query.priorities.map((priority) =>
+                priority === "none" ? "" : priority.slice(1)
+              ),
+            },
+          ]),
+    ],
+    pageSize: defaultView.pageSize,
+    readsSelection: false,
+  };
+}
+/** The `nofilter` value that says the reader took a start filter of column `id` off: `1` for
+ *  Status, which every address has written since the Issues tab first took its filter off, and
+ *  the column's id for any other. */
+const noFilterValue = (id: string) => (id === "status" ? "1" : id);
+/** Whether two filter values pick the same values, in any order. */
+function samePicks(one: unknown, other: unknown): boolean {
+  const picks = (value: unknown) => (Array.isArray(value) ? value.map(String) : [String(value)]);
+  const left = picks(one);
+  const right = picks(other);
+  return left.length === right.length && left.every((value) => right.includes(value));
+}
 /** What a narrowing that names itself in no other way is called. */
 const DEFAULT_SELECTION_LABEL = "Selected issues";
 
@@ -590,7 +655,11 @@ const viewName = (key: string, stateKey: string | undefined): string | undefined
       ? key.slice(stateKey.length + 1)
       : undefined;
 
-export function readUrl(params: URLSearchParams, stateKey?: string): View {
+export function readUrl(
+  params: URLSearchParams,
+  stateKey?: string,
+  start: StartView = issuesTabStart
+): View {
   const key = (name: string) => viewKey(name, stateKey);
   const sorting = (params.get(key("sort")) ?? "")
     .split(",")
@@ -626,8 +695,14 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
         ...new Set([...(Array.isArray(claim.value) ? claim.value : []), UNCLAIMED_FACET]),
       ];
   }
-  if (!params.has(key("status")) && !params.has(key("nofilter")))
-    filters.unshift(...defaultView.filters);
+  // Each start filter stands unless the address picks that column's values itself or says the
+  // reader took the filter off (`nofilter`).
+  const takenOff = params.getAll(key("nofilter"));
+  filters.unshift(
+    ...start.filters.filter(
+      ({ id }) => !params.has(key(paramFor(id))) && !takenOff.includes(noFilterValue(id))
+    )
+  );
   const page = Number(params.get(key("page")));
   const size = Number(params.get(key("size")));
   return {
@@ -636,22 +711,21 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
         ? []
         : sorting.length
           ? sorting
-          : defaultView.sorting,
+          : start.sorting,
     grouping: canGroupBy(grouping) ? [grouping] : [],
     filters,
     search: capSearchQuery(params.get(key("q")) ?? ""),
     page: Number.isSafeInteger(page) && page > 0 ? page - 1 : 0,
-    pageSize: PAGE_SIZES.includes(size) ? size : defaultView.pageSize,
-    selection: readSelection(params),
+    pageSize: PAGE_SIZES.includes(size) ? size : start.pageSize,
+    selection: start.readsSelection ? readSelection(params) : null,
   };
 }
-/** Whether a status pick is exactly the set the table opens with. */
-function isDefaultStatus(value: unknown): boolean {
-  const picked = Array.isArray(value) ? value.map(String) : [];
-  const fallback = (defaultView.filters[0]?.value ?? []) as string[];
-  return picked.length === fallback.length && fallback.every((status) => picked.includes(status));
-}
-export function writeUrl(params: URLSearchParams, state: View, stateKey?: string): URLSearchParams {
+export function writeUrl(
+  params: URLSearchParams,
+  state: View,
+  stateKey?: string,
+  start: StartView = issuesTabStart
+): URLSearchParams {
   const key = (name: string) => viewKey(name, stateKey);
   const next = new URLSearchParams(params);
   for (const param of [...next.keys()]) {
@@ -664,16 +738,18 @@ export function writeUrl(params: URLSearchParams, state: View, stateKey?: string
     )
       next.delete(param);
   }
-  // A control left at its default says nothing, so a shared link carries only what was changed.
-  const sort = state.sorting.map(({ id, desc }) => `${desc ? "-" : ""}${id}`).join(",");
-  if (sort !== defaultSort) next.set(key("sort"), sort);
+  // A control left where the table starts says nothing, so a shared link carries only what was
+  // changed, and `readUrl` puts the rest back.
+  const sort = sortParam(state.sorting);
+  if (sort !== sortParam(start.sorting)) next.set(key("sort"), sort);
   if (state.grouping[0]) next.set(key("group"), state.grouping[0]);
-  if (!state.filters.some(({ id }) => id === "status")) next.set(key("nofilter"), "1");
+  // `nofilter` is how a start filter the reader took off stays off.
+  for (const { id } of start.filters)
+    if (!state.filters.some((filter) => filter.id === id))
+      next.append(key("nofilter"), noFilterValue(id));
   for (const filter of state.filters) {
-    // The open statuses are what the table shows when nothing says otherwise, so a link that
-    // carries them says nothing; `readUrl` puts them back, and `nofilter=1` is how an empty
-    // selection stays expressible.
-    if (filter.id === "status" && isDefaultStatus(filter.value)) continue;
+    const started = start.filters.find(({ id }) => id === filter.id);
+    if (started !== undefined && samePicks(started.value, filter.value)) continue;
     const values = Array.isArray(filter.value) ? filter.value : [filter.value];
     for (const value of values) {
       if (filter.id === "claim" && value === UNCLAIMED_FACET) next.set(key("unclaimed"), "1");
@@ -682,7 +758,9 @@ export function writeUrl(params: URLSearchParams, state: View, stateKey?: string
   }
   if (state.search) next.set(key("q"), state.search);
   if (state.page) next.set(key("page"), String(state.page + 1));
-  if (state.pageSize !== defaultView.pageSize) next.set(key("size"), String(state.pageSize));
+  if (state.pageSize !== start.pageSize) next.set(key("size"), String(state.pageSize));
+  // A table that reads no `only=` leaves it to the table that does.
+  if (!start.readsSelection) return next;
   // The narrowing belongs to the address rather than to one table's view, so it is written
   // bare under every `stateKey`, and `clearPicked` is what takes it off.
   next.delete("only");

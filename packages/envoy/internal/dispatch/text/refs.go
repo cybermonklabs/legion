@@ -7,7 +7,10 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // referenceEnd is every character that ends a reference: whitespace (the Unicode space separators
@@ -355,6 +358,80 @@ func parseDispatch(value string) (Ref, bool) {
 // (api.commentPartiesOf). Its twin on the web is isPartyRoute in `party-references.ts`.
 func (r Ref) IsParty() bool {
 	return r.Kind == "session" || r.Kind == "role" || r.Kind == "person"
+}
+
+// IssueList is a list of issues a text writes as `dispatch://issues?<query>`: the projects,
+// statuses, labels and priorities its query chooses by, each value once and in UTF-16 code-unit
+// order, the order the dashboard's reader sorts in (`parseIssueListReference` in
+// `features/refs/routes.ts`), so the order of the parameters and a repeated value change no
+// list. A field with no value chooses by nothing. A list names no node, so Extract cites none and
+// the graph indexes none; the dashboard draws one where a document writes it on a line of its
+// own. The `lists` of `testdata/dispatch-text-references.json` are what both readers are held to.
+type IssueList struct {
+	Projects   []string
+	Statuses   []string
+	Labels     []string
+	Priorities []string
+}
+
+// issueListReference is what every list's reference starts with.
+const issueListReference = "dispatch://issues?"
+
+// issueListPriorities are the priorities a list's query names, the names the issues table
+// gives them.
+var issueListPriorities = []string{"P0", "P1", "P2", "P3", "none"}
+
+// ParseIssueList reads value, one reference span as Extract finds and trims it, as a list of
+// issues: `dispatch://issues?` and a query of `project` (a project key), `status` (a status of
+// model.IssueStatuses), `label` (any value but an empty one) and `priority` (P0 to P3, or none),
+// each as often as it likes, read as the browser's URLSearchParams reads a query
+// (searchParams). Another parameter, an empty value, a value outside its field's words, a
+// control character, a fragment, and a query with no parameter at all make no list.
+func ParseIssueList(value string) (IssueList, bool) {
+	query, ok := strings.CutPrefix(value, issueListReference)
+	if !ok || hasControl(value) || strings.Contains(query, "#") {
+		return IssueList{}, false
+	}
+	var list IssueList
+	named := false
+	for pair := range strings.SplitSeq(query, "&") {
+		if pair == "" {
+			continue
+		}
+		rawName, rawValue, _ := strings.Cut(pair, "=")
+		name, field := formDecode(rawName), formDecode(rawValue)
+		if field == "" || hasControl(field) {
+			return IssueList{}, false
+		}
+		switch {
+		case name == "project" && projectKeyPattern.MatchString(field):
+			list.Projects = append(list.Projects, field)
+		case name == "status" && slices.Contains(model.IssueStatuses, field):
+			list.Statuses = append(list.Statuses, field)
+		case name == "label":
+			list.Labels = append(list.Labels, field)
+		case name == "priority" && slices.Contains(issueListPriorities, field):
+			list.Priorities = append(list.Priorities, field)
+		default:
+			return IssueList{}, false
+		}
+		named = true
+	}
+	if !named {
+		return IssueList{}, false
+	}
+	for _, values := range []*[]string{&list.Projects, &list.Statuses, &list.Labels, &list.Priorities} {
+		slices.SortFunc(*values, compareUTF16)
+		*values = slices.Compact(*values)
+	}
+	return list, true
+}
+
+// compareUTF16 orders two strings by their UTF-16 code units, the order JavaScript's sort
+// compares strings in. Go's own order compares UTF-8 bytes, which differs from it once a value
+// holds a character outside the Basic Multilingual Plane.
+func compareUTF16(a, b string) int {
+	return slices.Compare(utf16.Encode([]rune(a)), utf16.Encode([]rune(b)))
 }
 
 // parseAgentArtifact reads what an agent's session owns, `artifact/<slug>` with an optional

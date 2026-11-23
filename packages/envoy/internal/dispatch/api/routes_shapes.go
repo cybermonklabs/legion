@@ -176,8 +176,9 @@ type issueListQuery struct {
 	// Pinned, `true`, lists the caller's pinned issues; it needs the person scope, the pins
 	// being one person's.
 	Pinned bool `query:"pinned"`
-	// Project lists one project's issues.
-	Project string `query:"project"`
+	// Project, repeatable, lists the issues of any of these projects; none, or only blank ones,
+	// is every project.
+	Project []string `query:"project"`
 	// Status, repeatable, lists issues standing in any of these statuses; none, or only blank
 	// ones, is every status. A value is matched as written, so one the lifecycle does not hold
 	// matches no issue and is never refused: alone it lists none, beside another it adds nothing.

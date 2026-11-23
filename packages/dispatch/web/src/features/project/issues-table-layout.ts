@@ -21,12 +21,15 @@ export interface LayoutPins {
   readonly wide: { readonly columns: readonly string[]; readonly share: number };
   /** In a narrower box, a phone's: these columns, left to right, within `share` of it. Each
    *  column of `widths` is drawn at that width whatever the reader dragged, and `flexible` takes
-   *  what the others leave, between `flexibleMin` and its own width. */
+   *  what the others leave, between `flexibleMin` and its own width. `measured` is drawn as wide
+   *  as the widest content its cells hold among the rows drawn, plus the cells' padding, and never
+   *  narrower than its `widths` entry: a fixed width cuts a key longer than the one it was set for. */
   readonly phone: {
     readonly columns: readonly string[];
     readonly share: number;
     readonly widths: Readonly<Record<string, number>>;
     readonly flexibleMin: number;
+    readonly measured?: string;
   };
   /** The pinned column that gives up width so the others fit. */
   readonly flexible: string;
@@ -53,6 +56,8 @@ export interface TableLayoutModel {
   readonly attachBox: (node: HTMLDivElement | null) => void;
   readonly boxHeight: number;
   readonly boxWidth: number;
+  /** Measures the box and the rows drawn in it again: the table calls it when its rows change. */
+  readonly measure: () => void;
   readonly order: ColumnOrderState;
   readonly pagerRef: RefObject<HTMLDivElement | null>;
   /** The widths the window allows and the columns pinned at its left. */
@@ -63,6 +68,65 @@ export interface TableLayoutModel {
   readonly setVisibility: Dispatch<SetStateAction<VisibilityState>>;
   readonly sizing: ColumnSizingState;
   readonly visibility: VisibilityState;
+}
+
+/** The horizontal padding of a cell, 8 px on each side (`px-2`), which a measured column adds
+ *  to the widest content its cells hold. */
+const CELL_PADDING = 16;
+
+/**
+ * The widths `columns` are drawn at in a box `boxWidth` wide, and the columns pinned at its left:
+ * each at the reader's width (`sizing`), else its starting width, never below its minimum; on a
+ * phone the measured column at `measuredWidth` and its cells' padding, never below its phone
+ * width, and the flexible column taking what the pinned ones leave of the box's share.
+ */
+export function fitColumns(
+  columns: LayoutColumns,
+  sizing: ColumnSizingState,
+  boxWidth: number,
+  measuredWidth: number
+): { sizing: ColumnSizingState; pinned: string[] } {
+  const { ids, minimums = {}, pins, sizes = {} } = columns;
+  // Each column at the reader's width, else its starting width, never below its minimum; a
+  // column with neither keeps the width its definition gives it.
+  const widths: ColumnSizingState = Object.fromEntries(
+    ids.flatMap((id): [string, number][] => {
+      const width = sizing[id] ?? sizes[id];
+      return width === undefined ? [] : [[id, Math.max(minimums[id] ?? 0, width)]];
+    })
+  );
+  if (pins === undefined) return { sizing: widths, pinned: [] };
+  const { flexible, phone, wide } = pins;
+  const covered = (pinned: readonly string[]) =>
+    pinned.reduce((sum, id) => sum + (widths[id] ?? 0), 0);
+  const flexibleWidth = widths[flexible];
+  if (boxWidth < 640) {
+    Object.assign(widths, phone.widths);
+    if (phone.measured !== undefined && measuredWidth > 0)
+      widths[phone.measured] = Math.max(
+        widths[phone.measured] ?? 0,
+        Math.ceil(measuredWidth) + CELL_PADDING
+      );
+    if (flexibleWidth !== undefined)
+      widths[flexible] = Math.max(
+        phone.flexibleMin,
+        Math.min(
+          flexibleWidth,
+          boxWidth * phone.share - covered(phone.columns.filter((id) => id !== flexible))
+        )
+      );
+    return { sizing: widths, pinned: [...phone.columns] };
+  }
+  const budget = boxWidth * wide.share;
+  const pinned = [...wide.columns];
+  if (flexibleWidth !== undefined)
+    widths[flexible] = Math.max(
+      minimums[flexible] ?? 0,
+      flexibleWidth - Math.max(0, covered(pinned) - budget)
+    );
+  // At readable minimums, unpin from the right rather than cover the viewport.
+  while (pinned.length > 1 && covered(pinned) > budget) pinned.pop();
+  return { sizing: widths, pinned };
 }
 
 /**
@@ -85,6 +149,9 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
   const [visibility, setVisibility] = useState<VisibilityState>(saved.visibility);
   const [boxWidth, setBoxWidth] = useState(1000);
   const [boxHeight, setBoxHeight] = useState(400);
+  /** The widest content the measured column's cells hold among the rows drawn (`LayoutPins`). */
+  const [measuredWidth, setMeasuredWidth] = useState(0);
+  const measuredColumn = columns.pins?.phone.measured;
   const scrollRef = useRef<HTMLDivElement>(null);
   const pagerRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState<HTMLDivElement | null>(null);
@@ -103,50 +170,24 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     writeLayout(layoutKey, { sizing, order, visibility });
   }, [layoutKey, sizing, order, visibility]);
 
-  const responsive = useMemo(() => {
-    const { ids, minimums = {}, pins, sizes = {} } = columns;
-    // Each column at the reader's width, else its starting width, never below its minimum; a
-    // column with neither keeps the width its definition gives it.
-    const widths: ColumnSizingState = Object.fromEntries(
-      ids.flatMap((id): [string, number][] => {
-        const width = sizing[id] ?? sizes[id];
-        return width === undefined ? [] : [[id, Math.max(minimums[id] ?? 0, width)]];
-      })
-    );
-    if (pins === undefined) return { sizing: widths, pinned: [] };
-    const { flexible, phone, wide } = pins;
-    const covered = (pinned: readonly string[]) =>
-      pinned.reduce((sum, id) => sum + (widths[id] ?? 0), 0);
-    const flexibleWidth = widths[flexible];
-    if (boxWidth < 640) {
-      Object.assign(widths, phone.widths);
-      if (flexibleWidth !== undefined)
-        widths[flexible] = Math.max(
-          phone.flexibleMin,
-          Math.min(
-            flexibleWidth,
-            boxWidth * phone.share - covered(phone.columns.filter((id) => id !== flexible))
-          )
-        );
-      return { sizing: widths, pinned: [...phone.columns] };
-    }
-    const budget = boxWidth * wide.share;
-    const pinned = [...wide.columns];
-    if (flexibleWidth !== undefined)
-      widths[flexible] = Math.max(
-        minimums[flexible] ?? 0,
-        flexibleWidth - Math.max(0, covered(pinned) - budget)
-      );
-    // At readable minimums, unpin from the right rather than cover the viewport.
-    while (pinned.length > 1 && covered(pinned) > budget) pinned.pop();
-    return { sizing: widths, pinned };
-  }, [boxWidth, columns, sizing]);
+  const responsive = useMemo(
+    () => fitColumns(columns, sizing, boxWidth, measuredWidth),
+    [boxWidth, columns, sizing, measuredWidth]
+  );
 
   const measure = useCallback(() => {
     const box = scrollRef.current;
     if (!box) return;
     const bounds = box.getBoundingClientRect();
     setBoxWidth(bounds.width);
+    if (measuredColumn !== undefined) {
+      // A cell's content is wider than its cell where the cell cuts it, and `scrollWidth` is the
+      // whole of it either way.
+      const cells = box.querySelectorAll<HTMLElement>(
+        `td[data-column="${CSS.escape(measuredColumn)}"] > *`
+      );
+      setMeasuredWidth(Math.max(0, ...[...cells].map((content) => content.scrollWidth)));
+    }
     const header = box.querySelector("thead")?.getBoundingClientRect().height ?? 61;
     const firstRows = [...box.querySelectorAll<HTMLElement>("[data-issue-row]")].slice(0, 3);
     const rowsHeight = firstRows.reduce(
@@ -169,7 +210,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
       pager.getBoundingClientRect().bottom;
     const available = bounds.height + slack;
     setBoxHeight(Math.max(400, header + rowsHeight + 2, available));
-  }, []);
+  }, [measuredColumn]);
   useLayoutEffect(() => {
     measure();
     window.addEventListener("resize", measure);
@@ -194,6 +235,7 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     attachBox,
     boxHeight,
     boxWidth,
+    measure,
     order,
     pagerRef,
     responsive,

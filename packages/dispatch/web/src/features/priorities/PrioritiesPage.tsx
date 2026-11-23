@@ -6,7 +6,7 @@ import { QueryError } from "../../components/QueryError";
 import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import type { ShownColumnId } from "../project/issues-table-columns";
-import type { IssueListing } from "../project/issues-table-data";
+import type { AdvancesListing } from "../project/issues-table-data";
 import { runningIssueStatuses } from "../project/issues-table-model";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
@@ -22,8 +22,8 @@ const PARKED_RULE =
 /** The two faults, as the issue listing answers each: the work being done under no priority,
  *  in the statuses an issue is worked in, and the work under a priority standing in backlog or
  *  icebox, with the move that put it there. */
-const NO_PRIORITY: IssueListing = { advances: "none", statuses: runningIssueStatuses };
-const PARKED: IssueListing = { advances: "any", statuses: PARKED_STATUSES, moved: true };
+const NO_PRIORITY: AdvancesListing = { advances: "none", statuses: runningIssueStatuses };
+const PARKED: AdvancesListing = { advances: "any", statuses: PARKED_STATUSES, moved: true };
 
 /** Each fault list's own stored layout and the columns it opens with shown. Both name each row's
  *  project, since neither stands on one, and when the issue last changed, which is how long it

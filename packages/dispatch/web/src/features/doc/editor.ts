@@ -10,6 +10,7 @@ import { MARKS_MAP_NAME } from "./roots";
 import type { AskBlockHost } from "./typed-block-drawing";
 
 export type {
+  LineHost,
   MarkAction,
   RecordMarkPlacement,
   RemarkOutcome,

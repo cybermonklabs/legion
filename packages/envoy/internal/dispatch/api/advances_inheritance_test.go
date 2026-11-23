@@ -419,6 +419,54 @@ func TestListIssuesFiltersByRepeatedStatus(t *testing.T) {
 	}
 }
 
+// TestListIssuesFiltersByRepeatedProject reads `project` as a list, as `status` is read: the
+// issues of any project named, in the paged read as in the whole one, one value meaning the one
+// project it always meant, a repeat of one project the same as naming it once, and no value or
+// a blank one every project.
+func TestListIssuesFiltersByRepeatedProject(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	keys := map[string][]string{}
+	for _, project := range []string{"STAT", "OTHR", "THRD"} {
+		createTestProject(t, handler, project)
+		for _, status := range []string{"", "todo"} {
+			keys[project] = append(keys[project], seedPriorityIssue(t, handler, project, "Work in "+project+" "+status, status, "", nil))
+		}
+	}
+	every := slices.Sorted(slices.Values(slices.Concat(keys["STAT"], keys["OTHR"], keys["THRD"])))
+	for query, projects := range map[string][]string{
+		"":                                    nil,
+		"project=":                            nil,
+		"project=STAT":                        {"STAT"},
+		"project=STAT&project=STAT":           {"STAT"},
+		"project=STAT&project=OTHR":           {"STAT", "OTHR"},
+		"project=OTHR&project=+STAT+":         {"STAT", "OTHR"},
+		"project=STAT&project=OTHR&project=":  {"STAT", "OTHR"},
+		"project=STAT&project=NONE":           {"STAT"},
+		"project=STAT&project=OTHR&open=true": {"STAT", "OTHR"},
+	} {
+		want := every
+		if projects != nil {
+			want = []string{}
+			for _, project := range projects {
+				want = append(want, keys[project]...)
+			}
+			slices.Sort(want)
+		}
+		if got := slices.Sorted(slices.Values(listedIssueKeys(t, handler, "/api/v1/issues?"+query))); !slices.Equal(got, want) {
+			t.Fatalf("?%s answers %v, want %v", query, got, want)
+		}
+	}
+	page := listedIssuePage(t, handler, "/api/v1/issues?project=STAT&project=OTHR&limit=3")
+	if len(page.Issues) != 3 || page.Total != 4 {
+		t.Fatalf("a paged read of two projects answers %d rows counting %d, want 3 rows counting 4", len(page.Issues), page.Total)
+	}
+	for _, issue := range page.Issues {
+		if !slices.Contains(keys["STAT"], issue.Key) && !slices.Contains(keys["OTHR"], issue.Key) {
+			t.Fatalf("a paged read of STAT and OTHR answers %s", issue.Key)
+		}
+	}
+}
+
 // TestAStatusTheLifecycleDoesNotHoldIsNoRefusal holds the listing to what it answered before
 // `status` repeated, when a value was matched as written: a status the lifecycle does not hold,
 // or one spelled in another case, is a status no issue stands in, so alone it answers the empty

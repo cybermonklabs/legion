@@ -12,7 +12,7 @@ import { createPortal } from "react-dom";
 import type { DisplayTree } from "../../api/types";
 import { type AskBlockHost, applyAskBlockShell, askShellSlots } from "../doc/typed-block-drawing";
 import { collectPictureAnchors, DispatchPicture, type PictureAnchor } from "./DispatchPicture";
-import { TextAskCard } from "./markdown-cards";
+import { TextAskCard, TextIssueList } from "./markdown-cards";
 import { type MarkdownEngine, renderWithEngine, type SoftBreaks } from "./markdown-engine";
 import { drawMermaidDiagrams } from "./mermaid-diagrams";
 import {
@@ -23,6 +23,7 @@ import {
   RefLink,
 } from "./RefLink";
 import { hostLinksReferences, type ReferenceHost, useReferenceHost } from "./reference-host";
+import { type IssueListQuery, parseIssueListReference } from "./routes";
 
 /** The anchor list of a body with no references: one shared value, so re-rendering such a body
  *  leaves the state untouched instead of committing a fresh empty array each time. */
@@ -31,6 +32,35 @@ const NO_ANCHORS: readonly ReferenceAnchor[] = [];
 const NO_PICTURES: readonly PictureAnchor[] = [];
 /** The same, for a body with no decision card to mount. */
 const NO_ASK_HOSTS: readonly AskBlockHost[] = [];
+
+/** Where a list of issues a body writes on a line of its own is drawn: the element that took the
+ *  line's place, the list's query, and its place among the body's lists, from 0. */
+interface ListHost {
+  readonly element: HTMLElement;
+  readonly index: number;
+  readonly query: IssueListQuery;
+}
+/** The same, for a body with no list of issues. */
+const NO_LIST_HOSTS: readonly ListHost[] = [];
+
+/**
+ * A host in place of each paragraph `paint` drew whose whole text is a list of issues
+ * (`dispatch://issues?<query>`, `parseIssueListReference`), in document order: the list is drawn
+ * where its line stood. A list written inside a sentence stays the sentence's text. It runs before
+ * the link pass, which links no list, so no anchor is taken out with a line.
+ */
+function collectListHosts(element: HTMLElement): readonly ListHost[] {
+  const hosts: ListHost[] = [];
+  for (const line of element.querySelectorAll("p")) {
+    const query = parseIssueListReference((line.textContent ?? "").trim());
+    if (query === undefined) continue;
+    const host = line.ownerDocument.createElement("div");
+    host.dataset.issueList = String(hosts.length + 1);
+    line.replaceWith(host);
+    hosts.push({ element: host, index: hosts.length, query });
+  }
+  return hosts.length === 0 ? NO_LIST_HOSTS : hosts;
+}
 
 /**
  * A host for each `ask` shell `paint` drew under `element` (`renderAskBlockShell`), paired in
@@ -507,10 +537,12 @@ export function useRenderedMarkdown(
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
   const Card = useContext(TextAskCard);
+  const List = useContext(TextIssueList);
   const host = useReferenceHost();
   const [referenceAnchors, setReferenceAnchors] = useState<readonly ReferenceAnchor[]>(NO_ANCHORS);
   const [pictureAnchors, setPictureAnchors] = useState<readonly PictureAnchor[]>(NO_PICTURES);
   const [askHosts, setAskHosts] = useState<readonly AskBlockHost[]>(NO_ASK_HOSTS);
+  const [listHosts, setListHosts] = useState<readonly ListHost[]>(NO_LIST_HOSTS);
   const [isFallback, setIsFallback] = useState(false);
   const [isPending, setIsPending] = useState(false);
   /** The source the element holds painted, which a pending source keeps rather than replacing
@@ -580,6 +612,7 @@ export function useRenderedMarkdown(
           }
           element.replaceChildren(document.createTextNode(markdown));
           setAskHosts(NO_ASK_HOSTS);
+          setListHosts(NO_LIST_HOSTS);
           const { pictures: placeholders, references: anchors } = portalAnchors(
             element,
             decorate,
@@ -621,6 +654,11 @@ export function useRenderedMarkdown(
             hosts = collectAskHosts(element, parsed);
           }
           setAskHosts(hosts);
+          setListHosts(
+            engine !== undefined && parsed !== undefined && List !== undefined
+              ? collectListHosts(element)
+              : NO_LIST_HOSTS
+          );
           const { pictures: placeholders, references: anchors } = portalAnchors(
             element,
             decorate,
@@ -722,7 +760,19 @@ export function useRenderedMarkdown(
       { keepAPostedParse: true }
     );
     return cancelRender;
-  }, [Card, decorate, host, markdown, paint, paintInSlices, references, root, softBreaks, tree]);
+  }, [
+    Card,
+    List,
+    decorate,
+    host,
+    markdown,
+    paint,
+    paintInSlices,
+    references,
+    root,
+    softBreaks,
+    tree,
+  ]);
 
   return {
     isFallback,
@@ -745,6 +795,17 @@ export function useRenderedMarkdown(
       ...(Card === undefined
         ? []
         : askHosts.map((host) => <Card host={host} key={`ask-${host.key}`} />)),
+      // Each list under `list<N>`, its place among the body's lists from 1, so each keeps its
+      // own sort, filters and page in the address.
+      ...(List === undefined
+        ? []
+        : listHosts.map(({ element, index, query }) =>
+            createPortal(
+              <List query={query} stateKey={`list${index + 1}`} />,
+              element,
+              `list-${index}`
+            )
+          )),
     ],
   };
 }

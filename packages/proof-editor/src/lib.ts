@@ -117,6 +117,8 @@ import {
   editorChangeDecorationsPlugin,
   setChangeDecorations as applyChangeDecorations,
 } from './editor-change-decorations';
+import { lineHostsPlugin, setLineHosts as applyLineHosts } from './line-hosts';
+import type { EditorLineHosts } from './line-hosts';
 import type { ChangeDecorations } from './editor-change-decorations';
 import {
   referenceDecorationsPlugin,
@@ -136,6 +138,7 @@ export type { MarkAction, RecordMarkPlacement, SelectionBarActionKind, PopoverAc
 export type { ProofEditorAccess } from './dispatch-action-bar';
 export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOutcome } from './record-mark-retype';
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
+export type { EditorLineHosts, LineHost } from './line-hosts';
 export type { EditorReferences, OfferedReference, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
 export type { EditorReferencePicker, ReferenceInsertion, ReferencePickerCaret } from './reference-picker';
 export type { BlockMark } from './editor-highlights';
@@ -285,6 +288,10 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  Replaces what was drawn before; an empty set draws nothing.
    *  See ./editor-change-decorations.ts. */
   setChangeDecorations(decorations: ChangeDecorations): void;
+  /** Draws a host's element below each top-level paragraph whose text its test accepts, without
+   *  changing the document, and tells the host every element, in place of the last call's;
+   *  `null` draws none. See ./line-hosts.ts. */
+  setLineHosts(hosts: EditorLineHosts | null): void;
   /** Draws the references the host's reader finds in the document's own text as their targets'
    *  titles, without changing it: the reader, what each candidate resolves to, and the callback
    *  the editor reports the document's candidate keys to, in one value that replaces the last
@@ -500,6 +507,7 @@ export async function createProofEditor(
     .use(recordMarkHistoryPlugin)
     .use(editorHighlightsPlugin)
     .use(editorChangeDecorationsPlugin)
+    .use(lineHostsPlugin)
     .use(referenceDecorationsPlugin)
     .use(referencePickerPlugin)
     .use(placeholderPlugin)
@@ -690,6 +698,9 @@ export async function createProofEditor(
     },
     setChangeDecorations(decorations: ChangeDecorations): void {
       applyChangeDecorations(view, decorations);
+    },
+    setLineHosts(hosts: EditorLineHosts | null): void {
+      applyLineHosts(view, hosts);
     },
     setReferences(references: EditorReferences | null): void {
       applyReferences(view, references);

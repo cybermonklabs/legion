@@ -762,7 +762,7 @@ test("API client encodes list filters and artifact version query parameters", as
   await api.listIssues({
     pinned: true,
     open: true,
-    project: "CORE",
+    project: ["CORE"],
     status: ["in progress"],
     parent: "CORE-1",
     updated_since: "2026-09-10T12:00:00Z",

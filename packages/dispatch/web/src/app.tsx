@@ -46,8 +46,9 @@ import { ShortcutHelpOpener } from "./features/issue-page/shortcut-help-opener";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
+import { IssueQueryTable } from "./features/project/IssueQueryTable";
 import { AgentRegistryPoller } from "./features/refs/agent-registry";
-import { TextAskCard } from "./features/refs/markdown-cards";
+import { TextAskCard, TextIssueList } from "./features/refs/markdown-cards";
 import { RefPreviewHost } from "./features/refs/RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./features/refs/ref-preview-card";
 import { ReferenceNamesProvider } from "./features/refs/reference-names";
@@ -1147,12 +1148,15 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   }, [login, queryClient]);
   useEventFeed();
   // Every Markdown body the shell renders - routes, the margin, the inbox drawer, previews and
-  // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`).
+  // dialogs - draws a decision block in its text as the read-only card (`TextAskCard`), and a list
+  // of issues written on a line of its own as that list (`TextIssueList`).
   return (
     <KeymapProvider>
       <AgentRegistryPoller />
       <TextAskCard.Provider value={TextAskBlockCard}>
-        <AppShell user={user} />
+        <TextIssueList.Provider value={IssueQueryTable}>
+          <AppShell user={user} />
+        </TextIssueList.Provider>
       </TextAskCard.Provider>
     </KeymapProvider>
   );

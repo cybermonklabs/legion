@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
+import { DISPATCH_TEXT_REFERENCES } from "@legion/contracts";
 
 import { artifactVersionPath } from "../../api/client";
-import type { DispatchReferenceRoute, PagedReferenceRoute } from "./routes";
+import { referenceSpans } from "./reference-spans";
+import type { DispatchReferenceRoute, IssueListQuery, PagedReferenceRoute } from "./routes";
 import {
   buildDispatchReference,
   buildInboxPath,
@@ -17,6 +19,7 @@ import {
   parseAgentArtifactPath,
   parseDispatchReference,
   parseInboxSearch,
+  parseIssueListReference,
   parseIssuePath,
   parseMachinePath,
   parseNodeReference,
@@ -1239,4 +1242,64 @@ test("a path that names no one machine names no machine at all", () => {
   ]) {
     expect([pathname, parseMachinePath(pathname)]).toEqual([pathname, undefined]);
   }
+});
+
+// A list of issues reads its four fields, each value once and sorted, whatever the order of its
+// parameters, and a parameter the form does not take, a value outside its field's words and an
+// empty value are no list (dispatch://INFRA-4935/artifact/verification-md, c-grammar).
+test("a list of issues reads its query's fields whatever their order", () => {
+  const fields = {
+    labels: ["overnight"],
+    priorities: ["P0"],
+    projects: ["INFRA", "OSSV"],
+    statuses: ["todo"],
+  };
+  for (const reference of [
+    "dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0",
+    "dispatch://issues?priority=P0&status=todo&label=overnight&project=OSSV&project=INFRA",
+    "dispatch://issues?project=OSSV&project=INFRA&project=OSSV&&label=overnight&status=todo&priority=P0",
+  ]) {
+    expect(parseIssueListReference(reference)).toEqual(fields);
+  }
+  expect(
+    parseIssueListReference(
+      "dispatch://issues?label=needs+review&label=%F0%9F%9A%80&label=%EF%AC%80"
+    )?.labels
+  ).toEqual(["needs review", "🚀", "ﬀ"]);
+  for (const reference of [
+    "dispatch://issues?assignee=x",
+    "dispatch://issues?priority=P7",
+    "dispatch://issues?label=",
+    "dispatch://issues?label",
+    "dispatch://issues?",
+    "dispatch://issues",
+    "dispatch://issues?project=infra",
+    "dispatch://issues?status=almost",
+    "dispatch://issues?priority=p0",
+    "dispatch://issues?label=x#b-1",
+    "dispatch://issues?label=a%0Ab",
+    "dispatch://issues/?label=x",
+  ]) {
+    expect(parseIssueListReference(reference)).toBeUndefined();
+    // A list names no node, so no reader of a node's reference reads one either.
+    expect(parseNodeReference(reference)).toBeUndefined();
+  }
+});
+
+// The dashboard's half of the shared table's `lists`, which Go's `text.ParseIssueList` is held to
+// row for row: each reference span a body writes that is a list, each list once.
+test.each(
+  DISPATCH_TEXT_REFERENCES.map((row) => [row.body, row.lists ?? []] as const)
+)("%s writes its row's lists", (body, lists) => {
+  const read: IssueListQuery[] = [];
+  for (const span of referenceSpans(body)) {
+    const list = parseIssueListReference(span.value);
+    if (list !== undefined && !read.some((seen) => Bun.deepEquals(seen, list))) {
+      read.push(list);
+    }
+  }
+  const written = lists.map((reference) => parseIssueListReference(reference));
+  // Every list a row names is one: a row naming text no reader reads as a list is a broken row.
+  expect(written.includes(undefined)).toBe(false);
+  expect(read).toEqual(written.flatMap((list) => (list === undefined ? [] : [list])));
 });

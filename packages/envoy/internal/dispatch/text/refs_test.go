@@ -161,6 +161,91 @@ func TestExtractMatchesTheSharedTextTable(t *testing.T) {
 	}
 }
 
+// The lists half of the shared text table: every reference span of a row's body that reads as a
+// list of issues, each list once, is the list each of the row's `lists` reads as, in order. The
+// dashboard's reader walks the same column (`parseIssueListReference`, routes.test.ts).
+func TestIssueListsMatchTheSharedTextTable(t *testing.T) {
+	raw, err := os.ReadFile("testdata/dispatch-text-references.json")
+	if err != nil {
+		t.Fatalf("read table: %v", err)
+	}
+	var rows []struct {
+		Body  string   `json:"body"`
+		Lists []string `json:"lists"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatalf("parse table: %v", err)
+	}
+	written := 0
+	for _, row := range rows {
+		want := []IssueList{}
+		for _, reference := range row.Lists {
+			list, ok := ParseIssueList(reference)
+			if !ok {
+				t.Fatalf("%s is not a list", reference)
+			}
+			want = append(want, list)
+		}
+		written += len(want)
+		got := []IssueList{}
+		for _, span := range referencePattern.FindAllString(row.Body, -1) {
+			list, ok := ParseIssueList(trimReference(span))
+			if ok && !slices.ContainsFunc(got, func(seen IssueList) bool { return reflect.DeepEqual(seen, list) }) {
+				got = append(got, list)
+			}
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s reads the lists %#v; want %#v", row.Body, got, want)
+		}
+	}
+	if written == 0 {
+		t.Fatal("the shared text table writes no list")
+	}
+}
+
+// ParseIssueList reads a list's four fields, each value once and sorted, whatever the order of
+// the parameters, and refuses a parameter the form does not take, a value outside its field's
+// words and an empty value (dispatch://INFRA-4935/artifact/verification-md, c-grammar).
+func TestParseIssueList(t *testing.T) {
+	want := IssueList{
+		Projects:   []string{"INFRA", "OSSV"},
+		Statuses:   []string{"todo"},
+		Labels:     []string{"overnight"},
+		Priorities: []string{"P0"},
+	}
+	for _, reference := range []string{
+		"dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0",
+		"dispatch://issues?priority=P0&status=todo&label=overnight&project=OSSV&project=INFRA",
+		"dispatch://issues?project=OSSV&project=INFRA&project=OSSV&&label=overnight&status=todo&priority=P0",
+	} {
+		if got, ok := ParseIssueList(reference); !ok || !reflect.DeepEqual(got, want) {
+			t.Errorf("ParseIssueList(%s) = %#v, %v; want %#v", reference, got, ok, want)
+		}
+	}
+	if got, ok := ParseIssueList("dispatch://issues?label=needs+review&label=%F0%9F%9A%80&label=%EF%AC%80"); !ok ||
+		!reflect.DeepEqual(got.Labels, []string{"needs review", "🚀", "ﬀ"}) {
+		t.Errorf("the labels read as %#v, %v; want them decoded, in UTF-16 order", got.Labels, ok)
+	}
+	for _, reference := range []string{
+		"dispatch://issues?assignee=x",
+		"dispatch://issues?priority=P7",
+		"dispatch://issues?label=",
+		"dispatch://issues?label",
+		"dispatch://issues?",
+		"dispatch://issues",
+		"dispatch://issues?project=infra",
+		"dispatch://issues?status=almost",
+		"dispatch://issues?priority=p0",
+		"dispatch://issues?label=x#b-1",
+		"dispatch://issues?label=a%0Ab",
+		"dispatch://issues/?label=x",
+	} {
+		if got, ok := ParseIssueList(reference); ok {
+			t.Errorf("ParseIssueList(%s) = %#v; want no list", reference, got)
+		}
+	}
+}
+
 // blockFragment writes a parsed block reference's fragment canonically: `#b-`, the id as
 // EncodeBlockID writes it, and `@v<N>` for a pinned one.
 func blockFragment(ref Ref) string {

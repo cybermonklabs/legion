@@ -9,6 +9,8 @@ import {
   facetCounts,
   isEpic,
   isQueued,
+  issueQueryStart,
+  issuesTabStart,
   matchesFilters,
   matchesSearch,
   mergeMembers,
@@ -392,4 +394,67 @@ test("a stateKey prefixes the table's own controls and leaves the bare ones to t
   const bare = writeUrl(new URLSearchParams(), state);
   expect(bare.get("sort")).toBe("-key");
   expect([...bare.keys()].some((key) => key.includes("advances."))).toBe(false);
+});
+
+/** A list's query as `parseIssueListReference` reads it, with no field but those given. */
+const listQuery = (fields: Partial<Parameters<typeof issueQueryStart>[0]> = {}) => ({
+  labels: [],
+  priorities: [],
+  projects: [],
+  statuses: [],
+  ...fields,
+});
+
+// c-start-view (dispatch://INFRA-4935/artifact/verification-md): a list starts from its query,
+// with no not-done Status filter and no Queue sort, and its address holds only what the reader
+// changed, under the list's own prefix.
+test("a list starts from its query's filters, with no sort, and writes only what the reader changed", () => {
+  const overnight = issueQueryStart(listQuery({ labels: ["overnight"] }));
+  const view = readUrl(new URLSearchParams(), "list1", overnight);
+  expect(view.filters).toEqual([]);
+  expect(view.sorting).toEqual([]);
+  expect(view.selection).toBeNull();
+  expect(writeUrl(new URLSearchParams(), view, "list1", overnight).toString()).toBe("");
+
+  const todo = issueQueryStart(listQuery({ priorities: ["P0", "none"], statuses: ["todo"] }));
+  const picked = readUrl(new URLSearchParams(), "list1", todo);
+  expect(picked.filters).toEqual([
+    { id: "status", value: ["todo"] },
+    { id: "priority", value: ["0", ""] },
+  ]);
+  expect(writeUrl(new URLSearchParams(), picked, "list1", todo).toString()).toBe("");
+
+  // A reader's change is written under the list's prefix alone, beside another list's and the
+  // page's own parameters, and reads back as the view it wrote.
+  const address = new URLSearchParams("list2.sort=key&only=CORE-1&tab=spec");
+  const changed = {
+    ...picked,
+    filters: [{ id: "status", value: ["todo", "done"] }],
+    sorting: [{ desc: true, id: "asks" }],
+  };
+  const written = writeUrl(address, changed, "list1", todo);
+  expect([...written.keys()].filter((name) => !address.has(name))).toEqual([
+    "list1.sort",
+    "list1.nofilter",
+    "list1.status",
+    "list1.status",
+  ]);
+  expect(written.get("list2.sort")).toBe("key");
+  expect(written.get("only")).toBe("CORE-1");
+  expect(written.getAll("list1.nofilter")).toEqual(["priority"]);
+  expect(readUrl(written, "list1", todo)).toEqual({ ...changed, selection: null });
+  // Taking off the query's statuses keeps no Status filter.
+  const none = writeUrl(new URLSearchParams(), { ...picked, filters: [] }, "list1", todo);
+  expect(none.getAll("list1.nofilter")).toEqual(["1", "priority"]);
+  expect(readUrl(none, "list1", todo).filters).toEqual([]);
+});
+
+// The negative control of c-start-view: the Issues tab's start is the view it always opened with.
+test("the Issues tab's start is still the not-done Status filter and the Queue sort", () => {
+  const view = readUrl(new URLSearchParams(), undefined, issuesTabStart);
+  expect(view.filters).toEqual(defaultView.filters);
+  expect(view.filters[0]?.value).not.toContain("done");
+  expect(view.sorting).toEqual([{ id: "queue", desc: false }]);
+  expect(readUrl(new URLSearchParams())).toEqual(view);
+  expect(writeUrl(new URLSearchParams(), view).toString()).toBe("");
 });

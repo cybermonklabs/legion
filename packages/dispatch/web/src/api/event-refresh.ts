@@ -743,6 +743,22 @@ function issueWriteTargets(
     targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
   }
 
+  // Every list a document holds (`["issues", "query", ...]`, `queryIssuesQuery`): a new issue, a
+  // close, a reopen, and a move of the status, the labels or the priority can each carry an issue
+  // into a list's query or out of it, and no row of a list names the lists that do not yet hold
+  // it, so every list reads again. Any other write is a list's only where its rows hold the issue
+  // (`listsHolding`, below every event of an issue).
+  if (
+    created ||
+    closed ||
+    moved("closed_at") ||
+    moved("status") ||
+    moved("labels") ||
+    moved("priority")
+  ) {
+    targets.push({ queryKey: ["issues", "query"] });
+  }
+
   // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
   // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
   // that still list an edge from this issue.
@@ -816,6 +832,13 @@ function priorityWriteTargets(
     { exact: true, queryKey: ["agents", "issue-picker"], when }
   );
   return targets;
+}
+
+/** Every list a document holds whose rows hold the issue `key` (`queryIssuesQuery`). */
+function listsHolding(key: string): RefreshTarget {
+  const when: RefreshCheck = (data) =>
+    rowsOf<Pick<IssueSummary, "key">>(data).some((row) => row.key === key);
+  return { queryKey: ["issues", "query"], when };
 }
 
 /** Every question map a reader holds (`["references", "questions", <kind>, <id>]`, the read
@@ -1105,6 +1128,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     { queryKey: ["events", key] },
     // Every event an issue owns moves its `last_seq`, which a project list's unread dot reads.
     { queryKey: project === undefined ? ["issues", "project"] : ["issues", "project", project] },
+    // And a list a document holds, where its rows hold the issue: its title, its open asks and
+    // its unread dot are the row's (`queryIssuesQuery`).
+    listsHolding(key),
   ];
   if (movesInboxThreads(event, viewer)) {
     targets.push({ queryKey: myRepliesKey });

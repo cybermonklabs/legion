@@ -2,6 +2,7 @@ import {
   ASK_URGENCIES,
   decodeBlockId,
   hasControlCharacter,
+  ISSUE_STATUSES,
   isSessionId,
   itemFromSearch,
   PLAIN_ISSUE_TABS,
@@ -487,6 +488,69 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
       ? undefined
       : { id: itemID, kind: document[3] === "ask" ? "ask" : "comment" }
   );
+}
+
+/**
+ * A list of issues a text writes as `dispatch://issues?<query>`: the projects, statuses, labels
+ * and priorities its query chooses by, each value once and sorted, so the order of the
+ * parameters and a repeated value change no list. A field with no value chooses by nothing. A
+ * list names no node, so no text reader cites one and nothing links one; a document draws it
+ * where it stands on a line of its own (`TextIssueList`). Its server twin is Go's
+ * `text.ParseIssueList`, and both are held to the `lists` of `@legion/contracts`'s
+ * DISPATCH_TEXT_REFERENCES.
+ */
+export interface IssueListQuery {
+  readonly projects: readonly string[];
+  readonly statuses: readonly string[];
+  readonly labels: readonly string[];
+  /** `P0` to `P3`, and `none` for an issue with no priority: the names the table gives them. */
+  readonly priorities: readonly string[];
+}
+
+/** What every list's reference starts with. */
+const ISSUE_LIST_REFERENCE = "dispatch://issues?";
+
+/** The priorities a list's query names. */
+export const ISSUE_LIST_PRIORITIES = ["P0", "P1", "P2", "P3", "none"] as const;
+
+/** The words each field of a list's query takes; a label is any value but an empty one. */
+const ISSUE_LIST_FIELDS: Readonly<Record<string, (value: string) => boolean>> = {
+  project: (value) => projectKeyOnlyPattern.test(value),
+  status: (value) => (ISSUE_STATUSES as readonly string[]).includes(value),
+  label: () => true,
+  priority: (value) => (ISSUE_LIST_PRIORITIES as readonly string[]).includes(value),
+};
+
+/** `value`, one reference as text writes it, as a list of issues: `dispatch://issues?` and a
+ *  query of `project`, `status`, `label` and `priority`, each as often as it likes, read by
+ *  `URLSearchParams`. Another parameter, an empty value, a value outside its field's words, a
+ *  control character, a fragment, and a query with no parameter at all are no list. */
+export function parseIssueListReference(value: string): IssueListQuery | undefined {
+  if (
+    !value.startsWith(ISSUE_LIST_REFERENCE) ||
+    hasControlCharacter(value) ||
+    value.includes("#")
+  ) {
+    return undefined;
+  }
+  const fields = new Map<string, Set<string>>();
+  for (const [name, field] of new URLSearchParams(value.slice(ISSUE_LIST_REFERENCE.length))) {
+    const takes = Object.hasOwn(ISSUE_LIST_FIELDS, name) ? ISSUE_LIST_FIELDS[name] : undefined;
+    if (field === "" || hasControlCharacter(field) || takes === undefined || !takes(field)) {
+      return undefined;
+    }
+    fields.set(name, (fields.get(name) ?? new Set()).add(field));
+  }
+  if (fields.size === 0) {
+    return undefined;
+  }
+  const values = (name: string) => [...(fields.get(name) ?? [])].sort();
+  return {
+    labels: values("label"),
+    priorities: values("priority"),
+    projects: values("project"),
+    statuses: values("status"),
+  };
 }
 
 export function parseIssuePath(pathname: string, search = ""): IssueRoute | undefined {

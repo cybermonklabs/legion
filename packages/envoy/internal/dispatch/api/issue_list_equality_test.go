@@ -184,11 +184,12 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 			// Main's statement carries the eight filters it had, where the listing carries six
 			// more behind them — the closed window's two, the `advances` keys' three and the
 			// move read's gate — named here as the request that asks for none of them: the rows
-			// the two read are then the same rows. Main's status filter is one value and the
-			// listing's a list, so the request naming no status passes each its own empty one.
+			// the two read are then the same rows. Main's project and status filters are one value
+			// each and the listing's are lists, so the request naming project LIST and no status
+			// passes each its own spelling of them.
 			oracleArguments := slices.Clone(filters)
 			arguments := append(slices.Clone(filters), nil, nil, []string{}, false, false, false)
-			arguments[1] = []string{}
+			arguments[0], arguments[1] = []string{"LIST"}, []string{}
 			if listing.pinnedBy != "" {
 				oracleArguments = append(oracleArguments, listing.pinnedBy)
 				arguments = append(arguments, listing.pinnedBy)

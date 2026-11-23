@@ -8,7 +8,7 @@ import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
-import { type IssueListing, listingName } from "./issues-table-data";
+import { listingName, type WritableListing } from "./issues-table-data";
 import {
   buildItems,
   type Item,
@@ -66,7 +66,7 @@ export function useIssueTableActions({
   items,
   clearSelection,
 }: {
-  listing: IssueListing;
+  listing: WritableListing;
   issues: readonly IssueSummary[];
   items: readonly Item[];
   clearSelection: () => void;
@@ -92,7 +92,7 @@ export function useIssueTableActions({
   /** Every issue of this table's listing, read afresh: what an action checks itself against. */
   const listAll = () =>
     "project" in listing
-      ? api.listIssues({ project: listing.project })
+      ? api.listIssues({ project: [listing.project] })
       : api.listIssues(advancesIssuesParams(listing));
 
   const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {

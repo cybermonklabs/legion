@@ -10,7 +10,7 @@ import {
 
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
-import type { AdvancesListing } from "../features/project/issues-table-data";
+import type { AdvancesListing, QueryListing } from "../features/project/issues-table-data";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from "./client";
@@ -371,7 +371,7 @@ export const projectIssuesQuery = (project: string, labels: readonly string[], o
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
       return api.listIssues({
-        project,
+        project: [project],
         ...(labels.length ? { label: [...labels] } : {}),
         ...(open ? { open: true } : {}),
       });
@@ -437,6 +437,44 @@ export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
       ...(open ? ["open"] : []),
     ] as unknown[],
     queryFn: () => api.listIssues(advancesIssuesParams(listing, open)),
+  });
+
+/** What `GET /api/v1/issues` is asked for one list a document holds: its query's projects and
+ *  labels, the statuses and priorities its filters pick (`P0` sent as `0`, `none` as itself),
+ *  and no `open`, since a list hides nothing its query does not say. A field with no value is
+ *  not sent, and chooses by nothing. */
+export const queryIssuesParams = ({ query }: QueryListing) => ({
+  ...(query.projects.length === 0 ? {} : { project: [...query.projects] }),
+  ...(query.labels.length === 0 ? {} : { label: [...query.labels] }),
+  ...(query.statuses.length === 0 ? {} : { status: [...query.statuses] }),
+  ...(query.priorities.length === 0
+    ? {}
+    : {
+        priority: query.priorities.map((priority) =>
+          priority === "none" ? priority : priority.slice(1)
+        ),
+      }),
+});
+
+/** Every issue one list a document holds reads, with no limit, since a limit would cut issues
+ *  its query chooses (dispatch://INFRA-4935/spec#b-r-exact-query). Every key sits under
+ *  `["issues", "query"]`, the prefix the event feed refreshes when an issue can move into or out
+ *  of a query, and a list whose rows hold an issue refreshes on every event of it
+ *  (`api/event-refresh.ts`). */
+export const queryIssuesQuery = (listing: QueryListing) =>
+  queryOptions({
+    queryKey: [
+      "issues",
+      "query",
+      listing.query.projects,
+      listing.query.labels,
+      listing.query.statuses,
+      listing.query.priorities,
+    ] as unknown[],
+    queryFn: () => api.listIssues(queryIssuesParams(listing)),
+    // A new pick of Status or Priority is a new key: the rows already drawn stay until it answers,
+    // so the list never falls back to its loading state under the reader's open filter.
+    placeholderData: keepPreviousData,
   });
 
 /** Every live priority with the work under each and the two faults beside them

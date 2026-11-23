@@ -15,7 +15,7 @@ import { useKeymapScope } from "../shell/keymap";
 import { SendExpiredError, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
-import type { IssueListing } from "./issues-table-data";
+import type { WritableListing } from "./issues-table-data";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
 import { readLayout } from "./issues-table-storage";
 
@@ -99,7 +99,7 @@ function table(
   search = "",
   full?: Promise<IssueSummary[]>,
   props: {
-    listing?: IssueListing;
+    listing?: WritableListing;
     priorityTitles?: ReadonlyMap<string, string>;
     stateKey?: string;
   } = {}

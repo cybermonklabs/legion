@@ -1,9 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { advancesIssuesQuery, issueQuery, projectIssuesQuery } from "../../api/queries";
+import {
+  advancesIssuesQuery,
+  issueQuery,
+  projectIssuesQuery,
+  queryIssuesQuery,
+} from "../../api/queries";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
+import type { IssueListQuery } from "../refs/routes";
 import { openIssueStatuses } from "./board-model";
 import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 
@@ -16,9 +22,21 @@ const PARENT_READS_IN_FLIGHT = 8;
  * issues that advance one priority, where `advances` is the priority node's id and the server
  * narrows the listing by it (`GET /api/v1/issues?advances=<id>`). A priority belongs to no
  * project, so a scoped table lists the work of every project and stands on none of them: it
- * can make no write that names a project, and it offers none (`issues-table-actions.ts`).
+ * can make no write that names a project, and it offers none (`issues-table-actions.ts`). A list
+ * a document holds lists the issues a query chooses (`QueryListing`), and writes nothing.
  */
-export type IssueListing = { readonly project: string } | AdvancesListing;
+export type IssueListing = { readonly project: string } | AdvancesListing | QueryListing;
+
+/** The listings whose table writes: a project's, and the work under a priority. */
+export type WritableListing = Exclude<IssueListing, QueryListing>;
+
+/**
+ * The issues a list of issues a document holds reads (`dispatch://issues?<query>`): the
+ * reference's projects and labels, and the statuses and priorities its Status and Priority
+ * filters pick, which start as the reference's. One read answers every row, so the table reads
+ * no closed issue beside it (`answeredWhole`).
+ */
+export type QueryListing = { readonly query: IssueListQuery };
 
 /**
  * The issues of every project the server narrows by what they advance: one priority's id, or
@@ -42,6 +60,7 @@ export type AdvancesListing = {
  * has: each of those reads the full listing once the reader lets closed issues through.
  */
 export function answeredWhole(listing: IssueListing): boolean {
+  if ("query" in listing) return true;
   return (
     "advances" in listing &&
     listing.statuses !== undefined &&
@@ -54,7 +73,9 @@ export function answeredWhole(listing: IssueListing): boolean {
 export const listingName = (listing: IssueListing): string =>
   "project" in listing
     ? listing.project
-    : [`advances:${listing.advances}`, ...(listing.statuses ?? [])].join(":");
+    : "query" in listing
+      ? JSON.stringify(listing.query)
+      : [`advances:${listing.advances}`, ...(listing.statuses ?? [])].join(":");
 
 /**
  * One project's issues as the table shows them - or, under a scope, every project's issues that
@@ -77,18 +98,23 @@ export function useIssueTableItems(
   const text = useAgentText();
   // Scoped, the listing is the priority's own, which names no project: a priority belongs to
   // none, so the work under it is every project's. A listing its open read answers whole never
-  // asks for this one (`answeredWhole`, which `IssuesTable` reads).
+  // asks for this one (`answeredWhole`, which `IssuesTable` reads). A list's query is one read,
+  // with no `open`, whichever of the two asks.
   const everyIssue = useQuery({
     ...("project" in listing
       ? projectIssuesQuery(listing.project, [])
-      : advancesIssuesQuery(listing)),
+      : "query" in listing
+        ? queryIssuesQuery(listing)
+        : advancesIssuesQuery(listing)),
     enabled: wantsDone,
   });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
   const openIssues = useQuery({
     ...("project" in listing
       ? projectIssuesQuery(listing.project, [], true)
-      : advancesIssuesQuery(listing, true)),
+      : "query" in listing
+        ? queryIssuesQuery(listing)
+        : advancesIssuesQuery(listing, true)),
     enabled: !doneLoaded,
   });
   const issues = doneLoaded ? everyIssue : openIssues;
@@ -105,7 +131,8 @@ export function useIssueTableItems(
   }, [all]);
   const ancestry = useQuery({
     queryKey: ["issue-ancestors", listingName(listing), ...missingParents],
-    enabled: missingParents.length > 0,
+    // A list draws no epic, so it walks no ancestry.
+    enabled: missingParents.length > 0 && !("query" in listing),
     retry: false,
     queryFn: async () => {
       const known = new Map<string, EpicAncestor>(all.map((issue) => [issue.key, issue]));

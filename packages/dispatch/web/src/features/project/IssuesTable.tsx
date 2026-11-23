@@ -26,7 +26,7 @@ import {
   useIssueTableColumns,
 } from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
-import { answeredWhole, type IssueListing, useIssueTableItems } from "./issues-table-data";
+import { answeredWhole, useIssueTableItems, type WritableListing } from "./issues-table-data";
 import { useTableLayout } from "./issues-table-layout";
 import {
   clearPicked,
@@ -71,7 +71,7 @@ export function IssuesTable({
   layout?: { readonly key: string; readonly shown: readonly ShownColumnId[] };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
-  listing: IssueListing;
+  listing: WritableListing;
   /** Each priority's title by its id. Given, the table has the Advances column, which names each
    *  priority a row advances by its title; unset, it has none (`listingColumns`). */
   priorityTitles?: ReadonlyMap<string, string>;

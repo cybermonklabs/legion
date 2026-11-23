@@ -386,6 +386,29 @@
     "refs": []
   },
   {
+    "body": "Lists dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0 and dispatch://issues?priority=P0&status=todo&label=overnight&project=OSSV&project=INFRA here.",
+    "refs": [],
+    "lists": [
+      "dispatch://issues?project=INFRA&project=OSSV&label=overnight&status=todo&priority=P0"
+    ]
+  },
+  {
+    "body": "Lists dispatch://issues?label=needs+review&label=needs%20review&status=in_progress&status=done&status=in_progress and dispatch://issues?priority=none.",
+    "refs": [],
+    "lists": [
+      "dispatch://issues?label=needs%20review&status=done&status=in_progress",
+      "dispatch://issues?priority=none"
+    ]
+  },
+  {
+    "body": "No list: dispatch://issues?assignee=x, dispatch://issues?priority=P7 and dispatch://issues?label= here.",
+    "refs": []
+  },
+  {
+    "body": "Nor dispatch://issues, dispatch://issues?project=infra, dispatch://issues?status=almost, dispatch://issues?priority=p0, dispatch://issues/?label=x or dispatch://issues?label=x#b-1.",
+    "refs": []
+  },
+  {
     "body": "![shot.png](dispatch://LEGION-1/artifact/shot-png@v1)",
     "refs": [
       "dispatch://LEGION-1/artifact/shot-png@v1"

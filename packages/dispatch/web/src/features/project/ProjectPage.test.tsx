@@ -623,7 +623,7 @@ test("a move refused on one project's board leaves no refusal above the board th
     ]
   );
   page.listIssues.mockImplementation(async (options = {}) =>
-    options.project === "OTHER" ? [todo("OTHER-1", "Bravo")] : [todo("CORE-1", "Alpha")]
+    options.project?.includes("OTHER") ? [todo("OTHER-1", "Bravo")] : [todo("CORE-1", "Alpha")]
   );
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(409, { code: "CONFLICT", error: "CORE-1 is blocked by CORE-2" })

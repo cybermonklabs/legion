@@ -1,6 +1,7 @@
 import { type ComponentType, createContext } from "react";
 
 import type { AskBlockHost } from "../doc/typed-block-drawing";
+import type { IssueListQuery } from "./routes";
 
 /**
  * The component that draws a decision card into a text body's `ask` shell (`useRenderedMarkdown`
@@ -15,3 +16,15 @@ import type { AskBlockHost } from "../doc/typed-block-drawing";
 export const TextAskCard = createContext<ComponentType<{ host: AskBlockHost }> | undefined>(
   undefined
 );
+
+/**
+ * The component that draws a list of issues a text writes on a line of its own
+ * (`dispatch://issues?<query>`, `parseIssueListReference`): a rendered body puts one in place of
+ * the line (`useRenderedMarkdown`), and the document editor one below it (`ProofDocument`), each
+ * under the address prefix `list<N>`, N its place among the text's lists from 1. A context for the
+ * reason `TextAskCard` is one: the issues table renders references, whose previews render
+ * `MarkdownBody`. With no provider a line keeps its text and draws no list.
+ */
+export const TextIssueList = createContext<
+  ComponentType<{ query: IssueListQuery; stateKey: string }> | undefined
+>(undefined);

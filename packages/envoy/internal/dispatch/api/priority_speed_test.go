@@ -360,7 +360,7 @@ var speedPagedListingTarget = fmt.Sprintf("/api/v1/issues?open=true&limit=%d", s
 // other (issueSummaryQuery).
 func speedPageArguments(limit, offset int) []any {
 	return []any{
-		"", []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
+		[]string{}, []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
 		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, limit, offset,
 	}
 }

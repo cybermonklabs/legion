@@ -116,8 +116,9 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 // issueListFilters are the ten filters a listing request carries, written as thirteen parameters
 // (the priority filter takes a list and a flag for the unset, and the `advances` filter a list
 // and a flag for each of its two keywords), every one but the last written against `issues i`
-// alone, so the filtered term joins nothing. The status filter ($2) is a list of the statuses
-// named, an issue standing in any of them, and the empty list is every status. The closed
+// alone, so the filtered term joins nothing. The project filter ($1) is a list of the projects
+// named, an issue of any of them, and so is the status filter ($2), an issue standing in any of
+// those statuses; the empty list is every project, and every status. The closed
 // window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time, is
 // outside every window. The last is the `advances` filter, which no column of an issue holds and
 // whose answer a relation of an issue above it can decide: it reads one term computed once per
@@ -128,7 +129,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 //
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
 // (issueSummaryJoins), and the parameters after it are the pinned login and the page.
-const issueListFilters = `where ($1 = '' or i.project_key = $1)
+const issueListFilters = `where (cardinality($1::text[]) = 0 or i.project_key = any($1::text[]))
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
@@ -384,14 +385,30 @@ const (
 // The list is never nil: pgx writes a nil slice as NULL, which the statement's empty-list test
 // does not read as every status.
 func parseStatusFilter(values []string) []string {
-	statuses := make([]string, 0, len(values))
+	return repeatedFilter(values)
+}
+
+// parseProjectFilter reads the repeated `project` query parameter as parseStatusFilter reads
+// `status`: the listing answers the issues of any project named, one value means the one project
+// it has always meant, and no value, or only blank ones, is every project. A key no project holds
+// matches no issue, as it always has, so a request that names one project is answered as it was
+// before the key repeated; a repeated key, which the listing read as its first value alone, now
+// answers the union.
+func parseProjectFilter(values []string) []string {
+	return repeatedFilter(values)
+}
+
+// repeatedFilter is a repeated key's values as a filter list: each trimmed, the blank ones
+// dropped, sorted and each once. It is never nil.
+func repeatedFilter(values []string) []string {
+	kept := make([]string, 0, len(values))
 	for _, raw := range values {
 		if value := strings.TrimSpace(raw); value != "" {
-			statuses = append(statuses, value)
+			kept = append(kept, value)
 		}
 	}
-	slices.Sort(statuses)
-	return slices.Compact(statuses)
+	slices.Sort(kept)
+	return slices.Compact(kept)
 }
 
 // parsePriorityFilter reads the repeated `priority` query parameter: each value is 0..3, or
@@ -553,7 +570,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	} else if !s.requireAuthenticated(w, r) {
 		return
 	}
-	project := strings.TrimSpace(query.Get("project"))
+	projects := parseProjectFilter(query["project"])
 	statuses := parseStatusFilter(query["status"])
 	parent := strings.TrimSpace(query.Get("parent"))
 	labels, err := normalizeIssueLabels(query["label"])
@@ -626,7 +643,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// The move into `backlog` or `icebox` is read only when the request asks for it, and a row
 	// carries its two cells only then (model.IssueSummary's MovedAt and MovedBy).
 	moved := query.Get("moved") == "true"
-	arguments := []any{project, statuses, parent, store.MicrosecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
+	arguments := []any{projects, statuses, parent, store.MicrosecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
 		store.MicrosecondCeiling(closedSince), store.MicrosecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
 	if pinned {
 		arguments = append(arguments, login)

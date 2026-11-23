@@ -699,7 +699,7 @@ test("IssuePage lists project labels with issue labels selected and filters them
   try {
     await user.click(await screen.findByRole("button", { name: "Edit labels" }));
     const input = await screen.findByRole("combobox", { name: "Search or create label" });
-    await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: "CORE" }));
+    await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: ["CORE"] }));
     expect(screen.getByRole("option", { name: "bug" })).toHaveAttribute("aria-selected", "true");
     // "frontend" is a label of the project's list, which the picker draws once that request has
     // answered, not when it is made; "bug" is the issue's own and is drawn at once.

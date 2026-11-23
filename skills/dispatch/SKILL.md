@@ -86,6 +86,8 @@ dispatch://PROJECT/artifact/<slug>/comment/<id>#b-<block>[@vN]
 
 A bare id or path, or `dispatch://` outside Dispatch, is no link: give the `https://` one. Write ids whole.
 
+A line of a document that holds only `dispatch://issues?<query>` shows the issues its query chooses, live: `project`, `status`, `label` and `priority` (`P0` to `P3`, or `none`), each repeatable; a field the query leaves out does not filter, so no `status` is every status.
+
 ## Setup and the HTTP API
 
 - Use a personal token from **Settings → Agent tokens**, as `DISPATCH_TOKEN` or `dispatch.token` in the session's `envoy.json`.

@@ -342,6 +342,13 @@ dispatch://PROJECT/artifact/<document>/comment/<id>#b-<block>[@v<N>]
 
 `dispatch read` on any of them shows what it is and everything that references it.
 
+A line of a document that holds only `dispatch://issues?<query>` shows the issues its query
+chooses, from every project, and changes as they change. The query takes `project`, `status`,
+`label` and `priority` (`P0` to `P3`, or `none`), each as often as it likes: a repeated
+`project`, `status` or `priority` is any of its values, a repeated `label` is every one. A field
+the query leaves out does not filter, so `dispatch://issues?label=overnight` lists done issues
+too. Inside a sentence the reference stays its text.
+
 Write each id whole. Where one reaches you short, Dispatch still resolves it: 8 or more of the
 characters an id starts with name the one ask, comment, message, document or block that carries
 them, in a reference, in a page address and on the API routes that take an id in their path, and

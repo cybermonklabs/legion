@@ -50,6 +50,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { TextIssueList } from "../refs/markdown-cards";
 import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
 import {
@@ -57,6 +58,7 @@ import {
   buildIssuePath,
   buildProjectPath,
   documentRoute,
+  parseIssueListReference,
 } from "../refs/routes";
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { importWhenOnline } from "../shell/DeploymentResilience";
@@ -71,7 +73,7 @@ import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
 import { DocumentRefPicker } from "./DocumentRefPicker";
 import { DocumentReferences, useReferenceClick } from "./document-references";
-import type { EditorHandle, EditorOptions } from "./editor";
+import type { EditorHandle, EditorOptions, LineHost } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import type { Highlight } from "./highlight";
 import {
@@ -428,6 +430,22 @@ export function ProofDocument({
   );
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
+  // A list of issues the document writes on a line of its own is drawn below that line, which
+  // keeps its text for the writer to edit (`setLineHosts`), under `list<N>`, its place among the
+  // document's lists from 1.
+  const IssueList = useContext(TextIssueList);
+  const [listHosts, setListHosts] = useState<readonly LineHost[]>([]);
+  useEffect(() => {
+    if (editorHandle === undefined || IssueList === undefined) return;
+    editorHandle.setLineHosts({
+      accepts: (text) => parseIssueListReference(text) !== undefined,
+      onHosts: setListHosts,
+    });
+    return () => {
+      editorHandle.setLineHosts(null);
+      setListHosts([]);
+    };
+  }, [editorHandle, IssueList]);
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
   // Naming a version is the name dialog's form, which shows a refusal itself; a rebuild shows
   // its own beside its button.
@@ -1281,6 +1299,18 @@ export function ProofDocument({
           issueKey={owner.kind === "issue" ? owner.key : undefined}
           project={owner.kind === "document" ? owner.project : undefined}
         />
+        {IssueList === undefined
+          ? null
+          : listHosts.map(({ element, index, text }) => {
+              const query = parseIssueListReference(text);
+              return query === undefined
+                ? null
+                : createPortal(
+                    <IssueList query={query} stateKey={`list${index + 1}`} />,
+                    element,
+                    `list-${index}-${text}`
+                  );
+            })}
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (

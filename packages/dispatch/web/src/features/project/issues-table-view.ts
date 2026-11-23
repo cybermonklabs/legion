@@ -7,7 +7,7 @@ import type {
 import { useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { capSearchQuery } from "../../lib/query-param";
-import { readUrl, type View, writeUrl } from "./issues-table-model";
+import { issuesTabStart, readUrl, type StartView, type View, writeUrl } from "./issues-table-model";
 
 /**
  * The table's view — what it sorts, groups, filters, searches and pages by — read from and
@@ -16,15 +16,18 @@ import { readUrl, type View, writeUrl } from "./issues-table-model";
  * first page: a filter that leaves fewer rows than the page the reader was on would otherwise
  * show nothing. `stateKey` is the prefix the table's own controls are written under
  * (`<stateKey>.sort`), so a page drawing two tables gives each one its own; a table with none
- * keeps the bare `sort`, `q`, `group`, `page` and `size` this page has always published.
+ * keeps the bare `sort`, `q`, `group`, `page` and `size` this page has always published. `start`
+ * is the view the table starts from, which the address leaves out (`StartView`): the Issues
+ * tab's unless the caller gives another, which it keeps the same object across renders.
  */
-export function useTableView(stateKey?: string) {
+export function useTableView(stateKey?: string, start: StartView = issuesTabStart) {
   const [params, setParams] = useSearchParams();
-  const view = useMemo(() => readUrl(params, stateKey), [params, stateKey]);
+  const view = useMemo(() => readUrl(params, stateKey, start), [params, stateKey, start]);
   const updateView = (update: (current: View) => View) =>
-    setParams((current) => writeUrl(current, update(readUrl(current, stateKey)), stateKey), {
-      replace: true,
-    });
+    setParams(
+      (current) => writeUrl(current, update(readUrl(current, stateKey, start)), stateKey, start),
+      { replace: true }
+    );
   return {
     params,
     setParams,

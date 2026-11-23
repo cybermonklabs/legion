@@ -498,7 +498,7 @@ export function getIssueCoverage(issue: string, options: ApiOptions = {}) {
  *  The route answers the page object where the call asks for one with `limit` or `offset`, and
  *  the whole list otherwise; this read asks for neither. */
 export async function listIssues(project: string, options: ApiOptions = {}) {
-  const answered = await get("/api/v1/issues", { query: { project } }, options);
+  const answered = await get("/api/v1/issues", { query: { project: [project] } }, options);
   if (!Array.isArray(answered)) {
     throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
   }

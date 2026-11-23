@@ -22,25 +22,26 @@ import { issueStatuses, statusLabel } from "./board-model";
 import { Popover } from "./issues-table-controls";
 import { columnFilterSpec, type Item } from "./issues-table-model";
 
-/** One issue's row: its cells, and the Start next the reader reaches by hovering it. */
+/** One issue's row: its cells, and the Start next the reader reaches by hovering it. A row with no
+ *  `onStartNext` - a list a document holds, which writes nothing - draws no action cell. */
 export function IssueRow({
-  busy,
+  busy = false,
   index,
   measure,
   moved,
   onStartNext,
   row,
 }: {
-  busy: boolean;
+  busy?: boolean;
   index: number;
   measure: (element: Element | null) => void;
   /** The issues this action has just changed, which the row shows until the next one. */
-  moved: ReadonlySet<string>;
-  onStartNext: (key: string) => void;
+  moved?: ReadonlySet<string>;
+  onStartNext?: (key: string) => void;
   row: Row<Item>;
 }): ReactNode {
   const { issue, queue } = row.original;
-  const changed = moved.has(issue.key);
+  const changed = moved?.has(issue.key) === true;
   return (
     <tr
       aria-label={`${issue.key} ${issue.title}`}
@@ -57,6 +58,7 @@ export function IssueRow({
         return (
           <td
             className={`overflow-hidden border-b px-2 py-2 ${borderDefault} ${pinned ? `sticky z-10 ${changed ? selectedCardBg : surfaceBg}` : ""} ${pinned && cell.column.getIsLastColumn("left") ? "border-r" : ""} ${row.depth > 0 && cell.column.id === "select" ? "pl-6" : ""}`}
+            data-column={cell.column.id}
             key={cell.id}
             style={{
               width: cell.column.getSize(),
@@ -67,18 +69,20 @@ export function IssueRow({
           </td>
         );
       })}
-      <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
-        {queue !== undefined && queue > 1 ? (
-          <button
-            className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
-            disabled={busy}
-            onClick={() => onStartNext(issue.key)}
-            type="button"
-          >
-            Start next
-          </button>
-        ) : null}
-      </td>
+      {onStartNext === undefined ? null : (
+        <td className={`border-b px-2 py-2 text-right ${borderDefault}`}>
+          {queue !== undefined && queue > 1 ? (
+            <button
+              className={`rounded-md border px-2 py-0.5 text-xs whitespace-nowrap opacity-0 group-hover:opacity-100 focus:opacity-100 ${borderDefault} ${surfaceBg}`}
+              disabled={busy}
+              onClick={() => onStartNext(issue.key)}
+              type="button"
+            >
+              Start next
+            </button>
+          ) : null}
+        </td>
+      )}
     </tr>
   );
 }
