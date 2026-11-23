@@ -195,9 +195,9 @@ type workflowRuntime struct {
 	// record (tellReleaseWaits), and which leave with the repository's own marker where a pass
 	// stops reading GitHub for it (settleRecovery, tellLetGoWaits); recoveryHeldSince is when a
 	// recovery's listing was first found held with waits to tell (zero for none), so a hold past
-	// recoveryHoldBound tells them, and recoveryBoundChecked whether a run of the recovery has begun
-	// with that bound passed (recoverRepositories), after which the refresher no longer cuts its wait
-	// to it.
+	// the read bounds' holdBound (repositoryReadBounds) tells them, and recoveryBoundChecked
+	// whether a run of the recovery has begun with that bound passed (recoverRepositories), after
+	// which the refresher no longer cuts its wait to it.
 	// recheckAfter is the refresher's wait before it runs a job of its own (refreshRepositories),
 	// time.After when nil; a test sees each wait through it.
 	repositories         *repositories
@@ -317,6 +317,9 @@ type workflowRuntime struct {
 	// the production ones (callBounds): they bound the start's App calls and the runtime's reads
 	// that take the same bound (recordedRepositories, recordedBranches, rereadHeldBranches).
 	appCalls *appCallBounds
+	// readBounds are the bounds of the runtime's reads for a repository and of the refresher's
+	// waits the daemon was given (overrides.reads), nil for the production ones (reads).
+	readBounds *repositoryReadBounds
 }
 
 // readyReleaseTimeout bounds one release of ready architects' waiting notices
@@ -642,7 +645,8 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // row (queueGatedStepsPublish) and the recorded gate of every issue Dispatch has not closed queued
 // for its own (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an
 // owner. It reads GitHub for a repository only to fill a record that lacks its repository columns,
-// one read per such record bounded by installReadAttempt (backfillRead), which mints the token that
+// one read per such record bounded by the read attempt bound (repositoryReadBounds.attempt,
+// backfillRead), which mints the token that
 // read needs, a read that fails leaving the record for the refresher; the preparation of the
 // repositories the records name is the refresher's first job, once the API serves
 // (prepareAtStart), beside the boot, so no other read of GitHub for a repository here can stop or
@@ -667,8 +671,9 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // ExperimentSource). nil is the engine's own, experiment.CryptoSource.
 //
 // appCalls are the start's App-call bounds (overrides.appCalls): nil, in production, is
-// productionAppCalls.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds) (opened *workflowRuntime, _ error) {
+// productionAppCalls. reads are the runtime's read bounds (overrides.reads): nil, in production, is
+// productionRepositoryReads.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, installed *appauth.Installed, log *slog.Logger, suppliedTokens appauth.Source, githubAPI string, reserve func(time.Time) time.Time, clock func() time.Time, source func(uint64) (uint64, error), appCalls *appCallBounds, reads *repositoryReadBounds) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -710,7 +715,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
 		mergeStateRunning: map[string]*mergeStateRun{},
-		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, appCalls: appCalls,
+		controllerWake:    cfg.ControllerWakeInterval, githubAPI: githubAPI, now: clock, appCalls: appCalls, readBounds: reads,
 		defaultBranches: newDefaultBranches(tokens, repos, githubAPI, defaultBranchTTL, time.Now),
 	}
 	// A read of a default branch GitHub's rate limit refuses, answered from the branch held, is
@@ -775,7 +780,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
 	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
-	left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log)
+	left, err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, w.reads(), log)
 	if err != nil {
 		return nil, err
 	}
