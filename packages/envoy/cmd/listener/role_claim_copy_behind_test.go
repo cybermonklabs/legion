@@ -42,9 +42,10 @@ func (kv *staleClaimKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // hands that holder the message: the sender got its answer, and the new holder never receives it.
 // The kept lane's handover that follows the relay's copy resolves the holder from the claim too,
 // and a stale read there walks the lane for the previous holder and gives the copy up until the
-// next sweep. The copy stays behind until the relay has judged the message, then catches up, as a
-// copy does. Control: with a current copy the message reaches the new holder, and not the previous
-// one.
+// next sweep. The copy stays behind through the relay's judgement and the handover's resolutions,
+// until the new holder has received the message or the row's 30 s have passed: a copy that caught
+// up while the handover was still resolving would let a handover that reads it pass. Control: with
+// a current copy the message reaches the new holder, and not the previous one.
 func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIsBehind(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -90,12 +91,15 @@ func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIs
 
 			event := rig.storeDispatchMessage(t, previous, role)
 			if tc.behind {
-				testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
+				if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
 					return rig.copies.Load() > 0 || heardPrevious.count(event) > 0
-				})
-				copyBehind.catchUp()
+				}) {
+					t.Fatalf("the previous holder's relay neither copied the role message %s to the kept lane nor handed it to %s within 15s: no read the copy behind is there for was made", event, previous)
+				}
 			}
-			if !heardNext.await(30*time.Second, event) {
+			heard := heardNext.await(30*time.Second, event)
+			copyBehind.catchUp()
+			if !heard {
 				t.Errorf("the new holder %s received %v within 30s, want the role message %s", next, heardNext.all(), event)
 			} else if n := heardNext.count(event); n != 1 {
 				t.Errorf("the new holder %s received the role message %s %d times, want once", next, event, n)
