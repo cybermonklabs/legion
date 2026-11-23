@@ -90,6 +90,9 @@ const Call = z.looseObject({
     .looseObject({ root: z.string(), files: z.record(z.string(), z.string()).nullable() })
     .nullable()
     .optional(),
+  /** The last 64 KiB of what the call wrote to standard error, as the bun stand-in records it:
+   * `bun test`'s report (rig.sh's standins). */
+  stderr: z.string().optional(),
 });
 /** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
  * head, the implementer's code commit. */
@@ -695,44 +698,56 @@ function bunWords(command: string): string[] | undefined {
   if (words[0] !== "bun") return undefined;
   return words.slice(1);
 }
-/** A `--timeout` value Bun takes: a whole number of milliseconds above 0. */
-const TIMEOUT_MS = /^[1-9][0-9]*$/;
-/** What the bun command line `words` (its words after `bun`) runs, as one string, so two command
- * lines that run the same thing read alike, or undefined where it holds an option this does not
- * read. `bun test` reads as its targets (each leading `./` dropped, in byte order), with one
- * option dropped: `--timeout` with a whole number of milliseconds, as `--timeout N` or
- * `--timeout=N`, so `bun test --timeout 60000 ./limits.test.ts` runs what `bun test limits.test.ts`
- * runs. A script reads, after an optional `run`, as the script (its leading `./` dropped) and its
- * arguments as given, so `bun run greet.ts Grace` runs what `bun greet.ts Grace` runs. Any other
- * option, or a `--timeout` value Bun refuses, can change what runs or whether anything runs:
- * `--help` prints help and runs no test, `--eval` runs its argument as code and never a file, and
- * Bun refuses `--timeout=oops` before it runs any test, exiting 1. Such a command line runs
- * nothing a check names. Another target or another argument is another run, and so is
- * `bun run test`, which runs a package script. */
-function bunRuns(words: string[]): string | undefined {
+/** What a bun command line runs: a script with its arguments, or `bun test` with its targets. */
+type BunRun = { script: string; args: string[] } | { test: string[] };
+/** What the bun command line `words` (its words after `bun`) runs, so two command lines that run
+ * the same thing read alike, or undefined where it holds an option this does not read. A script
+ * reads, after an optional `run`, as the script (its leading `./` dropped) and its arguments as
+ * given, so `bun run greet.ts Grace` runs what `bun greet.ts Grace` runs; an option before the
+ * script (`--eval`, which runs its argument as code and never a file) reads as nothing. `bun test`
+ * reads as its targets (each leading `./` dropped, in byte order), and its one option read is
+ * `--timeout`, with whatever value follows it (`--timeout N`, `--timeout=N`): whether Bun took the
+ * value, and ran any test, is the call's report to say (runsOf), not this. Any other option among
+ * its targets (`--help`, which prints help and runs no test) reads as nothing. Another target or
+ * another argument is another run, and so is `bun run test`, which runs a package script. */
+function bunRuns(words: string[]): BunRun | undefined {
   if (words[0] !== "test") {
     const [script = "", ...args] = words.slice(words[0] === "run" ? 1 : 0);
-    return script.startsWith("-")
-      ? undefined
-      : JSON.stringify({ script: withoutDot(script), args });
+    return script.startsWith("-") ? undefined : { script: withoutDot(script), args };
   }
   const targets: string[] = [];
   for (let index = 1; index < words.length; index++) {
     const word = words[index] ?? "";
     if (!word.startsWith("-")) targets.push(withoutDot(word));
-    else if (word === "--timeout" && TIMEOUT_MS.test(words[index + 1] ?? "")) index++;
-    else if (!(word.startsWith("--timeout=") && TIMEOUT_MS.test(word.slice("--timeout=".length))))
-      return undefined;
+    else if (word === "--timeout") index++;
+    else if (!word.startsWith("--timeout=")) return undefined;
   }
-  return JSON.stringify({ test: targets.sort() });
+  return { test: targets.sort() };
 }
+/** The summary line of a `bun test` report that ran tests: `Ran 1 test across 1 file.`. */
+const TESTS_RAN = /^Ran [1-9][0-9]* tests? across [1-9][0-9]* files?\./;
 /** The bun stand-in's calls of `command`: each whose command line runs what the command's does
- * (bunRuns). A call of any other command line, or of one bunRuns cannot read, is no run of it. */
+ * (bunRuns), and, for a `bun test` command, whose report (the call's `stderr`) says Bun ran tests,
+ * with its summary line and a `<target>:` line for each of the command's targets. So a call whose
+ * `--timeout` value Bun refused ran nothing, whatever its spelling (`--timeout=oops`,
+ * `--timeout=4294967296`, `--timeout --help`: `error: Invalid timeout`, exit 1), and one Bun took
+ * (`--timeout 0`, `--timeout=0001`, `--timeout 60000`) ran the command. A call of any other command
+ * line, or of one bunRuns cannot read, is no run of it. */
 function runsOf(calls: z.infer<typeof Call>[], command: string): z.infer<typeof Call>[] {
   const words = bunWords(command);
   const runs = words === undefined ? undefined : bunRuns(words);
   if (runs === undefined) return [];
-  return calls.filter((call) => call.as === "bun" && bunRuns(call.argv) === runs);
+  const key = JSON.stringify(runs);
+  return calls.filter((call) => {
+    const ran = call.as === "bun" ? bunRuns(call.argv) : undefined;
+    if (ran === undefined || JSON.stringify(ran) !== key) return false;
+    if (!("test" in runs)) return true;
+    const report = (call.stderr ?? "").split("\n");
+    return (
+      report.some((line) => TESTS_RAN.test(line)) &&
+      runs.test.every((target) => report.includes(`${target}:`))
+    );
+  });
 }
 
 /** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.

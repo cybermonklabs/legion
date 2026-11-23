@@ -598,6 +598,10 @@ base_env() {
 # is under the run's own, the git blob of each file in it (`files`, path to blob; `.git`, `.jj` and
 # `node_modules` left out), so a score can tell at which commit's files a command ran; a root
 # outside the run's directory has `files` null, and a call outside any workspace `workspace` null.
+# The record also holds the last 64 KiB of what the call wrote to standard error (`stderr`), which
+# it still writes there as it comes: `bun test` writes its report there, each file's `<file>:`
+# line and the `Ran <n> tests across <m> files.` line, so a score can tell a call that ran tests
+# from one Bun refused before it ran any (`error: Invalid timeout: "oops"`, exit 1).
 # The score reads the tester's runs from that record. No `legion` stands in: an
 # agent reaches the daemon stand-in through its `legion` tool alone, never `legion` from bash.
 standins() {
@@ -621,9 +625,13 @@ if [ "\$root" != / ]; then
   *) workspace=\$(jq -cn --arg root "\$root" '{root:\$root, files:null}') ;;
   esac
 fi
+err=\$(mktemp)
+trap 'rm -f "\$err"' EXIT
 status=0
-$(printf %q "$bun_real") "\$@" || status=\$?
-jq -cn --arg at "\$at" --argjson exit "\$status" --argjson workspace "\$workspace" '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit, workspace:\$workspace}' \\
+$(printf %q "$bun_real") "\$@" 2> >(tee "\$err" >&2) || status=\$?
+wait \$! 2>/dev/null || true
+jq -cn --arg at "\$at" --argjson exit "\$status" --argjson workspace "\$workspace" --rawfile stderr <(tail -c 65536 "\$err") \\
+  '{at:\$at, as:"bun", argv:\$ARGS.positional, exit:\$exit, workspace:\$workspace, stderr:\$stderr}' \\
   --args -- "\$@" >>$(printf %q "$R/calls.jsonl")
 exit "\$status"
 EOF

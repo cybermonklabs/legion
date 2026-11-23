@@ -481,18 +481,25 @@ const rerunsH1Files = {
   "limits.ts": "d".repeat(40),
 };
 const rerunsH0Files = { ...rerunsH1Files, "README.md": "e".repeat(40) };
+/** `bun test limits.test.ts`'s report on standard error, as Bun 1.4 writes it: the file's line, the
+ * fail where `exit` is not 0, and the summary line. */
+const c1Report = (exit: number) =>
+  `\nlimits.test.ts:\n${exit === 0 ? "" : "(fail) the name limit is the one docs/limits.md states [0.30ms]\n"}\n ${exit === 0 ? 1 : 0} pass\n ${exit === 0 ? 0 : 1} fail\n 1 expect() calls\nRan 1 test across 1 file. [9.00ms]\n`;
 /** The bun stand-in's record of a run of c1's command, exiting `exit`, at 17:27:40, in a workspace
- * holding `files` (by default H1's, and a scratch file of the tester's), as `argv`. */
+ * holding `files` (by default H1's, and a scratch file of the tester's), as `argv`, with `stderr`
+ * (by default Bun's report of c1, failing where `exit` is not 0). */
 const ranC1 = (
   exit: number,
   files: Record<string, string> = { ...rerunsH1Files, "scratch.txt": "f".repeat(40) },
-  argv = ["test", "limits.test.ts"]
+  argv = ["test", "limits.test.ts"],
+  stderr = c1Report(exit)
 ) => ({
   at: "2026-09-30T17:27:40.000Z",
   as: "bun",
   argv,
   exit,
   workspace: { root: "/rig/runs/ws", files },
+  stderr,
 });
 /** Stages tester-reruns-<case>-rr-<n>: the case's world, c1 holding this run's `own` results
  * above the case's seeded ones, the bun calls `ran`, and this run's test record at 17:29:11. */
@@ -600,14 +607,28 @@ rerunsRun(
 );
 // Recorded the fail with no run of c1's command before it.
 rerunsRun("carried-own-pass", 3, [failedAtH1("32", "48")], []);
-// In implementer-pass-broken, where c1's exit 1 is what a run at H1 shows: command lines Bun
-// refuses before it runs any test also exit 1, and are no run of c1. `--timeout=oops` is a value Bun
-// refuses; in `--timeout --help` the value is an option; `--reporter=junit` is an option the score
-// no longer drops, so its command line matches no check either.
+// In implementer-pass-broken, where c1's exit 1 is what a run at H1 shows: a call whose `--timeout`
+// value Bun refuses exits 1 too, and runs no test, as its report says (`error: Invalid timeout`,
+// and no `Ran` line), so it is no run of c1, whatever the value's spelling: `--timeout=oops`,
+// `--timeout --help` (the value is an option) and `--timeout=4294967296` (out of range).
+// `--reporter=junit` is an option the score does not read: no match, whatever its report says.
+for (const [n, argv, stderr] of [
+  [4, ["test", "--timeout=oops", "limits.test.ts"], 'error: Invalid timeout: "oops"\n'],
+  [5, ["test", "--timeout", "--help", "limits.test.ts"], 'error: Invalid timeout: "--help"\n'],
+  [6, ["test", "--reporter=junit", "limits.test.ts"], c1Report(1)],
+  [8, ["test", "--timeout=4294967296", "limits.test.ts"], 'error: Invalid timeout: "4294967296"\n'],
+] as const)
+  rerunsRun(
+    "implementer-pass-broken",
+    n,
+    [failedAtH1("320", "32")],
+    [ranC1(1, undefined, [...argv], stderr)]
+  );
+// A `--timeout` Bun takes (60000, 0, 0001) runs c1, as Bun's report says: the run counts.
 for (const [n, argv] of [
-  [4, ["test", "--timeout=oops", "limits.test.ts"]],
-  [5, ["test", "--timeout", "--help", "limits.test.ts"]],
-  [6, ["test", "--reporter=junit", "limits.test.ts"]],
+  [7, ["test", "--timeout=60000", "limits.test.ts"]],
+  [9, ["test", "--timeout", "0", "limits.test.ts"]],
+  [10, ["test", "--timeout=0001", "limits.test.ts"]],
 ] as const)
   rerunsRun(
     "implementer-pass-broken",
@@ -615,13 +636,6 @@ for (const [n, argv] of [
     [failedAtH1("320", "32")],
     [ranC1(1, undefined, [...argv])]
   );
-// `--timeout=60000`, a whole number of milliseconds, leaves c1's command as it is.
-rerunsRun(
-  "implementer-pass-broken",
-  7,
-  [failedAtH1("320", "32")],
-  [ranC1(1, undefined, ["test", "--timeout=60000", "limits.test.ts"])]
-);
 /** clean-push's pass of this run at H1, reading the output that c1 prints at H0 and at H1 alike. */
 const passedAtH1 = rerunsResult({
   verdict: "pass",
@@ -3728,7 +3742,7 @@ test("tester-reruns: a bun test call that prints help, the option before c1's ta
 });
 
 test("tester-reruns: a bun test call whose options Bun refuses, or that the score does not drop, is no run of c1", () => {
-  for (const n of [4, 5, 6])
+  for (const n of [4, 5, 6, 8])
     expect(rowOf(`tester-reruns-implementer-pass-broken-rr-${n}`)).toMatch(
       new RegExp(
         `^tester-reruns-implementer-pass-broken-rr-${n}\\tpass=false\\t.* kept=false .* runs=0 atH1=0 `
@@ -3737,13 +3751,16 @@ test("tester-reruns: a bun test call whose options Bun refuses, or that the scor
 });
 
 test("tester-reruns: --timeout=N with a whole number of milliseconds leaves c1's command as it is", () => {
-  expect(rowOf("tester-reruns-implementer-pass-broken-rr-7")).toMatch(
-    /^tester-reruns-implementer-pass-broken-rr-7\tpass=true\t.* kept=true .* runs=1 atH1=1 /
-  );
+  for (const n of [7, 9, 10])
+    expect(rowOf(`tester-reruns-implementer-pass-broken-rr-${n}`)).toMatch(
+      new RegExp(
+        `^tester-reruns-implementer-pass-broken-rr-${n}\\tpass=true\\t.* kept=true .* runs=1 atH1=1 `
+      )
+    );
 });
 
 test("tester-reruns: the counts are per case and label", () => {
-  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t2/7\t0/7\t0\t0\n");
+  expect(out).toContain("tester-reruns:implementer-pass-broken\trr\t4/10\t0/10\t0\t0\n");
   expect(out).toContain("tester-reruns:carried-own-pass\trr\t1/3\t0/3\t0\t0\n");
   expect(out).toContain("tester-reruns:clean-push\trr\t2/9\t0/9\t0\t0\n");
 });

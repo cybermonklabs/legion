@@ -218,6 +218,122 @@ describe("tester-reruns", () => {
     expect(new Set(tokens).size).toBe(3);
   });
 
+  /** Stages tester-reruns-<case>-real-<n> under `runs` as run_tester_reruns leaves a run for
+   * score.ts: the case's fixture repository at `at`, the bun stand-in rig.sh writes, one real call
+   * of it with `argv` in the repository, the run's own result of c1 at H1 (`verdict` and
+   * `observed`), then its test record. Answers the call's record, the repository and the call's
+   * exit. */
+  const realRun = (
+    runs: string,
+    n: number,
+    rerunsCase: keyof typeof CASES,
+    at: "h0" | "h1",
+    argv: string[],
+    verdict: string,
+    observed: string
+  ) => {
+    const runDir = path.join(runs, `tester-reruns-${rerunsCase}-real-${n}`);
+    const repo = world.rerunsRepository(
+      path.join(runDir, "src"),
+      rerunsCase,
+      "ACME-1",
+      1_800_000_000
+    );
+    const standIn = Bun.spawnSync([
+      "bash",
+      "-c",
+      `R=$1 here=$2\n${fn("standins")}\nstandins`,
+      "-",
+      runDir,
+      import.meta.dir,
+    ]);
+    expect(standIn.exitCode).toBe(0);
+    git(path.join(runDir, "src"), "checkout", "-q", repo[at]);
+    const ran = Bun.spawnSync([path.join(runDir, "bin", "bun"), ...argv], {
+      cwd: path.join(runDir, "src"),
+      env: { ...process.env, NO_COLOR: "1" },
+    });
+    const [call] = readFileSync(path.join(runDir, "calls.jsonl"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(call.argv).toEqual(argv);
+    expect(call.exit).toBe(ran.exitCode);
+    expect(call.workspace.root).toBe(path.join(runDir, "src"));
+    const later = (seconds: number) => new Date(Date.now() + seconds * 1000).toISOString();
+    const files = {
+      "dispatch.json": JSON.stringify({
+        postgres: "pg-real",
+        database: `run_real_${rerunsCase.replaceAll("-", "_")}_${n}`,
+        port: 20000,
+        url: "http://127.0.0.1:20000",
+      }),
+      "out.txt": "exit=0\n",
+      "world.json": JSON.stringify({
+        key: "ACME-1",
+        repo: "example/widgets",
+        pr: 1000 + n,
+        branch: "legion/ACME-1",
+        head: repo.h1,
+        h0: repo.h0,
+        case: rerunsCase,
+        h1Output: CASES[rerunsCase].output,
+        h1Files: repo.h1Files,
+      }),
+      "handoffs.json": JSON.stringify([
+        {
+          id: "h-test",
+          issue_key: "ACME-1",
+          phase: "test",
+          version: 1,
+          author: { kind: "session", id: "real-tester" },
+          created_at: later(2),
+          body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: "ACME-1", head: repo.h1 }),
+        },
+      ]),
+      "results.json": JSON.stringify([
+        {
+          check: "c1",
+          run: world.C1_RUN,
+          results: [
+            {
+              session: "real-tester",
+              commit: repo.h1,
+              verdict,
+              run: world.C1_RUN,
+              observed,
+              created_at: later(1),
+            },
+          ],
+        },
+      ]),
+    };
+    for (const [file, text] of Object.entries(files)) writeFileSync(path.join(runDir, file), text);
+    mkdirSync(path.join(runDir, "sessions"));
+    writeFileSync(
+      path.join(runDir, "sessions", "real.jsonl"),
+      [
+        { type: "session", id: "real-tester", cwd: path.join(runDir, "cwd") },
+        {
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "Tested." }] },
+        },
+      ]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join("")
+    );
+    return { call, repo, exit: ran.exitCode };
+  };
+  /** What `score.ts runs <runs> tester-reruns` prints. */
+  const scoreRuns = (runs: string) =>
+    Bun.spawnSync([
+      process.execPath,
+      path.join(import.meta.dir, "score.ts"),
+      "runs",
+      runs,
+      "tester-reruns",
+    ]).stdout.toString();
+
   // The bun stand-in rig.sh writes, run for real on the fixture repository at H0 and at H1, and
   // the run it records scored by score.ts: clean-push's output is the same at both heads, so only
   // the files the stand-in read tell a run at H1 from one at H0.
@@ -225,120 +341,59 @@ describe("tester-reruns", () => {
     "tester-reruns clean-push: the bun stand-in records the files c1 ran on, and a run of c1 only at H0 scores no pass at H1",
     () => {
       const runs = path.join(freshDir("stand-in"), "runs");
-      const score = (n: number, at: "h0" | "h1") => {
-        const runDir = path.join(runs, `tester-reruns-clean-push-real-${n}`);
-        const repo = world.rerunsRepository(
-          path.join(runDir, "src"),
-          "clean-push",
-          "ACME-1",
-          1_800_000_000
-        );
-        const standIn = Bun.spawnSync([
-          "bash",
-          "-c",
-          `R=$1 here=$2\n${fn("standins")}\nstandins`,
-          "-",
-          runDir,
-          import.meta.dir,
-        ]);
-        expect(standIn.exitCode).toBe(0);
-        git(path.join(runDir, "src"), "checkout", "-q", repo[at]);
-        const ran = Bun.spawnSync([path.join(runDir, "bin", "bun"), "test", "limits.test.ts"], {
-          cwd: path.join(runDir, "src"),
-          env: { ...process.env, NO_COLOR: "1" },
-        });
-        expect(ran.exitCode).toBe(0);
-        const [call] = readFileSync(path.join(runDir, "calls.jsonl"), "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line));
-        expect(call.argv).toEqual(["test", "limits.test.ts"]);
-        expect(call.workspace.root).toBe(path.join(runDir, "src"));
-        const later = (seconds: number) => new Date(Date.now() + seconds * 1000).toISOString();
-        const files = {
-          "dispatch.json": JSON.stringify({
-            postgres: "pg-real",
-            database: `run_real_${n}`,
-            port: 20000,
-            url: "http://127.0.0.1:20000",
-          }),
-          "out.txt": "exit=0\n",
-          "world.json": JSON.stringify({
-            key: "ACME-1",
-            repo: "example/widgets",
-            pr: 1000 + n,
-            branch: "legion/ACME-1",
-            head: repo.h1,
-            h0: repo.h0,
-            case: "clean-push",
-            h1Output: "32",
-            h1Files: repo.h1Files,
-          }),
-          "handoffs.json": JSON.stringify([
-            {
-              id: "h-test",
-              issue_key: "ACME-1",
-              phase: "test",
-              version: 1,
-              author: { kind: "session", id: "real-tester" },
-              created_at: later(2),
-              body: JSON.stringify({
-                schemaVersion: 1,
-                phase: "test",
-                issue: "ACME-1",
-                head: repo.h1,
-              }),
-            },
-          ]),
-          "results.json": JSON.stringify([
-            {
-              check: "c1",
-              run: world.C1_RUN,
-              results: [
-                {
-                  session: "real-tester",
-                  commit: repo.h1,
-                  verdict: "pass",
-                  run: world.C1_RUN,
-                  observed: "limits.ts says 32, docs/limits.md says 32; 1 pass, 0 fail",
-                  created_at: later(1),
-                },
-              ],
-            },
-          ]),
-        };
-        for (const [file, text] of Object.entries(files))
-          writeFileSync(path.join(runDir, file), text);
-        mkdirSync(path.join(runDir, "sessions"));
-        writeFileSync(
-          path.join(runDir, "sessions", "real.jsonl"),
-          [
-            { type: "session", id: "real-tester", cwd: path.join(runDir, "cwd") },
-            {
-              type: "message",
-              message: { role: "assistant", content: [{ type: "text", text: "Tested." }] },
-            },
-          ]
-            .map((entry) => `${JSON.stringify(entry)}\n`)
-            .join("")
-        );
-        return { call, repo };
-      };
-      const atH0 = score(1, "h0");
-      const atH1 = score(2, "h1");
+      const passed = "limits.ts says 32, docs/limits.md says 32; 1 pass, 0 fail";
+      const argv = ["test", "limits.test.ts"];
+      const atH0 = realRun(runs, 1, "clean-push", "h0", argv, "pass", passed);
+      const atH1 = realRun(runs, 2, "clean-push", "h1", argv, "pass", passed);
+      expect([atH0.exit, atH1.exit]).toEqual([0, 0]);
       // At H1 the stand-in read each file of H1 as H1 holds it; at H0 README.md is H0's.
       expect(atH1.call.workspace.files).toEqual(atH1.repo.h1Files);
       expect(atH0.call.workspace.files["README.md"]).not.toBe(atH0.repo.h1Files["README.md"]);
-      const scored = Bun.spawnSync([
-        process.execPath,
-        path.join(import.meta.dir, "score.ts"),
-        "runs",
-        runs,
-        "tester-reruns",
-      ]);
-      const out = scored.stdout.toString();
+      const out = scoreRuns(runs);
       expect(out).toMatch(/^tester-reruns-clean-push-real-1\tpass=false\t.* runs=1 atH1=0 /m);
       expect(out).toMatch(/^tester-reruns-clean-push-real-2\tpass=true\t.* runs=1 atH1=1 /m);
+    },
+    REPOSITORY_ROW_MS
+  );
+
+  // The same stand-in, run for real at H1 of implementer-pass-broken, where c1 fails (exit 1): a
+  // `--timeout` Bun refuses also exits 1, and only the report the stand-in kept shows it ran no
+  // test. A `--timeout` Bun takes, in a spelling no rule of the score names, runs c1.
+  test(
+    "tester-reruns implementer-pass-broken: the bun stand-in keeps Bun's report, so a --timeout Bun refuses runs no test and one it takes runs c1",
+    () => {
+      const runs = path.join(freshDir("stand-in"), "runs");
+      const failed = "limits.ts says 320, docs/limits.md says 32; 1 fail";
+      const refused = realRun(
+        runs,
+        3,
+        "implementer-pass-broken",
+        "h1",
+        ["test", "--timeout=4294967296", "limits.test.ts"],
+        "fail",
+        failed
+      );
+      const taken = realRun(
+        runs,
+        4,
+        "implementer-pass-broken",
+        "h1",
+        ["test", "--timeout=0001", "limits.test.ts"],
+        "fail",
+        failed
+      );
+      expect([refused.exit, taken.exit]).toEqual([1, 1]);
+      expect(refused.call.stderr).toContain('error: Invalid timeout: "4294967296"');
+      expect(refused.call.stderr).not.toMatch(/^Ran /m);
+      expect(taken.call.stderr).toMatch(/^limits\.test\.ts:$/m);
+      expect(taken.call.stderr).toMatch(/^Ran 1 test across 1 file\./m);
+      const out = scoreRuns(runs);
+      expect(out).toMatch(
+        /^tester-reruns-implementer-pass-broken-real-3\tpass=false\t.* runs=0 atH1=0 /m
+      );
+      expect(out).toMatch(
+        /^tester-reruns-implementer-pass-broken-real-4\tpass=true\t.* runs=1 atH1=1 /m
+      );
     },
     REPOSITORY_ROW_MS
   );
