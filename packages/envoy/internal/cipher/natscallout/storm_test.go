@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -133,7 +134,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	}
 	var decided, slowest atomic.Int64
 	introspect := introspector(sessions...)
-	timed := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	timed := func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		began := time.Now()
 		decision, err := Decide(ctx, deps, services, req)
 		for took := int64(time.Since(began)); took > slowest.Load(); {
@@ -223,7 +224,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		const control = 5
 		controls := sessionsNamed(t, "ses_late", control)
 		var seen sync.Map
-		lateFirst := func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+		lateFirst := func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 			if _, again := seen.LoadOrStore(req.Token, true); !again {
 				time.Sleep(hubTimeout + 500*time.Millisecond)
 			}
@@ -389,7 +390,7 @@ func newDecidedNonces() *decidedNonces { return &decidedNonces{nonces: map[strin
 
 // wrap is decide, keeping the nonce of each request it decides with no error.
 func (d *decidedNonces) wrap(decide decideFunc) decideFunc {
-	return func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
+	return func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		decision, err := decide(ctx, deps, services, req)
 		if err == nil {
 			d.mu.Lock()

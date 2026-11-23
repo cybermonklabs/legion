@@ -129,11 +129,11 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	const form = "secret retag"
 	flagArgs, positional := splitArgs(args, secretFlagValues)
 	flags := secretFlags(form, stderr)
-	newOwner := flags.String("owner", "", "the new owner: me (the email of the person your AWS or Google sign-in names), shared, or a person's email")
+	newOwner := flags.String("owner", "", "the new owner: me (the email of the person your AWS or Google sign-in names), shared, a person's email, or group: and a Google group's lowercase email")
 	newTier := flags.String("tier", "", "the new tier: agent or human")
 	newType := flags.String("type", "", strings.Join(policy.Types, ", ")+" or none")
 	newGitHubOwners := flags.String("github-owners", "", `the GitHub accounts a github-app secret mints for, separated by spaces ("<login> <login>"), or none`)
-	newRequesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email) and registered services that may ask for this secret at all, separated by spaces ("<email> <service>"), or none; an admin secret and a google-service-account one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
+	newRequesters := flags.String("requesters", "", `the people (each by their lowercase sign-in email), Google groups (each as group: and its lowercase email) and registered services that may ask for this secret at all, separated by spaces ("<email> group:<email> <service>"), or none; an admin secret, a google-service-account one and an anthropic-federation one each need a --max-grant of an hour or less, and a secret that only lists who may ask keeps its own cap, or none`)
 	newScopes := flags.String("scopes", "", `the OAuth scopes the token a google-service-account secret mints carries, each the part of a Google scope after https://www.googleapis.com/auth/, separated by spaces ("cloud-platform bigquery"), or none; read on that type alone, and a secret without it mints cloud-platform`)
 	newAdmin := flags.String("admin", "", "true marks a secret whose grant is an administrator's, or none removes the mark: such a secret is human tier, so a person approves each release, names its requesters, and bounds its grants to an hour with --max-grant")
 	newProject := flags.String("project", "", "the key of the Dispatch project the secret belongs to (PRIV), whose private secret goes only to a session naming the project in AGENT_SECRETS_PROJECTS, or none: the secret then belongs to no project")

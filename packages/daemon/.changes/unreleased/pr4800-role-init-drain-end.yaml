@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+    role-init logs how its wait over a role's namespace ended, once the role's shim exits on its
+    own: `role-init: the role's namespace emptied <span> after its SIGTERM` when the role's
+    processes left on the signal, or `role-init: the role's processes still ran <span> after its
+    SIGTERM, the drain's bound of 2s: killing them` when the bound came first and the kill ends
+    what is left. That second line is where a git or a jj the role left can leave a lock in the
+    issue's clone.
+time: 2026-11-21T12:02:01Z
+custom:
+    Issue: pr4800

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
-import type { CaseRow } from "./build-corpus";
+import { claimStartOf, walkThroughPin } from "./claim-start";
 import {
   CannotRunError,
   type Corpus,
@@ -10,7 +10,6 @@ import {
   listOf,
   outDirectory,
   pool,
-  readCorpus,
   recordOf,
   stringOf,
   UsageError,
@@ -21,26 +20,9 @@ import {
   dispatchConfig,
   pageEventLog,
 } from "./dispatch-read";
-import {
-  BUILD_CHAIN_NAMES,
-  type BuildChain,
-  chainRefusal,
-  drawFactsOf,
-  drawPath,
-  type FinalTestTree,
-  slicesOf,
-  slicesPath,
-} from "./draw-io";
 import { LeakError } from "./render";
 import { readVersion } from "./replay";
-import {
-  CLAIM_RUN_VARIABLE,
-  microsecondsOf,
-  REPOSITORY_ROOT,
-  RESERVE_VARIABLE,
-  type Registration,
-  runDigestOf,
-} from "./reserve";
+import { microsecondsOf, type Registration } from "./reserve";
 import { type Decision, type ReserveVerdict, reserveAskDecision } from "./s10-decision";
 import {
   AnswerLog,
@@ -53,10 +35,13 @@ import {
   INPUTS_VERSION,
   INVENTORY_FILE,
   type InventoryLine,
+  type InventoryRequest,
   ISSUE_FIELDS,
   type IssueAsOf,
   type IssueField,
+  inventoryOf,
   type JudgedMoment,
+  judgedMomentOf,
   noCounts,
   type QueryHit,
   type RequestDocument,
@@ -85,7 +70,6 @@ import {
   Stage,
   writeWhole,
 } from "./s10-stage";
-import { TREES_FILE } from "./trees";
 
 /**
  * Writes the inputs the claim's S10 reviewer judges each request of the final test on: the third
@@ -106,9 +90,10 @@ import { TREES_FILE } from "./trees";
  * request, and are its provenance only: never a second judgement or a second row of any figure.
  * A report case the build does not hold, an approval case of a tree the draw left out of report,
  * a case `slices.json` and the trees disagree on, a case named twice, and an ask whose cases sit
- * in two trees are each refused. A case id is `<ask id>@<answer time>`, so no file here names one:
- * a line carries the count of its cases, and `analyze.ts` maps the cases to the requests by ask id
- * over the draw's report trees, the draw pinned by its sha256 in `s10-inputs.json`.
+ * in two trees are each refused (`inventoryOf`, in `s10-inputs-io.ts`). A case id is
+ * `<ask id>@<answer time>`, so no file here names one: a line carries the count of its cases, and
+ * the analysis (`analyze.ts --claim-s10`) holds this inventory to the same rule over the same
+ * build and draw, the draw pinned by its sha256 in `s10-inputs.json`.
  *
  * What is read, and as of when (point 3). Live, S10 judged a request at its last opening or edit,
  * before the person's answer existed. Here each request is read as it stood at the judged moment:
@@ -159,8 +144,8 @@ import { TREES_FILE } from "./trees";
  * otherwise than `factHold` is a deviation.
  *
  * His answer is placed and never written: no verdict, option, words or answer time of it, and no
- * id of its event, is in any file this writes. The analysis places it again over its own walk of
- * the log with the same rule (`AnswerLog`), so the two stages read one answer. A payload at the
+ * id of its event, is in any file this writes. The analysis compares each request with his
+ * answer as the build's corpus records it, which this stage never writes. A payload at the
  * judged moment that carries an `answer`, or an `approval.approved` that is not before the
  * moment, makes the request a deviation, and every request file is held, before it is written, to
  * `assertNoAnswer`: no case id of the ask, no event id that is the answer's, no `answered_at` at
@@ -192,16 +177,14 @@ import { TREES_FILE } from "./trees";
  * with no event in the log through the pin opened after it, so after the moment, and is dropped
  * too, and so is one with an event after the pin (below). Otherwise its fields are its last whole
  * payload's, which no event after the moment changed, and its issue's title as of the moment.
- * S10's `neighbours` reads a candidate's fields one after another, each only where the ones
- * before it let the candidate through (its state and its answer's user; its issue; its answer's
- * time; its kind; its documents' ids, names and versions, its answer's selected options and
- * words, its question and its issue's title), taking the hits in its own order, by rank, and
- * stopping at its eighth neighbour (`neighbourFault`); the first of those reads the log cannot
- * give as of the moment makes the request a deviation, naming the candidate and the field. The
- * filters themselves are S10's own code's, run over these fields. Each inventory line carries its
- * request's counts (the asks held, the asks `reserve-ask.ts` decided nothing on, those dropped by
- * an event after the moment, by where the event was seen, and those kept) and the end of the drop
- * scan its candidates were dropped by (`dropScanThrough`), as its request file does.
+ * S10's `neighbours` reads a candidate's fields one after another, in the order `neighbourFault`
+ * in `s10-mirror.ts` states, taking the hits in its own order, by rank, and stopping at its eighth
+ * neighbour; the first of those reads the log cannot give as of the moment makes the request a
+ * deviation, naming the candidate and the field. The filters themselves are S10's own code's,
+ * run over these fields. Each inventory line carries its request's counts (the asks held, the
+ * asks `reserve-ask.ts` decided nothing on, those dropped by an event after the moment, by where
+ * the event was seen, and those kept) and the end of the drop scan its candidates were dropped by
+ * (`dropScanThrough`), as its request file does.
  *
  * The walks. The log is walked twice, each time through the build's pin, and each walk is refused
  * unless it reads as many events as the build read, which a build in the claim run records (a
@@ -297,14 +280,6 @@ export interface InputsOptions {
   registration?: Registration;
   root?: string;
   decision?: Decision;
-}
-
-/** One request of the inventory, with the corpus's cases of its ask, which are never written. */
-export interface InventoryRequest {
-  askId: string;
-  issueKey: string | null;
-  group: string;
-  rows: readonly CaseRow[];
 }
 
 interface Flags {
@@ -499,81 +474,6 @@ export class CandidateLog {
   }
 }
 
-/**
- * The inventory: one request per ask among the approval cases of the eligible trees the draw put
- * in report, sorted by ask id (point 6). Every way the draw's two files could make a report case
- * map to no request or to two is refused, and so is a case either names twice.
- */
-export function inventoryOf(
-  byCaseId: ReadonlyMap<string, CaseRow>,
-  trees: readonly FinalTestTree[],
-  report: readonly string[]
-): InventoryRequest[] {
-  const inReport = new Set<string>();
-  for (const caseId of report) {
-    if (inReport.has(caseId)) {
-      throw new S10InputsError(`the draw's report slice names the case ${caseId} twice`);
-    }
-    inReport.add(caseId);
-  }
-  const requests = new Map<string, InventoryRequest & { rows: CaseRow[] }>();
-  const placed = new Set<string>();
-  for (const tree of trees) {
-    for (const caseId of tree.cases) {
-      const row = byCaseId.get(caseId);
-      if (row === undefined) {
-        throw new S10InputsError(
-          `the draw's tree ${tree.group} names the case ${caseId}, which the build does not hold`
-        );
-      }
-      if (placed.has(caseId)) {
-        throw new S10InputsError(`the draw's trees name the case ${caseId} twice`);
-      }
-      placed.add(caseId);
-      if (row.kind !== "approval") continue;
-      if (tree.slice !== "report" || !inReport.has(caseId)) {
-        throw new S10InputsError(
-          `the draw left the approval case ${caseId} of the eligible tree ${tree.group} out of ` +
-            "its report slice, where the claim's draw puts every one"
-        );
-      }
-      const known = requests.get(row.askId);
-      if (known === undefined) {
-        requests.set(row.askId, {
-          askId: row.askId,
-          issueKey: row.issueKey,
-          group: tree.group,
-          rows: [row],
-        });
-      } else if (known.group !== tree.group) {
-        throw new S10InputsError(
-          `the ask ${row.askId} has cases in the trees ${known.group} and ${tree.group}, so its ` +
-            "one request would be judged twice"
-        );
-      } else {
-        known.rows.push(row);
-      }
-    }
-  }
-  for (const caseId of inReport) {
-    const row = byCaseId.get(caseId);
-    if (row === undefined) {
-      throw new S10InputsError(
-        `the draw's report slice names the case ${caseId}, which the build does not hold`
-      );
-    }
-    if (!placed.has(caseId)) {
-      throw new S10InputsError(
-        `the draw's report slice holds the case ${caseId}, which no eligible tree of its ` +
-          "record holds"
-      );
-    }
-  }
-  return [...requests.values()].sort((one, other) =>
-    one.askId < other.askId ? -1 : one.askId > other.askId ? 1 : 0
-  );
-}
-
 /** What `assertNoAnswer` holds a request file to: the person's answer to the judged request. */
 export interface AnswerGuard {
   askId: string;
@@ -664,71 +564,6 @@ function walkValues(
   for (const [name, entry] of Object.entries(record)) walkValues(entry, name, visit);
 }
 
-/** The bytes of a file a stage before this one wrote, refused where it is not there. */
-async function stageBytesOf(path: string, flag: string): Promise<Buffer> {
-  try {
-    return await readFile(path);
-  } catch {
-    throw new S10InputsError(`${path} could not be read: ${flag} takes the directory it wrote`);
-  }
-}
-
-/** The claim's draw, as this run reads it, with the sha256 of each of its two files. */
-interface ClaimDraw {
-  directory: string;
-  trees: readonly FinalTestTree[];
-  report: readonly string[];
-  drawSha256: string;
-  slicesSha256: string;
-}
-
-/**
- * The draw at `directory`, refused unless the claim run made it under this read from this build,
- * as its record says: the claim run it names and the sha256 of each of the build's three files,
- * each the bytes the build directory holds now (`build`, one `chainRefusal`), the read its final
- * test was drawn under, and that it applied no never-decide rule.
- */
-async function claimDrawOf(
-  directory: string,
-  build: BuildChain,
-  reference: string
-): Promise<ClaimDraw> {
-  const drawFile = drawPath(directory);
-  const slicesFile = slicesPath(directory);
-  const drawBytes = await stageBytesOf(drawFile, "--draw");
-  const slicesBytes = await stageBytesOf(slicesFile, "--draw");
-  const facts = drawFactsOf(drawBytes.toString("utf8"), drawFile);
-  const refusal = chainRefusal(facts.claimRun, build, BUILD_CHAIN_NAMES);
-  if (refusal !== null) {
-    throw new S10InputsError(
-      `${drawFile} is not this claim run's draw of the build it reads: ${refusal}. A stage ` +
-        "takes only its own claim run's draw of the build's bytes now"
-    );
-  }
-  if (facts.finalTestReference !== reference) {
-    throw new S10InputsError(
-      `${drawFile} was drawn under ${facts.finalTestReference ?? "no read of the reserve"}, and ` +
-        `this run reads under ${reference}`
-    );
-  }
-  if (facts.neverDecideApplied !== false) {
-    throw new S10InputsError(
-      `${drawFile} does not record that it applied no never-decide rule, which the claim's draw ` +
-        "does not apply (draw.ts)"
-    );
-  }
-  if (facts.finalTestTrees === undefined) {
-    throw new S10InputsError(`${drawFile} records no final test's trees`);
-  }
-  return {
-    directory,
-    trees: facts.finalTestTrees,
-    report: slicesOf(slicesBytes.toString("utf8"), slicesFile).report,
-    drawSha256: sha256Of(drawBytes),
-    slicesSha256: sha256Of(slicesBytes),
-  };
-}
-
 /** A request's ask hits, the title's before the question's, in the order the pages give them. */
 function hitsOf(search: RequestSearch): QueryHit[] {
   return [...search.title.hits, ...search.question.hits];
@@ -787,26 +622,6 @@ async function dropScanOf(
   return { asks, through };
 }
 
-/** Walks the log through the pin into `note`, refused unless it reads the events the build read. */
-async function walkThroughPin(
-  corpus: Corpus,
-  note: (event: DispatchEvent) => void
-): Promise<number> {
-  const walk = await pageEventLog({
-    through: corpus.snapshot.throughEventId,
-    onPage: (events) => {
-      for (const event of events) note(event);
-    },
-  });
-  if (walk.eventsRead !== corpus.snapshot.eventsRead) {
-    throw new S10InputsError(
-      `the log through event ${corpus.snapshot.throughEventId} reads ${walk.eventsRead} events, ` +
-        `and the build read ${corpus.snapshot.eventsRead} there: it is not the log the build read`
-    );
-  }
-  return walk.eventsRead;
-}
-
 /** A request of the inventory that cannot be judged as the text fixes, and why. */
 interface Deviation {
   state: "deviation";
@@ -855,7 +670,7 @@ function planOf(request: InventoryRequest, log: InputsLog): Ready | Deviation {
   if (event === null) {
     return deviation("no ask.opened or ask.edited of the ask comes before the person's answer");
   }
-  const judged = { eventId: event.id, type: event.type, createdAt: event.created_at };
+  const judged = judgedMomentOf(event);
   const judgedAt = microsecondsOf(event.created_at);
   if (judgedAt === null) return deviation("the judged event's time is no time", judged);
   const payload = event.payload;
@@ -1004,9 +819,10 @@ interface Run {
 
 /**
  * The run's start: the decision checked first, so a checkout whose `reserve-ask.ts` closure is not
- * the registered one reads nothing; then the build, read under the registered read and the claim
- * run its snapshot records, which must record the events it read; the draw, held to that build;
- * the chain; the inventory; and the stage directory, started or resumed.
+ * the registered one reads nothing; then the claim run's start the analysis shares (`claimStartOf`:
+ * the admission before any file is read, the build under that read, whose snapshot must record the
+ * events it read, and the draw held to the build); the chain; the inventory; and the stage
+ * directory, started or resumed.
  */
 async function openRun(flags: Flags, options: InputsOptions): Promise<Run> {
   const decision = options.decision ?? (await reserveAskDecision());
@@ -1014,36 +830,15 @@ async function openRun(flags: Flags, options: InputsOptions): Promise<Run> {
     throw new S10InputsError("the decision handed in names itself by no sha256");
   }
   const directory = await outDirectory(flags.out);
-  const root = options.root ?? REPOSITORY_ROOT;
-  const corpus = await readCorpus(flags.corpus, { registration: options.registration, root });
-  const reference = corpus.reserve.readUnder;
-  const claimRun = corpus.snapshot.reserve?.claimRun;
-  if (reference === null || claimRun === undefined) {
-    throw new S10InputsError(
-      "the claim's inputs are written only under its registered read, by the claim run its " +
-        `build recorded: set ${RESERVE_VARIABLE} and ${CLAIM_RUN_VARIABLE} as that build had them`
-    );
-  }
-  if (corpus.snapshot.eventsRead <= 0) {
-    // `readCorpus` reads a snapshot that records none as having read none; a build of the claim
-    // run always records it, so no walk here can show it reads the build's log without it.
-    throw new S10InputsError(
-      `${join(corpus.directory, "snapshot.json")} records no events read, so no walk of the log ` +
-        "here can show it is the log the build read"
-    );
-  }
-  const treesBytes = await stageBytesOf(join(corpus.directory, TREES_FILE), "--corpus");
-  const build: BuildChain = {
-    id: claimRun,
-    snapshotSha256: corpus.snapshotSha256,
-    corpusSha256: corpus.corpusSha256,
-    treesSha256: sha256Of(treesBytes),
-  };
-  const draw = await claimDrawOf(resolve(flags.draw), build, reference);
+  const { corpus, reference, build, draw, runDigest } = await claimStartOf(
+    flags.corpus,
+    flags.draw,
+    { registration: options.registration, root: options.root }
+  );
   const chain: StageChain = {
     claimRun: build,
     reference,
-    runDigest: await runDigestOf({ argv: process.argv, env: process.env }, root),
+    runDigest,
     person: corpus.snapshot.person,
     throughEventId: corpus.snapshot.throughEventId,
     draw: { drawSha256: draw.drawSha256, slicesSha256: draw.slicesSha256 },
@@ -1499,5 +1294,5 @@ export async function main(argv: readonly string[], options: InputsOptions = {})
   }
 }
 
-// Only when run: a test that imports `inventoryOf` must not write any inputs.
+// Only when run: a test that imports `assertNoAnswer` or the logs must not write any inputs.
 if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));

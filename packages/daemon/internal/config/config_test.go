@@ -1977,8 +1977,8 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 		}
 	})
 	for _, tc := range []struct{ name, line, want string }{
-		{"a name that is no deployment capability", `capabilities: {decided: {nonsense: "because"}}`, "unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits or pool-capacity"},
-		{"an image row, which no decision covers", `capabilities: {decided: {browser: "no Chromium"}}`, "unknown key capabilities.decided.browser: a decision may name secrets, model-fallback, resource-limits or pool-capacity"},
+		{"a name that is no deployment capability", `capabilities: {decided: {nonsense: "because"}}`, "unknown key capabilities.decided.nonsense: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room"},
+		{"an image row, which no decision covers", `capabilities: {decided: {browser: "no Chromium"}}`, "unknown key capabilities.decided.browser: a decision may name secrets, model-fallback, resource-limits, pool-capacity or repository-cache-room"},
 		{"a blank reason", `capabilities: {decided: {secrets: "  "}}`, "capabilities.decided.secrets must not be empty"},
 		{"a null reason", `capabilities: {decided: {secrets: }}`, "capabilities.decided.secrets must not be empty"},
 		{"a reason that is not a string", `capabilities: {decided: {secrets: [a, b]}}`, "capabilities.decided.secrets must be a string"},

@@ -210,9 +210,12 @@ func startCreate(t *testing.T, cmd *exec.Cmd, env ...string) *createProcess {
 	return p
 }
 
-// helperCommand runs TestCreateSignalHelper directly.
+// helperCommand runs TestCreateSignalHelper with each of createSignals at its default action
+// (`env --default-signal`), so it does not inherit one this test process ignores (a job run in the
+// background of a script ignores SIGINT and SIGQUIT, nohup SIGHUP), at which the create rightly
+// goes on.
 func helperCommand() *exec.Cmd {
-	return exec.Command(os.Args[0], "-test.run=^TestCreateSignalHelper$")
+	return exec.Command("env", "--default-signal=HUP,INT,QUIT,TERM", os.Args[0], "-test.run=^TestCreateSignalHelper$")
 }
 
 // waitFor returns once the process has printed want, failing the test once the wait the test

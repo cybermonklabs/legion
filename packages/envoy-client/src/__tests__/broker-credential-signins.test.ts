@@ -358,9 +358,6 @@ test("a write whose person signs out between two attempts ends unsettled, presen
     port: 0,
     hostname: "127.0.0.1",
     fetch: async (request) => {
-      if (new URL(request.url).pathname === "/healthz") {
-        return Response.json({ status: "ok", idempotency_keys: true });
-      }
       const key = request.headers.get("Idempotency-Key") ?? "";
       asked.push({ authorization: request.headers.get("Authorization") ?? "", key });
       if (request.method === "POST" && asked.length === 1) {

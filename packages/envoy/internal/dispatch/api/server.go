@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -66,11 +67,6 @@ func projectKeyProblem(field, value string) string {
 	return fmt.Sprintf("%s %q is not a project key: %s", field, value, contracts.ProjectKeyRule)
 }
 
-// repoLabelPrefix marks an issue created through DISPATCH_DEFAULT_PROJECT
-// with the external repository it came from, so the repository stays
-// visible and filterable once it's no longer named by the project key.
-const repoLabelPrefix = "repo:"
-
 // ServiceTokenVerifier verifies a Kubernetes pod's projected service-account token.
 // *oidc.LazyVerifier is the one Dispatch serves with: until its issuer is discovered every Verify
 // fails with an error matching oidc.ErrIssuerUnavailable.
@@ -91,10 +87,9 @@ type AgentPublisher interface {
 
 // Deps are the API's application dependencies.
 type Deps struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession configure the issue the dashboard's search bar files
 	// from the words a person typed when those words match nothing it found
 	// (GET /api/v1/settings/new-issue; cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL,
@@ -124,6 +119,14 @@ type Deps struct {
 	// fetches one project twice at once. The source row, not this sharing, orders every process's
 	// writes (architecture.Importer).
 	Architecture *architecture.Importer
+	// Renames is the rename pairs the boot read (store.ReadRepoRenames). The results routes name
+	// a check's repository by its canonical name under them, and GET /api/v1/issues/resolve finds
+	// a link stored under either name of a pair. The zero value holds no pairs.
+	Renames refs.Renames
+	// Attributor attributes the pull requests a results read or a recorded result reads through
+	// for (delivery.Attributor.ReadThroughCommitPulls). NewDeps builds it of Renames, so it
+	// attributes by the same pairs renamedRepo and resolveIssueRef read.
+	Attributor *delivery.Attributor
 	// OIDC verifies a JWT-shaped bearer as a Kubernetes pod's projected
 	// service-account token; nil is the unconfigured deployment, where a
 	// JWT-shaped bearer is only ever an unknown personal token. A configured
@@ -203,6 +206,11 @@ type Deps struct {
 	// Metrics is the process's registry, which register adds the gauges of the mention sends held
 	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
 	Metrics *metrics.Registry
+	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
+	// serves from the moment it enters the route's handler chain, as the access-log line times
+	// it (routeHandler), for the keyword fill's pause, which shares it (textversions); nil times
+	// none.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -220,10 +228,9 @@ const defaultStreamHeartbeat = 15 * time.Second
 
 // DepsInput contains raw boot values used to construct API dependencies.
 type DepsInput struct {
-	Store          *store.Store
-	Identity       identity.Identity
-	AgentTokens    *auth.SharedAgentTokens
-	DefaultProject string
+	Store       *store.Store
+	Identity    identity.Identity
+	AgentTokens *auth.SharedAgentTokens
 	// NewIssueLabel and NewIssueSession are the two new-issue settings; see Deps. A label longer
 	// than one an issue may carry, or a session id that is no session id, refuses startup.
 	NewIssueLabel   string
@@ -254,6 +261,9 @@ type DepsInput struct {
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
 	Events   *events.Broker
+	// Renames is the rename pairs the boot read; see Deps.Renames. The zero value holds none.
+	// NewDeps builds Deps.Attributor of them.
+	Renames refs.Renames
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -301,6 +311,9 @@ type DepsInput struct {
 	OutboxPublishes bool
 	// Metrics is the process's metrics registry; see Deps.Metrics.
 	Metrics *metrics.Registry
+	// AnswersLatency times the answers reads for the keyword fill's pause; see
+	// Deps.AnswersLatency.
+	AnswersLatency *sessionanswers.Latency
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
@@ -309,10 +322,6 @@ type DepsInput struct {
 
 // NewDeps parses boot configuration once and returns API dependencies.
 func NewDeps(input DepsInput) (Deps, error) {
-	defaultProject := strings.TrimSpace(input.DefaultProject)
-	if defaultProject != "" && !projectKeyPattern.MatchString(defaultProject) {
-		return Deps{}, fmt.Errorf("invalid DISPATCH_DEFAULT_PROJECT %q (expected project key)", defaultProject)
-	}
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
@@ -367,7 +376,6 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Store:                  input.Store,
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
-		DefaultProject:         defaultProject,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
 		ServerURL:              strings.TrimSuffix(input.ServerURL, "/"),
@@ -378,6 +386,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Events:                 input.Events,
 		GitHub:                 github,
 		Architecture:           architecture.NewImporter(input.Store, github, input.Events),
+		Renames:                input.Renames,
+		Attributor:             delivery.NewAttributor(input.Renames),
 		OIDC:                   input.OIDC,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
@@ -394,45 +404,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		OutboxPublishes:        input.OutboxPublishes,
 		Metrics:                input.Metrics,
+		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
 	}, nil
-}
-
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each entry is
-// trimmed, and its repository is read as a mapping's path is (refs.ParseGitHubRepo: lower-cased,
-// one trailing `.git` trimmed, and held to the names GitHub allows in that form), so the seed
-// stores no mapping the settings route refuses: `acme/.git=KEY`, which reads as `acme/`, a
-// mapping no request reaches, or `acme/..=KEY`. Nothing more is trimmed, so a space before the
-// `=` stays in the name and `acme/x =KEY` is refused. Such an entry is refused, naming it, and the
-// boot with it: one whose repository GitHub's rule refuses with that rule's own words, any other
-// with the form an entry takes.
-func ParseRepoProjects(raw string) (map[string]string, error) {
-	projects := make(map[string]string)
-	if strings.TrimSpace(raw) == "" {
-		return projects, nil
-	}
-	for _, part := range strings.Split(raw, ",") {
-		part = strings.TrimSpace(part)
-		repo, project, ok := strings.Cut(part, "=")
-		project = strings.TrimSpace(project)
-		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		owner, name, err := refs.ParseGitHubRepo(repo)
-		switch {
-		case errors.Is(err, refs.ErrNotGitHubRepo):
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
-		case err != nil:
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
-		}
-		canonical := owner + "/" + name
-		if _, exists := projects[canonical]; exists {
-			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
-		}
-		projects[canonical] = project
-	}
-	return projects, nil
 }
 
 type server struct {
@@ -456,8 +431,11 @@ type server struct {
 	readOnlyRefusal string
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
-	going           GoingCatalogue
-	adviceQueryHook func(context.Context, pgx.Tx, string) error
+	going GoingCatalogue
+	// unguardedReplacements counts the document replacements stored naming no token
+	// (noteUnguardedReplacement); nil, which counts nothing, where Deps.Metrics is nil.
+	unguardedReplacements *metrics.Counter
+	adviceQueryHook       func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
@@ -797,6 +775,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
 	s.registerHeldGauges(deps.Metrics)
+	s.unguardedReplacements = registerUnguardedReplacements(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -938,11 +917,18 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
-	// them resolved. Compression sits just inside it, so every one of those answers is
-	// compressed for a caller that takes gzip and the line counts the bytes that went on the
-	// wire. The two websockets register mounts beside the table carry no compressed answer: the
-	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	// them resolved. Compression sits just inside it, with nothing between them but the answers
+	// read's timing below, so every one of those answers is compressed for a caller that takes
+	// gzip and the line counts the bytes that went on the wire. The two websockets register
+	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
+	// frames after it are the socket's (compressAnswers).
+	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
+	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
+		// Just inside the access-log line, so the time of an answers read the keyword fill
+		// pauses on is the time the line records for it, every layer of the chain included.
+		served = timedAnswersReads(s.deps.AnswersLatency, served)
+	}
+	return accesslog.HandlerFunc(route.Pattern, served)
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1375,8 +1361,7 @@ func (s *server) decodeOptionalJSON(w http.ResponseWriter, r *http.Request, dst 
 }
 
 // codeScopeRequired refuses a caller whose credential does not hold an OAuth scope the route
-// needs: the deployment's shared token and a pod's projected token hold none, and a personal
-// token holds the set its own row names.
+// needs. What each credential holds is said once, above routeScopes.
 const codeScopeRequired = "OAUTH_SCOPE_REQUIRED"
 
 // insufficientScopeChallenge is the WWW-Authenticate header RFC 6750 section 3.1 gives a refusal
@@ -1405,11 +1390,9 @@ func missingScopeError(scope, message string) *apiError {
 
 // gateRouteScopes is the one place a route's OAuth scopes are enforced: register wraps every row
 // that declares any (routeScopes) in it, ahead of the keyed, project and session layers, so the
-// table is what decides and a handler restates nothing. A credential the deployment configured
-// rather than a person — the shared token, a pod's service-account token, a broker-issued token
-// scoped to a project — holds none of them; a personal token holds the set its own row names.
-// The first scope the credential lacks, in the order the row declares them, is 403
-// OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
+// table is what decides and a handler restates nothing. What each credential holds is said once,
+// above routeScopes. The first scope the credential lacks, in the order the row declares them, is
+// 403 OAUTH_SCOPE_REQUIRED (refuseMissingScope); a caller that does not resolve at all answers
 // through writeAuthenticationError, as every gate on this server does.
 //
 // The caller it resolved rides along (resolvedCallerKey), so no layer behind it verifies the
@@ -1552,10 +1535,11 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // proven.
 //
 // Only those routes read it: decodeJSON ignores a member the route's input struct does not
-// declare (it logs it at debug), so a body actor on any other route is dropped unread, and four of
-// the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
-// names no agent (act is nil), so there is nothing for a body to name, and its body actor is
-// ignored here as it always was.
+// declare (it logs the member at debug and decodes the rest), so a body actor on any other route
+// is dropped unread and the caller's credential alone decides the act, and four of the mutating
+// rows a person's scope opened are DELETEs with no body at all. A browser's actor names no agent
+// (act is nil), so there is nothing for a body to name, and its body actor is ignored here as it
+// always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {
@@ -1717,6 +1701,18 @@ func decodeJSONWithin(r *http.Request, value any, limit int64, tooLarge *apiErro
 	}
 	logUndeclaredMembers(r, value, body)
 	return nil
+}
+
+// decodeJSONBody is decodeJSON for a route that reads its body's bytes again for what the decoded
+// value cannot say, such as whether a member was there at all (replaceFieldsRefusal); it answers
+// them.
+func decodeJSONBody(r *http.Request, value any) ([]byte, error) {
+	body, err := readJSONBody(r, value, maxJSONRequestBytes, errJSONTooLarge)
+	if err != nil {
+		return nil, err
+	}
+	logUndeclaredMembers(r, value, body)
+	return body, nil
 }
 
 // decodeJSONTestHook is decodeJSON for a route this tree alone calls: the test hooks, mounted only

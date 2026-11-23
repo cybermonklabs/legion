@@ -1,0 +1,54 @@
+{
+  "id": 862,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 8,
+  "type": "artifact.version",
+  "actor": {
+    "kind": "session",
+    "id": "01a13c57-d826-7242-80fe-5f0670188b11",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit ",
+      "tmux": "lorem i",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-16T20:40:02.895048Z",
+  "payload": {
+    "diff": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit am",
+    "name": "lorem i",
+    "version": {
+      "size": 1807,
+      "named": true,
+      "number": 2,
+      "authors": [
+        {
+          "id": "01a13c57-d826-7242-80fe-5f0670188b11",
+          "kind": "session",
+          "origin": {
+            "cwd": "lorem ipsum dolor sit ",
+            "host": "lor",
+            "pane": "lo",
+            "tmux": "lorem i",
+            "machine": "lorem ipsum d",
+            "session_title": "lorem ipsum dolor sit"
+          }
+        }
+      ],
+      "summary": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem i",
+      "created_at": "2026-10-16T20:40:02.895048Z"
+    },
+    "artifact_id": "a2a1467e-e64e-46b0-abb2-ba48bb53212e",
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ]
+  }
+}

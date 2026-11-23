@@ -1,0 +1,81 @@
+{
+  "id": 567099,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 3,
+  "type": "issue.updated",
+  "actor": {
+    "kind": "session",
+    "id": "01a1de29-816e-72e6-bf7a-cfbcd67cd210",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit amet lorem ",
+      "cwd": "lorem",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor "
+    }
+  },
+  "notify": false,
+  "created_at": "2026-11-15T08:49:52.015547Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+    "repo": "lorem ipsum dolor sit am",
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem i",
+    "labels": [
+      "lorem"
+    ],
+    "number": 3756,
+    "parent": null,
+    "status": "backlog",
+    "changed": [
+      "status",
+      "blocked_by"
+    ],
+    "project": "ACME",
+    "advances": [],
+    "assignee": "alice@example.com",
+    "last_seq": 3,
+    "priority": 2,
+    "ancestors": [],
+    "closed_at": null,
+    "blocked_by": [
+      "ACME-2"
+    ],
+    "components": {
+      "ids": [],
+      "mode": "none",
+      "reason": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+      "unknown": [],
+      "inherited_from": null
+    },
+    "created_at": "2026-11-15T08:49:34.65042Z",
+    "created_by": {
+      "id": "01a1de29-816e-72e6-bf7a-cfbcd67cd210",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit amet lorem ",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor "
+      }
+    },
+    "updated_at": "2026-11-15T08:49:52.031986Z",
+    "resolved_repo": "lorem ipsum dolor sit am",
+    "thread_logins": [],
+    "external_links": [],
+    "plan_artifact_id": "",
+    "advances_revision": 0,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ],
+    "primary_artifact_id": "05cbe903-3122-439e-8991-e1a647a72414",
+    "decisions_artifact_id": "",
+    "verification_artifact_id": ""
+  }
+}

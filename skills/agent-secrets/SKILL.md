@@ -12,7 +12,7 @@ Every message the client prints is explained at https://cybermonklabs.github.io/
 ## The one form
 
 ```sh
-agent-secrets NAME... --reason 'TEXT' [--wait DURATION] [--ttl DURATION] -- <command> [args...]
+agent-secrets NAME... [--reason 'TEXT'] [--wait DURATION] [--ttl DURATION] -- <command> [args...]
 ```
 
 - Each granted secret reaches `<command>`'s environment under its own name. Nothing runs unless every name is granted.
@@ -70,12 +70,12 @@ Your transcript keeps everything a command prints.
 A deployment can keep a secret's value back. The name then holds `agent-secrets-placeholder-` and 32 letters and digits, and the broker's proxy, which the run's `HTTPS_PROXY` names, puts the real value into the call to the secret's service. A shape check reads only the placeholder.
 
 - Make every call inside the `agent-secrets NAME -- <command>` run. A tool that caches a token across runs, or calls outside the run, stops working.
-- A proxy refusal names the rule that refused it, and a retry does not fix it: report it with the command and its output. `407` means the grant ended: ask again. `503` means the broker could not read the grant: try the call again.
+- A proxy refusal names why it refused the call, and a retry does not fix it: change what the command sent as the refusal says, or report it with the command and its output. `407` means the grant ended: ask again. `503` means the broker could not read the grant: try the call again.
 - A GitHub narrowing and an airlocked name cannot share a run: ask for the GitHub App secret in a run of its own.
 
 ## What the exit status means
 
-After a grant the client writes `agent-secrets: <names> from <source>` to stderr, and the status is then the command's own. Without that line the status is the client's:
+After a grant the client writes `agent-secrets: <names> from <source>` to stderr, and the status is then the command's own, unless a line `agent-secrets: exec <command>: …` follows it: then the status is 1. Without the grant line the status is the client's:
 
 - **1**: a refusal or a failure that the message names.
   `UNKNOWN_SECRET` is final: do not ask again, and do not try a name of your own.
@@ -83,7 +83,7 @@ After a grant the client writes `agent-secrets: <names> from <source>` to stderr
   `REQUEST_PENDING` names a waiting request of this session that shares a name with this one.
 - **2**: a usage error, such as no `AGENT_SECRETS_URL` or no `--`.
 - **75**: the request is still undecided when `--wait` runs out, and nothing ran. The message gives the `agent-secrets status <request_id>` that reads it.
-- **77**: the request was denied; the message gives the broker's reason when it recorded one. Final: ask for none of it again, and try no name of your own. The one exception is a message that says `ask again with --reason`: ask again with `--reason`.
+- **77**: the request was denied; the message gives the broker's reason when it recorded one. Final: ask for none of it again, and try no name of your own. The exceptions: on a message that says `ask again with --reason`, ask again with `--reason`; on `requester-group-unread`, ask again later.
 
 ## Where a name comes from
 

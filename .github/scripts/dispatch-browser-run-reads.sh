@@ -175,7 +175,7 @@ case "$mode" in
 
     pages=$(mktemp)
     # One stderr file and one exit status per attempt, and a count of the attempts the ladder
-    # made. gh_read runs its three attempts itself and sends every attempt's stderr straight
+    # made. gh_read runs its attempts itself and sends every attempt's stderr straight
     # to this script's, with nothing between them, so one capture file cannot be taken apart
     # again afterwards: this wrapper is what keeps the attempts apart. It counts the attempt,
     # gives gh that attempt's own stderr file, writes that attempt's exit status beside it and
@@ -254,8 +254,8 @@ case "$mode" in
       echo "::error::this run's jobs could not be read, so the legs this lane owed are" \
         "unknown: of GET $route, attempt $attempts, which decided the failure," \
         "$deciding$earlier; the ladder made $attempts attempts, all on run attempt" \
-        "$GITHUB_RUN_ATTEMPT. This is a failed read of the jobs API and not a failed browser" \
-        "row: no row of the suite failed here, and re-running this job reads the list again."
+        "$GITHUB_RUN_ATTEMPT. This error is a failed read of the jobs API, not a failed browser" \
+        "row. Re-running this job reads the list again."
       exit 1
     fi
 
@@ -297,8 +297,8 @@ case "$mode" in
     need GITHUB_RUN_ATTEMPT
     echo "::error::the legs' blob report artifacts could not be downloaded: the step" \
       "\"Download every leg's blob report\" failed on run attempt $GITHUB_RUN_ATTEMPT, and" \
-      "that step's own error line in this job's log says why. This is a failed read of the" \
-      "run's artifacts and not a failed browser row: no row of the suite failed here."
+      "that step's own error line in this job's log says why. This error is a failed read of the" \
+      "run's artifacts, not a failed browser row."
     ;;
   *)
     usage "$@"

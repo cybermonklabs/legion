@@ -8,7 +8,6 @@ package session
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -264,8 +263,9 @@ func (r *SessionRegistry) deleteGone(ctx context.Context, candidate goneCandidat
 //
 // A key the bucket no longer holds, and a record a registration has renewed since, are both 0:
 // the caller deletes nothing, counts nothing and logs nothing for them. A value this build cannot
-// read is dated by nothing, and a record no reader can judge is not one this pass deletes: it is
-// the error that reports the record kept.
+// read, and one that is not the session's registration (DecodeEntry), are dated by nothing the
+// session wrote, and a record no reader can judge is not one this pass deletes: it is the error
+// that reports the record kept.
 func (r *SessionRegistry) judgeGone(ctx context.Context, kv bus.KeyValue, sessionID string) (uint64, error) {
 	got, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
@@ -277,8 +277,8 @@ func (r *SessionRegistry) judgeGone(ctx context.Context, kv bus.KeyValue, sessio
 	if err != nil {
 		return 0, err
 	}
-	var stored SessionEntry
-	if err := json.Unmarshal(got.Value(), &stored); err != nil {
+	stored, err := DecodeEntry(sessionID, got.Value())
+	if err != nil {
 		return 0, fmt.Errorf("judge session %s's record before deleting it: %w", sessionID, err)
 	}
 	if r.stateOf(stored, r.now()) != Gone {

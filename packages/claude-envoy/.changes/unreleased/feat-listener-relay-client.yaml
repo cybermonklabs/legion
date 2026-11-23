@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  With `ENVOY_INBOUND=listener` (or `"inbound": "listener"` in envoy.json), a Claude Code or Codex
+  session's channel server takes its inbound messages through the Envoy listener's relay socket,
+  over HTTPS alone with the session's own broker token, rather than over NATS
+  (`dialChannelInbound`); a `/clear` or `/new` opens the socket again for the new id. The socket
+  carries no agent stream, so neither live view takes its control subject (`liveView: false`), and
+  the start notice says so. The Codex manifest passes `ENVOY_INBOUND` to the server. A topic an
+  edge listener refuses for the projects of the session's token stops being followed, in the
+  session and its delivery state, and the session is told which, once, with the edge's reason,
+  whichever registration was refused; the server's log names it once, and the heartbeats register
+  the rest. With `ENVOY_INBOUND` unset the server dials NATS as before.
+time: 2026-11-20T09:58:42Z
+custom:
+    Issue: feat-listener-relay-client

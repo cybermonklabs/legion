@@ -76,7 +76,7 @@ func TestReplacingADriftedPodResumesItsOtherLiveRoleOnItsSessionUncharged(t *tes
 	if obs := next(t, observations); obs.Locator != architectLoc || obs.Kind != runtime.Alive {
 		t.Fatalf("the re-adopted architect: %s at %+v (%s), want alive at its recorded locator", obs.Kind, obs.Locator, obs.Detail)
 	}
-	if drifted := driftOf(t, g.ctx, r2, architectLoc); len(drifted) == 0 {
+	if drifted := driftOf(t, g, r2, architectLoc); len(drifted) == 0 {
 		t.Fatalf("the architect's pod, built from image %s under a daemon pinning %s, has drifted from nothing", testImage, nextImage)
 	}
 

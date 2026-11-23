@@ -100,7 +100,7 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 				t.Fatalf("the controller's pod holds nothing of this change, so this case proves nothing")
 			}
 			obs := readopt(t, g.ctx, r2, loc)[0]
-			drifted := driftOf(t, g.ctx, r2, loc)
+			drifted := driftOf(t, g, r2, loc)
 			spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-controller-g2", controllerSession
 			next, err := r2.Resume(g.ctx, &loc, spec)
 			if err != nil {

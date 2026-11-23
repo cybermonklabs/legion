@@ -135,7 +135,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 // never comes back with the key (migration 20261106020619); the feed's column does come back, so
 // the row's birth stamp is hashed in beside it. It is the same fact, read the same way, that
 // tells the event relay an event log that was reset under its cursor from one that merely went
-// quiet (eventLogWasReset).
+// quiet (events.EventLogWasReset).
 func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventListOptions, trees bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "created=%d\nlast_seq=%d\nafter=%d\nbefore=%d\nhas_before=%t\ndescending=%t\nlimit=%d\n",
@@ -209,13 +209,13 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 	query := r.URL.Query()
 	hasBefore := query.Has("before")
 	if hasBefore && strings.TrimSpace(query.Get("before")) == "" {
-		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "before must be a non-negative integer")
+		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "before must be an integer from 0 to %d", maxIntegerColumn)
 	}
-	after, err := parseNonNegativeInt(query.Get("after"), "after")
+	after, err := parseEventPosition(query.Get("after"), "after")
 	if err != nil {
 		return eventListOptions{}, err
 	}
-	before, err := parseNonNegativeInt(query.Get("before"), "before")
+	before, err := parseEventPosition(query.Get("before"), "before")
 	if err != nil {
 		return eventListOptions{}, err
 	}
@@ -620,6 +620,19 @@ func parseNonNegativeInt(raw, field string) (int64, error) {
 	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
 		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be a non-negative integer", field)
+	}
+	return value, nil
+}
+
+// parseEventPosition reads an event list's after or before, a position in its owner's event
+// sequence: a non-negative integer that fits events.seq, an integer column (fitsIntegerColumn).
+// Anything else names no event and is refused 400 INVALID_QUERY before any query is made with
+// it. The whole log's after (listEventLog) is an event id, a bigint, and is read without this
+// bound.
+func parseEventPosition(raw, field string) (int64, error) {
+	value, err := parseNonNegativeInt(raw, field)
+	if err != nil || !fitsIntegerColumn(value) {
+		return 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s must be an integer from 0 to %d", field, maxIntegerColumn)
 	}
 	return value, nil
 }

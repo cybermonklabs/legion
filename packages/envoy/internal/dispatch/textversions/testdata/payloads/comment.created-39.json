@@ -1,0 +1,71 @@
+{
+  "id": 220600,
+  "issue_key": null,
+  "artifact_id": "052b006e-dac1-4591-9663-99212b995268",
+  "project": "ACME",
+  "seq": 7,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "59178be2-37e3-4280-8c82-dbe8aada3272",
+    "origin": {
+      "host": "lorem ",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum",
+      "tmux": "lorem ipsum dol",
+      "pane": "lorem ",
+      "session_title": "lorem ipsum dolor si"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-06T01:44:50.581723Z",
+  "payload": {
+    "id": "a61482cd-333d-4c86-a279-cff8602b98cd",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+    "turn": null,
+    "anchor": null,
+    "ask_id": "133ac582-eff4-4831-9d8e-68b78acc6432",
+    "author": {
+      "id": "59178be2-37e3-4280-8c82-dbe8aada3272",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum",
+        "host": "lorem ",
+        "pane": "lorem ",
+        "tmux": "lorem ipsum dol",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor si"
+      }
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "ask_state": "answered",
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-11-06T01:44:50.588363Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "052b006e-dac1-4591-9663-99212b995268",
+    "project_key": "ACME",
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "ask_question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+    "artifact_name": "",
+    "artifact_slug": "lorem ipsum dol",
+    "thread_logins": [
+      "bob@example.com"
+    ],
+    "suppress_route": false,
+    "references_changed": [
+      {
+        "id": "2be0f151-b818-4b9f-b08d-2fdf313c3a3a",
+        "ref": "dispatch://ACME-1",
+        "kind": "artifact"
+      }
+    ]
+  }
+}

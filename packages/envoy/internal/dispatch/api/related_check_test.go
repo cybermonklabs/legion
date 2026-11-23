@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // relatedOwnerKeys is the issue each related item stands for, in order.
@@ -169,25 +170,19 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 // - and for the binary's own end: the margin throughputWait leaves for the socket rig's.
 const binaryDeadlineMargin = 30 * time.Second
 
-// binaryDeadlineGuard fires binaryDeadlineMargin before the test binary's deadline, and never
-// when the binary runs without one (-timeout 0). A case that waits on something only the code
-// under test ends - the related-item check's answer, a leg's read - selects on it, so code that
-// never ends the wait fails that case by name, and leaves the binary's timeout to the package's
-// later tests. It bounds no measurement: it fires only where the wait would otherwise last as
-// long as the binary. A deadline that leaves no more than the margin to begin with fails at once,
-// by name, as throughputWait's does.
+// binaryDeadlineGuard fires binaryDeadlineMargin before the test binary's deadline
+// (testwait.Remaining), and never when the binary runs without one (-timeout 0). A case that waits
+// on something only the code under test ends - the related-item check's answer, a leg's read -
+// selects on it, so code that never ends the wait fails that case by name, and leaves the binary's
+// timeout to the package's later tests. It bounds no measurement: it fires only where the wait
+// would otherwise last as long as the binary. A deadline that leaves no more than the margin to
+// begin with fails at once, by name, as throughputWait's does.
 func binaryDeadlineGuard(t *testing.T) <-chan time.Time {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
+	if _, bounded := t.Deadline(); !bounded {
 		return nil
 	}
-	left := time.Until(deadline) - binaryDeadlineMargin
-	if left <= 0 {
-		t.Fatalf("the test binary's deadline leaves %s, not more than binaryDeadlineMargin (%s): this looks like a misconfigured run; raise -timeout",
-			time.Until(deadline).Round(time.Millisecond), binaryDeadlineMargin)
-	}
-	timer := time.NewTimer(left)
+	timer := time.NewTimer(testwait.Remaining(t, binaryDeadlineMargin))
 	t.Cleanup(func() { timer.Stop() })
 	return timer.C
 }
@@ -1218,17 +1213,12 @@ func TestRelatedCheckRecordsEachCheck(t *testing.T) {
 func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createSuggestionProject(t, handler, "EXT")
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "EXT",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", response.Code, response.Body.String())
-	}
-	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12"}, "alice")
+	first := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12", "project": "EXT"}, "alice")
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first create: status=%d body=%s", first.Code, first.Body.String())
 	}
 	key := decodeBody[model.Issue](t, first).Key
-	again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12"}, "alice")
+	again := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"external": "owner/repo#12", "project": "EXT"}, "alice")
 	if again.Code != http.StatusOK {
 		t.Fatalf("second create: status=%d body=%s", again.Code, again.Body.String())
 	}

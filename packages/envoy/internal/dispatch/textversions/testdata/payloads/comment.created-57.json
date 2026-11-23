@@ -1,0 +1,63 @@
+{
+  "id": 346669,
+  "issue_key": null,
+  "artifact_id": "ca92791c-9789-4563-af0e-2d6d34890efb",
+  "project": "ACME",
+  "seq": 4,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1ad1d-b99c-7726-8b84-c0d9ddf0ff4b",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit amet l",
+      "cwd": "lorem ipsum ",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum "
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-10T19:59:17.139585Z",
+  "payload": {
+    "id": "de40bdf3-b6b5-4888-8981-e45d0b715551",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet ",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "01a1ad1d-b99c-7726-8b84-c0d9ddf0ff4b",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum ",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit amet l",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum "
+      }
+    },
+    "answers": null,
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-11-10T19:59:17.143124Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "ca92791c-9789-4563-af0e-2d6d34890efb",
+    "project_key": "ACME",
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "artifact_slug": "lorem ipsum do",
+    "thread_logins": [],
+    "suppress_route": false,
+    "references_changed": [
+      {
+        "id": "ACME-1",
+        "kind": "issue"
+      }
+    ]
+  }
+}

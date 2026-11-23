@@ -58,9 +58,9 @@ const StepRecordsRollForward = 20261117064152
 // runs an empty block, or prose, against a store. That test is all this reads: what the block
 // does is held by the test of the migration that runs it, and its text by internal/textcheck,
 // which holds it to the block docs/kubernetes.md gives under the migration's rollback. The
-// headers of 20261117023932_outbox_kinds_with_the_plan_record.up.sql and of
-// StepRecordsRollForward carry one. The header of
-// 20261120055717_dispatch_issue_value_sequences.up.sql carries a third, one statement that
+// headers of 20261117023932_outbox_kinds_with_the_plan_record.up.sql, of
+// 20261120012547_set_back_observed_seq.up.sql and of StepRecordsRollForward carry one. The header
+// of 20261120055717_dispatch_issue_value_sequences.up.sql carries another, one statement that
 // docs/kubernetes.md gives too: internal/store's
 // TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack runs it, and no textcheck holds its
 // text to the guide's.

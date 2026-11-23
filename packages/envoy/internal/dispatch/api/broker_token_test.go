@@ -63,6 +63,15 @@ func liveNamedToken(jkt string) ciphertoken.Introspection {
 	}
 }
 
+// personScopedTokenAnswer is the broker's answer for a dev box session's token: live, bound to jkt,
+// acting as its person (the project scope person) and naming no project. It is what a person's
+// sign-in and a person's machine login both trade for.
+func personScopedTokenAnswer(jkt string) ciphertoken.Introspection {
+	answer := liveNamedToken(jkt)
+	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, nil
+	return answer
+}
+
 // serviceOnlyToken is the broker's answer for a machine nobody has signed in on: live, bound to
 // jkt, naming a session and the service its fleet is, and no person. It names no project either.
 // The exchange mints this shape for one caller only, a machine whose fleet entry names neither a
@@ -289,9 +298,7 @@ func TestAPersonScopedBrokerTokenCarriesNoProject(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-session-token"
-	answer := liveNamedToken(caller.jkt)
-	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopePerson, nil
-	rig.broker.Says(token, answer)
+	rig.broker.Says(token, personScopedTokenAnswer(caller.jkt))
 
 	response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
 	if response.Code != http.StatusOK {

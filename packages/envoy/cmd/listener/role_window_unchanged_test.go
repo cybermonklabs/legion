@@ -202,7 +202,7 @@ func TestARoleHolderInsideTheLiveWindowReadsLiveOnEveryRoleRoute(t *testing.T) {
 	// wrote it.
 	standIn := startSessionStandIn(t, rig.url, holder, answerDone)
 	rig.register(t, holder, nil)
-	standIn.conn.Close()
+	standIn.close()
 	awaitNoRelaySubscriber(t, rig.url, holder)
 	// The claim lands after the subscriber stopped. It renews the holder's record, as the claim
 	// route refreshes its claimant's registration, and starts the handover of the role's kept

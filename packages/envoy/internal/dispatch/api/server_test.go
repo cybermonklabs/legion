@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -55,7 +56,6 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 
 // testServerOptions configure the server an API test drives.
 type testServerOptions struct {
-	defaultProject string
 	// newIssueLabel and newIssueSession are the two settings the dashboard's search bar reads
 	// before it files a person's typed words as an issue (GET /api/v1/settings/new-issue); both
 	// empty is the deployment that configured neither.
@@ -65,6 +65,10 @@ type testServerOptions struct {
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
+	// renames is the rename pairs the server is given, as a boot gives its own (Deps.Renames).
+	// A test that seeds a pair by SQL reads them from its store after the seed (readRenames) and
+	// passes that store too. The zero value holds no pairs.
+	renames refs.Renames
 	// app and githubAPIBase wire the GitHub App access-check client at a fake
 	// GitHub; both nil/empty leaves the client in its "no app credentials"
 	// state (every check answers ErrNoAppKey).
@@ -84,6 +88,11 @@ type testServerOptions struct {
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
 	brokerTokens func(*store.Store) *ciphertoken.Verifier
+	// agentSecretsURL points Deps' broker relay for the credential pages at a fake secrets broker
+	// (DISPATCH_AGENT_SECRETS_URL), and the server presents the account token
+	// credentialTestAccountToken there from a file newRegisteredTestServer writes, as envoyURL's
+	// is; empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
+	agentSecretsURL string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -211,12 +220,6 @@ func newTestHandlerWithTestHooks(t *testing.T) (http.Handler, *store.Store) {
 	return handler, database
 }
 
-func newTestHandlerWithDefaultProject(t *testing.T) (http.Handler, *store.Store) {
-	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{defaultProject: "DEFAULT"})
-	return handler, database
-}
-
 // testEnvoyAccountTokenFile is a file holding a stand-in for Dispatch's projected token at the
 // listener, for a server whose Envoy client is configured (envoyURL set), and "" otherwise.
 func testEnvoyAccountTokenFile(t testing.TB, envoyURL string) string {
@@ -287,16 +290,20 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	case agentPublisher == nil:
 		agentPublisher = NewAgentPublishRecorder()
 	}
+	agentSecretsTokenFile := ""
+	if options.agentSecretsURL != "" {
+		agentSecretsTokenFile = accountTokenFile(t, credentialTestAccountToken)
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:            database,
 		Identity:         people,
 		AgentTokens:      sharedAgentTokens(t, "agent-token"),
-		DefaultProject:   options.defaultProject,
 		NewIssueLabel:    options.newIssueLabel,
 		NewIssueSession:  options.newIssueSession,
 		ServerURL:        testServerURL,
 		Docs:             documentService,
 		Events:           broker,
+		Renames:          options.renames,
 		App:              options.app,
 		GitHubAPIBase:    options.githubAPIBase,
 		TestHooksEnabled: options.testHooks,
@@ -312,19 +319,21 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter: horizontest.StallWarning,
-		HorizonWarnEvery:  horizontest.StallWarning,
-		OIDC:              options.oidc,
-		BrokerTokens:      brokerTokens,
-		AgentStream:       options.agentStream,
-		AgentPublisher:    agentPublisher,
-		Embedder:          options.embedder,
-		Answerer:          options.answerer,
-		Files:             options.files,
-		DashboardEntry:    options.dashboardEntry,
-		BuildCommit:       options.buildCommit,
-		OutboxPublishes:   options.outboxPublishes,
-		Metrics:           options.metrics,
+		HorizonStallAfter:     horizontest.StallWarning,
+		HorizonWarnEvery:      horizontest.StallWarning,
+		OIDC:                  options.oidc,
+		BrokerTokens:          brokerTokens,
+		AgentSecretsURL:       options.agentSecretsURL,
+		AgentSecretsTokenFile: agentSecretsTokenFile,
+		AgentStream:           options.agentStream,
+		AgentPublisher:        agentPublisher,
+		Embedder:              options.embedder,
+		Answerer:              options.answerer,
+		Files:                 options.files,
+		DashboardEntry:        options.dashboardEntry,
+		BuildCommit:           options.buildCommit,
+		OutboxPublishes:       options.outboxPublishes,
+		Metrics:               options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -911,11 +920,6 @@ func TestExternalIssueResolutionAndAutoCreation(t *testing.T) {
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", response.Code, response.Body.String())
-	}
 	for number := 1; number <= 2; number++ {
 		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
 			"project": "TEST", "title": "ordinary issue", "force": true,
@@ -929,7 +933,7 @@ func TestExternalIssueResolutionAndAutoCreation(t *testing.T) {
 		t.Fatalf("resolve unlinked external issue: status=%d body=%s", unlinked.Code, unlinked.Body.String())
 	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "owner/repo#7",
+		"external": "owner/repo#7", "project": "TEST",
 	}, "alice")
 	if created.Code != http.StatusCreated {
 		t.Fatalf("auto-create external issue: status=%d body=%s", created.Code, created.Body.String())
@@ -1022,11 +1026,6 @@ func TestExternalIssueCreationReusesPullRequestLink(t *testing.T) {
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map repository: status=%d body=%s", response.Code, response.Body.String())
-	}
 	existing := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "TEST", "title": "Linked pull request",
 	}, "alice")
@@ -1043,7 +1042,7 @@ func TestExternalIssueCreationReusesPullRequestLink(t *testing.T) {
 	}
 
 	reused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "owner/repo#42",
+		"external": "owner/repo#42", "project": "TEST",
 	}, "alice")
 	if reused.Code != http.StatusOK {
 		t.Fatalf("reuse pull-request link: status=%d body=%s", reused.Code, reused.Body.String())
@@ -1060,81 +1059,68 @@ func TestExternalIssueCreationReusesPullRequestLink(t *testing.T) {
 	}
 }
 
-func TestExternalIssueRejectsUnmappedProject(t *testing.T) {
-	handler := newTestHandler(t)
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "unmapped/repository#1",
-	}, "alice")
-	body := response.Body.String()
-	if response.Code != http.StatusBadRequest || !strings.Contains(body, `"code":"PROJECT_UNMAPPED"`) ||
-		!strings.Contains(body, "repository settings") || !strings.Contains(body, "DISPATCH_DEFAULT_PROJECT") {
-		t.Fatalf("create unmapped external issue: status=%d body=%s", response.Code, body)
-	}
-}
-
-func TestExternalIssueUsesDefaultProjectForUnmappedRepository(t *testing.T) {
-	handler, _ := newTestHandlerWithDefaultProject(t)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "DEFAULT", "name": "Default project",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create default project: status=%d body=%s", response.Code, response.Body.String())
-	}
-	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "another/repo#5",
-	}, "alice")
-	if created.Code != http.StatusCreated {
-		t.Fatalf("create default-project external issue: status=%d body=%s", created.Code, created.Body.String())
-	}
-	issue := decodeBody[struct {
-		Key           string   `json:"key"`
-		Labels        []string `json:"labels"`
-		ExternalLinks []struct {
-			URL string `json:"url"`
-		} `json:"external_links"`
-	}](t, created)
-	if issue.Key != "DEFAULT-1" {
-		t.Fatalf("default-project issue key: got %q, want DEFAULT-1", issue.Key)
-	}
-	if len(issue.Labels) != 1 || issue.Labels[0] != repoLabelPrefix+"another/repo" {
-		t.Fatalf("default-project issue labels: got %#v, want [%sanother/repo]", issue.Labels, repoLabelPrefix)
-	}
-	if len(issue.ExternalLinks) != 1 || issue.ExternalLinks[0].URL != "https://github.com/another/repo/issues/5" {
-		t.Fatalf("default-project issue external links: got %#v", issue.ExternalLinks)
-	}
-}
-
-func TestExternalIssueExplicitMappingTakesPrecedenceOverDefaultProject(t *testing.T) {
-	handler, _ := newTestHandlerWithDefaultProject(t)
+// An import names its project: a create that names external and no project, or an empty one,
+// is refused naming project, and stores no issue and no link.
+func TestExternalIssueRejectsAMissingProject(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create mapped project: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "DEFAULT", "name": "Default project",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create default project: status=%d body=%s", response.Code, response.Body.String())
+	for _, body := range []map[string]string{
+		{"external": "owner/repo#1"},
+		{"external": "owner/repo#1", "project": ""},
+		{"external": "owner/repo#1", "project": "  "},
+	} {
+		response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")
+		if response.Code != http.StatusBadRequest || responseCode(t, response) != "INVALID_ISSUE" ||
+			!strings.Contains(response.Body.String(), "project is required when external is set") {
+			t.Errorf("create %v: status=%d body=%s, want 400 INVALID_ISSUE naming project", body, response.Code, response.Body.String())
+		}
 	}
-	if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", response.Code, response.Body.String())
+	var issues, links int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select (select count(*) from issues), (select count(*) from issue_external_links)
+	`).Scan(&issues, &links); err != nil {
+		t.Fatalf("count issues and links: %v", err)
+	}
+	if issues != 0 || links != 0 {
+		t.Fatalf("after the refusals: %d issues and %d links, want none", issues, links)
+	}
+}
+
+// An external ref already linked to an issue of one project is not imported into another: the
+// refusal names both projects and no repository setting.
+func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", project, "alice"); response.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project["key"], response.Code, response.Body.String())
+		}
 	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"external": "owner/repo#9",
+		"external": "owner/repo#1", "project": "CORE",
 	}, "alice")
 	if created.Code != http.StatusCreated {
-		t.Fatalf("create mapped external issue: status=%d body=%s", created.Code, created.Body.String())
+		t.Fatalf("import owner/repo#1 into CORE: status=%d body=%s", created.Code, created.Body.String())
 	}
-	issue := decodeBody[struct {
-		Key    string   `json:"key"`
-		Labels []string `json:"labels"`
-	}](t, created)
-	if issue.Key != "TEST-1" {
-		t.Fatalf("explicit-mapping issue key: got %q, want TEST-1", issue.Key)
+	key := decodeBody[model.Issue](t, created).Key
+	refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"external": "owner/repo#1", "project": "OTHER",
+	}, "alice")
+	body := refused.Body.String()
+	if refused.Code != http.StatusBadRequest || responseCode(t, refused) != "EXTERNAL_PROJECT_MISMATCH" ||
+		!strings.Contains(body, key) || !strings.Contains(body, "project CORE") || !strings.Contains(body, "project OTHER") ||
+		strings.Contains(body, "setting") {
+		t.Fatalf("import owner/repo#1 into OTHER: status=%d body=%s, want 400 EXTERNAL_PROJECT_MISMATCH naming %s, CORE and OTHER", refused.Code, body, key)
 	}
-	if len(issue.Labels) != 0 {
-		t.Fatalf("explicit-mapping issue labels: got %#v, want none", issue.Labels)
+	var issues int
+	if err := database.Pool.QueryRow(context.Background(), `select count(*) from issues`).Scan(&issues); err != nil {
+		t.Fatalf("count issues: %v", err)
+	}
+	if issues != 1 {
+		t.Fatalf("issue count = %d, want 1", issues)
 	}
 }
 

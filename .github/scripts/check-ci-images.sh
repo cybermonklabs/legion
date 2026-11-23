@@ -379,7 +379,11 @@ FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 # installs a fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/),
 # whose cluster.test.sh the envoy-go-checks job runs with a fake `kubectl` on PATH, sources
 # cluster.sh, templates nats.yaml and runs render-nats.sh --pin-from, which takes each digest from
-# the committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at.
+# the committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at;
+# and the legacy-subjects gate (packages/envoy/scripts/legacy-subjects-gate.sh), whose
+# legacy-subjects-gate.test.sh the envoy-go-checks job runs with a fake `kubectl` on PATH, so the
+# nats-box digest the gate writes into its Job (the deployment's own moveImage pin) is pulled only
+# by the cluster an operator runs the gate against.
 EXCEPTIONS = {
     "docs/kubernetes.md": NO_CI_JOB,
     "docs/plans/2026-10-14-dispatch-gcp-plan.md": NO_CI_JOB,
@@ -415,6 +419,8 @@ EXCEPTIONS = {
     "packages/envoy/loadtest/cluster/render-nats.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/vm/vm.test.sh": FETCHES_NOTHING,
     "packages/envoy/loadtest/vm/deployment.example.json": FETCHES_NOTHING,
+    "packages/envoy/scripts/legacy-subjects-gate.sh": FETCHES_NOTHING,
+    "packages/envoy/scripts/legacy-subjects-gate.test.sh": FETCHES_NOTHING,
 }
 
 # ---------------------------------------------------------------- reference grammar

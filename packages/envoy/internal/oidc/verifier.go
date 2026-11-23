@@ -134,7 +134,8 @@ func New(ctx context.Context, issuer, audience string) (*Verifier, error) {
 // exchange, to hand the key itself to the OAuth provider (Keys), and building
 // both from one *Keys makes one discovery read at boot, keeps one set in
 // memory, and bounds the reads a token naming an unpublished key id prompts at
-// one per MinRefresh across both of them.
+// one per MinRefresh while reads succeed, and one per FailureSpacing while they
+// fail, across both of them.
 func NewWithKeys(issuer, audience string, keys *Keys) *Verifier {
 	return &Verifier{
 		// SupportedSigningAlgs is set because gooidc.NewVerifier, unlike the
@@ -170,17 +171,6 @@ func newVerifier(provider *gooidc.Provider, issuer, audience string) *Verifier {
 		issuer:   issuer,
 		audience: audience,
 	}
-}
-
-// Issues reports whether raw's iss claim, read without verifying anything, names this verifier's
-// issuer, Google's scheme-less spelling included when the verifier is Google's (namesIssuer). A
-// caller that trusts several issuers picks with it the one verifier a token is for, so a token of
-// one issuer never makes another's verifier fetch its keys; Verify still checks the issuer with
-// everything else. It reads unverified text, so it picks a verifier and decides nothing about a
-// caller: no claim anyone is admitted on comes from it.
-func (v *Verifier) Issues(raw string) bool {
-	claims, err := decodeUnverifiedClaims(raw)
-	return err == nil && v.namesIssuer(claims.Issuer)
 }
 
 // Verify checks raw against the issuer's published keys, the configured

@@ -76,6 +76,9 @@ func TestIAPVerifierCallsOnlyAnAssertionIAPSignedExpired(t *testing.T) {
 // set that cannot be read reaches no verdict on it either: ErrIssuerUnavailable, never ErrExpired.
 func TestIAPVerifierReportsAnUnreadableKeySetForAnExpiredAssertion(t *testing.T) {
 	rig := newIAPRig(t)
+	// The read once the key set answers again is due at once: this is the verdict after a
+	// recovery, not the spacing between failed reads (TestAKeySetThatFailsAtOnceIsReadOncePerSpacing).
+	rig.keys.FailureSpacing = 0
 	rig.server.FailKeys(http.StatusServiceUnavailable)
 	if _, err := rig.verify(t, rig.signing, expiredClaims(nil)); errors.Is(err, ErrExpired) || !errors.Is(err, ErrIssuerUnavailable) {
 		t.Fatalf("an expired assertion while the key set answers 503: err = %v, want %v", err, ErrIssuerUnavailable)

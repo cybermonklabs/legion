@@ -572,7 +572,7 @@ func TestPodUpdateBackgroundOfAClaimInAnotherPodHoldsNothing(t *testing.T) {
 
 // A claim in the round's pod that the round has not asked holds the round too (R1, R5 case 12).
 // The planner is still launching there with no session, so the round neither asks it nor waits
-// for its answer (askedClaims): only its report can hold the round, and that report names a
+// for its answer (roundAsks): only its report can hold the round, and that report names a
 // subagent. The line names the planner with that kind, and the planner's report that nothing
 // runs ends the round.
 func TestPodUpdateBackgroundOfAClaimTheRoundHasNotAskedHoldsTheRound(t *testing.T) {

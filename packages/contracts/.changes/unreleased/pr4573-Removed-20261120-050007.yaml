@@ -1,0 +1,5 @@
+kind: Removed
+body: The `child-park.json` fixture of `fixtures/daemon-api` is removed with the route it recorded. `LegionChildRequest` stays, because `rerun_child` takes it.
+time: 2026-11-20T05:00:07.953602009Z
+custom:
+    Issue: pr4573

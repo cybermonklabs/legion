@@ -44,6 +44,11 @@ export function operatorNatsSeed(
     if (inbound.noSessionNamed === true) throw broker;
     throw new LoggableError(`${refused}: ${inbound.off}`);
   }
+  // ENVOY_NATS_URL is set above, so settings that choose the listener's relay socket
+  // (`ENVOY_INBOUND=listener`) are refused beside it, in `inbound.off`, before this line.
+  if (!("natsCredential" in inbound)) {
+    throw new LoggableError(`${refused}: ${inbound.relaySetting} is listener`);
+  }
   const credential = inbound.natsCredential;
   switch (credential.kind) {
     case "seed":

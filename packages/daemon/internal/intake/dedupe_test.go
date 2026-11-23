@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // GitHub redelivers a delivery under its own X-GitHub-Delivery, and Dispatch's redelivery sweep asks
@@ -18,6 +20,18 @@ func TestARedeliveredGitHubDeliveryIsAppliedOnceByItsDedupeKey(t *testing.T) {
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
+	// A hang guard, not the subject: the row counts the review handler's runs and the processed
+	// events, and AckWait bounds the one store read each review's handling makes before either,
+	// whether its pull request is recorded (recordedPullRequest, which cuts the read at AckWait).
+	// Any fixed window loses to a store slow enough: at consumerSpec's 200 ms a read a loaded
+	// runner made slower was cut and its delivery naked, so the row's acknowledgements waited on
+	// the machine, and at one minute a read of 61 s was cut and naked the same way. The window,
+	// and the row's wait for each acknowledgement (waitAcknowledged), are what is left of the test
+	// binary's deadline less 30 s (testwait.Remaining), so a read however slow is waited out
+	// and only one that never answers fails the row, by name, before the binary's own timeout. The
+	// progress keeper reports nothing: it ticks at a third of the window (spec.AckWait/3 in
+	// consume.go), and each handling acknowledges long before that.
+	spec.AckWait = testwait.Remaining(t)
 	spec.ReviewPermission = func(context.Context, PullRequestReview) (bool, error) { return true, nil }
 	stop := startConsume(t, js, spec, pool, writeHandler("review", nil))
 	defer stop()

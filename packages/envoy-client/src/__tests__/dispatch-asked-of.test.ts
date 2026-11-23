@@ -12,7 +12,6 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // Who an open ask waits on, from the command line and from the texts an agent reads. A person
 // hands an ask on through the web app or `PUT /api/v1/asks/{id}/asked-of`, both person-scoped, so
@@ -84,7 +83,6 @@ beforeEach(() => {
   requests.length = 0;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{

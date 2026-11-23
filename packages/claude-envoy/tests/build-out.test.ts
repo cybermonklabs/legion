@@ -51,6 +51,27 @@ test("--out keeps bin/dispatch executable, and it runs the built CLI", async () 
   expect(await run.exited).toBe(0)
 }, 30_000)
 
+// A shell profile may export CDPATH=.:<dirs>; a `cd` whose operand CDPATH resolves prints the
+// directory it entered, which the shim's `$(cd … && pwd)` would then hold as well.
+test("bin/dispatch started by a relative path from the plugin's directory runs under an exported CDPATH", async () => {
+  const run = Bun.spawn(["sh", "-c", 'cd "$1" && bin/dispatch --help', "sh", out], {
+    cwd: scratch,
+    env: { PATH: process.env["PATH"] ?? "", HOME: scratch, CDPATH: "." },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    run.exited,
+    new Response(run.stdout).text(),
+    new Response(run.stderr).text(),
+  ])
+  expect({ exitCode, stderr, usage: stdout.startsWith("Usage: dispatch ") }).toEqual({
+    exitCode: 0,
+    stderr: "",
+    usage: true,
+  })
+}, 30_000)
+
 test("--out refuses a directory inside the repository and creates nothing", async () => {
   const inside = join(packageRoot, `build-out-${randomUUID()}`)
   try {

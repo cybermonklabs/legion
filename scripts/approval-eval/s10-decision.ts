@@ -31,13 +31,15 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  * `reserve.ts`, which is pinned, imports it, so a closure that loads no `claim.ts` is refused as
  * one that cannot be resolved.
  *
- * Against 651db8d5, `reserve-ask.ts`, `stats.ts` and `claim.ts` are byte for byte the same, and
- * the pinned `reserve.ts`, `corpus-io.ts` and `dispatch-read.ts` differ only in what the decision
- * never calls: the `--draw` and `--inputs` path options of `runDigestOf` and the file options of
- * `s10_judge.py`, the two sha256s `readCorpus` records, and `pageEventLog`'s `after` and the new
- * `readBytes`. So the pinned closure is the 651db8d5 decision, and any later change to a pinned
- * file fails this check until a reviewed pull request moves the pin. The pinned files are checked
- * again right before the children are spawned (`Decision.confirm`).
+ * Against 651db8d5, `reserve-ask.ts` and `stats.ts` are byte for byte the same, and the pinned
+ * `reserve.ts`, `corpus-io.ts` and `dispatch-read.ts` differ only in what the decision never
+ * calls: the `--draw`, `--inputs` and `--claim-s10` path options of `runDigestOf` and the file
+ * options of `s10_judge.py`, the two sha256s `readCorpus` records and the four field readers the
+ * claim's stage readers share (`parsed`, `countAt`, `textAt`, `sha256At`), and `pageEventLog`'s
+ * `after` and the new `readBytes`. So the pinned closure is the 651db8d5 decision, and any later
+ * change to a pinned file fails this check until a reviewed pull request moves the pin. The
+ * pinned files are checked again once, right before the first child is spawned
+ * (`Decision.confirm`).
  *
  * The children. Each ask is decided by a child process (`spawnDecision`) run with neither
  * `APPROVAL_EVAL_RESERVE` nor `APPROVAL_EVAL_CLAIM_RUN` in its environment, so outside the claim's
@@ -54,11 +56,11 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  * whose closure differs in any of these files, or loads a file more or less, is refused.
  */
 export const RESERVE_ASK_CLOSURE: Readonly<Record<string, string>> = {
-  "corpus-io.ts": "3a15ed63b87a66b161b12e2957382b93b190354c81cc35fe5958add81ccc3fb1",
-  "decision-preload.ts": "fbd2007b4294be4645e6b38cb31cd92803371d18b1807b3a8dd911586deb5641",
+  "corpus-io.ts": "fa89727871dcf12c849756f84a888e52c6141c81467a353277fbaf98aba03198",
+  "decision-preload.ts": "50ff3dd835d4345aac95c64df7a3e820a30c625b1e1e63e1c0277ea278dccad3",
   "dispatch-read.ts": "d1732d4c3d8a0d4e86496da5223e125335ea623df93f9249ad07ee30c03883d7",
   "reserve-ask.ts": "604e2f943ed71f6d43761f594d333e083d9d2811f28df779673b32a2fefdde42",
-  "reserve.ts": "069ec9dee6ee2994e173b57c4679ba2a60df27ae7287eaa1363ec80373e22a83",
+  "reserve.ts": "9debce6d78cc8f6579f5a393540fb97124db53ca25401e9d617a41615320724d",
   "stats.ts": "aaf9b5a598436d3ae5be4173b659f5889a24dd4d8b8afef0be9b5852eec6ffe9",
 };
 
@@ -89,7 +91,7 @@ export type ReserveDecision = (askId: string) => Promise<ReserveVerdict>;
  * The decision a run makes every candidate's with: the sha256 its stage record names it by, the
  * digest of the pinned closure (`reserveAskDecision`) or a test's own, which must be a sha256 as
  * well; the decision itself; and `confirm`, which refuses where the decision's files are no
- * longer the pinned ones, and which the stage calls right before it spawns any child.
+ * longer the pinned ones, and which the stage calls once, right before it spawns its first child.
  */
 export interface Decision {
   sha256: string;
@@ -187,10 +189,12 @@ async function admittedDigestOf(path: string, ended: string | null): Promise<str
 
 /**
  * The decision point 4 (d) names, admitted (`admittedDigestOf`) and named by the digest of the
- * pinned files, whose `confirm` admits it again, so a pinned file changed since the run began
- * is refused before any child loads it. `ended` is this checkout's `RESERVE_ENDED`, of the
- * `claim.ts` the decision at `RESERVE_ASK_PATH` loads; only a test hands in another, with a `path`
- * of its own. A `claim.ts` changed after that check is read by each child's preload.
+ * pinned files, whose `confirm` admits it again. The inputs stage calls `confirm` once, right
+ * before its first child, so a pinned file changed between the run's start and that moment is
+ * refused before any child loads it; one changed while the children run is not checked again.
+ * `ended` is this checkout's `RESERVE_ENDED`, of the `claim.ts` the decision at
+ * `RESERVE_ASK_PATH` loads; only a test hands in another, with a `path` of its own. A `claim.ts`
+ * changed after that check is read by each child's preload.
  */
 export async function reserveAskDecision(
   path: string = RESERVE_ASK_PATH,

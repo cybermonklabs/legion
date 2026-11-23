@@ -4,10 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,48 +18,79 @@ import (
 const pullDroppedLine = "session consumer pull dropped a message its consumer did not deliver: its reply is not the consumer's acknowledgement subject"
 
 // forger is a client of the test's account that publishes into a pull's inbox as any connection
-// whose grant publishes every _INBOX. subject can, and records each publish the server refuses
-// it for its reply subject, which reaches the client only as an asynchronous error.
-type forger struct {
-	conn    *nats.Conn
-	mu      sync.Mutex
-	refused []string
-}
+// whose grant publishes every _INBOX. subject can.
+type forger struct{ conn *nats.Conn }
 
 func newForger(t *testing.T) *forger {
 	t.Helper()
-	f := &forger{}
-	conn, err := nats.Connect(testnats.URL(t), nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
-		if strings.Contains(err.Error(), "Permissions Violation for Publish with Reply of") {
-			f.mu.Lock()
-			defer f.mu.Unlock()
-			f.refused = append(f.refused, err.Error())
-		}
-	}))
+	conn, err := nats.Connect(testnats.URL(t))
 	if err != nil {
 		t.Fatalf("connect the forger: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	f.conn = conn
-	return f
+	return &forger{conn: conn}
 }
 
 // publish publishes data into inbox with reply as its reply subject and returns once the server
-// has read it.
-func (f *forger) publish(t *testing.T, inbox, reply, data string) {
+// has read it. A publish the server refuses for its reply subject is the forger's LastError by
+// then: nats.go records the server's -ERR as it reads it, before the PONG that ends the flush.
+func (f *forger) publish(t *testing.T, ctx context.Context, inbox, reply, data string) {
 	t.Helper()
 	if err := f.conn.PublishMsg(&nats.Msg{Subject: inbox, Reply: reply, Data: []byte(data)}); err != nil {
 		t.Fatalf("publish into %s: %v", inbox, err)
 	}
-	if err := f.conn.Flush(); err != nil {
+	if err := f.conn.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flush the forger: %v", err)
 	}
 }
 
-func (f *forger) refusals() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return slices.Clone(f.refused)
+// forgedWaitMargin is what forgedWait leaves of the test binary's deadline for a failed test's
+// cleanups and the package's later tests to report.
+const forgedWaitMargin = 30 * time.Second
+
+// forgedWait is a context that ends forgedWaitMargin before the test binary's deadline: the
+// bound of a wait for something that comes, so a loaded machine only makes it come later, and
+// one that never comes fails the test by name. With no deadline (-timeout 0) it ends a day from
+// now, which stands for none: nats.go's FlushWithContext refuses a context without a deadline
+// ("nats: context requires a deadline").
+func forgedWait(t *testing.T) context.Context {
+	t.Helper()
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour)
+		t.Cleanup(cancel)
+		return ctx
+	}
+	if time.Until(deadline) <= forgedWaitMargin {
+		t.Fatalf("the test binary's deadline leaves %s, not more than forgedWaitMargin (%s): raise -timeout",
+			time.Until(deadline).Round(time.Millisecond), forgedWaitMargin)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline.Add(-forgedWaitMargin))
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// requireSubscribed returns once the server holds the pull's inbox subscription. The pull sends
+// it on its own connection (Pull), and nats.go writes it to the server from a goroutine of its
+// own, so a message another connection publishes into the inbox before the server has taken it
+// has no subscriber, and the server drops it: the pull never sees it. A flush of the pull's
+// connection ends with the server's PONG, which the server sends only once it has taken
+// everything the connection sent before the PING, the subscription among it.
+func requireSubscribed(t *testing.T, ctx context.Context, pull *SessionPull) {
+	t.Helper()
+	if err := pull.conn.FlushWithContext(ctx); err != nil {
+		t.Fatalf("flush the pull's connection, so the server holds its inbox subscription: %v", err)
+	}
+}
+
+// nextWithin returns the next message pull holds, waiting for it until ctx ends.
+func nextWithin(t *testing.T, ctx context.Context, pull *SessionPull) SessionMessage {
+	t.Helper()
+	msg, err := pull.Next(ctx)
+	if err != nil {
+		t.Fatalf("next message: %v", err)
+	}
+	return msg
 }
 
 // A message another client publishes into a pull's inbox is not one its consumer delivered: its
@@ -82,42 +110,61 @@ func TestAPullDropsAMessageItsConsumerDidNotDeliver(t *testing.T) {
 	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
+	wait := forgedWait(t)
 	pull := pullSession(t, consumers, session)
+	requireSubscribed(t, wait, pull)
 	forger := newForger(t)
-	// The forged message is read by the server before the stored one is published, and the
-	// server writes both to the pull's connection in that order.
-	forger.publish(t, pull.inbox, "_INBOX.forged", "forged")
-	stored := publishStored(t, owner, agent, "stored")
-
-	msg := next(t, pull)
-	if msg.StreamSeq != stored || string(msg.Data) != "stored" {
-		t.Fatalf("the pull handed over message %d %q, want the stored message %d", msg.StreamSeq, msg.Data, stored)
+	// forgeThenStore publishes a forged message into the pull's inbox and then a stored one, and
+	// returns once the pull has handed the stored one over. The server has read the forged message
+	// before the stored one is published, and writes both to the pull's connection in that order;
+	// the pull's one subscription takes them in that order. So once Next hands the stored one
+	// over, the pull has taken the forged one, and what it logged and counted for it is read at
+	// once, with no wait of its own.
+	forgeThenStore := func(reply, body string) {
+		t.Helper()
+		forger.publish(t, wait, pull.inbox, reply, "forged")
+		stored := publishStored(t, owner, agent, body)
+		msg := nextWithin(t, wait, pull)
+		if msg.StreamSeq != stored || string(msg.Data) != body {
+			t.Fatalf("the pull handed over message %d %q, want the stored message %d %q", msg.StreamSeq, msg.Data, stored, body)
+		}
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("ack message %d: %v", stored, err)
+		}
 	}
+	droppedHeld := func() int {
+		pull.mu.Lock()
+		defer pull.mu.Unlock()
+		return pull.droppedHeld
+	}
+
+	forgeThenStore("_INBOX.forged", "stored")
 	requireOneLine(t, logs, "WARN", pullDroppedLine, session, map[string]any{
 		"consumer": "s-" + session, "reply": "_INBOX.forged", "held": uint64(0),
 	})
 
 	// A second within the minute is dropped and held back; the next one after the minute is
-	// logged and counts it.
-	forger.publish(t, pull.inbox, "_INBOX.forged.again", "forged")
-	waitUntil(t, "the pull to hold one drop back from its line", func() (bool, string) {
-		pull.mu.Lock()
-		defer pull.mu.Unlock()
-		return pull.droppedHeld == 1, fmt.Sprintf("it holds %d back", pull.droppedHeld)
-	})
+	// logged and counts it. drop reads the minute off the wall clock (sessionPullDroppedLogEvery),
+	// so the first line's time is set to the end of the test's wait: the second drop comes before
+	// that end, or nextWithin fails first, so it falls inside the minute however long the machine
+	// takes to get there.
+	waitEnd, _ := wait.Deadline()
+	pull.mu.Lock()
+	pull.droppedLoggedAt = waitEnd
+	pull.mu.Unlock()
+	forgeThenStore("_INBOX.forged.again", "stored again")
+	if held := droppedHeld(); held != 1 {
+		t.Fatalf("after a second drop within the minute the pull holds %d back from its line, want 1", held)
+	}
 	if lines := sessionLines(t, logs, pullDroppedLine, session); len(lines) != 1 {
 		t.Fatalf("the pull logged %d drops for 2 within a minute, want the first alone: %v", len(lines), lines)
 	}
 	pull.mu.Lock()
-	pull.droppedLoggedAt = pull.droppedLoggedAt.Add(-sessionPullDroppedLogEvery)
+	pull.droppedLoggedAt = time.Now().Add(-sessionPullDroppedLogEvery)
 	pull.mu.Unlock()
-	forger.publish(t, pull.inbox, "_INBOX.forged.third", "forged")
-	var lines []map[string]any
-	waitUntil(t, "the pull's second line", func() (bool, string) {
-		lines = sessionLines(t, logs, pullDroppedLine, session)
-		return len(lines) == 2, fmt.Sprintf("it wrote %d", len(lines))
-	})
-	if lines[1]["reply"] != "_INBOX.forged.third" || lines[1]["held"] != json.Number("1") {
+	forgeThenStore("_INBOX.forged.third", "stored third")
+	lines := sessionLines(t, logs, pullDroppedLine, session)
+	if len(lines) != 2 || lines[1]["reply"] != "_INBOX.forged.third" || lines[1]["held"] != json.Number("1") {
 		t.Fatalf("once a minute had passed the pull logged %v, want a second line for _INBOX.forged.third holding 1", lines)
 	}
 	requireNoMessage(t, pull, time.Second)
@@ -169,6 +216,11 @@ func TestAMessageInAPullsInboxNamingAnotherConsumersAckIsNotDeliveredAndAcksNoth
 		}
 	}
 	pull := pullSession(t, consumers, one)
+	// The server holds the pull's inbox subscription before the forger publishes, so a publish it
+	// let through would reach the pull, and the over-the-wire half below reads a pull that could
+	// have received it.
+	wait := forgedWait(t)
+	requireSubscribed(t, wait, pull)
 	// deliveredWithin answers the forged message if Next hands it over within window, after
 	// acknowledging it as session one's relay does on session one's done, and nil if the window
 	// ends with nothing handed over.
@@ -189,12 +241,12 @@ func TestAMessageInAPullsInboxNamingAnotherConsumersAckIsNotDeliveredAndAcksNoth
 	}
 
 	forger := newForger(t)
-	forger.publish(t, pull.inbox, ack, "forged")
-	waitUntil(t, "the server to refuse the forger's publish for its reply subject", func() (bool, string) {
-		refused := forger.refusals()
-		return len(refused) == 1, fmt.Sprintf("it has refused %q", refused)
-	})
-	t.Logf("the server refused the forger's publish: %q", forger.refusals())
+	forger.publish(t, wait, pull.inbox, ack, "forged")
+	refused := forger.conn.LastError()
+	if !errors.Is(refused, nats.ErrPermissionViolation) || !strings.Contains(refused.Error(), "Permissions Violation for Publish with Reply of") {
+		t.Fatalf("the server answered the forger's publish with reply %s with %v, want its refusal for the reply subject", ack, refused)
+	}
+	t.Logf("the server refused the forger's publish: %q", refused)
 	if msg := deliveredWithin(time.Second); msg != nil {
 		t.Errorf("over the wire, session one's pull handed over a message on %s with reply %s", msg.Subject, ack)
 	}

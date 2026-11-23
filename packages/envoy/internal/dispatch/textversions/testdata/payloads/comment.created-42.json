@@ -1,0 +1,52 @@
+{
+  "id": 234145,
+  "issue_key": null,
+  "artifact_id": "82e1c387-3194-4590-9597-a6bd22e17370",
+  "project": "ACME",
+  "seq": 77,
+  "type": "comment.created",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-11-06T21:15:03.111135Z",
+  "payload": {
+    "id": "98b2fbfc-19c8-4ad3-9ab3-9ae0f8e2f228",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem i",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "mentions": [
+      {
+        "target": "role:lorem ipsu",
+        "delivery": "steer",
+        "session_id": "01a13c57-d826-7242-80fe-5f0670188b11"
+      }
+    ],
+    "reply_to": "0c511b31-b304-4525-a6e0-edbb74497a57",
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-11-06T21:15:03.120598Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "82e1c387-3194-4590-9597-a6bd22e17370",
+    "project_key": "ACME",
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "artifact_slug": "lorem ipsum d",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "suppress_route": false,
+    "thread_root_id": "0c511b31-b304-4525-a6e0-edbb74497a57",
+    "mentions_decide_routes": true
+  }
+}

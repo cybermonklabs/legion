@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -80,7 +81,17 @@ const (
 // launcher SIGKILLs the shim at the stop grace (endGeneration, internal/launcher/process.go),
 // which would leave the lease behind. With the defaults, 10 s − 5 s − 1 s = 4 s.
 func warmUpDrain(stopGrace, grace time.Duration) time.Duration {
-	return max(stopGrace-grace-DrainTimeout, MinWarmUpDrain)
+	return max(stopGrace-grace-DrainTimeout, programbound.Of(&warmUpDrainFloor))
+}
+
+// warmUpDrainFloor is MinWarmUpDrain as warmUpDrain reads it, through programbound: a variable so
+// that cmd/legion's tests can give it their own deadline, since a warm-up a loaded machine makes
+// slow to release its lease is not left at 3 s there. MinWarmUpDrain stays the constant
+// internal/config sizes MinStopGrace by.
+var warmUpDrainFloor = MinWarmUpDrain
+
+func init() {
+	programbound.Register(&warmUpDrainFloor)
 }
 
 // Clock is the time the shim waits on: the backoff between dials and the grace before a kill.
@@ -367,7 +378,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeBundleWorkspace, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -384,6 +395,9 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.BundleWorkspace:
 		s.answer(func() { s.bundleWorkspace(f) })
+		return
+	case shimwire.WorkspaceWork:
+		s.answer(func() { s.workspaceWork(f) })
 		return
 	case shimwire.AgentSecretsEnrollment:
 		s.enroll(f)

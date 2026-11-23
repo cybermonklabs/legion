@@ -76,6 +76,7 @@ import {
   type DrawnRow,
   drawnRows,
   expectIssuePageDrawn,
+  expectOpeningLanded,
   focusRow,
   focusThePage,
   nodeRow,
@@ -151,10 +152,11 @@ interface OpenedTree {
 
 /** The whole issue, opened on the new page by one signed-in reader with the focus on the page
  *  itself, which is where reading mode is. A key pressed before this returns reaches no handler,
- *  because the keymap binds only once sign-in resolves. It asserts only that the page loaded
- *  and that the focus left for the page itself (`gotoIssue`, `focusThePage`): each row below
- *  asserts the key or the tree property it is about first, and `expectTreeDrawn` after it. The
- *  suite's `test` has emptied the database before the row. */
+ *  because the keymap binds only once sign-in resolves. It asserts only that the page loaded,
+ *  that the page's opening put the focus on a row of its own and that the focus then left for the
+ *  page itself (`gotoIssue`, `expectOpeningLanded`, `focusThePage`): each row below asserts the
+ *  key or the tree property it is about first, and `expectTreeDrawn` after it. The suite's
+ *  `test` has emptied the database before the row. */
 async function openTree(browser: Browser): Promise<OpenedTree> {
   const seeded = await seedWholeIssue();
   const context = await asUser(browser, "alice");
@@ -162,6 +164,7 @@ async function openTree(browser: Browser): Promise<OpenedTree> {
   const page = await context.newPage();
   await page.setViewportSize({ height: 900, width: 1280 });
   await gotoIssue(page, `/issues/${seeded.key}`);
+  await expectOpeningLanded(page);
   await focusThePage(page);
   return { context, page, seeded };
 }
@@ -317,11 +320,7 @@ async function enterNode(
 ): Promise<void> {
   await gotoIssue(page, `/issues/${key}`);
   await expectIssuePageDrawn(page);
-  await expect
-    .poll(async () => (await focusedRow(page)) !== null, {
-      message: `the page opens with the focus on no row, so End cannot reach ${what}`,
-    })
-    .toBe(true);
+  await expectOpeningLanded(page);
   await page.keyboard.press("End");
   await expect.poll(() => focusedRow(page), { message: `End did not reach ${what}` }).toBe(nodeId);
   if (!enter) return;
@@ -689,6 +688,7 @@ test("with no filter the page is the conversation, each node edited once, folded
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
 
     // The outline's measure: at most 1000 px wide, the prototype's `#pane`, and centred in
     // the stage, its gaps to the stage's insets on its two sides a pixel apart at most.
@@ -1078,6 +1078,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
@@ -1182,6 +1183,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
     const rows = await drawnRows(page);
     const parentOf = (id: string) => ancestorsIn(rows, id).at(-1);
@@ -1268,6 +1270,7 @@ test("each node sits under the parent the model stores", async ({ browser }) => 
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
     // The thread's folds are opened by their fold controls alone: `unfoldEveryBranch` also
     // presses the line that counts a deeper branch, which is what this reading reads shut.
@@ -1368,6 +1371,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
+      await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `the page does not open with the focus on the first open question that waits on the reader at ${at}`,
@@ -1383,6 +1387,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
     // is none; the reader's next move lets that line go.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expect.poll(() => focusedNodeId(page)).toBe(first);
     await page.keyboard.press("q");
     await expect
@@ -1418,6 +1423,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
+      await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `the page does not open with the focus on the question under forty older nodes at ${at}`,
@@ -1443,11 +1449,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
-      await expect
-        .poll(async () => (await focusedNodeId(page)) !== null, {
-          message: `the page opens with the focus on no row at ${at}`,
-        })
-        .toBe(true);
+      await expectOpeningLanded(page);
       const rows = await drawnRows(page);
       expect(
         await focusedNodeId(page),
@@ -1477,6 +1479,7 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${tall.key}`);
       await expectIssuePageDrawn(page);
+      await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `the page does not open with the focus on the first row at ${at}`,
@@ -1521,6 +1524,7 @@ test("an issue opened by a link opens with the focus on its question, or on its 
       await expect(link, `the Inbox draws no link to ${seeded.key} at ${at}`).toBeVisible();
       await link.click();
       await expectIssuePageDrawn(page);
+      await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `the issue opened from the Inbox does not open with the focus on its open question at ${at}`,
@@ -1548,11 +1552,7 @@ test("an issue opened by a link opens with the focus on its question, or on its 
       await link.click();
       await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
       await expectIssuePageDrawn(page);
-      await expect
-        .poll(async () => (await focusedNodeId(page)) !== null, {
-          message: `the issue opened from its parent's outline opens with the focus on no row at ${at}`,
-        })
-        .toBe(true);
+      await expectOpeningLanded(page);
       expect(
         await focusedNodeId(page),
         `the issue opened from its parent's outline does not open with the focus on the outline's first row at ${at}`
@@ -1598,6 +1598,7 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
     const statement = blockNodeId(await primarySlug(deep.key), "r-deep");
     await gotoIssue(page, `/issues/${deep.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), { message: "the page does not open on the statement" })
       .toBe(statement);
@@ -1677,6 +1678,7 @@ test("a row that edits a statement is no taller than the window, and the page ar
     const statement = blockNodeId(await primarySlug(deep.key), "r-deep");
     await gotoIssue(page, `/issues/${deep.key}`);
     await expectIssuePageDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), { message: "the page does not open on the statement" })
       .toBe(statement);
@@ -1727,11 +1729,7 @@ test("a row that edits a statement is no taller than the window, and the page ar
     const last = blockNodeId(await primarySlug(long.key), "r-long-12");
     await gotoIssue(page, `/issues/${long.key}`);
     await expectIssuePageDrawn(page);
-    await expect
-      .poll(async () => (await focusedRow(page)) !== null, {
-        message: "the page opens with the focus on no row",
-      })
-      .toBe(true);
+    await expectOpeningLanded(page);
     await page.keyboard.press("End");
     await expect
       .poll(() => focusedRow(page), { message: "End did not reach the last statement" })
@@ -2037,11 +2035,7 @@ test("zooming back out of a top-level row keeps that row on screen", async ({ br
     }
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    await expect
-      .poll(async () => (await focusedRow(page)) !== null, {
-        message: "the page opens with the focus on no row",
-      })
-      .toBe(true);
+    await expectOpeningLanded(page);
     await page.keyboard.press("End");
     await expectFocusedRowOnScreen(page, "End", "left the last row off screen");
     const last = await focusedRow(page);
@@ -2121,11 +2115,7 @@ test("the caret Enter puts in a statement stays on screen while the editor draws
     const last = blockNodeId(await primarySlug(spec.key), "r-cited-12");
     await gotoIssue(page, `/issues/${spec.key}`);
     await expectIssuePageDrawn(page);
-    await expect
-      .poll(async () => (await focusedRow(page)) !== null, {
-        message: "the page opens with the focus on no row",
-      })
-      .toBe(true);
+    await expectOpeningLanded(page);
     await page.keyboard.press("End");
     await expect
       .poll(() => focusedRow(page), { message: "End did not reach the last statement" })
@@ -2365,6 +2355,8 @@ test("the children are one group of rows of the outline @phone", async ({ browse
     // What a child's row holds: its title as its words, how it stands, what blocks it, who
     // holds it, and its key as the tag, which opens the child's own page.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    // no opening focus: this load reads the children's rows, and the next read of the focus comes
+    // after the next load, below.
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
     for (const key of seeded.children.keys) {
@@ -2424,6 +2416,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
       };
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${seeded.key}/children`);
+      await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `/children does not focus the group's first row at ${at}`,
@@ -2436,6 +2429,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
       await toSecondChild();
 
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectOpeningLanded(page);
       await expect(childRows(page)).toHaveCount(seeded.children.keys.length);
       await toChildren("from the issue's address");
       await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/children$`));
@@ -2475,6 +2469,7 @@ test("the children are one group of rows of the outline @phone", async ({ browse
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expect(outlineRows(page).first(), "the issue draws no row").toBeVisible();
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await filterRow(page).getByRole("button", { exact: true, name: CONTROL_LABELS.keys }).click();
     const keys = page.getByRole("dialog", { name: "Keyboard shortcuts" });
@@ -2596,6 +2591,7 @@ test("a thread read on the outline is read in the Inbox", async ({ browser }) =>
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await expect(nodeRow(page, seeded.head), "the thread's head draws no row").toHaveCount(1);
     // A mark's absence is the claim, so the wait is a span: two seconds, twice the dwell that
     // marks a thread read, after which the folded thread is still unread.
@@ -2758,6 +2754,7 @@ test("a crumb draws its node's first line, cut at a word @phone @phone-only", as
     ): Promise<void> => {
       await page.setViewportSize(size);
       await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.comments.replies[0] ?? ""}`);
+      await expectOpeningLanded(page);
       await expect
         .poll(() => focusedNodeId(page), {
           message: `the reply's address does not focus its row${at}`,
@@ -2908,7 +2905,9 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
 
-    // One body is drawn: the focused node's.
+    // One body is drawn: the focused node's. The page's opening puts the focus on a row first,
+    // and the focus leaves for the page after it.
+    await expectOpeningLanded(page);
     await focusThePage(page);
     await page.keyboard.press("Tab");
     const focused = await focusedNodeId(page);
@@ -3500,6 +3499,7 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectTreeDrawn(page);
+    await expectOpeningLanded(page);
     // The page lands on the question that waits on the reader once its read answers, which
     // would take the focus back from a row focused before then.
     const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
@@ -3572,6 +3572,7 @@ test("Tab from the focused row stops on its code block and its table, then leave
   await phase(browser, seedWideCode, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.wide}`);
     await expectTreeDrawn(page);
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), {
         message: "the comment's address did not put the focus on its row",
@@ -3815,6 +3816,7 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
+    await expectOpeningLanded(page);
     await unfoldEveryBranch(page);
 
     // The gaps the page draws are those that tell a node apart and name work somebody owes: each
@@ -3921,6 +3923,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
   test.setTimeout(120_000);
   await phase(browser, seedReplyNesting, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectIssuePageDrawn(page);
     await focusRow(page, seeded.answeredAsk);
     await page.keyboard.press("w");
@@ -3981,6 +3984,7 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
 
     await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
     await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.first}`);
+    await expectOpeningLanded(page);
     await expect
       .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })
       .toBe(seeded.first);
@@ -4041,6 +4045,7 @@ test("a comment's address followed from a link while the reader is zoomed elsewh
       reply_to: seeded.head,
     });
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectIssuePageDrawn(page);
     await focusRow(page, seeded.head);
     await page.keyboard.press(".");
@@ -4115,6 +4120,7 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
       await bobPage.setViewportSize({ height: 900, width: 1280 });
       const bobSockets = countDocumentSockets(bobPage, seeded.specArtifactId);
       await gotoIssue(bobPage, `/issues/${seeded.key}`);
+      await expectOpeningLanded(bobPage);
       await expectTreeDrawn(bobPage);
       await focusRow(bobPage, statement);
       await bobPage.keyboard.press("Enter");
@@ -4143,6 +4149,7 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
     // What was typed is stored: a reload reads it, and the same keys remove it.
     const storedWords = async () => {
       await page.reload();
+      await expectOpeningLanded(page);
       await expectTreeDrawn(page);
       const row = await focusRow(page, statement);
       return (await rowWords(row).innerText()).replace(/\s+/g, " ");
@@ -4284,11 +4291,7 @@ function cueColours(page: Page): Promise<{ readonly ink: string; readonly pane: 
 async function openWithNoRowFocused(page: Page, key: string): Promise<void> {
   await gotoIssue(page, `/issues/${key}`);
   await expectIssuePageDrawn(page);
-  await expect
-    .poll(async () => (await focusedRow(page)) !== null, {
-      message: "the page opens with the focus on no row",
-    })
-    .toBe(true);
+  await expectOpeningLanded(page);
   await focusThePage(page);
   await page.mouse.move(0, 0);
 }
@@ -4491,6 +4494,7 @@ test("a read that drops the focused comment's row leaves the focus on a row of t
     const [gone = "", other = ""] = seeded.comments.threads;
     expect(other, "the seed holds fewer than two comment threads").not.toBe("");
     await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectOpeningLanded(page);
     await expectIssuePageDrawn(page);
     await focusRow(page, gone);
 
@@ -4889,6 +4893,7 @@ test("Tab from a row's editor stops at the references button of the node's own b
     },
     async (page, seeded) => {
       await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectOpeningLanded(page);
       await expectTreeDrawn(page);
       const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
       const statementBlock = requirementBlockId(2);

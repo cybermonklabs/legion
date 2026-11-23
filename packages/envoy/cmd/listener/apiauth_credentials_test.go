@@ -43,14 +43,13 @@ type googleStandIn struct {
 	identities *googleIdentities
 }
 
+// newGoogleStandIn is a Google stand-in and the identities a listener builds for it, whose verifier
+// reads the stand-in's discovery document on its first token, as the listener's reads Google's.
 func newGoogleStandIn(t *testing.T, accounts ...string) googleStandIn {
 	t.Helper()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "google-signing-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerGoogleAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerGoogleAudience, err)
-	}
+	verifier := oidc.NewLazyVerifier(issuer.URL(), listenerGoogleAudience)
 	return googleStandIn{issuer: issuer, key: key, identities: &googleIdentities{audience: listenerGoogleAudience, verifier: verifier, accounts: accounts}}
 }
 
@@ -67,22 +66,19 @@ func (g googleStandIn) token(t *testing.T, account string, verified any, audienc
 }
 
 // clusterIssuer is the cluster's issuer of projected service-account tokens and the verifier a
-// listener builds for it from ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE.
+// listener builds for it from ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE, which reads the issuer's
+// discovery document on its first token.
 type clusterIssuer struct {
 	issuer   *oidctest.Issuer
 	key      *oidctest.Key
-	verifier *oidc.Verifier
+	verifier *oidc.LazyVerifier
 }
 
 func newClusterIssuer(t *testing.T) clusterIssuer {
 	t.Helper()
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "listener-test-key")
-	verifier, err := oidc.New(context.Background(), issuer.URL(), listenerTestAudience)
-	if err != nil {
-		t.Fatalf("oidc.New(%q, %q): %v", issuer.URL(), listenerTestAudience, err)
-	}
-	return clusterIssuer{issuer: issuer, key: key, verifier: verifier}
+	return clusterIssuer{issuer: issuer, key: key, verifier: oidc.NewLazyVerifier(issuer.URL(), listenerTestAudience)}
 }
 
 func (c clusterIssuer) token(t *testing.T, subject string) string {
@@ -200,7 +196,7 @@ func TestGoogleIssuerAliasesReachTheGoogleBranch(t *testing.T) {
 	}
 	google := &googleIdentities{
 		audience: listenerGoogleAudience,
-		verifier: oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys),
+		verifier: oidc.DiscoveredVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerGoogleAudience, keys)),
 		accounts: []string{listenerGoogleAccount},
 	}
 	cluster := newClusterIssuer(t)
@@ -338,6 +334,9 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 		route:    gate.route,
 	}, gate)
 	open := apiAuth(listenerAPIAuth{logger: logger, requests: requests, route: gate.route}, gate)
+	// An open listener that takes broker tokens verifies one and counts it broker, never
+	// none_broker_token: that label is the open /v1 of a listener with no broker settings alone.
+	openWithBrokers := apiAuth(listenerAPIAuth{brokers: listenerBrokerTokens(t, broker), logger: logger, requests: requests, route: gate.route}, gate)
 
 	rows := []struct {
 		credential string
@@ -358,6 +357,15 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 			return brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", "access-token-counted", `{}`)
 		}},
 		{"none", "/v1/registry/", open, func() *http.Request { return bearerRequest("/v1/registry/ses_anyone", "") }},
+		// An open listener takes no broker token, so it serves a DPoP presentation as it serves a
+		// request with no credential, unverified; the label keeps it apart from a bare request, so
+		// the gate on the open /v1 can see the callers that already hold a broker token.
+		{"none_broker_token", "/v1/messages/publish", open, func() *http.Request {
+			return brokerTokenRequest(t, caller, http.MethodPost, "/v1/messages/publish", "access-token-counted", `{}`)
+		}},
+		{"broker", "/v1/sessions", openWithBrokers, func() *http.Request {
+			return brokerTokenRequest(t, caller, http.MethodGet, "/v1/sessions", "access-token-counted", "")
+		}},
 	}
 	for _, row := range rows {
 		before := requestSeries(t, met)
@@ -404,10 +412,10 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 	}
 }
 
-// The two credentials the removal waits on, the shared token and none at all, each log one WARN
-// a minute naming the route and the caller's address, so an operator can find the callers the
-// series counts; a line says how many admissions it held back since the last. The others log
-// nothing when admitted.
+// The three credentials the removal waits on, the shared token, none at all and a broker token an
+// open listener serves unverified, each log one WARN a minute naming the route and the caller's
+// address, so an operator can find the callers the series counts; a line says how many admissions
+// it held back since the last. The others log nothing when admitted.
 func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 	const shared = "expected-token"
 	cluster := newClusterIssuer(t)
@@ -421,6 +429,15 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 	gate.open(routes)
 	closed := apiAuth(listenerAPIAuth{token: shared, verifier: cluster.verifier, logger: logger, route: gate.route, now: now}, gate)
 	open := apiAuth(listenerAPIAuth{logger: logger, route: gate.route, now: now}, gate)
+	caller := ciphertokentest.NewCaller(t)
+	unverified := func() *http.Request {
+		return brokerTokenRequest(t, caller, http.MethodGet, "/v1/sessions", "access-token-unverified", "")
+	}
+	warned := map[string]string{
+		sharedTokenAdmittedMessage:      credentialSharedToken,
+		openAdmittedMessage:             credentialNone,
+		unverifiedBrokerAdmittedMessage: credentialNoneBrokerToken,
+	}
 
 	lines := func(message string) []string {
 		var found []string
@@ -444,9 +461,10 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 	for range 3 {
 		serve(closed, bearerRequest("/v1/sessions", "Bearer "+shared))
 		serve(open, bearerRequest("/v1/sessions", ""))
+		serve(open, unverified())
 		serve(closed, bearerRequest("/v1/sessions", "Bearer "+cluster.token(t, listenerListedSubject)))
 	}
-	for message, credential := range map[string]string{sharedTokenAdmittedMessage: credentialSharedToken, openAdmittedMessage: credentialNone} {
+	for message, credential := range warned {
 		found := lines(message)
 		if len(found) != 1 {
 			t.Fatalf("%d lines %q within the minute, want 1; log: %s", len(found), message, logged.String())
@@ -465,7 +483,8 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 	clock = clock.Add(time.Minute - time.Second)
 	serve(closed, bearerRequest("/v1/sessions", "Bearer "+shared))
 	serve(open, bearerRequest("/v1/sessions", ""))
-	for _, message := range []string{sharedTokenAdmittedMessage, openAdmittedMessage} {
+	serve(open, unverified())
+	for message := range warned {
 		if found := lines(message); len(found) != 1 {
 			t.Fatalf("%d lines %q a second before the minute ends, want 1; log: %s", len(found), message, logged.String())
 		}
@@ -473,7 +492,8 @@ func TestTheSharedTokenAndTheOpenPathWarnOnceAMinute(t *testing.T) {
 	clock = clock.Add(time.Second)
 	serve(closed, bearerRequest("/v1/sessions", "Bearer "+shared))
 	serve(open, bearerRequest("/v1/sessions", ""))
-	for _, message := range []string{sharedTokenAdmittedMessage, openAdmittedMessage} {
+	serve(open, unverified())
+	for message := range warned {
 		found := lines(message)
 		if len(found) != 2 {
 			t.Fatalf("%d lines %q once a minute had passed, want 2; log: %s", len(found), message, logged.String())
@@ -652,12 +672,12 @@ func TestGoogleIssuerOnAProjectedOnlyListener(t *testing.T) {
 	raw := cluster.issuer.Mint(t, cluster.key, claims)
 	for _, tc := range []struct {
 		name       string
-		verifier   *oidc.Verifier
+		verifier   *oidc.LazyVerifier
 		wantStatus int
 		wantReason string
 	}{
 		{name: "the cluster verifier refuses Google's issuer", verifier: cluster.verifier, wantStatus: http.StatusUnauthorized, wantReason: "issuer"},
-		{name: "a verifier configured for Google still admits it without a Google account list", verifier: oidc.NewWithKeys(oidc.GoogleIssuer, listenerTestAudience, keys), wantStatus: http.StatusNoContent},
+		{name: "a verifier configured for Google still admits it without a Google account list", verifier: oidc.DiscoveredVerifier(oidc.NewWithKeys(oidc.GoogleIssuer, listenerTestAudience, keys)), wantStatus: http.StatusNoContent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logged bytes.Buffer

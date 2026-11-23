@@ -391,6 +391,10 @@ export const VERIFICATION_WORDS = freeze({
   /** After the count of a check's other results, which the line opens in place (ruling 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
+  /** After the count of the checks the coverage read counts for a statement beyond those the
+   *  view draws with it, which serve it from an issue under this one. */
+  elsewhere_many: "more checks elsewhere",
+  elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
@@ -668,6 +672,10 @@ export const ANSWER_LINES = freeze({
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
+  /** What Left on a row of the Decisions list says, and so does the key that zooms out, since
+   *  the list has no level above its rows: the outline's own report for those keys speaks of
+   *  the whole issue, which the list is not (`decisions-filter/DecisionsFilterBody.tsx`). */
+  no_level_above: "This list has no level above this row.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",

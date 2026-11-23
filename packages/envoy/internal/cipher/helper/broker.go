@@ -1749,11 +1749,14 @@ func traceReach(ctx context.Context) (context.Context, *requestReach) {
 // unknown outcome (outcomeUnknown) when the request may have changed the broker's state, and as
 // it came otherwise.
 //
-// A 4xx answer is known: the broker decides its refusals before it writes anything. Every other
-// failure of a request that was sent is unknown: a transport error after the write (a reset, a
-// timeout, the op's context ending at its bound), a 5xx (a front door's 502 or 504 can come after
-// the broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or
-// one that lacks what the caller needs). A failure of a request that was never sent in full is
+// A 4xx answer is known: the broker decides its refusals before it writes anything. So is the
+// broker's own 503 MEMBER_KIND_UNCHECKABLE (uncheckableCode), which it answers when it cannot
+// learn whether Dispatch calls the login's person a restricted member, before it writes anything:
+// nothing was enrolled, and the same request made later is asked afresh. Every other failure of a
+// request that was sent is unknown: a transport error after the write (a reset, a timeout, the
+// op's context ending at its bound), any other 5xx (a front door's 502 or 504 can come after the
+// broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or one
+// that lacks what the caller needs). A failure of a request that was never sent in full is
 // known: a refused dial, a context that ended before the transport held a connection, a failed
 // write. So is a failure before any request: signing a proof, reading the operator file, a
 // sign-in's trade.
@@ -1772,7 +1775,7 @@ func (r *requestReach) settle(err error) error {
 		return nil
 	}
 	var be *BrokerError
-	if errors.As(err, &be) && be.Status >= 400 && be.Status < 500 {
+	if errors.As(err, &be) && (be.Status >= 400 && be.Status < 500 || be.Status == http.StatusServiceUnavailable && be.Code == uncheckableCode) {
 		return err
 	}
 	ended := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
@@ -1781,6 +1784,12 @@ func (r *requestReach) settle(err error) error {
 	}
 	return err
 }
+
+// uncheckableCode is the code of the broker's own 503 for something it would do for a person
+// while it cannot learn whether Dispatch calls that person a restricted member
+// (projectaccess.UncheckableCode, spelled here as the helper reads it off the wire): it answers it
+// before it writes anything, so the outcome is known (settle).
+const uncheckableCode = "MEMBER_KIND_UNCHECKABLE"
 
 // outcomeUnknownError marks the failure of a broker request whose outcome the helper does not
 // know (requestReach.settle). It reads as the failure it wraps and unwraps to it, so every caller

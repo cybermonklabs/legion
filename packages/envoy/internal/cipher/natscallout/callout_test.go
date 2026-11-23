@@ -27,19 +27,12 @@ import (
 // stopped when the test ends, and returns once its subscription has reached the server.
 func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps, decide decideFunc) *Service {
 	t.Helper()
-	dir := t.TempDir()
-	write := func(name, seed string) string {
-		path := filepath.Join(dir, name)
-		require.NoError(t, os.WriteFile(path, []byte(seed+"\n"), 0o600))
-		return path
-	}
-	settings := Settings{
-		URLs:           []string{url},
-		SeedFile:       write("service.seed", keys.ServiceSeed),
-		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
-		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
-		Services:       exampleServices,
-	}
+	return startServiceWith(t, serviceSettings(t, url, keys), deps, decide)
+}
+
+// startServiceWith is startService with settings of the test's own.
+func startServiceWith(t *testing.T, settings Settings, deps Deps, decide decideFunc) *Service {
+	t.Helper()
 	service, err := start(t.Context(), settings, deps, decide)
 	require.NoError(t, err)
 	t.Cleanup(service.Close)
@@ -47,6 +40,25 @@ func startService(t *testing.T, url string, keys testnats.CalloutKeys, deps Deps
 	defer cancel()
 	require.NoError(t, service.Ready(ctx), "the auth service's subscription never reached the server")
 	return service
+}
+
+// serviceSettings are the settings of an auth service that connects to the server at url with
+// keys' seeds, each written to a file of the test's own, and admits exampleServices.
+func serviceSettings(t *testing.T, url string, keys testnats.CalloutKeys) Settings {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, seed string) string {
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(seed+"\n"), 0o600))
+		return path
+	}
+	return Settings{
+		URLs:           []string{url},
+		SeedFile:       write("service.seed", keys.ServiceSeed),
+		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
+		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
+		Services:       exampleServices,
+	}
 }
 
 // connectSession connects to url as s, presenting its token and its proof over the nonce the

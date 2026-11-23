@@ -61,6 +61,10 @@ export interface AgentStreamOptions {
    * subjects, and the new control subject is taken at once.
    */
   readonly admitted?: (session: string) => Promise<void>
+  /** Whether a viewer can take this session: false over the listener's relay socket, which
+   *  carries no agent stream (`ControlSubscriptionOptions.liveView`). The mod's events still
+   *  reach `observe`. True by default. */
+  readonly liveView?: boolean
   /** Whether this session is a Legion pane, whose first command the daemon's bridge writes
    *  rather than a person (`./agent-stream-claude`, `PANE_SEEDED_COMMAND`). */
   readonly isPane?: boolean
@@ -151,6 +155,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
     connection: options.connection,
     session: () => session,
     ...(options.admitted === undefined ? {} : { admitted: options.admitted }),
+    ...(options.liveView === undefined ? {} : { liveView: options.liveView }),
     warn,
     answer: answerControl,
   })

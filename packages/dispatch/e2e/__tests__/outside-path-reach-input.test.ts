@@ -6,7 +6,9 @@
  */
 
 import { describe, expect } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 import {
@@ -141,6 +143,30 @@ describe.concurrent("outside-path-reach.sh", () => {
         `UNKNOWN: ${where} did not answer as Dispatch; reached nothing, so proved nothing`
       );
       expect(run.code).toBe(2);
+    }
+  );
+
+  // A run's output can be posted where anyone reads it, such as a public CI log, so it names this
+  // device's host name nowhere: neither a HOSTNAME the environment hands bash, which bash keeps,
+  // nor the one bash reads from the system where the environment names none. Both runs stop at an
+  // origin that does not answer, after the header lines, and each must have printed them.
+  row(withoutTools)(
+    "prints the device's host name in no line, whether the environment names it or bash reads it",
+    async () => {
+      const where = `http://127.0.0.1:${await closedPort()}`;
+      const planted = `planted-host-${randomUUID()}`;
+      for (const { name, env } of [
+        { name: planted, env: { HOSTNAME: planted } },
+        { name: hostname(), env: {} },
+      ]) {
+        const run = await drive({
+          OUTSIDE_ORIGIN: where,
+          OUTSIDE_PATH_TARGETS: await list(),
+          ...env,
+        });
+        expect(run.stdout).toContain(`outside-path-reach: origin ${where}\n`);
+        expect(run.stdout.split("\n").filter((line) => line.includes(name))).toEqual([]);
+      }
     }
   );
 

@@ -76,7 +76,7 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // installation may not read this resource, or cannot see the repository at all — which the
 // results read takes as unknown, never as a commit it placed elsewhere. A rate limit behind
 // either status is the *RateLimitError instead. Any other status is the error CheckResponse
-// makes, named by the target. repoFull is the `owner/repo` the error names.
+// makes, named by the target as ShownBody shows it. repoFull is the `owner/repo` the error names.
 func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
 	if status == http.StatusOK || slices.Contains(handled, status) {
 		return nil
@@ -88,7 +88,7 @@ func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFu
 		return fmt.Errorf("%w: %s", ErrRepositoryUnreadable, repoFull)
 	}
 	if err := CheckResponse(status, header, body); err != nil {
-		return fmt.Errorf("GET %s: %w", target, err)
+		return fmt.Errorf("GET %s: %w", ShownBody(target), err)
 	}
 	return nil
 }
@@ -119,7 +119,7 @@ func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch,
 		Status string `json:"status"`
 	}
 	if err := json.Unmarshal(body, &comparison); err != nil {
-		return false, fmt.Errorf("decode the comparison of %s/%s %s...%s: %w", owner, repo, branch, sha, err)
+		return false, fmt.Errorf("decode the comparison of %s/%s %s...%s: %w", owner, repo, branch, sha, ShownErr(err))
 	}
 	return comparison.Status == "behind" || comparison.Status == "identical", nil
 }
@@ -206,7 +206,7 @@ func (c *Client) DefaultBranch(ctx context.Context, token, owner, repo string) (
 		DefaultBranch string `json:"default_branch"`
 	}
 	if err := json.Unmarshal(body, &repository); err != nil {
-		return "", fmt.Errorf("decode %s/%s: %w", owner, repo, err)
+		return "", fmt.Errorf("decode %s/%s: %w", owner, repo, ShownErr(err))
 	}
 	if repository.DefaultBranch == "" {
 		return "", fmt.Errorf("%s/%s: GitHub named no default branch", owner, repo)
@@ -255,7 +255,7 @@ func (c *Client) CommitCheckRuns(ctx context.Context, token, owner, repo, sha st
 			CheckRuns []map[string]any `json:"check_runs"`
 		}
 		if err := json.Unmarshal(body, &answer); err != nil {
-			return nil, fmt.Errorf("decode the check_runs of %s: %w", repoFull, err)
+			return nil, fmt.Errorf("decode the check_runs of %s: %w", repoFull, ShownErr(err))
 		}
 		return answer.CheckRuns, nil
 	})
@@ -275,7 +275,7 @@ func (c *Client) CommitCheckSuites(ctx context.Context, token, owner, repo, sha 
 			CheckSuites []map[string]any `json:"check_suites"`
 		}
 		if err := json.Unmarshal(body, &answer); err != nil {
-			return nil, fmt.Errorf("decode the check_suites of %s: %w", repoFull, err)
+			return nil, fmt.Errorf("decode the check_suites of %s: %w", repoFull, ShownErr(err))
 		}
 		return answer.CheckSuites, nil
 	})
@@ -300,7 +300,7 @@ func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha str
 			Statuses []map[string]any `json:"statuses"`
 		}
 		if err := json.Unmarshal(body, &answer); err != nil {
-			return nil, fmt.Errorf("decode the statuses of %s: %w", repoFull, err)
+			return nil, fmt.Errorf("decode the statuses of %s: %w", repoFull, ShownErr(err))
 		}
 		return answer.Statuses, nil
 	})
@@ -367,7 +367,7 @@ func (c *Client) OpenPullRequests(ctx context.Context, token, owner, repo string
 		} `json:"head"`
 	}
 	if err := json.Unmarshal(body, &answer); err != nil {
-		return PullRequestPage{}, fmt.Errorf("decode the open pull requests of %s/%s: %w", owner, repo, err)
+		return PullRequestPage{}, fmt.Errorf("decode the open pull requests of %s/%s: %w", owner, repo, ShownErr(err))
 	}
 	pulls := make([]PullRequestHead, len(answer))
 	for i, pull := range answer {
@@ -404,7 +404,7 @@ func (c *Client) RepositoryIdentity(ctx context.Context, token, owner, repo, eta
 		ID       int64  `json:"id"`
 	}
 	if err := json.Unmarshal(body, &repository); err != nil {
-		return RepositoryAnswer{}, fmt.Errorf("decode %s/%s: %w", owner, repo, err)
+		return RepositoryAnswer{}, fmt.Errorf("decode %s/%s: %w", owner, repo, ShownErr(err))
 	}
 	return RepositoryAnswer{FullName: repository.FullName, ID: repository.ID, ETag: answerETag}, nil
 }

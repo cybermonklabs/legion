@@ -128,25 +128,32 @@ run_check_as() {
 # argv_grep <file> <log>: writes a grep for a case's PATH that appends to <log> each pattern it is
 # handed on its command line (an -e or --regexp value, or the first operand when it has neither -e
 # nor -f), never a file's path, then runs the grep that PATH named when argv_grep ran, with the
-# same arguments. Both paths are written into the script as it is made, before the case puts it on
+# same arguments. A call shaped as check-private-names.sh's search runs grep (-o and -Z) also
+# appends one line, `<search grep -f>` when its patterns came from a file and `<search grep -e>`
+# otherwise, so a case sees that the search itself reached this grep: the masking's own greps fill
+# the log too. Both paths are written into the script as it is made, before the case puts it on
 # PATH, so it never finds itself as the grep it runs.
 argv_grep() {
   {
     printf '#!/usr/bin/env bash\nREAL_GREP=%q\nARGV_LOG=%q\n' "$(command -v grep)" "$2"
     cat <<'GREP'
-skip=no explicit=no operand=no
+skip=no explicit=no operand=no only=no null=no from=-e
 for a in "$@"; do
   if [ "$skip" = pattern ]; then printf '%s\n' "$a" >> "$ARGV_LOG"; skip=no; continue; fi
   if [ "$skip" = yes ]; then skip=no; continue; fi
   case $a in
     -e | --regexp) skip=pattern; explicit=yes ;;
     --regexp=*) printf '%s\n' "${a#--regexp=}" >> "$ARGV_LOG"; explicit=yes ;;
-    -f | --file | -m | -A | -B | -C) skip=yes; explicit=yes ;;
-    --file=*) explicit=yes ;;
+    -f | --file) skip=yes; explicit=yes; from=-f ;;
+    --file=*) explicit=yes; from=-f ;;
+    -m | -A | -B | -C) skip=yes; explicit=yes ;;
+    -o) only=yes ;;
+    -Z) null=yes ;;
     -*) ;;
     *) if [ "$explicit" = no ] && [ "$operand" = no ]; then printf '%s\n' "$a" >> "$ARGV_LOG"; fi; operand=yes ;;
   esac
 done
+if [ "$only" = yes ] && [ "$null" = yes ]; then printf '<search grep %s>\n' "$from" >> "$ARGV_LOG"; fi
 exec "$REAL_GREP" "$@"
 GREP
   } > "$1"

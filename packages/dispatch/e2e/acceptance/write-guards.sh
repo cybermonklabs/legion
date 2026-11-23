@@ -15,9 +15,10 @@
 #             carries the live token, the version the document stands at and where to read a
 #             fresh token; the command exits non-zero and nothing is written. The same upload
 #             naming the token `dispatch doc-read` prints is taken. A replacement that names no
-#             token at all is refused `400 PRECONDITION_REQUIRED`, which no setting decides: no
-#             replacement lands unguarded. (The section is labelled `base` in the lines below,
-#             which is the name the issue's check carries.)
+#             token at all is taken unchecked, as it was before #3000, since no deployed
+#             `dispatch` command could name one (INFRA-4980); Dispatch refuses it again once
+#             every deployed command sends the token. (The section is labelled `base` in the
+#             lines below, which is the name the issue's check carries.)
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DEV_SIGNIN_LOGIN (a login the
@@ -443,6 +444,7 @@ printf 'The first body of the guarded document.\n' >"$work/base-one.md"
 printf 'The second body of the guarded document.\n' >"$work/base-two.md"
 printf 'The third body, which the stale base must not write.\n' >"$work/base-three.md"
 printf 'The fourth body, which names no base.\n' >"$work/base-four.md"
+printf 'The fifth body, which names no base either.\n' >"$work/base-five.md"
 
 upload base "$guard" guard.md "$work/base-one.md"
 read_token base "$guard" guard.md
@@ -500,15 +502,14 @@ upload base "$guard" guard.md "$work/base-three.md" "$doc_token"
 
 # --- base: a replacement that names no token at all ----------------------------------------------
 
-# Dispatch refuses every replacement that names no token, so no replacement lands unguarded. The
-# command exits non-zero and the route answers 400 PRECONDITION_REQUIRED; nothing is written, so
-# the document stands where the accepted upload above left it.
+# A replacement that names no token is taken unchecked, as every replacement was before #3000,
+# since no deployed `dispatch` command could name one on `dispatch artifact` (INFRA-4980). Dispatch
+# counts and logs each one, and refuses one again once every deployed command sends the token.
 read_token base "$guard" guard.md
-before_refusal="$doc_token"
+before_unguarded="$doc_token"
 
 # Asked for no next version, the command refuses the name before it sends anything, and the
-# refusal names both things a replacement takes - --force and the token - so a writer who follows
-# it is not refused a second time, by Dispatch, for the token.
+# refusal names both things a replacement takes - --force and the token.
 cli artifact --issue "$guard" --name guard.md --path "$work/base-four.md" >"$work/out" 2>&1 &&
   fail base "an upload over a name the issue holds, with no --force" \
     "the command exited 0: $(<"$work/out")"
@@ -520,29 +521,23 @@ grep -F 'already holds guard.md' "$work/out" | grep -qF -- '--precondition-json'
   fail base "the command's refusal names the token a replacement takes" "$(<"$work/out")"
 pass base "the command's refusal names --precondition-json beside --force"
 
-# With --force it reaches Dispatch, which refuses it for the token.
+# With --force it reaches Dispatch, which takes it.
 cli artifact --issue "$guard" --name guard.md --path "$work/base-four.md" --force \
-  >"$work/out" 2>&1 &&
-  fail base "a replacement naming no token" "the command exited 0: $(<"$work/out")"
-pass base "a replacement naming no token exits non-zero"
-grep -qF 'must name the token of the version it replaces' "$work/out" ||
-  fail base "the refusal says the replacement must name the version it replaces" "$(<"$work/out")"
-pass base "the refusal says the replacement must name the token of the version it replaces"
-grep -qF 'dispatch doc-read' "$work/out" ||
-  fail base "the refusal says where the token comes from" "$(<"$work/out")"
-pass base "the refusal says where the token comes from"
+  >"$work/out" 2>&1 ||
+  fail base "a replacement naming no token" "the command exited non-zero: $(<"$work/out")"
+pass base "a replacement naming no token exits 0"
+read_token base "$guard" guard.md
+[[ "$doc_token" != "$before_unguarded" ]] ||
+  fail base "the replacement naming no token wrote its version" "the document token stayed $doc_token"
+pass base "the replacement naming no token wrote its version"
 
 send POST "/api/v1/issues/$guard/artifacts" \
-  "$(document_body "$guard" guard.md "$work/base-four.md")"
-want_status 400 base "the same replacement over the artifacts route"
-expect base "it is refused PRECONDITION_REQUIRED" '"PRECONDITION_REQUIRED"' '.code'
-refusal base "the refusal" 'dispatch doc-read'
+  "$(document_body "$guard" guard.md "$work/base-five.md")"
+want_status 201 base "the same replacement over the artifacts route"
+pass base "the same replacement over the artifacts route is taken, 201"
 
 read_token base "$guard" guard.md
-[[ "$doc_token" == "$before_refusal" ]] ||
-  fail base "the refused replacement wrote nothing" \
-    "the document token moved from $before_refusal to $doc_token"
-pass base "the refused replacement wrote nothing: the document is where the accepted upload left it"
+before_refusal="$doc_token"
 
 # --- base: a write with no content over a document that exists ---------------------------------
 

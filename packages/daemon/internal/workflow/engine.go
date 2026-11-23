@@ -286,6 +286,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.sessionStoreFault(ctx, tx, fact)
 	case intake.MemoryGuardKill:
 		return e.memoryGuardKill(ctx, tx, fact)
+	case intake.ControllerMemoryGuardKill:
+		return e.controllerMemoryGuardKill(ctx, tx, fact)
 	case intake.RetryOrEscalate:
 		return e.retryOrEscalate(ctx, tx, fact)
 	case intake.RestartPhase:
@@ -529,6 +531,16 @@ const releaseReason = "the issue was set to todo while its phase was held"
 // workflow does not react: the observation is recorded with the status kept (keepStatus), and the
 // daemon re-asserts its own status through the outbox. A person's move and the daemon's own write
 // carry no session (intake.DispatchIssue.ActorSession): they are the workflow's to act on.
+//
+// One write of a session of the tree is not set back: the owning architect's done, backlog,
+// icebox or triage on a child of its tree (owningArchitectsMove). The architect decides that the
+// work of a child is done, folded into another issue or no longer needed, and the child's status
+// in Dispatch is the one field that records that decision (dispatch://INFRA-3178). For that write
+// the function answers that it did not handle it, so dispatchIssue takes the move as it takes a
+// person's: it drops the status writes it queued for the child, and the child leaves the workflow
+// (leave). Every other write of a session of the tree is set back. That is a status that moves
+// the workflow or todo, any status of a phase worker, a child's own architect's status on its own
+// issue, an architect's status on an issue it does not own, and any status on the tree root.
 func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if fact.ActorSession == "" {
 		return false, nil
@@ -537,7 +549,11 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil {
 		return false, err
 	}
-	if !agent {
+	if agent {
+		if stands, err := e.owningArchitectsMove(ctx, tx, issue, fact); err != nil || stands {
+			return false, err
+		}
+	} else {
 		// Whether the write lands on the root of a tree that is running now, by the one rule every
 		// reader of that question asks (record.TreeRunning, record.TreeRuns): its lifecycle stands
 		// open under the workflow's own authority, it does not linger, and it is not itself waiting
@@ -562,7 +578,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err := e.keepStatus(ctx, tx, issue, fact); err != nil {
 		return false, err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status)); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status, fact.Seq)); err != nil {
 		return false, err
 	}
 	if agent {
@@ -570,6 +586,41 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	}
 	return true, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "status-reasserted", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("session %s set %s to %s, and the daemon set it back to %s", fact.ActorSession, issue.Key, fact.Status, issue.Status)})
+}
+
+// owningArchitectsMove says whether fact, the write of a session that holds a claim in issue's
+// tree, is the owning architect's move of issue out of the workflow, which sessionStatusWrite does
+// not set back. Four conditions make it one:
+//   - The status is done, backlog, icebox or triage (record.OutOfWorkflow).
+//   - The issue is not the tree root, which leaves the workflow only by the architect's sign-off
+//     or close_root.
+//   - The session holds the architect claim of an issue of the tree, in any state
+//     (record.Store.ArchitectIssueOfSession).
+//   - That architect owns the issue by the rule of the API's operations on a child
+//     (record.OwnsUnder). The tree root's architect owns every issue of its tree, so its move is
+//     judged with no read of the tree. A sub-architect's move is judged over the tree's records.
+//
+// A move that stands writes its own log line, which names the architect's issue.
+func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
+	if !record.OutOfWorkflow(fact.Status) || claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return false, nil
+	}
+	architect, held, err := e.store.ArchitectIssueOfSession(ctx, tx, issue.Tree, fact.ActorSession)
+	if err != nil || !held {
+		return false, err
+	}
+	if !claim.IsTreeRoot(architect, issue.Tree) {
+		members, err := e.treeMembers(ctx, tx, issue)
+		if err != nil {
+			return false, err
+		}
+		if !record.OwnsUnder(members, issue.Tree, architect, issue) {
+			return false, nil
+		}
+	}
+	e.logOnCommit(ctx, "workflow: the owning architect's status on its child stands", "issue", issue.Key,
+		"session", fact.ActorSession, "architect", architect, "status", fact.Status)
+	return true, nil
 }
 
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,
@@ -625,7 +676,7 @@ func (e *Engine) rejectStaleHandover(ctx context.Context, tx pgx.Tx, issue recor
 		return false, err
 	}
 	if issue.Status != fact.Status {
-		if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status)); err != nil {
+		if err := e.enqueue(ctx, tx, issue.Key, record.ReassertStatusWrite(issue.Status, fact.Status, fact.Seq)); err != nil {
 			return false, err
 		}
 	}
@@ -774,8 +825,9 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 // starts it (gateOpened) when the line reaches it. The gate and the blockers are therefore read
 // where the line is read, once for the whole project, rather than here once per child.
 //
-// A child entering beneath an ancestor the daemon has already accepted waits for that ancestor
-// to close before anything starts it (record.AcceptedAncestor, which the waiting line reads),
+// A child entering beneath an ancestor the daemon has already accepted waits while that ancestor
+// stands in retro or merging before anything starts it (record.AcceptedAncestor, which the
+// waiting line reads),
 // and the architect above the child is told so here. The two doors an agent uses refuse such a
 // child outright (api's CHILD_UNDER_ACCEPTED_PARENT), so what reaches this is a person's own move
 // to todo, which the daemon records rather than undoes: the record is the honest one, and the
@@ -1723,6 +1775,133 @@ func kernelKillLead(report shimwire.LauncherMemoryKill) string {
 		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.CounterBytes), binarySize(report.LimitBytes))
 }
 
+// controllerMemoryGuardKill tells the project's controller which of its own programs the memory
+// guard of the controller's pod ended, or the pod's own kernel stopped, and why
+// (intake.ControllerMemoryGuardKill): one controller notice of kind memory-guard-kill, filed under
+// the project key as a tick is, and enqueued in the fact's transaction, so a fact that rolls back
+// tells nobody and the outbox carries the telling across a restart. No architect is told: the
+// controller's pod is of no issue, and the program was the controller's.
+//
+// The report's cause chooses the note, as memoryGuardKill's does. The controller's pod in gVisor
+// runs the guard, whose reports carry no cause; the controller's pod in a microVM runs the guest
+// watch over the launcher's controllerClassifier in its place, and reports the kernel's kills
+// with their causes, where the daemon's acknowledgement carried KernelKills (runtime/sandbox's
+// launcherHelloAck sets it on the controller's). So the kernel's note of a command
+// (controllerKernelKillNote) answers shimwire.MemoryKillCauseKernel; the kernel's note of one of
+// the processes that run the controller's session (controllerKernelProtectedKillNote) answers
+// shimwire.MemoryKillCauseKernelProtected; and the guard's (controllerMemoryGuardNote) answers
+// shimwire.MemoryKillCauseGuard, the only other cause the launcher session lets through
+// (shimwire.LauncherMemoryKill.Validate). The line logged names the cause.
+//
+// Each kill is a row of its own, written here and never through admission's wakeController,
+// whose rule keeps one unsent notice per kind and project: a second kill while the first one's
+// notice waits is a second program ended, and the controller must hear of each. What keeps one
+// kill to one row however often its report arrives is the fact's event id (the daemon's
+// memoryGuardKillEventID), which ApplyFact applies once.
+//
+// The token is the session's, the claim the launcher's connection authenticated for. A token that
+// is not this project's controller's (claim.ControllerToken of the project as every token spells
+// it, claim.ProjectToken, which is how the sandbox names the controller pod's claim) is no kill of
+// this controller's program: the runtime hands only the controller's pod a session of no issue, so
+// it is logged and dropped rather than told to a reader whose program it was not.
+func (e *Engine) controllerMemoryGuardKill(ctx context.Context, tx pgx.Tx, fact intake.ControllerMemoryGuardKill) (intake.Result, error) {
+	report := fact.Report
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if fact.Token != claim.ControllerToken(project) {
+		e.logOnCommit(ctx, "workflow: a controller memory guard kill names a token that is not this project's controller, so nobody is told",
+			"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID, "cause", report.Cause)
+		return intake.Result{}, nil
+	}
+	var note, told string
+	switch report.Cause {
+	case shimwire.MemoryKillCauseKernel:
+		note, told = controllerKernelKillNote(report), "workflow: the controller whose program the pod's kernel stopped is told why"
+	case shimwire.MemoryKillCauseKernelProtected:
+		note, told = controllerKernelProtectedKillNote(report), "workflow: the controller is told why the pod's kernel stopped one of the processes that run its session"
+	default:
+		note, told = controllerMemoryGuardNote(report), "workflow: the controller whose program the memory guard ended is told why"
+	}
+	if err := e.enqueue(ctx, tx, e.cfg.Project, record.ControllerNotice(record.Notice{
+		Kind: record.MemoryGuardKillNotice, Role: claim.RoleController, Reason: note})); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, told,
+		"role", fact.Token, "pod", fact.PodUID, "guard", report.Guard, "sequence", report.Sequence, "pid", report.PID,
+		"cause", report.Cause, "sizeBytes", report.SizeBytes, "readingBytes", report.ReadingBytes, "counterBytes", report.CounterBytes,
+		"limitBytes", report.LimitBytes)
+	return intake.Result{}, nil
+}
+
+// The ends of the controller's notes of a process stopped for memory, which it reads in place of
+// a role's (memoryKillGoesOn, memoryKillHeavyWork). The controller has no worker's tools
+// reference, and its skill has no section for this notice, so each note gives its own brief
+// advice and points to no skill (dispatch://INFRA-3368/ask/aa99c6ba-8a58-4830-998c-7f8102f65dd0).
+// controllerMemoryKillGoesOn says what goes on after a command of the controller's is stopped, in
+// the guard's note and the kernel's note of a command; it is not true of a process that runs the
+// controller's session, whose note says what happens instead (controllerKernelProtectedKillEnd).
+// controllerMemoryKillRunAgain, what to run in place of the same program, ends both notes of a
+// command.
+const (
+	controllerMemoryKillGoesOn   = "Your session and the pod's other processes go on. "
+	controllerMemoryKillRunAgain = "Do not run the same program again unchanged: bound its output (a page, a limit, a stream), " +
+		"or send heavy work where your deployment's instructions say."
+)
+
+// controllerKernelProtectedKillEnd is what the controller reads of one of the processes that run
+// its session stopped by its microVM pod's kernel (shimwire.MemoryKillCauseKernelProtected): the
+// shim and its direct children, the agent among them, which the launcher's controllerClassifier
+// marks as the session's. The controller's pod has no role-init: its shim is the launcher's
+// generation itself. The agent's end ends the shim's (the shim returns the agent's exit), and the
+// shim's is the generation's exit: the launcher, the container's PID 1, ends what the generation
+// left (cleanExitedGeneration) and reports that exit. The daemon reads that as the controller's
+// process gone, as it reads every exit of that process (supervise's died): it takes back the task
+// the turn was running, charges one launch failure and relaunches the same session, and where the
+// claim's budget has run out and the claim fails, the controller keeper retries it with fresh
+// budgets after a wait (the daemon's controllerKeeper). Either way the same session starts again,
+// which is all the note says of it. A helper of the agent's may end alone, which is why the note
+// says what follows only of the agent. It never says the session goes on, which the end of the
+// agent's own process makes false, and it does not say "do not run the same program again", since
+// the process was not one the controller ran.
+const controllerKernelProtectedKillEnd = "It was one of the processes that run your session, not a command you ran. " +
+	"If it was your agent, your turn ended with it, and so did every command it was running. " +
+	"The daemon then starts the same session again, as it does after any exit of your session's process. " +
+	"Bound the output of what you run (a page, a limit, a stream), and send heavy work where your deployment's instructions say."
+
+// controllerMemoryGuardNote is the reason of the notice the controller reads when the memory guard
+// of its pod ended one of its programs: which process, how much it held, how near the limit the
+// pod was, that its session and the pod's other processes go on (controllerMemoryKillGoesOn), and
+// what to run in place of the same program (controllerMemoryKillRunAgain). It is written as
+// memoryGuardNote is: sizes in binary units (binarySize), and the process by its executable alone
+// in a code span (codeSpan), with none of its arguments.
+func controllerMemoryGuardNote(report shimwire.LauncherMemoryKill) string {
+	return fmt.Sprintf("The launcher's memory guard stopped one of your processes with SIGKILL because your pod was near its memory limit: "+
+		"%s (pid %d) held %s of anonymous memory while the pod's anonymous memory read %s of its %s limit. "+
+		controllerMemoryKillGoesOn+controllerMemoryKillRunAgain,
+		codeSpan(report.Executable), report.PID, binarySize(report.SizeBytes), binarySize(report.ReadingBytes), binarySize(report.LimitBytes))
+}
+
+// controllerKernelKillNote is the reason of the notice the controller reads when its microVM
+// pod's own kernel stopped one of its commands because the pod ran out of memory
+// (shimwire.MemoryKillCauseKernel): which process, how much it held, the pod's memory counter
+// against its limit, as kernelKillNote's lead gives them (kernelKillLead), then what the guard's
+// note says after its lead: that the controller's session and the pod's other processes go on,
+// and what to run in place of the same program.
+func controllerKernelKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + controllerMemoryKillGoesOn + controllerMemoryKillRunAgain
+}
+
+// controllerKernelProtectedKillNote is the reason of the notice the controller reads when its
+// microVM pod's own kernel stopped one of the processes that run its session
+// (shimwire.MemoryKillCauseKernelProtected): which process, how much it held, the pod's memory
+// counter against its limit (kernelKillLead), and what that process's end does to the controller
+// (controllerKernelProtectedKillEnd), as kernelProtectedKillNote tells a role.
+func controllerKernelProtectedKillNote(report shimwire.LauncherMemoryKill) string {
+	return kernelKillLead(report) + controllerKernelProtectedKillEnd
+}
+
 // codeSpan is text as one Markdown code span that nothing in text ends early or spreads over
 // lines. The fence is one backtick longer than the longest run of backticks text holds, so a
 // backtick in a file name is text inside the span; text that begins or ends with a backtick, or
@@ -1939,6 +2118,10 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
 // names which of the guard's three readings failed. served is whether the table holds a backward
 // row of the issue's phase for the move's target.
+//
+// It is a function of the issue and the fact alone and reads no pull request, so the rule that a
+// merged change never moves back is none of its readings: backward, which holds the transaction,
+// reads the issue's pull request after this answers "" and refuses that move itself.
 func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) string {
 	switch {
 	case fact.To == "":
@@ -1966,6 +2149,13 @@ func (e *Engine) phaseNow(ctx context.Context, tx pgx.Tx, issue record.Issue) (p
 	return moved.Phase, nil
 }
 
+// backward applies a backward move (request_backward_move): the role running the issue's phase
+// sends it back to an earlier phase, with its reason. It is refused BACKWARD_REFUSED, changing
+// nothing, where the table's guard refuses it (backwardRefusal), and where the issue's pull
+// request has merged, in whichever phase the issue stands: a merged change never moves back.
+// GitHub reopens no merged pull request and its change is already on the base branch, so an
+// earlier phase has no pull request left to carry new work; that work goes to an issue whose pull
+// request is still open, which the architect decides.
 func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMove) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1984,6 +2174,17 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if why := backwardRefusal(*issue, fact, served); why != "" {
 		return refused("BACKWARD_REFUSED", why), nil
 	}
+	// A merged pull request refuses the move in every phase: in merging, where a root's close can
+	// wait on the rest of its tree (closeMerged), and in an earlier phase whose pull request merged
+	// early, which the architect is told of (merged).
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if pr != nil && pr.State == record.PullRequestMerged {
+		return refused("BACKWARD_REFUSED", fmt.Sprintf("the %s's move of %s to %s changed nothing: its pull request has merged; a merged change never moves back",
+			fact.Requester, issue.Key, fact.To)), nil
+	}
 	// The move posts its reason on the issue, so a reason Dispatch would refuse there is refused
 	// here, before anything moves (backwardReasonRefusal).
 	if code, why := backwardReasonRefusal(issue.Phase, fact.To, fact.Reason); code != "" {
@@ -2000,32 +2201,30 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil {
-		return intake.Result{}, err
-	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
 }
 
-// parkRule is the condition dispatch://INFRA-2971 sets on each move of an issue to backlog,
-// icebox or triage. Each refusal and notice of this package that names such a move (park_child,
-// or icebox for a children-first wait) carries it word for word, as the skills and the prompts do,
-// so that an architect reads one rule wherever it reads of a park.
-const parkRule = "only when a person asked for that move, or when the work is done, folded into another issue or no longer needed"
+// endChildrenFirst is what the refusals over children still in the workflow, sign_off's and
+// close_root's, tell the architect to do: wait for its status write to be taken, end a child by
+// that write (record.EndChildRule), and ask the person about a child that no move fits. hold is
+// what the architect holds until the person answers.
+func endChildrenFirst(hold string) string {
+	return record.StatusNotTakenYet + " " + record.EndChildRule +
+		" When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
+}
 
 // signOff is the architect's acceptance of a reviewed head: it moves the issue from accepting to
 // retro and starts the implementer there, told the review's handoff and the pull request as the
 // approval told it before acceptance existed. Outside accepting it changes nothing and says so.
 //
 // It is refused while any issue beneath the one being accepted is still in the workflow
-// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them. A parent's work is proved by a head
-// that carries its children's merges: accepted first, it would reach retro and the merge
-// with their work not in it, which is what dispatch://INFRA-980 forbids. The acceptance
-// was held this way once before (dispatch://INFRA-229) and the hold was taken off because a
-// parent's approved pull request then waited outside the merge queue and went stale against its
-// base; under children-first a parent starts its own phases only after its children have left,
-// so by the time it is accepted there is nothing left to wait for, and the refusal is the
-// backstop for a child filed after the parent started.
+// (OpenBeneath), with SIGNOFF_CHILD_IN_WORKFLOW naming them, since a parent is accepted only once
+// no issue beneath it is still in the workflow (dispatch://INFRA-980). The acceptance was held
+// this way once before (dispatch://INFRA-229) and the hold was taken off because a parent's
+// approved pull request then waited outside the merge queue and went stale against its base;
+// under children-first a parent starts its own phases only after its children have left, so by
+// the time it is accepted there is nothing left to wait for, and the refusal is the backstop for
+// a child filed after the parent started.
 func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -2039,8 +2238,9 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if len(open) > 0 {
-		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent's head proves its children's merged work, so it is accepted after them: run each one to done, and sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-			issue.Key, strings.Join(open, ", "))), nil
+		return refused("SIGNOFF_CHILD_IN_WORKFLOW", fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. "+
+			"A parent is accepted only once no issue beneath it is still in the workflow. Sign off again when each of them has left the workflow.",
+			issue.Key, strings.Join(open, ", "))+" "+endChildrenFirst("acceptance")), nil
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
@@ -2167,6 +2367,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
+		return err
+	}
 	// Two moves start a step no phase worker's start begins, so it starts here, under the agent it
 	// names (startNamedStep): a merge GitHub has already made, which no merger runs and whose close
 	// ends it, and accepting, whose role is the architect, for which start above starts no worker
@@ -2194,6 +2397,25 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if row.To == phase.Done {
 		return e.leave(ctx, tx, issue, "done")
+	}
+	return nil
+}
+
+// queueMovedNews queues the reconcile of issue's tree's news of its approved design
+// (record.QueueDesignNews) when the move just written leaves the holder of issue's phase owed news
+// (record.OwedNews over the record as the move leaves it). A phase worker's start carries what its
+// holder is owed (the daemon's start executor), but no start carries news into accepting, since
+// the engine starts no architect (start): the reconcile is what sends an owed member in accepting
+// its news, as a task to the architect that owns it, beside the phase-finished notice. A move into
+// any other phase queues it too, so news whose change set no start could carry yet is sent once
+// the reconcile has recorded it.
+func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	facts, err := record.TreeNewsFacts(ctx, e.store, tx, e.cfg.Steps, issue.Tree)
+	if err != nil {
+		return err
+	}
+	if _, owes := record.OwedNews(facts).Member(issue.Key); owes {
+		return record.QueueDesignNews(ctx, e.store, tx, issue.Tree, e.now())
 	}
 	return nil
 }

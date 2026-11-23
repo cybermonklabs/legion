@@ -31,7 +31,11 @@
 # (DEV_STACK_CALLOUT=1), against that stack: assertion 6 kills that stack's second broker, which
 # the stack outlives. With nothing exported, it starts dev-stack.sh --callout itself, passing its
 # own arguments on (--database-url, --binaries; else LEGION_TEST_PG_DSN or DATABASE_URL, as
-# dev-stack.sh reads them), drives it, and stops it on exit, which drops its databases.
+# dev-stack.sh reads them), drives it, and stops it on exit, which drops its databases. A
+# --database-url reaches dev-stack.sh as LEGION_TEST_PG_DSN, set for that one command, never in
+# its arguments. Prefer LEGION_TEST_PG_DSN or DATABASE_URL to the option for a URL that holds a
+# password: the option stays in this script's own arguments, which are in the process list for any
+# user of the machine to read for the whole run, and the environment is not.
 #
 # Every line is PASS, FAIL or UNKNOWN; UNKNOWN is a probe that reported nothing it can read, and
 # counts as a failure, since a check that saw nothing has not passed. The last line is
@@ -39,7 +43,7 @@
 # never comes up is exit 2.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/callout-check.sh       # starts and stops its own stack
-#   bash scripts/callout-check.sh --database-url 'postgres://...'
+#   DATABASE_URL='postgres://...' bash scripts/callout-check.sh  # the same, from another server
 #   (with a callout stack's banner exported) bash scripts/callout-check.sh
 set -euo pipefail
 
@@ -70,7 +74,19 @@ trap 'stop 143' TERM
 if [ "${DEV_STACK_CALLOUT:-}" != 1 ]; then
   stack_log="$WORK_DIR/dev-stack.log"
   echo "callout-check: starting dev-stack.sh --callout (log $stack_log)..." >&2
-  bash "$SCRIPT_DIR/dev-stack.sh" --callout "$@" >"$stack_log" 2>&1 &
+  # A --database-url with no URL after it is passed on as it is, for dev-stack.sh to refuse.
+  stack_args=() database_url=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --database-url=?*) database_url="${1#--database-url=}"; shift ;;
+      --database-url)
+        if [ -n "${2:-}" ]; then database_url="$2"; shift 2; else stack_args+=("$1"); shift; fi
+        ;;
+      *) stack_args+=("$1"); shift ;;
+    esac
+  done
+  LEGION_TEST_PG_DSN="${database_url:-${LEGION_TEST_PG_DSN:-}}" \
+    bash "$SCRIPT_DIR/dev-stack.sh" --callout "${stack_args[@]}" >"$stack_log" 2>&1 &
   STACK_PID=$!
   ready=false
   for _ in $(seq 1 600); do

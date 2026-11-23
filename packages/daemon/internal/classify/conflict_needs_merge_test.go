@@ -4,25 +4,28 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // A confirmed conflict is acted on only when the issue's next step needs a head that merges, and
 // the first of R0's reasons that holds is the one the act records (dispatch://INFRA-4374 R0): the
-// merge is next past the review, rules the daemon could not read tell it nothing, a base that
-// requires a current head holds this one whatever its checks say, and a check the base requires
-// that has not passed on the head never will while GitHub runs no checks on it. A required context
-// is green by a check run on the head that succeeded, or by a success status the record keeps for
-// the head once a settlement stands for it; a failed run, a run or a status of another head, and a
-// status kept while no settlement stands for the head are not green. Each reason the decision
-// answers is one a merge forward's ask can be queued with, so no act can name a reason its message
-// cannot state.
+// merge is next in merging, rules the daemon could not read tell it nothing, a base that requires
+// a current head holds this one whatever its checks say, and a check the base requires that has
+// not passed on the head never will while GitHub runs no checks on it. Past the review and before
+// merging - accepting and retro, or held from one of them - nothing is acted on, whatever the
+// rules: the conflict waits for merging, where the merger merges the base forward
+// (cybermonklabs/legion#4979). A required context is green by a check run on the head that succeeded,
+// or by a success status the record keeps for the head once a settlement stands for it; a failed
+// run, a run or a status of another head, and a status kept while no settlement stands for the
+// head are not green. Each reason the decision answers is one a merge forward's ask can be queued
+// with, to the role it goes to, so no act can name a reason its message cannot state.
 func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 	const head, other = "h2", "h1"
 	issueIn := func(at phase.Phase) record.Issue { return record.Issue{Key: "LEGION-208", Phase: at} }
-	heldFrom := record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: phase.Accepting}}
+	heldFrom := func(at phase.Phase) record.Issue {
+		return record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: at}}
+	}
 	settled := func(runs []record.AttemptRun, statuses ...record.CommitStatus) record.PullRequest {
 		return record.PullRequest{HeadSHA: head, CheckedHead: head, Failing: []string{}, CheckRuns: runs, Statuses: statuses}
 	}
@@ -44,10 +47,14 @@ func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 		rules *record.BaseRules
 		want  record.ConflictWhy
 	}{
-		{"accepting, before the rules are read", issueIn(phase.Accepting), green, nil, record.ConflictMergeNext},
-		{"retro, every check green", issueIn(phase.Retro), green, requires("ci"), record.ConflictMergeNext},
+		{"accepting, before the rules are read", issueIn(phase.Accepting), green, nil, ""},
+		{"accepting, a required check with no run", issueIn(phase.Accepting), settled(nil), requires("ci"), ""},
+		{"retro, every check green", issueIn(phase.Retro), green, requires("ci"), ""},
+		{"retro under a strict ruleset", issueIn(phase.Retro), green, strict, ""},
+		{"held from accepting", heldFrom(phase.Accepting), green, requires("ci"), ""},
 		{"merging under a strict ruleset", issueIn(phase.Merging), green, strict, record.ConflictMergeNext},
-		{"held from accepting", heldFrom, green, requires("ci"), record.ConflictMergeNext},
+		{"merging, every check green", issueIn(phase.Merging), green, requires("ci"), record.ConflictMergeNext},
+		{"held from merging", heldFrom(phase.Merging), green, requires("ci"), record.ConflictMergeNext},
 		{"testing, no rules read", issueIn(phase.Testing), green, nil, record.ConflictRulesUnread},
 		{"reviewing, the read failed under what would be a strict ruleset", issueIn(phase.Reviewing), green,
 			&record.BaseRules{Required: []string{"ci"}, Strict: true, Unread: "HTTP 502"}, record.ConflictRulesUnread},
@@ -74,8 +81,9 @@ func TestConflictNeedsMergeAnswersTheFirstReasonThatHolds(t *testing.T) {
 			if got == "" {
 				return
 			}
-			ask := record.MergeForwardMessage{Role: claim.RoleImplementer, Step: record.MergeForwardAsk, Head: head, Base: "main",
-				Phase: record.StandsAt(tc.issue), PullRequest: 42, Why: got}
+			at := record.StandsAt(tc.issue)
+			ask := record.MergeForwardMessage{Role: record.MergeForwardAsker(at), Step: record.MergeForwardAsk, Head: head, Base: "main",
+				Phase: at, PullRequest: 42, Why: got}
 			if _, err := record.NewOutboxRow(tc.issue.Key, ask, time.Date(2026, 11, 19, 1, 0, 0, 0, time.UTC)); err != nil {
 				t.Fatalf("the merge forward's ask with why %q cannot be queued: %v", got, err)
 			}

@@ -61,7 +61,7 @@ func TestATakeoverRecordThatWaitedWhileItsHolderKeptTheRoleCopiesNoOlderHour(t *
 				}
 			}
 
-			keeper.conn.Close()
+			keeper.close()
 			awaitNoRelaySubscriber(t, rig.url, a)
 			consumer, _ := bus.SessionConsumerName(a)
 			if err := rig.harness.client.JS().DeleteConsumer(bus.Stream, consumer); err != nil {

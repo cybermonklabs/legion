@@ -229,16 +229,18 @@ type Horizon struct {
 
 	mu sync.Mutex
 	// generation counts Resets. An observation records only into the generation it started in,
-	// so one in flight across a Reset cannot bring back what the Reset forgot.
+	// so one in flight across a Reset cannot bring back what the Reset forgot; it never stands as
+	// h.ended, and Safe answers no H from it.
 	generation uint64
 	// started counts observations ever started and is never reset: an observation's number is
 	// its order, and Safe and Await each wait for one numbered above the count when called.
 	started  uint64
 	inFlight *horizonFlight
-	// ended is the newest observation to have ended that its runner's cancellation did not
-	// abandon, nil before the first: observations run one at a time, so it is the highest
-	// numbered of those. A caller takes it when it is numbered above the count the caller waits
-	// past (observe).
+	// ended is the newest observation of this generation to have ended that its runner's
+	// cancellation did not abandon, nil before the first: observations run one at a time, so it is
+	// the highest numbered of those. Reset clears it, and run sets it only to one that ended in the
+	// generation it started in. A caller takes it when it is numbered above the count the caller
+	// waits past (observe).
 	ended *horizonFlight
 	// safe is H. safeThrough is the number of the newest observation H covers: proven safe, or
 	// with an A at or below H when recorded or later. Both are this generation's.
@@ -376,14 +378,27 @@ func (h *Horizon) Persisted(ctx context.Context) (int64, error) {
 // id. Safe waits it out, then joins one in flight, takes one that ended after the call, or runs
 // one. Its own observation saw every id committed before the call, so each such id is at or below
 // H, or stands above it and keeps a gap open until H reaches it.
+//
+// It answers H only from an observation recorded in the generation that H is of. A Reset during
+// the call discards an observation that started before it, and the H of 0 the Reset leaves has no
+// gap above it, so Safe returns no H from that observation: it takes another, numbered above the
+// one discarded, until it takes one that no Reset has discarded. An observation that failed
+// answers its error, whichever generation it started in.
 func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 	after := h.observationBoundary()
-	if _, err := h.observe(ctx, after); err != nil {
-		return 0, err
+	for {
+		number, generation, err := h.observe(ctx, after)
+		if err != nil {
+			return 0, err
+		}
+		h.mu.Lock()
+		current, safe := generation == h.generation, h.safe
+		h.mu.Unlock()
+		if current {
+			return safe, nil
+		}
+		after = number
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.safe, nil
 }
 
 // Await returns H once an observation taken during this call is proven safe, so H is at or
@@ -415,7 +430,7 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	var failed error
 	var failingSince time.Time
 	for {
-		number, err := h.observe(ctx, taken)
+		number, _, err := h.observe(ctx, taken)
 		taken = max(taken, number)
 		again := false
 		if err == nil {
@@ -641,11 +656,13 @@ func (h *Horizon) Reset() {
 	h.safe, h.safeThrough, h.newest, h.recorded = 0, 0, 0, 0
 	h.safeAt = time.Time{}
 	h.pending = nil
+	h.ended = nil
 	h.persistedSafe = 0
 }
 
-// run takes flight's observation and records it, unless a Reset came between. A stall warning it
-// finds due runs on a goroutine of its own: its diagnosis query can take up to
+// run takes flight's observation and records it, unless a Reset came between. It leaves flight as
+// h.ended only when no Reset came between and its runner's cancellation did not abandon it. A
+// stall warning it finds due runs on a goroutine of its own: its diagnosis query can take up to
 // horizonDiagnosisTimeout, which would otherwise hold up the relay, the hub or the handler that
 // ran the observation. stalled has already marked the warning logged and the diagnosis started,
 // so the rate limit and the one-diagnosis-at-a-time rule both hold however long the diagnosis
@@ -661,14 +678,15 @@ func (h *Horizon) run(ctx context.Context, flight *horizonFlight) {
 	h.inFlight = nil
 	flight.err = err
 	flight.abandoned = err != nil && ctx.Err() != nil
-	if !flight.abandoned {
+	current := flight.generation == h.generation
+	if current && !flight.abandoned {
 		h.ended = flight
 	}
 	var stalled *horizonObservation
 	var safe, toPersist int64
 	var toPersistAt time.Time
 	var generation uint64
-	if err == nil && flight.generation == h.generation {
+	if err == nil && current {
 		observation.number, observation.at = flight.number, h.now()
 		h.record(observation, xmin)
 		stalled, safe = h.stalled(observation.at), h.safe

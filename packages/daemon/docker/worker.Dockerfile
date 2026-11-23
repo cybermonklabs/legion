@@ -9,8 +9,8 @@
 # Go version, static, at /opt/legion/bin/legion (one binary: worker-shim, launcher, workspace-init,
 # gh, git-credential, probe-image and the daemon's own commands), the first PATH entry and the
 # ENTRYPOINT name, with the `agent-secrets` client and the `gh` that runs `legion gh` beside it; the
-# pinned OMP fork build, resolved with
-# mise's github backend exactly as a tmux host resolves an `omp_invocation` naming it;
+# pinned OMP fork build, the linux-x64 archive of the release .omp-pin names, at /opt/omp, laid out
+# as mise's github backend lays out a tmux host's install of that pin (bin/omp; the tools stage);
 # @sjawhar/pi-envoy and @sjawhar/pi-legion packed from this checkout's packages/pi-envoy and
 # packages/pi-legion at /opt/legion/pi-envoy and /opt/legion/pi-legion, the two roots a pod names as
 # Oh My Pi's explicit extensions with discovery on, linked into no profile (a plugin both linked and
@@ -87,7 +87,8 @@
 # with --pod-safety), which names no model, provider or route.
 
 # Pins not derived from daemon code. The OMP fork pin is deliberately NOT an ARG: it is the one line of
-# the repository's .omp-pin, its only home, which the tools stage copies.
+# the repository's .omp-pin, its only home, which the tools stage copies; ARG OMP_SHA256 below is the
+# digest of that release's archive, and it moves with the pin.
 ARG BUN_VERSION=1.4.4
 ARG MISE_VERSION=v2026.8.12
 # SHA-256 of the tools stage's linux-x64 archive (the image builds linux/amd64 only; `install-jj`'s
@@ -98,9 +99,32 @@ ARG MISE_VERSION=v2026.8.12
 # command reports a good signature from release key 24853EC9F655CE80B48E6C3A8B81C9D17413A06D
 # (published at https://mise.jdx.dev/gpg-key.pub, and at keys.openpgp.org by the same fingerprint).
 ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
-# Sami's jj fork: what the dogfood daemon runs on the devbox; same 0.45 line as the jj-lib inside OMP.
-ARG JJ_TOOL=github:sjawhar/jj@0.45.1-sami.20260910-043938
+# Sami's jj fork, at the release of sjawhar/jj#3 (INFRA-4036): jj 0.46 with a gix-pack that maps
+# each pack, index and multi-pack-index in 8 MiB chunks and keeps the chunks reads mark within
+# 512 MiB (JJ_PACK_MAPPED_LIMIT sets another budget). Under gVisor a whole mapping counts as the
+# pod's memory once one page of it is read, so a later pin must carry that patch, or one jj command
+# on a large pack fills an issue pod again.
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261120-120102
 ARG GH_TOOL=gh@2.98.0
+# The SHA-256 of the release archive the tools stage fetches for each of its three tools, which it
+# checks before it unpacks anything, as the toolchain stage does its downloads: the linux-x64
+# archive of the Oh My Pi release .omp-pin names (omp-v<version>-linux-x64.tar.gz), the x86_64
+# musl archive of the jj release ARG JJ_TOOL names (jj-v<version>-x86_64-unknown-linux-musl.tar.gz,
+# whose jj binary is the one the `jj` row of .github/ci-tools.yaml pins), and the linux amd64
+# archive of the gh release ARG GH_TOOL names (gh_<version>_linux_amd64.tar.gz of cli/cli). A pin
+# and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
+# digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
+# Each was read on 2026-11-22 (Oh My Pi's at its 18.18.6-sami.20261122-091943 pin, jj's at its
+# 0.46.0-sami.20261120-120102 pin, gh's at 2.98.0) as the `digest` GitHub's API gives the release
+# asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq '.assets[]'`), and each equals the
+# sha256 of the archive downloaded from the address the tools stage reads. gh's is also its line
+# in the release's gh_<version>_checksums.txt, and `gh attestation verify <archive> --repo
+# cli/cli` verified that archive against cli/cli's deployment.yml workflow; the Oh My Pi and jj
+# releases carry no attestation (the same command answers 404 for both). A bump repeats those
+# reads.
+ARG OMP_SHA256=aef5ca3a44b97bed2e3038f1a2f9f9bbbc4e5ccc2cbd5d85c3a0550bfb0eafc4
+ARG JJ_SHA256=770b129af434b0b93edfea6de3960a34b82e4f77fda30960aa18f816d543a1de
+ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The pin of the shared public leak check: the tag of the repository a deployment names in its
 # leak check setting (legion.yaml's leak_check, or LEGION_LEAK_CHECK_REPOSITORY), whose leak-check
 # directory holds it. The image carries the pin alone. The pod's launcher names this tag to the
@@ -109,13 +133,13 @@ ARG GH_TOOL=gh@2.98.0
 # (packages/daemon/internal/leakguard's
 # Source and InstallServed). R5 of dispatch://INFRA-1527 requires the newest
 # `leak-check-v<n>` tag at the time the pin is written, never a number a spec fixed: this is the
-# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-20T00:45:44Z,
+# newest, read with `gh api repos/example-org/deployment/git/refs/tags` at 2026-11-21T18:04:21Z,
 # and a bump reads that list again. The runtime stage exports it as LEGION_LEAK_CHECK_TAG, which
 # is where the launcher and each role's shim read it. Go holds the same tag once more:
 # ghReadsProvenCheck in packages/daemon/cmd/legion/gh_reads.go, the check `legion gh`'s list of
 # reads was proven against, and TestGhReadsAreProvenAgainstThePinnedCheck holds the two equal, so
 # a bump moves both, by the steps ghReadsProvenCheck's comment gives.
-ARG LEAK_CHECK_TAG=leak-check-v21
+ARG LEAK_CHECK_TAG=leak-check-v31
 # go.work's `go` line: the Go stage builds in workspace mode, and the golang image's GOTOOLCHAIN=local
 # fails the build if go.work moves past this. The toolchain stage ships the same release to the workers
 # (/opt/go), checked against GO_SHA256: the SHA-256 https://go.dev/dl/ publishes for
@@ -355,10 +379,11 @@ RUN set -eu; \
     test -f /out/claude-envoy/legion/.claude-plugin/plugin.json
 
 # ------------------------------------------------------------------------------------------------
-# tools: mise resolves the pinned OMP fork build, jj, and gh — the same backend and pin string the
-# daemon hands to `mise where` on a tmux host. mise itself is checked against MISE_SHA256 before
+# tools: mise, and the pinned OMP fork build, jj and gh. mise is checked against MISE_SHA256 before
 # anything extracts or runs it, the same shape the toolchain stage below uses for uv, Node and the AWS
-# CLI; .github/actions/install-jj reads the same pair for the CI runner's own mise.
+# CLI; .github/actions/install-jj reads the same pair for the CI runner's own mise. The image carries
+# this mise for the scripts a role runs (the runtime stage says which), and the build runs nothing of
+# it past `mise --version`.
 # ghcr.io/cybermonklabs/legion/ci, the copy of debian:bookworm-slim (.github/ci-images.yaml)
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:99c0b25c46d0214d5a2091092e7908907dcaecd6a962cde0ac700acee222b6f3 AS tools
 ARG MISE_VERSION
@@ -379,20 +404,63 @@ RUN set -eu; \
     mise --version; \
     rm -rf "$t"
 COPY .omp-pin /omp-pin
-# github_token (optional BuildKit secret): mise's github backend reads MISE_GITHUB_TOKEN; a shared
-# builder IP without it can hit GitHub's unauthenticated API limit (403). CI passes secrets.GITHUB_TOKEN;
-# a build without the secret still runs, unauthenticated.
-RUN --mount=type=secret,id=github_token \
-    set -eu; \
-    if [ -s /run/secrets/github_token ]; then \
-      MISE_GITHUB_TOKEN="$(cat /run/secrets/github_token)"; export MISE_GITHUB_TOKEN; \
-    fi; \
-    pin="$(cat /omp-pin)"; \
-    mise x "$pin" -- omp --version; \
-    cp -r "$(mise where "$pin")" /opt/omp; \
-    mkdir -p /opt/tools; \
-    install -m 0755 "$(mise x "$JJ_TOOL" -- sh -c 'command -v jj')" /opt/tools/jj; \
-    install -m 0755 "$(mise x "$GH_TOOL" -- sh -c 'command -v gh')" /opt/tools/gh; \
+# The Oh My Pi build, jj and gh are each one archive of the release its pin names, fetched from the
+# address GitHub serves a release asset at, https://github.com/<owner>/<repo>/releases/download/<tag>/<name>,
+# and checked against its ARG *_SHA256 before it is unpacked. That address makes no GitHub API call.
+# Until 2026-11-21 mise resolved the three through the API (the release by its tag, cli/cli's release
+# list, the artifact attestations) with the run's GITHUB_TOKEN, whose hourly budget of 15,000 calls
+# every job of this repository's CI shares. That day the budget ran out before its hour reset at
+# 17:24:15Z (mise: `github rate limit: 0/15000 (core)`), mise skipped the install it could not
+# resolve, and `mise x <pin> -- omp --version` failed every pull request's build in that hour with
+# `"omp" couldn't exec process: No such file or directory` (runs 44928923080, 44929049036 and
+# 44929265240). The pins are `github:<owner>/<repo>@<version>` (.omp-pin, ARG JJ_TOOL) and
+# `gh@<version>` (ARG GH_TOOL), each release's tag is `v` and that version, as the notices stage
+# reads them too. Each part of a pin — owner, repository, version — is one or more of
+# [A-Za-z0-9._-] and holds no `..`, so no part can be a path of its own or climb out of the one
+# it stands in; a pin of any other shape fails here by its name rather than fetch an address it
+# does not name. /opt/omp is the Oh My Pi archive with its one top-level directory stripped, as mise strips
+# it: bin/omp. Each fetch refuses by the tool's name and the address it read: a digest ARG that is
+# no 64-hex sha256, a download curl did not complete (a 404, a truncated body), or an archive
+# whose sha256 is not the pinned one, so the log says which of the three failed and why, though
+# BuildKit marks every line of this RUN. The three digests are declared here, after the layers
+# above, so a bump of one rebuilds this layer alone.
+ARG OMP_SHA256
+ARG JJ_SHA256
+ARG GH_SHA256
+RUN set -eu; \
+    omp_pin="$(cat /omp-pin)"; \
+    part() { case "$1" in "" | *[!A-Za-z0-9._-]* | *..*) return 1 ;; esac; }; \
+    pinned() { \
+      rest=${2#github:}; owner=${rest%%/*}; after=${rest#*/}; repo=${after%@*}; version=${after##*@}; \
+      [ "$rest" != "$2" ] && [ "$after" != "$rest" ] && [ "$version" != "$after" ] && \
+        part "$owner" && part "$repo" && part "$version" || \
+        { echo "tools: $1 is '$2', which is no github:<owner>/<repo>@<version> pin of [A-Za-z0-9._-] parts without '..'" >&2; exit 1; }; \
+    }; \
+    pinned .omp-pin "$omp_pin"; \
+    pinned "ARG JJ_TOOL" "$JJ_TOOL"; \
+    part "${GH_TOOL#gh@}" && [ "${GH_TOOL#gh@}" != "$GH_TOOL" ] || { echo "tools: ARG GH_TOOL is '$GH_TOOL', which is no gh@<version> pin of [A-Za-z0-9._-] without '..'" >&2; exit 1; }; \
+    omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; omp_tag="v${omp_pin##*@}"; \
+    jj_repo="${JJ_TOOL#github:}"; jj_repo="${jj_repo%@*}"; jj_tag="v${JJ_TOOL##*@}"; \
+    gh_version="${GH_TOOL#gh@}"; \
+    fetch() { \
+      tool=$1; arg=$2; want=$3; url=$4; file=$5; \
+      printf '%s\n' "$want" | grep -Eqx '[0-9a-f]{64}' || { echo "tools: $tool: ARG $arg is '$want', which is no 64-hex sha256, so the archive at $url is not fetched" >&2; exit 1; }; \
+      curl -fsSL --max-time 300 -o "$file" "$url" || { echo "tools: $tool: the archive did not download from $url (curl exit $?)" >&2; exit 1; }; \
+      got=$(sha256sum "$file"); got=${got%% *}; \
+      [ "$got" = "$want" ] || { echo "tools: $tool: the archive from $url has sha256 $got, and ARG $arg pins $want" >&2; exit 1; }; \
+      echo "tools: $tool: $url, sha256 $got"; \
+    }; \
+    asset() { printf 'https://github.com/%s/releases/download/%s/%s' "$1" "$2" "$3"; }; \
+    t=/tmp/tools; mkdir -p "$t" /opt/omp /opt/tools; \
+    fetch omp OMP_SHA256 "$OMP_SHA256" "$(asset "$omp_repo" "$omp_tag" "omp-${omp_tag}-linux-x64.tar.gz")" "$t/omp.tar.gz"; \
+    fetch jj JJ_SHA256 "$JJ_SHA256" "$(asset "$jj_repo" "$jj_tag" "jj-${jj_tag}-x86_64-unknown-linux-musl.tar.gz")" "$t/jj.tar.gz"; \
+    fetch gh GH_SHA256 "$GH_SHA256" "$(asset cli/cli "v${gh_version}" "gh_${gh_version}_linux_amd64.tar.gz")" "$t/gh.tar.gz"; \
+    tar -xzf "$t/omp.tar.gz" -C /opt/omp --strip-components=1 --no-same-owner; \
+    tar -xzf "$t/jj.tar.gz" -C "$t" --no-same-owner ./jj; \
+    tar -xzf "$t/gh.tar.gz" -C "$t" --no-same-owner "gh_${gh_version}_linux_amd64/bin/gh"; \
+    install -m 0755 "$t/jj" /opt/tools/jj; \
+    install -m 0755 "$t/gh_${gh_version}_linux_amd64/bin/gh" /opt/tools/gh; \
+    rm -rf "$t"; \
     /opt/omp/bin/omp --version && /opt/tools/jj --version && /opt/tools/gh --version
 
 # ------------------------------------------------------------------------------------------------
@@ -605,8 +673,8 @@ RUN set -eu; \
 # and bq at Debian's root bundle. As the SDK ships, both trust the CA files it bundles, which hold
 # the compromised emSign and AAA roots: measured on 2026-11-18 in an INFRA issue pod, gcloud 589.0.0
 # and bq 2.1.40 accepted the emSign chain. With the property at Debian's bundle both refuse the two
-# chains and reach example.com, which `legion probe-image`'s TLS probe holds them to (the final
-# step). The two properties are defaults: a role's own gcloud configuration or
+# chains, which `legion probe-image`'s TLS probe holds them to (the final step). The two properties
+# are defaults: a role's own gcloud configuration or
 # CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE still overrides them, as a role's AWS_CA_BUNDLE does the
 # image's.
 # /opt is read-only in a pod, so the SDK cannot write the bytecode Python would otherwise compile at
@@ -688,7 +756,7 @@ RUN --mount=type=bind,source=packages/daemon/docker/azure-cli/requirements.txt,t
 COPY --chmod=0755 packages/daemon/docker/azure-cli/az /opt/azure-cli/bin/az
 
 # ------------------------------------------------------------------------------------------------
-# runtime-base: debian:trixie-slim for its git (2.47; jj 0.45's git backend needs >= 2.42 — bookworm
+# runtime-base: debian:trixie-slim for its git (2.47; jj 0.46's git backend needs >= 2.42 — bookworm
 # and bookworm-backports stop at 2.39.5). The dynamically linked binaries copied in below were built
 # or fetched on bookworm; trixie's newer glibc runs them, and the probe RUN below proves it.
 # No later layer may install a package: the image's Debian packages are the base's own and those this
@@ -1254,7 +1322,6 @@ COPY --from=go /out/gopls /usr/local/bin/gopls
 COPY --from=go --chown=1000:1000 /gomodcache/cache/download /home/legion/go/pkg/mod/cache/download
 USER root
 COPY --from=toolchain /out/chromium /opt/chromium
-COPY packages/daemon/docker/tls-roots /usr/share/legion/tls-roots
 # legion-testpg: root-owned and mode 0555, like every other program on the image's PATH, so a role
 # cannot rewrite the script the roles container's launcher runs.
 COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-testpg
@@ -1266,6 +1333,19 @@ COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-test
 # test database reads an empty file there. The final step refuses an image where it is anything
 # else.
 RUN install -m 0444 -o root -g root /dev/null /var/run/legion/testpg.log
+# /etc/gitconfig holds the four pack settings of every git in an issue pod or a repository cache
+# (packWindowConfig, packages/daemon/internal/workspace/config.go): pack data mapped 32 MiB at a
+# time up to 256 MiB, and 64 MiB each of pack-objects' window memory and of cached delta bases.
+# git's defaults map 1 GiB windows, and gVisor counts every window a process touched whole as the
+# pod's memory. This file is for provisioning's git in the init container: its runner removes the
+# role environment's GIT_CONFIG pairs, which carry the same four to every role's git, and the
+# shared clone's own configuration, which provisioning writes them into, does not hold them yet
+# when that git first clones it. A Dockerfile cannot read the Go list, so the values are written
+# out here, and the final step fails the build when the file holds any others.
+RUN /usr/bin/git config --system core.packedGitWindowSize 32m \
+    && /usr/bin/git config --system core.packedGitLimit 256m \
+    && /usr/bin/git config --system pack.windowMemory 64m \
+    && /usr/bin/git config --system core.deltaBaseCacheLimit 64m
 # Keep Debian's chromium package for its shared-library dependency closure, but make its vulnerable
 # executable unreachable and expose the pinned Chrome for Testing binary under the usual name.
 RUN rm -f /opt/codegraph/node /usr/bin/chromium /usr/lib/chromium/chromium \
@@ -1433,11 +1513,12 @@ COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
 # core.hooksPath=/dev/null pin, which still holds for every other command (mainEnvironment,
 # packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
-# jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
-# arguments it was given and checks one thing before a `jj git push`: that the git jj will shell
-# out to is the wrapper above, on PATH and in jj's own git.executable-path. jj's push is a
-# `git … push --porcelain --no-verify`, so that wrapper is what puts the leak guard in front of
-# it, and a jj that would run another git is refused rather than pushing unchecked:
+# jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the wrapper
+# above as jj's git.executable-path on every command line, and again as the line's last layer
+# after a push. jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts
+# the leak guard in front of it. Before a `jj git push` or `jj gerrit upload`, aliases and the
+# default command expanded as jj expands them, it also checks that the git on PATH is the wrapper
+# and refuses a push whose configuration names another git, rather than pushing unchecked:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:
@@ -1468,6 +1549,9 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # and no file under /usr/lib/openssh or /usr/bin/ssh-agent
 # carries a setuid or setgid bit (the apt RUN drops the two openssh-client installs, ssh-keysign's and
 # ssh-agent's), so a rebuild of that layer that brings one back fails here.
+# /etc/gitconfig holds the four pack settings the runtime stage wrote, at their values: the step
+# prints `gitconfig: <key>=<value>` for each, as `git config --system --get` reads it, and fails on
+# any other value, a missing key included.
 # Then the `legion` on the image PATH is this one, it runs on this base, and it names the
 # commit the workflow built. git, jj and gh each resolve to Legion's own wrapper in
 # /opt/legion/bin and the step refuses any other path, and behind each one the real binary runs
@@ -1525,9 +1609,14 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # with npm and node on PATH (packages/daemon/internal/capabilities/image.go). It then has node, bun,
 # omp's embedded bun, CodeGraph's Node, uv, the AWS CLI, curl, Python, gh, GNU wget, git, go,
 # kubectl, redis-cli and Chromium, and, where each is on PATH, gcloud, bq, az, mise and socat,
-# refuse each compromised chain while reaching the control; a deployment image without one of
-# those five is not refused for it (the probe reports it `absent`), because those five are outside
-# the floor every deployment's image is held to. It
+# refuse each compromised chain while accepting the control, and the public test sites' own chains,
+# all served by the probe's own server on 127.0.0.1, so no public host's name or route decides the
+# build; node, CodeGraph's Node, wget and git, which read a chain only after the handshake, are held
+# to the two public test sites instead, which fail the build only where a client accepts their
+# chains and print `probe-image: UNKNOWN: <client> against <host>` where they cannot be reached
+# (packages/daemon/cmd/legion/tls_probe.go says why). A
+# deployment image without one of those five is not refused for it (the probe reports it
+# `absent`), because those five are outside the floor every deployment's image is held to. It
 # prints the table, one `probe-image: capability <name>: <status> (<detail>)` line per row, every TLS
 # decision, then `probe-image: OK (/opt/omp/bin/omp) session-storage=probed extensions=discovered
 # agent-models=skipped capabilities=checked model-fallback=on daemon-api-version=<N>` — `on` here is
@@ -1578,6 +1667,10 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \
     setid="$(find /usr/lib/openssh /usr/bin/ssh-agent -perm /6000)"; echo "set-id bits: ${setid:-none}"; test -z "$setid"; \
     git="$(command -v git)"; echo "git: $git"; test "$git" = /opt/legion/bin/git; /usr/bin/git --version; \
+    for setting in core.packedGitWindowSize=32m core.packedGitLimit=256m pack.windowMemory=64m core.deltaBaseCacheLimit=64m; do \
+      key="${setting%%=*}"; value="$(/usr/bin/git config --system --get "$key" || true)"; \
+      echo "gitconfig: $key=$value"; test "$key=$value" = "$setting"; \
+    done; \
     jj="$(command -v jj)"; echo "jj: $jj"; test "$jj" = /opt/legion/bin/jj; /usr/local/bin/jj --version; \
     hook="$(stat -c '%u:%g %a' /opt/legion/githooks/pre-push)"; echo "pre-push hook: $hook"; \
     test "$hook" = "0:0 755"; test -x /opt/legion/githooks/pre-push; \

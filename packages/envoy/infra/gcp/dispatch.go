@@ -106,7 +106,7 @@ const (
 // counted pools and its permanent listeners. The listener's and the front door's pods open none.
 // TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
 // does not.
-const dispatchConnectionsPerPod = 113
+const dispatchConnectionsPerPod = 115
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,
@@ -130,7 +130,6 @@ var (
 var (
 	tailnetDNSNameRule = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.ts\.net$`)
 	namespaceRule      = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	secretKeyRule      = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
 	// quantityRule is a Kubernetes resource quantity (k8s.io/apimachinery's resource.Quantity):
 	// a signed decimal, then a binary suffix, a decimal suffix or a decimal exponent.
 	quantityRule = regexp.MustCompile(`^([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))(Ki|Mi|Gi|Ti|Pi|Ei|n|u|m|k|M|G|T|P|E|[eE][+-]?[0-9]+)?$`)
@@ -145,6 +144,21 @@ var (
 	// 97 lowercase letters, digits or hyphens, ending in a letter or digit).
 	connectionNameRule = regexp.MustCompile(`^(?:[a-z0-9](?:[-a-z0-9]*[a-z0-9])?(?:\.[a-z0-9](?:[-a-z0-9]*[a-z0-9])?)+:)?[a-z][-a-z0-9]{4,28}[a-z0-9]:[a-z]+-[a-z]+[0-9]+:[a-z](?:[-a-z0-9]{0,96}[a-z0-9])?$`)
 )
+
+// secretKeyChars are the characters of a key of a Secret's data.
+var secretKeyChars = regexp.MustCompile(`^[-._a-zA-Z0-9]+$`)
+
+// secretKeyRule says what a key of a Secret's data may be, as Kubernetes holds it
+// (k8s.io/apimachinery's validation.IsConfigMapKey, which validates a Secret's keys too).
+const secretKeyRule = `a Secret's key: letters, digits, "-", "_" and ".", at most 253 characters, and neither "." nor ".." nor ` +
+	`one that begins with ".."`
+
+// isSecretKey reports whether key can be a key of a Secret's data (secretKeyRule). The API server
+// refuses a Secret with any other key, so a secretKeyRef to one names a key no Secret holds, and
+// the pod that reads it never starts.
+func isSecretKey(key string) bool {
+	return len(key) <= 253 && secretKeyChars.MatchString(key) && key != "." && key != ".." && !strings.HasPrefix(key, "..")
+}
 
 // DispatchArgs are the inputs of an envoy-infra:gcp:Dispatch. Every field of a plain Go type is a
 // value the consumer's program knows when it runs; the pulumi.*Input fields may come from another
@@ -418,6 +432,18 @@ type DispatchArgs struct {
 	// Unset renders nothing: no limit, and a rate with no burst takes the rate as its burst.
 	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
 	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
+	// ConsumerNames is how both consumer creators, the app and the listener, name the JetStream
+	// consumers they create: ENVOY_CONSUMER_NAMES on the app's and the listener's containers,
+	// "fixed" or "fresh". Unset renders nothing, and both run fixed; any other value is refused
+	// (core.CheckConsumerNames). Each reads it only at its start, so a change rolls both pods.
+	ConsumerNames string `pulumi:"consumerNames,optional"`
+	// ReplaceUnderHold is the writer hold's update rule (heldReplacement) for the same two
+	// Deployments: true recreates each, whatever its replica count, so its old pods stop before the
+	// new ones start, and lets the apply finish without waiting for the new pods, whose readiness
+	// the hold's refusal of their NATS connections can hold back. The front door, which creates no
+	// consumer, is unchanged. Unset or false, each Deployment updates and is waited for as it always
+	// has.
+	ReplaceUnderHold bool `pulumi:"replaceUnderHold,optional"`
 
 	// SigningKeyGenerations is the ordered key set the server holds, the shape
 	// auth.ParseSigningKeys reads DISPATCH_SIGNING_KEY into: the first entry signs every new
@@ -580,6 +606,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
 		{"appPrivateKeySecretKey", args.AppPrivateKeySecretKey},
+		{"consumerNames", args.ConsumerNames},
 	} {
 		if bus.HoldsSeed(value.value) {
 			return value.input, true
@@ -688,9 +715,11 @@ type Dispatch struct {
 // network half both modes build: no other field is read by the cluster and the network the mode
 // builds.
 // natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
-// inputs are unset, where the component renders none of those settings, and signingKeyGenerations
-// is the generations the component registers a signing key for, in the order the server holds
-// them, [0] when its input is unset. frontDoor and signInOn are the two groups of inputs a
+// inputs are unset, where the component renders none of those settings, consumerNames is "" when
+// its input is unset, where it renders no ENVOY_CONSUMER_NAMES, and signingKeyGenerations is the
+// generations the component registers a signing key for, in the order the server holds them, [0]
+// when its input is unset. replaceUnderHold is the writer hold's update rule for the app's and the
+// listener's Deployments (heldReplacement). frontDoor and signInOn are the two groups of inputs a
 // consumer sets together or not at all: frontDoor is set when any tailnet input is, where the
 // component builds the front door and Dispatch is reached at its tailnet name, and signInOn when
 // any sign-in input is, where the app runs browser sign-in. publicOrigin is the origin Dispatch
@@ -736,6 +765,8 @@ type dispatchSettings struct {
 	natsInCluster                               bool
 	natsReplicas, streamMaxBytes                int
 	senderMessagesPerMinute, senderMessageBurst int
+	consumerNames                               string
+	replaceUnderHold                            bool
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
 	pprofPort                                   int
@@ -1118,6 +1149,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"chatEndpoint", args.ChatEndpoint != nil},
 		{"chatModel", args.ChatModel != nil},
 		{"chatTokenSecret", args.ChatTokenSecret != nil},
+		{"consumerNames", args.ConsumerNames != ""},
+		{"replaceUnderHold", args.ReplaceUnderHold},
 	})
 }
 
@@ -1778,7 +1811,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if !dnsSubdomain(args.AppPrivateKeySecretName) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretName", "appPrivateKeySecretName %q must be a DNS subdomain", args.AppPrivateKeySecretName)
 		}
-		if !secretKeyRule.MatchString(args.AppPrivateKeySecretKey) {
+		if !isSecretKey(args.AppPrivateKeySecretKey) {
 			return dispatchSettings{}, core.InputErrorf("appPrivateKeySecretKey", "appPrivateKeySecretKey %q must match %s", args.AppPrivateKeySecretKey, secretKeyRule)
 		}
 	}
@@ -1894,6 +1927,11 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	if s.senderMessagesPerMinute, s.senderMessageBurst, err = core.CheckSenderLimit("", args.SenderMessagesPerMinute, args.SenderMessageBurst); err != nil {
 		return dispatchSettings{}, err
 	}
+	// The consumer-name setting both creators read, checked here for the sender limit's reason.
+	if err := core.CheckConsumerNames("consumerNames", args.ConsumerNames); err != nil {
+		return dispatchSettings{}, err
+	}
+	s.consumerNames, s.replaceUnderHold = args.ConsumerNames, args.ReplaceUnderHold
 	if s.signingKeyGenerations, err = newDispatchSigningKeyGenerations(args); err != nil {
 		return dispatchSettings{}, err
 	}

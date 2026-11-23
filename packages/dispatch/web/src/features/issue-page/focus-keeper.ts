@@ -28,23 +28,43 @@ export type FocusFallback = (loss: FocusLoss) => HTMLElement | null | undefined;
 /** What takes an element, and everything inside it, out of the focus's reach. */
 const OUT_OF_REACH = "[hidden], [inert]";
 
+/** Whether `element`, or an element around it below `within`, is hidden or inert: the nearest
+ *  such element refuses unless it is `within` or above it. With no `within`, or one that does
+ *  not hold `element`, every element around it is read. */
+function outOfReach(element: Element, within: Element | null | undefined): boolean {
+  const shut = element.closest(OUT_OF_REACH);
+  if (shut === null) return false;
+  return within?.contains(element) !== true || !shut.contains(within);
+}
+
 /**
- * Whether the element can take the focus as it stands: it is on the page, not disabled, and
+ * Whether the element can take the focus (up to `within`): it is on the page, not disabled, and
  * neither it nor an ancestor is hidden or inert. It reads no layout, so a test's DOM, which has
  * none, answers as a browser does.
+ *
+ * With `within`, only the element and the elements around it below `within` are read for
+ * `hidden` and `inert`: `within` and what is above it are not, since a caller names a bound
+ * that may be shut on purpose (`usableControl`, `usable-control.ts`).
  */
-export function canHoldFocus(element: Element | null | undefined): element is HTMLElement {
+export function canHoldFocus(
+  element: Element | null | undefined,
+  within?: Element | null
+): element is HTMLElement {
   return (
     element instanceof HTMLElement &&
     element.isConnected &&
     !element.matches(":disabled") &&
-    element.closest(OUT_OF_REACH) === null
+    !outOfReach(element, within)
   );
 }
 
+/** The attributes whose change can change what `canHoldFocus` answers: `LOSSES` watches them,
+ *  and so does a watch of `usableControl`'s answer (`usable-control.ts`), among its own. */
+export const FOCUS_ATTRIBUTES = ["disabled", "hidden", "inert"] as const;
+
 /** The changes that can take the focus away: a removal, and a disable, a hide or an inert. */
 const LOSSES: MutationObserverInit = {
-  attributeFilter: ["disabled", "hidden", "inert"],
+  attributeFilter: [...FOCUS_ATTRIBUTES],
   attributes: true,
   childList: true,
   subtree: true,

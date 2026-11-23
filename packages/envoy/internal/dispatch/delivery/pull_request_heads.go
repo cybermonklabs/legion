@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
@@ -33,9 +34,10 @@ import (
 // made for a commit that is no head Dispatch knows (ReadThroughCommitPulls) — by a recorded
 // result, and by the read of an issue's results for a `before_merge` result's commit, at most
 // once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
-// which takes every open row read longer than five minutes ago and every merged row the rule
-// this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
-// ListStalePullRequestHeads).
+// which takes every open row read longer ago than PullRequestHeadStaleAfter (every open row at
+// every pass of one process, as far as the batch reaches, and as PullRequestHeadStaleAfter says
+// with several) and every merged row the rule this build judges by has not judged yet — one
+// offer per rule version (AttributionRuleVersion, ListStalePullRequestHeads).
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
@@ -97,11 +99,11 @@ func PullRequestHeadState(action string, merged bool) string {
 //
 // It marks every database failure on the way to that write and not the write alone, because
 // they all end the same way and a connection-level outage reaches the earlier ones first. The
-// envelope's path to the write is two reads and the write: the canonical name of the
-// repository (refs.CanonicalRepo) and the attribution's own read of the issues its candidates
-// name (headAttribution, through resolveAttributionCandidates). A head row lost because
-// Postgres refused the first of those is as lost as one lost at the insert, so
-// recordPullRequestHead marks all three (markHeadNotStored).
+// envelope's path to the write is one read and the write: the attribution's own read of the
+// issues its candidates name (headAttribution, through resolveAttributionCandidates). The
+// canonical name of the repository is no read (refs.Renames.Canonical, over the pairs the boot
+// read). A head row lost because Postgres refused that read is as lost as one lost at the
+// insert, so recordPullRequestHead marks both (markHeadNotStored).
 //
 // One failure of that path is deliberately left unmarked, because no redelivery mends it. A
 // read of GitHub the App refused is answered by the reconcile's own next pass, and handing
@@ -409,7 +411,7 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 }
 
 // upsertHeadUnderCanonicalName writes head, which every caller has already keyed by the
-// canonical name of its repository (refs.CanonicalRepo), and drops the row the same pull
+// canonical name of its repository (refs.Renames.Canonical), and drops the row the same pull
 // request is stored under as storedUnder when that is another name. A row keyed under a
 // repository's old name can be read at all only under the canonical one — the App answers 404
 // for the old name's installation, so nothing can refresh it and no issue is ever held to it
@@ -465,8 +467,9 @@ type AttributedHead struct {
 // the four columns other than linked_repo drops a row both arms read, which a stale attribution
 // can make — one judged while the issue resolved to the pull request's repository — and
 // `linked_repo desc` keeps the linked arm's copy: the row is of a repository the issue does not
-// resolve to, which is what the name says.
-var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
+// resolve to, which is what the name says. NewAttributor builds it once from its rename pairs.
+func headsAttributedQuery(renames refs.Renames) string {
+	return `with recursive ` + linkedPullRequestTerms(renames) + `
 	select number, head_sha, checked_at, event_at, linked_repo from (
 		select distinct on (number, head_sha, checked_at, event_at)
 			number, head_sha, checked_at, event_at, linked_repo
@@ -481,6 +484,7 @@ var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
 		order by number, head_sha, checked_at, event_at, linked_repo desc
 	) heads
 	order by greatest(checked_at, event_at) desc nulls last, number desc`
+}
 
 // HeadsAttributedTo is every open or merged pull request that is issueKey's — attributed to it,
 // or linked from it in a repository it does not resolve to (linkedPullRequestTerms) — newest
@@ -496,8 +500,8 @@ var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
 // BaseBranchMergedFor's are: the rows one issue's key holds are the handful of pull requests
 // attributed to that issue. The linked rows are read through pull_request_heads_repo_head's
 // leading column, one repository's rows for each linked pull request.
-func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
-	rows, err := pool.Query(ctx, headsAttributedQuery, issueKey)
+func (a *Attributor) HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
+	rows, err := pool.Query(ctx, a.headsQuery, issueKey)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 	}
@@ -563,12 +567,12 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 // commit does not stop another being opened from the same head. Counting one would leave every
 // result at that commit standing at no basis for good.
 //
-// repoFull is the canonical name of the repository (refs.CanonicalRepo), compared without case,
-// as every other comparison of a repository here is (refs.CanonicalRepoSQL): a row written from
-// a `pull_request` envelope carries GitHub's own spelling of the repository (`Acme/Widgets`),
-// while the results read is passed the lowercased spelling the repository-to-project mapping
-// stores (refs.ExternalRepo), so an exact comparison would answer "no row" for a repository
-// whose owner writes their name with capitals. The read is one index lookup on
+// repoFull is the canonical name of the repository (refs.Renames.Canonical), compared without
+// case, as every other comparison of a repository here is: a row written from a `pull_request`
+// envelope carries GitHub's own spelling of the repository (`Acme/Widgets`), while the results
+// read is passed the lowercased spelling an issue's own repository and a project's default
+// repository are stored under (refs.ExternalRepo), so an exact comparison would answer "no row"
+// for a repository whose owner writes their name with capitals. The read is one index lookup on
 // pull_request_heads_repo_head (migration 20261105112616), which is built on
 // `(lower(repo), head_sha)` for that reason: pull_request_heads_issue_head is partial on
 // `issue_key is not null` and keyed on the issue, so it serves no lookup by repository and head
@@ -636,11 +640,27 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string)
 }
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
-// reconcile reads it again, and PullRequestHeadBatch how many it reads in one pass.
-const (
-	PullRequestHeadStaleAfter = 5 * time.Minute
-	PullRequestHeadBatch      = 200
-)
+// reconcile reads it again.
+//
+// The bound is duty.LeasePeriod(ReconcileInterval), ReconcileInterval less a tenth of it: the
+// shortest wait the reconcile leaves after a pass, whose waits are drawn in
+// (ReconcileInterval - ReconcileInterval/10, ReconcileInterval] (duty.RunJittered,
+// duty.JitteredWithin). A row a pass reads is stamped (checked_at) no later than that pass ends.
+// With one process the next pass starts more than this bound after that end, so every pass
+// re-reads every open row the pass before it read, as far as the batch reaches. With several
+// processes serving one database the next pass can be another process's, starting less than this
+// bound after the read, and it leaves the row as fresh. The first pass that starts more than this
+// bound after the read reads it, and the deployment's passes come at most ReconcileInterval
+// apart, so two reads of an open row are at most about this bound plus ReconcileInterval apart,
+// nine and a half minutes, plus the passes' own run time. A bound of the whole ReconcileInterval
+// would leave such a row not yet due at one process's next pass whenever that pass's wait, with
+// the time the pass before ran on after the read, came to five minutes or less, which a quick pass
+// almost always does, and the row would wait for the pass after: about ten minutes between two
+// reads of it rather than five.
+var PullRequestHeadStaleAfter = duty.LeasePeriod(ReconcileInterval)
+
+// PullRequestHeadBatch is how many rows the reconcile reads again in one pass.
+const PullRequestHeadBatch = 200
 
 // ListStalePullRequestHeads is at most limit rows for the reconcile to read again, the longest
 // unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter (a row
@@ -648,14 +668,15 @@ const (
 // merged row a rule older than this build's judged (AttributionRuleVersion).
 //
 // A merged row is revisited at all because nothing else ever revisits one. An open row comes
-// round every five minutes; a merged row is written once more at most, by an envelope or a
-// read-through, and a recorded result reads through only for a commit no head Dispatch knows.
-// So a merged row left credited to nobody stays that way, and every `before_merge` result at
-// that head stands at no basis for ever: a merge delivered by a `pull_request` envelope naming no
-// head repository is one such row (recordPullRequestHead attributes nobody, since it cannot
-// tell this repository's branch from a fork's), and so is every pull request merged under an
-// older attribution rule that credited nobody — a title naming another repository's issue first
-// was the whole of INFRA-1240.
+// round at every pass of one process, each starting at most five minutes after the one before it
+// ended, and as PullRequestHeadStaleAfter says with several; a merged row is written once more at
+// most, by an envelope or a read-through, and a recorded result reads through only for a commit
+// no head Dispatch knows. So a merged row left credited to nobody stays that way, and every
+// `before_merge` result at that head stands at no basis for ever: a merge delivered by a
+// `pull_request` envelope naming no head repository is one such row (recordPullRequestHead
+// attributes nobody, since it cannot tell this repository's branch from a fork's), and so is
+// every pull request merged under an older attribution rule that credited nobody — a title
+// naming another repository's issue first was the whole of INFRA-1240.
 //
 // The rule half of the arm takes a row an older rule credited too, which is R8 of INFRA-1522:
 // rule 2 ranks the head branch and the two links above the title and the body, so a child's
@@ -688,10 +709,11 @@ const (
 // and the merged rows no read ever reached. Raising the rule offers every merged row of the
 // deployment once, which on a production-shaped table measured for INFRA-1522 is 12,000 rows,
 // about 12,000 GitHub reads and 2,400 an hour against an installation's 5,000 — half a
-// deployment's budget for five hours, for a backfill nothing live waits on. At 50 a pass it is
-// about 600 an hour and about a day, and a table of a few hundred merged rows is still a few
-// passes. The two reads are ordered the same way and the bound is applied to their sum, so a
-// pass never reads more rows than it did before.
+// deployment's budget for five hours, for a backfill nothing live waits on. At 50 a pass, and at
+// most one pass in each 4.5-minute period of the reconcile's lease, it is about 600 to 670 an
+// hour and about a day, and a table of a few hundred merged rows is still a few passes. The two
+// reads are ordered the same way and the bound is applied to their sum, so a pass never reads
+// more rows than it did before.
 func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestHead, error) {
 	heads, err := listStaleHeads(ctx, pool, `
 		select repo, number from pull_request_heads
@@ -815,13 +837,13 @@ type headAttributionResult struct {
 // it settled on, if any. attributeHead calls this a second time, after reading the commit
 // messages, whenever the first call held no candidate, so on that path both calls log and the
 // second line names the candidates the commit messages added.
-func headAttribution(ctx context.Context, pool *store.Pool, facts attributionFacts, headRepo string) (headAttributionResult, error) {
+func (a *Attributor) headAttribution(ctx context.Context, pool *store.Pool, facts attributionFacts, headRepo string) (headAttributionResult, error) {
 	attributed := headAttributionResult{
 		source:   string(sourceNone),
 		ownHead:  headInOwnRepository(facts.Repo, headRepo),
 		complete: headRepo != "",
 	}
-	candidates, err := resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, attributionInputsFrom(facts))
+	candidates, err := a.resolveAttributionCandidates(ctx, pool, facts.Repo, facts.URL, a.attributionInputsFrom(facts))
 	if err != nil || len(candidates) == 0 {
 		return attributed, err
 	}
@@ -867,8 +889,8 @@ func headAttribution(ctx context.Context, pool *store.Pool, facts attributionFac
 // the row read. The read given up is noted on the attempt ctx carries (githubreads), which only
 // the reconcile's leased pass carries: the intakes and the results routes call this too, and
 // their contexts carry none, so the note changes nothing there.
-func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
-	attributed, err := headAttribution(ctx, pool, facts, headRepo)
+func (a *Attributor) attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), facts attributionFacts, headRepo string, number int) (headAttributionResult, error) {
+	attributed, err := a.headAttribution(ctx, pool, facts, headRepo)
 	if err != nil || attributed.issueKey != nil || !attributed.ownHead {
 		return attributed, err
 	}
@@ -888,7 +910,7 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 		return attributed, nil
 	}
 	facts.CommitMessages = read
-	attributed, err = headAttribution(ctx, pool, facts, headRepo)
+	attributed, err = a.headAttribution(ctx, pool, facts, headRepo)
 	attributed.messages = read
 	return attributed, err
 }
@@ -933,8 +955,8 @@ func mergeCommitOf(payload pullRequestPayload) string {
 // four name is held to the repository the pull request is in, its commit messages, read with the
 // caller's installation token. The one place the two GitHub readers below build an attribution
 // from a payload, so a sixth source, or a sixth fact a payload carries, is added in one.
-func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
-	return attributeHead(ctx, pool, client, func() (string, error) { return token, nil },
+func (a *Attributor) attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.Client, token, repoFull string, payload pullRequestPayload) (headAttributionResult, error) {
+	return a.attributeHead(ctx, pool, client, func() (string, error) { return token, nil },
 		attributionFacts{
 			Repo: repoFull, URL: payload.HTMLURL, Title: payload.Title, Body: payload.Body,
 			HeadRef: payload.Head.Ref,
@@ -955,23 +977,20 @@ func attributePayload(ctx context.Context, pool *store.Pool, client *githubapp.C
 //
 // repoFull is the key ListStalePullRequestHeads read off the row, which may be a name the
 // repository has been renamed away from, and every step here but the stamp works on the
-// canonical name instead (refs.CanonicalRepo): the token is minted for it, since GitHub answers
-// 404 for the installation of a name no longer in use; the attribution holds the pull request's
-// issue to it; and the row is written under it, with the row under the old key dropped in the
-// same step (upsertHeadUnderCanonicalName). The stamp stays on the key the batch handed over,
-// since that is the row the batch must stop offering: a canonical repository the App cannot
-// read teaches this row nothing under either name.
+// canonical name instead (refs.Renames.Canonical): the token is minted for it, since GitHub
+// answers 404 for the installation of a name no longer in use; the attribution holds the pull
+// request's issue to it; and the row is written under it, with the row under the old key
+// dropped in the same step (upsertHeadUnderCanonicalName). The stamp stays on the key the batch
+// handed over, since that is the row the batch must stop offering: a canonical repository the
+// App cannot read teaches this row nothing under either name.
 //
 // broker is the reconcile's own, so a row this pass re-judges under a newer attribution rule
 // records the move on both issues (UpsertPullRequestHead).
-func RefreshPullRequestHead(
+func (a *Attributor) RefreshPullRequestHead(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull string, number int, now time.Time,
 ) error {
-	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
-	if err != nil {
-		return err
-	}
+	canonical := a.canonical(repoFull)
 	owner, repo, err := refs.SplitGitHubRepo(canonical)
 	if err != nil {
 		// No read of GitHub can reach a name GitHub does not allow, so the row is stamped as an
@@ -996,7 +1015,7 @@ func RefreshPullRequestHead(
 		}
 		return err
 	}
-	attributed, err := attributePayload(ctx, pool, client, token, canonical, payload)
+	attributed, err := a.attributePayload(ctx, pool, client, token, canonical, payload)
 	if err != nil {
 		return err
 	}
@@ -1048,8 +1067,8 @@ func RepositoryUnreadable(err error) bool {
 // rather than this read-through standing as the last word.
 //
 // repoFull comes from outside — the repository the check's issue resolves to — so it is
-// canonicalised before anything is asked of GitHub or written (refs.CanonicalRepo), and no row
-// is ever written under a name a repository was renamed away from. The read-time caller has
+// canonicalised before anything is asked of GitHub or written (refs.Renames.Canonical), and no
+// row is ever written under a name a repository was renamed away from. The read-time caller has
 // canonicalised that name already, and so has the record-time caller, which resolves through
 // the same helper (api/issue_repo.go, server.checkIssueRepository); the rule reaches the
 // canonical name in one step, so this read changes nothing for either. It is here because this
@@ -1060,14 +1079,11 @@ func RepositoryUnreadable(err error) bool {
 // broker is the caller's own event broker, which a row this read re-attributes records its move
 // through (UpsertPullRequestHead); a caller that holds none hands over nil and the move is
 // written with no event.
-func ReadThroughCommitPulls(
+func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client, broker *events.Broker,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
-	canonical, err := refs.CanonicalRepo(ctx, pool, repoFull)
-	if err != nil {
-		return 0, false, err
-	}
+	canonical := a.canonical(repoFull)
 	owner, repo, token, err := repositoryRead(ctx, client, canonical)
 	if err != nil {
 		return 0, false, err
@@ -1080,7 +1096,7 @@ func ReadThroughCommitPulls(
 		if pull.Head.SHA == sha {
 			atHead = true
 		}
-		attributed, err := attributePayload(ctx, pool, client, token, canonical, pull)
+		attributed, err := a.attributePayload(ctx, pool, client, token, canonical, pull)
 		if err != nil {
 			return written, atHead, err
 		}
@@ -1122,30 +1138,28 @@ func ReadThroughCommitPulls(
 // the reconcile ever revisits, clearing it would be for good.
 //
 // The envelope's own `repo` comes from outside — the topic a publisher built — so it is
-// canonicalised before anything is read or written (refs.CanonicalRepo), and no row is ever
+// canonicalised before anything is read or written (refs.Renames.Canonical), and no row is ever
 // written under a name a repository was renamed away from. It is also what the head is held to:
 // an envelope keyed by an old name carries a `head_repo` GitHub spells under the new one, and
 // comparing those two would make every such pull request a fork's (headInOwnRepository).
 //
-// Three of the four steps here can fail, and each failure is marked, or left bare, by what a
-// redelivery of the envelope would do with it (markHeadNotStored, ErrHeadNotStored). The
-// canonical read and the attribution are reads of Postgres before any row is written, so a
-// failure of either loses the head row exactly as a refused insert does and both are marked;
-// the attribution's own exception, a rate limit, is not. The split this function makes for
-// itself is the one failure it returns bare without asking markHeadNotStored at all: a name
-// that is not `owner/repo` is malformed in the envelope, so the next delivery of the same
-// envelope carries the same name and would fail on it again.
+// The split, the attribution and the write can fail here, and each failure is marked, or left
+// bare, by what a redelivery of the envelope would do with it (markHeadNotStored,
+// ErrHeadNotStored). The attribution is a read of Postgres before any row is written, so its
+// failure loses the head row exactly as a refused insert does and is marked; the attribution's
+// own exception, a rate limit, is not. The split this function makes for itself is the one
+// failure it returns bare without asking markHeadNotStored at all: a name that is not
+// `owner/repo` is malformed in the envelope, so the next delivery of the same envelope carries
+// the same name and would fail on it again. The canonical name is no read at all
+// (refs.Renames.Canonical), so it cannot fail.
 func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) ([]string, error) {
 	given := payload["repo"]
-	repoFull, err := refs.CanonicalRepo(ctx, in.pool, given)
-	if err != nil {
-		return nil, markHeadNotStored(err)
-	}
+	repoFull := in.attributor.canonical(given)
 	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return nil, err
 	}
-	attributed, err := attributeHead(ctx, in.pool, in.github,
+	attributed, err := in.attributor.attributeHead(ctx, in.pool, in.github,
 		func() (string, error) { return in.github.RepositoryToken(ctx, owner, repo) },
 		attributionFacts{
 			Repo: repoFull, URL: payload["url"], Title: payload["title"], Body: payload["body"],

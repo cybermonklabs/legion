@@ -1,0 +1,46 @@
+{
+  "id": 104,
+  "issue_key": null,
+  "artifact_id": null,
+  "project": "",
+  "seq": 0,
+  "type": "message.answered",
+  "actor": {
+    "kind": "session",
+    "id": "01a145a7-d12b-72c1-9012-ee05ad8612eb",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum d",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor",
+      "tmux": "lorem i",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit amet lorem ips"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-16T17:32:07.403712Z",
+  "payload": {
+    "id": "e884a3bc-ad97-4378-af9f-8e6abd597a95",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem",
+    "author": {
+      "id": "01a145a7-d12b-72c1-9012-ee05ad8612eb",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor",
+        "host": "lor",
+        "pane": "lo",
+        "tmux": "lorem i",
+        "machine": "lorem ipsum d",
+        "session_title": "lorem ipsum dolor sit amet lorem ips"
+      }
+    },
+    "target": "session:01a145a7-d12b-72c1-9012-ee05ad8612eb",
+    "issue_key": null,
+    "created_at": "2026-10-16T17:32:07.403712Z",
+    "deliveries": [],
+    "reply_body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit ame",
+    "in_reply_to": "4f4997d5-804a-4e36-9c03-559a21dd6178",
+    "broadcast_id": null,
+    "thread_target": "session:01a145a7-d12b-72c1-9012-ee05ad8612eb"
+  }
+}

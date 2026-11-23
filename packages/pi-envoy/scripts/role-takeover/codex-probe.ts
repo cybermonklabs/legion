@@ -76,6 +76,11 @@ if (!envoy.enabled)
 if ("off" in envoy.inbound) {
   usage(`the plugin's settings take no inbound messages there: ${envoy.inbound.off}`);
 }
+if (!("natsCredential" in envoy.inbound)) {
+  usage(
+    `the plugin's settings take inbound messages through the listener's relay socket there (${envoy.inbound.relaySetting} is listener), and natsprobe probes NATS`
+  );
+}
 const kind = envoy.inbound.natsCredential.kind;
 const said =
   kind === "broker"

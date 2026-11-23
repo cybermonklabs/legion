@@ -1,0 +1,11 @@
+{
+  "kind": "message",
+  "id": "cf315d9b-818b-4e42-9392-5c7340e832d2",
+  "issue_key": "ACME-1",
+  "title_or_body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+  "options": null,
+  "answer": null,
+  "spec_artifact_id": null,
+  "spec_version": null,
+  "body_truncated": null
+}

@@ -69,8 +69,9 @@ const server = Bun.serve({
         advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
       });
     }
+    // A refusal, so a write this stub has no route for is answered once and never asked again.
     record();
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 400 });
   },
 });
 afterAll(() => server.stop(true));

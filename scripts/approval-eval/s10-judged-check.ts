@@ -16,7 +16,7 @@ Reads one outcome file of the judged stage on standard input and prints, on one 
 whether the analysis's parser refuses it: {"refused": null} or {"refused": "<reason>"}.`;
 
 /** Why `judgedOutcomeOf` refuses `text` as the outcome at `path`, or null where it reads it. */
-export function refusalOf(text: string, path: string): string | null {
+function refusalOf(text: string, path: string): string | null {
   try {
     judgedOutcomeOf(text, path);
     return null;

@@ -53,6 +53,38 @@ export const ACTOR_TOKEN_TYPE_MACHINE = "urn:envoy:params:oauth:token-type:machi
  *  proved, and is presented as `Authorization: DPoP <token>` beside a proof of that key. */
 export const TOKEN_TYPE_DPOP = "DPoP";
 
+/** The `subject_token_type` a machine login's own access token is traded under: RFC 8693's own
+ *  name for an access token (`oauthwire.SubjectTokenTypeAccessToken`), which a device login
+ *  presents with no actor, since the login already names the person who approved it. */
+export const SUBJECT_TYPE_ACCESS = "urn:ietf:params:oauth:token-type:access_token";
+
+/** The broker's RFC 8628 device authorization endpoint, where a machine login starts. */
+export const DEVICE_AUTHORIZATION_PATH = "/v1/oauth/device_authorization";
+
+/** RFC 8628's own grant name, under which a machine polls its device code. */
+export const GRANT_TYPE_DEVICE_CODE = "urn:ietf:params:oauth:grant-type:device_code";
+
+/** RFC 6749's refresh grant, under which a machine login's refresh token mints its next access
+ *  token and is rotated. */
+export const GRANT_TYPE_REFRESH = "refresh_token";
+
+/** The OAuth client a machine logs in as, and refreshes its login as (`oauthwire.ClientID`). */
+export const MACHINE_LOGIN_CLIENT_ID = "agent-secrets-helper";
+
+/** The one scope a machine login asks for and is granted (`oauthwire.Scope`). */
+export const MACHINE_LOGIN_SCOPE = "machine";
+
+/** The `typ` of the credential-request object a machine login signs (`record.RequestTyp`), which
+ *  the broker's verifier refuses under any other `typ`. */
+export const REQUEST_OBJECT_TYPE = "agent-secrets-request+jwt";
+
+/** The one authorization detail a machine login's request object carries
+ *  (`record.KindLauncherCredential`), naming the machine's host. */
+export const LAUNCHER_CREDENTIAL_DETAIL = "launcher_credential";
+
+/** How long past its `iat` a request object may be good for (`record.maxRequestLifetime`). */
+export const REQUEST_OBJECT_LIFETIME_SECONDS = 600;
+
 /** Followed by a colon, begins the `error_description` of the broker's `invalid_grant` for a pod
  *  whose session no registration names yet (`oauthwire.PodSessionNotRegistered`): a refusal of
  *  the broker's state that a later trade cures, which a client trades again on rather than stop. */

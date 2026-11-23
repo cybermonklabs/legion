@@ -8,11 +8,10 @@
 // write ends.
 //
 // The rule the table holds: once an attempt may have landed, only a 2xx whose body was read whole
-// and that Dispatch's keyed layer answered, or a refusal the keyed layer judged for the write's key
-// (the key echoed back), settles the write. Every other way it ends — any other answer, a failure,
-// the deadline, the caller's stop, running out of retries or of time — is
-// `DispatchWriteUnsettledError` carrying the key. Before anything may have landed, a write that ends
-// is told the event's own error: the refusal, the transport's failure, the credential's, the
+// or a final refusal settles the write. Every other way it ends — any other answer, a failure, the
+// deadline, the caller's stop, running out of retries or of time — is
+// `DispatchWriteUnsettledError` carrying the key. Before anything may have landed, a write that
+// ends is told the event's own error: the refusal, the transport's failure, the credential's, the
 // deadline's; but where the deadline or the caller's stop ends the wait after a credential that
 // could not present, the credential's failure, since it is why nothing was sent.
 //
@@ -33,19 +32,23 @@ export type WriteEvent =
   /** A 2xx whose body was read whole: Dispatch ran the write, or replayed the answer it stored
    *  under the key. */
   | "applied"
-  /** A non-2xx the keyed layer judged for the key (the key echoed back) and that a repeat cannot
-   *  change: `422 KEY_REUSED`, `409 KEY_COMMITTED`, a validation refusal. */
+  /** A non-2xx final refusal, settled even after a possible landing: an answer marked
+   *  `Idempotency-Replayed: ?1` (a stored or a recovery replay), `409 KEY_COMMITTED`,
+   *  `422 KEY_REUSED` echoing exactly this request's key (every attempt of a call carries its
+   *  bytes, so a key held under another digest was claimed by no attempt of it), or a fresh
+   *  answer echoing exactly this request's key with a 4xx Dispatch stores (not 401, 408 or 429)
+   *  and none of `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. It holds once every replica
+   *  runs `b1c42d1d7d`; an older one could land an attempt unkeyed. */
   | "judged"
-  /** A non-2xx nothing judged for the key and not asked again after: a page something in
-   *  Dispatch's place wrote, a refusal Dispatch's auth made before its keyed layer ran (`401`,
-   *  `403 READ_ONLY_TOKEN`), a second dead token, a 1xx. */
+  /** A non-2xx answer without that proof: a page, a refusal made before the key claim (none
+   *  echoes the key), an answer echoing another key, a second dead token, or a 1xx. */
   | "unjudged"
   /** A 3xx, `304` included. Never followed: a 301, 302 or 303 would turn the POST into a GET,
    *  and a 307 or 308 would send it again to another origin without its credential. */
   | "redirect"
-  /** A 2xx that carried no key back, from a Dispatch this process knows runs the keyed layer,
-   *  whose every answer to a keyed write carries it: not Dispatch's answer to this write (a
-   *  captive portal's or a proxy's own page), so it says nothing of whether the write ran. */
+  /** A 2xx that is no Dispatch answer: a captive portal's or proxy's empty or non-JSON page, or
+   *  one without the write's key after an earlier answer of the call carried it back, so it says
+   *  nothing of whether the write ran. */
   | "foreign-2xx"
   /** A 2xx whose body broke off before it was read whole (a reset mid-body): Dispatch answered,
    *  and asked again under the key it replays what it stored. */
@@ -95,7 +98,6 @@ export type WriteEvent =
   /** The caller's stop ended a pause, a wait or a presentation: nothing in flight. */
   | "cancelled"
   /** No ask is left after an event that asks again: the attempts or the time are spent, the
-   *  Dispatch is not known to run the keyed layer (a repeat there would be a second write), the
    *  rolling-release schedule is spent, or the client asks no route again (`retryNoRoute: false`). */
   | "exhausted";
 

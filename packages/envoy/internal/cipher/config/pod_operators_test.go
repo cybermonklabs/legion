@@ -190,7 +190,7 @@ func mappedAccountRefusalCases(t *testing.T) []mappedAccountRefusalCase {
 			},
 			reachable: func(cfg Config) (string, bool) {
 				return "the NATS auth service runs, and BROKER_NATS_SERVICES names " + adaAccount,
-					cfg.NATS.Enabled() && cfg.NATS.Services == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount] == adaLoginService
+					cfg.NATS.Enabled() && entryTexts(cfg.NATS.Services) == "daemon/-/*="+adaAccount && cfg.ServiceLogins[adaAccount] == adaLoginService
 			},
 			names: []string{"the BROKER_NATS_SERVICES entry " + strconv.Quote("daemon/-/*="+adaAccount) + " names it"},
 		},

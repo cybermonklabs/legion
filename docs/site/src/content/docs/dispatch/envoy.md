@@ -443,11 +443,14 @@ after the claim was written, before any registration that states no process has 
 any process of the session, not only the one that took the role; after such a renewal no
 registration takes it. A release
 that loses its conditional delete to a record written since is not reported as a release: the
-claim is read again, a record still naming that same session and that same process is its own
-holder's renewal, and the delete goes out again at the revision that renewal left, three
-deletes in all. A claim renewed under every one of them is left standing and fails the request
-naming the role, so a client that is handing a role back sends the hand-back again rather than
-leaving the role held while its own registrations renew the claim.
+claim is read again, a record still naming that same session and that same process, and carrying
+the same `grant_id`, is its own holder's renewal, and the delete goes out again at the revision
+that renewal left, three deletes in all. A claim renewed under every one of them is left standing
+and fails the request naming the role, so a client that is handing a role back sends the hand-back
+again rather than leaving the role held while its own registrations renew the claim. A claim
+granted again since the release read the claim, to any process, the one the release states
+included, and in any millisecond, is no claim the release read: it is left standing, as the
+hand-back's mark leaves it.
 
 Dispatch judges a role route's holder by the same two windows, and both processes carry the same
 values: give every listener of a deployment and Dispatch's server the same
@@ -532,9 +535,9 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_NATS_SOCKS5_PROXY` | A SOCKS5 proxy, as `host:port` (for example `127.0.0.1:1055`), that every NATS connection goes through, each server's host name handed to the proxy unresolved. Needs `ENVOY_ALLOW_REMOTE_NATS=1`, since the proxy decides which server a connection reaches. |
 | `ENVOY_LISTEN_HOST`, `PORT` | Where to listen. Defaults: `127.0.0.1` and `9020`. |
 | `ENVOY_API_TOKEN` | The bearer token `/v1` callers must send. |
-| `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` | Also accept Kubernetes service-account tokens from that issuer for that audience. Set both or neither. |
+| `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` | Also accept Kubernetes service-account tokens from that issuer for that audience. Set both or neither. The listener reads the issuer's discovery document in the background and when such a token needs it, never before it starts: while the issuer cannot be read, the listener serves everything else and answers such a token `503` with `Retry-After`, so its caller tries again. A listener started then still becomes ready, so watch `/healthz`'s `oidc` field or the `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` gauge, which read `false` and `0` until the issuer is read. |
 | `ENVOY_OIDC_ACCOUNTS` | The service accounts whose tokens the OIDC pair admits, as `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces. Unset or empty, every account the issuer signs for is admitted; a value that names no account, only spaces or commas, refuses startup, and so does a stray comma that leaves an entry empty. Any pod of a cluster can get a token for any audience, so set it on a listener that takes no shared token. |
-| `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. |
+| `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. Google's discovery document is read as the issuer's above: while it cannot be read, such a token is answered `503` and the listener serves everything else, and `/healthz`'s `google` field and the gauge's `issuer="google"` series report it. |
 | `ENVOY_DISPATCH_PRINCIPAL` | Dispatch's own account: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. Only a send whose token proves this account may carry `role`, the role a Dispatch message for a `role:` route is sent for; any other caller that sends `role` is refused `403`, and so is every caller while this is unset. When the role has moved to another session by the time such a send arrives, the listener keeps the message for the role's holder and answers `202` with `kept`. A value no configured pair could prove refuses startup. |
 | `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that a listener with no bearer serves `/v1` to besides loopback. Set it to each name clients reach such a listener by, such as a forward to it. |
 | `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream and its buckets with this many copies and raises one it finds with fewer, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
@@ -568,10 +571,11 @@ without case.
 
 `/metrics` counts every `/v1` request the listener admits in `envoy_listener_requests_total`, by
 `credential` — `shared_token`, `none` (a listener with no bearer, which admits a request with no
-credential), `oidc`, `google` or `broker` — and by `path`, the route that served it. A request
-admitted on the shared token or with no credential also logs a warning, at most once a minute
-each, naming the route and the caller's address, so callers that still use either can be found
-and moved to a token of their own.
+credential), `none_broker_token` (that listener, taking no broker token, admitting a request that
+presents one, unverified), `oidc`, `google` or `broker` — and by `path`, the route that served it.
+A request admitted on the shared token, with no credential or on an unverified broker token also
+logs a warning, at most once a minute each, naming the route and the caller's address, so callers
+that still use one of them can be found and moved to a credential the listener verifies.
 
 Raising a bucket to `ENVOY_NATS_REPLICAS` copies is an update of the bucket's stream, so the
 listener's NATS user needs `$JS.API.STREAM.UPDATE.KV_<bucket>` for each of its buckets beside the
@@ -762,7 +766,7 @@ install it, what each component deploys and which settings it sets.
 | `200` `starting` | The listener is still binding its durable consumer. |
 | `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
 | `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Before the first full read completes the view answers no read, so the answer is then `role claim view unavailable`. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
-| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. |
+| `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. While that lasts, the listener's self-health check logs `self-health probe failed` every 30 seconds, and logs `self-health recovered` once the lane is back; it never restarts the listener for it. An alert should match the line's `msg`: its `error` reads `role lane subscription inactive` alone only while nothing else fails. When the NATS server refused the lane's subscription on a connection that stays up, as a configuration reload that takes the grant away does, each check sends the subscription again, in the shared queue group and then in the machine's, as the lane's start does. So a reload that gives the grant back brings the lane back with no restart, and one that takes away only the shared group's grant leaves the lane in the machine's group. While the grant stays missing, each check costs one subscription, one refusal from the server and one `envoy nats async error` line in each of the two groups, every 30 seconds. |
 
 `role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
 every role claim from NATS again one minute after each full read completes, and each such read

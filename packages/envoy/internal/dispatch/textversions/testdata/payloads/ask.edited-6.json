@@ -1,0 +1,91 @@
+{
+  "id": 7164,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 35,
+  "type": "ask.edited",
+  "actor": {
+    "kind": "session",
+    "id": "01a156a9-ff4f-70c5-8066-2cd88e4d3ed7",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit",
+      "cwd": "lore",
+      "session_title": "lorem ipsum dolor sit amet "
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-20T17:11:44.442636Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "author": {
+      "id": "01a156a9-ff4f-70c5-8066-2cd88e4d3ed7",
+      "kind": "session",
+      "origin": {
+        "cwd": "lore",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit",
+        "session_title": "lorem ipsum dolor sit amet "
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-10-20T17:09:12.188538Z",
+    "edited_at": "2026-10-20T17:11:44.442636Z",
+    "edited_by": {
+      "id": "01a156a9-ff4f-70c5-8066-2cd88e4d3ed7",
+      "kind": "session",
+      "origin": {
+        "cwd": "lore",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit",
+        "session_title": "lorem ipsum dolor sit amet "
+      }
+    },
+    "id": "d91e771f-10fb-419b-b2db-d60758b5009f",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 7151,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ",
+        "id": "b2",
+        "label": "lorem ipsum dolo"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum do",
+        "id": "b3",
+        "label": "lorem ipsum dolor sit amet lorem ipsum dolor si"
+      }
+    ],
+    "previous": {
+      "multiple": false,
+      "options": [
+        {
+          "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet ",
+          "label": "lorem ipsum dolo"
+        },
+        {
+          "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit",
+          "label": "lorem ipsum dolor sit amet lorem ipsum dolor si"
+        }
+      ],
+      "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+      "urgency": "high"
+    },
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum ",
+    "referenced_by_count": 2,
+    "references_changed": [
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ],
+    "revision": 1,
+    "state": "open",
+    "urgency": "high"
+  }
+}

@@ -75,7 +75,7 @@ func heldChildHarness(t *testing.T) (*harness, []intake.Handler, *statusRecorder
 // written at the linger's start now, and the hand-over is decided at its end from the member's
 // own state (the workflow's unfinishedHandOvers).
 func TestARerunUnderAReopenedRootIsNotTakenForAStaleHandOver(t *testing.T) {
-	h, handlers, _, logs := heldChildHarness(t)
+	h, handlers, statuses, logs := heldChildHarness(t)
 	ctx := context.Background()
 	apply := func(id string, fact intake.Fact) {
 		t.Helper()
@@ -105,11 +105,9 @@ func TestARerunUnderAReopenedRootIsNotTakenForAStaleHandOver(t *testing.T) {
 		t.Fatalf("the reopened root = %#v, want it re-admitted at generation 2, no longer lingering", root)
 	}
 
-	// In the new run its architect starts the child over: park_child, then rerun_child.
+	// In the new run its architect starts the child over: backlog, then rerun_child.
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
-	if recorder := h.request(http.MethodPost, "/legion/v1/children/park", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
-		t.Fatalf("park = %d %s, want 200", recorder.Code, recorder.Body)
-	}
+	ownersBacklog(t, h, handlers, statuses, architect, statusChild)
 	if recorder := h.request(http.MethodPost, "/legion/v1/children/rerun", map[string]any{"grantId": architect.grant(t), "issue": statusChild}, nil); recorder.Code != http.StatusOK {
 		t.Fatalf("rerun = %d %s, want 200", recorder.Code, recorder.Body)
 	}

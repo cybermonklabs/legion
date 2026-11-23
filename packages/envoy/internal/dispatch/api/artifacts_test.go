@@ -923,14 +923,13 @@ func TestARefusedFileUploadLeavesNoObjectInTheFileStore(t *testing.T) {
 }
 
 // Uploads at once to one owner that holds no plan yet, some named `plan.md` and the rest `plan-md`,
-// leave no reference, a name or a slug, that names two artifacts. Which name
+// are all stored, and leave no reference, a name or a slug, that names two artifacts. Which name
 // lands first decides whether they make one artifact or two: `plan-md` first holds that name and
 // slug, and `plan.md` then gets `plan-md-2`. Neither upload may look its artifact up while the
 // other is still creating one, which a project's upload, with no row to lock as an issue's has,
 // needs its own lock for. Only the first upload of each name creates: one that reaches an owner
-// already holding the name is a replacement, and names no token here, so it is refused
-// `400 PRECONDITION_REQUIRED` and writes nothing, which leaves what this test measures - the
-// artifact rows - as a taken upload does.
+// already holding the name is a replacement, which names no token here and is taken unchecked
+// (INFRA-4980).
 func TestConcurrentUploadsUnderOneNameAndItsSlugLeaveNoReferenceNamingTwo(t *testing.T) {
 	for _, owner := range []string{"issue", "project"} {
 		t.Run(owner, func(t *testing.T) {
@@ -955,9 +954,8 @@ func TestConcurrentUploadsUnderOneNameAndItsSlugLeaveNoReferenceNamingTwo(t *tes
 			close(start)
 			for range uploads {
 				response := awaitResponse(t, responses)
-				code, _ := refusalOf(t, response)
-				if response.Code != http.StatusCreated && !(response.Code == http.StatusBadRequest && code == "PRECONDITION_REQUIRED") {
-					t.Fatalf("concurrent upload: status=%d body=%s, want 201 or the 400 of a replacement naming no token", response.Code, response.Body.String())
+				if response.Code != http.StatusCreated {
+					t.Fatalf("concurrent upload: status=%d body=%s, want 201", response.Code, response.Body.String())
 				}
 			}
 

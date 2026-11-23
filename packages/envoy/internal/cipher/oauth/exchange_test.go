@@ -20,6 +20,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/cipher/dispatchread"
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
@@ -652,6 +653,27 @@ func TestADevBoxSessionExchangesItsMachineToken(t *testing.T) {
 	if answer.Thumbprint != thumbprint(t, key) {
 		t.Errorf("Introspect answered thumbprint %q, want the machine's own key %q", answer.Thumbprint, thumbprint(t, key))
 	}
+}
+
+// TestADevBoxTradeNamingAWildcardSessionIsRefused: a machine login's trade that names the session
+// *, > or one holding either is refused 400 invalid_request naming the unusable session, and no
+// token is minted: a token of such a session would make a relay socket subscribe a wildcard over
+// every session's relay subject. Control: the same login's trade naming ada-devbox is minted.
+func TestADevBoxTradeNamingAWildcardSessionIsRefused(t *testing.T) {
+	f := newExchangeFixture(t, func(*oauth.Config) {})
+	key := newKey(t)
+	machineToken := f.devBoxToken(t, key, person)
+	for _, session := range []string{"*", ">", "ada-*"} {
+		status, body := f.exchange(t, exchangeForm(machineToken, oauthwire.SubjectTokenTypeAccessToken, session), key)
+		description, _ := body["error_description"].(string)
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || !strings.Contains(description, exchange.ErrSessionInvalid.Error()) {
+			t.Errorf("a trade naming the session %q = %d %v, want 400 invalid_request naming %q", session, status, body, exchange.ErrSessionInvalid)
+		}
+		if _, minted := body["access_token"]; minted {
+			t.Errorf("a trade naming the session %q minted a token", session)
+		}
+	}
+	f.exchanged(t, exchangeForm(machineToken, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
 }
 
 // tokenAnswer is a token endpoint answer read off a goroutine, where a test may not fail.
@@ -1396,7 +1418,7 @@ func (a *fakeAccess) Access(_ context.Context, key, who string) (projectaccess.A
 		return projectaccess.Answer{}, errors.New("dispatch could not be reached")
 	}
 	if a.refused {
-		return projectaccess.Answer{}, fmt.Errorf("%w: dispatch answered 403", projectaccess.ErrBrokerRefused)
+		return projectaccess.Answer{}, fmt.Errorf("%w: dispatch answered 403", dispatchread.ErrBrokerRefused)
 	}
 	if !slices.Contains(a.held, key) {
 		return projectaccess.Answer{}, projectaccess.ErrProjectNotFound
@@ -1412,7 +1434,7 @@ func (a *fakeAccess) MemberKind(_ context.Context, who string) (string, error) {
 		return "", errors.New("dispatch could not be reached")
 	}
 	if a.refused {
-		return "", fmt.Errorf("%w: dispatch answered 403", projectaccess.ErrBrokerRefused)
+		return "", fmt.Errorf("%w: dispatch answered 403", dispatchread.ErrBrokerRefused)
 	}
 	if kind, held := a.kinds[who]; held {
 		return kind, nil

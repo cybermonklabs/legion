@@ -22,9 +22,9 @@ import (
 //go:embed private-names.toml
 var ruleFile string
 
-// maskedBy are the content rules a path component is masked by, the three
-// check-private-names.sh's own `names` reads (its lines 140-143): the deployment repository, the
-// company, and the company's first word as a proper noun.
+// maskedBy are the content rules a path component is masked by, the three that
+// check-private-names.sh's named_parts reads, under the same names: the deployment repository,
+// the company, and the company's first word as a proper noun.
 var maskedBy = []string{"repository_rule", "company_rule", "proper_noun_rule"}
 
 // rules is the compiled rule file: one detector every record of every call is scanned with, and
@@ -121,8 +121,9 @@ func (r *rules) scan(ctx context.Context, records []Record) ([]string, error) {
 }
 
 // mask is label with each slash-separated component the repository or company rules match
-// replaced by "<name>", the masking .github/scripts/check-private-names.sh does (its lines
-// 145-154). A label that names no file has no component to mask and comes back as it was.
+// replaced by "<name>", the masking .github/scripts/check-private-names.sh does (its named_parts
+// function, which its mask applies). A label that names no file has no component to mask and comes
+// back as it was.
 func (r *rules) mask(label string) string {
 	parts := strings.Split(label, "/")
 	for i, part := range parts {

@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,7 @@ const (
 	typeGoogleLogin          = "google-login"
 	typeGoogleServiceAccount = "google-service-account"
 	typeAzureLogin           = "azure-login"
+	typeAnthropicFederation  = "anthropic-federation"
 )
 
 // Value is a type secret's stored value as ParseValue decodes it: the field of the type it was
@@ -27,6 +29,7 @@ type Value struct {
 	GoogleLogin          GoogleLoginValue
 	GoogleServiceAccount GoogleServiceAccountValue
 	AzureLogin           AzureLoginValue
+	AnthropicFederation  AnthropicFederationValue
 }
 
 // GitHubAppValue is a github-app secret's value: the App's id, a run of ASCII digits, and its
@@ -57,8 +60,22 @@ type AzureLoginValue struct {
 	ClientID string
 }
 
-// githubAppSecret, googleLoginSecret, googleServiceAccountSecret and azureLoginSecret are the
-// JSON objects each type stores, as ParseValue decodes them.
+// AnthropicFederationValue is an anthropic-federation secret's value: the Anthropic
+// organization's UUID, the federation rule (fdrl_...) the exchange asks Anthropic to evaluate, the
+// rule's target Anthropic service account (svac_...), the Google service account whose identity
+// token the exchange presents (an address ValidServiceAccountEmail accepts), and the workspace
+// (wrkspc_...) to scope the token to, empty where the rule is enabled for one workspace alone, in
+// which case the exchange names none (Anthropic's WIF reference, "Token exchange request").
+type AnthropicFederationValue struct {
+	OrganizationID   string
+	FederationRuleID string
+	ServiceAccountID string
+	ServiceAccount   string
+	WorkspaceID      string
+}
+
+// githubAppSecret, googleLoginSecret, googleServiceAccountSecret, azureLoginSecret and
+// anthropicFederationSecret are the JSON objects each type stores, as ParseValue decodes them.
 type (
 	githubAppSecret struct {
 		AppID      string `json:"app_id"`
@@ -77,10 +94,17 @@ type (
 		TenantID string `json:"tenant_id"`
 		ClientID string `json:"client_id"`
 	}
+	anthropicFederationSecret struct {
+		OrganizationID   string `json:"organization_id"`
+		FederationRuleID string `json:"federation_rule_id"`
+		ServiceAccountID string `json:"service_account_id"`
+		ServiceAccount   string `json:"service_account"`
+		WorkspaceID      string `json:"workspace_id"`
+	}
 )
 
 // ParseValue is the one reader of a type secret's stored value: it decodes value as type stores
-// it and refuses every value that type's minter cannot mint from. The four minters call it
+// it and refuses every value that type's minter cannot mint from. The five minters call it
 // before anything else they do with the value, and agent-secrets calls it before it writes one,
 // so a value one refuses the other refuses too, in the same words.
 //
@@ -91,6 +115,10 @@ type (
 //   - google-service-account: a JSON object whose service_account is one account
 //     ValidServiceAccountEmail accepts.
 //   - azure-login: a JSON object naming a tenant_id and a client_id that are not white space alone.
+//   - anthropic-federation: a JSON object whose organization_id is a UUID, whose
+//     federation_rule_id is an fdrl_ id and service_account_id an svac_ id, whose service_account
+//     is one account ValidServiceAccountEmail accepts, and whose workspace_id, when it names one,
+//     is a wrkspc_ id.
 //
 // Any other type is refused. Every error wraps ErrMintStoredValue and never holds a byte of the
 // value: encoding/json's syntax errors quote the byte they stopped at, so no decode's own error
@@ -109,6 +137,9 @@ func ParseValue(secretType, value string) (Value, error) {
 	case typeAzureLogin:
 		parsed, err := parseAzureLogin(value)
 		return Value{AzureLogin: parsed}, err
+	case typeAnthropicFederation:
+		parsed, err := parseAnthropicFederation(value)
+		return Value{AnthropicFederation: parsed}, err
 	default:
 		return Value{}, fmt.Errorf("%w: %q is no type a minter reads", ErrMintStoredValue, secretType)
 	}
@@ -170,4 +201,40 @@ func parseAzureLogin(value string) (AzureLoginValue, error) {
 		return AzureLoginValue{}, fmt.Errorf("%w: Azure login secret must name tenant_id and client_id", ErrMintStoredValue)
 	}
 	return AzureLoginValue{TenantID: secret.TenantID, ClientID: secret.ClientID}, nil
+}
+
+// The shapes of an anthropic-federation value's Anthropic ids: the organization's UUID, and the
+// tagged ids of a federation rule, a service account and a workspace, each its prefix and then
+// ASCII letters and digits. A workspace_id of "default", which Anthropic still takes for the
+// Default Workspace, is refused: Anthropic's reference names it deprecated and asks for the
+// workspace's own wrkspc_ id.
+var (
+	anthropicOrganizationID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	anthropicRuleID         = regexp.MustCompile(`^fdrl_[A-Za-z0-9]+$`)
+	anthropicServiceAccount = regexp.MustCompile(`^svac_[A-Za-z0-9]+$`)
+	anthropicWorkspaceID    = regexp.MustCompile(`^wrkspc_[A-Za-z0-9]+$`)
+)
+
+// parseAnthropicFederation is ParseValue for an anthropic-federation value.
+func parseAnthropicFederation(value string) (AnthropicFederationValue, error) {
+	var secret anthropicFederationSecret
+	if json.Unmarshal([]byte(value), &secret) != nil {
+		return AnthropicFederationValue{}, fmt.Errorf("%w: decode Anthropic federation secret: not a JSON object of its fields", ErrMintStoredValue)
+	}
+	switch {
+	case !anthropicOrganizationID.MatchString(secret.OrganizationID):
+		return AnthropicFederationValue{}, fmt.Errorf("%w: Anthropic federation secret must name its organization's UUID in organization_id", ErrMintStoredValue)
+	case !anthropicRuleID.MatchString(secret.FederationRuleID):
+		return AnthropicFederationValue{}, fmt.Errorf("%w: Anthropic federation secret must name one fdrl_ rule in federation_rule_id", ErrMintStoredValue)
+	case !anthropicServiceAccount.MatchString(secret.ServiceAccountID):
+		return AnthropicFederationValue{}, fmt.Errorf("%w: Anthropic federation secret must name one svac_ service account in service_account_id", ErrMintStoredValue)
+	case !ValidServiceAccountEmail(secret.ServiceAccount):
+		return AnthropicFederationValue{}, fmt.Errorf("%w: Anthropic federation secret must name one <id>@<project>.iam.gserviceaccount.com account in service_account", ErrMintStoredValue)
+	case secret.WorkspaceID != "" && !anthropicWorkspaceID.MatchString(secret.WorkspaceID):
+		return AnthropicFederationValue{}, fmt.Errorf("%w: Anthropic federation secret's workspace_id, when it names one, is one wrkspc_ workspace", ErrMintStoredValue)
+	}
+	return AnthropicFederationValue{
+		OrganizationID: secret.OrganizationID, FederationRuleID: secret.FederationRuleID,
+		ServiceAccountID: secret.ServiceAccountID, ServiceAccount: secret.ServiceAccount, WorkspaceID: secret.WorkspaceID,
+	}, nil
 }

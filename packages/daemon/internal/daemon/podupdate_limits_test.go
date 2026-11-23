@@ -95,9 +95,10 @@ func (r *fleetRig) awaitRounds(what string, want ...string) {
 
 // awaitRoundEnded waits for the round of issue to be gone from every claim of it, which the
 // replacement posts to each of them (endPodUpdates). It is what a test waits for before it
-// sweeps again: a sweep that read that end half landed would find the round open and complete,
-// and would ask its workers again over the claims the end has already reached, which puts the
-// round back on a claim that had left it (podupdate_test.go's awaitSwept).
+// sweeps again, so the sweep reads the claims as the end leaves them. A sweep that read that end
+// half landed reads the round as over (podUpdateEnded): it decides nothing of that round again,
+// and the issue's next round opens no sooner than the sweep after the end has landed
+// (podupdate_test.go's awaitSwept).
 func (r *fleetRig) awaitRoundEnded(issue string) {
 	r.t.Helper()
 	testwait.Eventually(r.t, "the round of "+issue+" to end on every claim of it", func() bool {

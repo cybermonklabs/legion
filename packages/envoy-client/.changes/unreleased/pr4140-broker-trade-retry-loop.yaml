@@ -42,16 +42,13 @@ body: |-
   flight; a refused connection or a name that did not resolve reached nothing. A 2xx's body is
   read inside its attempt: a body the deadline or the caller's stop ends is that stop in flight,
   and a body that breaks off or is not the JSON its `Content-Type` says is asked again under the
-  key, paced by the `Retry-After` its headers carried and with the key they echoed read as
-  Dispatch's keyed layer. Once an attempt may have landed, only a 2xx whose body was read whole,
-  or a refusal Dispatch's keyed layer judged for the key, settles the write. A 2xx that is no
-  answer of Dispatch's settles nothing, wherever it comes: one whose body is empty or not typed
-  JSON (a captive portal's 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205),
-  whatever the process knows, and one that carries no key back from a Dispatch this process
-  knows runs the keyed layer. Every other end — a 3xx, a gateway's
-  page, Dispatch's auth refusal (a 401, `403 READ_ONLY_TOKEN`, a second `401
-  BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the deadline,
-  the caller's stop, or no attempt or time left, a 5xx included — is
+  key, paced by the `Retry-After` its headers carried. Once an attempt may have landed, a 2xx
+  whose body was read whole or a final refusal Dispatch decided settles the write. A 2xx that is
+  no answer of Dispatch settles nothing: one whose body is empty or not typed JSON (a captive
+  portal's 200 page; every Dispatch write answers JSON, or a bodiless 204 or 205). Every other
+  end — a 3xx, a gateway's page, Dispatch's auth refusal (a 401, `403 READ_ONLY_TOKEN`, a second
+  `401 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the
+  deadline, the caller's stop, or no attempt or time left, a 5xx included — is
   `DispatchWriteUnsettledError`, carrying the write's key as `key`, with that failure as its
   cause. Before, a 5xx on every attempt, a 3xx, a cancellation or a refusal after a landing could
   each reach the caller as a plain refusal, which reads as nothing written and invited a resend
@@ -65,14 +62,10 @@ body: |-
   sign-out, a sign-in or a session switch between two attempts) is never sent, and the write ends
   unsettled with its key. Dispatch keys a write per person or service, so a repeat as another
   person or as the machine could run it twice; the client's pin is stricter, holding the session
-  too, since it cannot tell whether another session trades as the same person. Before
-  anything of a write may have landed (a refused connection, a 408 or 429, a credential whose trade
-  goes on), it is asked again without asking `/healthz` first, since a repeat then is no second
-  write; before, the probe came first, and a fail-fast credential, which failed the probe's
-  presentation too, ended the write there. The `/healthz` probe now presents no credential, since
-  Dispatch serves it outside its API, so a credential failing at that moment no longer ends a
-  write the keyed layer could take again. No Dispatch or Envoy request follows a redirect any
-  more (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read
+  too, since it cannot tell whether another session trades as the same person. Before anything of a
+  write may have landed (a refused connection, a 408 or 429, a credential whose trade goes on), it is
+  asked again because its repeat is no second write. No Dispatch or Envoy request follows a redirect
+  any more (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read
   as the write's answer, and a 307 or 308 sent it again to another origin. A 3xx is now the
   answer, and its error names the origin its `Location` points at, never its path, query or user
   info; on a first attempt it says nothing reached Dispatch. Every body that is not the server's

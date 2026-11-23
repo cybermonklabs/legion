@@ -1,0 +1,81 @@
+{
+  "id": 119555,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 137,
+  "type": "ask.answered",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-10-30T00:32:25.521133Z",
+  "payload": {
+    "anchor": {
+      "artifact_id": "9dbc8aaf-b4d2-40f6-a1b4-b739cefafcdb",
+      "block_id": "400c3130-3c06-4cc3-8da7-b46b7644c15e",
+      "mark_id": "c7194e1a-0075-4eed-a280-c90df9935fae",
+      "orphaned": false,
+      "quote": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dol",
+      "version": 8
+    },
+    "anchor_artifact": {
+      "project": "ACME",
+      "slug": "lore",
+      "name": "lorem i",
+      "primary": true
+    },
+    "answer": {
+      "at": "2026-10-30T00:32:25.528034648Z",
+      "id": "b4",
+      "selected": [
+        "lorem ips"
+      ],
+      "text": null,
+      "user": "alice@example.com"
+    },
+    "artifact_id": null,
+    "author": {
+      "id": "01a18646-c7e3-73fd-bed3-a394723f904b",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet ",
+        "host": "lor",
+        "machine": "lorem ipsum",
+        "pane": "lore",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum d",
+        "tmux": "lorem ipsum dol"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_id": null,
+    "created_at": "2026-10-29T06:22:13.797115Z",
+    "edited_at": "2026-10-29T07:11:14.434719Z",
+    "id": "c7194e1a-0075-4eed-a280-c90df9935fae",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 105451,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet ",
+        "id": "b2",
+        "label": "lorem ips"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem",
+        "id": "b3",
+        "label": "lorem ipsum do"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor",
+    "referenced_by_count": 0,
+    "revision": 1,
+    "state": "answered",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "urgency": "high"
+  }
+}

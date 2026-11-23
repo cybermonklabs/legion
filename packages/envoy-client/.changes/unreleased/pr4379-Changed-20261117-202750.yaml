@@ -1,0 +1,27 @@
+kind: Changed
+body: |-
+    `DispatchClient` sends a keyed write (a `POST` or `PATCH`) that ended with no definitive answer
+    again under its key whatever the failure says of Dispatch's keyed layer, and asks nothing first:
+    every Dispatch that carries `b1c42d1d7d` runs that layer on every write route, so a repeat is
+    answered from the key and the write lands once. Before, it resent only after an answer that
+    echoed the key in the last five minutes or a `GET /healthz` that said `idempotency_keys: true`
+    within 5 s, and a probe that was refused, timed out or answered no JSON reported a write
+    Dispatch had stored as one that may or may not have taken effect. Once an attempt may have
+    landed, `DispatchServiceError` is thrown only for a final refusal: `Idempotency-Replayed: ?1`
+    (including a recovery replay),
+    `422 KEY_REUSED` echoing exactly this request's key (every attempt of a call carries the same
+    bytes, so a key held under another digest was claimed by no attempt of it), or a fresh answer
+    that echoes exactly this request's key, has a 4xx `storedStatus` keeps (not 401, 408 or 429),
+    and is not `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`; `409 KEY_COMMITTED` stays a
+    landed write. These hold once every Dispatch replica runs `b1c42d1d7d`. Other answers are
+    `DispatchWriteUnsettledError`; its message says Dispatch finishes an attempt it received and to
+    read the write back before sending it again. A gateway page followed by a stored refusal so
+    keeps what each caller reads: the dispatch command's `POSSIBLE_DUPLICATE` candidate list,
+    pi-envoy's typed-input fallback reply, AskGate's `KEY_REUSED` decision-record recovery and
+    `docEdit`'s `TARGET_AMBIGUOUS` candidates. A 2xx that lacks exactly the request's key after an
+    earlier answer of the same call carried it is still no answer of Dispatch's and leaves the
+    write `DispatchWriteUnsettledError`; what earlier calls saw no longer counts for it. Writes
+    with no key are unchanged.
+time: 2026-11-17T20:27:50.206250540Z
+custom:
+    Issue: pr4379

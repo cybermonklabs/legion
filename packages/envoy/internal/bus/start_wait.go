@@ -391,7 +391,8 @@ func limitedRead[T any](ctx context.Context, limit *readLimit, read func() (T, e
 // first send is answered only at the stream's first leader election, seconds after it is sent.
 // Its callers are the reads a start makes: EnsureKeyValue's lookup, its read of a found bucket's
 // stream and its handle open (wrapKeyValue), the stream ensure's read (ensureStreamWithConfig),
-// SetKeyValueMaxAge's read and updateStream's read after an update that drew no answer.
+// SetKeyValueMaxAge's read and updateStream's read after an update that drew no answer; and the
+// keeper's first read of the stream (keepStream) and of each bucket it raises (raiseReplicas).
 func readAgain[T any](ctx context.Context, request string, limit *readLimit, read func() (T, error)) (T, error) {
 	return sentAgain(ctx, request, func() (T, error) {
 		value, wait, answered, err := limitedRead(ctx, limit, read)

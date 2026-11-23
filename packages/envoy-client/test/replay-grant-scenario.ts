@@ -83,16 +83,18 @@ export async function runReplayGrantScenario(scenario: ReplayGrantScenario): Pro
       .split("\n")
       .some((line) => line.includes("Publish Violation") && line.includes(`"${before}"`));
   let logged = "";
-  const logDeadline = Date.now() + 10_000;
+  // A `performance.now()` reading, as the server's `log` takes it: each `docker logs` call is
+  // killed there too, so a read that hangs fails this step by name.
+  const logDeadline = performance.now() + 10_000;
   try {
     while (!refused(logged)) {
-      if (Date.now() > logDeadline) {
+      if (performance.now() > logDeadline) {
         throw new Error(
           `the server never logged a refused publish to ${before}; arrived there: ${JSON.stringify(arrived)}\n${logged}`
         );
       }
       await Bun.sleep(100);
-      logged = await server.log();
+      logged = await server.log(logDeadline);
     }
     await requester.flush();
     expect(arrived).toEqual([]);

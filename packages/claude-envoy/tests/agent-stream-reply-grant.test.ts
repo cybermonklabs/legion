@@ -16,9 +16,11 @@
 import { afterAll, beforeAll, describe, test } from "bun:test"
 import { natsConnectionOptions } from "@legion/envoy-client/nats-connection"
 import {
-  type NatsServer,
+  NATS_START_HOOK_MS,
+  NATS_STOP_HOOK_MS,
+  natsHookDeadline,
+  natsServerWithConfig,
   sessionGrantConfig,
-  startNatsServerWithConfig,
   useNatsServerDirectory,
 } from "@legion/envoy-client/test/nats-server"
 import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario"
@@ -66,26 +68,24 @@ function silentLink(): { readonly link: ModLink; readonly close: () => void } {
 describe.skipIf(LEGION_E2E !== "1")("the replay answer under a session's own NATS grant", () => {
   const sessionUser = testKeys.createUser()
   const requesterUser = testKeys.createUser()
-  let server: NatsServer | undefined
+  const server = natsServerWithConfig(
+    serverDirectory,
+    sessionGrantConfig({
+      requesterKey: requesterUser.getPublicKey(),
+      sessionID: SESSION,
+      sessionKey: sessionUser.getPublicKey(),
+    }),
+  )
   const open: NatsConnection[] = []
 
-  beforeAll(async () => {
-    server = await startNatsServerWithConfig(
-      serverDirectory,
-      sessionGrantConfig({
-        requesterKey: requesterUser.getPublicKey(),
-        sessionID: SESSION,
-        sessionKey: sessionUser.getPublicKey(),
-      }),
-    )
-  }, 120_000)
+  beforeAll(() => server.start(natsHookDeadline(NATS_START_HOOK_MS)), NATS_START_HOOK_MS)
   afterAll(async () => {
+    const deadline = natsHookDeadline(NATS_STOP_HOOK_MS)
     for (const connection of open) await connection.close()
-    server?.stop()
-  }, 60_000)
+    await server.stop(deadline)
+  }, NATS_STOP_HOOK_MS)
 
   test("answers a replay asked on its own reply prefix, and nothing on nats.go's request inbox", async () => {
-    if (server === undefined) throw new Error("the NATS server did not start")
     const decoder = new TextDecoder()
     const session = await connect({
       ...natsConnectionOptions({

@@ -14,6 +14,8 @@ export type UserPreference =
   | "inbox.folded-groups"
   | "inbox.pane-width"
   | "inbox.thread-order"
+  /** Which of the new issue page's Details sections this reader has closed. */
+  | "issue.margin-sections"
   | "issue.page"
   | "priorities.margin"
   | "project.board-edges"

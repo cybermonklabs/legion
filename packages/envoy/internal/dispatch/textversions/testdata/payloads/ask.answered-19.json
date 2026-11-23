@@ -1,0 +1,74 @@
+{
+  "id": 446813,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 742,
+  "type": "ask.answered",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-11-12T19:07:34.333619Z",
+  "payload": {
+    "anchor": null,
+    "answer": {
+      "at": "2026-11-12T19:07:34.333619Z",
+      "id": "b4",
+      "selected": [],
+      "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+      "user": "alice@example.com"
+    },
+    "artifact_id": null,
+    "asked_of": null,
+    "asked_of_at": null,
+    "asked_of_by": null,
+    "author": {
+      "id": "01a1ce31-8d12-74a0-91fa-85934f05ce2c",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum ",
+        "host": "lor",
+        "machine": "lorem i",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_id": null,
+    "created_at": "2026-11-12T06:27:05.51281Z",
+    "edited_at": null,
+    "id": "4a596aa0-a05d-455a-81b7-43304a09477e",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 418266,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+        "id": "b2",
+        "label": "lorem "
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet l",
+        "id": "b3",
+        "label": "lorem ipsum dolor sit amet "
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore",
+    "referenced_by_count": 0,
+    "references_changed": [
+      {
+        "id": "ffd63df8-a403-4ce7-af2b-d13d99bccad3",
+        "kind": "artifact",
+        "ref": "dispatch://ACME-1"
+      }
+    ],
+    "revision": 2,
+    "state": "answered",
+    "thread_logins": [
+      "alice@example.com"
+    ],
+    "urgency": "high"
+  }
+}

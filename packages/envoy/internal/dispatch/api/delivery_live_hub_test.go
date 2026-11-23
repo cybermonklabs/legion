@@ -87,6 +87,10 @@ type fakeHubClock struct {
 	// beforeArm, when set, runs at each arm, before the timer is placed, until it answers true: a
 	// test's Advance landing between the worker's read of the clock and its arm.
 	beforeArm func() bool
+	// firing counts the timer callbacks that have won their timer's one run and not yet returned,
+	// and returned is signalled as each returns (waitCallbacks).
+	firing   int
+	returned *sync.Cond
 }
 
 type fakeHubTimer struct {
@@ -153,14 +157,51 @@ func (c *fakeHubClock) onArm(f func() bool) {
 	c.beforeArm = f
 }
 
-func (t *fakeHubTimer) fire() {
-	if t.done.CompareAndSwap(false, true) {
-		t.f()
+// returnedLocked is the condition waitCallbacks waits on, made on first use, with c.mu held.
+func (c *fakeHubClock) returnedLocked() *sync.Cond {
+	if c.returned == nil {
+		c.returned = sync.NewCond(&c.mu)
 	}
+	return c.returned
+}
+
+// waitCallbacks returns once no timer callback that has begun is still running. A callback of an
+// earlier arm that has won its timer's one run (fire) can be descheduled before it sends its wake,
+// and a timer's Stop cannot take that run back; a wake it sends after a test read the worker's
+// wakes as spent would wake the worker in place of the timer the test is about.
+func (c *fakeHubClock) waitCallbacks() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for c.firing > 0 {
+		c.returnedLocked().Wait()
+	}
+}
+
+// fire runs the timer's callback once, whether the real timer or an Advance comes first. Its win
+// of that one run and the count of callbacks under way change together under the clock's lock, as
+// Stop's win does, so waitCallbacks sees every callback that has won and not yet returned.
+func (t *fakeHubTimer) fire() {
+	c := t.clock
+	c.mu.Lock()
+	won := t.done.CompareAndSwap(false, true)
+	if won {
+		c.firing++
+	}
+	c.mu.Unlock()
+	if !won {
+		return
+	}
+	t.f()
+	c.mu.Lock()
+	c.firing--
+	c.returnedLocked().Broadcast()
+	c.mu.Unlock()
 }
 
 func (t *fakeHubTimer) Stop() bool {
 	t.real.Stop()
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
 	return t.done.CompareAndSwap(false, true)
 }
 
@@ -2110,8 +2151,11 @@ func TestAPresetViewSendsItsOldestPullRequestLeavingWithoutAReadingTheDatabase(t
 	requireLandsOnGET(t, rig.handler, deliveryLiveTimeline, held, delta, "")
 }
 
+// The clock reads noon UTC (newNoonHubClock) and runs on from there, so the row's run itself
+// crossing a real UTC midnight, which would move the days before the row's own Advance, decides
+// nothing.
 func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing.T) {
-	clock := &fakeHubClock{}
+	clock := newNoonHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
 	conn := newFakeLiveConn()
@@ -2145,14 +2189,56 @@ func TestAPipelineViewMovesItsDaysAtMidnightWithoutReadingTheDatabase(t *testing
 // TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer moves the clock past midnight
 // inside the worker's arm of its timer, after the worker has read the clock and before the timer is
 // placed, where a test's Advance can land when the race detector slows the worker. It moves it at
-// the first arm once the view holds its answer with no wake left pending (the subscribe's mark
-// leaves one the worker's first pass never takes), so only the timer can wake the worker: the
-// expiry the clock already passed is due, so the timer fires and the expiry's delta follows.
+// the first arm once the relay's feed has been applied and the view holds its answer with no wake
+// left pending, so only the timer can wake the worker: the expiry the clock already passed is due,
+// so the timer fires and the expiry's delta follows. The clock reads noon UTC (newNoonHubClock)
+// until then, so the run itself crossing a real UTC midnight decides nothing.
+//
+// The feed is waited for because a generation takes it on a goroutine of its own (seedEvents), so
+// it can reach the intake at any moment until then, and its apply marks every view dirty
+// (applyFeed). Landing after the clock moved, that mark makes the view due as a change rather than
+// as the expiry: a change recompute then sends the moved days and no expiry recompute runs. That
+// recompute reads at the moved clock, so the page is still answered right, but the row then proves
+// nothing about the timer.
+//
+// So the hook is installed only once the feed's apply has made its note, which it makes after its
+// mark: no arm can then ask the hook while the feed is still to come, and no arm can be missed by
+// a hook that saw the mark's wake spent before the note was made. The row then wakes the worker
+// itself, as any mark would, so that the hook is asked. It installs the hook and sends that wake
+// in one hold of the hub's lock, which the hook takes (catchUpNow, then its read of the view)
+// before it can answer: a hook asked in between, by the arm that follows the feed's change
+// recompute, waits for the lock and then finds the row's wake pending, so it answers false, and
+// the row's wake is spent before the clock moves rather than standing in for the timer after it.
+// A wake can also still be on its way from an earlier arm's timer: its callback can have won its
+// timer's one run and be descheduled before it sends, and the worker's Stop of that timer cannot
+// take the run back. Sent after the clock moved, it too would wake the worker in the timer's place.
+// So the hook waits for every such callback to return (waitCallbacks) before it reads the worker's
+// wakes. No timer can begin a run after that: the worker stopped its last timer before this arm,
+// and this arm's timer is placed only once the hook has answered.
+//
+// Each arm at which the hook answers false is followed by another: the view is dirty or
+// computing, so a recompute is due, or a wake is pending. Nothing else the intake can still owe
+// here, a catch-up of the change log after a notification or a connection, marks the view, since
+// the row writes nothing after the generation starts.
 func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testing.T) {
-	clock := &fakeHubClock{}
+	clock := newNoonHubClock()
 	rig := newClockedHubRig(t, clock)
 	seedHubSettings(t, rig.database)
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(nil)))
+	conn.snapshot(t, 5*time.Second, "p")
+
+	// The feed stands behind the server's event horizon, so the wait for it is the horizon's.
+	rig.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
+	// No hub code holds the fake clock's lock while it takes the hub's, and the hook runs outside
+	// the clock's lock (fakeHubClock.At), so the clock's onArm under the hub's lock cannot deadlock.
+	rig.hub.mu.Lock()
 	clock.onArm(func() bool {
+		// catchUpNow returns once the intake has finished whatever it had already taken off its
+		// channels, such as a catch-up under way, so a mark that work made is on the view by the
+		// time the view is read.
+		rig.hub.catchUpNow()
+		clock.waitCallbacks()
 		rig.hub.mu.Lock()
 		g := rig.hub.generation
 		ready := g != nil && len(g.views) == 1 && len(g.wakeWork) == 0
@@ -2168,14 +2254,17 @@ func TestAHubClockMovedBetweenTheWorkersReadAndItsArmStillFiresItsTimer(t *testi
 		}
 		return ready
 	})
-	conn := newFakeLiveConn()
-	rig.hub.Subscribe(conn, subscribeFrame("p", livePipelineView(nil)))
-	conn.snapshot(t, 5*time.Second, "p")
-
-	delta := conn.delta(t, 3*time.Second, "p")
-	rig.waitFor(t, 0, time.Second, "the expiry's recompute", func(note deliveryHubNote) bool {
+	g := rig.hub.generation
+	signal(g.wakeWork)
+	rig.hub.mu.Unlock()
+	// The expiry's recompute is what the row waits for, with the test binary's deadline as its only
+	// bound. It sends its delta, when it has one, before it makes its note (expire, finishRecompute),
+	// so the bound of the read below decides only how soon the row reports an expiry that sent
+	// nothing.
+	rig.waitFor(t, 0, testwait.Bounded(t, 24*time.Hour, time.Second), "the expiry's recompute", func(note deliveryHubNote) bool {
 		return note.what == "recompute end" && note.cause == deliveryCauseExpiry
 	})
+	delta := conn.delta(t, 3*time.Second, "p")
 	var days []string
 	if err := json.Unmarshal(delta.Set["days"], &days); err != nil {
 		t.Fatalf("decode the delta's days %s: %v", delta.Set["days"], err)

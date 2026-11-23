@@ -25,8 +25,9 @@ func slackFixture(t *testing.T, rows map[string]projectaccesstest.Row) (*Machine
 	m, enr, key, _ := newProjectFixture(t, rules, publicTeam)
 	dispatch := answerFrom(t, m, rows)
 	// release grants names to the session and reads them as the proxy does, answering the values
-	// and how many calls Dispatch took for the two, from a client of its own so that no answer an
-	// earlier release cached stands in.
+	// and how many calls Dispatch took of its project route for the two (beside the member-kind
+	// reads every grant and release of a person's session makes, restrictedOperator), from a client
+	// of its own so that no answer an earlier release cached stands in.
 	release := func(names ...string) (map[string]AirlockSecret, int) {
 		t.Helper()
 		fresh := answerFrom(t, m, rows)
@@ -35,7 +36,7 @@ func slackFixture(t *testing.T, rows map[string]projectaccesstest.Row) (*Machine
 		if err != nil {
 			t.Fatalf("AirlockValues(%v): %v", names, err)
 		}
-		return values, fresh.Calls()
+		return values, fresh.ProjectCalls()
 	}
 	return m, enr, dispatch, release
 }
@@ -112,14 +113,14 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 		limitedTo(t, values, []string{})
 	})
 
-	t.Run("a credential naming no project is unlimited and asks Dispatch nothing", func(t *testing.T) {
+	t.Run("a credential naming no project is unlimited and asks Dispatch nothing of a project", func(t *testing.T) {
 		_, _, _, release := slackFixture(t, slackRows(projectaccesstest.Row{SlackChannels: []string{"C0ALLOWED1"}}, publicTeam))
 		values, calls := release(slackToken)
 		if got := values[slackToken]; got.Limited || got.Channels != nil || !got.Expires.IsZero() {
 			t.Fatalf("%s for a session naming no project = Limited %v Channels %#v Expires %v; want unlimited, as today", slackToken, got.Limited, got.Channels, got.Expires)
 		}
 		if calls != 0 {
-			t.Fatalf("a session naming no project made %d calls to Dispatch for %s; want none", calls, slackToken)
+			t.Fatalf("a session naming no project made %d calls to Dispatch's project route for %s; want none", calls, slackToken)
 		}
 	})
 }

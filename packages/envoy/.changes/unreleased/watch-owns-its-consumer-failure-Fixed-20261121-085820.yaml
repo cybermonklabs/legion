@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A KV watch (`bus.KeyValue.WatchKeys` and `WatchFilteredKeys`) on a connection that a
+  `bus.Client` owns no longer fails with the server's refusal of another consumer's create on the
+  same bucket. Before, a watch took the refusal of any consumer create on the bucket's stream that
+  the connection earned while the watch's own create was in flight. So a watch that the grant
+  allowed could fail with `bus: NATS denied the publish to
+  "$JS.API.CONSUMER.CREATE.KV_<bucket>.<other consumer>..."`, take that refusal away from the
+  request that earned it, and leave the watcher that its own create then built running with
+  nobody to stop it. A watch now takes only the refusal of a create of its own shape: the bucket's
+  stream, any consumer name, then its own key when it watches one key, or no key in the subject
+  when it watches several. A watch whose own create the grant refuses still fails at once and
+  names that refusal. A grant that refuses one consumer by name can still answer a watch of the
+  same shape first; the watcher that the watch's own create then builds is now stopped.
+time: 2026-11-21T08:58:20Z
+custom:
+    Issue: watch-owns-its-consumer-failure

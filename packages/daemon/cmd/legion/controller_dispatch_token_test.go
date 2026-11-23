@@ -337,7 +337,7 @@ func TestControllerStartPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 			}
 			shown := cipheraddr.New(address).String()
 			if address == broker.url && shown != address {
-				t.Fatalf("brokeraddr prints the clean address %q as %q", address, shown)
+				t.Fatalf("cipheraddr prints the clean address %q as %q", address, shown)
 			}
 			if !strings.Contains(errb, row.named+shown) {
 				t.Errorf("stderr %q does not name the broker as %q", errb, row.named+shown)

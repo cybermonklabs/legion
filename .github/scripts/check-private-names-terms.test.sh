@@ -5,9 +5,9 @@
 # a path, a named target and another command's message masked so the log never prints a term or a
 # fragment of one, overlapping terms and a traced run included; several files a mask prints alike
 # counted one by one; the allowed hosts of the committed rules never excusing a term; an unset
-# list warning on a pull request's event and failing on the merge queue's, a push's, a dispatched
-# run's and a review's; and a pull request's text through check-pr-text.sh, a stranger's login
-# never printed.
+# list warning on a pull request's event and a review's and failing on the merge queue's, a
+# push's and a dispatched run's; and a pull request's text through check-pr-text.sh, a
+# stranger's login never printed.
 #
 # The terms are placeholders this file and check-private-names-test-lib.sh set, never a real
 # term, and every case is named by a neutral label, since this script's own output is the CI log;
@@ -346,12 +346,25 @@ run_check_as pull_request - "$root"
 check "a hit of the rules the script spells still fails" "$(is "$status" 1)"
 check "and still warns" "$(contains "$out" "$unset_warning")"
 check "names the hit" "$(contains "$out" 'docs/notes.md:1: names the private deployment repository')"
+# A review on a fork's pull request runs with no secret, as the pull request's own events do, so a
+# review event warns the same way and keeps the committed rules' result.
+root=$(fixture terms-unset-review)
+run_check_as pull_request_review - "$root"
+check "pull_request_review, unset: exits 0 and warns" "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
+run_check_as pull_request_review "" "$root"
+check "pull_request_review, empty: exits 0 and warns" "$(is "$status:$(contains "$out" "$unset_warning")" 0:true)"
+printf 'line one\n%s\n' "$key-7" > "$root/docs/notes.md"
+run_check_as pull_request_review - "$root"
+check "pull_request_review, unset, a hit of the rules the script spells: fails" "$(is "$status" 1)"
+check "and still warns" "$(contains "$out" "$unset_warning")"
+check "names the hit's file and line" "$(contains "$out" 'docs/notes.md:2: names the private deployment repository')"
+run_check_as pull_request_review "" "$root"
+check "pull_request_review, empty, the same hit: fails, at its line" \
+  "$(is "$status:$(contains "$out" 'docs/notes.md:2: names the private deployment repository')" 1:true)"
 
-echo "case: an unset list on the merge queue, a push, a dispatched run or a review fails before it scans"
+echo "case: an unset list on the merge queue, a push or a dispatched run fails before it scans"
 root=$(fixture terms-unset-queue)
-# A review starts no run of any workflow, so a pull_request_review run is no fork's pull request
-# to warn for: it fails like the other events.
-for event in merge_group push workflow_dispatch pull_request_review; do
+for event in merge_group push workflow_dispatch; do
   run_check_as "$event" - "$root"
   check "$event, unset: exits 2" "$(is "$status" 2)"
   check "$event, unset: says the list is missing" \
@@ -455,8 +468,8 @@ argv_grep "$argv_dir/grep" "$argv_log"
 PATH="$argv_dir:$PATH" run_check_as merge_group "$planted_terms" "$root"
 check "the run still finds the term, in the file and in the path: fails" "$(is "$status" 1)"
 check "the path's report is masked" "$(contains "$out" 'docs/<name>/notes.md: names a term')"
-check "the fake grep logged the committed rules' patterns, so it saw the run's greps" \
-  "$(is "$([ -s "$argv_log" ] && echo yes)" yes)"
+check "the run's term search, its patterns from a file, reached the fake grep" \
+  "$(contains "$(< "$argv_log")" '^<search grep -f>$')"
 check "no grep was handed a term in its arguments" "$(is "$(names_planted "$(< "$argv_log")")" false)"
 
 finish_self_log

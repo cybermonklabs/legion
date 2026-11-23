@@ -1,0 +1,62 @@
+{
+  "id": 1984,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 46,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a14ae3-36e5-729c-960a-0ae991fe7743",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit ame",
+      "cwd": "lorem ipsum ",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-17T18:20:51.547432Z",
+  "payload": {
+    "id": "ec519f38-271c-4617-9749-57f279fc181f",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ips",
+    "turn": null,
+    "anchor": null,
+    "ask_id": "e0f59e90-425e-4751-bdba-2afc4ff916cb",
+    "author": {
+      "id": "01a14ae3-36e5-729c-960a-0ae991fe7743",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum ",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ame",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor sit"
+      }
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "ask_state": "answered",
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-17T18:20:51.552376Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "ask_question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor s",
+    "artifact_name": "",
+    "suppress_route": false,
+    "references_changed": [
+      {
+        "id": "fe07654a-915c-4fb3-8705-0f3a24e341c2",
+        "kind": "ask",
+        "issue_key": "ACME-1"
+      }
+    ],
+    "suppressed_authors": []
+  }
+}
