@@ -466,6 +466,8 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   the CI store refuses to settle a head while any check its record holds is queued or running, and nothing takes a check out of a record, so one abandoned queued run would stop that head settling for good.
   A `tester` or `architect` check run counts only from the App `DISPATCH_REVIEWER_APP_ID` names, by the rule the listener's webhook handler calls;
   with that variable unset no verdict check is recorded, and the server says so once at start.
+  A suite of the App `DISPATCH_VERDICT_APP_ID` names, the one that writes `legion-verdict`, is not recorded, as the listener leaves it out under `ENVOY_VERDICT_APP_ID`: it is no CI result, and written into a settled record it would re-arm it, so the head would be published a second time once the App's run completes its suite.
+  Give the two variables one value; with `DISPATCH_VERDICT_APP_ID` unset every App's completed suite is recorded, and the server says so once at start.
 
 - The pass reads the commit statuses of a repository's heads only where the App's token for that repository holds Commit statuses, at read or write (`githubapp.Client.RepositoryTokenWithStatuses`).
   It reads that from the `permissions` GitHub answers with the token itself (`POST /app/installations/{id}/access_tokens`), not from the installation: the client keeps a token until 5 minutes before it expires, so a token minted before a person approved Commit statuses does not hold it while the installation already does.
@@ -1589,6 +1591,7 @@ A process that finds it held tries again
   A webhook GitHub never delivered leaves a head short of a check, and a head short of a check never settles, which no notification announces either.
   It needs NATS, whose `envoy_ci_state` bucket it binds and never creates, and the App private key; without either it is off and says so at start.
   The pass compares a `tester` or `architect` check run's `app.id` against `DISPATCH_REVIEWER_APP_ID`, and with that variable unset records no verdict check at all.
+  It leaves out the check suites of the App `DISPATCH_VERDICT_APP_ID` names, and with that variable unset records every App's completed suite.
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 

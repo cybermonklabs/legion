@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  The listener logs a `github published` line for each topic of each GitHub delivery it
+  publishes, a renamed repository's copy under its former name included: the delivery's GUID, its
+  event and action, the topic, the key, the hook target's id (`X-GitHub-Hook-Installation-Target-ID`,
+  empty for a delivery without it), `result=stored` or `result=duplicate`, the stream's answer
+  for that topic, and `resent=`, whether that answer came to the bus's resend after a closed
+  connection, which counts as stored. The `github sender` line of a comment or a review names
+  the hook target's type and id, so the log says which App's webhook delivered. The body's
+  signature covers neither `X-GitHub-Delivery` nor the two hook-target headers, so each line
+  writes what it holds of them quoted: the `github sender` line `target_type`, `target_id` and
+  `delivery`, the `github published` line `target_id`, `delivery` and the `key` built from the
+  delivery, and the `github mention detected` line `delivery`. A test holds that one event
+  delivered by two Apps, under GitHub's one GUID and two `installation` values, is one stream
+  message on each topic.
+time: 2026-11-22T02:28:15Z
+custom:
+    Issue: pr4939

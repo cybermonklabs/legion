@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  `ENVOY_VERDICT_APP_ID` names the App that writes `legion-verdict`. The listener leaves that App's
+  own check suites out of the CI record in every action, and logs
+  `ci: left out the verdict App's own check suite` for each, a requested suite's too, so a head
+  settles beside the queued suite GitHub makes the App on each push; another App's suites are not
+  left out. A value that is not a GitHub App id (a whole number above 0, with no leading zero)
+  refuses the start, naming the variable; unset or blank, nothing changes. `aws:WebhookListener`
+  takes it as the optional input `verdictAppId`, and `envoy-infra render webhook-listener-env` as
+  `--verdict-app-id`, each refusing such a value. Dispatch takes the same id as
+  `DISPATCH_VERDICT_APP_ID`, and its CI reconcile pass leaves that App's check suites out too, so
+  the App's completed suite is not written back into a settled record, which published the head a
+  second time. Give the two variables one value: the Dispatch compose file passes
+  `DISPATCH_VERDICT_APP_ID` through from its `.env`, and `envoy-infra:gcp:Dispatch` takes it as
+  the optional input `verdictAppId`, with the App, refusing a blank or malformed value.
+time: 2026-11-22T02:28:15Z
+custom:
+    Issue: pr4939

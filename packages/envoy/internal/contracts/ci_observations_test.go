@@ -24,7 +24,7 @@ func TestGithubCIObservationsUsesCheckRunStartedAtBeforeCompletion(t *testing.T)
 		},
 	}
 
-	observations := GithubCIObservations("check_run", body)
+	observations := GithubCIObservations("check_run", body, "")
 	if len(observations) != 1 {
 		t.Fatalf("observations = %d, want 1", len(observations))
 	}
@@ -50,7 +50,7 @@ func TestGithubCIObservationsExtractCheckSuite(t *testing.T) {
 		},
 	}
 
-	observations := GithubCIObservations("check_suite", body)
+	observations := GithubCIObservations("check_suite", body, "")
 	if len(observations) != 1 {
 		t.Fatalf("observations = %d, want 1", len(observations))
 	}
@@ -106,13 +106,13 @@ func TestGithubCIObservationsLeavesOutASuiteRequestToItsApp(t *testing.T) {
 	}
 	for _, action := range []string{"requested", "rerequested"} {
 		t.Run("a "+action+" delivery maps to nothing", func(t *testing.T) {
-			if observations := GithubCIObservations("check_suite", webhook(action, captured(t, "check_suite_queued_no_runs.json"))); len(observations) != 0 {
+			if observations := GithubCIObservations("check_suite", webhook(action, captured(t, "check_suite_queued_no_runs.json")), ""); len(observations) != 0 {
 				t.Fatalf("observations = %+v, want none", observations)
 			}
 		})
 	}
 	t.Run("a completed delivery maps to its suite", func(t *testing.T) {
-		observations := GithubCIObservations("check_suite", webhook("completed", captured(t, "check_suite_completed.json")))
+		observations := GithubCIObservations("check_suite", webhook("completed", captured(t, "check_suite_completed.json")), "")
 		want := CIObservation{
 			Owner: "cybermonklabs", Repo: "legion", Number: "4464", SHA: sha,
 			AppID: "15368", SuiteID: "120620605808", Status: "completed", Conclusion: "success",

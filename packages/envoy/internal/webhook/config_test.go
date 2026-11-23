@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -154,6 +155,46 @@ func TestLoadWebhookConfig(t *testing.T) {
 			}
 			if cfg.GitHub != nil && cfg.GitHub.ReviewerAppID != tc.wantReviewerAppID {
 				t.Errorf("GitHub.ReviewerAppID = %q, want %q", cfg.GitHub.ReviewerAppID, tc.wantReviewerAppID)
+			}
+		})
+	}
+}
+
+// ENVOY_VERDICT_APP_ID is a GitHub App's id, which GitHub's JSON gives as a whole number above 0
+// and the listener compares as written (contracts.VerdictAppsOwnSuite): any other non-blank value
+// would match no App and leave every suite in the record, so the listener refuses to start and
+// names the variable. Unset or blank is no verdict App, and the value is trimmed.
+func TestLoadWebhookConfigReadsTheVerdictAppID(t *testing.T) {
+	for _, tc := range []struct {
+		value, want, err string
+	}{
+		{value: "", want: ""},
+		{value: "  ", want: ""},
+		{value: " 5341240 ", want: "5341240"},
+		{value: "not-a-number", err: `ENVOY_VERDICT_APP_ID "not-a-number" is not a GitHub App id`},
+		{value: "05341240", err: `ENVOY_VERDICT_APP_ID "05341240" is not a GitHub App id`},
+		{value: "0", err: `ENVOY_VERDICT_APP_ID "0" is not a GitHub App id`},
+		{value: "-5341240", err: `ENVOY_VERDICT_APP_ID "-5341240" is not a GitHub App id`},
+		{value: "5341240.0", err: `ENVOY_VERDICT_APP_ID "5341240.0" is not a GitHub App id`},
+	} {
+		t.Run(fmt.Sprintf("%q", tc.value), func(t *testing.T) {
+			clearEnvoyEnvironment(t)
+			t.Setenv("ENVOY_WEBHOOKS", "github")
+			t.Setenv("ENVOY_GITHUB_WEBHOOK_SECRET", "s")
+			t.Setenv("ENVOY_REVIEWER_APP_ID", "1")
+			t.Setenv("ENVOY_VERDICT_APP_ID", tc.value)
+			cfg, err := LoadWebhookConfig()
+			if tc.err != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.err) {
+					t.Fatalf("LoadWebhookConfig() error = %v, want one holding %q", err, tc.err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadWebhookConfig() error = %v, want none", err)
+			}
+			if cfg.GitHub.VerdictAppID != tc.want {
+				t.Fatalf("GitHub.VerdictAppID = %q, want %q", cfg.GitHub.VerdictAppID, tc.want)
 			}
 		})
 	}
