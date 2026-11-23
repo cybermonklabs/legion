@@ -1239,10 +1239,14 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
+// startDaemonLogging is startDaemon writing the daemon's log to log. Its wait for /healthz guards
+// against a boot that never serves, not its speed, so it is testwait's bound (a minute, or the test
+// binary's own deadline less a second): a fixed 10 s failed a test about the stranded report (1 of
+// 20 race-soak runs, TestABootWithOnlyIdleSuspendedClaimsReportsNothing) whose boot ran beside three
+// other daemon tests on four CPUs. A test of the boot's own time names its bound (startDaemonWithin).
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
+	return startDaemonWithin(t, cfg, o, log, testwait.Bounded(t, time.Minute, time.Second))
 }
 
 // startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
