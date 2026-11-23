@@ -2068,14 +2068,18 @@ code flow), envoy-go-race-api and envoy-go-race-docs, whose notes,
 .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
 say why the document service runs alone.
 
-api sits apart because isolation is what made it fast: sharing a runner, the race binaries
-contended for the four vCPUs, and alone api fell from 1099.487 s to 746.718 s. The packages
+api sits apart, on a runner of its own, because isolation is what made it fast: sharing a
+runner, the race binaries contended for the four vCPUs, and alone api fell from 1099.487 s to
+746.718 s. The packages
 left in envoy-go-race are cheap enough to share one: the two heaviest of those measured
 there, the bus at 286.931 s and the listener at 365.787 s (run 40926978371), are a quarter
 and a third of the lane's bar of 1080 s, which is 60 % of a 30-minute step's own timeout, so
 a runner each would buy nothing and cost about 8,000 replayed runner minutes. Running a heavy
 package apart also reads its seconds as its own job's, and leaves the others' numbers
 standing when one is red.
+
+envoy-go-race-api's tests drive the Dispatch store, so its job carries the lane's Postgres
+service.
 
 pmdoc is not in this lane: its tests run plain only, in envoy-go's unit-test step
 (INFRA-1408). It sat here because LEGION-571's flakes - pmdoc's own under -race and load, not
