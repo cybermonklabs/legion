@@ -44,8 +44,8 @@ func IsSpecBlock(typ string) bool {
 }
 
 // Block is one requirement, check or component block of an issue as the store holds it at a cut:
-// the block node's address and its text, the block's whole slice of its document, from its opening
-// line to its closing one.
+// the block node's address and its text, the block as a document holding it alone renders it
+// (BlockText), from its opening line to its closing one.
 type Block struct {
 	Address string
 	Text    string

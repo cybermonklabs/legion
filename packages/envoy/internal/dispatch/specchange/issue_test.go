@@ -44,3 +44,34 @@ func TestFromVersionsReadsTheTypedBlocksOfEachVersion(t *testing.T) {
 		t.Errorf("the check reads claim %q, procedure %q, failing example %q", check.Claim, check.ProcedureText, check.FailingExample)
 	}
 }
+
+// A block a quote or a list item holds is read with its own text, as the block alone renders it:
+// no marker of its container is part of the node it gives.
+func TestFromVersionsReadsABlockAQuoteOrAListHoldsWithoutItsMarkers(t *testing.T) {
+	t.Parallel()
+	spec := VersionText{Document: testIssue + "/spec", Version: 1, Markdown: "# The spec\n\n" +
+		"> :::requirement{#a-quoted-bill-is-sent kind=\"behavior\"}\n> A quoted bill is sent.\n>\n> It is sent once.\n> :::\n\n" +
+		"- A list.\n\n  :::requirement{#a-listed-bill-is-sent kind=\"behavior\"}\n  A listed bill is sent.\n  :::\n"}
+	request, err := FromVersions(testIssue, spec, nil)
+	if err != nil {
+		t.Fatalf("read the version: %v", err)
+	}
+	if len(request.Problems) != 0 {
+		t.Errorf("the request reads problems %+v", request.Problems)
+	}
+	texts := map[string]string{}
+	for _, proposal := range request.Proposals {
+		if statement, ok := proposal.Node.(specgraph.Statement); ok {
+			texts[proposal.ID] = statement.Text
+		}
+	}
+	want := map[string]string{"a-quoted-bill-is-sent": "A quoted bill is sent.\n\nIt is sent once.", "a-listed-bill-is-sent": "A listed bill is sent."}
+	if len(texts) != len(want) {
+		t.Fatalf("the request reads the statements %q, want %q", texts, want)
+	}
+	for id, text := range want {
+		if texts[id] != text {
+			t.Errorf("%s reads the text %q, want %q", id, texts[id], text)
+		}
+	}
+}

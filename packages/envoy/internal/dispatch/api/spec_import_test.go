@@ -932,3 +932,155 @@ func TestImportLevelOne(t *testing.T) {
 		}
 	})
 }
+
+// TestImportLevelTakesNoStatementFromACodeExample: the import reads the statements of the approved
+// level from the blocks of the parsed document, so a requirement directive that a code example of
+// the level shows is no statement: with notes the person approved or without, it is neither
+// written into the approved spec nor held, and no repair issue is opened for it. The same directive
+// written as a block is written with the approved notes, and held for its kind without them, in one
+// repair issue (D9).
+func TestImportLevelTakesNoStatementFromACodeExample(t *testing.T) {
+	const id = "an-example-is-not-a-statement"
+	const directive = ":::requirement{#" + id + "}\nA bill is sent.\n:::\n"
+	const notes = "# Notes\n\n### " + id + "\n\n- Kind: behavior\n- About: none\n- Supports: none\n"
+	for _, c := range []struct {
+		name                  string
+		fenced, approvedNotes bool
+	}{
+		{name: "a directive, notes the person approved", approvedNotes: true},
+		{name: "a directive, notes no approval names"},
+		{name: "a code example, notes the person approved", fenced: true, approvedNotes: true},
+		{name: "a code example, notes no approval names", fenced: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			text := "# Level\n\n## Statements\n\n" + directive
+			if c.fenced {
+				text = "# Level\n\n## Examples\n\n```markdown\n" + directive + "```\n"
+			}
+			rig := newLevelRig(t, "A level and an example", text)
+			uploaded := rig.upload(t, "notes.md", notes)
+			rig.approveLevel(t)
+			if c.approvedNotes {
+				rig.approveDocument(t, uploaded.ID)
+			}
+			imported := rig.imported(t, "notes.md")
+			written, held := slices.Contains(imported.Written, id), imported.lacks()
+			switch {
+			case c.fenced:
+				if len(imported.Written) != 0 || len(imported.Held) != 0 || imported.RepairIssue != nil {
+					t.Errorf("the import of a level whose one directive is a code example writes %v, holds %v and names the repair issue %v, want nothing",
+						imported.Written, held, imported.RepairIssue)
+				}
+				rig.requireAbsent(t, specRepo, id)
+				if children := rig.children(t); len(children) != 0 {
+					t.Errorf("%s has the child issues %v, want none: nothing is held", rig.level.Key, children)
+				}
+			case c.approvedNotes:
+				if !written || len(imported.Held) != 0 || imported.RepairIssue != nil {
+					t.Errorf("the import writes %v, holds %v and names the repair issue %v, want %s written and nothing held",
+						imported.Written, held, imported.RepairIssue, id)
+				}
+				if node := rig.requireVersions(t, specRepo, id, `kind="behavior"`); !strings.Contains(node.Versions[0].Block, "\nA bill is sent.\n") {
+					t.Errorf("%s is written as %q, want the block's text %q", id, node.Versions[0].Block, "A bill is sent.")
+				}
+			default:
+				if written || !reflect.DeepEqual(held, map[string][]string{id: {"kind"}}) || imported.RepairIssue == nil {
+					t.Errorf("the import writes %v, holds %v and names the repair issue %v, want %s held for its kind in one repair issue",
+						imported.Written, held, imported.RepairIssue, id)
+				}
+				rig.requireAbsent(t, specRepo, id)
+				rig.requireOneRepairChild(t, []string{id})
+			}
+		})
+	}
+}
+
+// TestImportLevelWritesEachComponentFromItsParsedCells: the import reads each component of the
+// level's Components part from the cells the document parser gives its row, wherever the part holds
+// its table, so a purpose holding an escaped pipe is written with a literal `|`, and a table in a
+// quote is read, as a purpose of plain words at the top of the part is; and a row that reads as no
+// component - here a table of four columns - refuses the import (409 SPEC_NODE_INVALID), which
+// writes nothing and opens no repair issue, rather than leaving the component out (D9).
+func TestImportLevelWritesEachComponentFromItsParsedCells(t *testing.T) {
+	const header = "| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n"
+	for _, c := range []struct {
+		name, table, purpose string
+	}{
+		{name: "a purpose of plain words", table: header + "| billing | component | Billing | It bills each order. | none |\n", purpose: "It bills each order."},
+		{name: "a purpose holding an escaped pipe", table: header + "| billing | component | Billing | It bills \\| pays each order. | none |\n", purpose: "It bills | pays each order."},
+		{name: "a table in a quote", purpose: "It bills each order.",
+			table: "> | Id | Kind | Name | Purpose | Parent or joins |\n> | --- | --- | --- | --- | --- |\n> | billing | component | Billing | It bills each order. | none |\n"},
+		{name: "a table of four columns", table: "| Id | Kind | Name | Purpose |\n| --- | --- | --- | --- |\n| billing | component | Billing | It bills each order. |\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newLevelRig(t, "A level of one component", "# Level\n\n## Components\n\n"+c.table)
+			rig.upload(t, "notes.md", "# Notes\n")
+			rig.approveLevel(t)
+			if c.purpose == "" {
+				response := rig.importLevel(t, "notes.md")
+				if code := decodeBody[struct {
+					Code string `json:"code"`
+				}](t, response).Code; response.Code != http.StatusConflict || code != specstore.RefusalNodeInvalid {
+					t.Errorf("the import of a row of four cells answers %d %s, want 409 %s: %s", response.Code, code, specstore.RefusalNodeInvalid, response.Body.String())
+				}
+				rig.requireAbsent(t, specRepo, "billing")
+				if children := rig.children(t); len(children) != 0 {
+					t.Errorf("%s has the child issues %v, want none", rig.level.Key, children)
+				}
+				return
+			}
+			imported := rig.imported(t, "notes.md")
+			if !slices.Equal(imported.Written, []string{"billing"}) || len(imported.Held) != 0 || imported.RepairIssue != nil {
+				t.Errorf("the import writes %v, holds %v and names the repair issue %v, want billing written and nothing held",
+					imported.Written, imported.lacks(), imported.RepairIssue)
+			}
+			if node := rig.requireVersions(t, specRepo, "billing", `name="Billing"`); !strings.Contains(node.Versions[0].Block, "\n"+c.purpose+"\n") {
+				t.Errorf("billing is written as %q, want the purpose %q", node.Versions[0].Block, c.purpose)
+			}
+		})
+	}
+}
+
+// TestImportLevelReadsEachNoteFieldAtEveryDepth: the import takes a statement's about and supports
+// from the list items of its approved note at every depth, so a note whose About and Supports items
+// stand in a list under its Kind item writes the statement with both relations, as a note of three
+// items of one list does; and a field the note writes where no list item holds it - here an About
+// paragraph of its own - holds the statement for that field, in one repair issue, rather than
+// writing it without the relation (D9).
+func TestImportLevelReadsEachNoteFieldAtEveryDepth(t *testing.T) {
+	const level = "# Level\n\n## Statements\n\n:::requirement{#a-bill-is-sent}\nA bill is sent.\n:::\n\n" +
+		":::requirement{#a-bill-is-kept}\nA bill is kept.\n:::\n\n## Components\n\n" +
+		"| Id | Kind | Name | Purpose | Parent or joins |\n| --- | --- | --- | --- | --- |\n| billing | component | Billing | It bills. | none |\n"
+	const sent = "# Notes\n\n### a-bill-is-sent\n\n- Kind: behavior\n- About: billing\n- Supports: none\n\n### a-bill-is-kept\n\n"
+	for _, c := range []struct {
+		name, kept string
+		held       bool
+	}{
+		{name: "three items of one list", kept: "- Kind: behavior\n- About: billing\n- Supports: a-bill-is-sent\n"},
+		{name: "about and supports in a list under the kind", kept: "- Kind: behavior\n  - About: billing\n  - Supports: a-bill-is-sent\n"},
+		{name: "about as a paragraph of its own", kept: "- Kind: behavior\n- Supports: a-bill-is-sent\n\nAbout: billing\n", held: true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			rig := newLevelRig(t, "A level of two statements", level)
+			notes := rig.upload(t, "notes.md", sent+c.kept)
+			rig.approveLevel(t)
+			rig.approveDocument(t, notes.ID)
+			imported := rig.imported(t, "notes.md")
+			written := slices.Sorted(slices.Values(imported.Written))
+			if c.held {
+				if !slices.Equal(written, []string{"a-bill-is-sent", "billing"}) || !reflect.DeepEqual(imported.lacks(), map[string][]string{"a-bill-is-kept": {"about"}}) {
+					t.Errorf("the import writes %v and holds %v, want a-bill-is-kept held for its about", written, imported.lacks())
+				}
+				rig.requireAbsent(t, specRepo, "a-bill-is-kept")
+				rig.requireOneRepairChild(t, []string{"a-bill-is-kept"})
+				return
+			}
+			if !slices.Equal(written, []string{"a-bill-is-kept", "a-bill-is-sent", "billing"}) || len(imported.Held) != 0 {
+				t.Errorf("the import writes %v and holds %v, want both statements and billing written, nothing held", written, imported.lacks())
+			}
+			if node := rig.requireVersions(t, specRepo, "a-bill-is-kept", `about="billing"`); !strings.Contains(node.Versions[0].Block, `serves="a-bill-is-sent"`) {
+				t.Errorf("a-bill-is-kept is written as %q, want it to serve a-bill-is-sent", node.Versions[0].Block)
+			}
+		})
+	}
+}

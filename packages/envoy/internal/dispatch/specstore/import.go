@@ -26,9 +26,11 @@ import (
 // supports under a heading of its id. The import writes each statement whose fields resolve, and
 // each component, as an approved node, with the person's approval of the level as provenance. A
 // statement that does not resolve - a kind no approved form names, an about or a supports naming
-// nothing, a parent nothing holds or that is itself held - is kept as a node of kind
-// spec_import_hold, with its text, its provenance and the fields it lacks, until a change request
-// that supplies them is approved (Apply clears the hold of each node it writes).
+// nothing, a field its notes write where the reader cannot place it, a parent nothing holds or that
+// is itself held - is kept as a node of kind spec_import_hold, with its text, its provenance and the
+// fields it lacks, until a change request that supplies them is approved (Apply clears the hold of
+// each node it writes). A row of the Components table that reads as no component refuses the
+// level (ParseLevel), so no component is left out either.
 
 // The values of a hold: what it keeps, and the issue opened for its repair.
 const (
@@ -46,12 +48,15 @@ var levelKinds = map[string]specgraph.Kind{
 }
 
 // LevelStatement is one statement of a level as its documents give it: its id, its text, its
-// parent from the level's structure, and the notes' kind, about and supports, as written.
+// parent from the level's structure, the notes' kind, about and supports, as written, and each
+// field its notes write where the reader cannot place it (Unread), which the import holds the
+// statement for.
 type LevelStatement struct {
 	ID, Text, Parent string
 	Kind             string
 	About, Supports  []string
 	Noted            bool
+	Unread           []string
 }
 
 // Level is a level read from its two documents: its statements in their order, and its
@@ -61,102 +66,291 @@ type Level struct {
 	Components []specgraph.Component
 }
 
-// ParseLevel reads a level from its level document and its notes document.
+// ParseLevel reads a level from its level document and its notes document, each through the
+// document parser every write goes through (pmdoc.ParseRendering), as a change request's versions
+// are read (specchange.FromVersions). A statement is each requirement block, wherever the level
+// holds it, with the block's own text (specchange.BlockText). A heading of the document's top
+// starts the part the blocks after it stand in: one of level two ends the part before it, and a
+// heading `## Components` starts the part whose tables, wherever the part holds them, name each
+// component and interface, one row each, read from the cells the parser gives the row
+// (componentsOf); one of level three `Under <id>` sets the parent of the statements after it, and
+// one of level three of any other title sets none. So a directive, a heading, a table row or a note
+// that a code example shows is none of them. A row of a Components table that reads as no
+// component is never left out: the level is refused (*Refusal, RefusalNodeInvalid) with a problem
+// for each such row, as Import refuses a level whose nodes the approved spec could not hold, and
+// nothing is written.
 func ParseLevel(level, notes string) (Level, error) {
+	doc, err := pmdoc.ParseRendering(level)
+	if err != nil {
+		return Level{}, fmt.Errorf("read the level: %w", err)
+	}
 	var parsed Level
-	lines := strings.Split(strings.ReplaceAll(level, "\r\n", "\n"), "\n")
+	var unreadable []specgraph.Problem
 	parent, components := "", false
-	for index := 0; index < len(lines); index++ {
-		line := strings.TrimRight(lines[index], " \t")
-		switch {
-		case strings.HasPrefix(line, "## "):
-			parent, components = "", strings.TrimSpace(line[3:]) == "Components"
-			continue
-		case strings.HasPrefix(line, "### "):
-			parent = ""
-			if under, ok := strings.CutPrefix(strings.TrimSpace(line[4:]), "Under "); ok {
-				parent = strings.TrimSpace(under)
-			}
-			continue
-		}
-		if components && strings.HasPrefix(line, "|") {
-			cells := tableCells(line)
-			if len(cells) != 5 || cells[0] == "Id" || strings.Trim(cells[0], "-: ") == "" {
-				continue
-			}
-			component := specgraph.Component{ID: cells[0], Interface: cells[1] == "interface", Name: cells[2], Purpose: cells[3]}
-			if related := cells[4]; related != "none" && related != "" {
-				if component.Interface {
-					// specgraph.Component holds the components an interface joins sorted and unique, as
-					// a change request's parse writes them, so an approved interface compares equal to
-					// the same interface a later request names as context.
-					component.Joins = sortedUnique(splitIDs(related))
-				} else {
-					component.Parent = related
+	for _, block := range doc.Children {
+		if block.Type == "heading" {
+			title := strings.TrimSpace(pmdoc.TextContent(block))
+			switch headingLevel(block) {
+			case 2:
+				parent, components = "", title == "Components"
+			case 3:
+				parent = ""
+				if under, ok := strings.CutPrefix(title, "Under "); ok {
+					parent = strings.TrimSpace(under)
 				}
 			}
-			parsed.Components = append(parsed.Components, component)
 			continue
 		}
-		name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(line)
-		if !ok || name != "requirement" {
-			continue
+		var failed error
+		pmdoc.Walk(block, func(node *pmdoc.Node) bool {
+			switch {
+			case components && node.Type == "table":
+				read, problems, err := componentsOf(node)
+				if err != nil {
+					failed = fmt.Errorf("read the components table of the level: %w", err)
+					return false
+				}
+				parsed.Components = append(parsed.Components, read...)
+				unreadable = append(unreadable, problems...)
+			case node.Type == "requirement":
+				id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
+				text, err := statementText(node)
+				if err != nil {
+					failed = fmt.Errorf("read the requirement %s of the level: %w", id, err)
+					return false
+				}
+				parsed.Statements = append(parsed.Statements, LevelStatement{ID: id, Text: text, Parent: parent})
+			}
+			return true
+		})
+		if failed != nil {
+			return Level{}, failed
 		}
-		id, _ := attrs[pmdoc.BlockIDAttr].(string)
-		var body []string
-		for index++; index < len(lines) && strings.TrimRight(lines[index], " \t") != ":::"; index++ {
-			body = append(body, strings.TrimRight(lines[index], " \t"))
-		}
-		parsed.Statements = append(parsed.Statements, LevelStatement{ID: id, Text: strings.TrimSpace(strings.Join(body, "\n")), Parent: parent})
 	}
-	noted := notesOf(notes)
+	if len(unreadable) > 0 {
+		return Level{}, &Refusal{Code: RefusalNodeInvalid, Detail: problemDetail(unreadable), Problems: unreadable}
+	}
+	noted, err := notesOf(notes)
+	if err != nil {
+		return Level{}, err
+	}
 	for index := range parsed.Statements {
 		statement := &parsed.Statements[index]
 		if note, held := noted[statement.ID]; held {
-			statement.Noted, statement.Kind, statement.About, statement.Supports = true, note.Kind, note.About, note.Supports
+			statement.Noted, statement.Kind, statement.About, statement.Supports, statement.Unread = true, note.Kind, note.About, note.Supports, note.Unread
 		}
 	}
 	return parsed, nil
 }
 
-// notesOf reads the kind, about and supports of each statement of a notes document, under a
-// heading `### <id>`, from its `- Kind:`, `- About:` and `- Supports:` lines.
-func notesOf(notes string) map[string]LevelStatement {
-	noted := map[string]LevelStatement{}
-	current := ""
-	for _, raw := range strings.Split(strings.ReplaceAll(notes, "\r\n", "\n"), "\n") {
-		line := strings.TrimSpace(raw)
-		if heading, ok := strings.CutPrefix(line, "### "); ok {
-			current = strings.TrimSpace(heading)
-			noted[current] = LevelStatement{ID: current}
-			continue
-		}
-		if current == "" {
-			continue
-		}
-		note := noted[current]
-		switch {
-		case strings.HasPrefix(line, "- Kind:"):
-			note.Kind = strings.TrimSpace(strings.TrimPrefix(line, "- Kind:"))
-		case strings.HasPrefix(line, "- About:"):
-			note.About = splitIDs(strings.TrimPrefix(line, "- About:"))
-		case strings.HasPrefix(line, "- Supports:"):
-			note.Supports = splitIDs(strings.TrimPrefix(line, "- Supports:"))
-		}
-		noted[current] = note
+// headingLevel is the level of a heading, 1 to 6.
+func headingLevel(node *pmdoc.Node) int {
+	switch level := node.Attrs["level"].(type) {
+	case int:
+		return level
+	case int64:
+		return int(level)
+	case float64:
+		return int(level)
 	}
-	return noted
+	return 1
 }
 
-// tableCells is the cells of one row of a markdown table, trimmed.
-func tableCells(line string) []string {
-	line = strings.TrimSpace(line)
-	line = strings.TrimPrefix(strings.TrimSuffix(line, "|"), "|")
-	cells := strings.Split(line, "|")
-	for index := range cells {
-		cells[index] = strings.TrimSpace(cells[index])
+// statementText is the text of a requirement block as a change request's reader reads a
+// statement's: the lines of the block's own markdown (specchange.BlockText) between its opening
+// line and its closing one, each without its trailing white space, and without the blank lines
+// at either end.
+func statementText(block *pmdoc.Node) (string, error) {
+	text, err := specchange.BlockText(block)
+	if err != nil {
+		return "", err
 	}
-	return cells
+	_, body, _ := strings.Cut(text, "\n")
+	end := strings.LastIndexByte(body, '\n')
+	if end < 0 {
+		return "", nil
+	}
+	lines := strings.Split(body[:end], "\n")
+	for index := range lines {
+		lines[index] = strings.TrimRight(lines[index], " \t")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n")), nil
+}
+
+// componentsOf is each component and interface the body rows of a Components table name, read from
+// the cells the document parser gives each row, so each cell keeps every character it holds and an
+// escaped pipe stays in its cell: a row of five cells - its id, `component` or `interface`, its name,
+// its purpose, and its parent or the components it joins. The id, the kind and the last cell are
+// read as the cells' text; the name and the purpose as each cell's own markdown, as a document
+// holding the cell's paragraph alone renders it, so a code span keeps its backticks and a pipe
+// reads as a pipe. A row that reads as no component - of another number of cells, with an empty id,
+// or of another kind - is a problem (bad-component) naming the row, never left out.
+func componentsOf(table *pmdoc.Node) ([]specgraph.Component, []specgraph.Problem, error) {
+	var components []specgraph.Component
+	var problems []specgraph.Problem
+	for _, row := range table.Children {
+		if row.Type != "table_row" {
+			continue
+		}
+		text := make([]string, len(row.Children))
+		for index, cell := range row.Children {
+			text[index] = strings.TrimSpace(pmdoc.TextContent(cell))
+		}
+		var why string
+		switch {
+		case len(text) != 5:
+			why = fmt.Sprintf("holds %d cells, want 5: its id, component or interface, its name, its purpose, and its parent or the components it joins", len(text))
+		case text[0] == "":
+			why = "names no id"
+		case text[1] != "component" && text[1] != "interface":
+			why = fmt.Sprintf("is of the kind %q, want component or interface", text[1])
+		}
+		if why != "" {
+			node := "-"
+			if len(text) > 0 && text[0] != "" {
+				node = text[0]
+			}
+			problems = append(problems, specgraph.Problem{Pos: specgraph.Position{File: "Components", Line: len(components) + len(problems) + 1},
+				Node: node, Rule: "bad-component", Effect: specgraph.LosesNode,
+				Detail: fmt.Sprintf("bad-component: the Components row %q reads as no component: it %s", strings.Join(text, " | "), why)})
+			continue
+		}
+		name, err := cellMarkdown(row.Children[2])
+		if err != nil {
+			return nil, nil, err
+		}
+		purpose, err := cellMarkdown(row.Children[3])
+		if err != nil {
+			return nil, nil, err
+		}
+		component := specgraph.Component{ID: text[0], Interface: text[1] == "interface", Name: name, Purpose: purpose}
+		if related := text[4]; related != "none" && related != "" {
+			if component.Interface {
+				// specgraph.Component holds the components an interface joins sorted and unique, as
+				// a change request's parse writes them, so an approved interface compares equal to
+				// the same interface a later request names as context.
+				component.Joins = sortedUnique(splitIDs(related))
+			} else {
+				component.Parent = related
+			}
+		}
+		components = append(components, component)
+	}
+	return components, problems, nil
+}
+
+// cellMarkdown is a table cell's content as a document holding its paragraph alone renders it.
+func cellMarkdown(cell *pmdoc.Node) (string, error) {
+	markdown, err := pmdoc.Render(&pmdoc.Node{Type: "doc", Children: cell.Children})
+	return strings.TrimSpace(markdown), err
+}
+
+// noteFields is each field a note writes, by the name its item gives it.
+var noteFields = map[string]string{"Kind": "kind", "About": "about", "Supports": "supports"}
+
+// notesOf reads, from a notes document parsed as the level is, the kind, about and supports of
+// each statement under a heading `### <id>` of the document's top, from the blocks after it up to
+// the next such heading: the items `Kind: …`, `About: …` and `Supports: …` of its lists, at every
+// depth, each from the item's first paragraph, read whole. Two headings of one id are one note. A
+// field the note writes where no such item holds it - a paragraph of its own, an item's later
+// paragraph, an item in a quote or in a table - or writes twice is unread (LevelStatement.Unread),
+// with no value, and the import holds the statement for it, so no field is left out of a statement
+// the import writes. A code block is an example, and none of its lines is a field.
+func notesOf(notes string) (map[string]LevelStatement, error) {
+	doc, err := pmdoc.ParseRendering(notes)
+	if err != nil {
+		return nil, fmt.Errorf("read the notes of the level: %w", err)
+	}
+	readings := map[string]*noteReading{}
+	var current *noteReading
+	for _, block := range doc.Children {
+		if block.Type == "heading" {
+			if headingLevel(block) == 3 {
+				id := strings.TrimSpace(pmdoc.TextContent(block))
+				if readings[id] == nil {
+					readings[id] = &noteReading{statement: LevelStatement{ID: id}, read: map[string]bool{}}
+				}
+				current = readings[id]
+			}
+			continue
+		}
+		if current != nil {
+			current.visit(block, isList(block))
+		}
+	}
+	noted := make(map[string]LevelStatement, len(readings))
+	for id, reading := range readings {
+		noted[id] = reading.statement
+	}
+	return noted, nil
+}
+
+// noteReading is one note as notesOf reads it: the statement's fields so far, and each field read
+// from an item.
+type noteReading struct {
+	statement LevelStatement
+	read      map[string]bool
+}
+
+// visit reads the fields node holds: listed is whether node is a list, or an item of one, that only
+// lists and their items hold, from the top of the document down.
+func (n *noteReading) visit(node *pmdoc.Node, listed bool) {
+	switch node.Type {
+	case "code_block":
+		return
+	case "paragraph":
+		n.field(node, false)
+		return
+	case "list_item":
+		if listed {
+			for index, child := range node.Children {
+				if index == 0 && child.Type == "paragraph" {
+					n.field(child, true)
+					continue
+				}
+				n.visit(child, isList(child))
+			}
+			return
+		}
+	}
+	listed = listed && isList(node)
+	for _, child := range node.Children {
+		n.visit(child, listed)
+	}
+}
+
+// field reads paragraph as a field of the note where it writes one: from a list item's first
+// paragraph (placed) the first time, else as unread, with no value.
+func (n *noteReading) field(paragraph *pmdoc.Node, placed bool) {
+	name, value, written := strings.Cut(strings.ReplaceAll(pmdoc.TextContent(paragraph), "\n", " "), ":")
+	field, known := noteFields[name]
+	switch {
+	case !written || !known || slices.Contains(n.statement.Unread, field):
+		return
+	case !placed || n.read[field]:
+		n.statement.Unread = append(n.statement.Unread, field)
+		n.set(field, "")
+		return
+	}
+	n.read[field] = true
+	n.set(field, value)
+}
+
+// set gives the statement's field the value its note writes.
+func (n *noteReading) set(field, value string) {
+	switch field {
+	case "kind":
+		n.statement.Kind = strings.TrimSpace(value)
+	case "about":
+		n.statement.About = splitIDs(value)
+	case "supports":
+		n.statement.Supports = splitIDs(value)
+	}
+}
+
+// isList is whether node is a list.
+func isList(node *pmdoc.Node) bool {
+	return node.Type == "bullet_list" || node.Type == "ordered_list"
 }
 
 // splitIDs is the ids a list names, separated by commas or spaces; "none" names none.
@@ -307,26 +501,35 @@ func Import(ctx context.Context, tx pgx.Tx, in ImportInput) (Imported, error) {
 		}
 		return ""
 	}
-	// lacks is each field of a statement no approved form or node resolves; held statements are
-	// found again until none is added, since a statement under a held one, or supporting one, is
-	// held too.
+	// lacks is each field of a statement no approved form or node resolves, or that its notes write
+	// where the reader cannot place it (LevelStatement.Unread); held statements are found again until
+	// none is added, since a statement under a held one, or supporting one, is held too.
 	lacks := map[string][]string{}
 	for _, statement := range in.Level.Statements {
 		var missing []string
-		if _, ok := levelKinds[statement.Kind]; !ok {
+		unread := func(field string) bool { return slices.Contains(statement.Unread, field) }
+		if _, ok := levelKinds[statement.Kind]; !ok || unread("kind") {
 			missing = append(missing, "kind")
 		}
+		resolves := !unread("about")
 		for _, id := range statement.About {
 			if kind := approvedKind(id); !components[id] && kind != specchange.KindComponent && kind != specchange.KindInterface {
-				missing = append(missing, "about")
+				resolves = false
 				break
 			}
 		}
+		if !resolves {
+			missing = append(missing, "about")
+		}
+		resolves = !unread("supports")
 		for _, id := range statement.Supports {
 			if !statements[id] && approvedKind(id) != specchange.KindStatement {
-				missing = append(missing, "supports")
+				resolves = false
 				break
 			}
+		}
+		if !resolves {
+			missing = append(missing, "supports")
 		}
 		if statement.Parent != "" && !statements[statement.Parent] && approvedKind(statement.Parent) != specchange.KindStatement {
 			missing = append(missing, "parent")
