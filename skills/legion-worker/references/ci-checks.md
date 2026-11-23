@@ -43,8 +43,8 @@ When the run gives no result, the line reads `CI run <name> has no result (<case
 
 - The reviewer waits for a run still going by its name, and neither approves nor requests changes for that check until it concludes.
 
-- A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites) reads `skipped` without it, and a job it runs there only in part (on cybermonklabs/legion, test, pi-legion, envoy-infra-go and dispatch-browser) reads `success` with its tests not run.
-  The implementer adds the label, then pushes, because the workflow starts on a push and not on a label.
+- A job the repository runs on a pull request only under the label `full-ci` (on cybermonklabs/legion, the slow suites) reads `skipped` without it, and a job it runs there only in part (on cybermonklabs/legion, test, pi-legion, envoy-infra-go and dispatch-browser) reads `success` with its slow test steps not run.
+  The implementer adds the label, `full-ci` or that job's `lane:<output>`, then pushes, because the workflow starts on a push and not on a label.
   The label stays on while a `ci_check` of the issue names such a job.
 
 ## A name that no run answers

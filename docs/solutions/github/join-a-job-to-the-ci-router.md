@@ -42,7 +42,7 @@ its own workflows; this page covers this repository only.
    `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.<filter> }}`.
    A slow suite carries the `full-ci` term too, with its own `lane:<filter>` label beside it (step 5 says why), and ends with the `'false'` that makes the skip `changes`' own:
    `<filter>: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:<filter>')) && steps.filter.outputs.<filter> || 'false' }}`.
-   Which jobs are slow suites is `.github/ci-notes/ci.md`'s rule ("Which lane a job runs in: the pull request or the merge queue"): a job above 10 minutes at the 90th percentile of its pull-request runs.
+   Which jobs are slow suites is `.github/ci-notes/ci.md`'s rule ("Which lane a job runs in: the pull request or the merge queue"): a test job above 10 minutes at the 90th percentile of its pull-request runs. A build, vet, format, typecheck or lint check runs on every pull request whatever its time, so it never takes this term; a job that mixes such checks with slow tests keeps the checks on the pull request and holds back only its test steps (step 5).
 3. **`needs: changes`** on the job, and
    `if: needs.changes.outputs.<filter> == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')`.
    The second term holds the job back on a re-run attempt of a merge-group run, where the group is tested already.

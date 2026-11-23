@@ -9,7 +9,7 @@ It reads the expressions themselves rather than a copy of them, so a change to a
 is what the harness tests. It evaluates the subset of GitHub's expression language those outputs
 use: string, boolean, number and null literals; the contexts `github.event_name`,
 `github.event.pull_request.labels.*.name`, `steps.<id>.outputs.<name>` and `steps.<id>.outputs`;
-`!`, `==`, `!=`, `&&`, `||` and parentheses; and the functions `contains` and `toJSON`. `&&` and
+`!`, `==`, `!=`, `&&`, `||` and parentheses; and the functions `contains`, `format` and `toJSON`. `&&` and
 `||` yield an operand, as GitHub's do (a non-empty string such as 'false' is truthy), `==` and
 `!=` compare strings without regard to case, and `contains` of an array asks whether an element
 equals the item. Anything else, an unknown function or a context it does not model, is refused by
@@ -18,10 +18,14 @@ name with exit 2, never read as false.
 Usage: ci_router_outputs.py <workflow> --event <name> [--label <name>]... [--verdict <filter>=<value>]...
   [--verdicts <true|false>]
        ci_router_outputs.py <workflow> --label-readers
+       ci_router_outputs.py <workflow> --lanes --event <name> [--label <name>]...
 Prints `<output>=<value>` for each output of the `changes` job, in the file's order. --verdicts
 sets every filter's verdict (default true); --verdict overrides one. --label-readers prints, one
 per line, each output whose expression reads the pull request's labels, found in the text
-rather than by evaluating it, so a broken term cannot drop an output from that list.
+rather than by evaluating it, so a broken term cannot drop an output from that list. --lanes
+prints `<job>=<lane>` for each job of the file that passes a `lane` input to the workflow it calls,
+then `PARTIAL=<value>`, the ci-ok job's list of the jobs that run only part of themselves
+(.github/ci-notes/ci.md#what-the-lane-input-reads), so the harness can hold the two to each other.
 Run from anywhere; ci.yaml's test job runs its harness."""
 import argparse
 import json
@@ -162,6 +166,8 @@ class Evaluator:
             return str(item).lower() in str(search).lower()
         if function == "toJSON" and len(args) == 1:
             return json.dumps(args[0], indent=2)
+        if function == "format" and args and isinstance(args[0], str):
+            return format_text(args[0], args[1:])
         raise Refused(f"function {function} with {len(args)} arguments is not modelled")
 
     def lookup(self, path):
@@ -179,11 +185,70 @@ class Evaluator:
         return value
 
 
+def text_of(value):
+    """A value as GitHub's format() writes it: a boolean as true or false, null as nothing."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def format_text(template, args):
+    """GitHub's format(): `{N}` is the Nth argument, `{{` and `}}` are a literal brace, and any
+    other brace, or an index past the arguments, is refused, as GitHub refuses it."""
+    out, at = [], 0
+    while at < len(template):
+        char = template[at]
+        if template.startswith("{{", at) or template.startswith("}}", at):
+            out.append(char)
+            at += 2
+            continue
+        if char == "{":
+            end = template.find("}", at)
+            index = template[at + 1:end] if end != -1 else ""
+            if not index.isdigit() or int(index) >= len(args):
+                raise Refused(f"format string {template!r} has a placeholder {template[at:end + 1]!r} with no argument")
+            out.append(text_of(args[int(index)]))
+            at = end + 1
+            continue
+        if char == "}":
+            raise Refused(f"format string {template!r} has an unpaired '}}'")
+        out.append(char)
+        at += 1
+    return "".join(out)
+
+
+def expression_of(name, text):
+    text = str(text).strip()
+    if not (text.startswith("${{") and text.endswith("}}")):
+        raise Refused(f"{name} is no expression: {text}")
+    return text[3:-2]
+
+
+def lanes(document, evaluator):
+    """The `lane` input each calling job passes, then the ci-ok job's PARTIAL, as `name=value`."""
+    out = []
+    for job, body in (document.get("jobs") or {}).items():
+        lane = ((body or {}).get("with") or {}).get("lane")
+        if lane is not None:
+            out.append(f"{job}={evaluator.evaluate(expression_of(f'job {job} lane', lane))}")
+    partial = [step["env"]["PARTIAL"] for step in document["jobs"]["ci-ok"]["steps"]
+               if "PARTIAL" in (step.get("env") or {})]
+    if len(partial) != 1:
+        raise Refused(f"the ci-ok job has {len(partial)} steps that set PARTIAL, not one")
+    out.append(f"PARTIAL={evaluator.evaluate(expression_of('PARTIAL', partial[0]))}")
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("workflow")
     parser.add_argument("--event")
     parser.add_argument("--label-readers", action="store_true")
+    parser.add_argument("--lanes", action="store_true")
     parser.add_argument("--label", action="append", default=[])
     parser.add_argument("--verdict", action="append", default=[])
     parser.add_argument("--verdicts", default="true", choices=["true", "false"])
@@ -197,6 +262,15 @@ def main():
         return 0
     if not args.event:
         parser.error("--event is required unless --label-readers is given")
+    if args.lanes:
+        context = {"github": {"event_name": args.event,
+                              "event": {"pull_request": {"labels": [{"name": label} for label in args.label]}}}}
+        try:
+            print("\n".join(lanes(document, Evaluator(context))))
+        except Refused as refusal:
+            print(f"ci_router_outputs: {refusal}", file=sys.stderr)
+            return 2
+        return 0
     filters = yaml.safe_load(Path(args.workflow).parent.parent.joinpath("ci-filters.yaml").read_text())
     verdicts = {name: args.verdicts for name in filters}
     for pair in args.verdict:

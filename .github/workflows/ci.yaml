@@ -339,7 +339,7 @@ jobs:
     uses: ./.github/workflows/ci-job-test.yaml
     with:
       # why: .github/ci-notes/ci.md#what-the-lane-input-reads
-      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
+      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:test')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       changes-result: ${{ needs.changes.result }}
       guide_layout: ${{ needs.changes.outputs.guide_layout }}
@@ -546,7 +546,7 @@ jobs:
     uses: ./.github/workflows/ci-job-pi-legion.yaml
     with:
       # why: .github/ci-notes/ci.md#what-the-lane-input-reads
-      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
+      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#the-dashboards-and-the-proof-editors-lint-typecheck-unit-tests-build-and
@@ -637,7 +637,7 @@ jobs:
     uses: ./.github/workflows/ci-job-envoy-infra-go.yaml
     with:
       # why: .github/ci-notes/ci.md#what-the-lane-input-reads
-      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
+      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:envoy_infra_go')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # why: .github/ci-notes/ci.md#the-checks-whose-subject-is-text-each-modules-internaltextcheck-package-the-dispatch
@@ -1041,10 +1041,11 @@ jobs:
           ALWAYS_RUN: ${{ env.CI_OK_ALWAYS_RUN }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          # The jobs that run only part of themselves without the label: dispatch-browser, test,
-          # pi-legion and envoy-infra-go, whose `lane:` inputs above read this same term. ci-ok.sh
-          # names each as run in part.
-          PARTIAL: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[]' || '["dispatch-browser", "test", "pi-legion", "envoy-infra-go"]' }}
+          # The jobs that run only part of themselves at this head: dispatch-browser, test,
+          # pi-legion and envoy-infra-go, each named while its `lane:` input above reads
+          # `pull-request`. ci-ok.sh names each as run in part. ci-router-outputs.test.sh holds this
+          # list to those four inputs under every label it tries.
+          PARTIAL: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '[]' || format('["dispatch-browser"{0}{1}{2}]', !contains(github.event.pull_request.labels.*.name, 'lane:test') && ', "test"' || '', !contains(github.event.pull_request.labels.*.name, 'lane:pi_legion') && ', "pi-legion"' || '', !contains(github.event.pull_request.labels.*.name, 'lane:envoy_infra_go') && ', "envoy-infra-go"' || '') }}
         run: .github/scripts/ci-ok.sh
 
       # why: .github/ci-notes/ci.md#why-a-failing-verdict-of-a-group-behind-the-front-waits-for-the-front

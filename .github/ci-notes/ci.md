@@ -1369,7 +1369,8 @@ only which lane it runs: that job's `lane:` input reads the label, and
 A pull request's run is a fast filter: the builds, the vets, the format, typecheck and lint
 checks, and the fast tests. The merge queue runs every job its paths select on the tree the
 change lands as, so a slow test runs once, in the queue, and main stays green. The rule that
-sorts a job, read off its pull-request runs (successful jobs, attempt 1; the numbers below are
+sorts a job, read off its pull-request runs (attempt 1, every leg of the job that ran succeeded,
+a job's time from its first leg's start to its last leg's end; the numbers below are
 2026-11-22's):
 
 - A job whose pull-request run takes 10 minutes or less at the 90th percentile runs on a pull
@@ -1377,26 +1378,27 @@ sorts a job, read off its pull-request runs (successful jobs, attempt 1; the num
 - A build, vet, format, typecheck or lint check runs on a pull request whatever its job's time,
   so a change that does not build or is not formatted fails while its author still has it.
 - Every other test is a slow suite: the merge queue runs it, and a pull request runs it only
-  under the label `full-ci`, or `lane:<output>` for one held-back output. A job that is all slow
+  under the label `full-ci`, or `lane:<output>` for that one job. A job that is all slow
   suite is held back through its `changes` output
   (.github/ci-notes/ci.md#how-a-slow-suite-is-held-back-on-a-pull-request). A job that mixes the
-  two keeps its build and check steps on the pull request and runs its tests behind its `lane`
-  input (.github/ci-notes/ci.md#what-the-lane-input-reads); ci-ok names it as run in part.
+  two keeps its build and check steps, and any fast test, on the pull request and runs its slow
+  test steps behind its `lane` input (.github/ci-notes/ci.md#what-the-lane-input-reads); ci-ok
+  names it as run in part.
 
 What that gives, with each job's 90th percentile in minutes:
 
-- held back whole: daemon-go 43.2, envoy-go 38.9, envoy-go-race-api 36.4, envoy-go-race-docs
-  33.7 and envoy-go-docs-finalizers 19.5 (one output), dispatch-memory 32.2, envoy-go-race 29.7,
-  envoy-go-claim-model 21.1, dispatch-multiprocess 18.5, envoy-go-checks (the script tests, 17.4
-  of what was a 24.1-minute job), dispatch-two-builds 13.7 and envoy-smoke 11.4;
+- held back whole: daemon-go 43.1, envoy-go 39.1, envoy-go-race-api 36.4, envoy-go-race-docs
+  33.7 and envoy-go-docs-finalizers 19.8 (one output), dispatch-memory 32.5, envoy-go-race 29.8,
+  envoy-go-claim-model 21.1, dispatch-multiprocess 18.7, envoy-go-checks (the script tests, 17.4
+  of what was a 24.0-minute job), dispatch-two-builds 13.7 and envoy-smoke 11.4;
 - run in part on a pull request: test (12.3; its plugin build, changelog fold, lint and typecheck
   steps take 1.1 on the pull request), pi-legion (14.8; its contracts build, typecheck and pack
   take 1.5), envoy-infra-go (14.0; its format check, vets and unit tests take 3.2) and
-  dispatch-browser (16.4, its two-project pull-request lane);
+  dispatch-browser (17.2, its two-project pull-request lane);
 - on the pull request: envoy-go-build (6.8: the build, vet, format, generated-code and migration
   checks that shared a job with the script tests), and every other job, each at 9.8 or less.
 
-dispatch-browser's pull-request lane is the one exception the rule names: at 16.4 minutes it is
+dispatch-browser's pull-request lane is the one exception the rule names: at 17.2 minutes it is
 above the line, and it stays as it was, since its rows tagged `@pr` are the ones a change to the
 dashboard is held to (.github/ci-notes/ci.md#why-the-browser-suite-is-ungated-and-what-the-label-decides).
 A job whose numbers cross the line moves class by the same rule.
@@ -1424,33 +1426,36 @@ names one of them, which reads `skipped` on a pull request without the label.
 
 ## A lane label turns on one slow suite on a pull request
 
-A pull request label `lane:<output>` turns on that one output of `changes`, where its paths
-matched, as `full-ci` turns on all of them. `<output>` is one of the eleven outputs the
-`full-ci` term gates: `daemon_go_tests`, `envoy_go`, `envoy_go_checks`, `envoy_go_race`,
-`envoy_go_race_api`, `envoy_go_claim_model`,
+A pull request label `lane:<output>` turns on that one slow suite, as `full-ci` turns on all of
+them. For a job held back whole, `<output>` is one of the eleven outputs the `full-ci` term
+gates, and the label turns that output on where its paths matched: `daemon_go_tests`,
+`envoy_go`, `envoy_go_checks`, `envoy_go_race`, `envoy_go_race_api`, `envoy_go_claim_model`,
 `envoy_go_race_docs` (which gates envoy-go-race-docs and envoy-go-docs-finalizers both),
-`dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds` and `envoy_smoke`. It is for
-a pull request that needs one slow suite's result at its head - a test that only that suite
-runs, or a `ci_check` naming that job - without running the other ten. Each output's term
-names its own label, so the label that turns an output on is written beside it and nowhere
-else, and the paths term stays: a lane label never runs a suite its filter did not select.
+`dispatch_memory`, `dispatch_multiprocess`, `dispatch_two_builds` and `envoy_smoke`. For a job
+that runs in part, `<output>` is the output that selects the job - `test`, `pi_legion` or
+`envoy_infra_go` - and the label turns that job's `lane` input to `full`
+(.github/ci-notes/ci.md#what-the-lane-input-reads), so its slow test steps run on the pull request
+too. It is for a pull request that needs one slow suite's result at its head - a test that only
+that suite runs, or a `ci_check` naming that job - without running the others. Each term names
+its own label, so the label that turns a job on is written beside it and nowhere else, and the
+paths term stays: a lane label never runs a suite its filter did not select.
 
 A label that names no such output - a misspelling, a job id such as `lane:envoy-go` where the
-output is `lane:envoy_go`, or an output with no `full-ci` term - turns on nothing and fails
-nothing. The label decides only what runs, never the verdict, and ci-ok's report names each
-job the label held back, so a misspelt label shows as its job not run. Failing the run on such
-a label would fail every check of it for a typo and need a step of its own that reads the
-labels. GitHub compares the label without regard to case. The `lane` inputs of the jobs that
-run in part (.github/ci-notes/ci.md#what-the-lane-input-reads) are not outputs, and stay the
-`full-ci` label's to choose.
+output is `lane:envoy_go`, or an output that is neither held back nor run in part - turns on
+nothing and fails nothing. The label decides only what runs, never the verdict, and ci-ok's
+report names each job the label held back or trimmed, so a misspelt label shows as its job not
+run. Failing the run on such a label would fail every check of it for a typo and need a step of
+its own that reads the labels. GitHub compares the label without regard to case.
+dispatch-browser's lane stays the `full-ci` label's to choose.
 
 A lane label is read as `full-ci` is, from the pull request the run's own event carries: it
 takes effect at the next push, reopen or ready-for-review, not when it is added, since this
 workflow takes no `labeled` trigger. On a head with no new commit to push, close the pull
 request and reopen it. Take it off once the run it was added for passes, as `full-ci`.
-.github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs
+.github/scripts/ci-router-outputs.test.sh evaluates ci.yaml's own outputs and `lane` inputs
 (.github/scripts/ci_router_outputs.py) and holds them to this: each lane label turns on its
-own output and leaves every other output as an unlabelled pull request has it, `full-ci` still
+own output, or its own job's lane, and leaves every other one as an unlabelled pull request has
+it, the ci-ok job's PARTIAL names exactly the jobs whose lane reads `pull-request`, `full-ci` still
 turns all eleven on, the paths term still holds under both, and a label naming no such output
 turns on nothing.
 
@@ -1839,16 +1844,19 @@ that job's last step, the ci-ok report.
 
 ## What the lane input reads
 
-An unlabelled pull request gets the `pull-request` lane; a pull request carrying `full-ci`,
-and every other event, gets the full lane. Four jobs read it:
+An unlabelled pull request gets the `pull-request` lane; a pull request carrying `full-ci`, or the
+job's own `lane:<output>` label, and every other event, gets the full lane. Four jobs read it:
 
 - dispatch-browser runs the two projects a pull request is held to on the pull-request lane,
-  and every project on the full one;
+  and every project on the full one; `full-ci` alone chooses its lane;
 - test, pi-legion and envoy-infra-go run their build, check, lint, typecheck and vet steps on
-  either lane, and their tests on the full one alone (each called file's `lane` input says which
-  steps): the test job's harnesses and Bun suites, pi-legion's suite, and envoy-infra-go's
-  natslive tests are slow suites
-  (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
+  either lane, envoy-infra-go its unit tests too, and their slow test steps on the full lane
+  alone (each called file's `lane` input says which steps): the test job's harnesses and Bun
+  suites, pi-legion's suite, and envoy-infra-go's natslive tests are slow suites
+  (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue). Their
+  labels are `lane:test`, `lane:pi_legion` and `lane:envoy_infra_go`. The test job's steps still
+  all run when `changes` did not succeed, on either lane
+  (.github/ci-notes/ci.md#the-fail-open-jobs-and-what-they-buy-while-changes-is-broken).
 
 That is what lets a worker recheck a slow-suite failure on a pull request: the label picks the
 lane, while each job's `changes` output runs the job either way. The ci-ok job's PARTIAL names

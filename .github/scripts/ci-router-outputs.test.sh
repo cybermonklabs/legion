@@ -4,7 +4,11 @@
 # outputs are false whatever their paths say, `full-ci` turns every one of them on, a
 # `lane:<output>` label turns on that one output and no other, still only where its paths
 # matched, and a label that names no such output turns on nothing
-# (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
+# (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). The jobs that
+# run in part read the same labels through their `lane` input, and the ci-ok job's PARTIAL must
+# name exactly the jobs whose lane reads `pull-request` under every label, or ci-ok calls a job
+# that ran in full a partial one, or the reverse
+# (.github/ci-notes/ci.md#what-the-lane-input-reads).
 #
 # The held-back set is read, not listed here, and read apart from the label terms it tests: the
 # outputs a merge group turns on and an unlabelled pull request holds false, every paths filter
@@ -161,6 +165,57 @@ set -e
 check "exits 2" "$(is "$status" 2)"
 check "names envoy_smoke and the read" \
   "$(contains "$err" 'output envoy_smoke: context github.event.pull_request is outside the modelled contexts')"
+
+# lanes_of <workflow> <argument>...: the `lane` input of each job that passes one, as `job=lane`,
+# then `PARTIAL=<the ci-ok job's list>`, for one event and set of labels.
+lanes_of() {
+  local workflow=$1
+  shift
+  "$script_dir/ci_router_outputs.py" "$workflow" --lanes "$@"
+}
+# short_of <lanes text>: the jobs on the pull-request lane, sorted, space-separated.
+short_of() { sed -n 's/=pull-request$//p' <<<"$1" | sort | tr '\n' ' '; }
+# partial_of <lanes text>: the jobs PARTIAL names, sorted, space-separated.
+partial_of() { sed -n 's/^PARTIAL=//p' <<<"$1" | jq -r '.[]' | sort | tr '\n' ' '; }
+ci="$repo/.github/workflows/ci.yaml"
+part_run='dispatch-browser envoy-infra-go pi-legion test '
+
+echo "case: an unlabelled pull request runs the four in part, and PARTIAL names the four"
+got=$(lanes_of "$ci" --event pull_request)
+check "the four are on the pull-request lane" "$(is "$(short_of "$got")" "$part_run")"
+check "PARTIAL names the same four" "$(is "$(partial_of "$got")" "$part_run")"
+
+echo "case: a merge group, a dispatched run and full-ci run every job in full, and PARTIAL is empty"
+for args in "--event merge_group" "--event workflow_dispatch" "--event pull_request --label full-ci"; do
+  # shellcheck disable=SC2086 # each word of args is one argument
+  got=$(lanes_of "$ci" $args)
+  check "$args: no job on the pull-request lane" "$(is "$(short_of "$got")" "")"
+  check "$args: PARTIAL is empty" "$(is "$(partial_of "$got")" "")"
+done
+
+echo "case: a job's own lane label runs that job in full, and PARTIAL drops it alone"
+for pair in test:test pi_legion:pi-legion envoy_infra_go:envoy-infra-go; do
+  output=${pair%%:*} job=${pair#*:}
+  got=$(lanes_of "$ci" --event pull_request --label "lane:$output")
+  want=$(tr ' ' '\n' <<<"$part_run" | grep -vx -- "$job" | grep . | tr '\n' ' ')
+  check "lane:$output runs $job in full" "$(is "$(short_of "$got")" "$want")"
+  check "lane:$output: PARTIAL names the other three" "$(is "$(partial_of "$got")" "$want")"
+  check "lane:$output leaves every changes output as an unlabelled pull request has it" \
+    "$(is "$(outputs --event pull_request --label "lane:$output")" "$baseline")"
+done
+
+echo "case: a lane label of a held-back output leaves every lane as an unlabelled pull request has it"
+got=$(lanes_of "$ci" --event pull_request --label lane:daemon_go_tests --label lane:envoy-infra-go)
+check "the four stay on the pull-request lane" "$(is "$(short_of "$got")" "$part_run")"
+check "PARTIAL still names the four" "$(is "$(partial_of "$got")" "$part_run")"
+
+echo "case: a lane whose label literal is broken disagrees with PARTIAL, which this harness reads"
+broken=$(broken_copy "$work/no-lane-input" lane "'lane:pi_legion'" "'lane:pi_legiox'")
+check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$ci" && echo same)" "")"
+got=$(lanes_of "$broken" --event pull_request --label lane:pi_legion)
+check "pi-legion stays on the pull-request lane" "$(is "$(short_of "$got" | grep -c pi-legion)" 1)"
+check "while PARTIAL drops it, so the two disagree" \
+  "$(is "$([ "$(short_of "$got")" = "$(partial_of "$got")" ] && echo agree || echo disagree)" disagree)"
 
 echo "case: an expression this reader does not model is refused, never read as false"
 mkdir -p "$work/.github/workflows"
