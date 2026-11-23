@@ -615,11 +615,7 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 // stored. Every update is stored once and the live write's never a second time, and the stored
 // history decodes with nothing left pending, every time over many rounds (run it with -race).
 func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
-	// Not parallel: it is one of the tests at the race binary's highest samples when the
-	// package runs six at once (build-cluster runs legion-race-docsiso6c-1 and -2, 7.3 and 9.5 GB
-	// against the step's 8 GB), as it grows a document's history or room far past the others'.
-	// Each round's edits grow the document's history, so a round costs more than the one before:
-	// under -race 150 rounds run in about 57 s and 200 in about 110 s.
+	t.Parallel()
 	const rounds = 150
 	ctx := context.Background()
 	database := storetest.Open(t)

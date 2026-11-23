@@ -1336,10 +1336,7 @@ func askRowCount(t *testing.T, service *Service, artifactID, blockID string) int
 // it; or the refusal names no delete and says why. No body is skipped for resembling another, and
 // each block's words are its own, so a lost word names its block.
 func TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision(t *testing.T) {
-	// Not parallel at the top: its 1,242 subtests run in parallel with each other, each loading a
-	// room of its own on one service, which holds them until the test ends. Beside the package's
-	// other tests that set the race binary's peak, 8.4 GB at six at once against the step's 8 GB
-	// (build-cluster run legion-race-docsmem6); alone, the package peaked at 4.4 GB.
+	t.Parallel()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
 	bodies := askBodies([]string{"P", "E", "L", "N"}, 5)
@@ -1600,10 +1597,7 @@ func TestSetAskBlockTextRefusalOfAnAskHoldingABrokenDecisionNamesTheNestedDelete
 // quoted in it; or it names no delete and says why, naming no decision that already reads as one,
 // so a caller is never sent to one, nor from the decision to the one holding it and back.
 func TestSetAskBlockTextRefusalOfEveryBrokenBodyHoldingADecisionLeadsToAValidDecision(t *testing.T) {
-	// Not parallel at the top: its 715 subtests run in parallel with each other, each loading a
-	// room of its own on one service, which holds them until the test ends. Beside the package's
-	// other tests that set the race binary's peak, 8.4 GB at six at once against the step's 8 GB
-	// (build-cluster run legion-race-docsmem6); alone, the package peaked at 4.4 GB.
+	t.Parallel()
 	service, _ := newTestService(t)
 	service.settle = time.Hour
 	nested := askBodies([]string{"P", "E", "L", "N"}, 3)
