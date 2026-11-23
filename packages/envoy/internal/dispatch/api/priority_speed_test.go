@@ -76,6 +76,12 @@ import (
 // generic ones (pg_prepared_statements, 2026-11-20).
 const speedCustomPlans = 5
 
+// speedSettleReads is how many times countSpeedStatement reads one statement, beyond the warm-up,
+// to settle its buffer count on the fewest any read made. One read past the warm-up is enough once
+// the pages' hint bits are set; a few leaves room for a reader that needs more than one to settle,
+// at a cost of a few explains a statement.
+const speedSettleReads = 5
+
 // The bounds the two tests hold their readings to, from the issue's own checks: the relation
 // read at no more than twice the same page without it, in rows and in buffer accesses (its scan's
 // allocations are held closer, speedScanAllocsPerID); the whole priorities body at no more than
@@ -517,13 +523,24 @@ func countSpeedPage(t *testing.T, corpus speedCorpusShape, name, query string, a
 }
 
 // countSpeedStatement counts the work of one statement under one of its two plans (speedWork), on
-// connection, a connection of the untraced pool: once to warm the connection, whose first run of
-// a statement can read catalog pages a second does not, then twice to be counted. The generic
-// plan is the one plan_cache_mode = force_generic_plan makes a prepared statement run from its
-// first execution, the plan a connection's later runs get (speedCustomPlans), as
-// analyzeGenericListingPlan reads it. Two counts that differ are a count of something beside the
-// statement, so the test stops on them rather than hold either to a bound; a count of no rows or
-// no buffer accesses is a plan this read could not see into, so it stops on that too.
+// connection, a connection of the untraced pool: once to warm the connection, whose first run of a
+// statement can read catalog pages a later one does not, then speedSettleReads times to be
+// counted. The generic plan is the one plan_cache_mode = force_generic_plan makes a prepared
+// statement run from its first execution, the plan a connection's later runs get
+// (speedCustomPlans), as analyzeGenericListingPlan reads it.
+//
+// The reads must agree on the plan's shape and its rows — the nodes, the walks, the rows the plan
+// produces and reads and throws away, and the rows it answers — which is the statement's work and
+// what the machine cannot move; two reads that answer different rows are a count of a different
+// plan, and the test stops. The buffer accesses are the fewest any read made (speedWork.buffers):
+// the first read of a heap page whose tuples a committed transaction wrote sets the page's hint
+// bits and, where the visibility map does not yet mark the page all-visible, fetches the heap
+// through an index-only scan, so a read before the pages settle accesses more buffers than the
+// read's own work (3,135 against 3,069 for the body's unplaced fault on a loaded arm64 CI runner,
+// 2026-11-23; a quiet amd64 node reads 3,069 every time of 40). The fewest is the settled floor,
+// the pages the plan touches once the hint bits are set, which is one number on either
+// architecture; the extra reads only ever add to it. A count of no rows or no buffer accesses is a
+// plan this read could not see into, so the test stops on that too.
 func countSpeedStatement(t *testing.T, connection *pgx.Conn, name, query string, arguments []any, generic bool) speedWork {
 	t.Helper()
 	ctx := context.Background()
@@ -565,17 +582,23 @@ func countSpeedStatement(t *testing.T, connection *pgx.Conn, name, query string,
 		}
 		return work
 	}
-	explain()
-	first, second := explain(), explain()
-	if first != second {
-		t.Fatalf("two counts of %s differ, %.0f rows and %.0f buffer accesses, then %.0f rows and %.0f buffer accesses: neither is the statement's work alone",
-			name, first.rows, first.buffers, second.rows, second.buffers)
+	warm := explain()
+	settled := warm
+	for range speedSettleReads {
+		read := explain()
+		if read.rows != settled.rows || read.answered != settled.answered || read.nodes != settled.nodes || read.walks != settled.walks {
+			t.Fatalf("two counts of %s answer different work, %.0f rows over %d nodes and then %.0f rows over %d nodes: one is a count of a different plan",
+				name, settled.rows, settled.nodes, read.rows, read.nodes)
+		}
+		if read.buffers < settled.buffers {
+			settled.buffers = read.buffers
+		}
 	}
-	if first.rows == 0 || first.buffers == 0 {
+	if settled.rows == 0 || settled.buffers == 0 {
 		t.Fatalf("%s counted %.0f rows and %.0f buffer accesses over %d plan nodes: the plan was not read, so nothing was measured",
-			name, first.rows, first.buffers, first.nodes)
+			name, settled.rows, settled.buffers, settled.nodes)
 	}
-	return first
+	return settled
 }
 
 // speedRequestWork is the work of one request: the statements the server sent to answer it, in
