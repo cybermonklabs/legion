@@ -90,6 +90,7 @@ func (rig *lookupRig) write(_ int32, w http.ResponseWriter, r *http.Request) {
 // A write with no key runs unkeyed by design and is no path of this census. Each row's control is
 // a subtest of its own, so a row that fails still runs it.
 func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
+	t.Parallel()
 	t.Run("the caller lookup fails for a passing reason", func(t *testing.T) {
 		t.Run("control", func(t *testing.T) {
 			// The fallback the layer took before: its lookup fails, and the handler, run with no

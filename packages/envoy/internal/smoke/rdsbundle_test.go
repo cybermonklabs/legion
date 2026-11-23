@@ -17,6 +17,8 @@ import (
 	tcexec "github.com/testcontainers/testcontainers-go/exec"
 )
 
+func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
+
 // rdsBundleInImage is where the Envoy image ships the RDS CA bundle (docker/Dockerfile).
 const rdsBundleInImage = "/etc/ssl/rds/global-bundle.pem"
 

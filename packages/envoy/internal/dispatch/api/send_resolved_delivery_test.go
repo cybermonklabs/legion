@@ -17,6 +17,7 @@ import (
 // and offers it no same-mode Retry. That holds only while every failure sendResolvedDelivery reports
 // comes with no envelope id: one beside a failure would read as the session's own error answer.
 func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
+	t.Parallel()
 	session := "s1"
 	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
 	for _, tc := range []struct {
@@ -81,6 +82,7 @@ func TestSendResolvedDeliveryReportsNoEnvelopeWithAnyFailure(t *testing.T) {
 // words (storeUnconfirmedText), not the receipt timeout's, and it is retryable under its key, as a
 // receipt timeout is. The control is the same 503 with no code: an ordinary unreachable failure.
 func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *testing.T) {
+	t.Parallel()
 	session := "s1"
 	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
 	send := func(body string) sendOutcome {

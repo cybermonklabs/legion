@@ -500,7 +500,7 @@ function componentsArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
       mode: z
         .enum(ISSUE_COMPONENTS_MODES)
         .describe(
-          "inherit: take the parent chain's attachment (the default; deletes this issue's own). explicit: attach to ids. none: not architectural work, with reason."
+          "inherit: take the parent chain's attachment within the issue's own project (the default; deletes this issue's own). explicit: attach to ids. none: not architectural work, with reason."
         ),
       ids: z
         .array(z.string({ min: 1 }), { min: 1, max: 50 })
@@ -887,7 +887,7 @@ export const dispatchToolSpecs = [
       title: z
         .string({ max: ISSUE_TITLE_MAX })
         .describe("Concise issue title, at most 1,000 characters."),
-      parent: z.string().describe("Optional parent issue.").optional(),
+      parent: z.string().describe("Optional parent issue, in any project.").optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
         .describe(
@@ -922,14 +922,14 @@ export const dispatchToolSpecs = [
       assignee: z
         .string()
         .describe(
-          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one. A question on it reaches the person it was handed to, else the issue's assignee, else the project's default assignee. Set it only when a person said who owns the issue."
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one. A parent in another project passes on no assignee. A question on it reaches the person it was handed to, else the issue's assignee, else the project's default assignee. Set it only when a person said who owns the issue."
         )
         .optional(),
       components: componentsArgument(z).optional(),
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name. A child inherits its parent's when unset, and an issue with none on its parent chain takes the project's default."
+          "The repository the issue targets, owner/name. When unset, the issue takes the nearest ancestor's in its own project, and an issue with none above it in its own project takes the project's default."
         )
         .optional(),
     }),
@@ -1025,7 +1025,9 @@ export const dispatchToolSpecs = [
         .optional(),
       parent: z
         .string()
-        .describe("Parent issue key in the same project; an empty string clears the parent.")
+        .describe(
+          "Parent issue key, in any project; an empty string clears the parent. A parent in another project passes on no repository, components or legion label."
+        )
         .optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
@@ -1049,7 +1051,7 @@ export const dispatchToolSpecs = [
       repo: z
         .string()
         .describe(
-          "The repository the issue targets, owner/name. An empty string clears it, so the issue inherits its parent's or the project's default again."
+          "The repository the issue targets, owner/name. An empty string clears it, so the issue takes the nearest ancestor's in its own project, or the project's default, again."
         )
         .optional(),
       before: z
@@ -2406,7 +2408,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or, for a broker token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, or null. A machine's broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with; an exchange entry's broker token that names its account writes, recorded under that account. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee, when the parent is in the issue's own project, and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or, for a broker token naming no person, the fleet its machine belongs to or the Kubernetes account an exchange entry lists, or null. A machine's broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with; an exchange entry's broker token that names its account writes, recorded under that account. project is the one project key your credential may write, or null when it names none.",
     arguments: () => ({}),
     strict: true,
   },

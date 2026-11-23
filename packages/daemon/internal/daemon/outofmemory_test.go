@@ -29,6 +29,7 @@ const outOfMemoryTools = "skill://legion-worker/references/tools.md"
 // delivery in the store and the daemon that relaunches the role may not be the one that saw the
 // end: this test posts the end to one daemon and reads the prompt the next one sends.
 func TestAnOutOfMemoryEndTellsTheRoleWhoseTurnItCutAcrossARestart(t *testing.T) {
+	t.Parallel()
 	const task = "Continue Workflow. Issue: LEGION-484. Phase: implementing."
 	worked, idle := claim.RoleImplementer, claim.RoleTester
 	rig := newPodUpdateRig(t, readyWorker(worked), readyWorker(idle))

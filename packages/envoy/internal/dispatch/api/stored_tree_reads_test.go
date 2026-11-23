@@ -195,6 +195,7 @@ func countedTreesRead(t *testing.T, handler http.Handler, target string) *httpte
 // it answers, and stores nothing when the table held every one of them: the cost of the trees on
 // a cold list is one round trip, not one per comment and not one markdown parse per comment.
 func TestACommentListReadsItsStoredTreesInOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -251,6 +252,7 @@ func TestACommentListReadsItsStoredTreesInOneStatement(t *testing.T) {
 // always did. Outside the transaction the same store writes, which is what makes the skip the
 // held connection's doing and not the text's.
 func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
+	t.Parallel()
 	_, database, deps := newTestServer(t, testServerOptions{})
 	served := directServer(deps)
 	const body = "A body shaped inside a **read-only** transaction."
@@ -336,6 +338,7 @@ func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
 // no write stores that mode: the first read of a version is where its tree reaches the table,
 // and the latest mode's row of the same text is a row of its own.
 func TestAVersionsDisplayTreeIsStoredOnItsFirstRead(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "VRTR", "A version's own tree", unshownText("# Head\n\nIts *own* text."))
 	target := "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/versions/1"

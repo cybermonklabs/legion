@@ -139,9 +139,12 @@ cancellation, or a `changes` that failed or was cancelled — the moment that jo
 group that can no longer merge should leave the queue at the first failure. It posts only for the
 queue's front group, whose base is the tip of main: the queue takes a group behind the front out
 only once the groups in front of it end, and an early failing `ci-ok` there makes the queue build
-another group on it, so that group's verdict waits for the `ci-ok` job. Every check run it
-posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the `ci-ok` job's
-last step (`.github/scripts/ci-ok-reconcile.sh`) sets to what the job concluded each `ci-ok`
+another group on it, so that group's verdict waits for the `ci-ok` job, which holds a failing
+verdict until the group is the front (`.github/scripts/ci-ok-hold.sh`) for the same reason.
+Every check run it posts carries an `external_id` of `ci-ok-post:<that run's id>`. And the
+`ci-ok` job's reconcile step (`.github/scripts/ci-ok-reconcile.sh`), its last on every run but a
+merge group's first attempt whose verdict failed, where the hold ends the job, sets to what the
+job concluded each `ci-ok`
 check run on the head that is a post: one carrying that marker, or one with an empty
 `external_id`, which the release before the marker posted. A posted check run is updated by no
 re-run and can sit in another workflow's suite, so a run that was posted a failing `ci-ok` and
@@ -361,9 +364,11 @@ a Bun job's typecheck program are the two halves it does find, from `go list` an
 cold runner as on a warm machine; third-party packages fail to load, which loses no first-party
 package. Run it locally from anywhere: `.github/scripts/check-ci-filters.sh`.
 
-## Caches: no job of the router writes one
+## Caches: no job of the router writes a Go cache
 
-No run of `ci.yaml` saves an Actions cache entry. A pull request's entries are scoped to its ref,
+No run of `ci.yaml` saves a Go cache entry; the two entries a job of it saves are
+dispatch-two-builds' builds of the previous commit and of the first rollout, which only later runs
+of the same ref read. A pull request's entries are scoped to its ref,
 no other pull request reads them, and they count against the repository's cache limit, where they
 evict main's entries; a merge group's entries are no more readable than those. Only an event that
 writes the default branch's scope — a push to main — leaves an entry every later run can read, so
@@ -375,8 +380,9 @@ the fills live in workflows that run there.
   (`key: <family>-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}`),
   with the family's prefix as `restore-keys`
   (`restore-keys: ${{ format('<family>-{0}-{1}-', runner.os, runner.arch) }}`; the families are
-  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test` and `go-envoy-infra`, and `go-notices` in
-  the order the item below gives). In
+  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-darwin-vet` and `go-envoy-infra`,
+  and `go-notices` in the order the item below gives; `go-envoy-darwin-vet` restores into the
+  build cache directory its step's `GOCACHE` names, not into `~/.cache/go-build`). In
   `ci.yaml` that fallback applies on every run, a dispatched one on main included, because no job
   there saves. A job that does save keeps the prefix off main alone
   (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-{1}-', runner.os, runner.arch) || '' }}`),
@@ -384,10 +390,11 @@ the fills live in workflows that run there.
   which docs-pages.yaml calls on main, is the one such job. The architecture is in the key because
   a build cache holds the objects of the architecture that compiled them: without it, a job on
   `ubuntu-24.04-arm` restores an entry an x86_64 runner filled and compiles every object again.
-  Each family keeps one entry per runner architecture, refreshed only when Go is bumped. Do not
-  key on go.sum: every go.sum change would leave a whole entry, up to a gigabyte, for seven days. A
+  Each family is kept per runner architecture and, but for `go-envoy-infra` and `go-docs`, filled
+  again on every push to main, so a job restores the entry of the last fill that succeeded. Do not key
+  on go.sum: every go.sum change would leave a whole entry, up to a gigabyte, for seven days. A
   go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a
-  stale entry costs a run only what changed. Share a family only with the jobs that build the same
+  fill compiles only what changed. Share a family only with the jobs that build the same
   packages, or whichever job saves first owns the entry the others then miss.
 - `go-notices` is the one family keyed with the architecture before the OS
   (`key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`,
@@ -414,13 +421,18 @@ the fills live in workflows that run there.
 - Add no `actions/cache/save` step here, and no `if:` that tests `github.event_name == 'push'` or
   compares `github.ref` with a branch ref: the workflow runs on no push, so such a condition gates
   its step on what no run ever is, and `check-ci-filters.sh` refuses it. A family a new job
-  restores is filled by `.github/workflows/ci-caches.yaml`, which runs on a push to main, looks
-  each key up (`lookup-only: true`, no `restore-keys`) and, only on a miss, runs what the job
-  builds and saves it under exactly the key and paths the restore names; `check-ci-filters.sh`
-  holds the save to the restore and fails when the two drift. The fill runs on every runner a
-  job restoring that family runs on, one matrix leg per runner where there are two. `go-docs` is
-  the exception: docs-pages.yaml saves it on that same push, from the build job it shares with
-  ci.yaml's docs job.
+  restores is filled by `.github/workflows/ci-caches.yaml`, which runs on a push to main,
+  restores the family's newest entry (the job's key, and that key and a `-` as `restore-keys`),
+  runs on it what the job builds, and saves it under the key the job restores followed by
+  `-${{ github.sha }}`, with the paths the restore names; its `refill-superseded` job then deletes
+  every other entry of the family, so it keeps one entry per runner. No entry carries the job's
+  key itself, so the job's restore takes the newest entry whose key starts with it.
+  `check-ci-filters.sh` holds the
+  save to the restore and fails when the two drift. The fill runs on every runner a job restoring
+  that family runs on, one matrix leg per runner where there are two. Two families are the
+  exception: `go-envoy-infra`, whose key carries a hash of its module files, is filled only when
+  that key is missing, and `go-docs` is saved by docs-pages.yaml on that same push, from the build
+  job it shares with ci.yaml's docs job.
 - The release workflows' Go builds (release.yaml's `legion_build`, release-envoy-infra.yaml's
   `build`) restore `go-daemon` and `go-envoy-infra` and save nothing, so they keep the prefix as
   `restore-keys` on main too: an entry they never save cannot grow.

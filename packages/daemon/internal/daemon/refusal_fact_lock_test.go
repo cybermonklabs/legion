@@ -26,6 +26,7 @@ import (
 // refusal, on the same pool and under the same held lock: it waits on the lock, has not finished
 // while the lock is held, and finishes and drops its fence once the lock is free.
 func TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -90,6 +91,7 @@ func TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock(t *testing.T) {
 // (settling), so it waits on the lock, has not answered while the lock is held, and answers that
 // the hand-over no longer holds, its fence dropped, once the lock is free.
 func TestTheCheckOfAHandOverWaitsOnTheFactLockOnlyToDropACancelledFence(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

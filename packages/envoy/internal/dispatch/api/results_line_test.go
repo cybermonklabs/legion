@@ -46,6 +46,7 @@ func requireNoPrivateReference(t *testing.T, line string) {
 // plain hyphenated word that is no such key stays: one whose first part names no project, and a
 // project's name followed by a version.
 func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
 	createTestProject(t, handler, "ACME", "KERNEL")
@@ -262,6 +263,7 @@ func TestThePullRequestLineDropsPrivateReferencesFromTheReading(t *testing.T) {
 // The line never carries the command a result ran or its negative control, so an issue key in
 // either reaches no pull request through it.
 func TestThePullRequestLineCarriesNoRunAndNoNegativeControl(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
 	createTestProject(t, handler, "ACME")
@@ -291,6 +293,7 @@ type resultDryRun struct {
 // refusals the record makes before it writes, and records nothing: no row, no event. The line
 // it answers drops what the record's line drops.
 func TestAResultsDryRunAnswersTheLineAndRecordsNothing(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESK", "Line", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -352,6 +355,7 @@ func TestAResultsDryRunAnswersTheLineAndRecordsNothing(t *testing.T) {
 // line goes into a pull request. The line is written at the read, so a check whose words were
 // written before this rule answers it the same way.
 func TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCQ", "acme/widgets", "CI line")
 	words := "logs.example-tailnet.ts.net/runs shows " + issue.Key + "'s build passing at the head."
@@ -382,6 +386,7 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheChecksWords(t *testing.T) {
 // The runs `e2e build` and `e2e  build`, every word of which the line keeps, are named, the second
 // with its blanks as one. Each row is reported, so a rule that gets several rows wrong shows each.
 func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESCQ", "CI run name", "A spec\n")
 	withControl := `negative_control="` + ciCheckNegativeControl + `" `
@@ -418,6 +423,7 @@ func TestTheCIPullRequestLineDropsIssueKeysFromTheRunName(t *testing.T) {
 // keeps only part of reads `the CI run the check names`, and the check's words follow the run. The
 // run's own name, which the read answers in ci.run, stays whole.
 func TestTheCIVerdictLineNamesTheRunOnlyWhenItKeepsEveryWordOfIt(t *testing.T) {
+	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCQ", "acme/widgets", "CI verdict line")
 	const run = "unit_tests (test_build.py, 0)"
@@ -447,6 +453,7 @@ func TestTheCIVerdictLineNamesTheRunOnlyWhenItKeepsEveryWordOfIt(t *testing.T) {
 // so the kept text passes the budget at its seventeenth `abcd` (84 runes), and a budget two runes
 // lower stops at its sixteenth (79 runes), which the cut then leaves whole.
 func TestTheLineStopsJudgingOnceItsKeptTextPassesTheCut(t *testing.T) {
+	t.Parallel()
 	words := lineWordsFor([]string{"ACME"}, testServerURL)
 	lineOf := func(body string, budget int) string { return words.cut(words.keepThrough(body, budget)) }
 	for _, row := range []struct{ name, body string }{
@@ -499,6 +506,7 @@ func keptKeyFormingWords(words lineWords) []string {
 // the word, so no rune can split, join, hide or forge a key. The control lets one rune, the
 // zero-width space, back into the set: the property then fails, and names that rune.
 func TestEveryRuneOutsidePlainWordsDropsAKeyFormingWord(t *testing.T) {
+	t.Parallel()
 	words := lineWordsFor([]string{"ACME"}, testServerURL)
 	if kept := keptKeyFormingWords(words); len(kept) != 0 {
 		t.Fatalf("the rule keeps %d key-forming words, the first %v", len(kept), kept[:min(len(kept), 5)])
@@ -519,6 +527,7 @@ func TestEveryRuneOutsidePlainWordsDropsAKeyFormingWord(t *testing.T) {
 
 // plainPunctuation's doc comment lists its runes on a line of their own, and that list is the set.
 func TestThePlainPunctuationIsWhatItsDocCommentLists(t *testing.T) {
+	t.Parallel()
 	file, err := parser.ParseFile(token.NewFileSet(), "results.go", nil, parser.ParseComments)
 	if err != nil {
 		t.Fatalf("parse results.go: %v", err)
@@ -567,6 +576,7 @@ var hostTexts = []struct{ name, text, parsed string }{
 // public host by lineWords; the parse reads a bare `www.` address as a link, as GFM does, and
 // blockWords drops link text, so the parsed form holds no `www.` host while the raw form keeps it.
 func TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt(t *testing.T) {
+	t.Parallel()
 	ciHandler, database, fake := resultsGitHubCheckRuns(t)
 	ciIssue := issueInRepository(t, ciHandler, "RESWC", "acme/widgets", "CI hosts")
 	var document strings.Builder
@@ -672,6 +682,7 @@ const earlyStopBodies = 50000
 // Its control stops judging one rune early (budget 79, as `runes >= budget` would): that tail must
 // differ from the whole text's on some body, which shows the comparison can fail.
 func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
+	t.Parallel()
 	words := lineWordsFor([]string{"ACME", "RESK"}, testServerURL)
 	r := rand.New(rand.NewPCG(4517, 50))
 	var stopped, cut, mismatches, controlMismatches int
@@ -711,6 +722,7 @@ func TestTheEarlyStopPrintsWhatWholeTextJudgingPrints(t *testing.T) {
 // budget and whose cut part holds an issue key the whole word did not. A word whose cut part holds
 // no key is printed cut, which is the control.
 func TestTheCILineEndsAtTheRunWhenTheCutKeepsNothing(t *testing.T) {
+	t.Parallel()
 	words := lineWordsFor([]string{"ACME"}, testServerURL)
 	prefix := "- Check c1 (before_merge): pass at " + headCommit + ", from CI run " + ciCheckRun + "."
 	for _, row := range []struct{ name, text, want string }{

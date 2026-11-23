@@ -231,6 +231,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // has received exactly one cutover message on G and one on E over both boots, and none on A, D,
 // O, B, N, C, T or S.
 func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
+	t.Parallel()
 	rig := newCutoverRig(t)
 	ctx := context.Background()
 
@@ -410,6 +411,10 @@ type cutoverRig struct {
 	built   *built
 	board   *liveDispatch
 	o       overrides
+	// engine is the workflow engine the daemon booted on cfg builds (engineConfig), which
+	// composes every task it sends a merger, so the task a test expects is the one it composes
+	// (resumeTaskOf).
+	engine *workflow.Engine
 	// daemon is the running boot, and logs is its log alone, so each boot's records are read
 	// apart.
 	daemon *daemon
@@ -484,7 +489,8 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 		t.Fatal(err)
 	}
 	rig := &cutoverRig{cfg: cfg, project: project, pool: st.Pool(), records: record.NewStore(), built: &built{},
-		board: newLiveDispatch(t, cfg.Project), agents: map[claim.Token][]*cutoverAgent{}, upgraded: map[string]cutoverMergerRow{}}
+		engine: workflow.New(record.NewStore(), engineConfig(cfg, "", nil), quietLogger()),
+		board:  newLiveDispatch(t, cfg.Project), agents: map[claim.Token][]*cutoverAgent{}, upgraded: map[string]cutoverMergerRow{}}
 	rig.board.lists = true
 	rig.cfg.DispatchURL = rig.board.url
 	for i, issue := range []*cutoverIssue{&rig.a, &rig.g, &rig.e, &rig.d, &rig.op, &rig.b, &rig.n, &rig.c, &rig.te, &rig.s} {
@@ -741,8 +747,8 @@ func cutoverAssignment(issue string, p phase.Phase) string {
 }
 
 // cutoverSlotRepairTask is the task legion-v19.57.3's repair of a slot whose worker held no task
-// (its ResumeSlottedWorker) wrote on a start of issue's merger on merging: that release's
-// ResumePhaseTask, whose title the old record gives as the key. That release's withApprovedHead
+// (its ResumeSlottedWorker) wrote on a start of issue's merger on merging: that release's resume
+// task, whose title the old record gives as the key. That release's withApprovedHead
 // appends no approved head, since the record holds no review round's approval.
 func cutoverSlotRepairTask(issue string) string {
 	return fmt.Sprintf("Continue %s. Issue: %s. Phase: merging. Resume the existing phase work.", issue, issue)
@@ -763,8 +769,12 @@ func (r *cutoverRig) startOrOweMark(t *testing.T) bool {
 	if err := r.records.PutIssue(ctx, tx, control); err != nil {
 		t.Fatalf("record the control issue: %v", err)
 	}
+	task, err := r.engine.ResumeTask(ctx, tx, control)
+	if err != nil {
+		t.Fatalf("compose the control issue's resume task: %v", err)
+	}
 	if err := workflow.StartOrOwe(ctx, tx, r.records, control.Key, record.SuperviseRequest{Op: "start", Tree: control.Tree,
-		Role: claim.RoleMerger, Generation: control.Generation, Phase: phase.Merging, Task: workflow.ResumePhaseTask(control),
+		Role: claim.RoleMerger, Generation: control.Generation, Phase: phase.Merging, Task: task,
 		ResumeTask: true, RuleResume: true}, time.Now()); err != nil {
 		t.Fatalf("owe the control issue's merger a start: %v", err)
 	}
@@ -884,15 +894,11 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 }
 
 // toldOnce holds that issue's merger was given exactly one task over its whole life in this
-// test, and that it is the merging task: the resume task of the phase it holds
-// (workflow.ResumePhaseTask), read from the issue as the record holds it now.
+// test, and that it is the merging task: the resume task of the phase it holds, as the daemon's
+// engine composes it from the issue as the record holds it now (resumeTaskOf).
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
-	stands := readIssue(t, r.pool, issue.key)
-	if stands == nil {
-		t.Fatalf("read %s: the record does not hold it", issue.key)
-	}
-	want := workflow.ResumePhaseTask(*stands)
+	want := resumeTaskOf(t, r.pool, r.engine, issue.key)
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}
@@ -909,11 +915,7 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 // sentence in front of the news, and is counted as the news.
 func (r *cutoverRig) toldOnceWithNews(t *testing.T, issue cutoverIssue, version int) {
 	t.Helper()
-	stands := readIssue(t, r.pool, issue.key)
-	if stands == nil {
-		t.Fatalf("read %s: the record does not hold it", issue.key)
-	}
-	task := workflow.ResumePhaseTask(*stands)
+	task := resumeTaskOf(t, r.pool, r.engine, issue.key)
 	read := fmt.Sprintf("dispatch doc-read --issue %s --artifact spec-%s --version %d", issue.key, issue.key, version)
 	told := r.tasks(issue.merger)
 	merging, news := 0, 0

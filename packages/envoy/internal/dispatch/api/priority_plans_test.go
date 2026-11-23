@@ -62,6 +62,9 @@ const planBuffersRatio = 2
 // A run that reports a statement the baseline did not, misses one, or reports from another
 // connection fails, so a run that read nothing cannot pass, and each run's counts are printed.
 func TestPrioritiesReadKeepsItsPlans(t *testing.T) {
+	// Not parallel: it holds shared-buffer counts of its own statements to a ratio, and the
+	// shared buffers and their caching are the whole Postgres server's, which the package's
+	// parallel tests use at the same time; it runs alone, as it did on main.
 	corpus := seedSpeedCorpus(t)
 	database := corpus.server.deps.Store
 

@@ -50,6 +50,7 @@ import (
 //     signs a DPoP proof per request, so the driver carries every other row and this test
 //     carries this one.
 func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")

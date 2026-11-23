@@ -107,7 +107,7 @@ func (s rollBackStore) pullRequest(key string, number int, state record.PullRequ
 }
 
 // stepRole and stepType are the role and the type of the record of each place (workflow's
-// stepOf); a retro's and a merge's type is "".
+// stepOfWalk); a retro's and a merge's type is "".
 var (
 	stepRole = map[string]string{"step 1": "planner", "step 2": "implementer", "step 3": "tester", "step 4": "reviewer",
 		"step 5": "acceptance", "retro 0": "implementer", "merge 0": "merger"}

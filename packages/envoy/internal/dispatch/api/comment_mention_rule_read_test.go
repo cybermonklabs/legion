@@ -28,6 +28,7 @@ import (
 // send instead would give its claim up to the delivery sweep, a lease later, and let the second
 // go first.
 func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
+	t.Parallel()
 	failer := &ruleReadFailer{}
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{

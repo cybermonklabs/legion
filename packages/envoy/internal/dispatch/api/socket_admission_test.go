@@ -93,6 +93,7 @@ const (
 // document's issue once and the caller once, whether the room is warm or cold and with the
 // Hocuspocus authentication frame the provider sends once the socket is open.
 func TestASocketOpenReadsTheIssueAndTheCallerOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	counter := &statementCounter{}
 	counted := storetest.TracedStore(t, storetest.Open(t), counter)

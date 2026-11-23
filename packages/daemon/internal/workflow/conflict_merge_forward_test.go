@@ -475,7 +475,9 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 	apply(2*time.Minute, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: conflictHead,
 		HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it", SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
 	nothingAskedIn(phase.Accepting)
-	apply(3*time.Minute, intake.SignOff{Issue: "LEGION-208"})
+	// The architect's sign-off names the claim, the generation and the run of accepting its route
+	// read, which the workflow judges again (rootsSignOff).
+	apply(3*time.Minute, rootsSignOff(t, pool, readsAfter(3*time.Minute), "LEGION-208"))
 	nothingAskedIn(phase.Retro)
 	// A base push in retro reads the head again, and a read that finds it still conflicting asks
 	// nothing either.

@@ -20,6 +20,7 @@ import (
 // from another source and one naming a reason this daemon does not know are refused naming the
 // event, and a report of a publish the listener refused for want of a holder is logged at debug.
 func TestReholdReadsAnExceptionEnvelopeThatCarriesTheRoleFieldAsWithoutIt(t *testing.T) {
+	t.Parallel()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect}
 	topic := architectTopic(t, "LEGION-1")

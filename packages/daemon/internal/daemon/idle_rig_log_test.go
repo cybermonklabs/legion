@@ -16,6 +16,7 @@ const logFileChildEnv = "LEGION_TEST_IDLE_RIG_LOG_CHILD"
 // then fails, so that the parent can read what the test binary left in its TMPDIR. It runs only
 // when the parent re-executes this binary.
 func TestTheIdleRigLogHelperFails(t *testing.T) {
+	t.Parallel()
 	if os.Getenv(logFileChildEnv) != "1" {
 		t.Skip(logFileChildEnv + " is not set: this test is the child of TestAFailedTestLeavesNoDaemonLog")
 	}
@@ -35,6 +36,7 @@ func TestTheIdleRigLogHelperFails(t *testing.T) {
 // The child runs with a TMPDIR of its own, so the directory this test reads holds nothing but
 // what the child left, and t.TempDir removes it whatever this test concludes.
 func TestAFailedTestLeavesNoDaemonLog(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	child := exec.Command(os.Args[0], "-test.run", "^TestTheIdleRigLogHelperFails$", "-test.v")
 	child.Env = append(os.Environ(), logFileChildEnv+"=1", "TMPDIR="+dir, "GOTMPDIR="+dir)

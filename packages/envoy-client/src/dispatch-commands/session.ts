@@ -67,7 +67,7 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
-    "no owner, so an issue you create without an assignee takes its parent's assignee, else the project's default assignee, which every project names, so the issue always has one.";
+    "no owner, so an issue you create without an assignee takes its parent's assignee when the parent is in the same project, else the project's default assignee, which every project names, so the issue always has one.";
   // Whether Dispatch refuses every write this credential makes until a person signs in on its
   // machine (SIGN_IN_REQUIRED). Dispatch answers it as sign_in_required, from the same decision
   // its write check makes, so an exchange entry's token that names its account and no person,

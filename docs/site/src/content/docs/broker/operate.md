@@ -2012,12 +2012,12 @@ either.
   same fields and three more. `resolved` is how many addresses the host resolved to. `failure`
   is `refused` (an address this proxy never dials, a private one or one inside
   `BROKER_AIRLOCK_CLUSTER_RANGES`, or an IPv6 address that carries such an IPv4 address in its
-  NAT64, 6to4, Teredo or IPv4-compatible form), `unresolved` (a host the resolver answered no
-  address or an error for), `unreachable` (every address was dialled and none answered), or
-  `cancelled` (the command closed its connection while the proxy looked its host up or dialled
-  it, and every attempt was given up for that, so its error says nothing about the service; a
-  dial one of whose addresses failed on its own before the command left keeps that failure's
-  class).
+  NAT64, 6to4, Teredo, IPv4-compatible, IPv4-translated or ISATAP form), `unresolved` (a host
+  the resolver answered no address or an error for), `unreachable` (every address was dialled
+  and none answered), or `cancelled` (the command closed its connection while the proxy looked
+  its host up or dialled it, and every attempt was given up for that, so its error says nothing
+  about the service; a dial one of whose addresses failed on its own before the command left
+  keeps that failure's class).
   `reason` is the broker's own words. The `address` is the one refused, as `ip:port`, for
   `refused`; empty for `unresolved` and for a lookup that was `cancelled`; and for `unreachable`
   and a dial that was `cancelled`, the addresses dialled, as `ip:port` each, separated by spaces,

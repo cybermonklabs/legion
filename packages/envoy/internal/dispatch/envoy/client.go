@@ -255,7 +255,11 @@ type SendInput struct {
 // reports that the stream already held this message, so it stored nothing new; the publish still
 // reached the agent's subject. What recognises that repeat, and for how long, is stated on
 // DELIVERY_DUPLICATE_WINDOW_MS in @legion/contracts (contracts.DeliveryDuplicateWindow here). The
-// envelope id then names an envelope JetStream discarded.
+// envelope id then names the copy the stream holds under the same key where the listener is of
+// this release, which may be an earlier attempt's or another sender's (whose text the answer
+// leaves out, listenerwire.ReadsKeyTaken), and the envelope it built for the repeat, which
+// JetStream discarded, where it is older; the answer does not say which, so a caller reads no
+// envelope id from a duplicate.
 //
 // State is what the target was when the listener stored the message, SendStateConnected or
 // SendStateStopped. A listener that predates the field answers none, which reads as a connected
@@ -877,6 +881,11 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 			return nil, fmt.Errorf("%w: build POST /v1/messages/send request: %v", ErrUnavailable, err)
 		}
 		request.Header.Set("Content-Type", "application/json")
+		// Dispatch reads the key-taken answer (SendResult): a duplicate's envelope id is never
+		// recorded, and a kept copy's 202 names that copy's event_id. Without the header the
+		// listener answers a copy Dispatch cannot prove its own, as every copy that names no
+		// session is, with the envelope it built for this request, whose id names no stored copy.
+		request.Header.Set(listenerwire.ReadsHeader, listenerwire.ReadsKeyTaken)
 		return request, nil
 	}, func(err error) error { return sendTransportError(err, written.Load()) })
 	if err != nil {

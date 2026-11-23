@@ -37,6 +37,17 @@ func teredo(server, client [4]byte) netip.Addr {
 	return netip.AddrFrom16(a)
 }
 
+// isatap is the ISATAP address (RFC 5214) of v4 under a public /64: the interface identifier
+// 0:5efe, or 200:5efe when u is 0x02 (the IPv4 address is globally unique), then v4.
+func isatap(u byte, v4 [4]byte) netip.Addr {
+	a := [16]byte{0x26, 0x06, 0x47, 0x00, 0x47, 0x00, 0x00, 0x01, u, 0x00, 0x5e, 0xfe}
+	copy(a[12:], v4[:])
+	return netip.AddrFrom16(a)
+}
+
+// isatapWords is the words a refusal names an ISATAP address's IPv4 address with.
+const isatapWords = "the ISATAP form (interface identifier 0:5efe or 200:5efe) of"
+
 // embeddingForms are the IPv6 forms that carry an IPv4 address: each form's name, the words a
 // refusal names the carried address with (none for the IPv4-mapped form, which is read as the
 // IPv4 address it holds and refused in that address's own words), and the address that carries
@@ -70,6 +81,13 @@ var embeddingForms = []struct {
 	{"Teredo 2001::/32, its server", "a Teredo address (2001::/32) whose server is", func(v4 [4]byte) netip.Addr {
 		return teredo(v4, teredoPublic)
 	}},
+	{"IPv4-translated ::ffff:0:0:0/96", "the IPv4-translated form (::ffff:0:0:0/96) of", func(v4 [4]byte) netip.Addr {
+		a := [16]byte{8: 0xff, 9: 0xff}
+		copy(a[12:], v4[:])
+		return netip.AddrFrom16(a)
+	}},
+	{"ISATAP 0:5efe", isatapWords, func(v4 [4]byte) netip.Addr { return isatap(0x00, v4) }},
+	{"ISATAP 200:5efe", isatapWords, func(v4 [4]byte) netip.Addr { return isatap(0x02, v4) }},
 }
 
 // refusalOf is the whole answer localRule gives an address that carries v4 in the form whose
@@ -116,11 +134,13 @@ var publicIPv6 = []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
 
 // beyondForms are addresses just outside a form's prefix, each holding the bytes of a refused
 // address where that form carries one: ::1:a9fe:a9fe outside ::/96, 64:ff9b::1:a9fe:a9fe outside
-// 64:ff9b::/96, 64:ff9b:2::a9fe:a9fe outside 64:ff9b:1::/48, and 2001:1:a9fe:a9fe::, inside
+// 64:ff9b::/96, 64:ff9b:2::a9fe:a9fe outside 64:ff9b:1::/48, 2001:1:a9fe:a9fe::, inside
 // 2001::/23 and outside Teredo's 2001::/32, whose server half is 169.254.169.254 and whose client
-// half is 255.255.255.255. None of them is in a form, so no rule refuses one: each form is read up
-// to its prefix's edge and no further.
-var beyondForms = []string{"::1:a9fe:a9fe", "64:ff9b::1:a9fe:a9fe", "64:ff9b:2::a9fe:a9fe", "2001:1:a9fe:a9fe::"}
+// half is 255.255.255.255, ::ffff:1:a9fe:a9fe outside ::ffff:0:0:0/96, and two interface
+// identifiers that are not ISATAP's, 400:5efe and 0:5eff. None of them is in a form, so no rule
+// refuses one: each form is read up to its edge and no further.
+var beyondForms = []string{"::1:a9fe:a9fe", "64:ff9b::1:a9fe:a9fe", "64:ff9b:2::a9fe:a9fe", "2001:1:a9fe:a9fe::",
+	"::ffff:1:a9fe:a9fe", "2606:4700:4700:1:400:5efe:a9fe:a9fe", "2606:4700:4700:1:0:5eff:a9fe:a9fe"}
 
 // localUseRule is the words of the refusal of the whole local-use translation prefix.
 const localUseRule = "64:ff9b:1::/48"
@@ -163,6 +183,20 @@ func TestLocalRuleRefusesEveryIPv6FormOfARefusedIPv4Address(t *testing.T) {
 		for _, v6 := range v6s {
 			if got := localRule(v6, ranges); !strings.Contains(got, localUseRule) {
 				t.Errorf("localRule(%s) = %q; want it to name %q", v6, got, localUseRule)
+			}
+		}
+	})
+	// An ISATAP interface identifier sits in the last 64 bits, so a 6to4 address can carry two
+	// IPv4 addresses, its prefix's and its identifier's; each is read, and either refuses it.
+	t.Run("an ISATAP identifier under 6to4", func(t *testing.T) {
+		metadata := localRule(netip.MustParseAddr("169.254.169.254"), ranges)
+		for v6, want := range map[string]string{
+			"2002:808:808:1:0:5efe:a9fe:a9fe": refusalOf(isatapWords, "169.254.169.254", metadata),
+			"2002:a9fe:a9fe:1:0:5efe:808:808": refusalOf("the 6to4 form (2002::/16) of", "169.254.169.254", metadata),
+			"2002:808:808:1:0:5efe:808:808":   "",
+		} {
+			if got := localRule(netip.MustParseAddr(v6), ranges); got != want {
+				t.Errorf("localRule(%s) = %q; want %q", v6, got, want)
 			}
 		}
 	})

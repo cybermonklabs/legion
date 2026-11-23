@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -240,6 +241,7 @@ func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, gith
 // context deadline exceeded", #1347). Control: with appAttempt classing its own deadline as a
 // refusal, the boot exits on the first attempt's "context deadline exceeded".
 func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	held := appMintAttempt + appMintAttempt/2
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
@@ -271,6 +273,7 @@ func TestABootRunsItsKeyProofAgainAfterAGitHubRequestOutlastsAnAttempt(t *testin
 // A definitive answer (the App's key refused) is refused at once, naming the App whose key GitHub
 // refused and GitHub's answer: no retry changes it.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
@@ -290,6 +293,7 @@ func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 // spent before the review App's installations are asked for more than once. With a budget per App
 // the boot would wait both out, twice as long, which is what outlasted Stage 3's wait for /healthz.
 func TestABootGivesBothAppsKeyProofsOneRetryBudget(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, app string, n int) {
 		if app == "1" && n > 2 {
@@ -375,6 +379,7 @@ func linesBeforeServing(logged, msg string) []string {
 // check a-go, item 8): proveAppKeys asking the token source for each role's token on acme. That
 // mint is refused and the boot stops.
 func TestTheBootProvesEachAppKeyWithItsInstallations(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	t.Run("each App's key is proved and nothing is minted", func(t *testing.T) {
 		quickAppMints(t)
 		manager, standIn := appTokens(t, func(w http.ResponseWriter, _ *http.Request, _ string, _ int) { installed(w) })
@@ -533,43 +538,71 @@ func commandTokensWith(t *testing.T, answer func(w http.ResponseWriter, r *http.
 	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
 }
 
+// keyProofHolds is a token source whose InstalledOwners, the boot's key proof (proveAppKeys, its
+// one caller before the daemon serves a launch), first writes the file begun, so a token_command
+// can hold each release asked for once the key proof has begun and none the App logins read asked
+// for, whatever the number of runs the logins read made: an attempt of the logins read that ends
+// after it took a role's release, as one can on a loaded box past appMintAttempt, runs the command
+// again on its next attempt for every role, the roles it already read among them
+// (appLoginsAtBoot).
+type keyProofHolds struct {
+	*appauth.Manager
+	begun string
+}
+
+func (k *keyProofHolds) InstalledOwners(ctx context.Context, role appauth.AppRole) ([]string, error) {
+	if err := os.WriteFile(k.begun, nil, 0o644); err != nil {
+		return nil, err
+	}
+	return k.Manager.InstalledOwners(ctx, role)
+}
+
 // A token_command still running when an attempt of the boot's key proof ends holds the boot
 // without ending it, however many attempt bounds it outlasts: a grant may wait on a person's
 // approval. Each such attempt is pending and spends no attempt of appMintRetry
 // (appauth.ErrCommandPending, appAttempt), the next attempt joins the command's run still going
 // (appauth.Manager.InstalledOwners, whose token-mode read is runTokenCommand's), and once the
 // command prints its release the key proof passes and the boot serves. Here each App's
-// token_command answers the logins read at once, and holds the key proof's release of every
-// installation for twice the bounds of all appMintRetry's attempts. Control: with InstalledOwners
-// answering its caller's bare ctx.Err() in token mode too, as it did before INFRA-4401's review
-// 5996655281, each attempt the bound ends is transient, and the boot refuses once the three are
-// spent, naming the key proof's context deadline exceeded.
+// token_command holds each release of every installation the key proof asks for (keyProofHolds)
+// for twice the bounds of all appMintRetry's attempts and writes the hold down, so each App's
+// command holds one run: the key proof's attempts join it. It holds no release the logins read
+// asked for; an attempt of the logins read may still outlast its bound on a loaded box, pending
+// or transient, which is the boot doing its job, so no line of the logins read is counted.
+// Control: with InstalledOwners answering its caller's bare ctx.Err() in token mode too, as it did
+// before INFRA-4401's review 5996655281, each attempt the bound ends is transient, and the boot
+// refuses once the three are spent, naming the key proof's context deadline exceeded.
 func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	hold := 2 * time.Duration(appMintRetry.Attempts) * appMintAttempt
 	dir := t.TempDir()
-	tokens := commandTokensWith(t, func(http.ResponseWriter, *http.Request) bool { return false }, func(role appauth.AppRole) string {
-		// The runs that name no owner are the logins read's, then the key proof's, which holds.
-		runs := filepath.Join(dir, string(role)+".runs")
-		return fmt.Sprintf(`if [ -z "${%s}" ]; then echo run >>%q; [ "$(( $(wc -l <%q) ))" -ne 2 ] || sleep %.3f; fi; `,
-			appauth.TokenCommandOwner, runs, runs, hold.Seconds())
+	begun := filepath.Join(dir, "key-proof-begun")
+	held := func(role appauth.AppRole) string { return filepath.Join(dir, string(role)+".held") }
+	manager := commandTokensWith(t, func(http.ResponseWriter, *http.Request) bool { return false }, func(role appauth.AppRole) string {
+		return fmt.Sprintf(`if [ -z "${%s}" ] && [ -e %q ]; then echo held >>%q; sleep %.3f; fi; `,
+			appauth.TokenCommandOwner, begun, held(role), hold.Seconds())
 	})
 	logs := &syncBuffer{}
 	started := time.Now()
-	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
+	if err := bootsOrExitsLogging(t, workflowConfig(t, workflowNATS(t)), &keyProofHolds{Manager: manager, begun: begun}, 60*time.Second, slog.New(slog.NewJSONHandler(logs, nil))); err != nil {
 		t.Fatalf("boot = %v, want it to wait for the token_command past every attempt of the key proof and serve", err)
 	}
 	if took := time.Since(started); took < hold {
 		t.Errorf("the daemon served %s after it started, want after the key proof's command held %s", took, hold)
 	}
+	for _, role := range appauth.Roles {
+		runs, err := os.ReadFile(held(role))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read the %s App's held runs: %v", role, err)
+		}
+		if n := strings.Count(string(runs), "held\n"); n != 1 {
+			t.Errorf("the %s App's token_command held %d runs for the key proof, want one: each attempt after the first joins the run still going", role, n)
+		}
+	}
 	byProbe := func(lines []map[string]any, probe string) []map[string]any {
 		return slices.DeleteFunc(lines, func(line map[string]any) bool { return line["probe"] != probe })
 	}
-	pending := loggedMessages(t, logs.String(), "boot probe's work is still running")
-	if logins := byProbe(slices.Clone(pending), "GitHub App logins read"); len(logins) != 0 {
-		t.Errorf("the logins read was pending %d times, want never: its command answers at once", len(logins))
-	}
-	proof := byProbe(pending, "GitHub App key proof")
+	proof := byProbe(loggedMessages(t, logs.String(), "boot probe's work is still running"), "GitHub App key proof")
 	if len(proof) <= appMintRetry.Attempts {
 		t.Fatalf("the key proof was pending %d times, want more than appMintRetry's %d attempts", len(proof), appMintRetry.Attempts)
 	}
@@ -589,6 +622,7 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 // the three quick attempts, which the wait does not spend: before, the start exited once they were
 // spent, before the reset.
 func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, keyProofRead))
@@ -614,6 +648,7 @@ func TestABootWaitsOutARateLimitOnTheAppKeyProofAndServesAfterTheReset(t *testin
 // names no time, so the start waits a minute, says so, and serves after it. Before, the start read
 // it as GitHub's answer about the App and exited at the first attempt.
 func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var refusals atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
@@ -646,6 +681,7 @@ func TestABootWaitsOutARateLimitNamedOnlyByItsMessageOnTheAppKeyProof(t *testing
 // and serves after it (c-boot-mint-rate-limit case 3). Before, the start exited once the three quick
 // attempts were spent, before the reset.
 func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(3*time.Second, &reset, func(r *http.Request) bool { return r.URL.Path == "/app" }))
@@ -668,6 +704,7 @@ func TestABootWaitsOutARateLimitOnTheAppLoginsRead(t *testing.T) {
 // (c-boot-mint-rate-limit case 4, on the logins read). The limit refuses the implement App's token
 // so released. Before, the start exited once the three quick attempts were spent, before the reset.
 func TestABootWaitsOutARateLimitOnATokenCommandsAppRead(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens := commandTokens(t, spentUntil(3*time.Second, &reset, func(r *http.Request) bool {
@@ -747,6 +784,7 @@ func bootStoppedWhen(t *testing.T, cfg config.Config, tokens appauth.Source, log
 // wait, the bound on a wait that runs past its until. An earlier version held the wait left to
 // equal the wait decided; with a 1 s delay injected before the line, it failed.
 func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Max = 2 * time.Second })
 	for _, tc := range []struct {
@@ -821,6 +859,7 @@ func TestABootWaitsAsLongAsGitHubAsksAtMostTheMaximum(t *testing.T) {
 // the first, and each wait left to within 1 s of the wait decided; with a 1 s delay injected before
 // each line, both failed.
 func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
 		if !keyProofRead(r) {
@@ -870,6 +909,7 @@ func TestABootWaitsOneMinuteThenTwoForRefusalsOfOneCallThatNameNoTime(t *testing
 // after it ends the start, naming the call, GitHub's last answer with its headers and message, the
 // 3 s waited and the App whose key the read proves.
 func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	withStartRateLimits(t, func(policy *rateLimitPolicy) { policy.Bound = 3 * time.Second })
 	tokens, _ := appTokensWith(t, discoveredOnAcme, func(w http.ResponseWriter, r *http.Request) bool {
@@ -906,6 +946,7 @@ func TestABootEndsWhenItsRateLimitWaitsReachTheirBound(t *testing.T) {
 // cleanly (c-boot-mint-rate-limit case 9, on the key proof): the App's installations are refused
 // until a reset a minute ahead, and run returns nil within a second of the stop.
 func TestABootStoppedWhileItWaitsOutARateLimitEndsAtOnce(t *testing.T) {
+	// Not parallel: it writes the package variable appMintAttempt (quickAppMints); it writes the package variable appMintRetry (quickAppMints).
 	quickAppMints(t)
 	var reset atomic.Int64
 	tokens, _ := appTokensWith(t, discoveredOnAcme, spentUntil(time.Minute, &reset, keyProofRead))

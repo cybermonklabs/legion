@@ -26,6 +26,7 @@ import (
 // pairs with the release from before the pause, and the release records count the pause's wait as
 // that release's. deliverHeld is the delivery a merge-queue removal shares, so this holds for both.
 func TestAHeldMergeForwardMessageWakesARoleReleasedBeforeThePauseWithThatPause(t *testing.T) {
+	t.Parallel()
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.Gates.Design = config.DesignGateOff.Steps() })
 	issue := r.issue(1)
 	head := "c0de000000000000000000000000000000000001"
