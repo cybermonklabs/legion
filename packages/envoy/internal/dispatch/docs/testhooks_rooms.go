@@ -79,8 +79,11 @@ type testHooks struct {
 	mu       sync.Mutex
 	counters map[string]*RoomCounters
 	// holds is, per document, the time until which its rooms' appends of browser updates wait.
-	holds  map[string]time.Time
-	pauses map[livePauseKey]*livePause
+	holds map[string]time.Time
+	// released is, per document held until a release (HoldRoomPersistenceUntilReleased), the
+	// channel ReleaseRoomPersistence closes, which its rooms' appends of browser updates wait on.
+	released map[string]chan struct{}
+	pauses   map[livePauseKey]*livePause
 }
 
 type livePauseKey struct {
@@ -100,6 +103,7 @@ func newTestHooks() *testHooks {
 	return &testHooks{
 		counters: make(map[string]*RoomCounters),
 		holds:    make(map[string]time.Time),
+		released: make(map[string]chan struct{}),
 		pauses:   make(map[livePauseKey]*livePause),
 	}
 }
@@ -160,6 +164,41 @@ func (s *Service) HoldRoomPersistence(artifactID string, duration time.Duration)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.holds[artifactID] = time.Now().Add(duration)
+	return nil
+}
+
+// HoldRoomPersistenceUntilReleased makes every append of a browser update from this process's
+// rooms of artifactID that starts before ReleaseRoomPersistence wait for that release, however
+// long it takes: a test that needs the appends held while it stages its work ends the hold on
+// its own facts rather than at a time a loaded machine can overrun. The room applies and
+// broadcasts each such update meanwhile; only its store waits. A hold already standing is kept.
+func (s *Service) HoldRoomPersistenceUntilReleased(artifactID string) error {
+	h := s.hooks
+	if h == nil {
+		return ErrTestHooksOff
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.released[artifactID] == nil {
+		h.released[artifactID] = make(chan struct{})
+	}
+	return nil
+}
+
+// ReleaseRoomPersistence ends the hold HoldRoomPersistenceUntilReleased put on artifactID's
+// appends, and every append waiting on it goes on. With no such hold standing it does nothing, so
+// a test can release in a cleanup as well as in its body.
+func (s *Service) ReleaseRoomPersistence(artifactID string) error {
+	h := s.hooks
+	if h == nil {
+		return ErrTestHooksOff
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if released := h.released[artifactID]; released != nil {
+		close(released)
+		delete(h.released, artifactID)
+	}
 	return nil
 }
 
@@ -277,23 +316,30 @@ func (h *testHooks) countersLocked(artifactID string) *RoomCounters {
 	return counters
 }
 
-// awaitPersistenceHold waits out a hold HoldRoomPersistence put on artifactID's appends, or
-// until ctx ends.
+// awaitPersistenceHold waits out a hold HoldRoomPersistence put on artifactID's appends, then for
+// the release of a hold HoldRoomPersistenceUntilReleased put on them, or until ctx ends.
 func (h *testHooks) awaitPersistenceHold(ctx context.Context, artifactID string) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	until := h.holds[artifactID]
+	released := h.released[artifactID]
 	h.mu.Unlock()
-	wait := time.Until(until)
-	if wait <= 0 {
+	if wait := time.Until(until); wait > 0 {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return
+		}
+	}
+	if released == nil {
 		return
 	}
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
 	select {
-	case <-timer.C:
+	case <-released:
 	case <-ctx.Done():
 	}
 }
