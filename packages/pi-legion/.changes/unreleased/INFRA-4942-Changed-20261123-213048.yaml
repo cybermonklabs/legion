@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    The `tester-proof` skill scenario seeds an implement handoff of `head` alone, and its scorer
+    refuses a test handoff that holds any key but `head`, `note`, `implementerProof`, `failures` and
+    `failed`, naming each key (`a test handoff holds no <key>`). It takes the issue from the record,
+    not from the body. The spec scorer names the parts of a spec as the outline of
+    `dispatch-writing-specs` names them: `Verification` is one of them, and no `Acceptance` part
+    states a design. A batch given both `SKILL_SCENARIOS_POSTGRES_URL` and
+    `SKILL_SCENARIOS_NATS_URL` uses those two servers and starts no container.
+time: 2026-11-23T21:30:48Z
+custom:
+    Issue: INFRA-4942
