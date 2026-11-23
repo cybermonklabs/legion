@@ -40,6 +40,7 @@ func wantListed(t *testing.T, m *Machine, recordID string, all, want []string) {
 // responsible person may see it, so the list writes one line counting them and no line for any one
 // of them.
 func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	const rows = 20
 	const takes = 300 * time.Millisecond
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
@@ -183,6 +184,7 @@ func wantUnreadLine(t *testing.T, capture *logtest.Recorder, recordID string) {
 // Dispatch still answers each reader's member kind in both outages; a list whose reader's kind
 // cannot be read holds none of their secret requests (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestTheFallbackFailsClosed(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	t.Run("control", func(t *testing.T) {
 		m, stranded := strandedRow(t)
 		capture := &logtest.Recorder{}
@@ -233,6 +235,7 @@ func TestTheFallbackFailsClosed(t *testing.T) {
 // takes 300 ms a question, spend the fallback's clock before insider's own older row is reached.
 // That row is read on the list's own context, not the clock, and is listed.
 func TestTheReadersOwnRowsAreNotCutByTheClock(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	mine, mineKey := newEnrollment(t, m.Store, "session", "box-own-row", new(insider), nil)
 	own, err := m.Create(t.Context(), mine, signRequest(t, m, mineKey, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
@@ -268,6 +271,7 @@ func TestTheReadersOwnRowsAreNotCutByTheClock(t *testing.T) {
 // its list. outsider's list asks about outsider and never about the operator. Control: the
 // operator's own list holds the row and asks about the operator.
 func TestTheReadersMaySeeIsReadFirst(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || req.RecordID == nil || req.State != "pending" {
@@ -300,6 +304,7 @@ func TestTheReadersMaySeeIsReadFirst(t *testing.T) {
 //   - control: the operator's request names a PRIV issue, and the operator is on PRIV's list, so it
 //     stays the operator's alone.
 func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing.T) {
+	t.Parallel()
 	people := []string{outsider, insider, fixtureOperator}
 	t.Run("an outsider's request naming a private project's issue", func(t *testing.T) {
 		m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
@@ -338,6 +343,7 @@ func TestARequestWhoseResponsiblePersonMayNotSeeItWaitsForThoseWhoMay(t *testing
 // grant of the private project's request is refused, record.ErrNotApprover, since a grant asks
 // Dispatch again.
 func TestTheJudgesRefusalReadsNothingOfDispatch(t *testing.T) {
+	t.Parallel()
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(900))}}}
 	const why = "the model judge refused this request: SHARED_KEY is withheld from this session. This request will not be granted. Tell whoever gave you this work."
 	held := func(t *testing.T, reason string) (*Machine, Request) {

@@ -50,6 +50,7 @@ func googleTokenClaims(issuer *oidctest.Issuer, audience string) map[string]any 
 // audience, the signature and the expiry, and answers what the token says. Which of the claims
 // is a refusal is the caller's rule, so nothing here refuses one.
 func TestVerifyGoogleAnswersTheClaimsAndRefusesNothingOfItsOwn(t *testing.T) {
+	t.Parallel()
 	verifier, issuer, key := newGoogleVerifier(t)
 	claims := googleTokenClaims(issuer, googleTokenAudience)
 
@@ -78,6 +79,7 @@ func TestVerifyGoogleAnswersTheClaimsAndRefusesNothingOfItsOwn(t *testing.T) {
 // google.compute_engine claims at all. Such a token comes back with no instance rather than
 // refused, which is what lets a caller that pins nothing take it.
 func TestVerifyGoogleAnswersATokenMintedOnNoInstance(t *testing.T) {
+	t.Parallel()
 	verifier, issuer, key := newGoogleVerifier(t)
 	claims := googleTokenClaims(issuer, googleTokenAudience)
 	delete(claims, "google")
@@ -97,6 +99,7 @@ func TestVerifyGoogleAnswersATokenMintedOnNoInstance(t *testing.T) {
 // TestVerifyGoogleAnswersAnUnverifiedAddress: email_verified is reported rather than refused,
 // because a caller decides what an unverified address means to it.
 func TestVerifyGoogleAnswersAnUnverifiedAddress(t *testing.T) {
+	t.Parallel()
 	verifier, issuer, key := newGoogleVerifier(t)
 	claims := googleTokenClaims(issuer, googleTokenAudience)
 	claims["email_verified"] = false
@@ -114,6 +117,7 @@ func TestVerifyGoogleAnswersAnUnverifiedAddress(t *testing.T) {
 // own — the issuer, the audience, the signature and the expiry — so a token minted for another
 // service is refused before any claim of it is read.
 func TestVerifyGoogleRefusesATokenOfAnotherAudience(t *testing.T) {
+	t.Parallel()
 	verifier, issuer, key := newGoogleVerifier(t)
 
 	_, err := verifier.VerifyGoogle(context.Background(), issuer.Mint(t, key, googleTokenClaims(issuer, "other-audience")))

@@ -15,6 +15,7 @@ import (
 //
 // The named revert: ping on every result (no cache), and the hundred checks cost a hundred pings.
 func TestTheEdgesHealthPingsPostgresAtMostOnceASecond(t *testing.T) {
+	t.Parallel()
 	start := time.Unix(1_700_000_000, 0)
 	now := start
 	pings := 0
@@ -54,6 +55,7 @@ func TestTheEdgesHealthPingsPostgresAtMostOnceASecond(t *testing.T) {
 // The named revert: hold the cache's lock while it pings, and the second check stays until the
 // first ping ends, past its own deadline.
 func TestTheEdgesHealthWaitersLeaveWhenTheirRequestEnds(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	started := make(chan struct{})
 	var pings int
@@ -95,6 +97,7 @@ func TestTheEdgesHealthWaitersLeaveWhenTheirRequestEnds(t *testing.T) {
 // The named revert: ping on the caller's context and keep the result only while that context has
 // not ended, as before, and the ping sees the cancel, and the next check pings again.
 func TestTheEdgesHealthPingOutlivesACallerWhoLeaves(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	started := make(chan context.Context, 1)
 	var pings int
@@ -135,6 +138,7 @@ func TestTheEdgesHealthPingOutlivesACallerWhoLeaves(t *testing.T) {
 // The named revert: clear the running ping after the ping returns, not in a defer, and the next
 // check waits until its own deadline.
 func TestTheEdgesHealthPingsAgainAfterAPingThatPanicked(t *testing.T) {
+	t.Parallel()
 	var pings int
 	c := &cachedPing{
 		ping: func(context.Context) error {
@@ -168,6 +172,7 @@ func TestTheEdgesHealthPingsAgainAfterAPingThatPanicked(t *testing.T) {
 //
 // The named revert: join the login and the address with ":" alone, and the two pairs share a key.
 func TestTheEdgesPersonKeyCannotCollide(t *testing.T) {
+	t.Parallel()
 	a := edgePersonKey("bob@x.example:2001", "2400:1:2::/64")
 	b := edgePersonKey("bob@x.example", "2001:2400:1:2::/64")
 	if a == b {

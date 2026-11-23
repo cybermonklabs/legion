@@ -18,6 +18,7 @@ import (
 // tester's finding on cybermonklabs/legion#4135: the judge's project check read only the secret's
 // tag, so a private project's pod request of an untagged secret reached the model.
 func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
+	t.Parallel()
 	m, enr, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, "")
 	if err != nil {
@@ -44,6 +45,7 @@ func TestTheJudgeLeavesAPrivateProjectsPodRequestToAPerson(t *testing.T) {
 // merge base judged it — JudgeProject false, no call to Dispatch. With a client, a pod whose entry
 // names a public project is judged as before too: only a private named project refers it.
 func TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: teamProject, Person: insider}}, nil, nil, nil, "")
 	if err != nil {

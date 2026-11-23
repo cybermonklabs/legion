@@ -268,6 +268,7 @@ func (r *airlockRereadRig) requireReads(g proxied, want int, when string) {
 // signal through the real route and reads, in the audit trail, that the proxy read the grant's
 // values again.
 func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
+	t.Parallel()
 	const boundHost = "reread.airlock.test"
 	r := startAirlockReread(t,
 		`{"profiles": [{"name": "AIRLOCK_TOKEN", "proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}}]}`,
@@ -292,6 +293,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 // values of a grant of the sibling profile AIRLOCK_SECOND again too, rather than going on
 // swapping the old value into their requests until each grant ends: a stored value has no expiry.
 func TestARereadOfASourceReachesTheProxysValuesOfEachProfileOfIt(t *testing.T) {
+	t.Parallel()
 	const readHost, secondHost = "read.airlock.test", "second.airlock.test"
 	r := startAirlockReread(t, `{"profiles": [
 		{"name": "AIRLOCK_READ", "source": "AIRLOCK_TOKEN", "proxy": {"hosts": ["`+readHost+`"], "headers": ["authorization"], "allow": []}},
@@ -335,6 +337,7 @@ func rereadAppSecret(t *testing.T, value string) string {
 // no token request to GitHub. A reread that finds a new version of the value has the proxy read
 // the grant's values again, which mints from the new one.
 func TestARereadOfAGitHubAppSourceDropsItsProfilesTokensOnlyWhenItMovedItsValue(t *testing.T) {
+	t.Parallel()
 	const boundHost = "app.airlock.test"
 	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Plain: true})
 	if err != nil {

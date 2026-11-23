@@ -273,6 +273,7 @@ func eventFor(t *testing.T, events []store.GrantLogEvent, kind, requestID string
 // callers that reach every other named-caller route — Dispatch's server and the Envoy listener —
 // read nothing here at all.
 func TestGrantLog(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts, reviewToken, listenerToken := newGrantLogServer(t)
@@ -619,6 +620,7 @@ const grantLogPage = 1000
 // statement, and tracing it needs a pool of the test's own; the route's own answer over HTTP,
 // its paging included, is TestGrantLog's.
 func TestGrantLogPagesByPrimaryKey(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	databaseURL := storetest.URL(t)
 	plain, err := pgxpool.New(ctx, databaseURL)

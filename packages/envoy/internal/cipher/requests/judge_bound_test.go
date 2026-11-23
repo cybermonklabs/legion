@@ -68,6 +68,7 @@ func (s slowAccess) States(ctx context.Context, projects []string) (map[string]p
 // deadline. The control is a Dispatch that answers at once: the approval is granted, writing its
 // own row, and the second row is the one written after it.
 func TestTheJudgedRowIsWrittenWhenTheDecisionsDispatchReadIsSlow(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		takes   time.Duration
@@ -192,6 +193,7 @@ func judgeHeldTeamRequest(t *testing.T) (m *Machine, enrollmentID string, req Re
 // issue. The test lists each question, and a method that asked Dispatch nothing at all is a
 // failure too, since a list without it cannot say whether its reads are bounded.
 func TestNoDispatchReadOnTheJudgesPathSkipsItsBound(t *testing.T) {
+	t.Parallel()
 	m, enr, req := judgeHeldTeamRequest(t)
 	log := &boundLog{inner: m.Projects}
 	m.Projects = log
@@ -233,6 +235,7 @@ func TestNoDispatchReadOnTheJudgesPathSkipsItsBound(t *testing.T) {
 // projectaccess.CacheTTL old when the decision is made; and for the model judge every read of its
 // approval shares one JudgeDispatch bound, the same deadline, never one bound after another.
 func TestAnApprovalAsksTheMemberKindFirstUnderTheDecisionsOneBound(t *testing.T) {
+	t.Parallel()
 	m, _, req := judgeHeldTeamRequest(t)
 	log := &boundLog{inner: m.Projects}
 	m.Projects = log

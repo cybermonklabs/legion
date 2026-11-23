@@ -85,6 +85,7 @@ func recordedDigests(t *testing.T, m *Machine, requestID string) map[string]stri
 // names, the profile's for one served as a profile and the empty string for a stored secret
 // served by its own name, which is what the release compares against.
 func TestARequestRecordsEachNamesProfileDigest(t *testing.T) {
+	t.Parallel()
 	file := proxied("api.example.com", "AUTO_TOKEN")
 	m, enr, key := newAirlockFixture(t, file)
 	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read both", "AUTO_TOKEN", "DEEL_API_KEY"), "")
@@ -105,6 +106,7 @@ func TestARequestRecordsEachNamesProfileDigest(t *testing.T) {
 // profile back does not bring it back. A grant of a name whose profile did not change goes on
 // releasing, even though the change moved the policy version both grants were decided under.
 func TestAChangedProfileEndsTheGrantsItAffects(t *testing.T) {
+	t.Parallel()
 	before := policytest.ProfilesFile(`{"name": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`, `{"name": "SHARED_KEY", "proxy": {"hosts": ["shared.example.com"]}}`)
 	changed := policytest.ProfilesFile(`{"name": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.org"]}}`, `{"name": "SHARED_KEY", "proxy": {"hosts": ["shared.example.com"]}}`)
 	m, enr, key := newAirlockFixture(t, before)
@@ -157,6 +159,7 @@ func TestAChangedProfileEndsTheGrantsItAffects(t *testing.T) {
 // was not true. A profile that moves after the decision still ends the grant, which is what the
 // fingerprint is there for.
 func TestARequestApprovedAcrossAProfilesChangeIsReleasedUnderTheEntryItWasDecidedUnder(t *testing.T) {
+	t.Parallel()
 	one, two, three := proxied("one.example.com", "SHARED_KEY"), proxied("two.example.com", "SHARED_KEY"), proxied("three.example.com", "SHARED_KEY")
 	m, enr, key := newAirlockFixture(t, one)
 	// SHARED_KEY is shared and human tier, so its grant comes of a person's approval.
@@ -200,6 +203,7 @@ func TestARequestApprovedAcrossAProfilesChangeIsReleasedUnderTheEntryItWasDecide
 // may be the wider, is not what was granted. The grant ends for good, as any other moved entry
 // ends it.
 func TestAGrantDecidedUnderAnotherEntryEndsWhenTheVersionReturnsToTheRequests(t *testing.T) {
+	t.Parallel()
 	one, two := proxied("one.example.com", "SHARED_KEY"), proxied("two.example.com", "SHARED_KEY")
 	m, enr, key := newAirlockFixture(t, one)
 	// SHARED_KEY is shared and human tier, so its grant comes of a person's approval.

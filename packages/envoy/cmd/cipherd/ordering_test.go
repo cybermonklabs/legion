@@ -145,6 +145,7 @@ const narrowedOwner = "ada@example.com"
 //
 // The named revert: remove the Catchup call from boot.
 func TestBootLoadsThePolicyAgainAfterTheFirstListen(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	secretStore := secrets.NewLocal(policytest.Secret(retaggedWhileBooting, policy.OwnerShared, policy.TierAgent, "v1"))
 	loader := policytest.Loader(secretStore)
@@ -275,6 +276,7 @@ func TestBootLoadsThePolicyAgainAfterTheFirstListen(t *testing.T) {
 // The named revert: move the bind above the catch-up (Listen called before Catchup returns, the
 // catch-up kept).
 func TestBootBindsOnlyAfterTheCatchUp(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	started, err := boot(t.Context(), brokerBoot{
 		LoadPolicy: func(context.Context) (*policy.Current, error) {
@@ -320,6 +322,7 @@ func TestBootBindsOnlyAfterTheCatchUp(t *testing.T) {
 //
 // The named revert: call Shutdown at the first signal, before the drain.
 func TestStopDrainsBeforeShutdown(t *testing.T) {
+	t.Parallel()
 	var shutdownRan bool
 	var shutdownAfter time.Duration
 	began := time.Now()
@@ -355,6 +358,7 @@ func TestStopDrainsBeforeShutdown(t *testing.T) {
 //
 // The named revert: call EndServing at the first signal.
 func TestStopEndsServingOnlyAfterShutdownReturns(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	stop(t.Context(), brokerStop{
 		Drain:    stopDrain,
@@ -390,6 +394,7 @@ func TestStopEndsServingOnlyAfterShutdownReturns(t *testing.T) {
 //
 // The named revert: call CloseStore before EndServing.
 func TestStopClosesTheStoreOnlyAfterServingEnds(t *testing.T) {
+	t.Parallel()
 	serving, endServing := context.WithCancel(context.Background())
 	defer endServing()
 	var ran steps
@@ -424,6 +429,7 @@ func TestStopClosesTheStoreOnlyAfterServingEnds(t *testing.T) {
 //
 // The named revert: bind the airlock in main, after boot has returned.
 func TestBootBindsTheAirlockPortAfterTheAPIAndInsideTheBoot(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	started, err := boot(t.Context(), brokerBoot{
 		LoadPolicy: func(context.Context) (*policy.Current, error) {
@@ -474,6 +480,7 @@ func TestBootBindsTheAirlockPortAfterTheAPIAndInsideTheBoot(t *testing.T) {
 //
 // The named revert: log the airlock bind's error and return the booted API listener anyway.
 func TestBootRefusesWhenTheAirlockPortCannotBeBound(t *testing.T) {
+	t.Parallel()
 	var apiListener net.Listener
 	refusal := errors.New("the proxy port is already held")
 	started, err := boot(t.Context(), brokerBoot{
@@ -513,6 +520,7 @@ func TestBootRefusesWhenTheAirlockPortCannotBeBound(t *testing.T) {
 //
 // The named revert: drop ShutdownAirlock from stop, or call it after EndServing.
 func TestStopDrainsTheAirlockBesideTheAPI(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	stop(t.Context(), brokerStop{
 		Drain:    stopDrain,
@@ -550,6 +558,7 @@ func TestStopDrainsTheAirlockBesideTheAPI(t *testing.T) {
 //
 // The named revert: bind the metrics port in main, after boot has returned.
 func TestBootBindsTheMetricsPortAfterTheOtherTwoAndInsideTheBoot(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	bind := func(step string) func() (net.Listener, error) {
 		return func() (net.Listener, error) {
@@ -600,6 +609,7 @@ func TestBootBindsTheMetricsPortAfterTheOtherTwoAndInsideTheBoot(t *testing.T) {
 //
 // The named revert: leave the airlock's socket open when the metrics bind fails.
 func TestBootRefusesWhenTheMetricsPortCannotBeBound(t *testing.T) {
+	t.Parallel()
 	var bound []net.Listener
 	bind := func() (net.Listener, error) {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -642,6 +652,7 @@ func TestBootRefusesWhenTheMetricsPortCannotBeBound(t *testing.T) {
 //
 // The named revert: drop the check of ListenMetrics at the top of boot.
 func TestBootRefusesWithNoMetricsPort(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	started, err := boot(t.Context(), brokerBoot{
 		LoadPolicy: func(context.Context) (*policy.Current, error) {
@@ -679,6 +690,7 @@ func TestBootRefusesWithNoMetricsPort(t *testing.T) {
 //
 // The named revert: drop ShutdownMetrics from stop, or call it after Shutdown has returned.
 func TestStopDrainsTheMetricsPortBesideTheAPI(t *testing.T) {
+	t.Parallel()
 	var ran steps
 	metricsBegan := make(chan struct{})
 	stop(t.Context(), brokerStop{

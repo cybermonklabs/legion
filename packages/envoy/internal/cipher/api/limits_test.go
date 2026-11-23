@@ -39,6 +39,7 @@ var mountedRereadBuckets = []struct {
 // half, that Register actually mounts this derivation; this row is about the derivation's own
 // output.
 func TestOneAddressNeverSustainsMoreThanHalfTheMountedRereadBucket(t *testing.T) {
+	t.Parallel()
 	for _, mounted := range mountedRereadBuckets {
 		t.Run(mounted.name, func(t *testing.T) {
 			address := RereadLimitFor(mounted.overall)
@@ -60,6 +61,7 @@ func TestOneAddressNeverSustainsMoreThanHalfTheMountedRereadBucket(t *testing.T)
 // bucket ever go sub-second. The behavioural row reads the header, which is right for what it
 // proves; an exact duration has to be read where it is computed.
 func TestRereadLimitForDerivesTheAddressBucketFromTheMountedOne(t *testing.T) {
+	t.Parallel()
 	for _, mounted := range mountedRereadBuckets {
 		t.Run(mounted.name, func(t *testing.T) {
 			address := RereadLimitFor(mounted.overall)

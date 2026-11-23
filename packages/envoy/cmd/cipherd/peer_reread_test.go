@@ -52,6 +52,7 @@ func (s *abandoningCall) DescribeSecret(ctx context.Context, in *secretsmanager.
 // The named revert: peerReread returns RefreshOne's error whole; the value-read row then answers
 // ErrValueUnchecked and this test fails.
 func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
+	t.Parallel()
 	driven := 0
 	for _, row := range []struct {
 		name string
@@ -110,6 +111,7 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 // value the reread read (policy.Current.RereadNames). Dropping the reread name alone left the
 // source's old value in every request of a profile of another name until its grant ended.
 func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"))
 	loader := policytest.Loader(local)
 	loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(
@@ -145,6 +147,7 @@ func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
 // The named revert: peerReread drops current.RereadNames(name) whatever the version did; the two
 // rows of an unmoved github-app source then drop its names and this test fails.
 func TestAPeersRereadDropsAMintedSourcesNamesOnlyWhenItMovedTheValueVersion(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(
 		policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 		policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"))

@@ -23,6 +23,7 @@ import (
 // never the failure's, which can name Dispatch's address. An error that is no such refusal is left
 // to the caller's next case.
 func TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode(t *testing.T) {
+	t.Parallel()
 	failure := errors.New("dial tcp 10.20.0.9:8766: connect: connection refused")
 	uncheckable := &projectaccess.MemberKindUncheckable{Person: "uma@example.com", Err: failure}
 	w := httptest.NewRecorder()
@@ -50,6 +51,7 @@ func TestAnUncheckableMemberKindIsAnsweredUnderItsOneCode(t *testing.T) {
 // hung up (answer.Recorder.NoteCallerEnded): it says nothing of Dispatch. A failure to ask
 // Dispatch is logged at ERROR and counted failed, as before.
 func TestACallerThatEndedIsNoDispatchFailure(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	for _, row := range []struct {
 		name    string
 		failure error

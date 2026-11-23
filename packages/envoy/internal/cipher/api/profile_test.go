@@ -154,6 +154,7 @@ func minting(secrets.MintRequest) (secrets.Minted, error) {
 // refusal as a broker from before github_app. A body that carries no github_app keeps its own
 // route's refusal of a field it does not take.
 func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
+	t.Parallel()
 	s := newProfileServer(t, minting)
 	grantID := s.grant(t)
 	s.take()
@@ -223,6 +224,7 @@ func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
 // (secrets.ErrMintNoInstallation). Each is logged at WARN as a refused scope, never as the
 // operator's mint failure, beside the record of the refusal the answer recorder writes for it.
 func TestAProfileMintRefusalIs422ProfileMintRefused(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	logged := policytest.CaptureLog(t)
 	s := newProfileServer(t, minting)
 	grantID := s.grant(t)
@@ -277,6 +279,7 @@ func TestAProfileMintRefusalIs422ProfileMintRefused(t *testing.T) {
 // profile and account, every entry the cut of the profile's permissions to what the installation
 // holds left out, and no github_app; a release whose cut left nothing out carries neither key.
 func TestTheValuesAnswerNamesWhatTheCutLeftOut(t *testing.T) {
+	t.Parallel()
 	s := newProfileServer(t, minting)
 	grantID := s.grant(t)
 
@@ -321,6 +324,7 @@ func TestTheValuesAnswerNamesWhatTheCutLeftOut(t *testing.T) {
 // for the same cause before the approval: the release wraps that refusal in requests.ErrMintFailed
 // and still carries secrets.ErrMintNoInstallation, which only createRequest answers 422.
 func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.T) {
+	t.Parallel()
 	s := newProfileServer(t, minting)
 	grantID := s.grant(t)
 	s.setMint(refusing(fmt.Errorf("%w: github app 123456 has no installation on ada", secrets.ErrMintNoInstallation)))

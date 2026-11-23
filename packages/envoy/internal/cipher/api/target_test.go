@@ -90,6 +90,7 @@ func (s *profileServer) requireTargetRefused(t *testing.T, status int, reply wir
 // minted. A target inside the profile, the account or a repository it names, is granted; on a
 // profile that names no repository, any repository of its accounts is inside it.
 func TestTargetOutsideTheProfileIsRefused(t *testing.T) {
+	t.Parallel()
 	s := newTargetServer(t)
 	for _, row := range []struct {
 		name, profile string
@@ -131,6 +132,7 @@ func TestTargetOutsideTheProfileIsRefused(t *testing.T) {
 // is refused 400 TARGET_REFUSED, so the target is outside the profile, and it is the policy's
 // denial that answers the other session first.
 func TestAPolicyDenialComesBeforeTheTargetCheck(t *testing.T) {
+	t.Parallel()
 	const profile = "LISTED_READ"
 	const outside = "https://github.com/example-org"
 	s := newProfileServerOf(t, policytest.ProfilesFile(
@@ -163,6 +165,7 @@ func TestAPolicyDenialComesBeforeTheTargetCheck(t *testing.T) {
 // TARGET_REFUSED naming the name, which has no account or repository to narrow, before anything
 // is written. The same names asked for with no target are served as before.
 func TestTargetOnAProfileWithNoGitHubBlockIsRefused(t *testing.T) {
+	t.Parallel()
 	s := newTargetServer(t)
 	for _, name := range []string{"WORKER_TOKEN", "DEEL_PROXIED"} {
 		t.Run(name, func(t *testing.T) {
@@ -183,6 +186,7 @@ func TestTargetOnAProfileWithNoGitHubBlockIsRefused(t *testing.T) {
 // value-token profile of one account with no target, the request goes to its approver as any
 // human-tier request does, with the check mint of the one account in effect.
 func TestAValueTokenProfileWithNoTargetIsRefusedBeforeAnyoneIsAsked(t *testing.T) {
+	t.Parallel()
 	s := newTargetServer(t)
 	status, reply, body := s.askTargeted(t, "GITHUB_READ")
 	s.requireTargetRefused(t, status, reply, body, "GITHUB_READ", "acme, ada, example-org", "--target")
@@ -216,6 +220,7 @@ func TestAValueTokenProfileWithNoTargetIsRefusedBeforeAnyoneIsAsked(t *testing.T
 // profile, left such a grant; the row is written directly here, its target moved outside the
 // profile, which is the state that grant is in.
 func TestAReleaseOfATargetOutsideItsProfileIs400TargetRefused(t *testing.T) {
+	t.Parallel()
 	s := newTargetServer(t)
 	status, body := s.request(t, "PROOFS_READ", map[string]any{"request": signTargetRequest(t, s.key, s.URL, "PROOFS_READ", "https://github.com/ada/lean")})
 	created := decode[wireCreateRequestResponse](t, body)
@@ -249,6 +254,7 @@ func TestAReleaseOfATargetOutsideItsProfileIs400TargetRefused(t *testing.T) {
 // since a broker from before locations reads the signed object without refusing the field it does
 // not know and releases the whole profile; an answer without the target it sent says so.
 func TestTheValuesAnswerConfirmsTheTargetItReleased(t *testing.T) {
+	t.Parallel()
 	s := newTargetServer(t)
 	for _, row := range []struct {
 		name      string

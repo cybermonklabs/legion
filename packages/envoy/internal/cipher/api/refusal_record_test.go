@@ -157,6 +157,7 @@ func refusalRecords(capture *logtest.Recorder, answerID string) []map[string]any
 // grant's authorization_pending and slow_down write no record and are counted. No record holds
 // the value of a secret the port released, or a refusal's message.
 func TestEveryWriterOfTheAPIPortWritesOneRefusalRecord(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	var failDeviceLogin, draining atomic.Bool

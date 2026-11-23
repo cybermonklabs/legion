@@ -33,6 +33,7 @@ func requestTypeSecret(name, secretType, tier, maxGrant string) secrets.LocalSec
 // names no type or no store source, which no policy built, is refused as malformed rather than as a
 // type the broker has no minter for, and releases nothing.
 func TestAMalformedMintedSourceIsNamedAndReleasesNothing(t *testing.T) {
+	t.Parallel()
 	machine, _, _, _ := newFixture(t)
 	for _, source := range []string{"mint:github-app", "mint::" + policytest.ID("X")} {
 		value, err := machine.release(t.Context(), requestedSecret{name: "X", source: source}, policy.Secret{})
@@ -43,6 +44,7 @@ func TestAMalformedMintedSourceIsNamedAndReleasesNothing(t *testing.T) {
 }
 
 func TestAgentTypeSecretIsGrantedAtOnceAndMintsForEachRelease(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newAppFixture(t, "GITHUB_APP_KEY")
 	retag(t, machine, requestTypeSecret("GITHUB_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	calls := 0
@@ -73,6 +75,7 @@ func TestAgentTypeSecretIsGrantedAtOnceAndMintsForEachRelease(t *testing.T) {
 // so a github-owners tag narrowed after a grant past the profile's accounts holds at the grant's
 // next release: the profile no longer fits its source, and the grant mints nothing.
 func TestAGitHubAppReleaseMintsForTheOwnersThePolicyServesNow(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	secret := requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 	retag(t, machine, secret)
@@ -107,6 +110,7 @@ func TestAGitHubAppReleaseMintsForTheOwnersThePolicyServesNow(t *testing.T) {
 }
 
 func TestHumanTypeSecretWaitsForApprovalThenMints(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, approver := newFixture(t)
 	retag(t, machine, requestTypeSecret("GOOGLE_LOGIN_KEY", policy.TypeGoogleLogin, policy.TierHuman, ""))
 	machine.Minters = map[string]Minter{
@@ -130,6 +134,7 @@ func TestHumanTypeSecretWaitsForApprovalThenMints(t *testing.T) {
 }
 
 func TestMaxGrantRequiresATTLNoLongerThanTheTag(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestTypeSecret("LIMITED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "1h"))
 
@@ -152,6 +157,7 @@ func TestMaxGrantRequiresATTLNoLongerThanTheTag(t *testing.T) {
 }
 
 func TestMaxGrantAcceptsALifetimeAtTheTag(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestTypeSecret("LIMITED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "1h"))
 	request, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, "LIMITED_LOGIN"), "")
@@ -165,6 +171,7 @@ func TestMaxGrantAcceptsALifetimeAtTheTag(t *testing.T) {
 // google-login one, which the policy serves by its own name with no profile, so the retag alone
 // moves the name.
 func TestPlainToTypeRetagEndsTheGrant(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	// A stored value the google-login decoder reads, so the retag below is served as that type and
 	// moves the grant's source, rather than refused for its value (policy.ReasonValueMalformed).
@@ -195,6 +202,7 @@ func TestPlainToTypeRetagEndsTheGrant(t *testing.T) {
 }
 
 func TestDeletedTypeSecretStopsReleasing(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestTypeSecret("DELETE_TYPE_KEY", policy.TypeGoogleLogin, policy.TierAgent, ""))
 	calls := 0
@@ -219,6 +227,7 @@ func TestDeletedTypeSecretStopsReleasing(t *testing.T) {
 // answered by that grant. The secret is a google-login one, served by its own name with no profile,
 // so the retag alone moves it.
 func TestTypeRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
+	t.Parallel()
 	for name, replacement := range map[string]func(secrets.LocalSecret) secrets.LocalSecret{
 		"cleared": func(secret secrets.LocalSecret) secrets.LocalSecret {
 			secret.Tags = maps.Clone(secret.Tags)
@@ -266,6 +275,7 @@ func TestTypeRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 }
 
 func TestTypeSecretWithoutAMinterDoesNotReleaseItsStoredValue(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newAppFixture(t, "NO_MINTER_KEY")
 	retag(t, machine, requestTypeSecret("NO_MINTER_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "NO_MINTER_KEY"), "")
@@ -285,6 +295,7 @@ func TestTypeSecretWithoutAMinterDoesNotReleaseItsStoredValue(t *testing.T) {
 // Azure login is released only on a person's approval, and a Google service account's grant is
 // an hour at most.
 func TestEveryTypeSecretReleasesItsMintedValueAndNeverItsStoredOne(t *testing.T) {
+	t.Parallel()
 	for _, secretType := range policy.Types {
 		t.Run(secretType, func(t *testing.T) {
 			const name = "TYPED_KEY"
@@ -328,6 +339,7 @@ func TestEveryTypeSecretReleasesItsMintedValueAndNeverItsStoredOne(t *testing.T)
 // the grant that lasts until its session ends releases nothing more, and the waiting request is
 // no one's to approve, so neither outlives the bound the owner has just set.
 func TestAMaxGrantAddedLaterBoundsLiveGrantsAndPendingApprovals(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, approver := newFixture(t)
 	machine.Minters = map[string]Minter{
 		policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -384,6 +396,7 @@ func endedForGood(t *testing.T, machine *Machine, grantID string) (revokedBy str
 // secret is a google-login one, served by its own name with no profile, so the type it moves to
 // is served in its place.
 func TestATypeChangedAwayAndBackLeavesTheGrantEnded(t *testing.T) {
+	t.Parallel()
 	for name, away := range map[string]string{"removed": "", "changed": policy.TypeAzureLogin} {
 		t.Run(name, func(t *testing.T) {
 			machine, enrollmentID, key, _ := newFixture(t)
@@ -435,6 +448,7 @@ func TestATypeChangedAwayAndBackLeavesTheGrantEnded(t *testing.T) {
 // grant's lifetime ends that grant in the store at its next release, so raising it back does not
 // bring the grant back, while a grant within the lowered bound keeps releasing.
 func TestAMaxGrantLoweredBelowAGrantAndRaisedBackLeavesItEnded(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	machine.Minters = map[string]Minter{
 		policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -473,6 +487,7 @@ func TestAMaxGrantLoweredBelowAGrantAndRaisedBackLeavesItEnded(t *testing.T) {
 // a new sign-in, reaches the session as ErrMintFailed with the minter's own words, never as the
 // stored value: the refresh token it holds, a canary no quoting changes, is not in the error.
 func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
+	t.Parallel()
 	machine, enrollmentID, key, _ := newFixture(t)
 	const canary = "refresh-not-a-secret-canary-91b3"
 	lapsed := requestTypeSecret("LAPSED_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, "")
@@ -502,6 +517,7 @@ func TestAFailedMintIsNamedAndReleasesNothing(t *testing.T) {
 // attempts the real minter's Retry makes, its line says attempts=3, and the counter holds the
 // third attempt under type google-login.
 func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine, requestTypeSecret("FLAKY_LOGIN", policy.TypeGoogleLogin, policy.TierAgent, ""))
 	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -540,6 +556,7 @@ func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
 // no minter, as every unservable secret's does. A new value stored and decoded serves it again,
 // and the same grant mints, since a value's version moves no policy Version.
 func TestAMintThatRefusesTheStoredValueRefusesTheSecret(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	machine, enrollmentID, key, _ := newAppFixture(t, "REFUSED_APP_KEY")
 	secret := requestTypeSecret("REFUSED_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 	retag(t, machine, secret)

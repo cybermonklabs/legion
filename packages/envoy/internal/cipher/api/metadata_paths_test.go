@@ -14,6 +14,7 @@ import (
 // spell their patterns as literals, since the generated reference reads them as source, so this
 // is what keeps a renamed route from leaving the document pointing at a 404.
 func TestTheMetadataPathsAreRoutesTheBrokerMounts(t *testing.T) {
+	t.Parallel()
 	mounted := map[string]string{}
 	for _, route := range routes() {
 		mounted[route.Pattern] = route.Method

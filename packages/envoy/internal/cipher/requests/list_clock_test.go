@@ -70,6 +70,7 @@ func (s *stallFor) States(ctx context.Context, projects []string) (map[string]pr
 // are listed, the TEAM row's question asked beside the stalled one, and the SLOW row is left off
 // and logged. The pending list and the grant list each do so.
 func TestAStalledProjectLeavesOffOnlyTheRowsNamingIt(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	reasons := []string{"TEAM-1: rotate the deploy key", "rotate the wiki key", stalledProject + "-1: rotate the slow key"}
 	for _, c := range []struct {
 		name string

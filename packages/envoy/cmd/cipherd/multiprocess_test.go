@@ -630,6 +630,7 @@ func race[T any](fleet *brokerFleet, step func(client *ciphertest.Client) T) []T
 // for ever, so TestABrokerFleetDerivesItsRereadRate drives that at fleets of its own. The binary
 // is built once for every row here.
 func TestTwoBrokers(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	pair := startBrokerPair(t, binary)
 	conn := pair.database(t)
@@ -1135,6 +1136,7 @@ func TestTwoBrokers(t *testing.T) {
 // pair is two pods for ever and each of these sizings is a function of the count. The binary is
 // built once for every row here.
 func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 
 	// What the fleet spends of the secret store, measured rather than asserted from the
@@ -1411,6 +1413,7 @@ type rolloutBroker struct {
 // last what the two generations do to each other until the last old-configuration process stops.
 // Every process is started with no drain, since nothing is in flight when one is stopped.
 func TestAFixedSessionNameAcrossARollout(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	databaseURL := storetest.URL(t)
 	conn := connectToBroker(t, databaseURL)

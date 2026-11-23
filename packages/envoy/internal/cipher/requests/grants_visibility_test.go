@@ -22,6 +22,7 @@ const handLaunchedAccount = "system:serviceaccount:legion:k8s-session"
 // people who already list and revoke the service login behind it. The operator's own automatic
 // grant is unmoved: theirs, and nobody else's.
 func TestAPodsAutomaticGrantIsOnEveryPersonsGrantList(t *testing.T) {
+	t.Parallel()
 	m, session, sessionKey, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
@@ -73,6 +74,7 @@ func TestAPodsAutomaticGrantIsOnEveryPersonsGrantList(t *testing.T) {
 // it is on nobody's list, as before, and this is the case that fails if `c.service is not null`
 // is dropped. A grant on a person's own session stays that person's alone.
 func TestAGrantUnderNoServicesLoginStaysOffEveryoneElsesList(t *testing.T) {
+	t.Parallel()
 	m, _, _, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()

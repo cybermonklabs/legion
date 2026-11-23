@@ -50,6 +50,7 @@ const (
 // the session naming none is denied project-not-named, told how to name the project, and its
 // command never runs; every one of them reads the untagged secret as before.
 func TestThePrivateSecretGoesOnlyToTheSessionThatNamesIt(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	clusterKey := issuer.PublishKey(t, "cluster-key")

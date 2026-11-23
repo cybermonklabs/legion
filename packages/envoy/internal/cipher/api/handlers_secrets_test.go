@@ -48,6 +48,7 @@ type wireReread struct {
 // which says this broker reads a secret's type from the type tag, so agent-secrets writes a typed
 // secret through it (a broker from before the tag sends no such field).
 func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	status, body := ts.req(t, http.MethodGet, "/v1/settings", nil, nil)
 	if status != http.StatusOK {
@@ -68,6 +69,7 @@ func TestSettingsAnswersTheNamespaceAndKey(t *testing.T) {
 // store's name, the prefix, the Cloud KMS key's name and the project number cut from the prefix,
 // with none of the AWS fields, and secret_type_tag, as on AWS.
 func TestSettingsAnswersTheGCPStore(t *testing.T) {
+	t.Parallel()
 	const prefix = "projects/000000000000/secrets/agent-secrets-"
 	const key = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 	mux := http.NewServeMux()
@@ -105,6 +107,7 @@ func TestSettingsAnswersTheGCPStore(t *testing.T) {
 // identity it can trade with no setting of its own, beside that store's own key field. A broker
 // that accepts no machine identity names no audience at all, and none ever names a Kubernetes one.
 func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
+	t.Parallel()
 	for _, store := range []struct{ name, kind, prefix, key, keyField string }{
 		{"aws", secrets.StoreAWS, policytest.Prefix, policytest.KeyARN, "kms_key_arn"},
 		{"gcp", secrets.StoreGCP, "projects/000000000000/secrets/agent-secrets-", "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets", "kms_key_name"},
@@ -162,6 +165,7 @@ func TestSettingsNameTheGoogleExchangeAudienceOnEitherStore(t *testing.T) {
 var rereadsFreely = ratelimit.Limit{Every: time.Millisecond, Burst: 100}
 
 func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
 	status, body := ts.sessionReread(t, "NEW_KEY")
@@ -192,6 +196,7 @@ func TestRereadServesANewSecretAndDropsADeletedOne(t *testing.T) {
 // profile of another name uses the secret, as a profile must for the broker to serve it as a
 // github-app one, and a reread answers the secret as the store holds it.
 func TestARereadNamesTheTypeItServes(t *testing.T) {
+	t.Parallel()
 	ts := newProfiledTestServer(t, policytest.ProfilesFile(`{"name": "PLAIN_READ", "source": "PLAIN_KEY", "github": {"accounts": ["acme"], "permissions": {"metadata": "read"}}}`),
 		func(d *api.Deps) { d.RereadOverallLimit = &rereadsFreely })
 	ts.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "v1"))
@@ -230,6 +235,7 @@ func TestARereadNamesTheTypeItServes(t *testing.T) {
 // told to reread the name as on a 200, on a context of the handler's own; one whose request ended
 // during its metadata read merged nothing and tells nobody, nor does the 500.
 func TestARereadWhoseRequestEndedLogsNoError(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	verifier, sign := oneSession(t)
 	// route is the reread route over a policy of local whose Secrets Manager calls client makes,
 	// telling the other pods through notifier.
@@ -379,6 +385,7 @@ func postReread(t *testing.T, ts *testServer, name string, headers map[string]st
 }
 
 func TestRereadIsRateLimitedPerAddress(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) { d.RereadLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1} })
 	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/WORKER_TOKEN/reread", nil, nil); status != http.StatusAccepted {
 		t.Fatalf("first reread: %d %s", status, body)
@@ -417,6 +424,7 @@ func TestRereadIsRateLimitedPerAddress(t *testing.T) {
 // address's own. The two rates it drives are the two stores' sizings at two pods; the relation
 // is the same at every count, since RereadRate moves both buckets together.
 func TestOneAddressNeverOutlastsTheSharedRereadBucket(t *testing.T) {
+	t.Parallel()
 	for _, shared := range []time.Duration{time.Second, 4 * time.Second} {
 		t.Run(shared.String(), func(t *testing.T) {
 			ts := newTestServerWith(t, func(d *api.Deps) {
@@ -450,6 +458,7 @@ func TestOneAddressNeverOutlastsTheSharedRereadBucket(t *testing.T) {
 // well inside their own limit — is refused all the same, and names the broker-wide bucket's own
 // Retry-After.
 func TestRereadIsRateLimitedAcrossEveryAddress(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.RereadOverallLimit = &ratelimit.Limit{Every: time.Hour, Burst: 2}
 		d.TrustedProxyHeader = "X-Forwarded-For"
@@ -469,6 +478,7 @@ func TestRereadIsRateLimitedAcrossEveryAddress(t *testing.T) {
 // in: a reread its own address's bucket refuses spends nothing of the broker-wide one, so one
 // address flooding past its own limit does not refuse another address's first reread.
 func TestOneAddressFloodingItsLimitLeavesOthersTheirRereads(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.RereadLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1}
 		d.RereadOverallLimit = &ratelimit.Limit{Every: time.Hour, Burst: 2}
@@ -520,6 +530,7 @@ func (n *recordingNotifier) recorded() []string {
 // "changed" without a verdict RefreshOne does not report. A name no secret can carry rereads
 // nothing, so it notifies nobody.
 func TestRereadNotifiesEveryOtherPodOnEvery200(t *testing.T) {
+	t.Parallel()
 	notifier := &recordingNotifier{}
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.NotifyReread = notifier.notify
@@ -548,6 +559,7 @@ func TestRereadNotifiesEveryOtherPodOnEvery200(t *testing.T) {
 // work sends nothing either: no reread happened on this pod, so there is nothing for a peer to
 // copy, and a flood the limiter exists to stop must not reach the other pods through the fan-out.
 func TestARereadTheLimiterRefusesNotifiesNobody(t *testing.T) {
+	t.Parallel()
 	notifier := &recordingNotifier{}
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.NotifyReread = notifier.notify

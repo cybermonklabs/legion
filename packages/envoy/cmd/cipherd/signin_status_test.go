@@ -84,6 +84,7 @@ func unreachableIssuer(t *testing.T) string {
 // serves the broker's client, one that refuses its secret, and one that cannot be reached at
 // all. Each pass writes its own word and the time it was taken, and nothing else of the status.
 func TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient(t *testing.T) {
+	t.Parallel()
 	st := storetest.Open(t)
 	ctx := context.Background()
 	issuer := oidctest.New(t)
@@ -178,6 +179,7 @@ func passClientChecks(t *testing.T, passes []clientCheckPass) {
 // writes it once more, and the pass that finds the client ready again writes
 // clientCheckReadyMessage once, naming the state it leaves, after which ready writes nothing.
 func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (passClientChecks, logtest.SetDefault, Swap, slog.SetDefault).
 	st := storetest.Open(t)
 	issuer := oidctest.New(t)
 	signIn := ciphertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
@@ -205,6 +207,7 @@ func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
 // check's own state is written beside them. The store that fails is a pool on the test's own
 // database, closed before it runs a statement, as a database that stopped answering fails.
 func TestClientCheckLogsAFailedWriteOnceUntilItWritesAgain(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (passClientChecks, logtest.SetDefault, Swap, slog.SetDefault).
 	st := storetest.Open(t)
 	issuer := oidctest.New(t)
 	signIn := ciphertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
@@ -233,6 +236,7 @@ func TestClientCheckLogsAFailedWriteOnceUntilItWritesAgain(t *testing.T) {
 // are gone - answers the same facts, which is what keeping them in Postgres is for. Nothing in
 // the answer names the person, the record or the secret.
 func TestTheBinaryAnswersSignInStatusFromPostgres(t *testing.T) {
+	t.Parallel()
 	f := newApprovalFixture(t)
 	databaseURL := storetest.URL(t)
 	public := newFront(t)
@@ -306,6 +310,7 @@ func TestTheBinaryAnswersSignInStatusFromPostgres(t *testing.T) {
 // in once `broker end-sessions ada@example.com` has printed that it ended it, while carol's
 // session stands. The subcommand binds nothing, and refuses an argument it does not know.
 func TestTheBinaryEndSessionsEndsALiveSession(t *testing.T) {
+	t.Parallel()
 	f := newApprovalFixture(t)
 	databaseURL := storetest.URL(t)
 	public := newFront(t)
@@ -383,6 +388,7 @@ func TestTheBinaryEndSessionsEndsALiveSession(t *testing.T) {
 // applied and brings nothing up to date itself, so an unmigrated database is an error rather
 // than a migration nobody asked for.
 func TestEndSessionsDoesNotMigrateTheDatabase(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.DatabaseURL(t)
 	out := runBrokerCommand(t, buildBroker(t), databaseURL, "http://127.0.0.1:9", 1, endSessionsCommand, ada)
 	t.Logf("broker %s against an unmigrated database = exit 1: %s", endSessionsCommand, strings.TrimSpace(out))

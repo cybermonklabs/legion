@@ -15,6 +15,7 @@ import (
 // lists a group's records or grants, or revokes or dismisses one, by naming the group, however
 // stale its members are.
 func TestARouteRefusesAGroupAsItsApprover(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	group := record.GroupPrefix + "approvers@example.com"
 	for _, c := range []struct {

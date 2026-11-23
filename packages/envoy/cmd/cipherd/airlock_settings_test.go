@@ -29,6 +29,7 @@ const githubReadProfile = `{"name": "EXAMPLE_APP_READ", "source": "EXAMPLE_APP",
 // with none of the airlock's settings, in a cluster and without BROKER_AIRLOCK_CLUSTER_RANGES,
 // binds no proxy port, and releases a grant of its GitHub profile as the token GitHub minted.
 func TestMainServesAGitHubProfileWithoutTheAirlock(t *testing.T) {
+	t.Parallel()
 	const (
 		podAudience  = "example-broker-pod"
 		service      = "example-service"
@@ -94,6 +95,7 @@ func TestMainServesAGitHubProfileWithoutTheAirlock(t *testing.T) {
 // it is given is unreachable, so a broker that checked the settings after opening the store would
 // fail on the host instead.
 func TestMainRefusesAProxyBlockWithoutTheAirlocksSettings(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	for _, missing := range airlockProxySettingNames {
 		t.Run(missing, func(t *testing.T) {

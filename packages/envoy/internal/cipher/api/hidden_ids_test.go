@@ -148,6 +148,7 @@ func (ts *testServer) writtenRows(t *testing.T) []string {
 // PROJECT_ACCESS_UNAVAILABLE to its insider and to mallory alike, and an id no record has is still
 // 404. Nothing is written by any of them.
 func TestTheDecideRoutesAnswerAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecordHas(t *testing.T) {
+	t.Parallel()
 	ts, access := hiddenServer(t)
 	hidden := *ts.askPrivate(t, "box-hidden", "SHARED_KEY").RecordID
 	_, stale := ts.askPrivateElsewhere(t, "box-stale")
@@ -240,6 +241,7 @@ func TestTheDecideRoutesAnswerAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecor
 // person the grant names. Once Dispatch answers, carol, on PRIV's list, ends the judged grant
 // through Dispatch.
 func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t *testing.T) {
+	t.Parallel()
 	ts, access := hiddenServer(t, sharedKeyJudged)
 	credID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	malloryID, malloryKey := ts.mintLauncherCredential(t, hiddenOutsider, "example-host-devbox-m")
@@ -343,6 +345,7 @@ func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t
 // PROJECT_ACCESS_UNAVAILABLE and writes no dismissal, the dismissal's fail-closed branch; once it
 // answers, testApprover dismisses it.
 func TestADismissalAnswersAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecordHas(t *testing.T) {
+	t.Parallel()
 	ts, access := hiddenServer(t)
 	created := ts.askPrivate(t, "box-hidden", "SHARED_KEY")
 	ts.overdue(t, created.RequestID)

@@ -17,6 +17,7 @@ import (
 // bounded by LogJudged's context: an approval that holds past it gets a row saying applied
 // "unknown", never false. testHoldCommit holds the approval with every row written.
 func TestLogJudgedWaitsForAnApprovalStillCommitting(t *testing.T) {
+	t.Parallel()
 	const reason = "INFRA-12: rotate the deploy key"
 	failureRow := map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": "the decision's COMMIT failed: unexpected EOF"}
 	type logged struct {

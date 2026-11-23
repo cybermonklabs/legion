@@ -154,6 +154,7 @@ func refusedWith(t *testing.T, what string, err error, status int, code string) 
 // The named reverts: key the edge on the last entry (clientAddress), and the second client is
 // refused; key it on the first, and the spoofed request is served.
 func TestTheEdgeKeysBucketsOnTheGoogleClientAddress(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	const client = "203.0.113.7"
 	burst := api.DefaultLauncherLimits.PerAddress.Burst
@@ -200,6 +201,7 @@ func TestTheEdgeKeysBucketsOnTheGoogleClientAddress(t *testing.T) {
 // The named revert: read the last line of several, and the client's own trailing line picks a
 // new bucket for each login, so all of them are served past the burst.
 func TestTheEdgeRefusesMoreThanOneForwardedForLine(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	burst := api.DefaultLauncherLimits.PerAddress.Burst
 	login := func(person string, lines ...string) answered {
@@ -256,6 +258,7 @@ func TestTheEdgeRefusesMoreThanOneForwardedForLine(t *testing.T) {
 // The named revert: read the last request value in the gate, and the first row is served and
 // opens a login awaiting the Workspace person.
 func TestTheEdgeGateReadsTheRequestObjectTheLoginIsMadeOf(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	header := map[string]string{"X-Forwarded-For": forwardedFor("", "203.0.113.90")}
 	workspace := "ada@" + ciphertest.SignInDomain
@@ -311,6 +314,7 @@ func TestTheEdgeGateReadsTheRequestObjectTheLoginIsMadeOf(t *testing.T) {
 // The named revert: build the edge's server on the launcher limiter of the broker's own address,
 // and the login on the broker's own address is refused 429.
 func TestAnEdgeFloodLeavesTheTailnetLoginBucket(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	const person = "flooded@outside.example"
 	// 127.0.0.1 is the address the broker's own address keys this test's requests on: the Rig
@@ -355,6 +359,7 @@ func TestAnEdgeFloodLeavesTheTailnetLoginBucket(t *testing.T) {
 // The named revert: take the Workspace check out of the edge's device gate, and every row is
 // served 200.
 func TestTheEdgeRefusesAWorkspaceLoginHint(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	const client = "203.0.113.20"
 	header := map[string]string{"X-Forwarded-For": forwardedFor("", client)}
@@ -417,6 +422,7 @@ func multipartForm(t *testing.T, form url.Values) (*bytes.Buffer, string) {
 // The named revert: take the grant check out of the edge's token gate, and the pod's trade mints a
 // token at the edge.
 func TestTheEdgeTokenRouteRefusesPodAndWorkflowTrades(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	exchange := func(subjectToken, subjectType string) url.Values {
 		return url.Values{
@@ -481,6 +487,7 @@ func TestTheEdgeTokenRouteRefusesPodAndWorkflowTrades(t *testing.T) {
 //
 // The named revert: answer the provider's own verification URL at the edge.
 func TestTheEdgeAnswersTheOutsideVerificationURI(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	da, err := newEdgeMachine(t, rig, throughBalancer{client: "203.0.113.40"}).edgeLogin(t, outsidePerson)
 	if err != nil {
@@ -501,6 +508,7 @@ func TestTheEdgeAnswersTheOutsideVerificationURI(t *testing.T) {
 // has never seen, are each answered 200 with the same members, the same page, the same lifetime
 // and polling interval, and a user code of the same shape.
 func TestTheEdgeAnswersTheSameShapeForAKnownAndAnUnknownLoginHint(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	const known, unknown = "known@outside.example", "unknown@outside.example"
 	first, err := newEdgeMachine(t, rig, throughBalancer{client: "203.0.113.50"}).edgeLogin(t, known)
@@ -544,6 +552,7 @@ func TestTheEdgeAnswersTheSameShapeForAKnownAndAnUnknownLoginHint(t *testing.T) 
 // for the listener it is sent to: one signed for the broker's own address is refused at the edge,
 // and one signed for the edge on the broker's own address.
 func TestTheEdgeLoginIsDecidedOnTheTailnetAndUsedAtTheEdge(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	via := throughBalancer{client: "203.0.113.60"}
 	m := newEdgeMachine(t, rig, via)
@@ -654,6 +663,7 @@ func tradeAt(t *testing.T, base string, transport http.RoundTripper, accessToken
 // The named revert: drop edgeTokenHooks from RegisterEdge, and the edge refreshes the login and
 // trades its token for one acting as the Workspace person.
 func TestTheEdgeRefusesAWorkspacePersonsMachineLoginOpenedOnTheTailnet(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	via := throughBalancer{client: "198.51.100.9"}
 	atEdge := func(m *deviceMachine) *deviceMachine {

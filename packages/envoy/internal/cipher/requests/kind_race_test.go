@@ -33,6 +33,7 @@ func (r retagDuringRead) Read(ctx context.Context, source string) (string, error
 // for good, as a type change found before the read ends it. Each route to a grant is held to it: a
 // grant made at once, the same grant a later request reuses, and one a person approved.
 func TestAPlainGrantRacingATypeRetagNeverReleasesWhatTheTypeStores(t *testing.T) {
+	t.Parallel()
 	const canary = "refresh-token-canary-9f3c"
 	for _, route := range []string{"automatic", "reused", "approved"} {
 		t.Run(route, func(t *testing.T) {

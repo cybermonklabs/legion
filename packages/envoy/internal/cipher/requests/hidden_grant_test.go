@@ -68,6 +68,7 @@ func requireRevokedAsUnknown(t *testing.T, m *Machine, grantID, login, what stri
 // grant stays live, and her list does not hold it; while Dispatch cannot answer, her revoke is
 // ErrProjectAccessUnavailable and the grant stays live; carol, on INFRA's list, ends it.
 func TestAnOutsiderCannotRevokeAJudgedGrantOfAProjectTurnedPrivate(t *testing.T) {
+	t.Parallel()
 	m, _, _ := newJudgeFixture(t)
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
 	grantID := judgedGrant(t, m, pod, podKey, 600, "SHARED_KEY")
@@ -111,6 +112,7 @@ func TestAnOutsiderCannotRevokeAJudgedGrantOfAProjectTurnedPrivate(t *testing.T)
 // ErrNotApprover, whichever part of the grant makes it PRIV's: its secret's tag, the projects of
 // the credential that asked, or those of the credential it hangs off after an adoption moved it.
 func TestAnOutsiderCannotRevokeAPersonsGrantOfAPrivateProject(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
 	_, tagged := approvedGrant(t, m, testAudience, enr, key, insider, "PRIV_HUMAN")
@@ -155,6 +157,7 @@ func TestAnOutsiderCannotRevokeAPersonsGrantOfAPrivateProject(t *testing.T) {
 // neither of them, carol ends the third and the operator the fourth. Before, the first two were
 // answered ErrProjectAccessUnavailable and the last two pgx.ErrNoRows, and none was revoked.
 func TestAGrantsApproverAndOperatorRevokeItWhateverDispatchAnswers(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	grants := map[string]string{}
 	for _, box := range []string{"approver-down", "operator-down", "approver-left", "operator-left"} {
@@ -200,6 +203,7 @@ func TestAGrantsApproverAndOperatorRevokeItWhateverDispatchAnswers(t *testing.T)
 // grant has and does not list it. Before, the operator's list left the grant out and their revoke
 // was answered pgx.ErrNoRows, so nobody but its own session could end it.
 func TestAnUntaggedGrantStaysWithItsOperatorOnceTheyLeaveItsProject(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
 	_, grantID := grantOf(t, m, enr, key, "deploy the worker", "AUTO_TOKEN")

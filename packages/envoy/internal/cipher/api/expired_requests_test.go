@@ -104,6 +104,7 @@ func listed(rows []wirePendingEntry) []string {
 // pending rows first and each state newest first, and the expired rows stay listed after the
 // sweep; any other value is 400 STATE_INPUT.
 func TestPendingListsEachRowsStateAndTheStatesAskedFor(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	lateRequest, late, _ := ts.secretRequestOnBox(t, "late-box")
 	lateDeadline := ts.overdue(t, lateRequest)
@@ -164,6 +165,7 @@ func TestPendingListsEachRowsStateAndTheStatesAskedFor(t *testing.T) {
 // are dismissed, a second dismissal answers the first one's values, and a list asking for both
 // states holds neither of them afterwards, while the request that can still be decided stays.
 func TestDismissAnswersEachOutcomeAndTakesTheRecordOffTheList(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	lateRequest, late, _ := ts.secretRequestOnBox(t, "late-box")
 	ts.overdue(t, lateRequest)

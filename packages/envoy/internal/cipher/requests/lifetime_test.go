@@ -48,6 +48,7 @@ func age(t *testing.T, m *Machine, grantID string, elapsed time.Duration) {
 // record names the lifetime, and a later request for the same names with the same lifetime reuses
 // the live grant, while one with another lifetime, or none, does not.
 func TestATTLGrantEndsAfterItsLifetime(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 
@@ -126,6 +127,7 @@ func beforeMigration13(t *testing.T, m *Machine, requestID string) {
 // expiry. A running session asking again without --ttl keeps that grant and its original expiry,
 // rather than opening a second approval request or extending what the person approved.
 func TestANoTTLRequestReusesAnUnexpiredPreMigrationGrant(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 
@@ -156,6 +158,7 @@ func TestANoTTLRequestReusesAnUnexpiredPreMigrationGrant(t *testing.T) {
 // before migration 0013. A grant asked for with --ttl 12h after the deploy records the same 43200
 // seconds, and is a lifetime that session chose; a request without --ttl is never handed it.
 func TestANoTTLRequestDoesNotReuseAPostMigration12HourGrant(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
@@ -175,6 +178,7 @@ func TestANoTTLRequestDoesNotReuseAPostMigration12HourGrant(t *testing.T) {
 // --ttl, as an older client's retry does, joins it rather than being refused REQUEST_PENDING; a
 // pending request written after the deploy with --ttl 12h is never joined by a request without one.
 func TestANoTTLRequestJoinsAPreMigrationPendingRequest(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
@@ -204,6 +208,7 @@ func TestANoTTLRequestJoinsAPreMigrationPendingRequest(t *testing.T) {
 // secret name: changing --ttl must name the request already in the approver's Inbox rather than
 // opening another card.
 func TestAPendingRequestWithAnotherLifetimeIsRefused(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 
@@ -225,6 +230,7 @@ func TestAPendingRequestWithAnotherLifetimeIsRefused(t *testing.T) {
 // session, whatever lifetime either asks for. A superset of a pending request's names, and a
 // subset of them, each name the pending request instead of opening a second card for its approver.
 func TestARequestOverlappingAPendingOneIsRefused(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct{ pending, overlapping []string }{
 		"a superset of the pending names": {[]string{"DEEL_API_KEY"}, []string{"DEEL_API_KEY", "STRIPE_KEY"}},
 		"a subset of the pending names":   {[]string{"DEEL_API_KEY", "STRIPE_KEY"}, []string{"DEEL_API_KEY"}},
@@ -253,6 +259,7 @@ func TestARequestOverlappingAPendingOneIsRefused(t *testing.T) {
 // no default-grant tag: its grant records the broker's 12-hour default, releases its values just
 // before 12 hours have passed and refuses them after, while its session is still live.
 func TestAGrantWithNoTTLLastsTwelveHours(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	want := int(DefaultGrantLifetime / time.Second)
@@ -278,6 +285,7 @@ func TestAGrantWithNoTTLLastsTwelveHours(t *testing.T) {
 // session is still live, and a request naming an agent-tier secret beside it is held to the same
 // short default.
 func TestAHumanTierGrantWithNoTTLLastsFifteenMinutes(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	want := int(DefaultHumanGrantLifetime / time.Second)
@@ -313,6 +321,7 @@ func TestAHumanTierGrantWithNoTTLLastsFifteenMinutes(t *testing.T) {
 // request names no lifetime. A session that signs eight hours gets eight hours, so a person who
 // reads that on the card still decides it.
 func TestAHumanTierRequestNamingALongerTTLKeepsIt(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	want := int((8 * time.Hour).Seconds())
@@ -337,6 +346,7 @@ func TestAHumanTierRequestNamingALongerTTLKeepsIt(t *testing.T) {
 // lifetime and no expiry, still releases its values a week on while its session is live, is listed
 // for the session and the operator with no expiry, and ends when the session does.
 func TestAGrantWithNoTTLLastsUntilItsSessionEnds(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	retag(t, m, sessionDefault(policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1")),
@@ -416,6 +426,7 @@ func sessionDefaultFixture(t *testing.T, m *Machine) {
 // TestAMixedNoTTLRequestLastsTwelveHours: a request naming no lifetime for one secret tagged
 // default-grant=session and one untagged gets the 12-hour default, not a session-long grant.
 func TestAMixedNoTTLRequestLastsTwelveHours(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	retag(t, m, sessionDefault(policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1")),
 		policytest.Secret("OTHER_TOKEN", fixtureOperator, policy.TierAgent, "other-v1"))
@@ -429,6 +440,7 @@ func TestAMixedNoTTLRequestLastsTwelveHours(t *testing.T) {
 // no lifetime while its human-tier secret was default-grant=session, still pending when the tag is
 // removed, is granted DefaultHumanGrantLifetime on approval.
 func TestAPendingSessionLengthRequestApprovedAfterItsTagGoesGetsTheHumanDefault(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	want := int(DefaultHumanGrantLifetime / time.Second)
@@ -460,6 +472,7 @@ func TestAPendingSessionLengthRequestApprovedAfterItsTagGoesGetsTheHumanDefault(
 // TestAMalformedTagAtApprovalKeepsTwelveHours: a pending no-lifetime request whose secret is
 // unserved at approval (default-grant=forever) is granted 12 hours, never a session-long grant.
 func TestAMalformedTagAtApprovalKeepsTwelveHours(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)
@@ -486,6 +499,7 @@ func TestAMalformedTagAtApprovalKeepsTwelveHours(t *testing.T) {
 // TestANoTTLRetryJoinsAPendingNoLifetimeRequest: a request pending with no lifetime (from before
 // the 12-hour default) is joined by a retry that names no --ttl, not refused REQUEST_PENDING.
 func TestANoTTLRetryJoinsAPendingNoLifetimeRequest(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
 	sessionDefaultFixture(t, m)

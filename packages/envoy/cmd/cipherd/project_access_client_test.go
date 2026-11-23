@@ -80,6 +80,7 @@ func (h *heldRounds) round(t *testing.T, ask func(i int) error) int {
 // each of the first round's is kept and taken again. Go's default client keeps two, so its second
 // round opens all but two again, which the control row shows.
 func TestTheProjectAccessClientReusesItsConnectionsRoundAfterRound(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		client *http.Client
@@ -116,6 +117,7 @@ func TestTheProjectAccessClientReusesItsConnectionsRoundAfterRound(t *testing.T)
 // build it, the second round opens all but two again, and this test fails. With no
 // BROKER_PROJECT_ACCESS_URL there is neither client, as interfaces main compares with nil.
 func TestTheBrokerAsksProjectAccessOnTheClientThatKeepsItsConnections(t *testing.T) {
+	t.Parallel()
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	if err := os.WriteFile(tokenFile, []byte("the-broker-account-token\n"), 0o600); err != nil {
 		t.Fatalf("write the token file: %v", err)

@@ -126,6 +126,7 @@ func (f *groupFixture) approvedTeamKey(t *testing.T) (recordID, grantID string) 
 // stale group, are refused as not live, with the plain refusal: the typed lapse of a
 // group-approved record is the chain check's to answer and log, never this one's.
 func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
+	t.Parallel()
 	local := secrets.NewLocal(groupSecrets()...)
 	directory := groupstest.New()
 	directory.Set(approversGroup, groupMember)
@@ -162,6 +163,7 @@ func TestStillAllowedAdmitsAGroupMemberAndRefusesANonMember(t *testing.T) {
 // TestMaySettleAdmitsAGroupMember: a person settles a name the policy routes to a group while the
 // set's group reader lists them, and not when it does not, nor once the group is stale.
 func TestMaySettleAdmitsAGroupMember(t *testing.T) {
+	t.Parallel()
 	directory := groupstest.New()
 	directory.Set(approversGroup, groupMember)
 	member, outsider := byPerson(groupMember), byPerson(groupOutsider)
@@ -177,6 +179,7 @@ func TestMaySettleAdmitsAGroupMember(t *testing.T) {
 // TestPendingForApproverListsAGroupRequestForEachMember: a request waiting on the group is listed
 // for each of its two members, and for neither a person outside it nor the asker.
 func TestPendingForApproverListsAGroupRequestForEachMember(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	req := f.ask(t, f.asker, f.askerKey, "TEAM_KEY")
 	if req.State != "pending" || req.RecordID == nil {
@@ -208,6 +211,7 @@ func TestPendingForApproverListsAGroupRequestForEachMember(t *testing.T) {
 // TestAMemberListsAndRevokesAGroupOwnedGrant: a grant one member approved is on another member's
 // list, and that member's revoke ends it; the grant and the request name the deciding member.
 func TestAMemberListsAndRevokesAGroupOwnedGrant(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	_, grantID := f.approvedTeamKey(t)
 	grants, err := f.m.GrantsForApprover(context.Background(), secondMember)
@@ -232,6 +236,7 @@ func TestAMemberListsAndRevokesAGroupOwnedGrant(t *testing.T) {
 // TestAnOutsiderNeitherListsNorRevokesAGroupOwnedGrant: a person outside the group finds the
 // group's grant on no list of their own, and their revoke is ErrNotApprover and ends nothing.
 func TestAnOutsiderNeitherListsNorRevokesAGroupOwnedGrant(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	_, grantID := f.approvedTeamKey(t)
 	grants, err := f.m.GrantsForApprover(context.Background(), groupOutsider)
@@ -277,6 +282,7 @@ func (f *groupFixture) staleUnderTheSamePolicy(t *testing.T) {
 // automatic grant of the group's agent-tier secret releases while the group is fresh, and is
 // refused at its next release once the group is stale, the policy's version unchanged.
 func TestAnAutomaticGrantOfAStaleGroupIsRefusedAtItsNextReleaseUnderAnUnchangedPolicy(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	grantID := f.automaticTeamToken(t)
 	f.staleUnderTheSamePolicy(t)
@@ -288,6 +294,7 @@ func TestAnAutomaticGrantOfAStaleGroupIsRefusedAtItsNextReleaseUnderAnUnchangedP
 // TestAnAutomaticGrantOfAStaleGroupIsNotReusedUnderAnUnchangedPolicy: in the same state, the
 // member's ask for the same name gets no grant back, and waits for the group's approval.
 func TestAnAutomaticGrantOfAStaleGroupIsNotReusedUnderAnUnchangedPolicy(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	grantID := f.automaticTeamToken(t)
 	f.staleUnderTheSamePolicy(t)
@@ -305,6 +312,7 @@ func TestAnAutomaticGrantOfAStaleGroupIsNotReusedUnderAnUnchangedPolicy(t *testi
 // lapsed grant once the group is stale: refused as no longer live, the group's refusal beneath,
 // and no broken-chain line written.
 func TestAnApprovedGrantOfAStaleGroupIsRefusedWithNoChainAlarm(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	f := newGroupFixture(t)
 	_, grantID := f.approvedTeamKey(t)
@@ -352,6 +360,7 @@ func requireLines(t *testing.T, capture *logtest.Recorder, mark, chainMark int, 
 // naming the grant, its record, its secret, the decider, the group and where; a fresh group's
 // refusal writes exactly one broken-chain line beside it, and a stale group's none.
 func TestALapsedGroupApprovalWritesOneLogLine(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	f := newGroupFixture(t)
 	ctx := context.Background()
@@ -413,6 +422,7 @@ func (f *groupFixture) grantRevoked(t *testing.T, grantID string) bool {
 // ask that would reuse it; a new ask is denied as the group unread; and the grant releases again
 // once a read lists the person.
 func TestAStaleRequestersGroupPausesItsGrants(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	ctx := context.Background()
 	req := f.ask(t, f.member, f.memberKey, "LISTED_TOKEN")
@@ -444,6 +454,7 @@ func TestAStaleRequestersGroupPausesItsGrants(t *testing.T) {
 // secret whose requesters name the group is refused while the group is stale, and the request
 // stays pending, not denied; once the group is read the same approval grants it.
 func TestAnApprovalWaitsWhileItsRequestersGroupIsUnread(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	ctx := context.Background()
 	req := f.ask(t, f.member, f.memberKey, "OWNER_KEY")
@@ -467,6 +478,7 @@ func TestAnApprovalWaitsWhileItsRequestersGroupIsUnread(t *testing.T) {
 // listed may still revoke a grant the group approved, since a revoke only takes power away; a
 // person outside it, and a login spelled as the group itself, may not.
 func TestAMemberRevokesTheGroupsGrantWhileItIsStale(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	ctx := context.Background()
 	_, grantID := f.approvedTeamKey(t)
@@ -491,6 +503,7 @@ func TestAMemberRevokesTheGroupsGrantWhileItIsStale(t *testing.T) {
 // member's Inbox list by state, and a member dismisses it: it leaves the second member's list too.
 // A person outside the group, and a login spelled as the group, are refused.
 func TestAMemberDismissesAnExpiredGroupRequest(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	ctx := context.Background()
 	req := f.ask(t, f.asker, f.askerKey, "TEAM_KEY")
@@ -526,6 +539,7 @@ func TestAMemberDismissesAnExpiredGroupRequest(t *testing.T) {
 // as those members may revoke it; a person outside the group does not list it, and once a fresh
 // read drops a member the grant leaves that member's list.
 func TestAJudgedGroupGrantStaysOnAMembersListWhileTheGroupIsStale(t *testing.T) {
+	t.Parallel()
 	f := newGroupFixture(t)
 	ctx := context.Background()
 	f.m.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "TEAM_KEY", Hosts: []string{"team.example"}, Judge: new(uint32(900))}}}
@@ -578,6 +592,7 @@ func (f *groupFixture) retag(t *testing.T, name string, secret secrets.LocalSecr
 // the one that can fail, since the reuse path is where a lapsed line was once written from the
 // policy's approver rather than the record's.
 func TestTheLapseLineFollowsTheRecordsGroup(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	f := newGroupFixture(t)
 	ctx := context.Background()

@@ -27,6 +27,7 @@ import (
 // approval finds no such record, insider's grants it; the grant is on insider's grant list and
 // not outsider's; and outsider's revoke finds no such grant, while insider's ends it.
 func TestAGroupsSecretOfAPrivateProject(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(append(fixtureSecrets(),

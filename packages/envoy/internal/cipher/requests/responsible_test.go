@@ -135,6 +135,7 @@ func requireListedFor(t *testing.T, m *Machine, recordID, notify string, people 
 // person's sign-in or a machine login she approved, asks for a shared human-tier secret. Her
 // Inbox lists it, and bob's does not.
 func TestASharedRequestIsListedForTheSessionsOperator(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	session, key := newEnrollment(t, m.Store, "session", "box-"+t.Name(), new(alice), nil)
 	req := askShared(t, m, session, key)
@@ -145,6 +146,7 @@ func TestASharedRequestIsListedForTheSessionsOperator(t *testing.T) {
 // operator, and its account's BROKER_VM_EXCHANGE_ACCOUNTS entry names carol, so carol's Inbox
 // lists it and bob's does not.
 func TestASharedRequestIsListedForTheFleetsPerson(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	m.VMServicesByAccount = map[string]string{fixtureMachineAccount: fixtureService}
 	m.VMPersonsByAccount = map[string]string{fixtureMachineAccount: carol}
@@ -157,6 +159,7 @@ func TestASharedRequestIsListedForTheFleetsPerson(t *testing.T) {
 // issue ACME-1, whose Dispatch assignee is dave. Dave's Inbox lists it, bob's does not, and
 // Dispatch was asked once, for ACME-1.
 func TestASharedRequestIsListedForTheClaimIssuesAssignee(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	assignees := &standInAssignees{answer: dave}
 	m.Assignees = assignees
@@ -176,6 +179,7 @@ func TestASharedRequestIsListedForTheClaimIssuesAssignee(t *testing.T) {
 // reached, so an operator sees that the step is off, and the line holds nothing of what the read
 // held; a row that read nothing, or read an issue nobody is assigned to, logs none.
 func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	for _, c := range []struct {
 		name      string
 		claim     string
@@ -258,6 +262,7 @@ func TestASharedRequestWithNoResponsiblePersonIsListedForEveryone(t *testing.T) 
 // TestTheFirstResponsiblePersonWins: a session whose operator is alice and whose subject also
 // reads as a machine of a fleet that names carol is alice's, the first step of the order.
 func TestTheFirstResponsiblePersonWins(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	m.VMServicesByAccount = map[string]string{fixtureMachineAccount: fixtureService}
 	m.VMPersonsByAccount = map[string]string{fixtureMachineAccount: carol}
@@ -270,6 +275,7 @@ func TestTheFirstResponsiblePersonWins(t *testing.T) {
 // TestIssueKeyOfClaim reads a Dispatch issue key out of a Legion role claim token and nothing
 // else: the controller's token and a token that ends in no role name no issue.
 func TestIssueKeyOfClaim(t *testing.T) {
+	t.Parallel()
 	for claim, want := range map[string]string{
 		"legion-acme-acme-12-planner":    "ACME-12",
 		"legion-widget-widget-12-merger": "WIDGET-12",
@@ -290,6 +296,7 @@ func TestIssueKeyOfClaim(t *testing.T) {
 // secret's owner, is that owner's alone whoever asks, as before. A Legion pod's request for it
 // reads no assignee, since its approver is no sentinel.
 func TestAPersonsOwnSecretIsListedForItsOwnerAlone(t *testing.T) {
+	t.Parallel()
 	m, _, _, owner := newFixture(t)
 	assignees := &standInAssignees{answer: dave}
 	m.Assignees = assignees
@@ -313,6 +320,7 @@ func TestAPersonsOwnSecretIsListedForItsOwnerAlone(t *testing.T) {
 // TestAnAgentTierPodRequestReadsNoAssignee: a request the policy grants at once waits on nobody,
 // so a Legion pod's request for a shared agent-tier secret makes no Dispatch read.
 func TestAnAgentTierPodRequestReadsNoAssignee(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newFixture(t)
 	withSharedToken(t, m)
 	assignees := &standInAssignees{answer: dave}
@@ -334,6 +342,7 @@ func TestAnAgentTierPodRequestReadsNoAssignee(t *testing.T) {
 // chooses whose Inbox lists a request anyone may decide, whatever the secret's tier, and here that
 // person is the operator who withheld it. Anyone signed in still decides it.
 func TestAWithheldSharedAgentTierRequestIsListedForTheResponsiblePerson(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()

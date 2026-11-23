@@ -196,6 +196,7 @@ func (r *sessionHiddenRig) requireHiddenFrom(t *testing.T, s enrolled, who strin
 // order: the rows that must leave the hidden requests and grant as they are come first, and the
 // rows that cancel and release them last.
 func TestASessionsRoutesAnswerAnIDOfAProjectItCannotSeeAsAnIDNothingHas(t *testing.T) {
+	t.Parallel()
 	r := newSessionHiddenRig(t)
 	ts := r.ts
 

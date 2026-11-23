@@ -34,6 +34,7 @@ const clusterServiceHost = "34.118.224.1"
 // unreachable, so a broker that read the setting after opening the store would fail on the host
 // instead of on the setting.
 func TestMainRefusesToStartInAClusterWithoutItsRanges(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	for _, row := range []struct {
 		name, host, ranges string
@@ -84,6 +85,7 @@ func TestMainRefusesToStartInAClusterWithoutItsRanges(t *testing.T) {
 // shows a certificate of its own, and with no service there the tunnel's dial answers nothing
 // within the deadline.
 func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
+	t.Parallel()
 	const (
 		podAudience  = "example-broker-pod"
 		service      = "example-service"
@@ -170,6 +172,7 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 // TestMainOutsideAClusterStartsWithoutTheRanges: with KUBERNETES_SERVICE_HOST unset - a dev box,
 // a local run - the setting is optional, and a broker with the airlock on and no ranges starts.
 func TestMainOutsideAClusterStartsWithoutTheRanges(t *testing.T) {
+	t.Parallel()
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)

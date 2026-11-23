@@ -131,6 +131,7 @@ func emptySecretsFile(t *testing.T) string {
 // and the metadata names neither the device code nor a device authorization endpoint, while
 // everything else the provider serves is named as ever.
 func TestTheBinaryWithNoMachineLoginURLServesNoDeviceGrant(t *testing.T) {
+	t.Parallel()
 	broker := startBroker(t, brokerOptions{Env: []string{
 		"BROKER_DATABASE_URL=" + storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
@@ -168,6 +169,7 @@ func TestTheBinaryWithNoMachineLoginURLServesNoDeviceGrant(t *testing.T) {
 // works exactly as it did — a signed device authorization is answered a device code and the user
 // code a person types — and the metadata names the grant and the endpoint.
 func TestTheBinaryWithAMachineLoginURLServesTheDeviceGrant(t *testing.T) {
+	t.Parallel()
 	broker := startBroker(t, brokerOptions{Env: []string{
 		"BROKER_MACHINE_LOGIN_URL=" + testMachineLoginURL,
 		"BROKER_DATABASE_URL=" + storetest.URL(t),
@@ -207,6 +209,7 @@ func TestTheBinaryWithAMachineLoginURLServesTheDeviceGrant(t *testing.T) {
 // is an API account: introspection works without listing a VM service, but neither that caller
 // nor an unlisted account can exchange its token for an access token or launcher credential.
 func TestAListenerOnAVMIntrospectsWithItsGoogleIdentity(t *testing.T) {
+	t.Parallel()
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	cluster.PublishKey(t, "cluster-key")
 	github.PublishKey(t, "github-key")

@@ -99,6 +99,7 @@ func loggedCommandOf(t *testing.T, m *Machine, grantID string) []string {
 // release starts. The proxy's release of the same grant records the reason too, and marks itself
 // as the airlock's in place of a command, since it starts none.
 func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	m, enr, key, _ := newPlaceholderFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
@@ -137,6 +138,7 @@ func TestAReleaseLogsTheGrantsReasonAndItsCommand(t *testing.T) {
 // holds the call's reason to a request's own rules (record.Sanitize), dropping the runes no reason
 // may carry and cutting it to record.MaxReasonRunes, since nothing refused it before the release.
 func TestAReleaseLogsTheReasonItsOwnCallGave(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
 	capture := captureRecords(t)
 	m, enr, key, _ := newFixture(t)
 	const reason, again = "publish the docs site", "rebuild the search index"
@@ -184,6 +186,7 @@ func TestAReleaseLogsTheReasonItsOwnCallGave(t *testing.T) {
 // The value is redacted before the argument is clipped to its 256 bytes, so a value that crosses
 // the cut leaves no prefix of itself behind. (The values below are fixtures, not credentials.)
 func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (captureRecords, logtest.SetDefault, Swap, slog.SetDefault).
 	// Each value opens with eight bytes no other line of the log or the rows holds, a test's
 	// name included, since what the rows and the log must not hold is those eight bytes.
 	const storedValue = "v7c1e9a2-stored-0123456789abcdef"
@@ -290,6 +293,7 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 // process runs can hold and a database's JSON refuses, is recorded with U+FFFD in its place
 // rather than failing the release.
 func TestAReleaseCommandIsClipped(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		command []string

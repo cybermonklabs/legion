@@ -78,6 +78,7 @@ func pagePersons(t *testing.T, rig *ciphertest.Rig, approver string) map[string]
 // field follows the setting: grace's list holds the pod's login and names grace, and ada's list
 // no longer holds it.
 func TestAPersonPodLoginsRowNamesItsPersonAndEveryOtherRowNamesNone(t *testing.T) {
+	t.Parallel()
 	rig := newPersonPodRig(t)
 	boxMachine, _, box := approvedLogin(t, rig)
 	daemon := daemonTokenLogin(t, rig)

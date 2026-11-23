@@ -87,6 +87,7 @@ func (h *hiddenMidQuestion) States(context.Context, []string) (map[string]projec
 // again. Every wait here ends with the list's clock, so a maySee that asks its projects one after
 // another, HIDE first, fails here rather than holding the test: it never asks SHARED while HIDE waits.
 func TestAQuestionAHiddenRowAskedIsAskedOnceForTheList(t *testing.T) {
+	t.Parallel()
 	dispatch := &hiddenMidQuestion{sharedArrived: make(chan struct{}), release: make(chan struct{}), asked: map[string]int{}}
 	m := &Machine{Projects: dispatch}
 	clock, cancel := context.WithTimeout(t.Context(), listOwnRowsBound)
@@ -197,6 +198,7 @@ func stalledRowsFirst(t *testing.T, m *Machine, list listUnderTest, stalled int)
 // fixed, and this row cannot tell on its own whether a waiting row holds a slot:
 // TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot does, on the memo itself.
 func TestRowsWaitingOnAStalledProjectHoldNoQuestionSlot(t *testing.T) {
+	t.Parallel()
 	for _, c := range listsUnderTest {
 		t.Run(c.name, func(t *testing.T) {
 			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
@@ -267,6 +269,7 @@ func listMemo(t *testing.T, list context.Context) *accessMemo {
 // slot, the 15 would hold every slot the question leaves, TEAM's question could take none before
 // the clock ran out, and the row would be ErrProjectAccessUnavailable.
 func TestARowWaitingOnAnotherRowsQuestionHoldsNoSlot(t *testing.T) {
+	t.Parallel()
 	stall := &stallFor{inner: publicAnswers{}, project: stalledProject, hold: time.Hour, arrived: make(chan struct{}, 1)}
 	m := &Machine{Projects: stall}
 	clock, cancel := context.WithTimeout(t.Context(), listOwnRowsBound)
@@ -345,6 +348,7 @@ func (l *liveCalls) States(ctx context.Context, projects []string) (map[string]p
 // race each of the 17 questions runs. Dispatch holds SLOW for the length of a list's clock, so a
 // read that wrongly asks it on a live context fails here rather than holding the test.
 func TestNoQuestionIsAskedOnceTheListsClockHasEnded(t *testing.T) {
+	t.Parallel()
 	stall := &stallFor{inner: publicAnswers{}, project: stalledProject, hold: listOwnRowsBound, arrived: make(chan struct{}, 1)}
 	dispatch := &liveCalls{inner: stall}
 	m := &Machine{Projects: dispatch}
@@ -396,6 +400,7 @@ func TestNoQuestionIsAskedOnceTheListsClockHasEnded(t *testing.T) {
 // be asked, so it is left off and logged with the SLOW rows: the threshold listRowsAtOnce's doc
 // states. With no bound on the rows read at once, the TEAM row is listed after 64 too.
 func TestAListReadsAtMostSixtyFourRowsAtOnce(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	for _, c := range listsUnderTest {
 		for _, k := range []struct {
 			stalled int
@@ -441,6 +446,7 @@ func TestAListReadsAtMostSixtyFourRowsAtOnce(t *testing.T) {
 // asks MaySeeAtOnce at once, so the count sees questions held together. Each project is one
 // Dispatch does not hold, which hides nothing, so every row is listed.
 func TestTheQuestionsAListAsksAtOnceNeverExceedTheCap(t *testing.T) {
+	t.Parallel()
 	const rows, projectsEach = 24, 4
 	m, _, _, dispatch := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	pending := listsUnderTest[0]
@@ -526,6 +532,7 @@ func panicLogged(capture *logtest.Recorder) bool {
 // panics, asked outside any list, is ErrProjectAccessUnavailable. Each panic is logged at ERROR
 // with its stack. Unrecovered, each panic ends the test binary.
 func TestAReadThatPanicsFailsItsRowClosedAndTheListGoesOn(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	for _, c := range listsUnderTest {
 		t.Run("a question of "+c.name, func(t *testing.T) {
 			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)

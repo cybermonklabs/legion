@@ -41,6 +41,7 @@ func appScope(account string) *secrets.GitHubScope {
 // does, since the minter cuts the profile's permissions to the one and checks the token against
 // the other.
 func TestEachTypeReachesItsOwnMinter(t *testing.T) {
+	t.Parallel()
 	_, pemText := githubapptest.Key(t)
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -107,6 +108,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 // and nothing else, so a type added to policy.Types with no minter behind it, or a minter left
 // under a key no type names, fails here rather than when a session asks for that secret.
 func TestTypeMinters(t *testing.T) {
+	t.Parallel()
 	minters := typeMinters(secrets.GitHubApp{}, secrets.GoogleLogin{}, secrets.AzureLogin{}, &secrets.GoogleServiceAccount{}, &secrets.AnthropicFederation{})
 	for _, secretType := range policy.Types {
 		if minters[secretType] == nil {
@@ -124,6 +126,7 @@ func TestTypeMinters(t *testing.T) {
 }
 
 func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
+	t.Parallel()
 	file := filepath.Join(t.TempDir(), "azure-token")
 	const token = "eyJhbGciOiJSUzI1NiJ9" + "." + "eyJleHAiOjQxMDI0NDQ4MDB9.c2lnbmF0dXJl"
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
@@ -155,6 +158,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 // Google login's 503 is then tried once. Two seconds on, the budget holds two retries again, and
 // the same Google minter asks three times.
 func TestTypeMintersShareOneRetryBudget(t *testing.T) {
+	t.Parallel()
 	var githubCalls, googleCalls atomic.Int64
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		githubCalls.Add(1)
@@ -196,6 +200,7 @@ func TestTypeMintersShareOneRetryBudget(t *testing.T) {
 // the GitHub stand answering its token request 503 once and then as ordinary mints at the second
 // attempt, and the registry's own handler serves both attempts in broker_mint_attempts_total.
 func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
+	t.Parallel()
 	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Plain: true})
 	if err != nil {
 		t.Fatal(err)
@@ -228,6 +233,7 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 // that fails after a github-app mint the GiveBack of the same GitHub its minter mints at, so the
 // token that release minted is revoked there: a read made with it afterwards is refused.
 func TestRequestMachineGivesBackAGitHubAppTokenAtTheMintersGitHub(t *testing.T) {
+	t.Parallel()
 	service, err := proxyrulestest.NewService(proxyrulestest.ServiceOptions{Plain: true})
 	if err != nil {
 		t.Fatal(err)

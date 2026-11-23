@@ -170,6 +170,7 @@ func linesOf(capture *logtest.Recorder, message string) []map[string]string {
 // answers the first one's values and writes nothing; each is logged once. The list that asks for
 // no state holds the overdue request before the sweep and not after it, as it always did.
 func TestExpiredSecretRequestStaysListedUntilDismissed(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	m, _, _, approver := newFixture(t)
@@ -258,6 +259,7 @@ func TestExpiredSecretRequestStaysListedUntilDismissed(t *testing.T) {
 // already passed. Its decisions are machine.ErrLoginExpired, the machine-login form of the refusal
 // the check calls ErrExpired, and write no event; the sweep is machine.Service.ExpirePending.
 func TestExpiredMachineLoginStaysListedUntilDismissed(t *testing.T) {
+	t.Parallel()
 	m, _, _, approver := newFixture(t)
 	ctx := context.Background()
 	deadline := time.Now().Add(-time.Hour)
@@ -325,6 +327,7 @@ func TestExpiredMachineLoginStaysListedUntilDismissed(t *testing.T) {
 // can decide off it. The records are written pending, expired, pending, expired, so the order by
 // time alone would interleave them.
 func TestExpiredRowsAreListedAfterThePendingOnesEachNewestFirst(t *testing.T) {
+	t.Parallel()
 	m, _, _, approver := newFixture(t)
 	olderPending := newSecretRequest(t, m, "box-a")
 	olderExpired := newSecretRequest(t, m, "box-b")
@@ -352,6 +355,7 @@ func TestExpiredRowsAreListedAfterThePendingOnesEachNewestFirst(t *testing.T) {
 // ErrNotExpired; and a decided record is ErrTerminal, whether its deadline has passed since or
 // not. None of them writes a dismissal.
 func TestExpiredDismissRefusesWhatIsNotAnExpiredRecordOfTheLogin(t *testing.T) {
+	t.Parallel()
 	m, _, _, approver := newFixture(t)
 	ctx := context.Background()
 
@@ -402,6 +406,7 @@ func TestExpiredDismissRefusesWhatIsNotAnExpiredRecordOfTheLogin(t *testing.T) {
 // dismiss it either way, and the first person's dismissal takes it out of every list; a second
 // person's dismissal answers the first one's.
 func TestExpiredSharedRequestOneLoginDismissesLeavesEveryList(t *testing.T) {
+	t.Parallel()
 	const bob, carol = "bob@example.com", "carol@example.com"
 	t.Run("nobody is responsible: every list", func(t *testing.T) {
 		m, _, _, _ := newFixture(t)
@@ -457,6 +462,7 @@ func TestExpiredSharedRequestOneLoginDismissesLeavesEveryList(t *testing.T) {
 // A request cancelled after its deadline had passed is still listed expired, a decision of it
 // is ErrTerminal, its record reads cancelled, and the approver dismisses it like any other.
 func TestExpiredRequestWhoseSessionEndedIsListedAndDismissed(t *testing.T) {
+	t.Parallel()
 	ends := map[string]func(t *testing.T, m *Machine, enrollmentID, requestID string){
 		"Cancel": func(t *testing.T, m *Machine, enrollmentID, requestID string) {
 			if err := m.Cancel(context.Background(), requestID, enrollmentID); err != nil {
@@ -516,6 +522,7 @@ func TestExpiredRequestWhoseSessionEndedIsListedAndDismissed(t *testing.T) {
 // its session cancelled while its deadline was still ahead never reached the deadline, so no list
 // holds it and it has nothing to dismiss.
 func TestExpiredRequestCancelledBeforeItsDeadlineIsNotListed(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")
@@ -541,6 +548,7 @@ func TestExpiredRequestCancelledBeforeItsDeadlineIsNotListed(t *testing.T) {
 // is left out with no line, list after list. A pending record left out is logged once, as it
 // always was.
 func TestExpiredRecordLeftOutOfAStatesListIsNotLogged(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	m, enr, key, approver := newFixture(t)
@@ -575,6 +583,7 @@ func TestExpiredRecordLeftOutOfAStatesListIsNotLogged(t *testing.T) {
 // ExpiresAt is its request's pending_expires_at, the deadline its decision compares. Once the
 // sweep has run, the secret request's expired event says the same.
 func TestReadRecordReadsAnOverdueRecordExpiredBeforeTheSweep(t *testing.T) {
+	t.Parallel()
 	m, _, _, approver := newFixture(t)
 	ctx := context.Background()
 	overdue := newSecretRequest(t, m, "box-a")
@@ -612,6 +621,7 @@ func TestReadRecordReadsAnOverdueRecordExpiredBeforeTheSweep(t *testing.T) {
 // than joining one every decision refuses, and the approver's list holds it pending beside the
 // expired one.
 func TestCoalescingSkipsARequestPastItsDeadline(t *testing.T) {
+	t.Parallel()
 	m, enr, key, approver := newFixture(t)
 	ctx := context.Background()
 	first, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "DEEL_API_KEY"), "")

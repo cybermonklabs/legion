@@ -77,6 +77,7 @@ type changed struct {
 // than a second after that decision returned (R1: a waiting command learns of a decision within
 // one second of it). A read that was not held would answer pending at once.
 func TestReadRequestWaitsForTheDecision(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		approve bool
@@ -120,6 +121,7 @@ func TestReadRequestWaitsForTheDecision(t *testing.T) {
 // TestReadRequestWaitEndsPending: with no decision, a read with ?wait=2 is held the two seconds
 // and answers pending, before a third second has passed.
 func TestReadRequestWaitEndsPending(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	start := time.Now()
@@ -142,6 +144,7 @@ func TestReadRequestWaitEndsPending(t *testing.T) {
 // longer judge_deciding, well before its wait ends: the request is its person's now, and the
 // agent learns so at once rather than at the end of its wait.
 func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	if _, err := ts.Store.Pool.Exec(context.Background(), `update requests set judge_until = now() + interval '1 second' where id=$1`, asked.RequestID); err != nil {
@@ -166,6 +169,7 @@ func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
 // record.MaxRequestWaitSeconds is refused 400 REQUEST_WAIT_INPUT, at once, for a request that is
 // pending.
 func TestReadRequestWaitRefusesBadInput(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	for _, wait := range []string{strconv.Itoa(record.MaxRequestWaitSeconds + 1), "x", "0", "-1", "1.5"} {
@@ -188,6 +192,7 @@ func TestReadRequestWaitRefusesBadInput(t *testing.T) {
 // (storetest). Once the table is back, the request is still pending, and a new held read
 // answers its decision.
 func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	ctx := context.Background()
@@ -226,6 +231,7 @@ func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
 // answered 403 NOT_YOURS at the next step, as a new read of it is, and not the request's state
 // for the rest of the wait.
 func TestReadRequestWaitEndsWhenTheRequestMoves(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	successor, _ := ts.newSessionEnrollment(t, "successor-"+t.Name(), testApprover)
@@ -366,6 +372,7 @@ func requireFailed(t *testing.T, ts *testServer, capture *logtest.Recorder, fail
 // no line. It is counted neither as the failed 503 a store fault is nor with the ERROR line one
 // writes.
 func TestReadRequestWaitEndedByItsCallerIsNoFailure(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts := newTestServer(t)
@@ -392,6 +399,7 @@ func TestReadRequestWaitEndedByItsCallerIsNoFailure(t *testing.T) {
 // sets no statement or acquire timeout, so such a read runs until its caller gives up or the
 // request deadline ends it, and counting it cancelled would hide the stall.
 func TestReadRequestWaitStalledPastItsWaitIsAFailure(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts := newTestServer(t)
@@ -410,6 +418,7 @@ func TestReadRequestWaitStalledPastItsWaitIsAFailure(t *testing.T) {
 // already late with: a store failure, logged and counted failed, as it was before ?wait= existed.
 // Only a held read's caller leaves early.
 func TestReadRequestWithNoWaitEndedByItsCallerIsAFailure(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts := newTestServer(t)
@@ -425,6 +434,7 @@ func TestReadRequestWithNoWaitEndedByItsCallerIsAFailure(t *testing.T) {
 // stalls for a second, a lock on the enrollments table, answers pending 2 s after it was sent, as
 // it asked, and not 3 s.
 func TestReadRequestWaitCountsFromItsArrival(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
@@ -449,6 +459,7 @@ func TestReadRequestWaitCountsFromItsArrival(t *testing.T) {
 // window would run to 2.5 s and count it cancelled. The cut at 2 s sits half a second from each
 // end, so a request a few hundred ms late to arrive still lands on the right side.
 func TestReadRequestOwedTimeCountsFromItsArrival(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts := newTestServer(t)
@@ -466,6 +477,7 @@ func TestReadRequestOwedTimeCountsFromItsArrival(t *testing.T) {
 // it ended is a store failure: `broker: verify proof failed` at ERROR, a 503 counted failed for an
 // unauthenticated caller.
 func TestReadRequestWaitEndedDuringItsProofCheckIsAFailure(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
 	ts := newTestServer(t)

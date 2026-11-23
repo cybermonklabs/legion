@@ -64,6 +64,7 @@ func (ts *testServer) audienceToken(t *testing.T, account, podUID, audience stri
 // accounts, and nothing is written: a login alone registers nothing. Its own pod is refused so
 // too, before POD_CALLER_IS_THE_POD, since the list check comes first.
 func TestASessionAccountLoginCannotRegister(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withExchangeAccounts(t, workerAccount, sessionAccount))
 	ts.ServiceLogins[sessionAccount] = "example-session"
 	login := ts.accountToken(t, sessionAccount, "pod-uid-session", time.Hour)
@@ -88,6 +89,7 @@ func TestASessionAccountLoginCannotRegister(t *testing.T) {
 // the pairing and not the login; and with the setting unset that admitted registration is 403
 // POD_REGISTRAR_NOT_LISTED, since no list admits nothing.
 func TestARegistrarRegistersOnlyItsListedAccountsPods(t *testing.T) {
+	t.Parallel()
 	listing := func(registrars api.PodRegistrars) func(*api.Deps) {
 		exchange := withExchangeAccounts(t, workerAccount, otherAccount)
 		return func(d *api.Deps) {
@@ -177,6 +179,7 @@ func (ts *testServer) rolesTradeToken(t *testing.T, pod string) string {
 // and a token of a third audience 401 POD_TOKEN_INVALID; and on a broker with the setting unset,
 // the registration audience's token is 401 POD_TOKEN_INVALID at the route too.
 func TestTheRegistrationAudienceIsAcceptedAtTheRouteAlone(t *testing.T) {
+	t.Parallel()
 	const pod, session = "pod-uid-roles", "implementer-g1"
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		// BROKER_SERVICES binds the roles account to the daemon's service, so the daemon's own

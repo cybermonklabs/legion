@@ -50,6 +50,7 @@ const restrictedGuest = "guest@outside.example"
 // 503 MEMBER_KIND_UNCHECKABLE with nothing written. The control: once Dispatch calls carol a full
 // member, her grant list holds the first grant, and she dismisses the request and ends that grant.
 func TestTheApproverRoutesGiveARestrictedMemberNothing(t *testing.T) {
+	t.Parallel()
 	ts, access := hiddenServer(t, sharedKeyJudged)
 	// The judge's grant asks Dispatch afresh whether a reader naming no person sees PRIV, which
 	// only a public PRIV allows (requests.Machine.ApplyJudgeDecision).
@@ -162,6 +163,7 @@ func TestTheApproverRoutesGiveARestrictedMemberNothing(t *testing.T) {
 // MEMBER_KIND_UNCHECKABLE, each deciding nothing; for bob, a full member, the control, it is 200
 // denied.
 func TestARestrictedMemberDeniesNoServicesLoginOnTheRoute(t *testing.T) {
+	t.Parallel()
 	access := &projectaccesstest.Swappable{}
 	stand := projectaccesstest.NewServer(t, nil, map[string]string{
 		restrictedGuest:   projectaccess.MemberRestricted,
@@ -253,6 +255,7 @@ func restrictedStand(t *testing.T) (*testServer, *projectaccesstest.Swappable, *
 // them neither record, and their dismissal of the expired one is 403 NOT_APPROVER, saying why,
 // dismissing nothing. The control: bob, a full member, lists both and dismisses the expired one.
 func TestAServicesLegacyLoginIsOnNoRestrictedMembersList(t *testing.T) {
+	t.Parallel()
 	ts, _, _ := restrictedStand(t)
 	pending := ts.insertLegacyServiceLogin(t, "WXYZ-ABCD", time.Now().Add(15*time.Minute))
 	expired := ts.insertLegacyServiceLogin(t, "QRST-UVWX", time.Now().Add(-time.Hour))
@@ -334,6 +337,7 @@ func (ts *testServer) machineLoginLive(t *testing.T, id string) bool {
 // revoke of the daemon's login answers 404 NOT_FOUND and ends nothing. The control: bob, a full
 // member, lists both service logins and ends the daemon's.
 func TestARestrictedMemberListsAndEndsNoServicesMachineLogin(t *testing.T) {
+	t.Parallel()
 	ts, access, stand := restrictedStand(t)
 	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
 	legacyLogin, _ := ts.mintOutstandingServiceCredential(t, testApprover)
@@ -386,6 +390,7 @@ func TestARestrictedMemberListsAndEndsNoServicesMachineLogin(t *testing.T) {
 // (api.MachineLoginsOwnOnlyMessage) once, since it writes it at most once per person per minute.
 // The control: once Dispatch answers him a full member, his list holds the daemon's login again.
 func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	const bob = "bob@example.com"
 	ts, access, stand := restrictedStand(t)
 	tokenLogin, _ := ts.mintServiceLauncherCredential(t)
@@ -446,6 +451,7 @@ func TestAFullMemberEndsTheirOwnMachineLoginWhileTheirKindCannotBeRead(t *testin
 // call: Dispatch's page reads the list each time it opens. While Dispatch is down, bob lists his
 // machine logins three times and carol once: one line names bob and one names carol.
 func TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	const bob = "bob@example.com"
 	ts, access, _ := restrictedStand(t)
 	down := projectaccesstest.NewServer(t, nil, nil)
@@ -484,6 +490,7 @@ func TestTheOwnLoginsLineIsWrittenOncePerPersonPerMinute(t *testing.T) {
 // line, and is counted cancelled (answer.Recorder.NoteCallerEnded), as every route counts a caller
 // that hung up.
 func TestARevokeWhoseCallerHungUpWritesNothingAndNoErrorLine(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	ts := newTestServer(t)
 	box, boxKey := ts.newSessionEnrollment(t, "hang-up-box-"+t.Name(), "operator@example.com")
 	grant := ts.approveAs(t, ts.requestAs(t, boxKey, box, "DEEL_API_KEY"), testApprover)
@@ -552,6 +559,7 @@ func (h hangsUpAfterKinds) MemberKind(ctx context.Context, person string) (strin
 // ERROR line and is counted cancelled (answer.Recorder.NoteCallerEnded), as a hang-up during the
 // read is; it ends nothing, since its transaction never began.
 func TestARevokeWhoseCallerHungUpAfterTheMemberKindReadWritesNoErrorLine(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (logtest.SetDefault, Swap, slog.SetDefault).
 	ts := newTestServer(t)
 	box, boxKey := ts.newSessionEnrollment(t, "hang-up-after-box-"+t.Name(), "operator@example.com")
 	grant := ts.approveAs(t, ts.requestAs(t, boxKey, box, "DEEL_API_KEY"), testApprover)
@@ -633,6 +641,7 @@ func (s *stalledKinds) MemberKind(ctx context.Context, person string) (string, e
 // Dispatch did not answer: bob, a full member, is listed his own login and not the Legion daemon's,
 // and ends his own login.
 func TestTheMachineLoginRoutesReadTheMemberKindWithinTheRelaysWait(t *testing.T) {
+	t.Parallel()
 	const bob = "bob@example.com"
 	const dispatchRelayWait = 5 * time.Second
 	stand := projectaccesstest.NewServer(t, nil, map[string]string{bob: projectaccess.MemberFull})
@@ -665,6 +674,7 @@ func TestTheMachineLoginRoutesReadTheMemberKindWithinTheRelaysWait(t *testing.T)
 // grants. A person Dispatch calls a restricted member sees nothing beyond their own projects, so
 // GET /v1/grants does not list it to them; bob, a full member, the control, sees it.
 func TestAServicePodsGrantIsOnNoRestrictedMembersList(t *testing.T) {
+	t.Parallel()
 	ts, _, _ := restrictedStand(t)
 	credentialID, launcherKey := ts.mintOutstandingServiceCredential(t, testApprover)
 	podUID := uuid.NewString()

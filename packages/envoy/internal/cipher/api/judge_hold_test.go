@@ -40,6 +40,7 @@ func (ts *testServer) createFor(t *testing.T, sessionKey *ecdsa.PrivateKey, enro
 // for a person to approve — and the person's pending list does not show it. No reason cites
 // anything. The same request on a broker that runs no judge is an ordinary card, with its page.
 func TestARequestTheJudgeHoldsLinksNoPage(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withJudge)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, held, body := ts.createFor(t, sessionKey, enrollmentID, "export the payroll", 600, "DEEL_API_KEY")
@@ -71,6 +72,7 @@ func TestARequestTheJudgeHoldsLinksNoPage(t *testing.T) {
 // seconds, and a request that asks for longer is refused in its create answer, naming the --ttl
 // that would do, as a max-grant tag refuses one. Nothing waits for anybody.
 func TestAJudgeKeysLongerLifetimeIsRefusedWhenWritten(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withJudge)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, _, body := ts.createFor(t, sessionKey, enrollmentID, "read the shared key", 600, "SHARED_KEY")
@@ -85,6 +87,7 @@ func TestAJudgeKeysLongerLifetimeIsRefusedWhenWritten(t *testing.T) {
 // 403 JUDGE_DECIDES — and never with the approval page they name for a request a person decides,
 // which a card on a broker with no judge still gets. Nothing is written.
 func TestTheDecisionRoutesRefuseARecordTheJudgeHolds(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withJudge)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
 	status, held, body := ts.createFor(t, sessionKey, enrollmentID, "export the payroll", 600, "DEEL_API_KEY")
@@ -117,6 +120,7 @@ func TestTheDecisionRoutesRefuseARecordTheJudgeHolds(t *testing.T) {
 // as every secret request is, never 500: on a broker with a judge, the hold is read and not the
 // record, so a held one is JUDGE_DECIDES and any other DECIDE_ON_BROKER_PAGE. Nothing is written.
 func TestTheDecisionRoutesRefuseARecordOfAnotherAudienceAsBefore(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		adjust func(*api.Deps)
@@ -151,6 +155,7 @@ func TestTheDecisionRoutesRefuseARecordOfAnotherAudienceAsBefore(t *testing.T) {
 // the same rules and no judge names the same keys, and one whose rules give the judge nothing
 // names none.
 func TestTheSettingsNameEachJudgeKeyAndItsGuidance(t *testing.T) {
+	t.Parallel()
 	type judgeKey struct {
 		Seconds  int    `json:"seconds"`
 		Guidance string `json:"guidance"`

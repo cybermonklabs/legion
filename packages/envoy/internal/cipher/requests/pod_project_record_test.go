@@ -31,6 +31,7 @@ import (
 // and approved it (request.granted, decided_by alice@example.com); the pod's PRIV_HUMAN page told
 // carol "PRIV, private, which the session does not name".
 func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: privProject, Person: insider}}, nil, nil, nil, "")
 	if err != nil {

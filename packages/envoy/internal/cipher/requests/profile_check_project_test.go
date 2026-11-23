@@ -78,6 +78,7 @@ func newPrivateProfileCheckFixture(t *testing.T, named ...string) *profileFixtur
 // not checked and not sent to a person. Without the facts the check could not evaluate a tagged
 // name, would skip, and the first request would spend an approval on a profile nobody can mint.
 func TestTheProfileCheckBeforeApprovalReadsTheProjectFacts(t *testing.T) {
+	t.Parallel()
 	named := newPrivateProfileCheckFixture(t, privateAppProject)
 	request, err := named.create(t, "PRIV_APP_READ")
 	if !errors.Is(err, secrets.ErrMintNoInstallation) {
