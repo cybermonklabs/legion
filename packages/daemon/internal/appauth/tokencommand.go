@@ -526,7 +526,9 @@ func (m *Manager) anyInstallation(ctx context.Context, role AppRole, app config.
 
 // tokenIdentity is the bot identity of the App whose installation token token is, with no JWT:
 // verifyTokenApp checks the token is appID's App's and names its bot login, run for every token,
-// and GET /users/<login> gives the bot user's id for its noreply email, read once per App.
+// and GET /users/<login> gives the bot user's id for its noreply email, read once per App. The
+// login and the identity's name are GitHub's words, decided on as they came and printed only as
+// logins GitHub allows (githubrest.ShownLogin), as verifyTokenApp says.
 func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token string) (GitIdentity, error) {
 	login, err := m.verifyTokenApp(ctx, role, appID, token)
 	if err != nil {
@@ -539,7 +541,8 @@ func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token 
 		return GitIdentity{}, err
 	}
 	if identity.Name != login {
-		return GitIdentity{}, fmt.Errorf("the %s App's %s released a token that acts as %s, where the App acted as %s", role, tokenCommandField(role), login, identity.Name)
+		return GitIdentity{}, fmt.Errorf("the %s App's %s released a token that acts as %s, where the App acted as %s",
+			role, tokenCommandField(role), githubrest.ShownLogin(login), githubrest.ShownLogin(identity.Name))
 	}
 	return identity, nil
 }
@@ -547,6 +550,11 @@ func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token 
 // verifyTokenApp returns the bot login token acts as, refusing a token that is not the App appID's:
 // GraphQL's viewer names the bot login, `<slug>[bot]`, and GET /apps/<slug> must answer appID, so a
 // command that releases another App's token is refused rather than acted as.
+//
+// The viewer's login is GitHub's words, or those of whatever answers in its place, which can echo
+// the token the read carried, the broker's release. It is decided on as it came, and the errors
+// here, checkAppID's and botIdentity's name it only as a login GitHub allows
+// (githubrest.ShownLogin), and its slug only as that login's.
 func (m *Manager) verifyTokenApp(ctx context.Context, role AppRole, appID, token string) (string, error) {
 	login, err := m.viewerLogin(ctx, role, token)
 	if err != nil {
@@ -554,7 +562,7 @@ func (m *Manager) verifyTokenApp(ctx context.Context, role AppRole, appID, token
 	}
 	slug, ok := strings.CutSuffix(login, "[bot]")
 	if !ok || slug == "" {
-		return "", fmt.Errorf("the %s App's %s released a token that acts as %s, not an App's bot", role, tokenCommandField(role), login)
+		return "", fmt.Errorf("the %s App's %s released a token that acts as %s, not an App's bot", role, tokenCommandField(role), githubrest.ShownLogin(login))
 	}
 	if err := m.checkAppID(ctx, role, slug, appID, token); err != nil {
 		return "", err
@@ -595,9 +603,15 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 	return answer.Data.Viewer.Login, nil
 }
 
-// checkAppID reads GET /apps/<slug> and refuses an App whose id is not appID.
+// checkAppID reads GET /apps/<slug> and refuses an App whose id is not appID. The slug and the id
+// GitHub answers are GitHub's words (verifyTokenApp): each is decided on as it came, the read asks
+// for the slug as it came, and what this prints of them is the slug as ShownLogin prints its bot
+// login, without "[bot]", and the id where it is a number (shownAppID). A failure names the read
+// by that slug: in GitHub's answer (transientAs) and in net/http's error for a read that got no
+// answer (githubrest.Unanswered).
 func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, token string) error {
-	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, slug, slug)
+	shown := strings.TrimSuffix(githubrest.ShownLogin(slug+"[bot]"), "[bot]")
+	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, shown, shown)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/apps/"+url.PathEscape(slug), nil)
 	if err != nil {
 		return err
@@ -605,10 +619,10 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 	tokenHeaders(request, token)
 	response, err := m.client.Do(request)
 	if err != nil {
-		return &TransientError{Err: fmt.Errorf("read %s: %w", what, err)}
+		return &TransientError{Err: fmt.Errorf("read %s: %w", what, githubrest.Unanswered(err, "/apps/"+shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return m.transient(response, refusalBody(response), fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
+		return m.transientAs(response, refusalBody(response), "/apps/"+shown, fmt.Errorf("read %s failed (%d)", what, response.StatusCode))
 	}
 	body, err := readBody(response, "read "+what, responseBound)
 	if err != nil {
@@ -625,9 +639,19 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 		return fmt.Errorf("read %s: GitHub answered no App id", what)
 	}
 	if id != appID {
-		return fmt.Errorf("the %s App's %s released a token of App %s (%s), not of the configured app_id %s", role, tokenCommandField(role), id, slug, appID)
+		return fmt.Errorf("the %s App's %s released a token of App %s (%s), not of the configured app_id %s", role, tokenCommandField(role), shownAppID(id), shown, appID)
 	}
 	return nil
+}
+
+// shownAppID is id, an App's id GitHub answered, as a message may print it: id where it is a
+// decimal number, as GitHub numbers every App, and a fixed phrase otherwise, since
+// installationID reads any text GitHub writes as a string id.
+func shownAppID(id string) string {
+	if _, err := strconv.ParseUint(id, 10, 64); err != nil {
+		return "(an id that is not a number)"
+	}
+	return id
 }
 
 // installedFromCommand is InstalledOn in token mode: the App is installed on repo when the release

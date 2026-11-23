@@ -103,7 +103,17 @@ func (e *AnswerError) Unwrap() error { return e.Err }
 // that answer (AnswerError), its path the request's under the Manager's base URL
 // (githubrest.PathUnder).
 func (m *Manager) answered(response *http.Response, read oauth2call.Answer, err error) *AnswerError {
-	path := githubrest.PathUnder(m.baseURL, response.Request.URL)
+	return m.answeredAs(response, read, "", err)
+}
+
+// answeredAs is answered naming the call shown in place of its path, for a call whose path holds
+// GitHub's words, which a message prints only in their shape; "" names it by its path, as
+// answered does.
+func (m *Manager) answeredAs(response *http.Response, read oauth2call.Answer, shown string, err error) *AnswerError {
+	path := shown
+	if path == "" {
+		path = githubrest.PathUnder(m.baseURL, response.Request.URL)
+	}
 	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, read)}
 }
 
@@ -112,7 +122,12 @@ func (m *Manager) answered(response *http.Response, read oauth2call.Answer, err 
 // headers and, for a secondary limit GitHub names in the body alone, the body as it came). Either
 // way err carries GitHub's answer (answered).
 func (m *Manager) transient(response *http.Response, read oauth2call.Answer, err error) error {
-	refused := m.answered(response, read, err)
+	return m.transientAs(response, read, "", err)
+}
+
+// transientAs is transient naming the call shown, as answeredAs does.
+func (m *Manager) transientAs(response *http.Response, read oauth2call.Answer, shown string, err error) error {
+	refused := m.answeredAs(response, read, shown, err)
 	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
 		return &TransientError{Err: refused}
 	}
@@ -949,7 +964,14 @@ func (m *Manager) fetchIdentity(ctx context.Context, jwt, installationToken stri
 
 // botIdentity is the git identity of the App bot login, its noreply email naming the bot user's
 // id, read from GET /users/<login> under installationToken.
+//
+// login is GitHub's words - its viewer's login in token mode, its App's slug in key mode - or
+// those of whatever answers in its place, which can echo the token the read carried. The read asks
+// for login as it came, path-escaped, which keeps a token's letters, so its failure names the read
+// by the login as a message may print it (githubrest.ShownLogin): in GitHub's answer
+// (transientAs) and in net/http's error for a read that got no answer (githubrest.Unanswered).
 func (m *Manager) botIdentity(ctx context.Context, login, installationToken string) (GitIdentity, error) {
+	shown := "/users/" + githubrest.ShownLogin(login)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/users/"+url.PathEscape(login), nil)
 	if err != nil {
 		return GitIdentity{}, err
@@ -959,10 +981,10 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 	request.Header.Set("User-Agent", "legion-daemon")
 	response, err := m.client.Do(request)
 	if err != nil {
-		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", err)}
+		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", githubrest.Unanswered(err, shown))}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return GitIdentity{}, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
+		return GitIdentity{}, m.transientAs(response, refusalBody(response), shown, fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App bot identity lookup", responseBound)
 	if err != nil {

@@ -4473,8 +4473,8 @@
       "requirement": "r3-each-site",
       "package": "github.com/sjawhar/legion/daemon/internal/githubrest",
       "test": "TestANextPageGitHubNamesPrintsNoTokenItEchoes/unanswered",
-      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (url.Error.URL, unanswered), never the URL GitHub's Link header wrote",
-      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.unanswered",
+      "production": "githubrest call and getPages: a later page's read that got no answer names the page by its number after the read's name (url.Error.URL, Unanswered), never the URL GitHub's Link header wrote",
+      "function": "github.com/sjawhar/legion/daemon/internal/githubrest.Unanswered",
       "capture": "githubrest.answer-words/next-page-unanswered",
       "mutation": {
         "file": "packages/daemon/internal/githubrest/githubrest.go",
@@ -6567,6 +6567,118 @@
       "package": "github.com/sjawhar/legion/daemon/internal/appauth",
       "test": "TestEachBrokerPhraseTheDaemonDecidesOnSurvivesTheCLIsRule",
       "production": "appauth mintFromCommand: each broker phrase it decides on in agent-secrets' stderr (brokerNoInstallation, brokerNarrowingRefused) survives the rule the CLI printed it through, which a credential sharing a run of the phrase would cut"
+    },
+    {
+      "id": "appauth-answer-words-viewer-not-a-bot",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/not-a-bot",
+      "production": "appauth Manager.verifyTokenApp: GraphQL's viewer login, which is no App's bot, named in the refusal only as a login GitHub allows (githubrest.ShownLogin), never as it came, which can echo the released token",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).verifyTokenApp",
+      "capture": "appauth.answer-words/viewer-not-a-bot",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/tokencommand.go",
+        "preimage": "githubrest.ShownLogin(login))",
+        "replacement": "login)"
+      }
+    },
+    {
+      "id": "appauth-answer-words-viewer-app-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/app-refused",
+      "production": "appauth Manager.checkAppID: GitHub's answer to GET /apps/<slug> names the read by the slug as ShownLogin prints its bot login (AnswerError's Answer.Path, transientAs), never by the path it asked, which holds the slug as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
+      "capture": "appauth.answer-words/viewer-app-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/tokencommand.go",
+        "preimage": "refusalBody(response), \"/apps/\"+shown,",
+        "replacement": "refusalBody(response), \"\","
+      }
+    },
+    {
+      "id": "appauth-answer-words-viewer-app-slug",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/app-refused",
+      "production": "appauth Manager.checkAppID: the App's slug, the viewer's login without \"[bot]\", named in the read's refusals only as ShownLogin prints its bot login, never as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
+      "capture": "appauth.answer-words/viewer-app-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/tokencommand.go",
+        "preimage": "shown := strings.TrimSuffix(githubrest.ShownLogin(slug+\"[bot]\"), \"[bot]\")",
+        "replacement": "shown := slug"
+      }
+    },
+    {
+      "id": "appauth-answer-words-viewer-app-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/app-unanswered",
+      "production": "appauth Manager.checkAppID: a GET /apps/<slug> that got no answer is named by the shown slug (githubrest.Unanswered, url.Error.URL), never by the URL it asked, which holds the slug as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
+      "capture": "appauth.answer-words/viewer-app-unanswered",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/tokencommand.go",
+        "preimage": "githubrest.Unanswered(err, \"/apps/\"+shown)",
+        "replacement": "err"
+      }
+    },
+    {
+      "id": "appauth-answer-words-viewer-another-app",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/another-app",
+      "production": "appauth Manager.checkAppID: the App id GitHub answers, refused for not being the configured app_id, named only where it is a number (shownAppID), never as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).checkAppID",
+      "capture": "appauth.answer-words/viewer-another-app",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/tokencommand.go",
+        "preimage": "shownAppID(id)",
+        "replacement": "id"
+      }
+    },
+    {
+      "id": "appauth-answer-words-viewer-identity",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/identity",
+      "production": "appauth Manager.tokenIdentity: a token acting as another bot than the App acted as names both logins only as logins GitHub allows (githubrest.ShownLogin), never as they came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).tokenIdentity",
+      "capture": "appauth.answer-words/viewer-identity",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/tokencommand.go",
+        "preimage": "githubrest.ShownLogin(login), githubrest.ShownLogin(identity.Name))",
+        "replacement": "login, identity.Name)"
+      }
+    },
+    {
+      "id": "appauth-answer-words-viewer-user-refused",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/user-refused",
+      "production": "appauth Manager.botIdentity: GitHub's answer to GET /users/<login> names the read by the login as ShownLogin prints it (AnswerError's Answer.Path, transientAs), never by the path it asked, which holds the login as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).botIdentity",
+      "capture": "appauth.answer-words/viewer-user-refused",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "refusalBody(response), shown,",
+        "replacement": "refusalBody(response), \"\","
+      }
+    },
+    {
+      "id": "appauth-answer-words-viewer-user-unanswered",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/appauth",
+      "test": "TestATokensIdentityReadNamesTheViewerOnlyInItsShape/user-unanswered",
+      "production": "appauth Manager.botIdentity: a GET /users/<login> that got no answer is named by the shown login (githubrest.Unanswered, url.Error.URL), never by the URL it asked, which holds the login as it came",
+      "function": "(*github.com/sjawhar/legion/daemon/internal/appauth.Manager).botIdentity",
+      "capture": "appauth.answer-words/viewer-user-unanswered",
+      "mutation": {
+        "file": "packages/daemon/internal/appauth/appauth.go",
+        "preimage": "githubrest.Unanswered(err, shown)",
+        "replacement": "err"
+      }
     },
     {
       "id": "cipher-unknown-field-as-it-came",
@@ -8897,6 +9009,11 @@
       "site": "daemon readPermission: a permission read whose failure it returned (a 5xx, a 401, a rate limit, a read that got no answer) printed the path it asked, which holds the review's author as GitHub's list named it (a token in GitHub's shape passes url.PathEscape as it is), in GitHub's answer's path and in net/http's error",
       "source": "the review of #4368 round 6, finding P",
       "guard": "daemon-answer-words-permission-failed-refused"
+    },
+    {
+      "site": "appauth token mode: GraphQL's viewer login, read under the released token, printed as it came in the refusals of verifyTokenApp and tokenIdentity, its slug in checkAppID's read name, path and URL, the App id GitHub answered, and botIdentity's path and URL",
+      "source": "the coordinator's class search of #4368 round 6's finding P",
+      "guard": "appauth-answer-words-viewer-not-a-bot"
     }
   ]
 }

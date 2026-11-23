@@ -188,7 +188,7 @@ func getPages[T any](ctx context.Context, c Client, path, shown, field string) (
 //
 // A failure names the call shown, its caller's name for it (Client), wherever it would name
 // target: GitHub's answer's path (refusal) and net/http's error for a request that got no answer
-// (unanswered). With shown "" each names target as it is.
+// (Unanswered). With shown "" each names target as it is.
 func (c Client) call(ctx context.Context, method, target, shown string, body []byte, into any) (string, http.Header, error) {
 	var payload io.Reader
 	if body != nil {
@@ -196,7 +196,7 @@ func (c Client) call(ctx context.Context, method, target, shown string, body []b
 	}
 	request, err := http.NewRequestWithContext(ctx, method, target, payload)
 	if err != nil {
-		return "", nil, unanswered(err, shown)
+		return "", nil, Unanswered(err, shown)
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -205,7 +205,7 @@ func (c Client) call(ctx context.Context, method, target, shown string, body []b
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return "", nil, unanswered(err, shown)
+		return "", nil, Unanswered(err, shown)
 	}
 	defer response.Body.Close()
 	read, err := oauth2call.ReadAnswer(response, 64<<20)
@@ -221,10 +221,11 @@ func (c Client) call(ctx context.Context, method, target, shown string, body []b
 	return nextPage(response.Header.Get("Link")), response.Header, read.Decode(into)
 }
 
-// unanswered is err, the failure of a call that got no answer, as call returns it: naming the call
-// shown in place of the URL net/http's error names (url.Error.URL), which is the target as it
-// came, and err as it came when shown is "".
-func unanswered(err error, shown string) error {
+// Unanswered is err, the failure of a call that got no answer, naming the call shown in place of
+// the URL net/http's error names (url.Error.URL), which is the target as it came, and err as it
+// came when shown is "". call returns its failures so, and appauth, which calls GitHub with a
+// client of its own, names its reads so where their path holds GitHub's words.
+func Unanswered(err error, shown string) error {
 	var failed *url.Error
 	if shown != "" && errors.As(err, &failed) {
 		failed.URL = shown
