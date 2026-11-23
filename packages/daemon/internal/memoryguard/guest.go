@@ -100,10 +100,10 @@ import (
 // victim's place within the rule's one limit (below). A process of that role that the watch counts
 // already is not set aside, and goes on counting, within the same limit. The launcher sets
 // SessionDrain to 3 s, role-init's 2 s drain and a second more for its kill to land. The launcher's
-// classifier counts every direct child of the shim as a session process, since it cannot tell the
-// agent from the shim's other children (the secrets renewer, the working copy's adoption, the
-// CodeGraph warm-up), which costs kills left unnamed, and a wrong name only within the rule's one
-// limit (below). A session process that shows the kill before it leaves, as an agent the kernel
+// classifier counts every direct child of the shim as a session process, by its place in the
+// tree, the agent and the shim's other children (the secrets renewer, the working copy's adoption,
+// the CodeGraph warm-up) alike, which costs kills left unnamed, and a wrong name only within the
+// rule's one limit (below). A session process that shows the kill before it leaves, as an agent the kernel
 // killed does while it is a zombie its shim has not reaped, is named as any process is, unless the
 // watch sees a session process of its role leave, itself among them, before the pass that settles
 // it has read the session processes after its status reads: that departure sets it aside, as above.
