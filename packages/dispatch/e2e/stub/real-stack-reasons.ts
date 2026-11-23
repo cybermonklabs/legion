@@ -230,7 +230,7 @@ export const realStackReasons: Record<string, string> = {
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
   "layout.e2e.ts":
-    "reads every route over the review corpus and its stress layer, whose fake GitHub pull requests, architecture source and live-socket replays the server reads through, and three of its routes wait on the live document's connected status",
+    "reads the routes a recording cannot draw: five draw a document over the live `/ws/doc` socket (the spec, an artifact, a project document, the Plan and Verification tabs), the Inbox's reading pane draws its row's document the same way, and the agent's live view takes its turns from the live relay",
   "legion.e2e.ts":
     "the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",

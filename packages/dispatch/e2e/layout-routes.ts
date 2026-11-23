@@ -25,6 +25,10 @@ export interface LayoutSeed extends ReviewSeed {
   readonly agentSession: string;
   /** The picture uploaded to that session's conversation. */
   readonly agentArtifactSlug: string;
+  /** When the stress layer finished writing, ISO 8601. The rows pin their page clock a minute
+   *  after it, so every relative time a page draws ("2 minutes ago") reads the same gap on every
+   *  run, and a replay of an old recording does not widen it to "3 weeks ago". */
+  readonly seededAt: string;
 }
 
 /** The name of that picture, which its page draws as its heading. */

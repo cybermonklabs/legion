@@ -29,7 +29,10 @@
  *  session's under the agent bearer with the session's title stamped in `origin`. The fakes are
  *  seeded as the suite seeds them elsewhere: the fake GitHub's repositories
  *  (`e2e/fake-github-helpers.ts`), the fake Envoy's sessions and interests (`e2e/agents.ts`). */
+
+import { expect } from "@playwright/test";
 import type { Actor, ArtifactUploadResponse } from "../web/src/api/types";
+
 import { type FakeSession, setInterests, setLiveSessions } from "./agents";
 import {
   answerAsk,
@@ -40,6 +43,7 @@ import {
   createIssue,
   createPriority,
   createProject,
+  getIssue,
   patchIssue,
   publishAgentStreamFrame,
   putArchitectureSource,
@@ -356,7 +360,7 @@ export async function seedLayoutStress({
       project: "CORE",
       title: prose(`Inbox stress ${ask}: a question production holds`, 140),
     });
-    await createAsk(
+    const asked = await createAsk(
       askIssue.key,
       {
         options:
@@ -384,6 +388,21 @@ export async function seedLayoutStress({
       },
       sessionActor(stressSession(ask))
     );
+    // The Inbox row's reply chip ("<agent> replied", `InboxRowChip` in `features/inbox/Inbox.tsx`):
+    // an agent's reply under the ask, which hands the turn back to the reader, as
+    // `dispatch comment --reply-to-ask` writes it (`ask_id`, `envoy-client`'s conversation tool).
+    // From the session with the 64-character title, on the first two asks.
+    if (ask <= 2) {
+      await createComment(
+        askIssue.key,
+        {
+          ask_id: asked.id,
+          body: prose("The header still scrolls sideways at 400 pixels on production", 200),
+          turn: "human",
+        },
+        sessionActor(stressSession(0))
+      );
+    }
   }
   // On an issue with no priority, so the reply's row lists under the Inbox's last band and the
   // spec decision the review corpus writes stays the row the reading pane opens on (the inbox
@@ -458,9 +477,22 @@ export async function seedLayoutStress({
   );
   const agentArtifactSlug = await uploadAgentPicture(live.session_id);
 
+  // The route nobody holds is drawn as a warning only once Dispatch has judged it `no_holder`
+  // against the listener's session list, which it re-reads every few seconds: before that it
+  // answers `unknown` and every page draws no warning. A page read in that gap drew the warning on
+  // one run and not on the next, so the seed is done only once the verdict stands.
+  await expect
+    .poll(async () => (await getIssue(issue)).route_status, {
+      message: `${issue}'s route reads no_holder`,
+      timeout: boundMs,
+    })
+    .toBe("no_holder");
+
   return {
     ...review,
     agentArtifactSlug,
     agentSession: live.session_id,
+    // A clock read, after every write: the rows pin the page clock a minute past it.
+    seededAt: new Date().toISOString(),
   };
 }

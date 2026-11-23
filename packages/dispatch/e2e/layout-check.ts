@@ -89,9 +89,13 @@ export function judgeReading(
   const listed = entriesAt(place, entries);
   let accepted = 0;
   for (const breach of reading.breaches) {
-    const entry = listed.find(
-      (candidate) => candidate.kind === breach.kind && breach.listed.includes(candidate.element)
-    );
+    // The entry that names the breach's own locator first, then any it sits in: a breach inside a
+    // region another entry names would otherwise match that wider entry and leave its own stale,
+    // on every run alike.
+    const ofKind = listed.filter((candidate) => candidate.kind === breach.kind);
+    const entry =
+      ofKind.find((candidate) => candidate.element === breach.locator) ??
+      ofKind.find((candidate) => breach.listed.includes(candidate.element));
     if (entry === undefined) {
       failures.push(
         `{ route: "${place.route}", ${place.state === undefined ? "" : `state: "${place.state}", `}` +
@@ -149,6 +153,10 @@ async function read(page: Page, place: ReadingPlace): Promise<LayoutReading> {
  *  reading, with every failure `judgeReading` found. */
 export async function checkLayout(page: Page, route: LayoutRoute, seed: LayoutSeed): Promise<void> {
   await route.prepare?.(page.context());
+  // A minute after the seed, as `e2e/visual.e2e.ts` pins its shots: a relative time ("just now",
+  // "2 minutes ago", "3 weeks ago") widens its column with the gap between the seed and the read,
+  // which moves with the run's pace on the stack and with the recording's age in a replay.
+  await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
   const address = route.path(seed);
   const failures: string[] = [];
   for (const width of LAYOUT_WIDTHS) {

@@ -32,7 +32,32 @@ export interface KnownLayoutBreach {
   readonly element: string;
   readonly reason: LayoutSlice;
 }
+
 export const layoutBreaches: readonly KnownLayoutBreach[] = [
+  {
+    route: "agents",
+    state: "peek-drawer",
+    width: 1280,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
+    reason: "D surfaces",
+  },
+  {
+    route: "agents",
+    state: "peek-drawer",
+    width: 1440,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
+    reason: "D surfaces",
+  },
+  {
+    route: "agents",
+    state: "peek-drawer",
+    width: 1920,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
+    reason: "D surfaces",
+  },
   {
     route: "agents",
     state: "peek-drawer",
@@ -43,9 +68,40 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
   },
   {
     route: "agents",
+    state: "peek-drawer",
+    width: 360,
+    kind: "clipped",
+    element: '[aria-label="Pin Planner"]',
+    reason: "D surfaces",
+  },
+  {
+    route: "agents",
+    state: "peek-drawer",
+    width: 360,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
+    reason: "D surfaces",
+  },
+  {
+    route: "agents",
+    state: "peek-drawer",
+    width: 900,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
+    reason: "D surfaces",
+  },
+  {
+    route: "agents",
     width: 360,
     kind: "clipped",
     element: '[aria-label="Agents"]',
+    reason: "D surfaces",
+  },
+  {
+    route: "agents",
+    width: 360,
+    kind: "clipped",
+    element: '[aria-label="Pin Planner"]',
     reason: "D surfaces",
   },
   {
@@ -67,6 +123,34 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     width: 900,
     kind: "page-scroll",
     element: '[aria-label="Answered by you"]',
+    reason: "C inbox",
+  },
+  {
+    route: "inbox-on-stack",
+    width: 360,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
+    reason: "C inbox",
+  },
+  {
+    route: "inbox-on-stack",
+    width: 900,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
+    reason: "C inbox",
+  },
+  {
+    route: "inbox",
+    width: 360,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
+    reason: "C inbox",
+  },
+  {
+    route: "inbox",
+    width: 900,
+    kind: "clipped",
+    element: '[data-testid="inbox-list"]',
     reason: "C inbox",
   },
   {
@@ -1011,13 +1095,6 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     route: "priority",
     width: 360,
     kind: "clipped",
-    element: '[aria-label="Description of P1"]',
-    reason: "D surfaces",
-  },
-  {
-    route: "priority",
-    width: 360,
-    kind: "clipped",
     element: '[aria-label="Title"]',
     reason: "D surfaces",
   },
@@ -1050,13 +1127,6 @@ export const layoutBreaches: readonly KnownLayoutBreach[] = [
     kind: "clipped",
     element:
       '[aria-label="CORE-12 Child 4: one surface of the layout rule - measured on production at every width from 360 to 1920 pixels, where"]',
-    reason: "D surfaces",
-  },
-  {
-    route: "priority",
-    width: 900,
-    kind: "clipped",
-    element: '[aria-label="Description of P1"]',
     reason: "D surfaces",
   },
   {
