@@ -18,11 +18,18 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // maxStackEnv carries the cap, in bytes, to the child process the parent runs, which caps its
 // stacks at that value: a child run by hand with it set runs the body under the cap it names.
 const maxStackEnv = "ENVOY_TEST_MAX_STACK_BYTES"
+
+// childSpare is what the child's -test.timeout leaves of the parent's deadline: the 30 s a
+// testwait wait leaves its test, here for the parent to read the child's output and fail by name.
+const childSpare = 30 * time.Second
 
 // Under runs body with every goroutine's stack capped at maxStackBytes.
 //
@@ -30,6 +37,13 @@ const maxStackEnv = "ENVOY_TEST_MAX_STACK_BYTES"
 // environment, and mirrors the child's result: a skipped child skips the parent, a passing child
 // passes, and any failure shows the child's whole output - a stack overflow's fatal error among it.
 // In the child, where the cap is set, it runs body under that cap.
+//
+// The child's -test.timeout is what the parent's deadline leaves less childSpare, and no flag when
+// the parent has no deadline (-timeout 0). The test binary run by hand has no deadline at all, so
+// without the flag a wait in the body that ends only on its fact or at the binary's deadline
+// (testwait) would have no end in the child, and the parent would die at its own alarm without the
+// child's output. With it, such a wait gives up and fails by name in the child, the child exits,
+// and the parent still has childSpare to print the child's output before its own deadline.
 func Under(t *testing.T, maxStackBytes int, body func(t *testing.T)) {
 	t.Helper()
 	if value := os.Getenv(maxStackEnv); value != "" {
@@ -42,6 +56,9 @@ func Under(t *testing.T, maxStackBytes int, body func(t *testing.T)) {
 		return
 	}
 	child := exec.Command(os.Args[0], "-test.run", runPattern(t.Name()), "-test.v", "-test.count=1")
+	if _, bounded := t.Deadline(); bounded {
+		child.Args = append(child.Args, "-test.timeout="+testwait.Remaining(t, childSpare).String())
+	}
 	child.Env = append(os.Environ(), maxStackEnv+"="+strconv.Itoa(maxStackBytes))
 	output, err := child.CombinedOutput()
 	if err == nil && hasVerdict(string(output), "SKIP", t.Name()) {

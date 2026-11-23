@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 const statusEnv = "ENVOY_STACKTEST_STATUS"
@@ -14,12 +15,14 @@ const statusEnv = "ENVOY_STACKTEST_STATUS"
 // TestUnderReportsChildStatus makes each child outcome observable from the test binary that owns
 // it. A stack overflow ends that binary, so the cases must run out of process. Each verdict is
 // matched on the child's own unindented line, so a copy quoted inside a message cannot stand in
-// for it.
+// for it. A case with a timeout runs its child under that -timeout, so Under in it has a deadline
+// to hand on.
 func TestUnderReportsChildStatus(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		fails  bool
-		output string
+		name    string
+		timeout string
+		fails   bool
+		output  string
 	}{
 		{name: "skip", output: "\n--- SKIP: TestUnderChildStatus ("},
 		{name: "pass", output: "\n--- PASS: TestUnderChildStatus ("},
@@ -27,10 +30,15 @@ func TestUnderReportsChildStatus(t *testing.T) {
 		{name: "fail", fails: true, output: "under a 1048576-byte stack cap"},
 		{name: "stack exhaustion", fails: true, output: "fatal error: stack overflow"},
 		{name: "stack exhaustion after long output", fails: true, output: "fatal error: stack overflow"},
+		{name: "no deadline", output: "\n--- PASS: TestUnderChildStatus ("},
+		{name: "deadline", timeout: childStatusTimeout.String(), output: "\n--- PASS: TestUnderChildStatus ("},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			child := exec.Command(os.Args[0], "-test.run", "^TestUnderChildStatus$", "-test.v", "-test.count=1")
+			if test.timeout != "" {
+				child.Args = append(child.Args, "-test.timeout="+test.timeout)
+			}
 			child.Env = append(os.Environ(), statusEnv+"="+test.name)
 			output, err := child.CombinedOutput()
 			if (err != nil) != test.fails {
@@ -42,6 +50,9 @@ func TestUnderReportsChildStatus(t *testing.T) {
 		})
 	}
 }
+
+// childStatusTimeout is the -timeout the "deadline" case runs its child under.
+const childStatusTimeout = 5 * time.Minute
 
 func TestUnderChildStatus(t *testing.T) {
 	switch os.Getenv(statusEnv) {
@@ -66,6 +77,25 @@ func TestUnderChildStatus(t *testing.T) {
 		Under(t, 1<<20, func(*testing.T) {
 			fmt.Fprint(os.Stderr, strings.Repeat("ERROR a log line written before the overflow\n", 400))
 			exhaustStack()
+		})
+	case "no deadline":
+		// This child runs with no -timeout, so the body Under runs has no deadline either.
+		Under(t, 1<<20, func(t *testing.T) {
+			if deadline, bounded := t.Deadline(); bounded {
+				t.Errorf("the body has a deadline %v away, want none under a parent with none", time.Until(deadline))
+			}
+		})
+	case "deadline":
+		// This child runs under childStatusTimeout, so the body Under runs must give up at least
+		// childSpare before this child's own deadline.
+		Under(t, 1<<20, func(t *testing.T) {
+			deadline, bounded := t.Deadline()
+			if !bounded {
+				t.Fatal("the body has no deadline under a parent with one")
+			}
+			if left, most := time.Until(deadline), childStatusTimeout-childSpare; left > most {
+				t.Errorf("the body's deadline is %v away, want at most %v: the parent's less childSpare", left, most)
+			}
 		})
 	default:
 		t.Fatalf("unknown child status %q", os.Getenv(statusEnv))
