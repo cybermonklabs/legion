@@ -1058,9 +1058,11 @@ func TestAServiceOnlyBrokerTokenIsRefusedEveryWrite(t *testing.T) {
 // project and no scope; its writes land, of every class the sign-in check would refuse a
 // machine's — a project's object, a write whose body names its project and a session's own
 // rows — and each is recorded as the session the token proved, acting for the account and for no
-// person, proven. The same writes under a machine's token that names a service and no person
-// stay refused (TestAServiceOnlyBrokerTokenIsRefusedEveryWrite), and so does a route that needs
-// the person scope, which such a token does not hold.
+// person, proven. The session check still holds it to its own session's rows: an upload into
+// another session's conversation is 403 SESSION_SCOPE and stores nothing. The same writes under a
+// machine's token that names a service and no person stay refused
+// (TestAServiceOnlyBrokerTokenIsRefusedEveryWrite), and so does a route that needs the person
+// scope, which such a token does not hold.
 func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -1129,6 +1131,31 @@ func TestAPersonlessTokenWritesAsItsAccount(t *testing.T) {
 			CreatedBy recordedActor `json:"created_by"`
 		} `json:"artifact"`
 	}](t, upload).Artifact.CreatedBy)
+
+	// The session check holds the account's token to the session it proved, as it holds every
+	// broker token (callerSession): the upload above went into its own conversation, and the same
+	// upload into another session's is refused by name before anything is stored there.
+	t.Run("another session's rows are refused", func(t *testing.T) {
+		const anotherSession = "01a1058e-f14f-7684-87eb-3dc885955552"
+		intruding := rig.serve(caller.presentingUpload(t, "/api/v1/agents/"+anotherSession+"/artifacts", token,
+			"shot.png", "image/png", pngBytes("another session's conversation")))
+		if intruding.Code != http.StatusForbidden {
+			t.Fatalf("an upload into another session's conversation: status=%d body=%s, want 403 %s", intruding.Code, intruding.Body.String(), codeSessionScope)
+		}
+		refusal := decodeBody[refusalAnswer](t, intruding)
+		if refusal.Code != codeSessionScope {
+			t.Fatalf("an upload into another session's conversation: refusal=%+v, want %s", refusal, codeSessionScope)
+		}
+		if !strings.Contains(refusal.Error, brokerTestSession) || !strings.Contains(refusal.Error, anotherSession) {
+			t.Fatalf("refusal %q names neither the session the token proved (%s) nor the session addressed (%s)",
+				refusal.Error, brokerTestSession, anotherSession)
+		}
+		read := rig.serve(withPerson(brokerRequest(t, http.MethodGet,
+			"/api/v1/agents/"+anotherSession+"/artifacts/shot-png", nil, "", ""), brokerTestPerson))
+		if read.Code != http.StatusNotFound {
+			t.Fatalf("the other session's conversation: status=%d body=%s, want nothing stored in it", read.Code, read.Body.String())
+		}
+	})
 
 	for _, key := range []string{own.issue, filed} {
 		listed := rig.serve(withPerson(brokerRequest(t, http.MethodGet, "/api/v1/issues/"+key+"/events", nil, "", ""), brokerTestPerson))
