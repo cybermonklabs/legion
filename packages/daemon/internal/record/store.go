@@ -541,7 +541,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, states_serial, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, states_serial, return_to, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -620,21 +620,21 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 	if !phase.EntryRaisedAt.IsZero() {
 		raisedAt = phase.EntryRaisedAt
 	}
-	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, states_serial, summary, last_handoff,
+	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, states_serial, return_to, summary, last_handoff,
 		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back, reviewed_head, step_task, step_place)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
 		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
-		cap_told = excluded.cap_told, states_serial = excluded.states_serial,
+		cap_told = excluded.cap_told, states_serial = excluded.states_serial, return_to = excluded.return_to,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at,
 		entry = excluded.entry, entry_task = excluded.entry_task, entry_verbatim = excluded.entry_verbatim,
 		entry_raised_at = excluded.entry_raised_at, entry_moved_back = excluded.entry_moved_back,
 		reviewed_head = excluded.reviewed_head, step_task = excluded.step_task, step_place = excluded.step_place`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
-		backwardMoves, phase.CapTold, phase.StatesSerial, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
+		backwardMoves, phase.CapTold, phase.StatesSerial, phase.ReturnTo, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
 		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack, phase.ReviewedHead, phase.StepTask, phase.StepPlace,
 	)
 	if err != nil {
@@ -649,7 +649,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var decision, backwardMoves []byte
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
-		&backwardMoves, &phase.CapTold, &phase.StatesSerial, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
+		&backwardMoves, &phase.CapTold, &phase.StatesSerial, &phase.ReturnTo, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
 		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack, &phase.ReviewedHead, &phase.StepTask, &phase.StepPlace); err != nil {
 		return PhaseRow{}, err
 	}
@@ -1496,7 +1496,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// the reviewer's own review goes with the decision: the new generation's first review reads
 		// the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
-			"backward_moves = '{}'::jsonb, cap_told = 0, states_serial = 0, summary = '', decision = null, reviewed_head = '', " +
+			"backward_moves = '{}'::jsonb, cap_told = 0, states_serial = 0, return_to = 0, summary = '', decision = null, reviewed_head = '', " +
 			"entry_task = '', entry_verbatim = false, step_task = '', step_place = 0 where " + where,
 		// What each holder took of the approved design goes with the gate it was taken from: the
 		// next generation registers its gate again, and its work starts from what that gate

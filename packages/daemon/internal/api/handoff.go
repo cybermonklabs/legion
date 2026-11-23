@@ -58,11 +58,13 @@ import (
 // A member written null reads as left out, since encoding/json decodes null into a pointer as nil;
 // the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
-// plugin sends one. ReturnTo is the step of the issue's running task that a failed
-// step names as the one its task returns to, by its place in the task, 1 for its first: only
-// a tester's completion with the verdict fail names one (returnToRefusal), and it is a pointer for
-// the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
-// Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
+// plugin sends one. ReturnTo is the step of the issue's running task that a tester's completion
+// names as the one its task returns to should the check states fail its testing step, by its place
+// in the task, 1 for its first: only a tester's completion names one (returnToRefusal), with no
+// verdict, and it is a pointer for the reason PlanRating is, so a completion naming 0 is refused
+// rather than read as naming none. Which step it may name is the workflow's to judge against the
+// task's steps (RETURN_REFUSED), and the workflow keeps it with the completion until the states
+// decide.
 type HandoffCompleteRequest struct {
 	GrantID        string     `json:"grantId"`
 	Summary        string     `json:"summary"`
@@ -249,9 +251,10 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			"a phase completion carries no verdict: Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded")
 		return
 	}
-	// The step a failed step's task returns to is the tester's fail's alone (returnToRefusal),
-	// refused here on every other completion before anything is read or recorded.
-	if refusal := returnToRefusal(req, req.Verdict == "fail", fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
+	// The step a task returns to when the check states fail its testing step is the tester's
+	// completion's alone to name (returnToRefusal), with no verdict: it is refused here on every
+	// other completion before anything is read or recorded.
+	if refusal := returnToRefusal(req, grant.Role == claim.RoleTester, fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
@@ -418,10 +421,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
 	// upgrade keeps its key.
 	//
-	// The step a fail names its task's return to (returnTo) ends the key when the completion
-	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
-	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
-	// fact of its own. A completion naming none keeps the key it had before returnTo existed.
+	// The step a tester's completion names for its task to return to (returnTo) ends the key when
+	// the completion names one, for the reason a tester's verdict stood in it before
+	// CheckStatesContract: the workflow commits its refusal of a step it may not name
+	// (RETURN_REFUSED) as processed, so the same completion naming another step must be a fact of
+	// its own. A completion naming none keeps the key it had before returnTo existed.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
@@ -476,25 +480,25 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 }
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
-// names none or names one it may. failsAStep is whether the completion fails a step (a tester's
-// verdict fail, which VERDICT_ROLE_FORBIDDEN leaves to the tester alone), and what names the
-// completion in a refusal. Every refusal is a 400 its caller writes before anything is recorded,
-// so the same completion sent again, corrected, is taken:
+// names none or names one it may. testsAStep is whether the completion is of a step the check
+// states can fail, a tester's completion, and what names the completion in a refusal. Every
+// refusal is a 400 its caller writes before anything is recorded, so the same completion sent
+// again, corrected, is taken:
 //
 //   - INVALID_RETURN_TO: returnTo below 1, which names no step of a task.
-//   - RETURN_TO_NEEDS_FAIL: a completion that fails no step names returnTo: a pass, another role's
-//     completion, or a production check's report, which is no step. Dropping it unread would let
-//     an agent believe it had sent the task back.
-func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *intake.Refusal {
+//   - RETURN_TO_NEEDS_FAIL: a completion of no step the check states can fail names returnTo:
+//     another role's completion, or a production check's report, which is no step. Dropping it
+//     unread would let an agent believe it had sent the task back.
+func returnToRefusal(req HandoffCompleteRequest, testsAStep bool, what string) *intake.Refusal {
 	switch {
 	case req.ReturnTo == nil:
 		return nil
 	case *req.ReturnTo < 1:
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "INVALID_RETURN_TO", Message: fmt.Sprintf(
 			"returnTo is %d, and it names a step of the task by its place, 1 for its first; nothing was recorded", *req.ReturnTo)}
-	case !failsAStep:
+	case !testsAStep:
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "RETURN_TO_NEEDS_FAIL", Message: fmt.Sprintf(
-			"%s names returnTo, and only the completion of a step that failed, with the verdict fail, names the step its task returns to: send it again without returnTo; nothing was recorded", what)}
+			"%s names returnTo, and only a tester's completion names the step its task returns to when the check states fail the testing step: send it again without returnTo; nothing was recorded", what)}
 	}
 	return nil
 }

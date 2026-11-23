@@ -135,9 +135,10 @@ const planReason = legionPlanReasonRules(z.string({ error: PLAN_REASON_REQUIRED 
 const RETURN_TO_REFUSAL =
   "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first";
 
-/** `handoff_complete`'s `return_to`: the step of the issue's running task that a step that failed
- * names for its task to return to, by its place in the task, 1 for its first
- * (`LegionHandoffCompleteRequest`'s `returnTo`, which goes on the wire). */
+/** `handoff_complete`'s `return_to`: the step of the issue's running task that a tester's
+ * completion names for its task to return to should the check states fail the testing step, by
+ * its place in the task, 1 for its first (`LegionHandoffCompleteRequest`'s `returnTo`, which goes
+ * on the wire). */
 const returnTo = z
   .number({ error: RETURN_TO_REFUSAL })
   .int({ error: RETURN_TO_REFUSAL })
@@ -374,10 +375,11 @@ export function legionToolDescription(host: {
     "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
     "A phase completion carries no verdict (the daemon refuses one, VERDICT_NOT_TAKEN): Dispatch's check states at the tested head " +
     "decide the testing phase. " +
-    "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
-    "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
-    "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
-    "(RETURN_REFUSED). " +
+    "A tester's completion may name `return_to`, the place of a step of the task its issue runs, 1 for its first. " +
+    "It sends no verdict. When the check states fail the testing step, the task goes back to that step. " +
+    "Without it, the task goes back to the first implementation step before the testing step. " +
+    "Only a tester's completion names it (RETURN_TO_NEEDS_FAIL). " +
+    "A place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to (RETURN_REFUSED). " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -567,8 +569,8 @@ export async function readBuild(runtime: {
  * `plan_rating` or `plan_reason` without the other; then what the record decides (a check
  * report's verdict, its claim's role against the check's own, its `wake_at`, a verdict or
  * `wake_at` on a phase completion, the issue a completion or a move names, a completion's
- * `return_to` without the verdict `fail` or on a done issue), then a refused handoff report
- * (`findHandoffReport`). A daemon refusal throws its code and sentence.
+ * `return_to` from a session that is not the tester's or on a done issue), then a refused handoff
+ * report (`findHandoffReport`). A daemon refusal throws its code and sentence.
  *
  * A completion is a phase's or a look's report on the closed issue's production check. The daemon
  * tells them apart by the caller's own live assignment (`api.handoffComplete`,
@@ -626,11 +628,13 @@ export async function executePhaseOp(
           `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
         );
       }
-      // Only a step that failed names the step its task returns to, and the daemon refuses one on
-      // any other completion (RETURN_TO_NEEDS_FAIL), so it is refused here in the same words.
-      if (args.return_to !== undefined && args.verdict !== "fail") {
+      // Only a tester's completion names the step its task returns to, which the check states'
+      // fail of the testing step sends it back to, and the daemon refuses one on any other role's
+      // completion (RETURN_TO_NEEDS_FAIL), so it is refused here in the same words. The tester's
+      // completion carries no verdict, which is refused below once the record is read.
+      if (args.return_to !== undefined && claim.role !== "tester") {
         throw new Error(
-          "handoff_complete names return_to without the verdict fail: only the completion of a step that failed, with the verdict fail, names the step its task returns to; send it again without return_to"
+          "handoff_complete names return_to, and only a tester's completion names the step its task returns to when the check states fail the testing step; send it again without return_to"
         );
       }
       // The rating of the plan is built here, where the call was parsed: `PhaseOpArguments`' pair

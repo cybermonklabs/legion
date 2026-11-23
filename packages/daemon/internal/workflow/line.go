@@ -317,33 +317,34 @@ func (w Walk) returnOf(issue record.Issue, trigger TriggerKind, target phase.Pha
 	return returned, false, nil
 }
 
-// returnStep is the phase of step n of w's task, the step that the report of the failed step
-// standing at failed names as the one its task returns to (returnTo), or why that report is
-// refused, which changes nothing: an issue with no plan rows has no step to name, a failed phase
-// that runs no step of the task's line now names no step to return from, a place past the task's
-// last step names no step of it, and the failed step itself or a later one is not earlier (the
-// spec's words: a report that names a step of another task, or a step that is not earlier). The
-// sentences take the route's shape for a returnTo it refuses before the workflow reads one (api's
-// INVALID_RETURN_TO). The failed phase is off the line where a later version of the plan took its
-// step away while the report was on its way: the report is of a run the daemon ended without it
-// (leftItsPhase), and the route takes returnTo on every tester's fail.
+// returnStep is the phase of step n of w's task, the step that the tester's completion of the
+// step standing at failed names as the one its task returns to (returnTo) should the check states
+// fail that step, or why that completion is refused, which changes nothing: an issue with no plan
+// rows has no step to name, a phase that runs no step of the task's line now names no step to
+// return from, a place past the task's last step names no step of it, and the step the completion
+// ends or a later one is not earlier (the spec's words: a report that names a step of another task,
+// or a step that is not earlier). The sentences take the route's shape for a returnTo it refuses
+// before the workflow reads one (api's INVALID_RETURN_TO). The phase is off the line where a later
+// version of the plan took its step away while the completion was on its way: the completion is of
+// a run the daemon ended without it (leftItsPhase), and the route takes returnTo on every tester's
+// completion.
 func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Phase, string) {
 	if !w.Stored {
-		return "", fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded",
+		return "", fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send the completion again without returnTo; nothing was recorded",
 			n, issue.Key)
 	}
 	at, _ := w.PlaceOf(failed)
 	if at.Kind != record.PlaceStep {
-		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded",
+		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so this completion names no step of the task to return to; send the completion again without returnTo; nothing was recorded",
 			n, w.Task, issue.Key, failed, strings.Join(plan.Words(namedSteps(w.Steps)), " "))
 	}
 	role := w.Steps[at.Position-1].Role
 	switch {
 	case n > len(w.Steps):
-		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has steps 1 to %d, so it names no step of the task whose step %d (%s) failed; send the fail again naming an earlier step of that task, or without returnTo; nothing was recorded",
+		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has steps 1 to %d, so it names no step of the task whose step %d (%s) this completion ends; send the completion again naming an earlier step of that task, or without returnTo; nothing was recorded",
 			n, w.Task, issue.Key, len(w.Steps), at.Position, role)
 	case n >= at.Position:
-		return "", fmt.Sprintf("returnTo is %d, and step %d (%s) of task %s of %s is not before step %d (%s), the step that failed; send the fail again naming an earlier step, or without returnTo; nothing was recorded",
+		return "", fmt.Sprintf("returnTo is %d, and step %d (%s) of task %s of %s is not before step %d (%s), the step this completion ends; send the completion again naming an earlier step, or without returnTo; nothing was recorded",
 			n, n, w.Steps[n-1].Role, w.Task, issue.Key, at.Position, role)
 	}
 	return w.steps()[n-1], ""

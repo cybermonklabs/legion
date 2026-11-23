@@ -358,15 +358,16 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 }
 
 // clearHandoff empties the handoff a role reported for its previous phase — its commit, the
-// Dispatch handoff record it named and that record's check states serial, its summary, and the
-// review round's decision, which ends with the round — keeping its claim, the record it last named
-// (LastHandoff) and the review rounds, when a transition starts it on a new phase. A role's
-// recorded handoff is then always its current phase's: the implementer's round-1 commit cannot
-// advance round 2, a reviewer starting round 2 or a tester starting a new round reads as not
-// completed until it completes again (record.PhaseRow.Completed), a merger sent back has no
-// summary until its next one, and no round inherits an earlier decision. The architect reports no
-// handoff, so it has none to clear: its phases row holds only the entry it was handed work on
-// (EnterArchitect), which no move between phases clears.
+// Dispatch handoff record it named and that record's check states serial, the step its completion
+// named for its task to return to, its summary, and the review round's decision, which ends with
+// the round — keeping its claim, the record it last named (LastHandoff) and the review rounds,
+// when a transition starts it on a new phase. A role's recorded handoff is then always its current
+// phase's: the implementer's round-1 commit cannot advance round 2, a reviewer starting round 2 or
+// a tester starting a new round reads as not completed until it completes again
+// (record.PhaseRow.Completed), a merger sent back has no summary until its next one, no round
+// inherits an earlier decision, and no testing step returns its task to a step an earlier one's
+// completion named. The architect reports no handoff, so it has none to clear: its phases row holds
+// only the entry it was handed work on (EnterArchitect), which no move between phases clears.
 func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -395,6 +396,7 @@ type phaseHandoff struct {
 	dispatchRecord string
 	version        int
 	statesSerial   int64
+	returnTo       int
 	summary        string
 	decision       *record.ReviewDecision
 	completedAt    time.Time
@@ -403,7 +405,7 @@ type phaseHandoff struct {
 // handoffOf is the handoff row carries.
 func handoffOf(row record.PhaseRow) phaseHandoff {
 	return phaseHandoff{commit: row.HandoffCommit, dispatchRecord: row.HandoffRecord, version: row.HandoffVersion,
-		statesSerial: row.StatesSerial, summary: row.Summary, decision: row.Decision, completedAt: row.CompletedAt,
+		statesSerial: row.StatesSerial, returnTo: row.ReturnTo, summary: row.Summary, decision: row.Decision, completedAt: row.CompletedAt,
 	}
 }
 
@@ -411,7 +413,7 @@ func handoffOf(row record.PhaseRow) phaseHandoff {
 // named, its rounds and their counts — left as it stands.
 func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 	row.HandoffCommit, row.HandoffRecord, row.HandoffVersion = h.commit, h.dispatchRecord, h.version
-	row.StatesSerial, row.Summary, row.Decision = h.statesSerial, h.summary, h.decision
+	row.StatesSerial, row.ReturnTo, row.Summary, row.Decision = h.statesSerial, h.returnTo, h.summary, h.decision
 	row.CompletedAt = h.completedAt
 	return row
 }

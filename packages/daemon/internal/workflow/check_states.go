@@ -98,13 +98,17 @@ func testedHead(issue record.Issue, row record.PhaseRow, pr *record.PullRequest)
 // before those results. At the fence it decides only once every check of the head's set holds a
 // conclusive state there (judgeStates): a head with no set held, or a check the judgement waits
 // for, moves nothing, whatever the other checks read, since a later state of the waiting check
-// changes what the task must name. Then every check passing moves the issue to reviewing, and
-// otherwise it goes back to implementing, the task naming each check that does not pass with its
-// state and its reason. Each wait and each move back is one testingMove, which writes the words of
-// the implementer's task and the architect's notice and the notice's fields from the same values.
-// atCompletion is whether the tester's completion is the fact deciding: only that one tells the
-// architect of a wait, in one phase-finished notice that names what the move waits for, so each
-// later state event that leaves the move waiting tells nothing more.
+// changes what the task must name. Then every check passing moves the issue on to the task's next
+// step, and the step the completion named for its task to return to (row.ReturnTo) is not used,
+// which the log says once, since a pass moves the issue out of testing. Otherwise the work goes
+// back, the task naming each check that does not pass with its state and its reason: to the step
+// the completion named (namedReturn), or, where it named none, by the walk's default, the first
+// implementation step before the tester (transition's returnOf), implementing for a run with no
+// plan rows. Each wait and each move back is one testingMove, which writes the words of the task
+// of the step the work goes back to and the architect's notice and the notice's fields from the
+// same values. atCompletion is whether the tester's completion is the fact deciding: only that one
+// tells the architect of a wait, in one phase-finished notice that names what the move waits for,
+// so each later state event that leaves the move waiting tells nothing more.
 func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, pr *record.PullRequest, atCompletion bool) error {
 	repo, head := testedHead(issue, row, pr)
 	if head == "" {
@@ -128,8 +132,25 @@ func (e *Engine) decideTesting(ctx context.Context, tx pgx.Tx, issue record.Issu
 	case len(judgement.Waiting) > 0:
 		return e.testingWaits(ctx, tx, issue, row, atCompletion, testingMove{Head: head, WaitsFor: waitsForChecks, Waiting: judgement.Waiting})
 	case len(judgement.Failing) > 0:
+		target, err := e.namedReturn(ctx, tx, issue, row)
+		if err != nil {
+			return err
+		}
 		move := testingMove{Head: head, Failing: judgement.Failing}
-		return e.transition(ctx, tx, issue, TriggerTesterFailed, "", row, pr, moveWhy{Testing: &move})
+		return e.transition(ctx, tx, issue, TriggerTesterFailed, target, row, pr, moveWhy{Testing: &move})
+	}
+	// A pass moves the issue out of testing, so the line that the step named is not used is written
+	// once. A lingering tree's move moves nothing (transition), and each later state event would
+	// decide it again, so the line waits for the move that does.
+	if row.ReturnTo > 0 {
+		lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+		if err != nil {
+			return err
+		}
+		if !lingers {
+			e.logOnCommit(ctx, "workflow: the testing step passed, so the step the tester's completion named is not used",
+				"issue", issue.Key, "head", head, "returnTo", row.ReturnTo)
+		}
 	}
 	return e.transition(ctx, tx, issue, TriggerTesterPassed, "", row, pr, moveWhy{})
 }
@@ -151,9 +172,9 @@ const (
 // testingMove is one wait or one move back of the testing move at the tested head Head
 // (decideTesting): a wait names what it waits for (WaitsFor), the fence's serial (Serial) and the
 // checks whose states it waits for (Waiting); a move back has no WaitsFor, and names each check
-// that does not pass (Failing). Its sentence is the words of the implementer's task and of the
-// architect's notice, and its notice carries the sentence and these values, so the words and the
-// fields are one value.
+// that does not pass (Failing). Its sentence is the words of the task of the step the work goes
+// back to and of the architect's notice, and its notice carries the sentence and these values, so
+// the words and the fields are one value.
 type testingMove struct {
 	Head     string
 	WaitsFor string
@@ -188,6 +209,29 @@ func (m testingMove) sentence() string {
 func (m testingMove) notice(row record.PhaseRow) record.Notice {
 	return record.Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: row.Summary,
 		Reason: m.sentence(), Head: m.Head, WaitsFor: m.WaitsFor, Waiting: m.Waiting, Failing: m.Failing}
+}
+
+// namedReturn is the phase of the step the tester's completion, row, named for its task to
+// return to (row.ReturnTo), which a fail of the check states returns the work to, and "" where
+// it named none, which leaves the walk's default (transition's returnOf). The completion's step
+// was judged against the task's steps when it was taken (refusedReturn). Should a later version
+// of the plan have changed those steps while the move waited, a step they no longer take is
+// logged and left, and the default holds.
+func (e *Engine) namedReturn(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow) (phase.Phase, error) {
+	if row.ReturnTo <= 0 {
+		return "", nil
+	}
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	target, why := returnStep(issue, w, issue.Phase, row.ReturnTo)
+	if why != "" {
+		e.logOnCommit(ctx, "workflow: the step the tester's completion named is no step its task can go back to now, so the walk's default takes the fail",
+			"issue", issue.Key, "returnTo", row.ReturnTo, "why", why)
+		return "", nil
+	}
+	return target, nil
 }
 
 // testingWaits is the testing move holding issue in testing for wait. At the tester's completion

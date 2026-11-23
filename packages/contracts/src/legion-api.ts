@@ -2026,11 +2026,12 @@ export function legionPlanRatingLoneField(
  * (`PLAN_RATING_UNEXPECTED`): a whole number from 1 (the plan cost the work) to 5 (the plan fit
  * the work), and why, the two together (`PLAN_RATING_INPUT`). A plugin at contract 168 or later
  * must send both on its retro (`PLAN_RATING_REQUIRED`). `returnTo` (contract 219) is the step a
- * step that failed names for its task to return to, by its place in the issue's running task, 1
- * for its first: a whole number of 1 or more (`INVALID_RETURN_TO`), carried only by a completion
- * with the verdict `fail` (`RETURN_TO_NEEDS_FAIL`, which the daemon also answers a production
- * check's report that names one, whatever its verdict). Which step the task then runs is the
- * workflow's to decide. */
+ * tester's completion names for its task to return to should the check states fail the testing
+ * step, by its place in the issue's running task, 1 for its first: a whole number of 1 or more
+ * (`INVALID_RETURN_TO`), carried only by a completion with no verdict. The daemon refuses it on
+ * every completion but a tester's (`RETURN_TO_NEEDS_FAIL`), a production check's report among
+ * them, whatever its verdict, and a verdict beside it on a phase completion (`VERDICT_NOT_TAKEN`).
+ * Which step the task then runs is the workflow's to decide, once the states fail the step. */
 export const LegionHandoffCompleteRequest = z
   .strictObject({
     grantId: nonEmptyString,
@@ -2048,8 +2049,8 @@ export const LegionHandoffCompleteRequest = z
     (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
     { message: "planRating and planReason appear together" }
   )
-  .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
-    message: "returnTo is carried only by a completion with the verdict fail",
+  .refine((request) => request.returnTo === undefined || request.verdict === "", {
+    message: "returnTo is carried only by a tester's completion, which names no verdict",
   });
 
 /** `api.IssueStatusRequest`, the controller's explicit board-status write. */

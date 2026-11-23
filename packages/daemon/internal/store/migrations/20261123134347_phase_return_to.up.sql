@@ -1,0 +1,36 @@
+-- 20261123134347_phase_return_to.up.sql — the step a tester's completion names for its task to
+-- return to, kept with the completion until Dispatch's check states decide the testing step.
+--
+-- phases.return_to is, on the tester's row, the place in the issue's running task of the step the
+-- tester's completion of testing named (record.PhaseRow.ReturnTo, 1 for the task's first step),
+-- and 0 where it named none. The completion carries no verdict, and the move waits for the check
+-- states at the head it tested, which can arrive as a later state event than the completion. So
+-- the step is kept with the completion, and the move reads it when the states fail the step
+-- (workflow's decideTesting): the task goes back to it, and with 0 to the first implementation
+-- step before the tester. A pass does not use it. The next phase's start clears it with the rest
+-- of the tester's handoff (workflow's clearHandoff), and a new generation clears it too
+-- (record.Postgres.ClearGeneration). Every other row holds 0.
+--
+-- Every row the table already holds takes the default, 0: no completion of the release before
+-- named a step this release can read, since that release moved its issue at the completion.
+--
+-- The release before this one names each column of phases it reads and writes (record's Phases
+-- and PutPhase), and none of them is this one, so every row it inserts takes the default, and a
+-- completion it records names no step.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with this release's daemon stopped and before the release
+-- before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The drop and the delete of
+-- this migration's row go together. The release before needs neither, since it never names the
+-- column: both are owed to the roll-forward. With the column dropped and the row deleted,
+-- store.apply finds no row of this version and runs this file again, which adds the column again at
+-- its default; an add of a column that stands would fail. What the drop costs is the step a tester's
+-- completion still waiting for its states named: after the roll-forward its fail returns the task
+-- to the first implementation step before the tester.
+--
+-- begin;
+-- alter table phases drop column if exists return_to;
+-- delete from schema_version where version = 20261123134347;
+-- commit;
+alter table phases add column return_to integer not null default 0 check (return_to >= 0);

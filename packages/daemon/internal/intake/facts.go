@@ -1039,11 +1039,13 @@ type HandoffComplete struct {
 	// whose tool takes it. The route reads it from the claim, which no state of the issue changes;
 	// a plugin before that contract sends no rating, and its retro ends with none.
 	MustRate bool
-	// ReturnTo is the step of the issue's running task that a failed step names as the one the
-	// task returns to: the place of that step in the task, 1 for its first. The route takes
-	// it only on a completion whose verdict is fail, and holds it to 1 or above; which step it may
-	// name is the workflow's to judge against the task's steps. 0 on every other completion, which
-	// returns to the step the workflow reads from the steps' types.
+	// ReturnTo is the step of the issue's running task that a tester's completion names as the one
+	// the task returns to should the check states fail its testing step: the place of that step in
+	// the task, 1 for its first. The route takes it on a tester's completion alone, which carries
+	// no verdict, and holds it to 1 or above; the workflow refuses a step the task's steps cannot
+	// take (RETURN_REFUSED), keeps it on the tester's row with the completion
+	// (record.PhaseRow.ReturnTo), and returns a fail the states decide to it. A pass does not use
+	// it. 0 on every other completion, and on a tester's that names none.
 	ReturnTo int
 }
 

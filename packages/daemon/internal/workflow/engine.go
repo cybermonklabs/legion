@@ -1013,23 +1013,23 @@ func (e *Engine) pastCompletion(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return nil, late, nil
 }
 
-// returnToOf is the phase of the earlier step a failed step's report names as the one its task
-// returns to (fact.ReturnTo), "" where it names none, or the refusal of the step it names
-// (returnStep). It is judged before anything is written, so a refusal records nothing, its
-// handoff record among it, and the agent reports again.
-func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (phase.Phase, *intake.Refusal, error) {
+// refusedReturn is the refusal of the step a tester's completion names for its task to return to
+// (fact.ReturnTo), one the task's steps cannot take (returnStep, RETURN_REFUSED), and nil where it
+// names none or one they can. It is judged before anything is written, so a refusal records
+// nothing, its handoff record among it, and the agent reports again. The step itself is read
+// again where a fail uses it (namedReturn).
+func (e *Engine) refusedReturn(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (*intake.Refusal, error) {
 	if fact.ReturnTo <= 0 {
-		return "", nil, nil
+		return nil, nil
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	target, why := returnStep(issue, w, reported, fact.ReturnTo)
-	if why == "" {
-		return target, nil, nil
+	if _, why := returnStep(issue, w, reported, fact.ReturnTo); why != "" {
+		return refused("RETURN_REFUSED", why).Refusal, nil
 	}
-	return "", refused("RETURN_REFUSED", why).Refusal, nil
+	return nil, nil
 }
 
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
@@ -1082,13 +1082,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		}
 		return intake.Result{Refusal: late}, nil
 	}
-	// The step a failed step's report names (returnTo) is judged here, before anything is written.
-	// The route takes it only with a tester's verdict fail, which no completion at
-	// CheckStatesContract carries; a tester's plugin below that contract still sends one, and its
-	// verdict and its step are both left to the check states, which return a fail by the walk's
-	// default (decideTesting, transition's returnOf). So the step it names moves nothing, and only
-	// its refusal (RETURN_REFUSED) is kept.
-	if _, refusal, err := e.returnToOf(ctx, tx, *issue, fact, reported); err != nil || refusal != nil {
+	// The step a tester's completion names for its task to return to (returnTo) is judged here,
+	// before anything is written, against the task's steps as they stand: a step the task cannot go
+	// back to is refused (RETURN_REFUSED). The completion carries no verdict, so the step is kept
+	// with it below, and the testing move reads it when the check states fail the step
+	// (decideTesting), whether they stand now or arrive in a later state event.
+	if refusal, err := e.refusedReturn(ctx, tx, *issue, fact, reported); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	row, err := e.phaseRow(ctx, tx, fact.Issue, fact.Role)
@@ -1141,7 +1140,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// decision, or with an approval of other code - was not stuck before it, and is told.
 	found := e.reviewRound(*issue, row, pr)
 	row.Claim, row.HandoffCommit, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Summary, e.now()
-	row.HandoffRecord, row.HandoffVersion, row.StatesSerial = fact.HandoffRecord, fact.HandoffVersion, fact.StatesSerial
+	row.HandoffRecord, row.HandoffVersion, row.StatesSerial, row.ReturnTo = fact.HandoffRecord, fact.HandoffVersion, fact.StatesSerial, fact.ReturnTo
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return intake.Result{}, err
 	}
@@ -1169,9 +1168,10 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	case phase.Testing:
 		// The tester's completion carries no verdict: the check states Dispatch published at the
 		// tested head decide, once the daemon holds them through the serial its test record names.
-		// A fail they decide returns the work as every failed step that names no step to return
-		// to does: to the first implementation step before it in the walk's task (transition's
-		// returnOf), or to implementing for a run with no plan rows.
+		// A fail they decide returns the work to the step the completion named (row.ReturnTo), or,
+		// where it named none, as every failed step that names none does: to the first
+		// implementation step before it in the walk's task (transition's returnOf), or to
+		// implementing for a run with no plan rows.
 		return intake.Result{}, e.decideTesting(ctx, tx, *issue, row, pr, true)
 	case phase.Reviewing:
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)

@@ -641,6 +641,14 @@ type PhaseRow struct {
 	// names it, so each row this release inserts takes its default, '', which that release reads
 	// as no verdict (migration 20261121074614_phase_verdict_gone). A later release drops it.
 	StatesSerial int64
+	// ReturnTo is, on the tester's row, the step of the issue's running task its completion of
+	// testing named for the task to return to (intake.HandoffComplete.ReturnTo), by its place in
+	// the task, 1 for its first, and 0 where it named none. The completion carries no verdict and
+	// the check states can arrive after it, so the step is kept here with the completion: the
+	// testing move reads it when the states fail the step (workflow's decideTesting), and a pass
+	// does not use it. Every other row holds 0. The next phase's start clears it with the rest of
+	// the handoff (workflow's clearHandoff), and so does a new generation (ClearGeneration).
+	ReturnTo int
 	// Summary is what the role reported with its completion, which the architect is told when the
 	// phase ends.
 	Summary string

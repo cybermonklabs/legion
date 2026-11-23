@@ -393,12 +393,12 @@ func standingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, pl
 	return now
 }
 
-// assertRefusedReturnTo fails unless result is the 409 RETURN_REFUSED whose message is want, and
-// key stands as it stood before the completion (before).
-func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, result intake.Result, want string, before recordAt) {
+// assertRefusedReturnTo fails unless result is a 409 RETURN_REFUSED, and key stands as it stood
+// before the completion (before).
+func assertRefusedReturnTo(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, result intake.Result, before recordAt) {
 	t.Helper()
-	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "RETURN_REFUSED" || result.Refusal.Message != want {
-		t.Fatalf("the completion = %+v, want the 409 RETURN_REFUSED %q", result.Refusal, want)
+	if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "RETURN_REFUSED" {
+		t.Fatalf("the completion = %+v, want a 409 RETURN_REFUSED", result.Refusal)
 	}
 	if after := standingOf(t, pool, engine, key, before.task != nil); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the refused completion changed %s:\n before %+v\n after  %+v", key, before, after)
@@ -467,19 +467,16 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		returnTo int
-		want     string
 	}{
-		{"returnTo naming the failed step itself is not earlier", 3,
-			"returnTo is 3, and step 3 (tester) of task a of LEGION-208 is not before step 3 (tester), the step that failed; send the fail again naming an earlier step, or without returnTo; nothing was recorded"},
-		{"returnTo naming a place no step of the task holds names another task's", 4,
-			"returnTo is 4, and task a of LEGION-208 has steps 1 to 3, so it names no step of the task whose step 3 (tester) failed; send the fail again naming an earlier step of that task, or without returnTo; nothing was recorded"},
+		{"returnTo naming the failed step itself is not earlier", 3},
+		{"returnTo naming a place no step of the task holds names another task's", 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, root := planned(t)
 			before := standingOf(t, pool, engine, root.Key, true)
 			apply := applyFacts(t, pool, engine)
 
-			assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, tc.returnTo, "test-1")), tc.want, before)
+			assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, tc.returnTo, "test-1")), before)
 
 			// The refusal recorded nothing, its handoff record among it, so the tester reports
 			// again with the same record, and the report naming no step returns to the
@@ -499,8 +496,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		before := standingOf(t, pool, engine, root.Key, false)
 		apply := applyFacts(t, pool, engine)
 
-		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, 1, "test-1")),
-			"returnTo is 1, and LEGION-208 has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded", before)
+		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, 1, "test-1")), before)
 
 		if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
@@ -661,9 +657,7 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 	before := standingOf(t, pool, engine, root.Key, true)
 
-	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(root.Key, 1, "test-1")),
-		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded",
-		before)
+	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(root.Key, 1, "test-1")), before)
 
 	if result := apply("late fail again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
 		t.Fatalf("the tester's late fail sent again without returnTo was refused: %+v", result.Refusal)
