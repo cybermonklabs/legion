@@ -192,10 +192,10 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 }
 
 // TurnOutcomeResponse is what the daemon made of the report: the run of refused turns the claim's
-// reports now end with (RefusedRun), counted up to the launch failure limit, at which a retry of
-// the claim starts a new session. A producer acts on neither field — its turn is over — but a
-// pane's log saying the daemon has counted three refusals in a row is the one place an operator
-// sees the count being made.
+// reports now end with (RefusedRun), counted up to the launch failure limit, which the daemon
+// answers each report with and which decides nothing. A producer acts on neither field — its turn
+// is over — but a pane's log saying the daemon has counted three refusals in a row is the one
+// place an operator sees the count being made.
 //
 // Failed is whether this report failed the claim. A run of refused turns fails no claim
 // (dispatch://INFRA-4508), so only one report does: that of a turn that ran no prompt of the

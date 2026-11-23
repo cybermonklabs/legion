@@ -257,29 +257,91 @@ func TestTheRefusedRunCarriesAcrossAGenerationThatResumesTheSameSession(t *testi
 	}
 }
 
-// The retry of a claim whose provider refused the recorded session's last launch_failure_limit
-// turns in a row starts a new session rather than resuming the recorded one: the session every
-// recent turn of which was refused would be refused again. The run fails nothing by itself; the
-// claim here fails at its last refused turn, whose provider error cannot clear. The claim spawns
-// instead of resuming, and the new session starts with a fresh run.
-func TestTheRetryOfAClaimItsProviderRefusedStartsANewSession(t *testing.T) {
-	h, limit := refusedUntilA400(t)
-	h.wantState(StateFailed)
-	h.wantRefusedRun(limit)
-	spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))
-
-	h.must(RequestRetry{Claim: h.token})
-
-	h.wantState(StateLaunching)
-	h.wantCalls("Spawn", spawns+1)
-	h.wantCalls("Resume", resumes)
-	if c := h.claim(); c.Session != "" || c.SessionFile != "" {
-		t.Errorf("the retried claim still records session %q (%s), want it started afresh", c.Session, c.SessionFile)
+// A retry resumes the recorded session with fresh budgets, whoever makes it, unless it asks for a
+// new session (dispatch://INFRA-4508's R5, check c-retry-keeps-session): a run of refused turns,
+// however long, is the claim's own count of refusals, mostly ones that can clear — a team limit's
+// 429 refuses every session of the team alike — and no sign that its session is bad. The two runs
+// here are of twenty refused turns, each a plugin turn's report, one run with a 429 and one with
+// no status; neither fails the claim, so it fails the way such a claim does, its process dying
+// until its launch budget runs out. A claim a prompt result's 400 failed resumes too. Only the
+// retry that asks for a new session (`--fresh-session`, the controller's fresh_session) leaves the
+// recorded session behind. With freshSession as at 9e30e970, which started a new session for a
+// run that reached launch_failure_limit, the 429 and no-status cases start a new session and fail.
+func TestARetryResumesTheRecordedSessionUnlessItAsksForANewOne(t *testing.T) {
+	const run = 20
+	const newSessionLine = "supervise: retrying in a new session"
+	refusedRun := func(t *testing.T, status int) *harness {
+		t.Helper()
+		h := newHarness(t)
+		h.reach(StateReady)
+		for turn := 1; turn <= run; turn++ {
+			h.pluginTurn(uint64(turn), true, status)
+		}
+		for range testLimits().LaunchFailures {
+			h.observe(runtime.Gone)
+		}
+		h.wantState(StateFailed)
+		h.wantRefusedRun(testLimits().LaunchFailures)
+		return h
 	}
-	h.wantRefusedRun(0)
-	if kept := h.claim().TurnOutcomes; len(kept) != 0 {
-		t.Errorf("the retried claim keeps %+v, want the refused session's turns gone with it", kept)
+	failedByA400 := func(t *testing.T) *harness {
+		t.Helper()
+		h := workingClaim(t)
+		h.refusedTurn(1, 400, "400 invalid_request_error: prompt is too long")
+		h.wantState(StateFailed)
+		return h
 	}
+
+	for _, tc := range []struct {
+		name  string
+		claim func(*testing.T) *harness
+	}{
+		{"a run of 20 refused turns that ends in a 429", func(t *testing.T) *harness { return refusedRun(t, 429) }},
+		{"a run of 20 refused turns that ends in a report with no status", func(t *testing.T) *harness { return refusedRun(t, 0) }},
+		{"a claim a prompt result's 400 failed", failedByA400},
+	} {
+		t.Run(tc.name+" resumes its session", func(t *testing.T) {
+			h := tc.claim(t)
+			resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
+
+			h.must(RequestRetry{Claim: h.token})
+
+			h.wantState(StateLaunching)
+			h.wantCalls("Resume", resumes+1)
+			h.wantCalls("Spawn", spawns)
+			if c := h.claim(); c.Session != session || c.SessionFile != sessionFile || c.Abandoned.Session != "" {
+				t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want %q resumed and nothing abandoned",
+					c.Session, c.SessionFile, c.Abandoned, session)
+			}
+			h.wantBudgets(Budgets{})
+			if lines := h.records.of(newSessionLine); len(lines) != 0 {
+				t.Fatalf("the retry logged %q %d times, want never", newSessionLine, len(lines))
+			}
+		})
+	}
+
+	t.Run("a run of 20 refused turns that ends in a 429, retried with --fresh-session, starts a new session", func(t *testing.T) {
+		h := refusedRun(t, 429)
+		resumes, spawns := len(h.calls("Resume")), len(h.calls("Spawn"))
+
+		h.must(RequestRetry{Claim: h.token, FreshSession: true})
+
+		h.wantState(StateLaunching)
+		h.wantCalls("Spawn", spawns+1)
+		h.wantCalls("Resume", resumes)
+		if c := h.claim(); c.Session != "" || c.SessionFile != "" || c.Abandoned.Session != session {
+			t.Fatalf("the retried claim records session %q (%s) and abandoned %+v, want the recorded %q forgotten",
+				c.Session, c.SessionFile, c.Abandoned, session)
+		}
+		h.wantRefusedRun(0)
+		lines := h.records.of(newSessionLine)
+		if len(lines) != 1 {
+			t.Fatalf("the retry logged %q %d times, want once", newSessionLine, len(lines))
+		}
+		if why, ok := lines[0].attr("why"); !ok || why.String() != "the retry asked for a new session" {
+			t.Fatalf("the line's why is %v, want the retry's own ask", why)
+		}
+	})
 }
 
 // A retry that asks for a new session starts one whatever failed the claim, and a retry that asks
@@ -311,7 +373,7 @@ func TestARetryStartsANewSessionWhenItAsksAndResumesTheRecordedOneWhenItDoesNot(
 			h.must(tc.retry)
 
 			h.wantState(StateLaunching)
-			asked, _ := freshSession(tc.retry, Claim{}, 1)
+			asked, _ := freshSession(tc.retry)
 			if asked {
 				h.wantCalls("Spawn", spawns+1)
 				h.wantCalls("Resume", resumes)

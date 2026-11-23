@@ -44,31 +44,27 @@ func (h *harness) wantAbandonedToldBy(by, when string) {
 	}
 }
 
-// abandonSession walks the claim to where the provider refused the recorded session's last
-// launch_failure_limit turns in a row, an operator stopped it, and a retry asking for nothing
-// started it again, which leaves that session behind (freshSession): from here the claim records
-// an abandoned session nothing has told its replacement of yet. The run fails no claim, so the
-// stop is what ends this one's run. It answers why the claim records the session was left: the
-// retry's own reason, since a stopped claim carries no failure to name.
+// abandonSession walks the claim to where an operator stopped it and a retry asking for a new
+// session started it again, which leaves the recorded session behind (freshSession): from here the
+// claim records an abandoned session nothing has told its replacement of yet. It answers why the
+// claim records the session was left: the retry's own reason, since a stopped claim carries no
+// failure to name.
 func (h *harness) abandonSession() string {
 	h.t.Helper()
 	h.reach(StateIdle)
-	for turn := 1; turn <= testLimits().LaunchFailures; turn++ {
-		h.report(uint64(turn), true, "the provider ended the turn with an error at 226k tokens of context")
-	}
 	h.must(RequestStop{Claim: h.token})
 	h.wantState(StateRetired)
-	h.must(RequestRetry{Claim: h.token})
-	return "the provider refused the recorded session's last " + strconv.Itoa(testLimits().LaunchFailures) + " turns in a row"
+	h.must(RequestRetry{Claim: h.token, FreshSession: true})
+	return "the retry asked for a new session"
 }
 
-// The retry of a claim whose provider refused the recorded session's last launch_failure_limit
-// turns in a row leaves that session behind. The claim records which session it abandoned and
-// why, since nothing else does — the session itself stays in its store — and the first task the
-// agent that replaces it is given names that session, quoted, why it was left, the issue's branch
-// and the handoffs committed on it. Nothing in a new session says that an older one existed, so a
-// worker given the bare task would read an empty transcript as a fresh start and do again what the
-// abandoned session already pushed (dispatch://INFRA-714, item 4 of the refusal section).
+// A retry that asks for a new session leaves the recorded one behind. The claim records which
+// session it abandoned and why, since nothing else does — the session itself stays in its store —
+// and the first task the agent that replaces it is given names that session, quoted, why it was
+// left, the issue's branch and the handoffs committed on it. Nothing in a new session says that an
+// older one existed, so a worker given the bare task would read an empty transcript as a fresh
+// start and do again what the abandoned session already pushed (dispatch://INFRA-714, item 4 of
+// the refusal section).
 func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *testing.T) {
 	h := newHarness(t)
 

@@ -27,12 +27,12 @@ var errReportTimeout = fmt.Errorf("the daemon gave no answer within the report's
 // turnReports is the bridge as the Claude Code backend's producer of turn outcomes: every turn the
 // bridge ends is reported to the daemon, clean or refused, with the bridge's own sequence within
 // its launch generation (POST /legion/v1/claims/turn-outcome). The daemon derives the claim's run
-// of refused turns from those reports. The run fails no claim (dispatch://INFRA-4508); it decides
-// whether a retry starts a new session. A turn that ran no prompt of the daemon's — one an inbox
-// delivery started, the phase hook's reminder among them, or one Claude Code started itself when a
-// background task finished — is judged by the daemon from its report alone, since no prompt
-// result comes for it (supervise's turnOutcome), so its report says so and carries the status the
-// provider refused it with.
+// of refused turns from those reports and answers each report with it; the run fails no claim
+// (dispatch://INFRA-4508) and decides nothing. A turn that ran no prompt of the daemon's — one an
+// inbox delivery started, the phase hook's reminder among them, or one Claude Code started itself
+// when a background task finished — is judged by the daemon from its report alone, since no
+// prompt result comes for it (supervise's turnOutcome), so its report says so and carries the
+// status the provider refused it with.
 //
 // The bridge is the producer because it is what sees the refusal: a step Claude Code ends with an
 // error is the assistant message it writes with stopReason "error" (result), and the pane's own

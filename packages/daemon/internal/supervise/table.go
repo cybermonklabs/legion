@@ -542,8 +542,8 @@ type RequestOperatorClose struct{ Claim claim.Token }
 // FreshSession asks for a new session in place of the recorded one. It is a field rather than an
 // event of its own, as the closes are, because both answers are the same decision made by the same
 // caller — the claim runs again — and neither skips a check the other makes: it says only which
-// session the retry starts. A retry that asks for none still starts one when the provider refused
-// the recorded session's last launch_failure_limit turns in a row (freshSession).
+// session the retry starts. A retry that asks for none resumes the recorded session, whatever the
+// claim's run of refused turns (freshSession).
 type RequestRetry struct {
 	Claim        claim.Token
 	FreshSession bool
@@ -1242,7 +1242,7 @@ func fillTable(t *builder) {
 	// backs: retiring is not a way past either.
 	t.row(onOperatorClose, "the tree is already closed", operatorCloseRetired, nil, StateRetired)
 
-	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused its last launch_failure_limit turns in a row, or no store holds it", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
+	t.row(onRetry, "retry: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it", retry, []ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onRetry, "the claim has not failed", live...)
@@ -1251,7 +1251,7 @@ func fillTable(t *builder) {
 	// A retired claim is retried here as the workflow's own retry retries one: `legion claims stop`
 	// retires a claim, and while this row refused that state the only way to start a stopped worker
 	// again was an edit of the claims store with the daemon stopped (dispatch://INFRA-956 R3).
-	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused its last launch_failure_limit turns in a row, or no store holds it", operatorRetry,
+	t.row(onOperatorRetry, "the operator's retry of an architect or a phase worker, failed or stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one or no store holds it", operatorRetry,
 		[]ClaimState{StateLaunching, StateFailed}, StateFailed, StateRetired)
 	t.ignore(onOperatorRetry, "a queued claim is spawned, not retried", StateQueued)
 	t.ignore(onOperatorRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
@@ -2729,10 +2729,12 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
 // operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
 //
-// A retry that asks for a new session, and one of a claim whose provider refused the recorded
-// session's last launch_failure_limit turns in a row, forgets that session instead, so the launch
-// spawns a fresh agent (freshSession): relaunching a session every recent turn of which was
-// refused would be refused again, and the claim would spend its next run having done nothing.
+// A retry that asks for a new session (`legion claims retry --fresh-session`, the controller's
+// fresh_session) forgets the recorded session instead, so the launch spawns a fresh agent
+// (freshSession). Every other retry, whoever makes it, resumes the recorded session with fresh
+// budgets, whatever the claim's run of refused turns: a run that reached launch_failure_limit is
+// the claim's own count of refusals, mostly ones that can clear, such as a team limit's 429 that
+// refuses every session alike, and no sign that its session is bad (dispatch://INFRA-4508's R5).
 //
 // The failure record goes with the counts it names, and both go once the claim is admitted. A
 // reader is served that record built from the counts the claim holds now (api.FailureViewOf),
@@ -2751,7 +2753,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
-	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
+	if fresh, why := freshSession(ev); fresh {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
 		// was, until then.

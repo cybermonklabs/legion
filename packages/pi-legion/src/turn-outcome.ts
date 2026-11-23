@@ -9,9 +9,10 @@ import { turnGoesOn } from "./turn-end";
  * The Oh My Pi half of the turn-outcome report (INFRA-714). Every turn this pane ends — one the
  * model answered, and one the provider refused — is reported to the daemon over HTTP, under a
  * sequence this plugin counts itself. The daemon derives the claim's run of refused turns from
- * the reports, and the run fails no claim (dispatch://INFRA-4508): it decides only whether a retry
- * of the claim starts a new session rather than resuming the one every recent turn of which was
- * refused (`freshSession`, `packages/daemon/internal/supervise/turnoutcome.go`).
+ * the reports and answers each report with it, which this plugin logs; the run fails no claim
+ * and decides nothing (dispatch://INFRA-4508): a retry of the claim resumes its recorded session
+ * whatever the run, unless the retry asks for a new one (`freshSession`,
+ * `packages/daemon/internal/supervise/turnoutcome.go`).
  *
  * A refused turn's report carries the HTTP status the provider answered, where the host recorded
  * one (`errorStatus` on the assistant message that ended the turn, the field the host's own

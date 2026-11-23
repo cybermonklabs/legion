@@ -3,7 +3,6 @@ package supervise
 import (
 	"cmp"
 	"context"
-	"fmt"
 	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -46,12 +45,13 @@ func compareTurnOutcomes(a, b TurnOutcome) int {
 const maxRefusalMessage = 500
 
 // turnOutcomeWindow is how many reports a claim keeps: the launch failure limit
-// (launch_failure_limit, 3 by default), which is the run of refused turns at which a retry of the
-// claim starts a new session (freshSession). That is the one thing the run decides, and it asks
-// only whether the run has reached the limit, so the newest limit reports are everything it reads:
-// a longer run reads as the limit, and a report older than all of them cannot shorten a run
-// derived over them, and is dropped. That bound is why a claim whose agent works for a week
-// carries a handful of rows rather than a turn-by-turn history nothing reads.
+// (launch_failure_limit, 3 by default). RefusedRun reads only the newest of them and counts up to
+// that bound, so a longer run reads as the limit, and a report older than all of them cannot
+// shorten a run derived over them, and is dropped. The run is what the daemon answers each report
+// with (claim.TurnOutcomeResponse's RefusedRun, api's turnOutcome), for the producer's log, and it
+// decides nothing: no claim fails on it, and no retry reads it (freshSession). That bound is why a
+// claim whose agent works for a week carries a handful of rows rather than a turn-by-turn history
+// nothing reads.
 func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures }
 
 // recordTurnOutcome puts a report in the claim's window, in (generation, sequence) order, and
@@ -88,9 +88,10 @@ func (m *Machine) recordTurnOutcome(o TurnOutcome) bool {
 // RefusedRun is the run of refused turns the claim's reports end with, in the order the turns ran,
 // counted up to the window's bound (turnOutcomeWindow). It is derived on every read and stored
 // nowhere, so no count is ever mutated and a report that arrives late lands in its place and is
-// counted there. The run carries across generations: a session the provider refused is refused
-// again when it is resumed, which is why the retry of a claim whose run reached the launch failure
-// limit starts a new session (freshSession), and a new session starts a fresh run (freshRun).
+// counted there. It is what the daemon answers each report with (claim.TurnOutcomeResponse's
+// RefusedRun, api's turnOutcome), which the producer logs, and the retry that leaves a session
+// behind logs it too (retry); it decides nothing. The run carries across generations, as a resumed
+// session's turns follow the ones before them, and a new session starts a fresh run (freshRun).
 func (c Claim) RefusedRun() int {
 	run := 0
 	for i := len(c.TurnOutcomes) - 1; i >= 0 && c.TurnOutcomes[i].Refused; i-- {
@@ -122,7 +123,8 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 
 // turnOutcome records the turn its producer reported and derives the claim's trailing run of
 // refused turns from the window that leaves. The run fails no claim, however long
-// (dispatch://INFRA-4508): it decides only whether a retry starts a new session (freshSession).
+// (dispatch://INFRA-4508), and decides nothing: it is what the daemon answers the report with
+// (RefusedRun).
 //
 // What a refused turn's provider error does is decided once for each turn, by the one record of
 // that turn that can say: the result of the prompt the turn ran (providerErrored), or, for a turn
@@ -149,7 +151,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	kept := m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
 		"refused", r.Refused, "httpStatus", r.HTTPStatus, "unprompted", r.Unprompted,
-		"refusedRun", m.claim.RefusedRun(), "freshSessionAt", m.deps.Limits.LaunchFailures)
+		"refusedRun", m.claim.RefusedRun())
 	if !r.Unprompted || !kept || r.Generation != m.claim.Generation {
 		return m.persist(ctx)
 	}
@@ -185,13 +187,17 @@ func (m *Machine) unpromptedTurnEnded(ctx context.Context, r RequestTurnOutcome)
 }
 
 // freshSession is whether a retry starts a new session rather than relaunching the recorded one,
-// and why, for the line it logs. An operator asks for one with `legion claims retry
-// --fresh-session`. A claim whose provider refused the recorded session's last limit turns in a
-// row takes one whoever retried it — its architect's retry_or_escalate, the next start of its
-// role, or that operator — because resuming the session those turns were refused in is what would
-// be refused again. Such a claim failed for a reason of its own, since a run of refused turns
-// fails none (turnOutcome).
-func freshSession(ev Event, c Claim, limit int) (bool, string) {
+// and why, for the line it logs: only when the retry asks for one, with `legion claims retry
+// --fresh-session` or the controller's fresh_session, since a new session is an operator's or the
+// controller's choice (dispatch://INFRA-956's Design). Every other retry — its architect's
+// retry_or_escalate, the next start of its role, an operator's retry that asks for nothing —
+// resumes the recorded session with fresh budgets, whatever the claim's run of refused turns
+// (dispatch://INFRA-4508's R5). That run is no sign that the session is bad: a refusal that cannot
+// clear fails the claim on the turn it ends, and holds the issue, so a run is mostly refusals that
+// can clear or carry no status, such as a team limit's 429, which refuses every session of the
+// team alike. A claim failed on a refusal that cannot clear resumes too; if its session is refused
+// again, it fails again at once.
+func freshSession(ev Event) (bool, string) {
 	asked := false
 	switch ev := ev.(type) {
 	case RequestRetry:
@@ -199,11 +205,8 @@ func freshSession(ev Event, c Claim, limit int) (bool, string) {
 	case RequestOperatorRetry:
 		asked = ev.FreshSession
 	}
-	switch {
-	case asked:
+	if asked {
 		return true, "the retry asked for a new session"
-	case c.RefusedRun() >= limit:
-		return true, fmt.Sprintf("the provider refused the recorded session's last %d turns in a row", limit)
 	}
 	return false, ""
 }

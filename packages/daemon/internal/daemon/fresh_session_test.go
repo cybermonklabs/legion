@@ -157,8 +157,8 @@ const refusal400 = "400 invalid_request_error: messages: unexpected role"
 // refused by the claim's producer, and then answers the task's prompt with a provider error that
 // cannot clear: an HTTP 400, a client error that is none of 401, 403, 408 and 429, which fails the
 // claim (supervise's holdsTheIssue). The reports fail nothing, however many there are
-// (dispatch://INFRA-4508): they are the claim's run of refused turns, which decides whether a
-// retry starts a new session.
+// (dispatch://INFRA-4508): they are the claim's run of refused turns, which the daemon answers each
+// report with and which decides nothing.
 func (r *freshSessionRig) refuseTurns(turns int) {
 	r.t.Helper()
 	// The phase task's prompt is acknowledged once its send is over, so its result is awaited
@@ -333,12 +333,14 @@ func TestAPluginTurnRefused400HoldsTheIssueForItsArchitect(t *testing.T) {
 }
 
 // A claim whose provider refused the recorded session's last launch_failure_limit turns in a row
-// takes a new session at its retry, whoever retries it (supervise's freshSession). The run of
-// refusals fails no claim (dispatch://INFRA-4508): this one fails because the prompt those turns
-// ran ended in a provider error that cannot clear, and its issue is held, so the tree's architect
-// can retry it. That one retry must reach a working agent: a new session, because every recent
-// turn of the recorded one was refused, given the task the claim owes.
-func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *testing.T) {
+// keeps that session at its retry, whoever retries it, unless the retry asks for a new one
+// (supervise's freshSession, dispatch://INFRA-4508's R5). The run of refusals fails no claim: this
+// one fails because the prompt those turns ran ended in a provider error that cannot clear, and
+// its issue is held, so the tree's architect can retry it. That one retry resumes the recorded
+// session with fresh budgets and gives it the task the claim owes; if the provider refuses it
+// again, the claim fails again at once, and a new session stays the operator's or the
+// controller's choice.
+func TestAnArchitectsRetryOfARefusedClaimResumesItsSessionWithThePhaseTask(t *testing.T) {
 	t.Parallel()
 	rig := newFreshSessionRig(t)
 	ctx := context.Background()
@@ -351,6 +353,7 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 			got.State, got.Session, got.RefusedRun(), limit)
 	}
 	rig.wantsHeldForTheArchitect()
+	spawned := len(rig.rt.CallsOf("Spawn"))
 
 	// The one command: the architect's retry of the held phase.
 	if _, err := intake.ApplyFact(ctx, rig.pool, "api", "retry:"+rig.issue.Key,
@@ -366,30 +369,24 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	}
 	rig.machine.Wait()
 
-	if got := rig.machine.Claim(); got.State != supervise.StateLaunching || got.Session != "" || got.SessionFile != "" {
-		t.Fatalf("after the retry the implementer is %s on session %q (%s), want it launching with no session to resume", got.State, got.Session, got.SessionFile)
+	if got := rig.machine.Claim(); got.State != supervise.StateLaunching || got.Session != oldSession || got.Abandoned.Session != "" {
+		t.Fatalf("after the retry the implementer is %s on session %q, abandoned %+v, want it launching to resume %q",
+			got.State, got.Session, got.Abandoned, oldSession)
 	}
-	if resumes := resumesOf(rig.rt, rig.implementer); len(resumes) != 0 {
-		t.Fatalf("the retry resumed %+v, want the refused session left alone", resumes)
+	if resumes := resumesOf(rig.rt, rig.implementer); len(resumes) != 1 {
+		t.Fatalf("the retry resumed %+v, want the recorded session resumed once", resumes)
 	}
-	spawns := rig.rt.CallsOf("Spawn")
-	if len(spawns) != 2 || spawns[1].Spec.ResumeSessionFile != "" {
-		t.Fatalf("the retry's launch = %+v, want a spawn resuming no session file", spawns)
+	if spawns := rig.rt.CallsOf("Spawn"); len(spawns) != spawned {
+		t.Fatalf("the retry spawned %+v, want no new agent", spawns[spawned:])
 	}
-	rig.register(newSession, newSessionFile)
-	if got := rig.machine.Claim(); got.Session != newSession || got.Session == oldSession {
-		t.Fatalf("the retried implementer registered session %q, want the new %q", got.Session, newSession)
-	}
+	rig.register(oldSession, oldSessionFile)
 	// The task the claim owes, which the provider error took back: the retried phase's own task
-	// waits behind it, as it does behind any task the claim still owes. It goes behind the
-	// sentence that says this session replaced one the provider refused: a worker reading an
-	// empty transcript would otherwise take the task for a fresh start and do again what the
-	// abandoned session already pushed.
+	// waits behind it, as it does behind any task the claim still owes. No sentence of an
+	// abandoned session goes with it: the session is the one the agent was working in.
 	prompts := rig.conn.Prompts()
-	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, phaseTask) {
-		t.Fatalf("the new session was prompted %+v, want it to end with the phase task the claim owes", prompts)
+	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, phaseTask) || strings.Contains(prompts[1].Message, "abandoned") {
+		t.Fatalf("the resumed session was prompted %+v, want it to end with the phase task the claim owes and name no abandoned session", prompts)
 	}
-	wantsAbandonment(t, prompts[1].Message, "HTTP 400")
 }
 
 // An operator who stops a worker whose agent can do nothing — a provider that refuses its session,

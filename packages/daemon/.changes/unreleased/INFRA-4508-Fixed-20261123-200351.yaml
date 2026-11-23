@@ -16,9 +16,14 @@ body: |-
   marks such a turn `unprompted` (daemon API contract 239; the Claude bridge sends both fields
   too): a refusal that cannot clear fails the claim, which ends the plugin's reminders; one that
   can clear, or whose report carries no status, fails nothing, and the reminders keep their pace
-  of one every 5 minutes. The run of refused turns the reports make now decides only whether a
-  retry of the claim starts a new session, at `launch_failure_limit` as before. The answer's
-  `failed` is true only for the report that failed the claim.
+  of one every 5 minutes. The answer's `failed` is true only for the report that failed the claim.
+  A retry, whoever makes it (the architect's `retry_or_escalate`, the next start of the role, an
+  operator), now resumes the recorded session with fresh budgets, whatever the claim's run of
+  refused turns, and starts a new session only when it asks for one (`legion claims retry
+  --fresh-session`, the controller's `fresh_session`). A claim whose provider had refused its
+  last `launch_failure_limit` turns in a row used to take a new session at any retry, though most
+  such runs are refusals that can clear, such as a team limit's 429, which refuses every session
+  alike. The run of refused turns is now only what the daemon answers each report with.
 time: 2026-11-23T20:03:51.993913529Z
 custom:
   Issue: INFRA-4508

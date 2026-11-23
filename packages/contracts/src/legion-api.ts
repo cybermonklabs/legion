@@ -1475,14 +1475,14 @@ export const LegionTurnOutcomeRequest = z.union([
 export type LegionTurnOutcomeRequestBody = z.output<typeof LegionTurnOutcomeRequest>;
 
 /** `claim.TurnOutcomeResponse`, the answer to a reported turn: `refusedRun` is the run of refused
- * turns the claim's reports now end with, counted up to `launch_failure_limit`, at which a retry of
- * the claim starts a new session. `failed` is whether this report failed the claim: a run of
- * refused turns fails none (dispatch://INFRA-4508), and the one report that does is that of an
- * `unprompted` turn the provider refused with a status that cannot clear, which holds the issue
- * for its architect as such a prompt's result does. This and `claim.TurnOutcomeResponse` are
- * where that rule is stated; every other reader of `failed` points here. The producer acts on
- * neither field — its turn is over — and logs them, which is where an operator sees the count
- * being made. */
+ * turns the claim's reports now end with, counted up to `launch_failure_limit`, which the daemon
+ * answers each report with and which decides nothing. `failed` is whether this report failed the
+ * claim: a run of refused turns fails none (dispatch://INFRA-4508), and the one report that does
+ * is that of an `unprompted` turn the provider refused with a status that cannot clear, which
+ * holds the issue for its architect as such a prompt's result does. This and
+ * `claim.TurnOutcomeResponse` are where that rule is stated; every other reader of `failed` points
+ * here. The producer acts on neither field — its turn is over — and logs them, which is where an
+ * operator sees the count being made. */
 export const LegionTurnOutcomeResponse = z.object({
   refusedRun: z.number().int().nonnegative(),
   failed: z.boolean(),

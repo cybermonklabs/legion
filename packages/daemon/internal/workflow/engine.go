@@ -2216,8 +2216,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 //
 // freshSession is the operator's `--fresh-session`: the start it queues retries the claim in a
 // new session rather than the one it recorded. An architect's retry of a held phase asks for
-// none — a claim whose provider refused the recorded session's last launch_failure_limit turns in
-// a row takes a new session all the same, which the claim's own retry decides (supervise's
+// none, and resumes the recorded session, whatever the claim's run of refused turns (supervise's
 // freshSession).
 //
 // The release is logged as it commits: the issue, the phase it comes back to and the reason,

@@ -330,8 +330,9 @@ func (s *server) turnOutcomeCaller(w http.ResponseWriter, r *http.Request, req c
 // launch the claim has moved past is refused, and so is a report for any generation but that
 // launch's. A pane left running from a replaced launch — one the daemon could not stop, one whose
 // container outlived its stop — would otherwise add its provider's refusals to the run the daemon
-// counts for the pane that replaced it, and a retry of that claim would leave the replacement's
-// session behind for refusals it never had (supervise's freshSession).
+// counts for the pane that replaced it, and its unprompted refusals to that claim's run of
+// provider-error turns, which a refusal that cannot clear fails the claim on (supervise's
+// turnOutcome).
 func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, caller claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, bool) {
 	launch, known, err := s.bootTokens.Resolve(r.Context(), caller.BootToken)
 	if err != nil {
