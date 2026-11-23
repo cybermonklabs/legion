@@ -34,9 +34,10 @@ const (
 const ExpectsReplyVocabulary = "false, optional, required"
 
 // expectsReplyLegacyNone is the retired wire word for wanting no reply, which the field carried
-// before the JSON literal false replaced it and which ParseExpectsReply still reads as
-// ExpectsReplyNone. Nothing writes it: retiring the leniency is deleting this constant and the
-// one case of ParseExpectsReply that names it.
+// before the JSON literal false replaced it and which ParseExpectsAsSpoken still reads as
+// ExpectsReplyNone. Only an answer to a request that wrote it writes it, back to that request
+// (ExpectsAsSpoken.LegacyNone): retiring the leniency is deleting this constant, the one case of
+// ParseExpectsAsSpoken that names it, and LegacyNone.
 const expectsReplyLegacyNone = "none"
 
 // MarshalJSON writes the no-reply value as the JSON literal false and the other two as their
@@ -70,35 +71,87 @@ func (e *ExpectsReply) UnmarshalJSON(raw []byte) error {
 // strings "optional" and "required", and - leniently - the old string "none", which means the
 // same as false. A field that is absent, as a nil raw or as JSON null, is the unset value, since
 // saying nothing about a reply is not an error. Anything else is refused by naming the vocabulary.
+// It is the value ParseExpectsAsSpoken reads, which also keeps the spelling.
 //
 // The "none" case is the one piece of leniency here, and what removes it is a count, not a date:
 // every producer and every skill line of this repository now writes false, so the case goes once
 // no deployment pins a plugin build old enough to write "none".
 func ParseExpectsReply(raw json.RawMessage) (ExpectsReply, error) {
+	spoken, err := ParseExpectsAsSpoken(raw)
+	return spoken.Value, err
+}
+
+// ExpectsAsSpoken is a request's expects_reply as the request spoke it: its value, and whether it
+// said no reply with the retired "none" rather than the literal false. It is what the listener's
+// answer to a send or a publish writes (SendResponse, KeptSendResponse and PublishResponse), so
+// each sender reads back the dialect it spoke - the literal false, "optional", "required" or
+// "none" - and the zero value, which those answers leave out, is a request that said nothing
+// about a reply or wrote null. The listener reads it from the request (ParseExpectsAsSpoken),
+// refusing anything else before an answer is built, and the envelope it puts on the bus carries
+// Value alone, in the one new vocabulary. An answer writes the request's word, not its bytes: a
+// word the request wrote with escapes comes back without them.
+//
+// Answering the request's own spelling is what keeps the ingress leniency's promise whole. A
+// plugin build old enough to write "none" holds an EnvelopeSchema whose expects_reply is the
+// three-word enum (packages/contracts/src/envelope.ts), and it parses this very answer
+// (packages/envoy-client/src/transport.ts): a literal false there fails that parse, so its send
+// is reported unconfirmed and re-sent, and its publish throws. LegacyNone goes with the leniency
+// itself, on the count ParseExpectsReply's comment names.
+type ExpectsAsSpoken struct {
+	// Value is what the request asked for, which the envelope carries.
+	Value ExpectsReply
+	// LegacyNone is set beside ExpectsReplyNone alone, for a request that wrote "none".
+	LegacyNone bool
+}
+
+// MarshalJSON writes Value as ExpectsReply writes it, and "none" back to a request that wrote it.
+func (s ExpectsAsSpoken) MarshalJSON() ([]byte, error) {
+	if !s.LegacyNone {
+		return s.Value.MarshalJSON()
+	}
+	if s.Value != ExpectsReplyNone {
+		return nil, expectsReplyRefusal()
+	}
+	return []byte(`"` + expectsReplyLegacyNone + `"`), nil
+}
+
+// UnmarshalJSON reads what ParseExpectsAsSpoken accepts.
+func (s *ExpectsAsSpoken) UnmarshalJSON(raw []byte) error {
+	parsed, err := ParseExpectsAsSpoken(raw)
+	if err != nil {
+		return err
+	}
+	*s = parsed
+	return nil
+}
+
+// ParseExpectsAsSpoken reads one expects_reply field as ParseExpectsReply says, and keeps whether
+// it wrote no reply as the retired "none" (LegacyNone).
+func ParseExpectsAsSpoken(raw json.RawMessage) (ExpectsAsSpoken, error) {
 	if len(raw) == 0 {
-		return ExpectsReplyUnset, nil
+		return ExpectsAsSpoken{}, nil
 	}
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return ExpectsReplyUnset, expectsReplyRefusal()
+		return ExpectsAsSpoken{}, expectsReplyRefusal()
 	}
 	switch read := value.(type) {
 	case nil:
-		return ExpectsReplyUnset, nil
+		return ExpectsAsSpoken{}, nil
 	case bool:
 		if !read {
-			return ExpectsReplyNone, nil
+			return ExpectsAsSpoken{Value: ExpectsReplyNone}, nil
 		}
 	case string:
 		if read == expectsReplyLegacyNone {
-			return ExpectsReplyNone, nil
+			return ExpectsAsSpoken{Value: ExpectsReplyNone, LegacyNone: true}, nil
 		}
 		switch ExpectsReply(read) {
 		case ExpectsReplyOptional, ExpectsReplyRequired:
-			return ExpectsReply(read), nil
+			return ExpectsAsSpoken{Value: ExpectsReply(read)}, nil
 		}
 	}
-	return ExpectsReplyUnset, expectsReplyRefusal()
+	return ExpectsAsSpoken{}, expectsReplyRefusal()
 }
 
 // Validate refuses a value no producer may write. envelope_generated.go's Envelope.Validate calls

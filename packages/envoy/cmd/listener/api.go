@@ -432,10 +432,11 @@ func writeStoreError(ctx context.Context, w http.ResponseWriter, err error, stat
 }
 
 // validateMessageBody refuses a body no envelope may be built from, naming the refusal and the
-// field it is about, and returns the body's parsed expects_reply so the envelope's message
-// (listenerMessage) takes the value this parse already read instead of parsing the same bytes
-// again. A refused body returns the unset value, which no caller reads.
-func validateMessageBody(body listenerwire.MessageBody) (string, string, listenerwire.ExpectsReply) {
+// field it is about, and returns the body's expects_reply as the request spoke it
+// (listenerwire.ExpectsAsSpoken): the route's answer writes it back as it is, and the envelope's
+// message (listenerMessage) takes its value, so nothing parses the same bytes again. A refused
+// body returns the zero value, which no caller reads.
+func validateMessageBody(body listenerwire.MessageBody) (string, string, listenerwire.ExpectsAsSpoken) {
 	for _, field := range []struct {
 		name  string
 		value *string
@@ -444,17 +445,17 @@ func validateMessageBody(body listenerwire.MessageBody) (string, string, listene
 		{"supersedes", body.Supersedes},
 	} {
 		if field.value != nil && strings.TrimSpace(*field.value) == "" {
-			return field.name + " must not be empty", field.name, listenerwire.ExpectsReplyUnset
+			return field.name + " must not be empty", field.name, listenerwire.ExpectsAsSpoken{}
 		}
 	}
 	if body.Urgency != nil {
 		if *body.Urgency == "" || (*body.Urgency != "low" && *body.Urgency != "med" && *body.Urgency != "high" && *body.Urgency != "blocking") {
-			return "urgency must be one of low, med, high, blocking", "urgency", listenerwire.ExpectsReplyUnset
+			return "urgency must be one of low, med, high, blocking", "urgency", listenerwire.ExpectsAsSpoken{}
 		}
 	}
-	expectsReply, err := listenerwire.ParseExpectsReply(body.ExpectsReply)
+	expectsReply, err := listenerwire.ParseExpectsAsSpoken(body.ExpectsReply)
 	if err != nil {
-		return "expects_reply must be one of " + listenerwire.ExpectsReplyVocabulary, "expects_reply", listenerwire.ExpectsReplyUnset
+		return "expects_reply must be one of " + listenerwire.ExpectsReplyVocabulary, "expects_reply", listenerwire.ExpectsAsSpoken{}
 	}
 	return "", "", expectsReply
 }
@@ -481,28 +482,6 @@ func listenerMessage(body listenerwire.MessageBody, expectsReply contracts.Expec
 		ExpectsReply:  expectsReply,
 		ExpiresAt:     body.ExpiresAt,
 	}
-}
-
-// expectsReplyAnswer is the expects_reply an answer to one request writes: the request's own
-// bytes, so each sender reads back the dialect it spoke - the literal false, "optional",
-// "required", or the old string "none" - and nil for a request that said nothing about a reply
-// or wrote null, whose answer omits the field as it always has. The route refuses anything else
-// (validateMessageBody) before an answer is built, and the envelope those same bytes were parsed
-// into carries the one new vocabulary whichever spelling they used.
-//
-// Answering the request's own spelling is what keeps the ingress leniency's promise whole. A
-// plugin build old enough to write "none" holds an EnvelopeSchema whose expects_reply is the
-// three-word enum (packages/contracts/src/envelope.ts), and it parses this very answer
-// (packages/envoy-client/src/transport.ts): a literal false there fails that parse, so its send
-// is reported unconfirmed and re-sent, and its publish throws. The echo is the answer's alone -
-// every envelope this listener puts on the bus carries the one new vocabulary - and it goes with
-// the leniency itself, on the same count ParseExpectsReply's comment names: once no deployment
-// pins a plugin build old enough to write "none".
-func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
-	if len(requested) == 0 || string(requested) == "null" {
-		return nil
-	}
-	return requested
 }
 
 // senderStamp is the sender a send or a publish carries: the session, the machine and directory it
@@ -785,12 +764,12 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "message is required", "message")
 			return
 		}
-		message, field, bodyExpectsReply := validateMessageBody(body)
+		message, field, expectsReply := validateMessageBody(body)
 		if message != "" {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, field)
 			return
 		}
-		item := contracts.AgentSendEnvelope(targetSession, body.IdempotencyKey, listenerMessage(body, bodyExpectsReply))
+		item := contracts.AgentSendEnvelope(targetSession, body.IdempotencyKey, listenerMessage(body, expectsReply.Value))
 		item.Role = request.Role
 		record.item = &item
 		if err := item.Validate(); err != nil {
@@ -802,7 +781,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			return
 		}
 		defer charge.settle()
-		if answerRoleSend(ctx, w, d, record, charge, &item, request, targetSession) {
+		if answerRoleSend(ctx, w, d, record, charge, &item, request, targetSession, expectsReply) {
 			return
 		}
 		// The cache alone cannot say a session is gone: it trails the bucket it follows, and is
@@ -899,7 +878,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		}
 		record.accept(w, listenerwire.SendResponse{
 			Envelope:       item,
-			ExpectsReply:   expectsReplyAnswer(body.ExpectsReply),
+			ExpectsReply:   expectsReply,
 			Recipient:      targetSession,
 			RecipientState: recipientState,
 			State:          state,
@@ -1205,7 +1184,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 				"cannot publish to "+lane+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder with the cursors of its drains, or its record of where a deleted session consumer stopped, and the listener alone writes it", "topic")
 			return
 		}
-		message, field, bodyExpectsReply := validateMessageBody(request.MessageBody)
+		message, field, expectsReply := validateMessageBody(request.MessageBody)
 		if message != "" {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, field)
 			return
@@ -1229,15 +1208,12 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		case request.IdempotencyKey != "":
 			dedupeKey = publishDedupePrefix + request.IdempotencyKey
 		}
-		item := contracts.MessageEnvelope(listenerMessage(request.MessageBody, bodyExpectsReply), request.Topic, dedupeKey)
+		item := contracts.MessageEnvelope(listenerMessage(request.MessageBody, expectsReply.Value), request.Topic, dedupeKey)
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
 			return
 		}
-		// The answer's own expects_reply, read from the request before any path answers: the three
-		// of them below each write it, and none of them changes the envelope that goes on the bus.
-		expectsReply := expectsReplyAnswer(request.ExpectsReply)
 		// Every topic that would deliver to no session is refused by name: a session reads
 		// only what its own consumer holds, so such a publish would reach nobody, now or later;
 		// nothing retries into success, so it is the 400 the refusals above answer rather than a

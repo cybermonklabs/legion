@@ -165,7 +165,7 @@ type SendResponse struct {
 	// (the listener's expectsReplyAnswer). It shadows the embedded envelope's own field: of two
 	// fields sharing one JSON name encoding/json writes the shallower, so these bytes are what
 	// the answer carries and every SendResponse the listener builds fills them.
-	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
+	ExpectsReply ExpectsAsSpoken `json:"expects_reply,omitzero"`
 	Recipient    string          `json:"recipient"`
 	// RecipientState is the state the recipient's record puts it in at the moment the send was
 	// accepted: live, or unresponsive for a session that has stopped answering and whose messages
@@ -199,7 +199,7 @@ type KeptSendResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke,
 	// shadowing the embedded envelope's own field exactly as SendResponse.ExpectsReply does.
-	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
+	ExpectsReply ExpectsAsSpoken `json:"expects_reply,omitzero"`
 	Recipient    string          `json:"recipient"`
 	Holder       string          `json:"holder,omitempty"`
 	Kept         bool            `json:"kept"`
@@ -235,7 +235,7 @@ type PublishResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke,
 	// shadowing the embedded envelope's own field exactly as SendResponse.ExpectsReply does.
-	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
+	ExpectsReply ExpectsAsSpoken `json:"expects_reply,omitzero"`
 	Holder       string          `json:"holder,omitempty"`
 	HolderState  SessionState    `json:"holder_state,omitempty"`
 	Kept         bool            `json:"kept,omitempty"`

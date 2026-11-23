@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -152,10 +151,10 @@ type roleSend struct {
 	// holders this send's answers may name (edgeScope.holderConfirmed).
 	scope *edgeScope
 	item  contracts.Envelope
-	// expectsReply is the expects_reply this send's answers write (expectsReplyAnswer, api.go):
-	// the request's own bytes, whichever of the field's spellings it wrote. The envelope the
-	// holder is forwarded is untouched by it, and carries the parsed value.
-	expectsReply json.RawMessage
+	// expectsReply is the expects_reply this send's answers write (validateMessageBody, api.go):
+	// the request's own, as the request spelled it. The envelope the holder is forwarded is
+	// untouched by it, and carries its value.
+	expectsReply listenerwire.ExpectsAsSpoken
 	role         string
 	// keep is the request's keep field as the route read it, true when it set none: whether
 	// this send's give-up keeps the message for the role's next holder (noHolder). It is the
@@ -468,12 +467,12 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
 // none outlasts it: a send whose window ends is answered 504, unless its last forward ended while
 // an earlier forward under its Nats-Msg-Id was still in process, which is the 503 maybe_stored
-// (windowEnded). expectsReply is the expects_reply its answers write (expectsReplyAnswer, api.go),
+// (windowEnded). expectsReply is the expects_reply its answers write (validateMessageBody, api.go),
 // the request's own dialect; the envelope this send forwards and keeps carries the envelope's own
 // value. scope is the edge's scope of the request, nil on every other listener: an answer names
 // only a holder it shows (edgeScope.holderConfirmed), and the send forwards to the holder whatever
 // it names. warnings is what its 200 and 202 name of the topic's old form.
-func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time, warnings []string) {
+func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply listenerwire.ExpectsAsSpoken, role string, keep bool, arrived time.Time, warnings []string) {
 	send := &roleSend{w: w, record: record, d: d, ctx: ctx, scope: scope, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived, warnings: warnings}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
