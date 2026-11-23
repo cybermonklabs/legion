@@ -93,6 +93,10 @@ func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *test
 
 	held := service.srv.GetDoc(artifactID)
 	var replaced atomic.Bool
+	// The hook runs inside the settlement, which it lets go on whatever it finds, so it records a
+	// room that never closes rather than ending the test. Its wait sets no span of its own: its one
+	// bound is the test binary's deadline less roomWaitMargin, read here on the test's goroutine.
+	giveUp := time.Now().Add(testwait.Remaining(t, roomWaitMargin))
 	service.afterSettleReconcile = func(room string) {
 		if room != artifactID || !replaced.CompareAndSwap(false, true) {
 			return
@@ -100,10 +104,9 @@ func TestSettlementWhoseRoomWasReplacedLeavesTheDocumentToTheReplacement(t *test
 		// This raw ygo close stands in for the idle sweep, which can evict the idle room between
 		// settlement's read and repair because no Server.Apply holds it then.
 		go func() { _ = service.srv.Server.CloseRoom(room, true) }()
-		deadline := time.Now().Add(5 * time.Second)
 		for service.srv.GetDoc(room) == held {
-			if time.Now().After(deadline) {
-				t.Error("the room was never closed")
+			if time.Now().After(giveUp) {
+				t.Error("the room was never closed before the test binary's deadline")
 				return
 			}
 			time.Sleep(time.Millisecond)
@@ -402,8 +405,7 @@ func TestBackfillStoresNothingForAStampTheDocumentNoLongerNeeds(t *testing.T) {
 		tree.Children[0].Attrs[pmdoc.BlockIDAttr] = "marker"
 		return tree
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the room's updates to reach persistence: %v", err)
 	}
@@ -479,13 +481,16 @@ func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 		}
 		return struct{}{}, queued
 	})
+	// A settlement that met a cycle through the document's lock would hold the cleanups that shut
+	// the service down, so a failed test ends the sessions holding that lock first.
+	t.Cleanup(func() {
+		if t.Failed() {
+			endRoomLockHolders(t, service)
+		}
+	})
 	pause.let()
-	select {
-	case <-settled:
-	case <-time.After(recoveryBound):
-		endRoomLockHolders(t, service)
-		t.Fatal("deadlock: the settlement never returned once its room failed under its commit")
-	}
+	// A settlement deadlocked under its commit never returns, so the wait sets no span of its own.
+	testwait.Receive(t, "the settlement to return once its room failed under its commit", settled)
 	awaitRecovered(t, service, artifactID)
 
 	requireNextSettlementStamps(t, service, artifactID, "before\n\nadded\n")
@@ -557,21 +562,18 @@ func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.
 			}()
 			// The room's persistence worker takes the second commit and waits there for the
 			// repair's slot, which the repair's commit, still held, has yet to reach.
-			waitFor(t, 10*time.Second, "the second writer's commit to reach the room's persistence", func() bool {
+			waitUntil(t, "the second writer's commit to reach the room's persistence", func() bool {
 				return goroutinesIn("consumeSuppressedPersistence") > 0
 			})
 			pause.let()
+			// A step deadlocked under the repair's commit never returns, so each wait sets no span
+			// of its own; the cleanup above then releases the suppression slots and the lock
+			// holders that would hold the test's shutdown.
 			for _, step := range []struct {
 				name string
 				done <-chan struct{}
 			}{{"the settlement", settled}, {"the second writer", written}, {"the room's close", closed}} {
-				select {
-				case <-step.done:
-				case <-time.After(10 * time.Second):
-					service.purgeSuppressedPersistence(artifactID)
-					endRoomLockHolders(t, service)
-					t.Fatalf("deadlock: %s never returned once the room closed under the settlement's repair commit", step.name)
-				}
+				testwait.Receive(t, step.name+" to return once the room closed under the settlement's repair commit", step.done)
 			}
 			if closeErr != nil || writeErr != nil {
 				t.Fatalf("close = %v, second writer = %v", closeErr, writeErr)
@@ -597,8 +599,7 @@ func owedStamp(t *testing.T, service *Service, artifactID string) uint64 {
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "added"))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the edit to reach persistence: %v", err)
 	}
@@ -624,7 +625,8 @@ func requireNextSettlementStamps(t *testing.T, service *Service, artifactID, wan
 }
 
 // settleUnderPause runs the room's settlement at generation and returns, with the channel the
-// settlement closes when it returns, once pause holds its stamp's commit.
+// settlement closes when it returns, once pause holds its stamp's commit. The wait for that commit
+// sets no span of its own (testwait.Until).
 func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, artifactID string, generation uint64) <-chan struct{} {
 	t.Helper()
 	t.Cleanup(pause.let)
@@ -634,12 +636,18 @@ func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, 
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
 	}()
-	select {
-	case <-pause.held:
-	case <-settled:
+	committed := testwait.Until(t, "the settlement to commit into the room", func() (bool, bool) {
+		select {
+		case <-pause.held:
+			return true, true
+		case <-settled:
+			return false, true
+		default:
+			return false, false
+		}
+	})
+	if !committed {
 		t.Fatal("the settlement returned without committing into the room")
-	case <-time.After(10 * time.Second):
-		t.Fatal("the settlement never committed into the room")
 	}
 	return settled
 }
@@ -669,23 +677,32 @@ func closeWaitsForRepair() bool {
 }
 
 // awaitCloseWaitingForRepair blocks until a close the service makes of the room waits for the
-// paused repair's commit (closeWaitsForRepair), failing at once if the close returns first, and
-// otherwise only after a ceiling no ordering of the close's own waits reaches - Shutdown's close
-// comes after its own settlement of the room has waited, up to its drain budget, for the document
-// lock the paused repair holds. On the ceiling it reports where the service's goroutines stand and
-// what the database's sessions wait on, so a close held up elsewhere names what held it.
+// paused repair's commit (closeWaitsForRepair), failing at once if the close returns first. The
+// wait sets no span of its own - Shutdown's close comes only after its own settlement of the room
+// has waited, up to its drain budget, for the document lock the paused repair holds, and a loaded
+// machine stretches that further - and its one bound is the test binary's deadline less
+// roomWaitMargin. There it reports where the service's goroutines stand and what the database's
+// sessions wait on, so a close held up elsewhere names what held it.
 func awaitCloseWaitingForRepair(t *testing.T, service *Service, closed <-chan struct{}) {
 	t.Helper()
-	ceiling := time.After(ShutdownDrainBudget + 2*time.Minute)
-	for !closeWaitsForRepair() {
+	returned := false
+	if !testwait.Holds(testwait.Remaining(t, roomWaitMargin), 10*time.Millisecond, func() bool {
+		if closeWaitsForRepair() {
+			return true
+		}
 		select {
 		case <-closed:
-			t.Fatal("the room's close returned without waiting for the repair's commit")
-		case <-ceiling:
-			describeCloseWait(t, service)
-			t.Fatal("the room's close never waited for the repair's commit")
-		case <-time.After(10 * time.Millisecond):
+			returned = true
+			return true
+		default:
+			return false
 		}
+	}) {
+		describeCloseWait(t, service)
+		t.Fatal("the room's close never waited for the repair's commit before the test binary's deadline")
+	}
+	if returned {
+		t.Fatal("the room's close returned without waiting for the repair's commit")
 	}
 }
 
@@ -809,23 +826,20 @@ func appendUnidentifiedBlocks(t *testing.T, markdown string) func(*pmdoc.Node) *
 }
 
 // requireNoSuppressedSlots waits for the room's persistence worker to consume every suppression
-// slot queued for room. A slot still queued at the deadline is released before the test fails,
+// slot queued for room. The wait sets no span of its own: its one bound is the test binary's
+// deadline less roomWaitMargin, and a slot still queued there is released before the test fails,
 // so the worker it holds lets the test's shutdown finish.
 func requireNoSuppressedSlots(t *testing.T, service *Service, room, when string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for {
+	queued := 0
+	if !testwait.Holds(testwait.Remaining(t, roomWaitMargin), 5*time.Millisecond, func() bool {
 		service.suppressMu.Lock()
-		queued := len(service.suppressed[room])
-		service.suppressMu.Unlock()
-		if queued == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			service.purgeSuppressedPersistence(room)
-			t.Fatalf("%s: %d suppression slots still queued for the room", when, queued)
-		}
-		time.Sleep(5 * time.Millisecond)
+		defer service.suppressMu.Unlock()
+		queued = len(service.suppressed[room])
+		return queued == 0
+	}) {
+		service.purgeSuppressedPersistence(room)
+		t.Fatalf("%s: %d suppression slots still queued for the room at the test binary's deadline", when, queued)
 	}
 }
 
