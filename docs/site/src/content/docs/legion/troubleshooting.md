@@ -843,6 +843,17 @@ Your own requests are what
 drop it — a resume, a retry or a task you send that claim is run at once, taking the reserved wake
 back, so nothing you ask for waits for a turn.
 
+A claim whose process the daemon found dead before the restart is on that list as well.
+Its record says the death was charged, and the boot raises the relaunch that death raised again, in
+the restart's own wave beside the launches the previous daemon did not finish, without waiting for
+the runtime to report the death a second time.
+Until its turn, such a claim reads the state it was in when its process died, most often `working`
+or `shim_connected`, with `lastDeathCause` naming the death (after an issue pod's `roles` container
+was killed for memory and restarted, `launcher reports no child; container roles restarted`), and
+its `wake` names the launch it waits for.
+The controller's `fresh_session` refuses such a claim with `CLAIM_UNSETTLED` for that reason: its
+launch is already in flight, and runs at the `dueAt` the list names.
+
 After a boot onto a new plugin contract, the wakes alone understate the wave: the stale-plugin
 lane holds at most one minute of the pacing at a time, so what it has reserved is a minute's
 worth and what it has left is `.claimsToRefresh` of the same body.

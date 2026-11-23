@@ -1120,6 +1120,33 @@ func TestTheRegistrationDeadlineOfADeadProcessIsNotFiredWhileItsRelaunchWaits(t 
 	h.wantStarts(h.token, 2)
 }
 
+// The boot's replay of a recorded death (RecordedDeath) raises no second relaunch over a claim
+// whose death the sweep already decided: at boot the runtime's first report can reach a machine
+// before the replay does — a pod that is gone reads gone at once — and that report raised the
+// relaunch the record names. A second launch raised over a waiting wake replaces it and takes a
+// token of its own at the back of the queue (reserveWake), so the replay must find the launch
+// already raised and decide nothing (relaunchRecordedDeath, launchMet).
+//
+// The negative control is that guard reverted: the replay then reserves again and the claim's
+// wake moves to a later turn, which wantWakeDueAt reads.
+func TestARecordedDeathWhoseReportCameFirstTakesNoSecondWake(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateReady)
+	queueAhead(h, 1)
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	if !h.claim().DeathCharged {
+		t.Fatal("the claim records no charge for the death the sweep decided, want DeathCharged: the boot's replay reads it")
+	}
+
+	h.must(RecordedDeath{Claim: h.token, Generation: h.claim().Generation})
+
+	h.wantWakeDueAt(waiting)
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	h.wantStarts(h.token, 1)
+}
+
 // Nothing probes the process a waiting launch replaces, so no probe interval ever falls inside
 // the wait. The probe interval was the one of the four timers that could still be armed there:
 // the park disarms the others (parkWake), and a closed connection whose probe the runtime could

@@ -431,17 +431,19 @@ type Claim struct {
 	// reported twice is ProcessGone's two windows above.
 	//
 	// It is durable, and it is the one of these marks that is: a restart restores the claim a
-	// refused or parked relaunch left standing over its dead process, and the sweep's first
-	// report of that process after the restart is the second report of a death this record
-	// says was charged. Charged a second time, the one death walks the claim to the deaths
-	// limit and fails the worker for one dead process, in the very window the claim is waiting
-	// to be relaunched out of — the window both recovery doors reach it in, the fresh session
-	// by stopping it and starting it again (api's refuseWorkingClaim, freshSession). Every
-	// write of it is made where the decision it records is made, because the windows that leave
-	// such a claim are the windows where nothing else writes the claim at all: died writes the
-	// charge with the count it charged, and the report that finds the process running again
-	// writes the clear (judge, reportedProcess). The read a recovery makes of the process records
-	// what it finds as such a report does, and writes that clear in the same write (ReadProcess).
+	// refused or parked relaunch left standing over its dead process, and the boot reads this
+	// record to raise that relaunch again at once (RecordedDeath, relaunchRecordedDeath), rather
+	// than wait for the sweep's next report of the process, which is the second report of a
+	// death this record says was charged. Charged a second time, the one death walks the claim
+	// to the deaths limit and fails the worker for one dead process, in the very window the claim
+	// is waiting to be relaunched out of — the window both recovery doors reach it in, the
+	// fresh session by stopping it and starting it again (api's refuseWorkingClaim,
+	// freshSession). Every write of it is made where the decision it records is made, because
+	// the windows that leave such a claim are the windows where nothing else writes the claim at
+	// all: died writes the charge with the count it charged, and the report that finds the
+	// process running again writes the clear (judge, reportedProcess). The read a recovery makes
+	// of the process records what it finds as such a report does, and writes that clear in the
+	// same write (ReadProcess).
 	//
 	// It is of the process the claim records, as ProcessGone is, and goes with it: letGo clears
 	// it with the process it is about, and the claim written there records no process for a
@@ -3662,10 +3664,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	if m.held != nil {
 		return m.endHeld(ctx, false, stopSent)
 	}
-	relaunch := func(ctx context.Context) error { return m.relaunchAfterFailure(ctx, CauseDied, ended) }
-	if m.endUncharged("died") {
-		relaunch = func(ctx context.Context) error { return m.launch(ctx, ended) }
-	}
+	relaunch := m.deathRelaunch(ended)
 	if m.claim.DeathCharged {
 		return relaunch(ctx)
 	}
@@ -3683,6 +3682,52 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
 	return errors.Join(m.persist(ctx), relaunch(ctx))
+}
+
+// deathRelaunch is the relaunch a death of the claim's process raises, ended being how that
+// process ended (endDied): the same session after one charged launch failure
+// (relaunchAfterFailure), or, for an end endUncharged charges nothing, through launch, which
+// charges no launch failure and waits no backoff. died raises it at every report of the death,
+// and relaunchRecordedDeath at the boot that finds the death recorded, so the two raise one
+// relaunch the same way.
+func (m *Machine) deathRelaunch(ended string) func(context.Context) error {
+	if m.endUncharged("died") {
+		return func(ctx context.Context) error { return m.launch(ctx, ended) }
+	}
+	return func(ctx context.Context) error { return m.relaunchAfterFailure(ctx, CauseDied, ended) }
+}
+
+// relaunchRecordedDeath is the RecordedDeath row: a boot finds the claim's record saying the
+// process it records died (Claim.DeathCharged), and raises again the relaunch that death raised,
+// which the restart lost with the memory it lived in (dispatch://INFRA-5472). It is the relaunch
+// the sweep's next report of the death would raise (died's charged branch), raised without
+// waiting for that report, which reaches an issue pod whose roles container restarted only once
+// its launcher has reconnected: by then the boot's wave holds the pacing, and a relaunch raised
+// then waits behind all of it. What the death ended was recorded, its task taken back and its
+// session stopped by the daemon that judged it, and its charge is written: so this charges no
+// death, takes nothing back and stops nothing, and the report that comes later decides nothing
+// while the relaunch waits (judge, launchWaits), or is fenced off once it has run (fence).
+//
+// It raises nothing over a claim whose record moved since the boot read it: a launch started the
+// next generation, or a report found the process running, which clears the charge
+// (reportedProcess). Nor over one that already holds a launch (launchMet: a wake, or the retry
+// relaunchLater holds), which is a report of the death decided first, nor over a suspension held
+// for the claim, which the report of the death ends where it lands (died, endHeld).
+func relaunchRecordedDeath(m *Machine, ctx context.Context, ev Event) error {
+	recorded := ev.(RecordedDeath)
+	switch {
+	case m.claim.Generation != recorded.Generation || !m.claim.DeathCharged || m.claim.Locator == nil:
+		m.log.Info("supervise: the claim's record moved on from the death the boot read; nothing is relaunched for it",
+			"generation", m.claim.Generation, "read", recorded.Generation, "deathCharged", m.claim.DeathCharged)
+		return nil
+	case m.launchMet() || m.held != nil:
+		m.log.Info("supervise: the recorded death already has its relaunch, or a held suspension that its report ends; the boot raises nothing",
+			"launchWaiting", m.launchMet(), "heldSuspension", m.held != nil)
+		return nil
+	}
+	m.log.Warn("supervise: relaunching a process the previous daemon found dead; its relaunch did not survive the restart",
+		"incarnation", m.claim.Locator.Incarnation, "generation", m.claim.Generation, "lastDeathCause", m.claim.LastDeathCause)
+	return m.deathRelaunch(endDied(m.claim.LastDeathCause))(ctx)
 }
 
 // endUncharged is whether the end of the claim's process is charged nothing, and it logs why
@@ -4627,6 +4672,8 @@ func claimOf(ev Event) claim.Token {
 	case Timer:
 		return ev.Claim
 	case StalePlugin:
+		return ev.Claim
+	case RecordedDeath:
 		return ev.Claim
 	case StallBackstop:
 		return ev.Claim

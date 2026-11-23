@@ -2092,9 +2092,10 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // after that reconciliation proves any pre-crash pane absent or reaped; a failed listing leaves it
 // launch_uncertain until the bounded retry succeeds. The relaunches run after hellos are
 // resolved, on a goroutine of their own, so start returns, and the API serves, without waiting for
-// any (relaunchUnfinished): every re-adopted claim on another plugin contract is posted its boot
-// stale-plugin relaunch first (refreshStalePlugins), over every one before any of them is
-// relaunched; a claim a refused attempt leaves stale is retried at the orphan sweep's own cadence
+// any (relaunchUnfinished): every re-adopted claim whose record says its process died is posted
+// that death's relaunch first (replayRecordedDeaths), and every re-adopted claim on another plugin
+// contract its boot stale-plugin relaunch (refreshStalePlugins), over every one before any of them
+// is relaunched; a claim a refused attempt leaves stale is retried at the orphan sweep's own cadence
 // from then on (reconcileOrphans), not just at this boot pass. A daemon that leaves the controller
 // to its operator first stops the controller's claim an earlier
 // boot under `controller: daemon` left (stopLaunchedController), which leaves it absent or
@@ -2186,6 +2187,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
+	s.replayRecordedDeaths(s.claims)
 	s.refreshStalePlugins(s.claims, "boot")
 	if len(unfinished) > 0 {
 		s.relaunchUnfinished(unfinished, reconciled)
@@ -2236,6 +2238,41 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 	if found > 0 {
 		s.log.Info("supervise: an earlier daemon left these claims in a plugin update round; this boot takes each of them out of it",
 			"claims", found)
+	}
+}
+
+// replayRecordedDeaths posts supervise.RecordedDeath to every restored live claim whose record
+// says the process it records died (supervise.Claim.DeathCharged): the daemon before this one
+// judged that process gone and charged its death, and the relaunch it raised lived in its memory
+// alone, a wake the pacing parked or a retry, which the restart lost (dispatch://INFRA-5472). The
+// machine raises that relaunch again where the post lands, so it enters the pacing beside the
+// unfinished launches this boot relaunches (relaunchUnfinished), rather than when the runtime
+// next reports the death: in a pod that lives on — its roles container restarted — that report
+// waits for the pod's launcher to reconnect, a probe interval after boot, which put every such
+// relaunch behind the whole of the boot's wave.
+//
+// It runs before the stale-plugin pass, and one machine's inbox is FIFO, so a dead claim that is
+// also stale is relaunched for its death, and the StalePlugin posted behind this finds the launch
+// already raised and raises none (supervise's refreshPlugin returns over a claim that holds a
+// wake). It reads the claims as the boot restored them; the machine reads its own record again
+// before it acts, so a claim that moved since raises nothing (supervise's relaunchRecordedDeath).
+//
+// One line is written for the pass with the number of claims it posted, and none when it posted
+// none, which is every boot that follows no death.
+func (s *supervision) replayRecordedDeaths(claims []supervise.Claim) {
+	live := supervise.LiveStates()
+	posted := 0
+	for _, c := range claims {
+		if !c.DeathCharged || c.Locator == nil || !slices.Contains(live, c.State) {
+			continue
+		}
+		if s.supervisor.post(c.Token, supervise.RecordedDeath{Claim: c.Token, Generation: c.Generation}) {
+			posted++
+		}
+	}
+	if posted > 0 {
+		s.log.Info("supervise: the previous daemon found these claims' processes dead and their relaunches waiting; this boot raises each relaunch again",
+			"claims", posted)
 	}
 }
 
