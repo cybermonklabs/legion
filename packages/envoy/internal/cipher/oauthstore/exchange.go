@@ -734,7 +734,9 @@ func (s *Store) PodSessionRegistered(ctx context.Context, podUID, session, jkt s
 //
 // A name exchange.ValidSession refuses is one the registration route never wrote a row of, so it
 // is dropped as matching nothing rather than refused, and a name given twice matches the same
-// rows. With no name left it reads nothing and answers 0. The filter is also what keeps a NUL
+// rows. (A row a build before ValidSession refused '*' and '>' wrote under such a name is not
+// released here; its registrar's next renewal of it is refused, and it ends at its expiry.) With
+// no name left it reads nothing and answers 0. The filter is also what keeps a NUL
 // byte out of the query: JSON's \u0000 decodes to one, ValidSession refuses it as unprintable,
 // and Postgres refuses it in text (invalid byte sequence for encoding "UTF8": 0x00), so without
 // the filter a release naming it would fail, and the route would answer 500.

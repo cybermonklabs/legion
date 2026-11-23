@@ -1,0 +1,6 @@
+kind: Removed
+body: |-
+  The exec form's `--github-owner`, `--github-repo`, `--github-read-only` and `--github-token`:
+  each exits 2, sends nothing, and names what replaces it, a GitHub profile narrowed with
+  `--target`. The client no longer sends the `github_app` request field, and no longer sends a
+  request again after `INVALID_REQUEST`.

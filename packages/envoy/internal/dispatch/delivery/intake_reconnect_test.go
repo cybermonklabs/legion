@@ -273,8 +273,8 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 	holderFetches, releaseHolder, holderGitHub := writingGitHub(t, true)
 	keeperFetches, _, keeperGitHub := writingGitHub(t, false)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
-	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 
 	runIntake(t, holder)
 	waitFor(t, 30*time.Second, func() bool {
@@ -511,8 +511,8 @@ func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *c
 	holderFetches, holderHeld, holderGitHub := holderFakeGitHub(t, holderFake)
 	keeperFetches, keeperGitHub := countingGitHub(t)
 	holderLeases := &cuttableLeases{pool: deliveryTestLeases(t, pool)}
-	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
-	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	holder := newIntake(holderClient, pool, holderLeases, holderGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	keeper := newIntake(keeperClient, pool, deliveryTestLeases(t, pool), keeperGitHub, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 
 	// The holder goes first and has the durable before the keeper starts, so the row knows whose
 	// connection to drop. Its own subscription is waited for as well as the server's PushBound:

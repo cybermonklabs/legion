@@ -93,9 +93,10 @@ const (
 // none of them back. The role-message lane runs the kinds the daemon addresses to one role of
 // the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
 // the message that tells the merger its pull request left the merge queue (merge_queue_removal),
-// the messages of a merge forward, which go to the implementer and to the worker of the phase the
-// issue stays in (merge_forward), and an update round's ask, which goes to any role whose process
-// runs in the issue's pod, its architect included (update_ask). It also runs the two reads of
+// the messages of a merge forward, which go to the role asked to merge (MergeForwardAsker) and to
+// the worker of the phase the issue stays in (merge_forward), and an update round's ask, which
+// goes to any role whose process runs in the issue's pod, its architect included (update_ask).
+// It also runs the two reads of
 // GitHub that come before a message: the read before a merge-queue removal's message
 // (merge_queue_read), and the second read of a head a first read found conflicting, whose
 // confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
@@ -966,6 +967,15 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
 //
+// A memory-guard-kill notice names one of the controller's own programs that the memory guard of
+// the controller's pod ended with SIGKILL because the pod was near its memory limit. Its issue is
+// the project key, as a tick's is, its Role is the controller, and its Reason names the process,
+// its pid, its size, the pod's reading and the limit, with none of the process's arguments, and
+// says what to run instead (workflow's controllerMemoryGuardKill). Each kill is a row of its own,
+// written by the workflow in the kill's own fact and never through admit.Admission.wakeController,
+// whose rule keeps one unsent notice per kind: two kills are two programs ended, and the second
+// must not be dropped behind the first.
+//
 // A project-paused notice tells the controller that the operator paused its project, and a
 // project-resumed notice that the operator resumed it (decision 24 of dispatch://INFRA-3759). Its
 // issue is the project key, and its Pause names who acted, when, and why: the pause's reason, or
@@ -992,6 +1002,7 @@ const (
 	ProviderErrorsNotice   NoticeKind = "provider-errors"
 	TreeStalledNotice      NoticeKind = "tree-stalled"
 	ArchitectStalledNotice NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
 	ProjectPausedNotice    NoticeKind = "project-paused"
 	ProjectResumedNotice   NoticeKind = "project-resumed"
 	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
@@ -1085,8 +1096,10 @@ type ArchitectStall struct {
 // as the first tree's waited in the outbox, and no pass could tell the controller of it until
 // that first notice was published.
 //
-// Every other kind says something about the project — a free slot, a todo issue, the day's tick
-// — which one wake carries however many facts find it pending.
+// Every other kind that wakeController queues says something about the project — a free slot, a
+// todo issue, the day's tick — which one wake carries however many facts find it pending. A
+// memory-guard-kill notice never passes through that rule: the workflow writes one row for each
+// kill.
 func NoticePerClaim(kind NoticeKind) bool {
 	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }
@@ -1830,7 +1843,8 @@ func (ConflictConfirm) OutboxKind() OutboxKind { return OutboxKindConflictConfir
 type MergeForwardStep string
 
 const (
-	// MergeForwardAsk asks the implementer to merge the base forward onto the head and push.
+	// MergeForwardAsk asks the role the daemon asks (MergeForwardAsker), the implementer before
+	// merging and the merger in merging, to merge the base forward onto the head and push.
 	MergeForwardAsk MergeForwardStep = "ask"
 	// MergeForwardHold tells the worker of the phase the issue stays in, when that is the
 	// tester, the reviewer or the merger, to stop writing the workspace while the merge runs.
@@ -1843,11 +1857,15 @@ const (
 )
 
 // mergeForwardRoles is the roles each step of a merge forward may go to: the ask to the
-// implementer, whose merge it is; the hold and the landed to a worker of the phase the issue
-// stays in that is neither the implementer, whom the ask tells, nor the architect, whom the
-// checks-red notice tells; and the review to the reviewer.
+// implementer or the merger, whose merge it is (MergeForwardAsker, which only in merging names
+// the merger); the hold to a worker of the phase the issue stays in that is neither the role
+// asked, whom the ask tells, nor the architect, whom the checks-red notice tells; the landed to the
+// worker of that phase, the merger included, which in merging made the merge and learns from it
+// to merge only once the reviewer approved the new head; and the review to the reviewer. The hold
+// still lists the merger, which a daemon before cybermonklabs/legion#4979 held in merging while it
+// asked the implementer, so a row that daemon queued is still read after the upgrade.
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
-	MergeForwardAsk:    {claim.RoleImplementer},
+	MergeForwardAsk:    {claim.RoleImplementer, claim.RoleMerger},
 	MergeForwardHold:   {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
 	MergeForwardLanded: {claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
 	MergeForwardReview: {claim.RoleReviewer},
@@ -1862,9 +1880,10 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
 // dispatch://INFRA-4374 R1) to one role of the issue, on that role's own Envoy topic. The daemon
-// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer
-// to merge Base forward onto Head in the issue workspace and push (MergeForwardAsk), and tells the
-// worker of the phase the issue stays in to stop writing that workspace while the merge runs
+// acts on a confirmed conflict without moving the issue out of its phase: it asks the implementer,
+// or in merging the merger (MergeForwardAsker, cybermonklabs/legion#4979), to merge Base forward onto
+// Head in the issue workspace and push (MergeForwardAsk), and tells the worker of the phase the
+// issue stays in, where that is another role, to stop writing that workspace while the merge runs
 // (MergeForwardHold). Once a new head lands it tells that worker so (MergeForwardLanded), and asks
 // the reviewer of an issue past its review to read the merge (MergeForwardReview).
 //
@@ -1913,11 +1932,14 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // plain, one instruction to a sentence, because an agent reads them (ASD-STE100).
 //
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
-// the daemon acted, and tells the implementer to merge the base forward in the issue workspace,
-// the one workspace every role of the issue shares, as the worker skill's conflicts reference
-// says, after the working-copy check of its foreign-path reference, and to push the issue branch,
-// with no handoff and no completion for the merge. In implementing it also says that the
-// implementer's own assignment and its completion stand: the act starts no phase entry there.
+// the daemon acted, and tells the role asked (the implementer, or in merging the merger) to merge
+// the base forward in the issue workspace, the one workspace every role of the issue shares, as
+// the worker skill's conflicts reference says, after the working-copy check of its foreign-path
+// reference, and to push the issue branch, with no handoff and no completion for the merge. In
+// implementing it also says that the implementer's own assignment and its completion stand: the
+// act starts no phase entry there. To the merger it also says that the merge is its own to
+// resolve and that the reviewer is asked to approve the head it pushes (cybermonklabs/legion#4979);
+// the landed, which comes when that matters, is what holds its merge to that approval.
 //
 // The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
@@ -1926,10 +1948,11 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // its session and its turn's jobs, that it is told the new head when it lands, and that a result
 // it recorded at the old head stays a result of the old head.
 //
-// The landed names both heads and how to read what changed: `git diff` from the old head to the
-// new, and, for a merge of the base, `git show --remerge-diff` for how the merge resolved the
-// conflict and `git diff --stat` against the merge's first parent for the files the base brought
-// in. Then the worker goes on at the new head. To the merger in merging it also says to merge the
+// The landed names both heads and how to read what changed (readMerge): for a merge of the base,
+// `git show --remerge-diff` for how the merge resolved the conflict and `git diff --stat` against
+// the merge's first parent for the files the base brought in, and for any other new head `git
+// diff` from the old head to the new. Then the worker goes on at the new head. To the merger in
+// merging it also says to merge the
 // pull request or put it in the merge queue at the new head only once the reviewer's approval of
 // that head is on the pull request: in merging the landing asks the reviewer for that review, and
 // the merger's task says the same (workflow's task). The review names both heads and the phase,
@@ -1943,15 +1966,19 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 	switch p.Step {
 	case MergeForwardAsk:
 		own := ""
-		if p.Phase == phase.Implementing {
+		switch {
+		case p.Phase == phase.Implementing:
 			own = " Your own assignment in implementing stands, and so does its completion."
+		case p.Role == claim.RoleMerger:
+			own = " The merge and its conflict are yours to resolve, as your role says." +
+				" When your merge lands, the daemon asks the reviewer to read it and approve the new head."
 		}
 		return fmt.Sprintf("%s: %s at head %s conflicts with its base branch %s, and a second read of GitHub confirmed it."+
 			" The issue stays in %s. %s"+
 			" Merge %s forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace."+
 			" First do the working-copy check of skill://legion-worker/references/foreign-path.md."+
 			" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
-			" Write no handoff and make no completion for this merge.%s",
+			" Write no handoff and make no completion for this forward merge.%s",
 			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
 	case MergeForwardHold:
 		merger := ""
@@ -1974,12 +2001,12 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 			" The issue stays in %s. Read what changed since the old head: %s Then go on with your work at the new head.%s",
 			issue, p.Base, pull, p.Head, p.Landed, p.Phase, p.readMerge(), merge)
 	default: // MergeForwardReview, the one step left: validateOutboxPayload admits no other.
-		tell := "the architect, on its role topic"
+		tell := "the architect, on its role topic,"
 		switch p.Phase {
 		case phase.Retro:
-			tell = "the architect and the implementer, each on its own role topic"
+			tell = "the architect and the implementer, each on its own role topic,"
 		case phase.Merging:
-			tell = "the architect and the merger, each on its own role topic"
+			tell = "the architect and the merger, each on its own role topic,"
 		}
 		return fmt.Sprintf("%s: the merge of %s forward landed on %s, and the issue stands in %s. The old head is %s, and the new head is %s."+
 			" Read what the merge changed since the old head: %s"+
@@ -1990,13 +2017,14 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 }
 
 // readMerge is how the landed and the review tell their role to read what a landed merge forward
-// changed (Message): `git diff` from the old head to the new, and, for a merge of the base,
-// `git show --remerge-diff` and `git diff --stat` against the merge's first parent.
+// changed (Message): for a merge of the base, `git show --remerge-diff` for how the merge resolved
+// the conflict, which is what the reviewer reads (cybermonklabs/legion#4979), and `git diff --stat`
+// against the merge's first parent for the files the base brought in; for any other new head,
+// `git diff` from the old head to the new, whose diff holds the base's own changes too.
 func (p MergeForwardMessage) readMerge() string {
-	return fmt.Sprintf("run `git diff %s %s`."+
-		" For a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
-		" and `git diff --stat %s^1 %s` lists the files the base brought in.",
-		p.Head, p.Landed, p.Landed, p.Landed, p.Landed)
+	return fmt.Sprintf("for a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
+		" and `git diff --stat %s^1 %s` lists the files the base brought in; for any other new head, run `git diff %s %s`.",
+		p.Landed, p.Landed, p.Landed, p.Head, p.Landed)
 }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at
@@ -2536,10 +2564,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a merge-forward message is an ask, a hold, a landed or a review; %q is none of them", value.Step)
 		}
 		if !MergeForwardReaches(value.Step, value.Role) {
-			return fmt.Errorf("a merge-forward ask goes to the implementer, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
+			return fmt.Errorf("a merge-forward ask goes to the implementer or the merger, a hold or a landed to the tester, the reviewer or the merger, and a review to the reviewer; a %s to %q is none of these", value.Step, value.Role)
 		}
 		if value.Head == "" || value.Base == "" || value.Phase == "" || value.PullRequest < 1 {
 			return fmt.Errorf("a merge-forward message names the head, the base branch, the phase the issue stays in and the pull request; it names %q, %q, %q and #%d", value.Head, value.Base, value.Phase, value.PullRequest)
+		}
+		// The merger is asked only where MergeForwardAsker names it, in merging. The implementer's ask
+		// is valid in every phase, so a row a daemon before cybermonklabs/legion#4979 queued past the
+		// review still reads.
+		if value.Step == MergeForwardAsk && value.Role == claim.RoleMerger && MergeForwardAsker(value.Phase) != claim.RoleMerger {
+			return fmt.Errorf("a merge-forward ask goes to the merger only while the issue stands in merging; this one names %q", value.Phase)
 		}
 		landing := value.Step == MergeForwardLanded || value.Step == MergeForwardReview
 		if landing != (value.Landed != "") {
@@ -2728,8 +2762,8 @@ func validateNoticeGiveUps(kind NoticeKind, role claim.Role, count int, giveUps 
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
-		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, ProjectPausedNotice, ProjectResumedNotice,
-		IntakeGaveUpNotice:
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice, ArchitectStalledNotice, MemoryGuardKillNotice,
+		ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
 		return true
 	default:
 		return false

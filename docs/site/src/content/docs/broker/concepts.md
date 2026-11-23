@@ -197,12 +197,12 @@ and a pod.
 | Source | What it is | Nothing for the caller (skipped) | Present but broken (stops the command) |
 | --- | --- | --- | --- |
 | `key-dir` | The `key.pem` and `enrollment` a launcher put in the key directory (`AGENT_SECRETS_KEY_DIR`, else `$XDG_RUNTIME_DIR/agent-secrets`): a box or a pod. | No `key.pem` there, and no `enrollment.pending` younger than 160 seconds. | A `key.pem` that does not parse, no `enrollment` beside it (with the launcher's `enrollment.error` when it left one), or a launcher still enrolling: a fresh `enrollment.pending` and no `key.pem` after `AGENT_SECRETS_ENROLL_WAIT`. |
-| `sign-in` | A person's `agent-secrets login` on this machine (`AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`). | Nobody has signed in on this machine. | Several people signed in and `AGENT_SECRETS_PERSON` names none of them, a record that does not parse, or a broker that refuses the sign-in. |
+| `sign-in` | A person's `agent-secrets login` on this machine (`AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`). | Nobody has signed in on this machine. Or this machine cannot renew the sign-in (no sign-in client, or another client than the person signed in with) and it holds no live enrollment: none in its record, or one the broker answers not live to a read signed with the sign-in's key, made only for such a sign-in. The command then says so on stderr, in one line ending `; using the <source> source` where a later source serves, or `; tried the <source> source next` before that source's own refusal. `renew` never passes a sign-in over: it reports the ended enrollment. | Several people signed in and `AGENT_SECRETS_PERSON` names none of them, a record that does not parse, or a broker that refuses the sign-in or the read of its enrollment. |
 | `helper` | `agent-secrets-helper`, for a caller inside a session `agent-secrets register` registered. The command asks the helper first, so a process that only inherited the socket goes on. | No socket file where no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset and no helper unit installed), or the helper answers `NOT_A_SESSION`. | A stopped helper: no socket file where `AGENT_SECRETS_HELPER_SOCK` names one or the helper's unit is installed (a clean stop removes the socket). A socket that does not answer, `NO_CREDENTIAL` (the machine is not logged in), or any other refusal. |
 | `machine` | The machine's own cloud identity, found with no setting (below), whose session the **machine cache** keeps: `$XDG_STATE_HOME/agent-secrets/machine` (`~/.local/state/agent-secrets/machine`), a 0700 directory holding `key.pem` and `enrollment`, each 0600. A cached session signs with no network call. | No cached session, and no identity found: no `external_account` credential, no metadata server, or a broker that names no exchange audience. | A cached session that does not parse, a credentials file that does not parse, an `AGENT_SECRETS_MACHINE_IDENTITY` missing one of its variables or set to `kubernetes`, a plain-http broker off loopback, a Google audience other than the one the machine first read, or any refusal of the broker's exchange. |
 
-A source that is present but broken, and any refusal of the broker's, stop the command with that
-error: the command never acts under the next identity in its place. With no source, one refusal
+A source that is present but broken, and any other refusal of the broker's, stop the command with
+that error: the command never acts under the next identity in its place. With no source, one refusal
 names each source and why it had nothing:
 `no broker identity for this process: key-dir: …; sign-in: …; helper: …; machine: …`.
 
@@ -986,7 +986,8 @@ The broker evaluates every name
   refuses a token holding a permission its request did not name, so the profiles file, at the boot
   and in `profiles check`, refuses a `github` block whose `permissions` leave `metadata` out or name
   it at any level but `read`. The values answer names each entry the cut left out
-  (`github_left_out`), and the broker logs one line for each. A cut that leaves no permission but
+  (`github_left_out`), the broker logs one line for each, and `agent-secrets` writes one line on
+  stderr for each account that names them. A cut that leaves no permission but
   `metadata`, of a profile that names more, refuses the release with no request to GitHub
   (`422 PROFILE_MINT_REFUSED`): every installation GitHub lists holds `metadata`, so that token
   would do nothing the profile is for, and GitHub gives every permission the installation holds
@@ -1029,12 +1030,15 @@ The broker evaluates every name
   hands the command a placeholder, and the proxy mints the profile's token itself, for the grant's
   target and with the same cut, keeps it until five minutes before it expires, and puts it in
   place of the placeholder only in the requests the block allows.
-  The exec form's `--github-token` narrows nothing: the release holds the
-  same JSON object of installations, and the flag decides what the exec form puts in the
-  command's environment. With it the name holds that one installation's token alone, which is
-  what a command sends to GitHub, and without it the name holds the whole object.
-  `--github-token` needs `--github-owner`, and nothing runs where the release holds other than
-  one installation or where no name of the grant released a github-app value. A Google login
+  The exec form puts a profile's release in the command's environment under the profile's name
+  as the broker hands it over: the JSON object of installations, or that one account's bare token
+  for a profile whose `github.value` is `token`, which is what a command sends to GitHub.
+  `agent-secrets NAME --target ACCOUNT -- command`, or one `--target ACCOUNT/REPOSITORY` for each
+  repository of one account, signs the target into the request and narrows a run of that one
+  name; the client refuses a target of two accounts, or a run of two names with a target, with
+  exit 2 before it sends anything. The release answers the grant's target as its `locations`, and
+  the client runs nothing, exiting 2, when a release does not answer the target its request
+  signed, as a broker from before `--target` releases the whole profile. A Google login
   value holds an `authorized_user` refresh-token credential. Its release returns a bare access
   token. A Google service-account value names one account,
   `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`, and its release returns a bare

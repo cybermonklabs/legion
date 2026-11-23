@@ -116,10 +116,12 @@ func newEdgeRepositories(brokerURL string, account ciphertoken.Account, projects
 	}
 }
 
-// newEdgeWithheldCounter registers envoy_edge_github_withheld_total.
+// newEdgeWithheldCounter registers envoy_edge_github_withheld_total, which counts every frame the
+// edge withholds: a GitHub frame by the repository rule, and any frame of a project the session's
+// token does not list (withheldProjectNotHeld, edge_frames.go).
 func newEdgeWithheldCounter(met *metrics.Registry) *metrics.Counter {
 	return met.NewCounter("envoy_edge_github_withheld_total",
-		"GitHub frames the edge listener acknowledged undelivered, by reason (not_in_project, answer_unknown)")
+		"Frames the edge listener withheld from a session, by reason: not_in_project and project_not_held acknowledged undelivered, answer_unknown acknowledged undelivered with its gap mark owed to the session's next frame")
 }
 
 // read asks the broker for project's repositories now, and keeps the answer when it is a whole
@@ -249,30 +251,28 @@ func (e *edgeRepositories) standing(projects []string) (repositories []string, c
 	return repositories, complete
 }
 
-// relayVerdict is whether the relay withholds a frame on subject, whose stored data is data, from
-// a session whose token lists projects, and why: a frame that is no GitHub event's is never
-// withheld; a GitHub event is relayed while a fresh answer of the session's projects names the
-// repository the event itself names (eventRepository), withheld not_in_project when the event
-// names none or once every one of those answers is fresh and none names it, and withheld
-// answer_unknown otherwise. The event's own repository decides, not the subject's tokens: a
-// subject writes a dot in a name as an underscore (contracts.SanitizeSubjectSegment), so acme/a.b
-// and acme/a_b publish on one subject, and an answer naming one must not admit the other's events.
-func (e *edgeRepositories) relayVerdict(projects []string, subject string, data []byte) (withhold bool, reason string) {
-	if !strings.HasPrefix(subject, contracts.GithubTopicPrefix) {
-		return false, ""
-	}
+// relayVerdict is whether the relay withholds a GitHub frame on subject, whose stored data is
+// data, from a session whose token lists projects, and why: its only caller (edgeFrameVerdict)
+// has already read that subject is a GitHub topic. The frame is relayed while a fresh answer of
+// the session's projects names the repository the event itself names (eventRepository), withheld
+// not_in_project when the event names none or once every one of those answers is fresh and none
+// names it, and withheld answer_unknown otherwise. The event's own repository decides, not the
+// subject's tokens: a subject writes a dot in a name as an underscore
+// (contracts.SanitizeSubjectSegment), so acme/a.b and acme/a_b publish on one subject, and an
+// answer naming one must not admit the other's events.
+func (e *edgeRepositories) relayVerdict(projects []string, subject string, data []byte) frameVerdict {
 	owner, name, named := eventRepository(data)
 	if !named {
-		return true, withheldNotInProject
+		return frameDrops(withheldNotInProject)
 	}
 	repositories, complete := e.standing(projects)
 	if repositoryNamed(repositories, owner, name) {
-		return false, ""
+		return framePasses()
 	}
 	if complete {
-		return true, withheldNotInProject
+		return frameDrops(withheldNotInProject)
 	}
-	return true, withheldAnswerUnknown
+	return frameAnswerUnknownVerdict()
 }
 
 // eventRepository is the owner and name of the repository a GitHub event names, data being its
