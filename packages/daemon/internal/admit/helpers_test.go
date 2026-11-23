@@ -447,20 +447,25 @@ func reconcile(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries
 	reconcileWithPosition(t, pool, admission, summaries, 1, 0, false)
 }
 
-func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries []dispatch.IssueSummary, target, ackFloorStream int64, idle bool) {
+// reconcileWithPosition applies summaries through Reconcile at target and the consumer's position,
+// and answers the keys Reconcile found older than an issue fact the daemon applied.
+func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries []dispatch.IssueSummary, target, ackFloorStream int64, idle bool) []string {
 	t.Helper()
 	position := intake.DispatchConsumerPosition{AckFloorStream: ackFloorStream, Idle: idle}
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
+	var refused []string
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		ctx, settle := intake.OpenSettlers(ctx, admission)
-		if err := admission.Reconcile(ctx, tx, listed, target, position); err != nil {
+		var err error
+		if refused, err = admission.Reconcile(ctx, tx, listed, target, position); err != nil {
 			return err
 		}
 		return settle(ctx, tx)
 	}); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
+	return refused
 }

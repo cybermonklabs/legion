@@ -34,10 +34,20 @@ const roleForwardDedupePrefix = contracts.RoleForwardDedupePrefix
 // (startRoleForward).
 const roleForwardTimeout = 2 * time.Second
 
-// exceptionPublishFailedLine is the line a delivery logs when its delivery exception could not be
-// published. The deployed publish-failure metric filter, which the deployment repository's
+// exceptionPublishFailedLine is the line a delivery logs at ERROR when its delivery exception could
+// not be published. The deployed publish-failure metric filter, which the deployment repository's
 // listener infrastructure defines, matches it exactly, so every site that logs it uses this constant.
 const exceptionPublishFailedLine = "listener exception publish failed"
+
+// exceptionPublishInProcessLine is the line a delivery logs at WARN, in place of
+// exceptionPublishFailedLine, when a clustered stream refused its delivery exception as still in
+// process under an earlier publish under the same message id (bus.ErrDuplicateInProcess):
+// another listener that raised the same exception from its own durable (publishDeliveryException)
+// is storing the one copy the stream keeps, so it is no failure the publish-failure alarm should
+// count, and that filter, matching exceptionPublishFailedLine at ERROR, does not. A failure still
+// clears the attempt where the outcome says so (exceptionFailureClearsAttempt), since that copy is
+// not stored yet.
+const exceptionPublishInProcessLine = "listener exception publish in process"
 
 func shouldNAKFanoutDelivery(sessionLive bool, err error) bool {
 	return err != nil && sessionLive
@@ -59,10 +69,15 @@ type listenerDeliveryHandlerConfig struct {
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
-	// storing it, which is what its wait returns nil for. The wait's bus.ErrForwardNotStored means
-	// the stream did not acknowledge storing it inside timeout; any other error — a raw
-	// nats.ErrTimeout from the flush included, returned by the publish or the wait — means the
-	// forward is not known to have left this process.
+	// storing it, which is what its wait returns nil for, a duplicate of an earlier forward under
+	// msgID included. The wait's error wraps errEarlierAttemptInProcess (earlierAttemptInProcess)
+	// when the stream refused a send of the forward as still in process under an earlier forward
+	// under msgID and timeout ended, or a later send failed, before an answer named that forward's
+	// copy: a forward under msgID reached the stream and may yet be stored, whether or not the
+	// error also wraps bus.ErrForwardNotStored. Otherwise the wait's bus.ErrForwardNotStored means
+	// the stream did not acknowledge storing it inside timeout, and any other error, returned by
+	// the publish (a raw nats.ErrTimeout from its flush included) or by the wait, means the forward
+	// is not known to have left this process.
 	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
 	// roleForwards runs the role lane's forwards off its handler (roleForwarder); every delivery
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
@@ -333,6 +348,9 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // judgement its transport takes too) then carries Nats-Msg-Id exception.<reason>.<origin>, so the
 // stream keeps one copy however many listeners raise it for that message, each from its own
 // durable, a lane only a newer build's subjects capture among them.
+// A clustered stream still storing another listener's copy refuses this one as still in process
+// under that publish (bus.ErrDuplicateInProcess), which applyDeliveryOutcome logs apart from a
+// failure (exceptionPublishInProcessLine).
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -435,7 +453,11 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 		if !cfg.edge.publishesException(item) {
 			cfg.edge.withhold(cfg.logger, item, outcome.exceptionReason)
 		} else if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
-			cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
+			if errors.Is(err, bus.ErrDuplicateInProcess) {
+				cfg.logger.Warn(exceptionPublishInProcessLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
+			} else {
+				cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
+			}
 			if outcome.exceptionFailureClearsAttempt {
 				cfg.attemptCache.Clear(item.DedupeKey, outcome.sessionID)
 			}

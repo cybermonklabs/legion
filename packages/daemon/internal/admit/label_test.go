@@ -281,7 +281,7 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 		// a daemon booted after the person's label — its consumer positioned past that event — does.
 		if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 			ctx, settle := intake.OpenSettlers(ctx, admission)
-			if err := admission.Reconcile(ctx, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
+			if _, err := admission.Reconcile(ctx, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
 				return err
 			}
 			return settle(ctx, tx)

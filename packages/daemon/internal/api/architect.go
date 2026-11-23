@@ -220,12 +220,10 @@ func (s *server) treeMembers(ctx context.Context, tree string) ([]record.Issue, 
 // ancestor the daemon has already accepted, naming the ancestor and what undoes the refusal.
 // Both routes say one sentence, because they refuse for one reason: a parent is accepted only once
 // no issue beneath it is still in the workflow, so nothing enters the workflow beneath an issue
-// already accepted. operation is what the caller would do again once the ancestor has closed. The
-// backward move it names is refused once the ancestor's pull request has merged (record.Accepted
-// holds merging, and merged work never moves back), so the sentence says so.
+// already accepted. operation is what the caller would do again once the ancestor has closed.
 func childUnderAcceptedParent(child, ancestor, operation string) string {
-	return fmt.Sprintf("%[1]s is beneath %[2]s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %[2]s now would let it merge a head that does not carry that work; %[3]s once %[2]s has closed, or take %[2]s back with a backward move first, unless the pull request of %[2]s has merged",
-		child, ancestor, operation)
+	return fmt.Sprintf("%s is beneath %s, whose own reviewed head the daemon has already accepted, and work entering the workflow beneath %s now would let it merge a head that does not carry that work; %s once %s has closed, where %s is not the tree's root",
+		child, ancestor, ancestor, operation, ancestor, ancestor)
 }
 
 // architectForIssue authorizes an architect's operation on a recorded issue of its tree, and

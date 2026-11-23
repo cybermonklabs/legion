@@ -204,7 +204,7 @@ func (issuePod) labels(project string, l launch) map[string]string {
 // claim that the Agent Sandbox controller makes from it (IssueClaimName), which the pod mounts.
 // The claim outlives the pod and goes with the Sandbox.
 //
-// Either claim is on the launch's class (diskSpec: a microVM pod's is the microVM block's).
+// Either claim is on the launch's class (diskSpec: a microVM issue pod's is the microVM block's).
 func (issuePod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
 	if l.keepsVolume() {
 		templates := keptVolumeTemplates(r.project, labelValue(l.spec.Issue), r.diskSpec(l))
@@ -331,9 +331,8 @@ func (issuePod) initVolumes(l launch) []corev1.Volume {
 // Linux refuses over a lower layer with mounts under it, and then binds each of them back at its
 // own path, but the shared config home, whose place gets the role's own copy of it
 // (launcher.ConfigHomeDir). The values the kubelet resolves are the same for every role (the
-// downward API's POD_UID), so they are set once. A microVM pod's launcher is told so (--microvm),
-// and, where the block names the metadata endpoint, is told the endpoint's pool and identity
-// provider and mounts the projected token it exchanges at WorkloadIdentityDir, under RolesDir,
+// downward API's POD_UID), so they are set once. A microVM pod's launcher is told so
+// (microVMLauncher), the metadata endpoint's token mounted at WorkloadIdentityDir, under RolesDir,
 // where no role's namespace shows it.
 func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	shared := []corev1.VolumeMount{
@@ -349,13 +348,9 @@ func (k issuePod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvV
 		flags = append(flags, "--test-postgres")
 		extra = append(extra, corev1.VolumeMount{Name: testPGVolume, MountPath: TestPGDir})
 	}
-	if l.microVM != nil {
-		flags = append(flags, "--microvm")
-		if endpoint := l.microVM.Metadata; endpoint != nil {
-			flags = append(flags, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
-			extra = append(extra, corev1.VolumeMount{Name: workloadIdentityTokenVolume, MountPath: WorkloadIdentityDir, ReadOnly: true})
-		}
-	}
+	microVMFlags, tokenMounts := microVMLauncher(l, WorkloadIdentityDir)
+	flags = append(flags, microVMFlags...)
+	extra = append(extra, tokenMounts...)
 	return r.rolesDirLauncher(k, l, resolved, providersMounts, shared, flags, extra)
 }
 
@@ -409,6 +404,23 @@ func (r *Runtime) rolesDirLayout(roles []claim.Role) (command []string, mounts [
 		}
 	}
 	return command, append(mounts, corev1.VolumeMount{Name: roleHomesVolume, MountPath: RoleHomesDir})
+}
+
+// microVMLauncher is what a pod's launcher of either kind is told of the microVM it runs in, and
+// what it mounts for it: nothing in gVisor (l.microVM nil); --microvm in a microVM; and, where the
+// block names the metadata endpoint, the endpoint's pool and identity provider, with the
+// projected token it exchanges mounted read-only at tokenDir, the kind's own place for it.
+func microVMLauncher(l launch, tokenDir string) (flags []string, mounts []corev1.VolumeMount) {
+	if l.microVM == nil {
+		return nil, nil
+	}
+	flags = []string{"--microvm"}
+	endpoint := l.microVM.Metadata
+	if endpoint == nil {
+		return flags, nil
+	}
+	flags = append(flags, "--metadata-workload-pool", endpoint.WorkloadPool, "--metadata-identity-provider", endpoint.IdentityProvider)
+	return flags, []corev1.VolumeMount{{Name: workloadIdentityTokenVolume, MountPath: tokenDir, ReadOnly: true}}
 }
 
 // mainVolumes is the role homes volume (roleHomesVolumes), and the test database's where the
@@ -531,7 +543,10 @@ func (issuePod) provision(ctx context.Context, r *Runtime, l *launch, s *sandbox
 // GitHub credential like any verdict-only role (appauth.AppRoleFor). Its pod runs no init
 // container: it provisions no workspace, and the sessions directory that was the last thing such a
 // container made on its volume is gone, its sessions now rows in the session database
-// (initContainers).
+// (initContainers). It runs in the project's sandbox (SandboxConfig.Controller, prepare): in a
+// microVM where the project's type is microvm, placed, labelled and told so as a microVM issue pod
+// is, and in gVisor otherwise, whatever the canary list says; its disk stays on
+// runtime.kubernetes.storage_class in either (diskSpec).
 type controllerPod struct{}
 
 func (controllerPod) roles() []claim.Role { return []claim.Role{claim.RoleController} }
@@ -562,7 +577,9 @@ func (controllerPod) labels(project string, _ launch) map[string]string {
 // which carry the project and the controller role and no tree: the controller belongs to none, and
 // the daemon's restricted identity has no PVC verb, so a label put on the claim at creation is the
 // label it keeps for life. The pod mounts the claim of its own Sandbox (IssueClaimName), the name
-// the Agent Sandbox controller gives the claim it makes from that template.
+// the Agent Sandbox controller gives the claim it makes from that template. The claim is on
+// runtime.kubernetes.storage_class whatever sandbox the pod runs in (diskSpec), so the launch that
+// moves the pod to another sandbox rebuilds the pod and keeps the Sandbox and its volume.
 func (controllerPod) disk(r *Runtime, l launch) ([]volumeClaimTemplate, corev1.VolumeSource) {
 	templates := []volumeClaimTemplate{{
 		Metadata: volumeClaimMetadata{Name: issueVolume, Labels: r.labels(l)},
@@ -588,12 +605,21 @@ func (controllerPod) initContainers(*Runtime, launch) []corev1.Container { retur
 // controller's own launcher token, private directory, state directory and gh volume mounted at the
 // fixed paths it reads them at, the gh volume read-only, its key directory and the broker's token
 // when the pod enrolls, beside the pod's volume, the config home, the providers and the operator's
-// mounts. Where it names one, the container runs the roles-dir form instead (rolesDirContainer).
+// mounts. A microVM pod's launcher is told so (microVMLauncher), the metadata endpoint's token
+// mounted at ControllerWorkloadIdentityDir, the single-role launcher's fixed path: the pod has no
+// role namespaces, so its agent can read the token too, which gives it no identity the endpoint
+// does not already serve it. The flags go before --stop-grace, as an issue pod's launcher's do.
+// Where the database names a writer audience, the container runs the roles-dir form instead
+// (rolesDirContainer).
 func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
 	if r.sessionWriterAudience() != "" {
 		return k.rolesDirContainer(r, l, resolved, providersMounts)
 	}
 	role := claim.RoleController
+	command := []string{
+		r.tools.Legion, "launcher", connectFlag, r.streamURL, "--token-file", LauncherDir + "/" + LauncherTokenFile,
+		"--sandbox", l.name, "--role", string(role), "--private-dir", LauncherPrivateDir,
+	}
 	mounts := []corev1.VolumeMount{
 		{Name: issueVolume, MountPath: TreeRoot},
 		{Name: roleVolume("launcher", role), MountPath: LauncherDir, ReadOnly: true},
@@ -602,14 +628,13 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 		{Name: configVolume, MountPath: xdgConfigHome},
 		{Name: roleVolume(ghVolume, role), MountPath: GHConfigDir, ReadOnly: true},
 	}
+	flags, tokenMounts := microVMLauncher(l, ControllerWorkloadIdentityDir)
+	command = append(command, flags...)
+	mounts = append(mounts, tokenMounts...)
 	return corev1.Container{
-		Name:  k.container(),
-		Image: r.image,
-		Command: slices.Concat([]string{
-			r.tools.Legion, "launcher", connectFlag, r.streamURL, "--token-file", LauncherDir + "/" + LauncherTokenFile,
-			"--sandbox", l.name, "--role", string(role), "--private-dir", LauncherPrivateDir,
-			"--stop-grace", r.terminationGrace.String(),
-		}, r.sessionProxyFlags()),
+		Name:            k.container(),
+		Image:           r.image,
+		Command:         slices.Concat(command, []string{"--stop-grace", r.terminationGrace.String()}, r.sessionProxyFlags()),
 		Env:             resolved,
 		WorkingDir:      l.workspace,
 		VolumeMounts:    slices.Concat(mounts, providersMounts, agentSecretsMounts(r.agentSecrets, role), r.pod.VolumeMounts),
@@ -627,15 +652,18 @@ func (k controllerPod) launcherContainer(r *Runtime, l launch, resolved []corev1
 // SessionWriterDir and the controller's launcher token are both under it, so the agent reads
 // neither. role-init binds the controller's own gh, private, state and agent-secrets key
 // directories back at the fixed paths the single-role form mounts them at, so this container
-// mounts nothing at those paths, and the agent sees each where it always has. The pod's volume, the
-// config home, the tokens (podTokenMounts), the providers and the operator's mounts are mounted
-// once, and every one of them at or under the image's home through homeMountsView, as in an issue
-// pod: both kinds build the container in rolesDirLauncher.
+// mounts nothing at those paths, and the agent sees each where it always has. A microVM pod's
+// launcher is told so (microVMLauncher), the metadata endpoint's token mounted at
+// WorkloadIdentityDir, under RolesDir, as an issue pod's is, where no role's namespace shows it.
+// The pod's volume, the config home, the tokens (podTokenMounts), the providers and the
+// operator's mounts are mounted once, and every one of them at or under the image's home through
+// homeMountsView, as in an issue pod: both kinds build the container in rolesDirLauncher.
 func (k controllerPod) rolesDirContainer(r *Runtime, l launch, resolved []corev1.EnvVar, providersMounts []corev1.VolumeMount) corev1.Container {
+	flags, tokenMounts := microVMLauncher(l, WorkloadIdentityDir)
 	return r.rolesDirLauncher(k, l, resolved, providersMounts, []corev1.VolumeMount{
 		{Name: issueVolume, MountPath: TreeRoot},
 		{Name: configVolume, MountPath: xdgConfigHome},
-	}, nil, nil)
+	}, flags, tokenMounts)
 }
 
 // mainVolumes are none beyond the controller's own in the single-role form: its launcher has no

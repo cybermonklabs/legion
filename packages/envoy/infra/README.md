@@ -184,13 +184,14 @@ refuses to reload them: a change of `sessionUser` (a changed `no_auth_user`); a 
 file store's limit, `maxFileStoreGb` given or derived (a lower `max_file_store` is refused, and a
 refused reload blocks every later one, a `users` change's included, until the server restarts);
 and, while `authCallout` is set, a change of the callout's lines (`core.Authorization.CalloutLines()`:
-the `auth_callout` block and the ping lines), which a change of `authCallout` or of the keys in
-`users`, a user added or removed among them, makes (`auth_users` lists every user's key).
+the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag), which a
+change of `authCallout`, of `privateProjects` or of the keys in `users`, a user added or removed
+among them, makes (`auth_users` lists every user's key).
 [A reload, not a replacement](docs/nats-hub.md#a-reload-not-a-replacement) says why a change of
-the ping lines, which nats-server would reload, rolls the pods too. The StatefulSet carries
-`config.kubernetes.io/depends-on` naming the chart's ConfigMap `<n>-config`, so Pulumi applies it
-only once the ConfigMap holding the new `nats.conf` and `auth.conf` is applied, and every restarted
-pod starts on them.
+the ping lines or the server tag, either of which nats-server can reload, rolls the pods too.
+The StatefulSet carries `config.kubernetes.io/depends-on` naming the chart's ConfigMap
+`<n>-config`, so Pulumi applies it only once the ConfigMap holding the new `nats.conf` and
+`auth.conf` is applied, and every restarted pod starts on them.
 
 ### Inputs
 
@@ -213,8 +214,8 @@ pod starts on them.
 | `metricsNamespaces` | `gmp-system`, `gke-gmp-system` | The namespaces admitted to the exporter's port, 7777, with the same rules: by default Google Managed Prometheus's, whose collectors run in `gmp-system` on a Standard cluster and in `gke-gmp-system` on Autopilot. |
 | `users` | none | The NATS server's nkey users, as `gcp:NatsHub`'s are (see [The hub's users](docs/nats-hub.md#the-hubs-users)). At least one is required unless the hub runs a session listener, which is a user of its own. |
 | `sessionUser` | unset | `name` and `nkey`, the user a client presenting no credential becomes, granted `SessionPermissions()`, as for `gcp:NatsHub`. |
-| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside a session listener, `listener` or `tailnet.listener`, and so beside `tailnet`, which always runs one: the listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block and the ping lines, so a change to `authCallout`, to the keys of `users` while it is set, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
-| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. |
+| `authCallout` | unset | The auth service's callout, a `nats:AuthCallout` (`issuer`, `xkey`, `serviceUser`, each required), as for `gcp:NatsHub` (see [The auth service](docs/nats-hub.md#the-auth-service)). Refused beside a session listener, `listener` or `tailnet.listener`, and so beside `tailnet`, which always runs one: the listener connects as a user with a stored seed until its service identity, with which it would connect through the auth service, arrives in a later change. Set, `auth.conf` ends with the ping lines, followed beside `privateProjects` by the server tag ([NATS authorization](#nats-authorization)), and `nats.conf`'s `cluster` block keeps the routes' ping at `ping_interval: "30s"` and `ping_max: 2` ([routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)). The hub pods' annotation `envoy-infra.sjawhar.dev/auth-callout` is the SHA-256 of `core.Authorization.CalloutLines()`, the `auth_callout` block, the ping lines and, beside `privateProjects`, the server tag, so a change to `authCallout`, to the keys of `users` while it is set, to `privateProjects`, or to the ping lines rolls the hub pods ([why](docs/nats-hub.md#a-reload-not-a-replacement)). A change of a user's grant alone does not roll them. Unset, the hub renders exactly what it rendered before callouts existed. |
+| `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. Set, the chart waits on the hub pods' NetworkPolicy, so no pod takes the server tag, by reload or by restart, before the policy that closes the monitoring port, 8222, is applied. Nothing orders its removal, so turn it off only after every project is public again, and give `monitorNamespaces` back only in a later apply, after the removal has restarted every hub pod on the untagged lines (see [The auth service](docs/nats-hub.md#the-auth-service)). |
 | `routeAuthorization` | unset | The routes' credential: `secretName` and `secretKey`, an existing Kubernetes Secret in `namespace` and its key, holding the route password, which the component names by reference and never reads; and `stage`, `env`, `routes` or `authorization`, each one apply after the one before it has finished. `env` gives the nats container `NATS_ROUTE_PASSWORD` and `NATS_ROUTE_URLS` and rolls the pods, `routes` names `$NATS_ROUTE_URLS` as `nats.conf`'s cluster routes, and `authorization` names the user `route` and `$NATS_ROUTE_PASSWORD` as its authorization, each applied by the reloader. The password holds letters and digits only, a letter first, and at least 32 characters. Change `secretKey` only together with `stage: env`. Unset, routes carry no credential, as before. See [Route authorization](docs/nats-hub.md#route-authorization). |
 | `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener, and beside `authCallout`, as `tailnet` is. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
@@ -3855,7 +3856,8 @@ unexpected first protocol response during connection initialization (`nats.go:29
 `noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key.
 
 With a callout, the text then ends with three top-level lines, after the authorization block and
-after `no_auth_user`. Without a callout, none of them is rendered.
+after `no_auth_user`, and beside `privateProjects` with two more after them (below). Without a
+callout, none of them is rendered.
 
 ```text
 # a replica of the auth service that answers nothing is dropped from the callout's queue group within 80 s
@@ -3922,11 +3924,34 @@ times the payload: about 8 to 17 KB/s. The first PING to a new client stays at 2
 (`client.go:7128-7142`, `server.go:60` `firstClientPingInterval`), so the answer budget above is
 unchanged.
 
-`core.Authorization.CalloutLines()` is every line the callout adds: the `auth_callout` block and
-the ping lines, or `""` without a callout. `gcp:ClusteredNatsHub` rolls its pods when that text
-changes, and beside a callout it keeps its routes' own ping at 30 s, since the top-level
-`ping_interval` also governs routes (see the hub's [reload](docs/nats-hub.md#a-reload-not-a-replacement)
-and [routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)).
+Beside `privateProjects`, the server tag's two lines follow the ping lines and end the text:
+
+```text
+# this hub is rendered with privateProjects: nats-server names this tag in each authorization request it sends the auth service
+server_tags: ["envoy-private-projects"]
+```
+
+nats-server v2.15.1 copies its tags into every authorization request it sends the auth service
+(`server/auth_callout.go:377`). The request's server claim also carries the server's name, host,
+id, version, cluster and xkey, and none of those says how the hub was rendered, so the tag,
+`natsgrant.PrivateProjectsServerTag`, is how a request can show that its hub was rendered with
+`privateProjects`. The auth service does not read it yet: its private-hub admission, which is to
+admit Dispatch's hub-admission proof, and a listener only in required privacy mode, only on a
+request that carries the tag, is later work. The comment line says only what the tag is, so it
+stays true then. Without `privateProjects` no line holds `server_tags`.
+`core/nats_server_tags_test.go` reads the tag off a request an in-process server sends.
+
+`core.Authorization.CalloutLines()` is every line the callout adds: the `auth_callout` block, the
+ping lines and, beside `privateProjects`, the server tag's lines, or `""` without a callout.
+`gcp:ClusteredNatsHub` rolls its pods when that text changes, so that each server takes a change
+at one known moment, its restart, after the chart's ConfigMap is applied. nats-server also
+reloads `server_tags`, so a change of the tag alone reaches a pod by its reloader before the roll
+restarts it, when the kubelet updates the mounted file, which nothing orders. Each reload decides
+every callout connection again: it closes each client the auth service named, which reconnects
+through the callout. Beside a callout the hub keeps its routes' own ping at 30 s, since the
+top-level `ping_interval` also governs routes (see the hub's
+[reload](docs/nats-hub.md#a-reload-not-a-replacement) and
+[routes](docs/nats-hub.md#two-ports-guarded-by-the-networkpolicy-alone)).
 
 For three keyed users, a pending `example-pending` and `noAuthUser` `example-fallback`, `core`'s
 tests pin this text:

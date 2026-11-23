@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    The controller pod's `launcher_hello_ack` carries `kernelKills` too, and its launcher takes
+    `--microvm` and the metadata flags.
+custom:
+    Issue: pr4485

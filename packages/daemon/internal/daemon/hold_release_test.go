@@ -744,7 +744,7 @@ func reconcileAdmission(t *testing.T, pool *store.Pool, admission *admit.Admissi
 	}
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		ctx, settle := intake.OpenSettlers(ctx, admission)
-		if err := admission.Reconcile(ctx, tx, listed, target, position); err != nil {
+		if _, err := admission.Reconcile(ctx, tx, listed, target, position); err != nil {
 			return err
 		}
 		return settle(ctx, tx)

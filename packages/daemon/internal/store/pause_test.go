@@ -513,7 +513,7 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 	var r result
 	select {
 	case r = <-done:
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-time.After(testwait.Remaining(t)):
 		t.Fatal("the second writer never finished after the first committed")
 	}
 	if r.err != nil || !r.ended {

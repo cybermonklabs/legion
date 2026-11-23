@@ -136,9 +136,11 @@ func newReconcileRig(t *testing.T) *reconcileRig {
 }
 
 // reconcile reconciles the rig's listing as a recovery does (recoverRepositories): outside the
-// boot, judging the summaries its keep keeps, here every one.
+// boot, judging the summaries its keep keeps, here every one. The keys it refused, older than an
+// applied fact, are none here: the rig applies no fact.
 func (r *reconcileRig) reconcile(ctx context.Context) error {
-	return r.w.reconcileListing(ctx, r.listing, func(map[string]*record.Issue, dispatch.IssueSummary) bool { return true }, false)
+	_, err := r.w.reconcileListing(ctx, r.listing, func(map[string]*record.Issue, dispatch.IssueSummary) bool { return true }, false)
+	return err
 }
 
 // A reconcile whose commit's reply arrives after its caller's cancel committed: the root holds
