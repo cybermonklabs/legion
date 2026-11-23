@@ -8,7 +8,7 @@
  *  remove. */
 
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -58,6 +58,9 @@ export const workflowInputs = [
 ];
 /** The full member's personal token the stand-in Dispatch takes (inputs/token). */
 export const fullToken = "example-token";
+/** The project owner's personal token the stand-in Dispatch takes where a run plants one
+ *  (inputs/owner-token, OUTSIDE_OWNER_TOKEN_FILE). */
+export const ownerToken = "the-owners-token";
 /** The grant of the stand-in full member's list that no person may end: a pod's, got without
  *  asking, with no approver and no operator; the probe grant the browser gate passes. */
 export const serviceGrant = "5f0c3a9b-1d2e-4f3a-8b4c-6d7e8f9a0b1c";
@@ -216,6 +219,15 @@ export interface BrowserStandIns {
   /** What the stand-in Dispatch answers the full member's token on GET /api/v1/whoami in place of
    *  Dispatch's own agent shape (state/token-whoami.json): a planted answer. */
   readonly tokenWhoami?: Readonly<Record<string, unknown>>;
+  /** The owner's acts are made with the owner's personal token (OUTSIDE_OWNER_TOKEN_FILE), with no
+   *  owner command: the scopes its row holds, the projects its own list names, the file's mode
+   *  (default 0o600), and whether the run's window step narrows it to person before the removal. */
+  readonly ownerToken?: {
+    readonly scopes: readonly string[];
+    readonly projects: readonly string[];
+    readonly mode?: number;
+    readonly narrowedInWindow?: boolean;
+  };
   /** The verdicts of the driver's rows grants-list and grants-revoke (default both PASS); `none`
    *  writes no outside-edge-grants.tsv. */
   readonly grantRows?: readonly [string, string] | "none";
@@ -583,6 +595,20 @@ function browserStandIn(
   if (browser.tokenWhoami !== undefined) {
     writeFileSync(join(state, "token-whoami.json"), JSON.stringify(browser.tokenWhoami));
   }
+  const owner = browser.ownerToken;
+  if (owner !== undefined) {
+    writeFileSync(
+      join(state, "owner-token.json"),
+      JSON.stringify({
+        token: ownerToken,
+        scopes: owner.scopes,
+        projects: owner.projects,
+        narrowedInWindow: owner.narrowedInWindow === true,
+      })
+    );
+    writeFileSync(join(inputs, "owner-token"), `${ownerToken}\n`);
+    chmodSync(join(inputs, "owner-token"), owner.mode ?? 0o600);
+  }
   if (browser.noWindow === true) writeFileSync(join(state, "no-window"), "");
   writeFileSync(
     join(state, "listed"),
@@ -665,8 +691,9 @@ if [ -f '${state}/no-window' ]; then
   echo completed >'${state}/window'
   exit "$worst"
 fi
+# The window waits for the owner's removal, or ends once Dispatch refused it: none will come.
 waited=0
-while [ ! -f '${state}/removed' ] && [ "$waited" -lt 300 ]; do
+while [ ! -f '${state}/removed' ] && [ ! -f '${state}/remove-refused' ] && [ "$waited" -lt 300 ]; do
   sleep 0.1
   waited=$((waited + 1))
 done
@@ -689,7 +716,7 @@ exit "$worst"
       OUTSIDE_WORKFLOW_REPO: workflowRepository,
       // A link here is left out: the browser gate's link is the owner invite's.
       OUTSIDE_WORKFLOW_INPUTS: `invite_url=${inviteUrl}`,
-      ...(browser.ownerByCookie === true
+      ...(browser.ownerByCookie === true || owner !== undefined
         ? {}
         : {
             OUTSIDE_OWNER_ADD_COMMAND: `bash ${add}`,
@@ -697,6 +724,7 @@ exit "$worst"
             OUTSIDE_OWNER_INVITE_COMMAND: `bash ${invite}`,
             OUTSIDE_OWNER_REMOVE_COMMAND: `bash ${remove}`,
           }),
+      ...(owner === undefined ? {} : { OUTSIDE_OWNER_TOKEN_FILE: join(inputs, "owner-token") }),
       ...(browser.unlistedListed === true ? { OUTSIDE_UNLISTED_PERSON: unlistedPerson } : {}),
       ...(browser.publicCommand === true ? { OUTSIDE_PUBLIC_COMMAND: `bash ${run}` } : {}),
     },

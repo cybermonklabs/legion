@@ -50,6 +50,7 @@ import {
   inviteUrl,
   linkToken,
   liveStandInDispatches,
+  ownerToken,
   type PreparedStandIn,
   passingControls,
   prepareStandIn,
@@ -1651,7 +1652,7 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
     );
 
     test(
-      "the owner's acts by the owner's browser session, with the called origin's Origin: every row passes with no owner command; a write sent another Origin is refused 403 invalid request origin, which the rows name; and with neither, the rows read UNKNOWN naming both",
+      "the owner's acts by the owner's browser session, with the called origin's Origin: every row passes with no owner command; a write sent another Origin is refused 403 invalid request origin, which the rows name; and with no command, token or session, the rows read UNKNOWN naming all three",
       async () => {
         const [byCookie, otherOrigin, neither] = await runStandIns(
           browserRun({ ownerByCookie: true }),
@@ -1695,18 +1696,99 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
           "exited 1 (403 invalid request origin)"
         );
         expect(existsSync(join(otherOrigin.state, "workflow-args"))).toBe(false);
-        // Neither a command nor the session: each owner row names both.
+        // Neither a command, a token nor the session: each owner row names all three.
         expect(verdictsOf(neither.stdout)).toMatchObject({
           unlisted: "UNKNOWN",
           public: "UNKNOWN",
         });
         expect(rowsOf(neither.stdout).get("unlisted")?.got).toContain(
-          "neither OUTSIDE_OWNER_INVITE_COMMAND nor the owner's browser session OUTSIDE_FULL_COOKIE_FILE is given"
+          "neither OUTSIDE_OWNER_INVITE_COMMAND, the owner's token OUTSIDE_OWNER_TOKEN_FILE nor the owner's browser session OUTSIDE_FULL_COOKIE_FILE is given"
         );
         expect(existsSync(join(neither.state, "workflow-args"))).toBe(false);
       },
       // The three runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short", "short"] })
+    );
+
+    test(
+      "the owner's acts by the owner's personal token: every row passes with no owner command and no browser session; a token whose list names another project gets the link refused, one without approve the add, and one narrowed in the window the removal, each read UNKNOWN naming the refusal; a token file others may read makes no act",
+      async () => {
+        const owner = { scopes: ["person", "approve"], projects: ["EXAMPLE"] };
+        const [byToken, otherProject, noApprove, narrowed, loose] = await runStandIns(
+          { ...browserRun({ ownerToken: owner }), cookie: "absent" },
+          { ...browserRun({ ownerToken: { ...owner, projects: ["OTHER"] } }), cookie: "absent" },
+          { ...browserRun({ ownerToken: { ...owner, scopes: ["person"] } }), cookie: "absent" },
+          { ...browserRun({ ownerToken: { ...owner, narrowedInWindow: true } }), cookie: "absent" },
+          browserRun({ ownerToken: { ...owner, mode: 0o640 } })
+        );
+        if (
+          byToken === undefined ||
+          otherProject === undefined ||
+          noApprove === undefined ||
+          narrowed === undefined ||
+          loose === undefined
+        ) {
+          throw new Error("five runs, want five");
+        }
+        const acts = [
+          "PUT /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com",
+          "GET /api/v1/projects/EXAMPLE/access",
+          "POST /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com/invitations",
+          "DELETE /api/v1/projects/EXAMPLE/access/people/outside-e2e@example.com",
+        ];
+        // The token alone makes every act, and no output holds it or the link.
+        expect({ verdicts: verdictsOf(byToken.stdout), stdout: byToken.stdout }).toMatchObject({
+          verdicts: Object.fromEntries(browserRows.map((name) => [name, "PASS"])),
+        });
+        expect(byToken.seen).toEqual(expect.arrayContaining(acts));
+        expect(rowsOf(byToken.stdout).get("unlisted")?.got).toContain(
+          "refused 409 PERSON_NOT_LISTED"
+        );
+        for (const run of [byToken, otherProject, noApprove, narrowed, loose]) {
+          expect(`${run.stdout}${run.stderr}`).not.toContain(ownerToken);
+          expect(`${run.stdout}${run.stderr}`).not.toContain(linkToken);
+        }
+        // A token whose own list does not name the project: Dispatch makes no link for it.
+        expect({
+          verdicts: verdictsOf(otherProject.stdout),
+          stdout: otherProject.stdout,
+        }).toMatchObject({ verdicts: { unlisted: "UNKNOWN", public: "UNKNOWN", T5: "UNKNOWN" } });
+        expect(rowsOf(otherProject.stdout).get("unlisted")?.got).toContain(
+          "refused 403 BROWSER_SESSION_REQUIRED, which is not the refusal of an address no list names"
+        );
+        expect(rowsOf(otherProject.stdout).get("public")?.got).toContain(
+          "the owner invite command was refused 403 BROWSER_SESSION_REQUIRED"
+        );
+        expect(existsSync(join(otherProject.state, "workflow-args"))).toBe(false);
+        // A token without approve: the add is refused, so the person is never listed.
+        expect({
+          verdicts: verdictsOf(noApprove.stdout),
+          stdout: noApprove.stdout,
+        }).toMatchObject({ verdicts: { unlisted: "UNKNOWN", public: "UNKNOWN", T5: "UNKNOWN" } });
+        expect(rowsOf(noApprove.stdout).get("public")?.got).toContain(
+          "the owner add command exited 1 (403 OAUTH_SCOPE_REQUIRED), and then outside-e2e@example.com is not read on EXAMPLE's access list (false)"
+        );
+        expect(existsSync(join(noApprove.state, "workflow-args"))).toBe(false);
+        // A token narrowed to person in the window: the removal is refused, and T5 names it.
+        expect({ verdicts: verdictsOf(narrowed.stdout), stdout: narrowed.stdout }).toMatchObject({
+          verdicts: { unlisted: "PASS", T5: "UNKNOWN" },
+        });
+        expect(rowsOf(narrowed.stdout).get("T5")?.got).toContain(
+          "so the removal was not made: the owner remove command exited 1 (403 OAUTH_SCOPE_REQUIRED)"
+        );
+        expect(existsSync(join(narrowed.state, "removed"))).toBe(false);
+        // A token file a group may read: no act is made, by the token or by the session beside it.
+        expect(verdictsOf(loose.stdout)).toMatchObject({ unlisted: "UNKNOWN", public: "UNKNOWN" });
+        expect(rowsOf(loose.stdout).get("unlisted")?.got).toContain(
+          "OUTSIDE_OWNER_INVITE_COMMAND is unset, and the owner's token cannot be used: OUTSIDE_OWNER_TOKEN_FILE"
+        );
+        expect(rowsOf(loose.stdout).get("unlisted")?.got).toContain(
+          "has mode -rw-r-----, which a group or others may read: make it 0600"
+        );
+        expect(loose.seen.filter((each) => acts.includes(each))).toEqual([]);
+      },
+      // The five runs at once, each a bounded child under the short bound.
+      rowLimit({ atOnce: ["short", "short", "short", "short", "short"] })
     );
 
     test(

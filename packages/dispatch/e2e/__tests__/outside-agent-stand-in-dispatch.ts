@@ -18,8 +18,9 @@
  *  credential-grants list (`<state>/full-grants.json`) and the GitHub proxy's read, which
  *  `<state>/proxy-refuses-token` makes 403 OAUTH_SCOPE_REQUIRED; and 401 to anything else. Its
  *  access list names the test person until `POST /_remove`, the owner's removal; in a browser
- *  gate's run (`<state>/browser`) the list is `<state>/listed`, which the owner's routes by cookie
- *  change: PUT and DELETE `/api/v1/projects/EXAMPLE/access/people/<address>` (DELETE leaves
+ *  gate's run (`<state>/browser`) the list is `<state>/listed`, which the owner's routes change
+ *  (ownerAct), by cookie or by the owner's personal token that `<state>/owner-token.json` plants:
+ *  PUT and DELETE `/api/v1/projects/EXAMPLE/access/people/<address>` (DELETE leaves
  *  `<state>/removed`) and POST `.../invitations`, which makes a link (kept in `<state>/links`)
  *  for an address the list names and answers 409 PERSON_NOT_LISTED for any other. It appends each
  *  request it answers, `METHOD path`, to `<state>/dispatch-seen`. */
@@ -54,6 +55,78 @@ const people = (): string[] =>
       ? ["outside-e2e@example.com"]
       : [];
 
+/** The project owner's personal token a test plants (`<state>/owner-token.json`): its bearer, the
+ *  scopes its row holds and the projects its own list names. With `narrowedInWindow` it holds
+ *  approve no more once the run's window step is in progress (`<state>/window`), as after its
+ *  owner narrowed it to person. */
+interface OwnerToken {
+  readonly token: string;
+  readonly scopes: readonly string[];
+  readonly projects: readonly string[];
+  readonly narrowedInWindow: boolean;
+}
+
+/** The owner's acts on EXAMPLE's access list as Dispatch answers them (project_access.go): the
+ *  list, and in a browser gate's run the add, the removal and the link; nothing for any other
+ *  route. A personal token is held to the route's scopes first (routeScopes: person for the list,
+ *  person and approve for the rest, else 403 OAUTH_SCOPE_REQUIRED), and for the link to a token
+ *  whose own list names the project (personalTokenListsProject, else 403
+ *  BROWSER_SESSION_REQUIRED), before the list is read; the owner's browser session (no token)
+ *  holds both. A refused removal leaves `<state>/remove-refused`, which ends the run's window. */
+function ownerAct(
+  method: string,
+  path: string,
+  token: OwnerToken | undefined
+): Response | undefined {
+  const windowFile = join(settings.state, "window");
+  const narrowed =
+    token?.narrowedInWindow === true &&
+    existsSync(windowFile) &&
+    readFileSync(windowFile, "utf8").trim() === "in_progress";
+  const scopes =
+    token === undefined
+      ? ["person", "approve"]
+      : narrowed
+        ? token.scopes.filter((scope) => scope !== "approve")
+        : token.scopes;
+  const scopeRefusal = Response.json({ code: "OAUTH_SCOPE_REQUIRED" }, { status: 403 });
+  if (`${method} ${path}` === "GET /api/v1/projects/EXAMPLE/access") {
+    return scopes.includes("person") ? Response.json({ people: people() }) : scopeRefusal;
+  }
+  const person = /^\/api\/v1\/projects\/EXAMPLE\/access\/people\/([^/]+)(\/invitations)?$/.exec(
+    path
+  );
+  if (!browserGate || person === null) return undefined;
+  const invitation = person[2] !== undefined;
+  if (invitation ? method !== "POST" : method !== "PUT" && method !== "DELETE") return undefined;
+  if (!scopes.includes("person") || !scopes.includes("approve")) {
+    if (method === "DELETE") writeFileSync(join(settings.state, "remove-refused"), "");
+    return scopeRefusal;
+  }
+  const address = decodeURIComponent(person[1] ?? "");
+  const named = people().includes(address);
+  if (invitation) {
+    if (token !== undefined && !token.projects.includes("EXAMPLE")) {
+      return Response.json({ code: "BROWSER_SESSION_REQUIRED" }, { status: 403 });
+    }
+    if (!named) return Response.json({ code: "PERSON_NOT_LISTED" }, { status: 409 });
+    const link = `https://dispatch.edge.example/enroll#${settings.linkToken}-${crypto.randomUUID()}`;
+    appendFileSync(join(settings.state, "links"), `${link}\n`);
+    return Response.json(
+      { url: link, made_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-02T00:00:00Z" },
+      { status: 201 }
+    );
+  }
+  if (method === "PUT") {
+    if (!named) appendFileSync(listFile, `${address}\n`);
+    return Response.json({ people: people() });
+  }
+  const kept = people().filter((each) => each !== address);
+  writeFileSync(listFile, kept.map((each) => `${each}\n`).join(""));
+  writeFileSync(join(settings.state, "removed"), "");
+  return Response.json({ people: kept });
+}
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: 0,
@@ -74,6 +147,19 @@ const server = Bun.serve({
       return Response.json({});
     }
     const proxyRuns = `GET /api/github/rest/repos/${settings.proxyRepository}/actions/runs`;
+    const ownerTokenFile = join(settings.state, "owner-token.json");
+    const ownerToken = existsSync(ownerTokenFile)
+      ? (JSON.parse(readFileSync(ownerTokenFile, "utf8")) as OwnerToken)
+      : undefined;
+    if (
+      ownerToken !== undefined &&
+      request.headers.get("authorization") === `Bearer ${ownerToken.token}`
+    ) {
+      return (
+        ownerAct(request.method, path, ownerToken) ??
+        Response.json({ code: "NOT_FOUND" }, { status: 404 })
+      );
+    }
     if (request.headers.get("authorization") === `Bearer ${settings.fullToken}`) {
       const route = `${request.method} ${path}`;
       if (route === "GET /api/v1/whoami") {
@@ -123,35 +209,8 @@ const server = Bun.serve({
         scopes: ["person", "approve"],
       });
     }
-    if (route === "GET /api/v1/projects/EXAMPLE/access") {
-      return Response.json({ people: people() });
-    }
-    const person = /^\/api\/v1\/projects\/EXAMPLE\/access\/people\/([^/]+)(\/invitations)?$/.exec(
-      path
-    );
-    if (browserGate && person !== null) {
-      const address = decodeURIComponent(person[1] ?? "");
-      const named = people().includes(address);
-      if (person[2] !== undefined && request.method === "POST") {
-        if (!named) return Response.json({ code: "PERSON_NOT_LISTED" }, { status: 409 });
-        const link = `https://dispatch.edge.example/enroll#${settings.linkToken}-${crypto.randomUUID()}`;
-        appendFileSync(join(settings.state, "links"), `${link}\n`);
-        return Response.json(
-          { url: link, made_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-02T00:00:00Z" },
-          { status: 201 }
-        );
-      }
-      if (person[2] === undefined && request.method === "PUT") {
-        if (!named) appendFileSync(listFile, `${address}\n`);
-        return Response.json({ people: people() });
-      }
-      if (person[2] === undefined && request.method === "DELETE") {
-        const kept = people().filter((each) => each !== address);
-        writeFileSync(listFile, kept.map((each) => `${each}\n`).join(""));
-        writeFileSync(join(settings.state, "removed"), "");
-        return Response.json({ people: kept });
-      }
-    }
+    const acted = ownerAct(request.method, path, undefined);
+    if (acted !== undefined) return acted;
     if (route === "POST /api/v1/me/agent-tokens") {
       return Response.json(
         { id: "token-1", name: body.name, token: "dsp_plaintext" },

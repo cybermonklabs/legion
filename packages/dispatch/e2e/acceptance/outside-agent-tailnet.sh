@@ -41,10 +41,10 @@
 # full member's browser session, where it is given, and else the full member's token
 # (OUTSIDE_SWEEP_FULL_TOKEN_FILE), which a Dispatch build that reads the proxy as a browser's person
 # alone refuses, so the sweep row then reads UNKNOWN naming that refusal; the same session makes
-# the owner's acts where their commands are unset (below). It refuses OUTSIDE_PUBLIC_COMMAND, since
-# only the workflow's step status opens its window. Its TSV's rows are pins, issue, unlisted, T5,
-# refusals, reach, sign-in, projects, limits, grants, public, sweep, pins-end and the gate. Any
-# other value of OUTSIDE_GATE is refused: every row UNKNOWN, exit 2.
+# the owner's acts where their commands and OUTSIDE_OWNER_TOKEN_FILE are unset (below). It refuses
+# OUTSIDE_PUBLIC_COMMAND, since only the workflow's step status opens its window. Its TSV's rows are
+# pins, issue, unlisted, T5, refusals, reach, sign-in, projects, limits, grants, public, sweep,
+# pins-end and the gate. Any other value of OUTSIDE_GATE is refused: every row UNKNOWN, exit 2.
 #
 # Inputs (environment), each named by the row that cannot run without it:
 #   $1                           the scratch project's key.
@@ -133,13 +133,19 @@
 # alone (exit 0), or prints Dispatch's refusal as `<status> <code>` on its first line (exit 1), or
 # exits 2 when it could not tell; OUTSIDE_OWNER_LIST_COMMAND, run with the project as its last word,
 # prints the addresses on the project's access list, one a line (exit 0). An owner command left
-# unset is made by the leg itself where OUTSIDE_FULL_COOKIE_FILE holds the owner's own browser
-# session (the project's owner, who holds the person and approve scopes no agent token holds
-# today): at OUTSIDE_TAILNET_DISPATCH_URL, PUT and DELETE /api/v1/projects/<key>/access/people/
-# <address>, GET /api/v1/projects/<key>/access and POST .../people/<address>/invitations, read as
-# the command's contract above (owner_by_browser). The browser gate needs each act, by its command
-# or by that session, and asks no terminal; with neither, the rows that need it read UNKNOWN naming
-# both. Its `invite_url` is the owner invite's link, and an `invite_url` line in
+# unset is made by the leg itself, at OUTSIDE_TAILNET_DISPATCH_URL (PUT and DELETE
+# /api/v1/projects/<key>/access/people/<address>, GET /api/v1/projects/<key>/access and POST
+# .../people/<address>/invitations, read as the command's contract above: owner_by_dispatch), with
+# one credential of the owner's own: OUTSIDE_OWNER_TOKEN_FILE where it is set, else
+# OUTSIDE_FULL_COOKIE_FILE. OUTSIDE_OWNER_TOKEN_FILE names a file of mode 0600 (one any group or
+# other may read is refused, and no act is made) holding a personal token of the project's owner
+# that holds the person and approve scopes and whose own project list names the project: Dispatch
+# makes a link for such a token alone, and refuses any other 403 BROWSER_SESSION_REQUIRED; the
+# token reaches curl in a header file of mode 0600 alone, never on a command line, and no output
+# holds it. OUTSIDE_FULL_COOKIE_FILE then holds the owner's own browser session. The browser gate
+# needs each act, by its command, that token or that session, and asks no terminal; with none, the
+# rows that need it read UNKNOWN naming all three, and with a token file that cannot be used, naming
+# why. Its `invite_url` is the owner invite's link, and an `invite_url` line in
 # OUTSIDE_WORKFLOW_INPUTS is left out. OUTSIDE_UNLISTED_PERSON is the address row unlisted asks a
 # link for (default outside-e2e-unlisted-<random>@example.com, which no list names).
 #
@@ -620,6 +626,48 @@ fi
 token_header="$work/full-token.h"
 token_problem=$(token_setup)
 
+# --- The owner's personal token (OUTSIDE_OWNER_TOKEN_FILE, the person and approve scopes, its own
+# project list naming the project), where it is set: the browser gate's owner acts are made with it
+# in place of the owner's browser session. A file any group or other may read is refused, and so no
+# act is made. The token reaches curl in a header file of mode 0600 alone, never on a command line,
+# and no output holds it. ---
+owner_token_header="$work/owner-token.h"
+owner_token_problem=''
+if [ -n "${OUTSIDE_OWNER_TOKEN_FILE:-}" ]; then
+  if [ ! -f "$OUTSIDE_OWNER_TOKEN_FILE" ] || [ ! -r "$OUTSIDE_OWNER_TOKEN_FILE" ]; then
+    owner_token_problem="OUTSIDE_OWNER_TOKEN_FILE names $OUTSIDE_OWNER_TOKEN_FILE, which cannot be read"
+  else
+    # shellcheck disable=SC2012 # one file this run named, so no name can confuse the read
+    owner_token_mode=$(ls -lnL "$OUTSIDE_OWNER_TOKEN_FILE" | { read -r perms _ && printf '%s' "$perms"; })
+    case $owner_token_mode in
+      -???------) ;;
+      *) owner_token_problem="OUTSIDE_OWNER_TOKEN_FILE ($OUTSIDE_OWNER_TOKEN_FILE) has mode $owner_token_mode, which a group or others may read: make it 0600" ;;
+    esac
+  fi
+  [ -n "$owner_token_problem" ] || [ -n "$(tr -d ' \t\r\n' <"$OUTSIDE_OWNER_TOKEN_FILE")" ] ||
+    owner_token_problem="OUTSIDE_OWNER_TOKEN_FILE ($OUTSIDE_OWNER_TOKEN_FILE) holds no token"
+  [ -n "$owner_token_problem" ] || [ -n "$work" ] || owner_token_problem='mktemp -d made no scratch directory'
+  if [ -z "$owner_token_problem" ]; then
+    (umask 077 && printf 'Authorization: Bearer %s\n' "$(tr -d '\r\n' <"$OUTSIDE_OWNER_TOKEN_FILE")" >"$owner_token_header") ||
+      owner_token_problem='the owner token header file could not be written'
+  fi
+fi
+# owner_token_call METHOD PATH OUT [BODY]: METHOD PATH at Dispatch's private origin with the
+# owner's personal token and the JSON file BODY; prints the answer's status, 000 when none came, and
+# leaves its body in OUT. A bearer carries no Origin: Dispatch holds a cookie's write alone to the
+# origin it was sent from.
+# shellcheck disable=SC2329 # owner_by_dispatch calls it by name, as its CALL
+owner_token_call() {
+  local status
+  local -a data=()
+  [ -z "${4:-}" ] || data=(-H 'Content-Type: application/json' --data-binary "@$4")
+  status=$(curl -q -sS -g --noproxy '*' --max-time 15 -X "$1" -o "$3" -w '%{http_code}' \
+    -H "@$owner_token_header" ${data[@]+"${data[@]}"} \
+    "$OUTSIDE_TAILNET_DISPATCH_URL$2" 2>"$work/owner-token.err" </dev/null)
+  [ "${#status}" -eq 3 ] || status=000
+  printf '%s' "$status"
+}
+
 # --- The read sweep's full-member half, its writer and its proxy control (outside-agent-sweep.sh).
 sweep_setup
 sweep_prepare
@@ -632,8 +680,10 @@ sweep_proxy_control
 # secret: a row says its exit and, of a refusal, the `<status> <code>` it printed alone. ---
 # owner NAME OUT WORD...: runs the owner command the variable NAME holds, split on blanks, with
 # WORD... as its last words, its stdout in OUT and its stderr in OUT.err; prints its exit status.
-# With NAME unset and the owner's browser session read (OUTSIDE_FULL_COOKIE_FILE), the leg makes
-# the act itself with that session (owner_by_browser); with neither, it prints 127.
+# With NAME unset the leg makes the act itself (owner_by_dispatch): with the owner's personal token
+# where OUTSIDE_OWNER_TOKEN_FILE is set and could be read, else with the owner's browser session
+# where OUTSIDE_FULL_COOKIE_FILE was read; with neither, it prints 127. A token file that is set
+# and cannot be used is never passed over for the session.
 owner() {
   local name=$1 out=$2
   local -a command
@@ -643,8 +693,14 @@ owner() {
   command=(${!name:-})
   set +f
   if [ "${#command[@]}" -eq 0 ]; then
-    if [ -z "$browser_problem" ]; then
-      owner_by_browser "$name" "$out" "$@"
+    if [ -n "${OUTSIDE_OWNER_TOKEN_FILE:-}" ]; then
+      if [ -z "$owner_token_problem" ]; then
+        owner_by_dispatch owner_token_call "$name" "$out" "$@"
+      else
+        printf 127
+      fi
+    elif [ -z "$browser_problem" ]; then
+      owner_by_dispatch browser "$name" "$out" "$@"
     else
       printf 127
     fi
@@ -653,22 +709,28 @@ owner() {
   "${command[@]}" "$@" >"$out" 2>"$out.err" </dev/null
   printf '%s' "$?"
 }
-# owner_input NAME: nothing where the owner act NAME names can be made, by its command or by the
-# owner's browser session; else why not, naming both.
+# owner_input NAME: nothing where the owner act NAME names can be made, by its command, the owner's
+# token or the owner's browser session; else why not, naming each.
 owner_input() {
   [ -z "${!1:-}" ] || return 0
+  if [ -n "${OUTSIDE_OWNER_TOKEN_FILE:-}" ]; then
+    [ -z "$owner_token_problem" ] ||
+      printf '%s is unset, and the owner'"'"'s token cannot be used: %s' "$1" "$owner_token_problem"
+    return 0
+  fi
   [ -n "$browser_problem" ] || return 0
-  printf 'neither %s nor the owner'"'"'s browser session OUTSIDE_FULL_COOKIE_FILE is given (%s)' "$1" "$browser_problem"
+  printf 'neither %s, the owner'"'"'s token OUTSIDE_OWNER_TOKEN_FILE nor the owner'"'"'s browser session OUTSIDE_FULL_COOKIE_FILE is given (%s)' "$1" "$browser_problem"
 }
-# owner_by_browser NAME OUT WORD...: the owner act NAME's command makes, made with the owner's
-# browser session at Dispatch's private origin (`browser`), its output in OUT and its exit printed
-# as the command's contract says (the header): the add and the remove print nothing and exit 0 on
-# a 2xx, the list prints the access list's people one a line, and the invite prints the link
-# alone; a refusal prints `<status> <code>` and exits 1; no answer, an answer that is not the
-# route's, or an address or project a path cannot carry as written, exits 2.
-owner_by_browser() {
-  local name=$1 out=$2 address='' key status answer words path rest each
-  shift 2
+# owner_by_dispatch CALL NAME OUT WORD...: the owner act NAME's command makes, made at Dispatch's
+# private origin with CALL, `owner_token_call` (the owner's personal token) or `browser` (the
+# owner's browser session), its output in OUT and its exit printed as the command's contract says
+# (the header): the add and the remove print nothing and exit 0 on a 2xx, the list prints the
+# access list's people one a line, and the invite prints the link alone; a refusal prints
+# `<status> <code>` and exits 1; no answer, an answer that is not the route's, or an address or
+# project a path cannot carry as written, exits 2.
+owner_by_dispatch() {
+  local call=$1 name=$2 out=$3 address='' key status answer words path rest each
+  shift 3
   case $name in
     OUTSIDE_OWNER_LIST_COMMAND) key=$1 ;;
     *) address=$1 key=$2 ;;
@@ -683,10 +745,10 @@ owner_by_browser() {
   path="/api/v1/projects/$key/access"
   printf '{}\n' >"$work/owner-body.json"
   case $name in
-    OUTSIDE_OWNER_ADD_COMMAND) status=$(browser PUT "$path/people/$address" "$out.json" "$work/owner-body.json") ;;
-    OUTSIDE_OWNER_REMOVE_COMMAND) status=$(browser DELETE "$path/people/$address" "$out.json") ;;
-    OUTSIDE_OWNER_INVITE_COMMAND) status=$(browser POST "$path/people/$address/invitations" "$out.json" "$work/owner-body.json") ;;
-    OUTSIDE_OWNER_LIST_COMMAND) status=$(browser GET "$path" "$out.json") ;;
+    OUTSIDE_OWNER_ADD_COMMAND) status=$("$call" PUT "$path/people/$address" "$out.json" "$work/owner-body.json") ;;
+    OUTSIDE_OWNER_REMOVE_COMMAND) status=$("$call" DELETE "$path/people/$address" "$out.json") ;;
+    OUTSIDE_OWNER_INVITE_COMMAND) status=$("$call" POST "$path/people/$address/invitations" "$out.json" "$work/owner-body.json") ;;
+    OUTSIDE_OWNER_LIST_COMMAND) status=$("$call" GET "$path" "$out.json") ;;
     *)
       printf 127
       return
@@ -758,7 +820,7 @@ owner_lists() {
   printf '%s' "$found"
 }
 # owner_refusal OUT: the `<status> <code>` of a refusal OUT's first line holds, or nothing; the code
-# may be a refusal's words where Dispatch named no code (owner_by_browser), and holds no `:`, `/` or
+# may be a refusal's words where Dispatch named no code (owner_by_dispatch), and holds no `:`, `/` or
 # `#`, so no link reads as one.
 owner_refusal() {
   local first=''
@@ -1216,6 +1278,7 @@ public_running() {
 }
 removal_from=''
 removal_to=''
+removal_refused=''
 t5_problem=''
 if [ "$outside_gate" = browser ]; then
   [ -z "$public_problem" ] || t5_problem="the workflow did not start: $public_problem"
@@ -1278,7 +1341,10 @@ if [ -z "$t5_problem" ]; then
     removal_from=$(now)
     if [ "$outside_gate" = browser ]; then
       removed=$(owner OUTSIDE_OWNER_REMOVE_COMMAND "$work/t5.remove" "$person" "$project")
-      [ "$removed" = 0 ] || say "T5: the owner remove command exited $removed"
+      if [ "$removed" != 0 ]; then
+        removal_refused="the owner remove command exited $removed$(removed_said=$(owner_refusal "$work/t5.remove") && printf ' (%s)' "$removed_said")"
+        say "T5: $removal_refused"
+      fi
     elif [ -n "${OUTSIDE_OWNER_REMOVE_COMMAND:-}" ]; then
       set -f
       # shellcheck disable=SC2086 # a command line, split on blanks on purpose
@@ -1449,7 +1515,7 @@ else
     fi
   done
   if [ "$after" != false ]; then
-    row T5 "$want_t5" "after the run the access list reads $after, so the removal was not made" UNKNOWN
+    row T5 "$want_t5" "after the run the access list reads $after, so the removal was not made${removal_refused:+: $removal_refused}" UNKNOWN
   elif [ -n "$wrong" ]; then
     row T5 "$want_t5" "$wrong${unread:+; $unread}" FAIL
   elif [ -n "$unread" ]; then
