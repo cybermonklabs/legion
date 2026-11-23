@@ -944,12 +944,9 @@ func isDue(at, now time.Time) bool { return !at.IsZero() && !at.After(now) }
 //  3. The unread repositories recovered (recoverRepositories), at once when leaveUnread,
 //     leaveForRecovery or readAnswered wakes it (recoverWake, markUnread), and on installReadRetry
 //     while any repository is unread or to recover (unreadReasons, recoveringReasons). While a held
-//     recovery has release waits to tell and the bound has not been checked by a run since it
-//     passed (recoveryHoldLeft), the wait is cut to the time left to recoveryHoldBound, or to none
-//     once that time is up, so the bound is checked when it falls, not up to a backoff later, even
-//     when another job of the refresher was still running when it fell; such a cut wait does not
-//     move the backoff on. A run past the bound that did not tell the waits waits the backoff as
-//     any failed run does, so a failure past the bound never turns the refresher into a busy loop.
+//     recovery has release waits to tell, the wait is cut to the time left to recoveryHoldBound,
+//     or to none once that time is up, until a run begins past the bound; recoveryHoldLeft's doc
+//     has the rule. Such a cut wait does not move the backoff on.
 //  4. The heard set published again (republishHeard), at once when a record's own consumer update
 //     was refused (hearRecorded, heardWake), and on installReadRetry while it fails (heardPending).
 //  5. A held default branch read again (rereadHeldBranches), at the end of each rate limit a
@@ -978,7 +975,7 @@ func (w *workflowRuntime) refreshRepositories(ctx context.Context) {
 		heard.stand(w.heardPending.Load(), now)
 		live.stand(liveFailed, now)
 		recoverAt, cut := recovery.due, false
-		if left, held := w.recoveryHoldLeft(); held && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
+		if left, due := w.recoveryHoldLeft(); due && !recoverAt.IsZero() && now.Add(left).Before(recoverAt) {
 			recoverAt, cut = now.Add(left), true
 		}
 		heldAt := w.heldDue()
@@ -1167,10 +1164,11 @@ func (w *workflowRuntime) refreshLive(ctx context.Context) error {
 //
 // A bound that passed while another job of the refresher ran (a read of the live records, say) is
 // still due: the refresher's wait was cut to it before that job began, and the loop that comes
-// back from the job finds no time left. Before, no time left meant no cut, and the run that tells
-// the waits came at the backoff, up to its cap past the bound. Once a run has begun past the bound,
-// whatever it then meets (a listing that fails, a notice that fails, GitHub failing again), the
-// next run waits the backoff, so a fault past the bound never turns the refresher into a busy loop.
+// back from the job finds no time left, so the run is due at once. Once a run has begun past the
+// bound, whatever it then meets (a listing that fails, a notice that fails, GitHub failing again),
+// the next run waits the backoff, so a fault past the bound never turns the refresher into a busy
+// loop. A run that begins just before the bound and fails after it is followed by one more run
+// at once, which begins past the bound.
 func (w *workflowRuntime) recoveryHoldLeft() (time.Duration, bool) {
 	w.recoveringMu.Lock()
 	defer w.recoveringMu.Unlock()
