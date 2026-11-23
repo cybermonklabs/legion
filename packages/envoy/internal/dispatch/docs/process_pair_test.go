@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -52,7 +53,10 @@ func newProcessPair(t *testing.T) processPair {
 // what a write does with it, and on a loaded machine an answer can take longer than that latency
 // budget to cross Postgres twice, which failed TestAShareHoldsEveryQueuedUpdateOfAPendingBatch with
 // no answer at all (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds
-// the budget itself.
+// the budget itself. Both processes keep an idle room past the run: no test over the pair tests the
+// idle sweep, and a room that a slow machine leaves idle for ygo's minute must not be closed under a
+// row that writes to it. ygo's sweep reads the timeout on every pass, so it is set before the first
+// room loads.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	t.Helper()
 	database := storetest.Open(t)
@@ -61,6 +65,7 @@ func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	taskB, gateB := newGatedServiceInstance(t, storetest.SecondProcess(t, database))
 	taskA.roomQueries.wait = testwait.Remaining(t, roomWaitMargin)
 	taskB.roomQueries.wait = taskA.roomQueries.wait
+	taskA.srv.RoomIdleTimeout, taskB.srv.RoomIdleTimeout = time.Hour, time.Hour
 	serverB := newTestServer(t, taskB)
 	seedServiceText(t, taskA, artifactID, markdown)
 	return processPair{
