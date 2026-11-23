@@ -569,15 +569,16 @@ func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload re
 	if !found {
 		return r.endPauseStop(ctx, row, issue, held, token, store.PauseStopFailed, "the daemon supervises no claim of the role")
 	}
-	switch machine.Claim().State {
-	case supervise.StateFailed, supervise.StateRetired:
+	// The read before the stop is claimToStop's. The read after it is the published view
+	// (supervise.Machine.View), which never waits: what the stop's own decision left.
+	if _, stoppable := claimToStop(machine); !stoppable {
 		return r.endPauseStop(ctx, row, issue, held, token, store.PauseStopFailed, "the claim has failed or retired")
 	}
 	err = machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByReleased, Pause: held.ID, Reason: payload.Reason})
 	var refused *supervise.RefusedError
 	switch {
 	case err == nil:
-		return r.pauseStopAnswered(ctx, row, held, machine.Claim())
+		return r.pauseStopAnswered(ctx, row, held, machine.View().Claim)
 	case errors.Is(err, supervise.ErrPauseEnded):
 		r.pauseStopEnded(row, issue, payload.Role, held.ID)
 		return nil
