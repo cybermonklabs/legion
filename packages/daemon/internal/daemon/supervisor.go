@@ -221,11 +221,8 @@ func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]c
 				"claim", c.Token, "stored", c.State, "generation", c.Generation)
 			c.State = supervise.StateLaunchUncertain
 		}
-		before := c
-		enrollment := supervise.NormalizeClaim(&c)
-		normalized := repaired || len(c.CapabilityHash) != len(before.CapabilityHash) ||
-			c.SuspendedBy != before.SuspendedBy || c.Enrollment != before.Enrollment ||
-			c.LastStartFailure != before.LastStartFailure
+		enrollment, normalized := supervise.NormalizeClaim(&c)
+		normalized = normalized || repaired
 		if normalized {
 			if err := s.deps.Store.PutClaim(ctx, supervise.StoredClaim(c)); err != nil {
 				return nil, err

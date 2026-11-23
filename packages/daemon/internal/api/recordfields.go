@@ -156,7 +156,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "LastDeathCause", Column: ColumnAgents, Keys: []string{"lastDeathCause"},
 		Reason: "why the claim's process was last found gone, which an architect deciding a retry from an escalation reads"},
 	{Field: "LastStartFailure", Column: ColumnAgents, Keys: []string{"lastStartFailure"},
-		Reason: "why the claim has produced no running agent since it was last ready, which is a different fault from a process that died and is read as one"},
+		Reason: "why the claim's last start produced no ready agent, dropped once an agent is ready, which is a different fault from a process that died and is read as one"},
 	{Field: "LastReady", Column: ColumnAgents, Keys: []string{"lastReady"},
 		Reason: "when the agent last said it could be prompted, which is what dates the death's cause above"},
 	{Field: "TurnOutcomes", Column: ColumnWithheld,

@@ -357,8 +357,11 @@ type Claim struct {
 	// claim that cannot start and a claim that keeps dying are different faults, and neither
 	// overwrites the other. The death's cause is kept until another death replaces it. The start
 	// failure is kept until another failed start replaces it or the agent says it is ready, which
-	// ends the episode of launch failures it names (table.go's ready), so a start failure on the
-	// claim is always one from after LastReady. Both are a far side's text, kept as such:
+	// ends the episode of launch failures it names (table.go's ready). So a start failure this
+	// release records is one from after LastReady. A claim an earlier release left queued,
+	// launching, suspended or failed can hold one from before its last ready until its agent is
+	// next ready; migration 20261123212127 cleared the ones it left ready, working or idle (a row
+	// says nothing of the others). Both are a far side's text, kept as such:
 	// LastStartFailure as any far side's error text is (storetext.FarSideError), and LastDeathCause
 	// as a far side's text (storetext.FarSideText) under the runtime's own bound (deathCause).
 	// LastReady is when the agent last said it could be prompted, which says how old the death's
@@ -4360,29 +4363,29 @@ func (m *Machine) takeOpenCall(callID string) (openCall, bool) {
 	return open, held
 }
 
-// NormalizeClaim clears state a claim can hold only while it records a compatible running process,
-// and the start failure a claim whose agent came up cannot hold: an agent that said it was ready
-// ended the launch failures that sentence names (table.go's ready), so a ready, working or idle
-// claim read back with one carries the refusal of a start from before its agent, which a daemon
-// before dispatch://INFRA-5463 kept. It returns an enrollment that lost that process so callers
-// can revoke it at the broker.
-func NormalizeClaim(c *Claim) *Enrollment {
+// NormalizeClaim clears state a claim can hold only while it records a compatible running process.
+// It returns an enrollment that lost that process so callers can revoke it at the broker, and
+// whether it changed anything of c, so a caller that read c from the store writes it back
+// (internal/daemon's restore).
+func NormalizeClaim(c *Claim) (enrollment *Enrollment, changed bool) {
 	if !HoldsCapability(c.State) {
+		changed = len(c.CapabilityHash) != 0
 		c.CapabilityHash = nil
 	}
-	if c.State != StateSuspended {
-		c.SuspendedBy = ""
-	}
-	if SaidReady(c.State) {
-		c.LastStartFailure = ""
+	if c.State != StateSuspended && c.SuspendedBy != "" {
+		c.SuspendedBy, changed = "", true
 	}
 	if c.Locator == nil {
 		// The charge is of the process the claim records, so a claim that records none carries
 		// none: whatever the next launch starts has been charged nothing (DeathCharged, letGo).
-		c.DeathCharged = false
-		return ClearEnrollment(c)
+		if c.DeathCharged {
+			c.DeathCharged, changed = false, true
+		}
+		if enrollment = ClearEnrollment(c); enrollment != nil {
+			changed = true
+		}
 	}
-	return nil
+	return enrollment, changed
 }
 
 // ClearEnrollment removes c's enrollment and returns the broker record that must be revoked.
@@ -4398,7 +4401,7 @@ func ClearEnrollment(c *Claim) *Enrollment {
 // stored normalizes the machine's live claim, revoking any enrollment it detached, then returns the
 // form a claim write hands the store. A pending delivery has a table of its own.
 func (m *Machine) stored() Claim {
-	if enrollment := NormalizeClaim(&m.claim); enrollment != nil {
+	if enrollment, _ := NormalizeClaim(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
 	return StoredClaim(m.claim)

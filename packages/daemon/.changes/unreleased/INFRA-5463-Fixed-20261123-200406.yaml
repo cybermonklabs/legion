@@ -5,9 +5,10 @@ body: |-
     names, so a claim launching again later shows a start failure only when a start failed since
     then. Before, a claim waiting to launch could show a refusal from days before, such as the
     leak-check install's `waitid: no child processes` that #4289 fixed, as if it were the reason
-    the claim was not running. The daemon's boot also drops the start failure of each claim whose
-    agent is up (ready, working or idle) as an earlier daemon stored it; a claim stored launching,
-    suspended or failed keeps its start failure until its agent is next ready.
+    the claim was not running. A migration clears the start failure of every claim stored ready,
+    working or idle. A claim an earlier release left queued, launching, suspended or failed keeps
+    the start failure it holds until its agent is next ready, since nothing in the row says
+    whether its agent came up after that start.
 time: 2026-11-23T20:04:06Z
 custom:
     Issue: INFRA-5463

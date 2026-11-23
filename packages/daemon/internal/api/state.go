@@ -976,9 +976,8 @@ type ClaimView struct {
 	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
 	// Each is absent until it happens. The two causes are separate because they answer separate
 	// questions. LastReady dates the death's cause: a death older than it is one the agent running
-	// now has already survived. A start failure is from after LastReady, since the claim drops it
-	// when its agent says it is ready (supervise.Claim.LastStartFailure): one present is why the
-	// claim has not run since.
+	// now has already survived. The claim drops its start failure when its agent says it is ready
+	// (supervise.Claim.LastStartFailure says which older claims can still hold one from before).
 	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
 	LastStartFailure string     `json:"lastStartFailure,omitempty"`
 	LastReady        *time.Time `json:"lastReady,omitempty"`
