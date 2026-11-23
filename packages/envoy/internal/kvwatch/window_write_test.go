@@ -697,34 +697,6 @@ func (s *heldStreamRead) Stream(ctx context.Context, name string) (jetstream.Str
 
 func (s *heldStreamRead) let() { s.released.Do(func() { close(s.release) }) }
 
-// createdAs is a bucket's jetstream context whose every stream read reports the stream's creation
-// time as created, as a server that keeps it across a restore of a snapshot reports it: the rest of
-// what the read reports, its sequences among it, is the server's.
-type createdAs struct {
-	jetstream.JetStream
-	created time.Time
-}
-
-func (s createdAs) Stream(ctx context.Context, name string) (jetstream.Stream, error) {
-	stream, err := s.JetStream.Stream(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	return createdStream{Stream: stream, created: s.created}, nil
-}
-
-// createdStream is a stream read whose cached information reports created as its creation time.
-type createdStream struct {
-	jetstream.Stream
-	created time.Time
-}
-
-func (s createdStream) CachedInfo() *jetstream.StreamInfo {
-	info := *s.Stream.CachedInfo()
-	info.Created = s.created
-	return &info
-}
-
 // failingBarriers is a bucket's jetstream context whose publishes, while failing is set, fail as a
 // closed connection's do: a read's barrier (bus.KeyValue.WriteBarrier) is the one publish through
 // it, so that read fails, while every stream read and watch goes on as usual.
