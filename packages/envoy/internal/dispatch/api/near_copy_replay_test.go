@@ -373,7 +373,7 @@ func measureNearCopyGate(
 			lexemes, weights := nearCopyScoreTerms(picked, keyLexemes)
 			started = time.Now()
 			rows, err := database.Pool.Query(ctx, duplicateScoreQuery,
-				corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions, title, refs.VisibilityArg(everyReader))
+				duplicateScoreArguments(corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, title, everyReader)...)
 			if err != nil {
 				t.Fatalf("score for %s: %v", name, err)
 			}
@@ -409,7 +409,7 @@ func measureNearCopyGate(
 	}
 	lexemes, weights := nearCopyScoreTerms(picked, keyLexemes)
 	plan, err := database.Pool.Query(ctx, "explain (analyze, buffers) "+duplicateScoreQuery,
-		corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions, title, refs.VisibilityArg(everyReader))
+		duplicateScoreArguments(corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, title, everyReader)...)
 	if err != nil {
 		t.Fatalf("explain the scoring statement: %v", err)
 	}
