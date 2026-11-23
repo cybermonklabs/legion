@@ -19,7 +19,10 @@
 # root also holds a copy of the script under test, the real one beside this file, and a
 # stand-in for .github/scripts/dispatch-browser-run-reads.sh, which the script calls relative
 # to its working directory. The stand-in writes a fixture's jobs instead of reading GitHub; the
-# real read is dispatch-browser-run-reads.test.sh's. The script is run from that root through
+# real read is dispatch-browser-run-reads.test.sh's. The root's bin/ holds a stand-in `bun`, first
+# on the call's PATH, for the script's reading of the shard legs' row lists
+# (packages/dispatch/e2e/tools/leg-rows.ts, whose own tests are leg-rows.test.ts): it records its
+# arguments and answers with the case's status. The script is run from that root through
 # the merge job's own call: the step "Reading one, the rows" as dispatch-browser.yaml beside
 # this directory writes it, with each `${{ steps.<id>.conclusion }}` replaced by the case's
 # conclusion. So a workflow that passes the script the wrong conclusion fails here too.
@@ -53,7 +56,10 @@ if [ -z "$step_run" ]; then
 fi
 
 # fixture <name>: one case's root, with its $RUNNER_TEMP, its step summary, the script under
-# test and the stand-in run-reads script. The stand-in writes the jobs in `jobs.fixture.json` to
+# test, the stand-in run-reads script and the stand-in bun. The stand-in bun takes only
+# leg-rows.ts, appends its arguments to bin/bun.calls, and exits with the status in
+# bin/leg-rows.status (0 when there is none), printing an error line when that is not 0. The
+# stand-in run-reads writes the jobs in `jobs.fixture.json` to
 # the out-file it is given, in the shape the real read writes: an array of {id, name,
 # conclusion, leg}. The four shards ran and the alone leg was skipped, so it owes no blob. It
 # carries a leg name, so only the script's filter on the conclusion keeps it out of the legs that
@@ -75,6 +81,18 @@ set -euo pipefail
 cp "$(dirname "$0")/jobs.fixture.json" "$2"
 STANDIN
   chmod +x "$root/.github/scripts/dispatch-browser-run-reads.sh"
+  mkdir -p "$root/bin"
+  cat > "$root/bin/bun" <<'STANDIN'
+#!/usr/bin/env bash
+set -euo pipefail
+here=$(dirname "$0")
+[ "$1" = packages/dispatch/e2e/tools/leg-rows.ts ] || { echo "stand-in bun: $1" >&2; exit 2; }
+printf '%s\n' "$*" >> "$here/bun.calls"
+status=$(cat "$here/leg-rows.status" 2>/dev/null || echo 0)
+[ "$status" = 0 ] || echo "::error::stand-in leg-rows: a row of the selection ran on no shard leg"
+exit "$status"
+STANDIN
+  chmod +x "$root/bin/bun"
   cat > "$root/.github/scripts/jobs.fixture.json" <<'JOBS'
 [
   {"id": 10, "name": "dispatch-browser / binaries", "conclusion": "success", "leg": null},
@@ -130,7 +148,7 @@ run_rows() {
       ;;
   esac
   set +e
-  out=$(cd "$1" && env RUNNER_TEMP="$1/temp" GITHUB_STEP_SUMMARY="$1/summary.md" GH_TOKEN=t \
+  out=$(cd "$1" && env PATH="$1/bin:$PATH" RUNNER_TEMP="$1/temp" GITHUB_STEP_SUMMARY="$1/summary.md" GH_TOKEN=t \
     GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 GITHUB_RUN_ATTEMPT=1 bash -c "$cmd" 2>&1)
   status=$?
   set -e
@@ -140,6 +158,7 @@ errors() { grep -c '::error::' <<<"$out" || true; }
 error_line() { grep '::error::' <<<"$out" || true; }
 notice_line() { grep '::notice title=dispatch-browser rows::' <<<"$out" || true; }
 table_rows() { grep -c -- "$2" "$1/summary.md" || true; }
+bun_calls() { cat "$1/bin/bun.calls" 2>/dev/null || true; }
 
 echo "case: the download step never ran, as in run 44754426131 attempt 1"
 # The job's time limit cancelled `bun install`, so the download and the selection were skipped
@@ -377,6 +396,30 @@ check "the notice reads both counts" \
 check "and the summary says the same" \
   "$(contains "$(cat "$root/summary.md")" '^The merged report holds 180 rows, against 180 printed by the legs\.$')"
 check "and marks each leg's blob held" "$(is "$(table_rows "$root" '| yes |$')" 4)"
+check "and reads the shard legs' row lists once, from the selected rows, for the shards alone" \
+  "$(is "$(bun_calls "$root")" "packages/dispatch/e2e/tools/leg-rows.ts $root/temp/selected-blobs/rows shard-1 shard-2 shard-3 shard-4")"
+
+echo "case: every owed blob arrived, the counts agree, and the shard legs' row lists do not"
+# The counts cannot see a row no shard ran, nor one two shards ran; the row lists can, and the
+# step fails on them though every count agrees.
+root=$(fixture lists-disagree)
+leg "$root" shard-1 30
+leg "$root" shard-2 40
+leg "$root" shard-3 50
+leg "$root" shard-4 60
+merged "$root" 170 3 4 3
+echo 1 > "$root/bin/leg-rows.status"
+run_rows "$root" success success
+check "fails the step" "$(is "$status" 1)"
+check "with the row lists' own line" "$(contains "$(error_line)" 'stand-in leg-rows: a row of the selection ran on no shard leg')"
+check "and the counts' notice all the same" \
+  "$(contains "$(notice_line)" 'holds 180 rows, against 180 printed by the legs')"
+
+echo "case: the download step never ran, so the row lists are not read"
+root=$(fixture lists-skipped)
+run_rows "$root" skipped skipped
+check "fails the step" "$(is "$status" 1)"
+check "and reads no row list, since no leg's was read" "$(is "$(bun_calls "$root")" "")"
 
 echo "case: every owed blob arrived and the merge dropped rows"
 root=$(fixture dropped)
@@ -461,6 +504,18 @@ check "exits 0" "$(is "$status" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "the notice says this job has no merged report, with the legs' counts" \
   "$(contains "$(notice_line)" "rows::this job has no merged report to hold against the legs' counts: shard-1 30, shard-2 40, shard-3 50, shard-4 60$")"
+
+echo "case: every owed blob arrived, there is no merged report, and the shard legs' row lists disagree"
+# With no count to compare, the row lists still decide the step.
+root=$(fixture no-report-lists-disagree)
+leg "$root" shard-1 30
+leg "$root" shard-2 40
+leg "$root" shard-3 50
+leg "$root" shard-4 60
+echo 1 > "$root/bin/leg-rows.status"
+run_rows "$root" success success
+check "fails the step" "$(is "$status" 1)"
+check "with the row lists' own line" "$(contains "$(error_line)" 'stand-in leg-rows: a row of the selection ran on no shard leg')"
 
 echo "case: every owed blob arrived, one leg's count file holds no number, and there is no merged report"
 # As in the case above, with nothing to hold the counts against. The unread count is then no
