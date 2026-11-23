@@ -363,9 +363,9 @@ package. Run it locally from anywhere: `.github/scripts/check-ci-filters.sh`.
 
 ## Caches: no job of the router writes a Go cache
 
-No run of `ci.yaml` saves a Go cache entry; the one entry a job of it saves is
-dispatch-two-builds' build of the previous commit, which only later runs of the same ref read. A
-pull request's entries are scoped to its ref,
+No run of `ci.yaml` saves a Go cache entry; the two entries a job of it saves are
+dispatch-two-builds' builds of the previous commit and of the first rollout, which only later runs
+of the same ref read. A pull request's entries are scoped to its ref,
 no other pull request reads them, and they count against the repository's cache limit, where they
 evict main's entries; a merge group's entries are no more readable than those. Only an event that
 writes the default branch's scope — a push to main — leaves an entry every later run can read, so
@@ -421,8 +421,9 @@ the fills live in workflows that run there.
   restores the family's newest entry (the job's key, and that key and a `-` as `restore-keys`),
   runs on it what the job builds, and saves it under the key the job restores followed by
   `-${{ github.sha }}`, with the paths the restore names; its `refill-superseded` job then deletes
-  the older entries but the one before the new one. No entry carries the job's key itself, so the
-  job's restore takes the newest entry whose key starts with it. `check-ci-filters.sh` holds the
+  every other entry of the family, so it keeps one entry per runner. No entry carries the job's
+  key itself, so the job's restore takes the newest entry whose key starts with it.
+  `check-ci-filters.sh` holds the
   save to the restore and fails when the two drift. The fill runs on every runner a job restoring
   that family runs on, one matrix leg per runner where there are two. Two families are the
   exception: `go-envoy-infra`, whose key carries a hash of its module files, is filled only when
